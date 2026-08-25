@@ -760,7 +760,10 @@ describe("the failed load is not a dead end (DW-142)", () => {
     // And a second press while it is running issues no second request.
     fireEvent.click(retrying);
     await settle();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await waitFor(
+      () => expect(fetchMock).toHaveBeenCalledTimes(2),
+      { timeout: 10_000 },
+    );
 
     gate.resolve(
       answer({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION }),

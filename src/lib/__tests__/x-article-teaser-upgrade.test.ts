@@ -26,6 +26,7 @@ vi.mock("../x-post", async (orig) => {
 import { ingestUrl } from "../ingest";
 import { readWikiPageWithFrontmatter, listWikiPages } from "../wiki";
 import { resetSourceIndex } from "../source-index";
+import { _resetStorage } from "../storage";
 import {
   isXPostUrl,
   fetchXPostContent,
@@ -63,13 +64,17 @@ const FULL_BODY = [
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
+let originalDataDir: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "x-teaser-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
+  originalDataDir = process.env.DATA_DIR;
+  process.env.DATA_DIR = tmpDir;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
+  _resetStorage();
   resetSourceIndex();
   mockedIsXPostUrl.mockReset();
   mockedFetch.mockReset();
@@ -80,6 +85,9 @@ afterEach(async () => {
   else process.env.WIKI_DIR = originalWikiDir;
   if (originalRawDir === undefined) delete process.env.RAW_DIR;
   else process.env.RAW_DIR = originalRawDir;
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
   resetSourceIndex();
 });

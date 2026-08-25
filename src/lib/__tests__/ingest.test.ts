@@ -268,13 +268,17 @@ describe("extractSummary", () => {
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
+let originalDataDir: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ingest-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
+  originalDataDir = process.env.DATA_DIR;
+  process.env.DATA_DIR = tmpDir;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
+  _resetStorage();
 });
 
 afterEach(async () => {
@@ -288,6 +292,12 @@ afterEach(async () => {
   } else {
     process.env.RAW_DIR = originalRawDir;
   }
+  if (originalDataDir === undefined) {
+    delete process.env.DATA_DIR;
+  } else {
+    process.env.DATA_DIR = originalDataDir;
+  }
+  _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -354,6 +364,51 @@ describe("ingest", () => {
     expect(page!.content).toContain("SECOND UNIQUE BODY");
     expect(Number(page!.frontmatter.source_count)).toBe(2);
   });
+
+  it("does not overwrite a competing first-ingest after its resolved-slug lease is lost", async () => {
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    let releaseFirst!: () => void;
+    let markFirstPaused!: () => void;
+    const firstPaused = new Promise<void>((resolve) => { markFirstPaused = resolve; });
+    const release = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let paused = false;
+    const writeSpy = vi.spyOn(storage, "writeFile").mockImplementation(async (target, body) => {
+      if (target.startsWith("derived-indexes/pages-dirty/v2-") && body === "lease-loss" && !paused) {
+        paused = true;
+        markFirstPaused();
+        await release;
+      }
+      return originalWrite(target, body);
+    });
+
+    const first = ingest("Lease Loss", "FIRST CREATOR BODY", {
+      owner: "alice",
+      author: "alice",
+    });
+    await firstPaused;
+    // Simulate a second Worker admitting the same slug after the first
+    // Worker's lease expired. The lifecycle create-only precondition, not the
+    // in-process lock, must be the final mutation fence.
+    _resetLocks();
+    const second = await ingest("Lease Loss", "SECOND CREATOR BODY", {
+      owner: "alice",
+      author: "alice",
+    });
+    releaseFirst();
+    await expect(first).rejects.toThrow(/already exists/i);
+    writeSpy.mockRestore();
+
+    expect(second.primarySlug).toBe("lease-loss");
+    const page = await readWikiPageWithFrontmatter("lease-loss", {
+      fresh: true,
+      strict: true,
+      owner: "alice",
+    });
+    expect(page!.content).toContain("SECOND CREATOR BODY");
+    expect(page!.content).not.toContain("FIRST CREATOR BODY");
+    _resetLocks();
+  }, 15_000);
 
   it("updates title on re-ingest when slug matches but title differs", async () => {
     // The slug for both is "hello-world"
@@ -592,6 +647,9 @@ describe("ingest — YAML frontmatter", () => {
     await writeWikiPage(
       "recurring",
       `---\ncreated: 2020-01-01\nupdated: 2020-01-01\nsource_count: 1\ntags: [keep-me]\n---\n\n# Recurring\n\nOlder body.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     await ingest("Recurring", "Second version of the content. More details.");
@@ -658,6 +716,9 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     await writeWikiPage(
       "phase1-reingest",
       `---\ncreated: 2024-06-01\nupdated: 2024-06-01\nsource_count: 1\ntags: []\nconfidence: 0.9\nexpiry: 2024-09-01\nauthors: [alice]\ncontributors: [bob]\ndisputed: true\nsupersedes: old-page\naliases: [p1r, phase-one]\n---\n\n# Phase1 Reingest\n\nEdited body.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     // Re-ingest

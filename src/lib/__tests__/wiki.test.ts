@@ -124,8 +124,8 @@ describe("updateIndex + listWikiPages roundtrip", () => {
     const result = await listWikiPages();
 
     expect(result).toHaveLength(2);
-    expect(result[0]).toEqual(entries[0]);
-    expect(result[1]).toEqual(entries[1]);
+    expect(result[0]).toEqual({ ...entries[0], visibility: "private" });
+    expect(result[1]).toEqual({ ...entries[1], visibility: "private" });
   });
 
   it("should return empty array when index does not exist", async () => {
@@ -217,7 +217,7 @@ describe("updateIndex + listWikiPages roundtrip", () => {
     expect(enrichEntry(base, fm).sourceCount).toBe(3);
   });
 
-  it("falls back to the plain entry when a page is missing on disk", async () => {
+  it("marks an index entry private when its page is missing on disk", async () => {
     // Index references a slug that has no corresponding file.
     await updateIndex([
       { slug: "ghost", title: "Ghost", summary: "Not on disk" },
@@ -229,6 +229,7 @@ describe("updateIndex + listWikiPages roundtrip", () => {
       slug: "ghost",
       title: "Ghost",
       summary: "Not on disk",
+      visibility: "private",
     });
   });
 });

@@ -2044,9 +2044,14 @@ export async function ingest(
   // fresh merge base and lifecycle commit prevents two first-ingests from both
   // observing "missing" and then overwriting one another.
   const commitLock = `ingest-commit:${slug}`;
+  let shouldAccumulateWithoutLlm = false;
   const { updatedSlugs } = await withDurableLock(commitLock, async () => {
   await assertNotCancelled(options?.jobId);
-  const existing = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+  const existing = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+    owner,
+  });
   if (existing) {
     const existingCreated = existing.frontmatter.created;
     if (typeof existingCreated === "string" && existingCreated !== "") {
@@ -2099,7 +2104,15 @@ export async function ingest(
     );
     // Merge the new entry, superseding a stale "text-paste" placeholder.
     // (source_count is the ingest counter, set above — not the array length.)
-    frontmatter.sources = serializeSources(mergeSourceEntry(existingSources, sourceEntry));
+    const existingSourceCount = existingSources.length;
+    const sourceSnapshotIsNew = !existingSources.some(
+      (source) => source.raw_id === rawId,
+    );
+    const mergedSources = mergeSourceEntry(existingSources, sourceEntry);
+    shouldAccumulateWithoutLlm =
+      mergedSources.length > existingSourceCount
+      || (sourceType === "text" && sourceSnapshotIsNew);
+    frontmatter.sources = serializeSources(mergedSources);
 
     // --- Phase 1 fields: preserve on re-ingest ---
     // Preserve authors from existing page (don't reset).
@@ -2179,7 +2192,12 @@ export async function ingest(
       // untouched).
       logger.warn("ingest", "reconcile-on-merge failed; using new body", err);
     }
-  } else if (existing && !canReconcileWithLlm && !prebuiltContent) {
+  } else if (
+    existing
+    && !canReconcileWithLlm
+    && !prebuiltContent
+    && shouldAccumulateWithoutLlm
+  ) {
     // The no-provider fallback must still be lossless. Preserve both compiled
     // bodies when distinct Sources converge on one slug; raw snapshots remain
     // authoritative, while this deterministic join keeps neither Source from
@@ -2243,7 +2261,7 @@ export async function ingest(
       logOp: "ingest",
       crossRefSource: content,
       author: actor,
-      ...(existing ? { expectedContent: existing.content } : {}),
+      ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
       logDetails: ({ updatedSlugs }) =>
         `slug: ${slug} · updated ${updatedSlugs.length} related page(s)`,
     });

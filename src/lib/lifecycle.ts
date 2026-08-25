@@ -22,7 +22,6 @@ import {
 } from "./wiki";
 import {
   clearPageIndexDirty,
-  getPageIndex,
   markPageIndexDirty,
   syncPageIndexForPage,
   removePageIndexForSlug,
@@ -356,8 +355,6 @@ async function runPageLifecycleOp(
     } else if (op.expectedContent !== undefined) {
       const tenant = writeTenant ?? tenantForOwner(undefined);
       const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
-      const pageIndex = await getPageIndex();
-      const siloIsAuthoritative = pageIndex?.[slug] !== undefined;
       let siloMatches = false;
       let siloExists = false;
       try {
@@ -391,7 +388,7 @@ async function runPageLifecycleOp(
         } catch (error) {
           logger.warn("wiki", `flat compatibility copy update failed for "${slug}"`, error);
         }
-      } else if (siloExists && siloIsAuthoritative) {
+      } else if (siloExists) {
         // A silo copy is authoritative whenever it exists. Never let a stale
         // transitional flat copy authorize overwriting newer owner bytes.
         throw new LifecyclePageConflictError(slug);
@@ -1079,5 +1076,6 @@ async function writeWikiPageWithSideEffectsInternal(
 export async function writeWikiPageWithSideEffects(
   opts: WritePageOptions,
 ): Promise<WritePageResult> {
+  assertWritable(READ_ONLY_REFUSAL.pageWrite);
   return writeWikiPageWithSideEffectsInternal(opts);
 }

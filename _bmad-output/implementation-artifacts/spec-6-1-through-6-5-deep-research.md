@@ -5,7 +5,7 @@ created: 2026-08-24
 status: done
 stepsCompleted: [1, 3, 4]
 followup_review_recommended: true
-review_loop_iteration: 7
+review_loop_iteration: 8
 baseline_revision: 6df2c30573d0a2dcbeabb3a0f65315d82a7698d9
 context:
   - AGENTS.md
@@ -345,6 +345,15 @@ None that block implementation. If an assumption is wrong, record the override i
 - patch: all findings from the `4cae4ee1` full-stack review applied: resolved-slug first-ingest serialization with lossless no-provider accumulation, authoritative-silo stale-flat rejection, dirty-before-write Page-metadata invalidation for privacy-safe reads, deterministic two-Page backlink-strip locking plus fresh retries, and an operator-enforced two-stage Cloudflare durable-lock migration gate
 - rollout safety: Cloudflare page mutations fail closed until `WORKWIKI_DURABLE_LOCK_V2_READY=1`; the flag may be set only after the prior Worker version's requests and Queue deliveries are drained, because its unconditional legacy lease publication cannot be fenced after a stale absent read
 - evidence: focused tests force concurrent same-slug first-ingests, stale flat versus newer silo bytes, public-to-private metadata sync failure, owner-edit and target-recreation backlink races, expired tokenless lease release, and the Cloudflare migration readiness refusal
+- independent verdict: pending against the next committed SHA
+- release gates: pending against that same next SHA
+- acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged
+
+### 2026-08-24 — Exact-head review remediation pass 8
+
+- patch: all findings from the `39cf8ca2` full-stack review applied: strict Page-index reads during synchronization, owner-silo-first ingest preconditions plus a create-only mutation fence, unconditional authoritative-silo stale-flat rejection before index seeding, fixed-length hashed dirty markers for nested or multibyte slugs, fail-closed scan metadata, and stale-flat-to-silo read-through during Page-index outages
+- hardening: no-LLM accumulation now joins bodies only for a distinct Source or text snapshot, so duplicate URL/teaser delivery stays idempotent while two real first-ingests remain lossless; tests isolate `DATA_DIR` so tenant silos cannot leak across cases
+- evidence: focused tests force resolved-slug lease loss between the missing-page read and create, an unseeded-index stale-flat conflict, a nested `queries/*` public-to-private sync failure, a failed Page-index base read, an unreadable authoritative Page, and a later Page-index outage while the flat mirror remains stale-public
 - independent verdict: pending against the next committed SHA
 - release gates: pending against that same next SHA
 - acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged

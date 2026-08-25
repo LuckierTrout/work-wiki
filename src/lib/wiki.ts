@@ -373,6 +373,14 @@ export interface ReadWikiPageOptions {
    * provider error can never authorize a destructive fix.
    */
   strict?: boolean;
+  /**
+   * Owner whose tenant silo should be checked before compatibility/index
+   * routing. Ingest knows the resolved owner before its final mutation and
+   * uses this to seed a create/update precondition from the authoritative
+   * object even when the metadata index is unseeded and the flat copy is
+   * missing after an interrupted write.
+   */
+  owner?: string;
 }
 
 /**
@@ -403,29 +411,50 @@ export async function readWikiPage(
 
   const storage = getStorage();
   const flatPath = `${getWikiDir()}/${slug}.md`;
-
-  // Silo-primary: try tenant path first. We use ONLY the O(1) page-index
-  // lookup — NOT tenantForSlug() — because its slow path triggers
-  // listWikiPages → scanWikiPagesUncached → readWikiPageWithFrontmatter →
-  // readWikiPage → infinite recursion.
   let content: string | null = null;
-  let actualPath: string = flatPath; // track where content was actually read from
-  const pageIdx = await getPageIndex();
-  if (pageIdx) {
-    const entry = pageIdx[slug];
-    const tenant = tenantForOwner(entry?.owner);
+  let actualPath: string = flatPath;
+  let authoritativeReadFailed = false;
+
+  // Silo-primary: try tenant path first. We use ONLY the caller's resolved
+  // owner and the O(1) page-index lookup — NOT tenantForSlug() — because its
+  // slow path triggers listWikiPages -> scanWikiPagesUncached ->
+  // readWikiPageWithFrontmatter -> readWikiPage -> infinite recursion.
+  const attemptedTenants = new Set<string>();
+  const readSilo = async (tenant: string): Promise<boolean> => {
+    if (attemptedTenants.has(tenant)) return false;
+    attemptedTenants.add(tenant);
     const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
     try {
       content = await storage.readFile(siloPath);
-      // Content came from the silo — resolve the absolute path
       actualPath = path.join(getDataDir(), siloPath);
-    } catch (e) {
-      if (!isEnoent(e)) {
-        if (strict) throw e;
-        logger.warn("wiki", `silo read failed for "${slug}", falling back to flat:`, e);
-      }
-      // Fall through to flat fallback
+      return true;
+    } catch (error) {
+      if (isEnoent(error)) return false;
+      // Once an owner/index routes a Page to its authoritative silo, a storage
+      // failure must not downgrade the read to possibly stale public flat
+      // bytes. Strict callers need the error; ordinary callers fail closed.
+      if (strict) throw error;
+      logger.warn("wiki", `silo read failed for "${slug}"; refusing flat fallback:`, error);
+      authoritativeReadFailed = true;
+      return true;
     }
+  };
+
+  if (options?.owner !== undefined) {
+    await readSilo(tenantForOwner(options.owner));
+    if (authoritativeReadFailed) return null;
+  }
+
+  // Silo-primary: try the indexed tenant path next. We use ONLY the O(1)
+  // page-index lookup — NOT tenantForSlug() — because its slow path triggers
+  // listWikiPages → scanWikiPagesUncached → readWikiPageWithFrontmatter →
+  // readWikiPage → infinite recursion.
+  const pageIdx = content === null ? await getPageIndex({ strict }) : null;
+  if (content === null && pageIdx) {
+    const entry = pageIdx[slug];
+    const tenant = tenantForOwner(entry?.owner);
+    await readSilo(tenant);
+    if (authoritativeReadFailed) return null;
   }
 
   // Flat fallback
@@ -446,6 +475,26 @@ export async function readWikiPage(
         pageCache.set(slug, null);
       }
       return null;
+    }
+
+    // An unseeded metadata index cannot identify the silo up front. The flat
+    // compatibility copy still carries the immutable owner, so use it only as
+    // a routing hint and prefer the matching silo bytes when they exist. This
+    // keeps a stale flat copy from restoring old public content after an index
+    // outage while preserving the migration fallback for truly flat-only
+    // Pages.
+    let inferredTenant: string | null = null;
+    try {
+      const { data } = parseFrontmatter(content);
+      const owner = typeof data.owner === "string" ? data.owner : undefined;
+      inferredTenant = tenantForOwner(owner);
+    } catch {
+      // Malformed frontmatter remains the responsibility of the extended read
+      // below; do not convert that established error into a missing Page here.
+    }
+    if (inferredTenant !== null) {
+      await readSilo(inferredTenant);
+      if (authoritativeReadFailed) return null;
     }
   }
 
@@ -697,24 +746,28 @@ async function readIndexBaseEntries(options?: { strict?: boolean }): Promise<Ind
 /**
  * The O(pages) scan: read `index.md` then EACH page's frontmatter to enrich.
  * The fallback for {@link listWikiPages} and the source for the `_idx:pages`
- * rebuild. A page that fails to parse falls back to its plain index entry so one
- * malformed page never breaks the whole list.
+ * rebuild. A page whose authoritative metadata cannot be read is represented
+ * as private + unowned so a transient failure can reduce availability but can
+ * never turn unknown visibility into public access.
  */
 export async function scanWikiPagesUncached(options?: { strict?: boolean }): Promise<IndexEntry[]> {
   const baseEntries = await readIndexBaseEntries(options);
   return Promise.all(
     baseEntries.map(async (entry): Promise<IndexEntry> => {
       try {
-        const page = await readWikiPageWithFrontmatter(entry.slug);
-        if (!page) return entry;
+        const page = await readWikiPageWithFrontmatter(
+          entry.slug,
+          { fresh: true, strict: true },
+        );
+        if (!page) return { ...entry, visibility: "private" };
         return enrichEntry(entry, page.frontmatter);
       } catch (err) {
         logger.warn(
           "wiki",
-          `listWikiPages: failed to read frontmatter for "${entry.slug}" — falling back to plain entry`,
+          `listWikiPages: failed to read frontmatter for "${entry.slug}" — hiding it`,
           err,
         );
-        return entry;
+        return { ...entry, visibility: "private" };
       }
     }),
   );

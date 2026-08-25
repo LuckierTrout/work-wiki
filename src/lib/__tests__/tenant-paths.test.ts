@@ -16,6 +16,7 @@ import type { PageMetaIndex } from "../page-index";
 let mockPageIndex: PageMetaIndex | null = null;
 vi.mock("../page-index", () => ({
   getPageIndex: () => Promise.resolve(mockPageIndex),
+  getPageIndexDirtySlugs: () => Promise.resolve(new Set<string>()),
 }));
 
 // Pin DATA_DIR and clear WIKI_DIR/RAW_DIR overrides so the relative-path math

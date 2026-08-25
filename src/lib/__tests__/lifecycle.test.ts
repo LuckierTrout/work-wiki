@@ -12,6 +12,7 @@ import type { WritePageOptions } from "../lifecycle";
 import {
   ensureDirectories,
   readWikiPage,
+  readWikiPageWithFrontmatter,
   writeWikiPage,
   listWikiPages,
   listReadableWikiPages,
@@ -24,7 +25,7 @@ import { serializeFrontmatter } from "../frontmatter";
 import { getStorage, _resetStorage } from "../storage";
 import { registerAgent, getAgent } from "../agents";
 import { _resetLocks, _setDurableLocksForTests, withDurableLock } from "../lock";
-import { rebuildPageIndex } from "../page-index";
+import { getPageIndexDirtySlugs, rebuildPageIndex } from "../page-index";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors wiki.test.ts approach
@@ -453,7 +454,6 @@ describe("writeWikiPageWithSideEffects", () => {
       crossRefSource: null,
       createOnly: true,
     }));
-    await rebuildPageIndex();
     const ownerEdit = serializeFrontmatter(
       { owner: "alice", visibility: "private" },
       "# Page\n\nOwner edit.\n",
@@ -652,13 +652,13 @@ describe("deleteWikiPage", () => {
     expect(result.strippedBacklinksFrom).toContain("linker");
   }, 15_000);
 
-  it("fails closed on stale visibility metadata after a page-index sync failure", async () => {
+  it("fails closed for a nested slug after a page-index sync failure", async () => {
     const publicContent = serializeFrontmatter(
       { owner: "alice", visibility: "public" },
       "# Secret\n\nSensitive body.\n",
     );
     await writeWikiPageWithSideEffects({
-      slug: "secret",
+      slug: "queries/secret",
       title: "Secret",
       content: publicContent,
       summary: "Sensitive",
@@ -683,7 +683,7 @@ describe("deleteWikiPage", () => {
       "# Secret\n\nSensitive body.\n",
     );
     await writeWikiPageWithSideEffects({
-      slug: "secret",
+      slug: "queries/secret",
       title: "Secret",
       content: privateContent,
       summary: "Sensitive",
@@ -693,10 +693,116 @@ describe("deleteWikiPage", () => {
     });
     writeSpy.mockRestore();
 
+    expect(await getPageIndexDirtySlugs()).toContain("queries/secret");
     expect((await listReadableWikiPages(null)).map((entry) => entry.slug))
-      .not.toContain("secret");
+      .not.toContain("queries/secret");
     expect((await listReadableWikiPages({ id: "alice-id", handle: "alice" }))
-      .map((entry) => entry.slug)).toContain("secret");
+      .map((entry) => entry.slug)).toContain("queries/secret");
+  });
+
+  it("keeps the privacy dirty marker when page-index sync cannot read its base", async () => {
+    const publicContent = serializeFrontmatter(
+      { owner: "alice", visibility: "public" },
+      "# Secret Read\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "secret-read",
+      title: "Secret Read",
+      content: publicContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let pageIndexReads = 0;
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (target) => {
+      if (target === "derived-indexes/pages.json" && ++pageIndexReads === 2) {
+        throw new Error("page index read unavailable");
+      }
+      return originalRead(target);
+    });
+    const privateContent = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Secret Read\n\nSensitive body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "secret-read",
+      title: "Secret Read",
+      content: privateContent,
+      summary: "Sensitive",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: publicContent,
+    });
+    readSpy.mockRestore();
+
+    expect((await listReadableWikiPages(null)).map((entry) => entry.slug))
+      .not.toContain("secret-read");
+  });
+
+  it("does not expose a stale public flat copy during a later page-index outage", async () => {
+    const publicContent = serializeFrontmatter(
+      { owner: "alice", visibility: "public" },
+      "# Index Outage\n\nPublic body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "index-outage",
+      title: "Index Outage",
+      content: publicContent,
+      summary: "Public",
+      logOp: "edit",
+      crossRefSource: null,
+      createOnly: true,
+    });
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    const matchSpy = vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => {
+        if (target === "wiki/index-outage.md") return false;
+        return originalMatch(target, content, etag);
+      },
+    );
+    const privateContent = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Index Outage\n\nPrivate body.\n",
+    );
+    await writeWikiPageWithSideEffects({
+      slug: "index-outage",
+      title: "Index Outage",
+      content: privateContent,
+      summary: "Private",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: publicContent,
+    });
+    matchSpy.mockRestore();
+
+    expect(await storage.readFile("wiki/index-outage.md")).toBe(publicContent);
+    expect(await getPageIndexDirtySlugs()).not.toContain("index-outage");
+
+    const originalRead = storage.readFile.bind(storage);
+    let failIndexOnce = true;
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (target) => {
+      if (target === "derived-indexes/pages.json" && failIndexOnce) {
+        failIndexOnce = false;
+        throw new Error("transient page-index outage");
+      }
+      return originalRead(target);
+    });
+
+    expect((await listReadableWikiPages(null)).map((entry) => entry.slug))
+      .not.toContain("index-outage");
+    failIndexOnce = true;
+    const direct = await readWikiPageWithFrontmatter("index-outage", { fresh: true });
+    expect(direct?.frontmatter.visibility).toBe("private");
+    expect(direct?.body).toContain("Private body");
+    readSpy.mockRestore();
   });
 
   // 14b. Backlink-strip revisions carry author="system"

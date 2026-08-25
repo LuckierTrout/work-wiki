@@ -19,6 +19,7 @@ import { getStorage } from "./storage";
 import { withDurableLock } from "./lock";
 import { logger } from "./logger";
 import { isEnoent } from "./errors";
+import { sourceSha256 } from "./source-sha256";
 import type { IndexEntry } from "./types";
 
 const PAGE_INDEX_KEY = "pages";
@@ -28,11 +29,24 @@ const PAGE_INDEX_DIRTY_PATH = "derived-indexes/pages-dirty";
 
 export type PageMetaIndex = Record<string, IndexEntry>;
 
+async function dirtyMarkerPath(slug: string): Promise<string> {
+  return `${PAGE_INDEX_DIRTY_PATH}/v2-${await sourceSha256(slug)}`;
+}
+
 export async function markPageIndexDirty(slug: string): Promise<void> {
-  await getStorage().writeFile(`${PAGE_INDEX_DIRTY_PATH}/${slug}`, "1");
+  // The slug is the marker payload, not its filename. A fixed-length digest
+  // keeps nested and long multibyte slugs below every provider's key/filename
+  // component limit while remaining deterministic for clear-on-success.
+  await getStorage().writeFile(await dirtyMarkerPath(slug), slug);
 }
 
 export async function clearPageIndexDirty(slug: string): Promise<void> {
+  try {
+    await getStorage().deleteFile(await dirtyMarkerPath(slug));
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+  // Rolling compatibility for raw-slug markers written by the prior version.
   try {
     await getStorage().deleteFile(`${PAGE_INDEX_DIRTY_PATH}/${slug}`);
   } catch (error) {
@@ -42,10 +56,23 @@ export async function clearPageIndexDirty(slug: string): Promise<void> {
 
 export async function getPageIndexDirtySlugs(): Promise<Set<string>> {
   try {
-    const entries = await getStorage().listFiles(PAGE_INDEX_DIRTY_PATH);
-    return new Set(
-      entries.filter((entry) => !entry.isDirectory).map((entry) => entry.name),
-    );
+    const storage = getStorage();
+    const slugs = new Set<string>();
+    const collect = async (prefix: string, legacyPrefix: string): Promise<void> => {
+      for (const entry of await storage.listFiles(prefix)) {
+        if (entry.isDirectory) {
+          await collect(`${prefix}/${entry.name}`, `${legacyPrefix}${entry.name}/`);
+        } else if (entry.name.startsWith("v2-")) {
+          slugs.add(await storage.readFile(`${prefix}/${entry.name}`));
+        } else {
+          // Raw-slug markers from the prior version. Walking directories also
+          // recovers the exact nested markers that version failed to surface.
+          slugs.add(`${legacyPrefix}${entry.name}`);
+        }
+      }
+    };
+    await collect(PAGE_INDEX_DIRTY_PATH, "");
+    return slugs;
   } catch (error) {
     if (isEnoent(error)) return new Set();
     // Failure to read the invalidation set must never make stale visibility
@@ -56,7 +83,9 @@ export async function getPageIndexDirtySlugs(): Promise<Set<string>> {
 
 /** The metadata map, or `null` when the index has never been seeded (caller
  *  should fall back to {@link scanWikiPagesUncached}). */
-export async function getPageIndex(): Promise<PageMetaIndex | null> {
+export async function getPageIndex(
+  options?: { strict?: boolean },
+): Promise<PageMetaIndex | null> {
   try {
     let idx: PageMetaIndex | null;
     try {
@@ -75,6 +104,7 @@ export async function getPageIndex(): Promise<PageMetaIndex | null> {
     if (!idx || typeof idx !== "object") return null;
     return idx;
   } catch (err) {
+    if (options?.strict) throw err;
     logger.warn("page-index", "read failed; falling back to scan", err);
     return null;
   }
@@ -83,7 +113,7 @@ export async function getPageIndex(): Promise<PageMetaIndex | null> {
 /** Upsert one page's enriched entry. NO-OP until the index is seeded. */
 export async function syncPageIndexForPage(entry: IndexEntry): Promise<void> {
   await withDurableLock(PAGE_INDEX_LOCK, async () => {
-    const idx = await getPageIndex();
+    const idx = await getPageIndex({ strict: true });
     if (idx === null) return; // not seeded — daily rebuild will seed it
     idx[entry.slug] = entry;
     await getStorage().writeFile(PAGE_INDEX_PATH, JSON.stringify(idx));
@@ -94,7 +124,7 @@ export async function syncPageIndexForPage(entry: IndexEntry): Promise<void> {
 /** Drop one page's entry (page deleted). NO-OP until seeded. */
 export async function removePageIndexForSlug(slug: string): Promise<void> {
   await withDurableLock(PAGE_INDEX_LOCK, async () => {
-    const idx = await getPageIndex();
+    const idx = await getPageIndex({ strict: true });
     if (idx === null) return;
     if (slug in idx) {
       delete idx[slug];
