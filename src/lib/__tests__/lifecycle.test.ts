@@ -987,16 +987,19 @@ describe("deleteWikiPage", () => {
     await saveRevision("rev-page", "# Rev Page\n\nOld version.\n");
     await new Promise((r) => setTimeout(r, 15));
     await saveRevision("rev-page", "# Rev Page\n\nOlder version.\n");
+    await saveRevision("rev-page", "# Rev Page\n\nTenant version.\n", undefined, undefined, "yopedia");
 
     // Verify revisions exist
     const revsBefore = await listRevisions("rev-page");
     expect(revsBefore.length).toBeGreaterThanOrEqual(1);
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(1);
 
     await deleteWikiPage("rev-page");
 
     // Revisions should be gone
     const revsAfter = await listRevisions("rev-page");
     expect(revsAfter).toHaveLength(0);
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(0);
   });
 
   // 17. Validates slug

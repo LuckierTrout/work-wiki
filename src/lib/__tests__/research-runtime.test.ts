@@ -1408,6 +1408,27 @@ describe("deep research — remediations", () => {
     vi.useRealTimers();
   });
 
+  it("reaps an expired rotated successor before deleting its stale-token tombstone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+    const rotated = await rotateResearchSlot("alice", created.id, grant.attemptId!);
+    expect(rotated?.attemptId).toBeTruthy();
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(await getResearchProject("alice", created.id)).toBeNull();
+    expect(await activeResearchCount("alice")).toBe(0);
+    vi.useRealTimers();
+  });
+
   it("retains the DELETE tombstone when lease cleanup cannot be confirmed", async () => {
     const created = await project();
     const grant = await acquireResearchSlot("alice", created.id);

@@ -35,7 +35,13 @@ import { saveRawSourceFor } from "../raw";
 import { tenantForOwner, writeWikiPage } from "../wiki";
 import { sourceSha256 } from "../source-sha256";
 import { serializeFrontmatter } from "../frontmatter";
-import { acquireResearchSlot, activeResearchCount } from "../research-concurrency";
+import {
+  acquireResearchSlot,
+  activeResearchCount,
+  renewResearchSlot,
+  rotateResearchSlot,
+  RESEARCH_SLOT_TTL_MS,
+} from "../research-concurrency";
 
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
 const mockedEnqueue = vi.mocked(enqueueTask);
@@ -761,6 +767,33 @@ describe("research completion outbox", () => {
       runAttemptId: grant.attemptId,
     });
     expect(await activeResearchCount("alice")).toBe(1);
+  });
+
+  it("retains the DELETE tombstone when completion sees a rotated successor lease", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+    const rotated = await rotateResearchSlot("alice", created.id, grant.attemptId!);
+
+    expect(await commitResearchPage("alice", created.id, OUTBOX)).toBeNull();
+
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      deleteRequested: true,
+      runAttemptId: grant.attemptId,
+    });
+    expect(await activeResearchCount("alice")).toBe(1);
+    await expect(renewResearchSlot("alice", created.id, rotated!.attemptId!))
+      .resolves.toBeUndefined();
+    vi.useRealTimers();
   });
 
   it("drops a leftover outbox when cancel wins after the outbox is saved", async () => {

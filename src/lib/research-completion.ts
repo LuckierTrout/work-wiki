@@ -20,7 +20,11 @@ import {
   type ResearchProject,
   type ResearchProjectResult,
 } from "./research-projects";
-import { hasResearchSlot, releaseResearchSlot } from "./research-concurrency";
+import {
+  hasResearchSlot,
+  releaseExpiredResearchSlot,
+  releaseResearchSlot,
+} from "./research-concurrency";
 import { researchPageSlug, researchSourceSlug } from "./research-slug";
 import { sourceSha256 } from "./source-sha256";
 import { buildSourceEntry, serializeSources } from "./sources";
@@ -51,6 +55,7 @@ async function deleteRetiredProjectIfLeaseGone(
   attemptId?: string | null,
 ): Promise<boolean> {
   await releaseResearchSlot(owner, id, attemptId ?? undefined);
+  await releaseExpiredResearchSlot(owner, id);
   try {
     if (await hasResearchSlot(owner, id)) return false;
   } catch {

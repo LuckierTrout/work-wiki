@@ -465,6 +465,7 @@ export async function runUpdate(slug: string, title?: string, tags?: string[]): 
     logOp: "edit",
     crossRefSource: body.trim(),
     expectedContent: existing.content,
+    validateNewLinkTargets: true,
   });
 
   console.log(`Updated: ${result.slug}`);

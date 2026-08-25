@@ -635,6 +635,9 @@ export async function reconcileResearchProjects(
           // unsafe revocation or an unreapable orphan if that worker crashes.
           continue;
         }
+        if (project.deleteRequested) {
+          await releaseExpiredResearchSlot(owner, project.id);
+        }
         const slotGone = await releaseResearchSlotAndConfirmGone(
           owner,
           project.id,
@@ -650,6 +653,7 @@ export async function reconcileResearchProjects(
       if (project.cancelRequested && !held) {
         await clearResearchStaging(owner, project.id);
         if (project.deleteRequested && !project.completion) {
+          await releaseExpiredResearchSlot(owner, project.id);
           if (await releaseResearchSlotAndConfirmGone(
             owner,
             project.id,

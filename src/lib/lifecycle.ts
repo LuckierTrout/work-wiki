@@ -93,6 +93,8 @@ export interface WritePageOptions {
   createOnly?: boolean;
   /** Refuse to overwrite unless the authoritative Page still has these bytes. */
   expectedContent?: string;
+  /** Refuse an edit that introduces a link to a Page missing at commit time. */
+  validateNewLinkTargets?: boolean;
   /**
    * Refuse this write unless another Page still exists while both lifecycle
    * locks are held. Cross-reference injection uses this to make the source
@@ -167,6 +169,7 @@ type PageLifecycleOp =
       revisionReason?: string;
       createOnly?: boolean;
       expectedContent?: string;
+      validateNewLinkTargets?: boolean;
       requiresExistingSlug?: string;
       requiresExistingTenant?: string;
       requiredTargetTenant?: string;
@@ -312,19 +315,31 @@ async function runPageLifecycleOp(
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
   validateSlug(slug);
-  const previousTargets = op.kind === "write" && op.expectedContent !== undefined
+  const previousTargets = op.kind === "write"
+      && op.validateNewLinkTargets
+      && op.expectedContent !== undefined
     ? new Set(extractAllInternalTargets(op.expectedContent))
     : new Set<string>();
   const requiredExistingSlugs = op.kind === "write"
     ? [...new Set([
         ...(op.requiresExistingSlug ? [op.requiresExistingSlug] : []),
-        ...(op.expectedContent === undefined
+        ...(!op.validateNewLinkTargets || op.expectedContent === undefined
           ? []
           : extractAllInternalTargets(op.content).filter(
               (target) => !previousTargets.has(target),
             )),
       ])].filter((target) => target !== slug)
     : [];
+  let writeTenant: string | undefined;
+  if (op.kind === "write") {
+    try {
+      const fm = parseFrontmatter(op.content).data;
+      const owner = typeof fm.owner === "string" ? fm.owner : undefined;
+      writeTenant = tenantForOwner(owner);
+    } catch {
+      writeTenant = tenantForOwner(undefined);
+    }
+  }
   let postIndexEntries!: IndexEntry[];
   let removedFromIndex = false;
   const mutatePrimaryAndIndexes = async (): Promise<void> => {
@@ -351,6 +366,10 @@ async function runPageLifecycleOp(
             && tenantForOwner(
               typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
             ) !== op.requiresExistingTenant)
+          || (requiredSlug !== op.requiresExistingSlug && op.validateNewLinkTargets
+            && tenantForOwner(
+              typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
+            ) !== writeTenant)
         ) {
           throw new LifecyclePageConflictError(
             slug,
@@ -361,17 +380,6 @@ async function runPageLifecycleOp(
     }
 
   // --- Silo-primary: resolve the write tenant from content frontmatter ---
-  let writeTenant: string | undefined;
-  if (op.kind === "write") {
-    try {
-      const fm = parseFrontmatter(op.content).data;
-      const owner = typeof fm.owner === "string" ? fm.owner : undefined;
-      writeTenant = tenantForOwner(owner);
-    } catch {
-      writeTenant = tenantForOwner(undefined);
-    }
-  }
-
   // Capture the deleted page's owner BEFORE removing it, so the delete path
   // knows which tenant silo to target.
   let deletedOwner: string | undefined;
@@ -619,6 +627,10 @@ async function runPageLifecycleOp(
     const cleanups: { label: string; run: Promise<unknown> }[] = [
       { label: "embedding remove", run: removeEmbedding(slug) },
       { label: "deleteRevisions", run: deleteRevisions(slug) },
+      {
+        label: "deleteTenantRevisions",
+        run: deleteRevisions(slug, tenantForOwner(deletedOwner)),
+      },
       { label: "deleteDiscussions", run: deleteDiscussions(slug) },
     ];
     const settled = await Promise.allSettled(cleanups.map((c) => c.run));
@@ -1302,6 +1314,7 @@ async function writeWikiPageWithSideEffectsInternal(
       revisionReason: opts.revisionReason,
       createOnly: opts.createOnly,
       expectedContent: opts.expectedContent,
+      validateNewLinkTargets: opts.validateNewLinkTargets,
       requiresExistingSlug: opts.requiresExistingSlug,
       requiresExistingTenant: opts.requiresExistingTenant,
       requiredTargetTenant: opts.requiredTargetTenant,

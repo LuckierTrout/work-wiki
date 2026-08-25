@@ -288,6 +288,7 @@ export async function PUT(
       crossRefSource: newBody,
       author: authorStr,
       expectedContent: existing.content,
+      validateNewLinkTargets: true,
       logDetails: (ctx) =>
         `edited · updated ${ctx.updatedSlugs.length} cross-ref(s)`,
     });

@@ -235,12 +235,53 @@ async function survivorDescendsFromMergedContent(
   slug: string,
   currentContent: string,
   mergedContent: string,
+  tenant: string,
 ): Promise<boolean> {
   if (currentContent === mergedContent) return true;
-  for (const revision of await listRevisions(slug)) {
-    if (await readRevision(slug, revision.timestamp) === mergedContent) return true;
+  const mergedGeneration = pageSnapshot(mergedContent, slug).frontmatter.merge_generation;
+  if (typeof mergedGeneration === "string") {
+    return pageSnapshot(currentContent, slug).frontmatter.merge_generation === mergedGeneration;
+  }
+  for (const revisionTenant of [tenant, undefined]) {
+    for (const revision of await listRevisions(slug, revisionTenant)) {
+      if (await readRevision(slug, revision.timestamp, revisionTenant) === mergedContent) return true;
+    }
   }
   return false;
+}
+
+async function validateCanonicalPageStorage(): Promise<void> {
+  const seen = new Map<string, string>();
+  const scan = async (prefix: string, tenant: string, relative = ""): Promise<void> => {
+    for (const entry of await getStorage().listFiles(prefix)) {
+      if (entry.name.startsWith(".")) continue;
+      const path = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory) {
+        await scan(`${prefix}/${entry.name}`, tenant, path);
+      } else if (path.endsWith(".md")) {
+        const slug = path.slice(0, -3);
+        if (["index", "log"].includes(slug)) continue;
+        const content = await getStorage().readFile(`${prefix}/${entry.name}`);
+        const owner = pageSnapshot(content, slug).frontmatter.owner;
+        if (tenantForOwner(typeof owner === "string" ? owner : undefined) !== tenant) {
+          throw new Error(`merge aborted: canonical Page "${slug}" is stored under the wrong tenant`);
+        }
+        const previousTenant = seen.get(slug);
+        if (previousTenant && previousTenant !== tenant) {
+          throw new Error(`merge aborted: Page "${slug}" exists in multiple tenant silos`);
+        }
+        seen.set(slug, tenant);
+      }
+    }
+  };
+  for (const tenantEntry of await getStorage().listFiles("tenants")) {
+    if (!tenantEntry.isDirectory || tenantEntry.name.startsWith(".")) continue;
+    try {
+      await scan(`tenants/${tenantEntry.name}/wiki`, tenantEntry.name);
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+    }
+  }
 }
 
 async function readMergeReceipt(path: string): Promise<MergeOperationReceipt | null> {
@@ -428,9 +469,11 @@ async function mergePagesWhileSourceLocked({
     const today = new Date().toISOString().slice(0, 10);
     const expiry = new Date();
     expiry.setDate(expiry.getDate() + 90);
+    const generation = crypto.randomUUID();
     fm.updated = today;
     fm.valid_from = today;
     fm.expiry = expiry.toISOString().slice(0, 10);
+    fm.merge_generation = generation;
     mergedBody = mergedBody.replace(
       new RegExp(`(\\]\\()${escapeRegex(fromSlug)}\\.md(?=[#)\\s])`, "g"),
       `$1${intoSlug}.md`,
@@ -438,7 +481,7 @@ async function mergePagesWhileSourceLocked({
     const summary = extractSummary(mergedBody.replace(/^#\s+.+$/m, "").trim());
     const candidate: MergeOperationReceipt = {
       version: 1,
-      generation: crypto.randomUUID(),
+      generation,
       fromSlug,
       intoSlug,
       fromContent: from.content,
@@ -474,6 +517,7 @@ async function mergePagesWhileSourceLocked({
     readWikiPageWithFrontmatter(fromSlug, { fresh: true, strict: true }),
     readWikiPageWithFrontmatter(intoSlug, { fresh: true, strict: true }),
   ]);
+  await validateCanonicalPageStorage();
   if (!currentFrom) {
     if (!currentInto) throw new Error("merge survivor disappeared after the absorbed Page was deleted");
     const originalSurvivor = pageSnapshot(receipt.intoContent, intoSlug);
@@ -489,6 +533,7 @@ async function mergePagesWhileSourceLocked({
         intoSlug,
         currentInto.content,
         receipt.mergedContent,
+        tenantForOwner(originalOwner),
       )
     ) {
       throw new Error(`merge aborted: survivor Page "${intoSlug}" was replaced after the absorbed Page was deleted`);

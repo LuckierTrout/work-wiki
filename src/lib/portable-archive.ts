@@ -214,8 +214,8 @@ export async function importPortableArchive(
   bytes: ArrayBuffer,
   collision: "skip" | "overwrite",
 ): Promise<PortableArchiveInspection & { imported: number; skipped: number; indexes: Record<string, { ok: boolean; error?: string }> }> {
-  const { inspection, files } = await parseArchive(owner, bytes);
   return withDurableLock("merge-pages", async () => {
+    const { inspection, files } = await parseArchive(owner, bytes);
     const collisionSet = new Set(inspection.collisions);
     const existingEntries = await listWikiPages({ strict: true });
     const archivePageSlugs = inspection.manifest.files.flatMap((entry) => {

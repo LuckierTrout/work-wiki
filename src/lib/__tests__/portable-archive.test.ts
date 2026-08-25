@@ -220,6 +220,26 @@ describe("portable owner archive", () => {
     expect(await getStorage().readFile("tenants/bob/wiki/z-conflict.md")).toBe(bob);
   });
 
+  it("keeps a same-owner Page that appears before a skip import acquires its snapshot", async () => {
+    const archived = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Atlas\n\nArchived bytes.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", archived);
+    const archive = await buildPortableArchive("alice");
+    await getStorage().deleteDirectory("tenants/alice");
+    const newer = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Atlas\n\nNewly committed bytes.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", newer);
+
+    const result = await importPortableArchive("alice", buffer(archive.bytes), "skip");
+
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(await getStorage().readFile("tenants/alice/wiki/atlas.md")).toBe(newer);
+  });
+
   it("rejects an oversized manifest before allocating its expanded payload", async () => {
     const oversized = zipSync({
       "manifest.json": new Uint8Array(5 * 1024 * 1024 + 1),

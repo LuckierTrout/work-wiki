@@ -345,6 +345,7 @@ export async function handleUpdatePage(args: {
     author: args.author,
     crossRefSource: callerBody,
     expectedContent: existingPage.content,
+    validateNewLinkTargets: true,
   });
 
   return { slug: args.slug, title, updated: true };
@@ -1402,6 +1403,7 @@ export async function handleRevertRevision(args: {
     author,
     crossRefSource: revisionContent,
     expectedContent: existing.content,
+    validateNewLinkTargets: true,
   });
 
   return { slug: result.slug, updatedSlugs: result.updatedSlugs };
