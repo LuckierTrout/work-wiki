@@ -17,9 +17,10 @@ import { getErrorMessage } from "@/lib/errors";
 import { patchMetadata } from "@/lib/patch-metadata";
 import {
   IF_MATCH_HEADER,
-  WRITE_CONFLICT_COPY,
+  checkVersionPrecondition,
   checkWritePrecondition,
   contentVersion,
+  parseIfMatch,
 } from "@/lib/write-precondition";
 
 export async function DELETE(
@@ -310,7 +311,16 @@ export async function PUT(
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
     }
     if (err instanceof Error && err.name === "LifecyclePageConflictError") {
-      return NextResponse.json({ error: WRITE_CONFLICT_COPY }, { status: 412 });
+      const conflict = checkVersionPrecondition(
+        parseIfMatch(req.headers.get(IF_MATCH_HEADER)),
+        null,
+      );
+      if (!conflict.ok) {
+        return NextResponse.json(
+          { error: conflict.error },
+          { status: conflict.status },
+        );
+      }
     }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;

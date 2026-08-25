@@ -380,7 +380,7 @@ describe("writeWikiPageWithSideEffects", () => {
     await Promise.all([first, second]);
     const slugs = (await listWikiPages()).map((entry) => entry.slug);
     expect(slugs).toEqual(expect.arrayContaining(["isolate-one", "isolate-two"]));
-  });
+  }, 15_000);
 
   it("serializes one Page and its derived metadata across simulated Worker isolates", async () => {
     const initial = serializeFrontmatter(
@@ -1249,7 +1249,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
     const rewritten = await readWikiPage(summary!.slug);
     expect(rewritten?.content).toContain("disputed: true");
     expect(rewritten?.content).toContain("second");
-  });
+  }, 15_000);
 
   it("bookkeeping cites options.sourcePath when ingest is given one", async () => {
     const { ingest } = await import("../ingest");

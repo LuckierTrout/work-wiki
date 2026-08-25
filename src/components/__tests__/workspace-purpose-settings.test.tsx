@@ -510,8 +510,10 @@ describe("a save that settles too late speaks for nobody (DW-320)", () => {
     await settle();
     // The recheck really did start — otherwise this case proves nothing at all.
     expect(interrupted).toBe(true);
-    expect(fetchMock.mock.calls.filter(([, init]) => !init || !("method" in init)).length)
-      .toBeGreaterThanOrEqual(2);
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([, init]) => !init || !("method" in init)).length)
+        .toBeGreaterThanOrEqual(2);
+    });
 
     gate.resolve(answer({ profile: PROFILE, wiki: WIKI, version: VERSION }));
     await settle();

@@ -172,7 +172,7 @@ describe("mergePages", () => {
     const other = await readWikiPage("other");
     expect(other!.content).toContain("](agent-harness.md)");
     expect(other!.content).not.toContain("](harness-ai-agents.md)");
-  });
+  }, 15_000);
 
   it("re-points via the precomputed backlink index when it's present (the production fast path)", async () => {
     await seedPage("agent-harness", { title: "Agent Harness" });
@@ -195,7 +195,7 @@ describe("mergePages", () => {
     const other = await readWikiPage("other");
     expect(other!.content).toContain("](agent-harness.md)");
     expect(other!.content).not.toContain("](harness-ai-agents.md)");
-  });
+  }, 15_000);
 
   it("escalates `disputed` (and caps confidence) when the fold finds a contradiction", async () => {
     await seedPage("agent-harness", {

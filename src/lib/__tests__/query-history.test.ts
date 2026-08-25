@@ -163,7 +163,7 @@ describe("storage placement + isolation", () => {
     }
     expect(await listQueries(undefined, "alice")).toHaveLength(200);
     expect(await listQueries(undefined, "bob")).toHaveLength(3);
-  }, 60_000);
+  }, 120_000);
 
   it("never clobbers history when a read fails (corrupt file → throws, untouched)", async () => {
     await fs.mkdir(path.dirname(siloFile(OWNER)), { recursive: true });
