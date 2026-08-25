@@ -173,6 +173,29 @@ export function restrictResearchCitations(
   return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
 
+/** True when the published markdown contains at least one exact fetched URL. */
+export function hasAllowedResearchCitation(
+  markdown: string,
+  allowedUrls: readonly string[],
+): boolean {
+  const allowed = new Set(
+    allowedUrls.map(normalizeUrl).filter((url): url is string => url !== null),
+  );
+  const candidates = markdown.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+  return candidates.some((candidate) => {
+    let href = candidate;
+    while (/[.,;:!?]$/.test(href)) href = href.slice(0, -1);
+    while (
+      href.endsWith(")")
+      && (href.match(/\(/g)?.length ?? 0) < (href.match(/\)/g)?.length ?? 0)
+    ) {
+      href = href.slice(0, -1);
+    }
+    const normalized = normalizeUrl(href);
+    return normalized !== null && allowed.has(normalized);
+  });
+}
+
 /** Newest `limit` thinking lines, in order, each trimmed and bounded. */
 export function appendThinkingLines(
   existing: readonly string[] | undefined,

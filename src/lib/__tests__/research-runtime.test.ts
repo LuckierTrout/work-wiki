@@ -182,7 +182,11 @@ beforeEach(async () => {
       content: "THE WHOLE PAGE BODY, well past any snippet cap.",
     },
   ]);
-  mockedLLM.mockResolvedValue("# Launch evidence\n\nA brief.");
+  mockedLLM.mockImplementation(async (_system, user) => {
+    const url = user.match(/(?:Exact )?URL: (https?:\/\/\S+)/)?.[1]
+      ?? "https://example.com/launch/brief";
+    return `# Launch evidence\n\nA brief [from the source](${url}).`;
+  });
   mockedPages.mockResolvedValue([]);
   mockedConventions.mockResolvedValue("");
 });
@@ -374,7 +378,7 @@ describe("deep research run — success", () => {
         return `condensed evidence ${"m".repeat(24_000)}`;
       }
       if (system.startsWith("Reduce these evidence notes")) return "reduced evidence";
-      return "# Launch evidence\n\nA brief.";
+      return "# Launch evidence\n\nA brief [from the source](https://example.com/large).";
     });
     const created = await project();
 
@@ -497,6 +501,17 @@ describe("deep research run — failure and cancellation", () => {
     expect(mockedSaveRaw).not.toHaveBeenCalled();
     expect(mockedIngestJob).not.toHaveBeenCalled();
     expect(await activeResearchCount("alice")).toBe(0);
+  });
+
+  it("writes no Page when synthesis cites none of the fetched source URLs", async () => {
+    mockedLLM.mockResolvedValue("# Launch evidence\n\nFacts without evidence links.");
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(/no citation/i);
+
+    expect((await getResearchProject("alice", created.id))?.status).toBe("failed");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedIngestJob).not.toHaveBeenCalled();
   });
 
   it("fails visibly when no result could be read", async () => {
@@ -800,9 +815,9 @@ describe("deep research — thinking is the model's, progress is the kernel's", 
     mockedStream.mockResolvedValue({
       textStream: (async function* () {
         yield "<thinking>step one\n";
-        yield "step two</thinking>\n# Launch evidence\n\nA brief.";
+        yield "step two</thinking>\n# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief).";
       })(),
-      text: Promise.resolve("<thinking>step one\nstep two</thinking>\n# Launch evidence\n\nA brief."),
+      text: Promise.resolve("<thinking>step one\nstep two</thinking>\n# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief)."),
     } as unknown as Awaited<ReturnType<typeof callLLMStream>>);
     const created = await project();
 
@@ -815,7 +830,7 @@ describe("deep research — thinking is the model's, progress is the kernel's", 
 
   it("keeps a model's think-tokens off the Page and on the project", async () => {
     mockedLLM.mockResolvedValue(
-      "<thinking>Weighing two dates.</thinking>\n# Launch evidence\n\nA brief.",
+      "<thinking>Weighing two dates.</thinking>\n# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief).",
     );
     const created = await project();
 
@@ -896,6 +911,21 @@ describe("deep research — an interrupted run gets an answer", () => {
 
     expect((await getResearchProject("alice", created.id))?.status).toBe("complete");
   });
+
+  it.each(["draft", "complete", "cancelled"] as const)(
+    "does not rewrite a legacy %s project when unrelated lease state is malformed",
+    async (status) => {
+      const created = await project();
+      await updateResearchProject("alice", created.id, { status, completion: null });
+      const leasePath = path.join(tmpDir, "tenants", "alice", "research-leases.json");
+      await fs.mkdir(path.dirname(leasePath), { recursive: true });
+      await fs.writeFile(leasePath, "{ malformed", "utf-8");
+
+      await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+      expect((await getResearchProject("alice", created.id))?.status).toBe(status);
+    },
+  );
 
   // `shouldAdvanceTime` so the clock can jump past the abandonment window
   // without freezing the real timers that `withFileLock` and the fs writes

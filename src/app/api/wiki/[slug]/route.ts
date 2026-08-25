@@ -285,6 +285,7 @@ export async function PUT(
       // block doesn't bias related-page matching.
       crossRefSource: newBody,
       author: authorStr,
+      expectedContent: existing.content,
       logDetails: (ctx) =>
         `edited · updated ${ctx.updatedSlugs.length} cross-ref(s)`,
     });

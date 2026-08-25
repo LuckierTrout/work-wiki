@@ -152,7 +152,10 @@ export async function withDurableLock<T>(
   const { getStorage, _getProviderType } = await import("./storage");
   const { isEnoent } = await import("./errors");
   const safe = key.replace(/[^a-zA-Z0-9._:-]/g, "_");
-  const rel = `locks/${safe}.json`;
+  // v1 used `locks/` for both tokenless and token leases. v2 has its own
+  // namespace so a late tokenless holder cannot delete a replacement lease.
+  const legacyRel = `locks/${safe}.json`;
+  const rel = `locks-v2/${safe}.json`;
 
   return withFileLock(key, async () => {
     const storage = getStorage();
@@ -168,6 +171,28 @@ export async function withDurableLock<T>(
 
     for (let attempt = 0; attempt < DURABLE_LOCK_CAS_ATTEMPTS;) {
       const now = Date.now();
+      let legacy: ParsedDurableLease | null = null;
+      try {
+        legacy = parseDurableLease((await storage.readFileWithEtag(legacyRel)).content);
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+      }
+      if (legacy?.kind === "invalid") {
+        throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
+      }
+      if (
+        (legacy?.kind === "legacy" || legacy?.kind === "current")
+        && legacy.lease.until > now
+      ) {
+        if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
+          throw new Error(`Legacy durable lock ${key} did not become available`);
+        }
+        await pause(Math.max(
+          10,
+          Math.min(DURABLE_LOCK_POLL_MAX_MS, legacy.lease.until - now),
+        ));
+        continue;
+      }
       let etag: string | null = null;
       let parsed: ParsedDurableLease | null = null;
       try {
@@ -182,15 +207,7 @@ export async function withDurableLock<T>(
         throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
       }
       if (parsed?.kind === "legacy") {
-        // An old holder releases by deleting this file and has no token with
-        // which to prove ownership. Never replace even an apparently expired
-        // legacy lease: the old holder could still finish late and delete a
-        // newer lease. Wait for its delete, or fail visibly at the bound.
-        if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
-          throw new Error(`Legacy durable lock ${key} did not become available`);
-        }
-        await pause(DURABLE_LOCK_POLL_MAX_MS);
-        continue;
+        throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
       }
       const until = parsed?.kind === "current"
         ? parsed.lease.until

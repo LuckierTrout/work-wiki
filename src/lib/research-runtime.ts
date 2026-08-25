@@ -42,7 +42,11 @@ import {
   type ResearchSearchResult,
 } from "./research-providers";
 import { researchPageSlug } from "./research-slug";
-import { extractThinking, restrictResearchCitations } from "./research-text";
+import {
+  extractThinking,
+  hasAllowedResearchCitation,
+  restrictResearchCitations,
+} from "./research-text";
 import { loadPageConventions } from "./schema";
 import { isAgentScopedType, isArtifactType, listWikiPages, readWikiPage, tenantForOwner } from "./wiki";
 import { enqueueTask } from "./tasks";
@@ -93,6 +97,19 @@ class ResearchCancelledError extends Error {
 
 async function requireResearchActive(owner: string, id: string): Promise<void> {
   if (await cancelled(owner, id)) throw new ResearchCancelledError();
+}
+
+async function stageActiveResearchSource(
+  owner: string,
+  id: string,
+  source: FetchedSource,
+): Promise<ResearchOutboxSource> {
+  try {
+    return await stageResearchSource(owner, id, source);
+  } catch (error) {
+    if (await cancelled(owner, id)) throw new ResearchCancelledError();
+    throw error;
+  }
 }
 
 /**
@@ -404,6 +421,18 @@ export async function reconcileResearchProjects(
         }
         continue;
       }
+      if (project.completion || outboxIds.has(project.id)) {
+        await drainResearchOutbox(owner, project.id);
+        changed = true;
+        outboxIds.delete(project.id);
+        continue;
+      }
+      const needsLease = project.status === "queued"
+        || RESEARCH_IN_FLIGHT_STATUSES.includes(project.status);
+      if (!needsLease) {
+        if (project.cancelRequested) await clearResearchStaging(owner, project.id);
+        continue;
+      }
       let held: boolean;
       try {
         held = await holdsResearchSlot(owner, project.id);
@@ -419,12 +448,6 @@ export async function reconcileResearchProjects(
           },
         });
         changed = true;
-        continue;
-      }
-      if (project.completion || outboxIds.has(project.id)) {
-        await drainResearchOutbox(owner, project.id);
-        changed = true;
-        outboxIds.delete(project.id);
         continue;
       }
       if (project.cancelRequested && !held) {
@@ -607,7 +630,7 @@ async function fetchSources(
     const existing = result.content?.trim();
     if (existing) {
       // Already in hand from the provider (Tavily `raw_content`): no fetch.
-      const stored = await stageResearchSource(owner, id, {
+      const stored = await stageActiveResearchSource(owner, id, {
         url: result.url,
         title: result.title,
         text: existing,
@@ -627,7 +650,7 @@ async function fetchSources(
         `Could not read source ${position} of ${targets.length}; skipping it.`);
       continue;
     }
-    const stored = await stageResearchSource(owner, id, {
+    const stored = await stageActiveResearchSource(owner, id, {
       url: result.url,
       title: extracted.title || result.title,
       text: extracted.content,
@@ -1038,7 +1061,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
         {
           onInlineContent: async ({ url, title, text }) => {
             if (providerStaged.has(url)) return;
-            providerStaged.set(url, await stageResearchSource(owner, id, { url, title, text }));
+            providerStaged.set(url, await stageActiveResearchSource(owner, id, { url, title, text }));
           },
         },
       );
@@ -1048,7 +1071,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       // while its response stream is still being parsed.
       for (const result of results) {
         if (!result.content || providerStaged.has(result.url)) continue;
-        providerStaged.set(result.url, await stageResearchSource(owner, id, {
+        providerStaged.set(result.url, await stageActiveResearchSource(owner, id, {
           url: result.url,
           title: result.title,
           text: result.content,
@@ -1125,6 +1148,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       ].filter(Boolean).join("\n\n"),
       `Research question: ${initial.question}\n\nEvidence:\n\n${evidence}`,
     ));
+    await requireResearchActive(owner, id);
     const split = extractThinking(raw);
     const synthesis = restrictResearchCitations(
       split.content
@@ -1135,6 +1159,9 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       sources.map((source) => source.url),
     );
     if (!synthesis) throw new Error("Research synthesis returned no content");
+    if (!hasAllowedResearchCitation(synthesis, sources.map((source) => source.url))) {
+      throw new Error("Research synthesis returned no citation to a fetched source URL");
+    }
 
     const slug = researchPageSlug({ title: initial.title, id });
     const thinking = split.thinking ? split.thinking.split(/\r?\n/).filter(Boolean) : [];

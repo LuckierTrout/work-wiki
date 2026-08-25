@@ -276,18 +276,31 @@ export async function claimIngestJob(
   owner: string,
 ): Promise<IngestJob | null> {
   return withFileLock(`ingest-job:${jobId}`, async () => {
-    const job = await getIngestJob(jobId);
-    if (!job || job.owner !== owner) return null;
-    if (job.cancelled || job.sourceDeleted) return null;
-    if (job.status !== "queued" && job.status !== "retrying") return null;
-    const updated: IngestJob = {
-      ...job,
-      status: "processing",
-      stage: job.stage === "generation" ? "generation" : "extracting",
-      updatedAt: new Date().toISOString(),
-    };
-    await getStorage().writeFile(relPathFor(jobId), JSON.stringify(updated));
-    return updated;
+    const storage = getStorage();
+    const rel = relPathFor(jobId);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      let read: Awaited<ReturnType<typeof storage.readFileWithEtag>>;
+      try {
+        read = await storage.readFileWithEtag(rel);
+      } catch (error) {
+        if (isEnoent(error)) return null;
+        throw error;
+      }
+      const job = JSON.parse(read.content) as IngestJob;
+      if (!job || job.owner !== owner) return null;
+      if (job.cancelled || job.sourceDeleted) return null;
+      if (job.status !== "queued" && job.status !== "retrying") return null;
+      const updated: IngestJob = {
+        ...job,
+        status: "processing",
+        stage: job.stage === "generation" ? "generation" : "extracting",
+        updatedAt: new Date().toISOString(),
+      };
+      if (await storage.writeFileIfMatch(rel, JSON.stringify(updated), read.etag)) {
+        return updated;
+      }
+    }
+    throw new Error("Ingest job was busy; retry the claim");
   });
 }
 

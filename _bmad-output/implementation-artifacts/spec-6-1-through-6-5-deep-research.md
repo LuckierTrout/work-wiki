@@ -5,7 +5,7 @@ created: 2026-08-24
 status: done
 stepsCompleted: [1, 3, 4]
 followup_review_recommended: true
-review_loop_iteration: 4
+review_loop_iteration: 5
 baseline_revision: 6df2c30573d0a2dcbeabb3a0f65315d82a7698d9
 context:
   - AGENTS.md
@@ -322,6 +322,14 @@ None that block implementation. If an assumption is wrong, record the override i
 - independent verdict: pending against the next committed SHA
 - release gates: pending against that same next SHA
 - acceptance effect: none yet; no prior review or gate result transfers to the new SHA
+
+### 2026-08-24 — Exact-head review remediation pass 5
+
+- patch: all findings from the `ee45c611` full-stack review applied: atomic cross-isolate Ingest claims, per-Page lifecycle serialization and owner-edit CAS recovery, terminal/draft malformed-lease isolation, late-stage DELETE fencing, reclaimable rolling-deploy leases, archive index freshness, durable Page-metadata indexing, and enforced exact fetched-URL citations
+- evidence: focused tests cover duplicate Ingest claims, same-slug lifecycle/index races, seeded private metadata races, expired and active legacy leases, late Source staging after DELETE, owner-edit retry recovery, uncited synthesis refusal, and malformed lease state beside legacy terminal projects
+- independent verdict: pending against the next committed SHA
+- release gates: pending against that same next SHA
+- acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged
 
 ### 2026-08-24 — Review pass
 - intent_gap: 0

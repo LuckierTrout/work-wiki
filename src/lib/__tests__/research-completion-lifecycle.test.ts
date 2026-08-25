@@ -154,5 +154,7 @@ describe("research completion lifecycle write", () => {
       previousPageContent: prior!.content,
     })).rejects.toThrow(/changed; run Lint again/i);
     expect((await readWikiPage(OUTBOX.pageSlug))?.content).toContain("Owner note.");
+    expect((await getResearchProject("alice", created.id))?.completion).toBeUndefined();
+    expect((await getResearchProject("alice", created.id))?.status).toBe("failed");
   });
 });

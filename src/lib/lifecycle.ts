@@ -207,8 +207,12 @@ function stripBacklinksTo(slug: string, content: string): string {
 /** Max concurrent R2 reads/writes during a page lifecycle op. */
 const LIFECYCLE_CONCURRENCY = 12;
 
-const LIFECYCLE_STALE_PAGE = (slug: string) =>
-  `Page "${slug}" changed; run Lint again`;
+export class LifecyclePageConflictError extends Error {
+  constructor(slug: string, reason = "changed; run Lint again") {
+    super(`Page "${slug}" ${reason}`);
+    this.name = "LifecyclePageConflictError";
+  }
+}
 
 async function storageFileExists(relPath: string): Promise<boolean> {
   try {
@@ -233,6 +237,7 @@ async function runPageLifecycleOp(
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
   validateSlug(slug);
+  return withDurableLock(`page-lifecycle:${slug}`, async () => {
 
   // --- Silo-primary: resolve the write tenant from content frontmatter ---
   let writeTenant: string | undefined;
@@ -278,11 +283,11 @@ async function runPageLifecycleOp(
       const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
       try {
         const silo = await getStorage().readFile(siloPath);
-        if (silo !== op.content) throw new Error(LIFECYCLE_STALE_PAGE(slug));
+        if (silo !== op.content) throw new LifecyclePageConflictError(slug);
       } catch (error) {
         if (!isEnoent(error)) throw error;
         const created = await createWikiPage(slug, op.content, tenant);
-        if (!created) throw new Error(LIFECYCLE_STALE_PAGE(slug));
+        if (!created) throw new LifecyclePageConflictError(slug);
       }
 
       const flatPath = wikiRelPath(`${slug}.md`);
@@ -308,7 +313,7 @@ async function runPageLifecycleOp(
       // The tenant silo is authoritative. Its conditional write is the
       // create-only boundary: Review must never overwrite an unrelated Page.
       const created = await createWikiPage(slug, op.content, writeTenant);
-      if (!created) throw new Error(`Page "${slug}" already exists`);
+      if (!created) throw new LifecyclePageConflictError(slug, "already exists");
       // The flat file is transitional. Preserve an unexpected pre-existing
       // flat Page rather than overwriting it; the page index will route reads
       // to the newly-created authoritative silo copy.
@@ -317,45 +322,24 @@ async function runPageLifecycleOp(
         logger.warn("wiki", `flat compatibility copy already exists for "${slug}"`);
       }
     } else if (op.expectedContent !== undefined) {
-      const updated = await writeWikiPageIfContentMatches(
-        slug,
-        op.content,
-        op.expectedContent,
-        op.author,
-        "conditional lifecycle edit",
-        writeTenant,
-      );
-      if (!updated) {
-        const siloPath = tenantWikiRelPath(
-          writeTenant ?? tenantForOwner(undefined),
-          `${slug}.md`,
-        );
-        if (await storageFileExists(siloPath)) {
-          throw new Error(LIFECYCLE_STALE_PAGE(slug));
-        }
-        // readWikiPage still falls back to the flat tree for pre-migration
-        // pages. CAS those bytes instead of treating a missing silo as a
-        // concurrent edit, then promote the new body into the silo once.
-        const flatUpdated = await writeWikiPageIfContentMatches(
+      const tenant = writeTenant ?? tenantForOwner(undefined);
+      const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
+      let siloMatches = false;
+      try {
+        siloMatches = await getStorage().readFile(siloPath) === op.expectedContent;
+      } catch (error) {
+        if (!isEnoent(error)) throw error;
+      }
+      if (siloMatches) {
+        const siloUpdated = await writeWikiPageIfContentMatches(
           slug,
           op.content,
           op.expectedContent,
           op.author,
           "conditional lifecycle edit",
+          tenant,
         );
-        if (!flatUpdated) {
-          throw new Error(LIFECYCLE_STALE_PAGE(slug));
-        }
-        const siloCreated = await createWikiPage(slug, op.content, writeTenant);
-        if (!siloCreated) {
-          logger.warn("wiki", `silo appeared during flat CAS for "${slug}"; left untouched`);
-        }
-      } else {
-        // The flat copy is compatibility-only. Update it conditionally when it
-        // still mirrors the source bytes, but never overwrite divergent bytes.
-        // A missing flat copy is not a conflict: createOnly already writes
-        // both trees, and readWikiPage still falls back to flat when the
-        // page index is unseeded.
+        if (!siloUpdated) throw new LifecyclePageConflictError(slug);
         try {
           const flatUpdated = await writeWikiPageIfContentMatches(
             slug,
@@ -364,19 +348,25 @@ async function runPageLifecycleOp(
             op.author,
             "conditional lifecycle edit",
           );
-          if (!flatUpdated) {
-            if (await storageFileExists(wikiRelPath(`${slug}.md`))) {
-              logger.warn("wiki", `flat compatibility copy changed for "${slug}"; left untouched`);
-            } else {
-              const flatCreated = await createWikiPage(slug, op.content);
-              if (!flatCreated) {
-                logger.warn("wiki", `flat compatibility copy appeared for "${slug}"`);
-              }
-            }
+          if (!flatUpdated && !await storageFileExists(wikiRelPath(`${slug}.md`))) {
+            await createWikiPage(slug, op.content);
           }
         } catch (error) {
           logger.warn("wiki", `flat compatibility copy update failed for "${slug}"`, error);
         }
+      } else {
+        // Before the page-metadata index is seeded, reads intentionally fall
+        // back to the flat tree. CAS that exact merge base, then repair/promote
+        // the tenant copy while the per-slug lifecycle lock is still held.
+        const flatUpdated = await writeWikiPageIfContentMatches(
+          slug,
+          op.content,
+          op.expectedContent,
+          op.author,
+          "conditional lifecycle edit",
+        );
+        if (!flatUpdated) throw new LifecyclePageConflictError(slug);
+        await writeWikiPage(slug, op.content, op.author, "conditional lifecycle silo repair", tenant);
       }
     } else {
       // Silo-primary: write to tenants/<tenant>/wiki/<slug>.md
@@ -687,7 +677,7 @@ async function runPageLifecycleOp(
   }
 
   // 3b-vi. Page-metadata index (_idx:pages) — the enriched IndexEntry per slug,
-  //         so listWikiPages enriches with one KV read instead of reading every
+  //         so listWikiPages enriches with one derived-index read instead of every
   //         page file. Holds ALL pages (visibility filtering is on the read side).
   //         No-op until the daily rebuild has seeded it. Fail-soft.
   try {
@@ -821,6 +811,7 @@ async function runPageLifecycleOp(
   }
 
   return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };
+  });
 }
 
 /**

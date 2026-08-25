@@ -88,7 +88,9 @@ beforeEach(async () => {
     snippet: "short excerpt",
     content: "THE WHOLE PAGE BODY.",
   }]);
-  mockedLLM.mockResolvedValue("# Launch evidence\n\nA brief.");
+  mockedLLM.mockResolvedValue(
+    "# Launch evidence\n\nA brief [from the launch source](https://example.com/launch/brief).",
+  );
 });
 
 afterEach(async () => {

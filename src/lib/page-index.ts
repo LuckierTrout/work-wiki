@@ -1,7 +1,7 @@
 /**
  * `_idx:pages` — a precomputed map of every page's enriched {@link IndexEntry}
  * metadata (tags / owner / type / visibility / updated / sourceCount / …). It
- * lets {@link listWikiPages} enrich entries with ONE KV read instead of reading
+ * lets {@link listWikiPages} enrich entries with one derived-index read instead of reading
  * every page file (the O(pages) loop that dominated the article + silo pages).
  *
  * Same hardened pattern as the other derived indexes (`commons.ts`): fail-soft
@@ -10,16 +10,20 @@
  * fabricate a partial map from one write), and a `rebuildPageIndex()` that
  * reconstructs from the authoritative {@link scanWikiPagesUncached}.
  *
- * This index holds ALL pages (public, private, agent-scoped) — it's the raw
+ * The authoritative copy is a strongly consistent R2/file object; the legacy
+ * KV index is mirrored during migration but is never preferred once that copy
+ * exists. This index holds ALL pages (public, private, agent-scoped) — it's the raw
  * metadata layer; visibility filtering happens in `listReadableWikiPages`.
  */
 import { getStorage } from "./storage";
-import { withFileLock } from "./lock";
+import { withDurableLock } from "./lock";
 import { logger } from "./logger";
+import { isEnoent } from "./errors";
 import type { IndexEntry } from "./types";
 
 const PAGE_INDEX_KEY = "pages";
 const PAGE_INDEX_LOCK = "page-index";
+const PAGE_INDEX_PATH = "derived-indexes/pages.json";
 
 export type PageMetaIndex = Record<string, IndexEntry>;
 
@@ -27,7 +31,15 @@ export type PageMetaIndex = Record<string, IndexEntry>;
  *  should fall back to {@link scanWikiPagesUncached}). */
 export async function getPageIndex(): Promise<PageMetaIndex | null> {
   try {
-    const idx = await getStorage().getIndex<PageMetaIndex>(PAGE_INDEX_KEY);
+    let idx: PageMetaIndex | null;
+    try {
+      idx = JSON.parse(await getStorage().readFile(PAGE_INDEX_PATH)) as PageMetaIndex;
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+      // One-way rolling migration from the old KV-only index. The next sync or
+      // rebuild writes the strongly consistent R2/file copy.
+      idx = await getStorage().getIndex<PageMetaIndex>(PAGE_INDEX_KEY);
+    }
     // Presence check only — per-entry shape is TRUSTED, not validated. Safe
     // because `listWikiPages` drives membership + title/slug/summary from
     // index.md and only pulls enriched (optional) fields from here, so a
@@ -43,21 +55,23 @@ export async function getPageIndex(): Promise<PageMetaIndex | null> {
 
 /** Upsert one page's enriched entry. NO-OP until the index is seeded. */
 export async function syncPageIndexForPage(entry: IndexEntry): Promise<void> {
-  await withFileLock(PAGE_INDEX_LOCK, async () => {
+  await withDurableLock(PAGE_INDEX_LOCK, async () => {
     const idx = await getPageIndex();
     if (idx === null) return; // not seeded — daily rebuild will seed it
     idx[entry.slug] = entry;
+    await getStorage().writeFile(PAGE_INDEX_PATH, JSON.stringify(idx));
     await getStorage().putIndex(PAGE_INDEX_KEY, idx);
   });
 }
 
 /** Drop one page's entry (page deleted). NO-OP until seeded. */
 export async function removePageIndexForSlug(slug: string): Promise<void> {
-  await withFileLock(PAGE_INDEX_LOCK, async () => {
+  await withDurableLock(PAGE_INDEX_LOCK, async () => {
     const idx = await getPageIndex();
     if (idx === null) return;
     if (slug in idx) {
       delete idx[slug];
+      await getStorage().writeFile(PAGE_INDEX_PATH, JSON.stringify(idx));
       await getStorage().putIndex(PAGE_INDEX_KEY, idx);
     }
   });
@@ -66,11 +80,12 @@ export async function removePageIndexForSlug(slug: string): Promise<void> {
 /** Rebuild the whole map from the authoritative per-page scan (daily self-heal). */
 export async function rebuildPageIndex(): Promise<number> {
   const { scanWikiPagesUncached } = await import("./wiki");
-  const all = await scanWikiPagesUncached();
-  const map: PageMetaIndex = {};
-  for (const entry of all) map[entry.slug] = entry;
-  await withFileLock(PAGE_INDEX_LOCK, async () => {
+  return withDurableLock(PAGE_INDEX_LOCK, async () => {
+    const all = await scanWikiPagesUncached();
+    const map: PageMetaIndex = {};
+    for (const entry of all) map[entry.slug] = entry;
+    await getStorage().writeFile(PAGE_INDEX_PATH, JSON.stringify(map));
     await getStorage().putIndex(PAGE_INDEX_KEY, map);
+    return all.length;
   });
-  return all.length;
 }

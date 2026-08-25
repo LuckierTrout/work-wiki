@@ -4,9 +4,10 @@ import { rebuildDerivedIndexes } from "./maintenance";
 import { buildAliasIndex } from "./alias-index";
 import { buildSourceIndex } from "./source-index";
 import { getStorage } from "./storage";
+import { withDurableLock } from "./lock";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { rawRelPath, wikiRelPath } from "./wiki";
-import { enrichEntry, listWikiPages, updateIndex, validateSlug } from "./wiki";
+import { enrichEntry, listWikiPages, updateIndexUnsafe, validateSlug } from "./wiki";
 import { parseFrontmatter } from "./frontmatter";
 import type { IndexEntry } from "./types";
 
@@ -191,55 +192,72 @@ export async function importPortableArchive(
       skipped += 1;
       continue;
     }
-    await getStorage().writeAsset(
-      `tenants/${tenant(owner)}/${entry.path}`,
-      bytesBuffer(files[`files/${entry.path}`]),
-    );
-    // Tenant storage is canonical, but the current transition still rebuilds
-    // global indexes from flat compatibility paths. Restore those copies for
-    // page, raw, and discussion artifacts before invoking the rebuild.
-    const compatibilityPath = entry.path.startsWith("wiki/")
-      ? wikiRelPath(entry.path.slice("wiki/".length))
-      : entry.path.startsWith("raw/")
-        ? rawRelPath(entry.path.slice("raw/".length))
-        : entry.path.startsWith("discuss/")
-          ? entry.path
-          : null;
-    if (compatibilityPath) {
+    const writeEntry = async () => {
       await getStorage().writeAsset(
-        compatibilityPath,
+        `tenants/${tenant(owner)}/${entry.path}`,
         bytesBuffer(files[`files/${entry.path}`]),
       );
+      // Tenant storage is canonical, but the current transition still rebuilds
+      // global indexes from flat compatibility paths. Restore those copies for
+      // page, raw, and discussion artifacts before invoking the rebuild.
+      const compatibilityPath = entry.path.startsWith("wiki/")
+        ? wikiRelPath(entry.path.slice("wiki/".length))
+        : entry.path.startsWith("raw/")
+          ? rawRelPath(entry.path.slice("raw/".length))
+          : entry.path.startsWith("discuss/")
+            ? entry.path
+            : null;
+      if (compatibilityPath) {
+        await getStorage().writeAsset(
+          compatibilityPath,
+          bytesBuffer(files[`files/${entry.path}`]),
+        );
+      }
+    };
+    const pageMatch = /^wiki\/([^/]+)\.md$/.exec(entry.path);
+    if (pageMatch && !["index", "log"].includes(pageMatch[1])) {
+      await withDurableLock(`page-lifecycle:${pageMatch[1]}`, async () => {
+        const current = (await listWikiPages({ strict: true }))
+          .find((candidate) => candidate.slug === pageMatch[1]);
+        if (current && tenantForOwner(current.owner) !== tenant(owner)) {
+          throw new Error(`Archive page conflicts with another owner: ${pageMatch[1]}`);
+        }
+        await writeEntry();
+      });
+    } else {
+      await writeEntry();
     }
     imported += 1;
   }
   // Reconstruct the flat index from every canonical page in this tenant. The
   // current transition still uses wiki/index.md as ordered discovery ground
   // truth, so a restore must seed it before rebuilding the derived indexes.
-  const ownerEntries: IndexEntry[] = [];
-  for (const entry of await getStorage().listFiles(`tenants/${tenant(owner)}/wiki`)) {
-    if (entry.isDirectory || !entry.name.endsWith(".md") || entry.name.startsWith(".")) continue;
-    const slug = entry.name.slice(0, -3);
-    if (["index", "log"].includes(slug)) continue;
-    validateSlug(slug);
-    const content = await getStorage().readFile(`tenants/${tenant(owner)}/wiki/${entry.name}`);
-    const parsed = parseFrontmatter(content);
-    if (tenantForOwner(typeof parsed.data.owner === "string" ? parsed.data.owner : undefined) !== tenant(owner)) {
-      throw new Error(`Restored page owner does not match archive tenant: ${slug}`);
+  await withDurableLock("index.md", async () => {
+    const ownerEntries: IndexEntry[] = [];
+    for (const entry of await getStorage().listFiles(`tenants/${tenant(owner)}/wiki`)) {
+      if (entry.isDirectory || !entry.name.endsWith(".md") || entry.name.startsWith(".")) continue;
+      const slug = entry.name.slice(0, -3);
+      if (["index", "log"].includes(slug)) continue;
+      validateSlug(slug);
+      const content = await getStorage().readFile(`tenants/${tenant(owner)}/wiki/${entry.name}`);
+      const parsed = parseFrontmatter(content);
+      if (tenantForOwner(typeof parsed.data.owner === "string" ? parsed.data.owner : undefined) !== tenant(owner)) {
+        throw new Error(`Restored page owner does not match archive tenant: ${slug}`);
+      }
+      const title = parsed.body.match(/^#\s+(.+)$/m)?.[1]?.trim() || slug;
+      const summary = parsed.body
+        .replace(/^#\s+.+$/m, "")
+        .split(/\n\s*\n/)
+        .map((value) => value.replace(/[#*_`>\[\]]/g, "").trim())
+        .find(Boolean)?.slice(0, 500) || "Restored from owner archive";
+      ownerEntries.push(enrichEntry({ slug, title, summary }, parsed.data));
     }
-    const title = parsed.body.match(/^#\s+(.+)$/m)?.[1]?.trim() || slug;
-    const summary = parsed.body
-      .replace(/^#\s+.+$/m, "")
-      .split(/\n\s*\n/)
-      .map((value) => value.replace(/[#*_`>\[\]]/g, "").trim())
-      .find(Boolean)?.slice(0, 500) || "Restored from owner archive";
-    ownerEntries.push(enrichEntry({ slug, title, summary }, parsed.data));
-    await getStorage().writeAsset(wikiRelPath(entry.name), bytesBuffer(new TextEncoder().encode(content)));
-  }
-  await updateIndex([
-    ...existingEntries.filter((entry) => tenantForOwner(entry.owner) !== tenant(owner)),
-    ...ownerEntries.sort((a, b) => a.title.localeCompare(b.title)),
-  ]);
+    const currentEntries = await listWikiPages({ strict: true });
+    await updateIndexUnsafe([
+      ...currentEntries.filter((entry) => tenantForOwner(entry.owner) !== tenant(owner)),
+      ...ownerEntries.sort((a, b) => a.title.localeCompare(b.title)),
+    ]);
+  });
   const indexes = await rebuildDerivedIndexes();
   await Promise.all([buildAliasIndex(), buildSourceIndex()]);
   return { ...inspection, imported, skipped, indexes };

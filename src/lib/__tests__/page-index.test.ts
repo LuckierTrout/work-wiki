@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -14,8 +14,8 @@ import {
   ensureDirectories,
   writeWikiPage,
 } from "../wiki";
-import { _resetLocks } from "../lock";
-import { _resetStorage } from "../storage";
+import { _resetLocks, _setDurableLocksForTests } from "../lock";
+import { _resetStorage, getStorage } from "../storage";
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -27,6 +27,7 @@ beforeEach(async () => {
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
   _resetLocks();
+  _setDurableLocksForTests(true);
   _resetStorage();
 });
 
@@ -35,6 +36,7 @@ afterEach(async () => {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
+  _setDurableLocksForTests(false);
   _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
@@ -105,5 +107,45 @@ describe("page-index", () => {
 
     await removePageIndexForSlug("a");
     expect((await getPageIndex())?.["a"]).toBeUndefined();
+  });
+
+  it("preserves concurrent metadata updates across simulated Worker isolates", async () => {
+    await createPage("a", "owner: alice\nvisibility: private", "Alpha");
+    await createPage("b", "owner: bob\nvisibility: private", "Beta");
+    await rebuildPageIndex();
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let firstRead!: () => void;
+    let releaseRead!: () => void;
+    const started = new Promise<void>((resolve) => { firstRead = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let reads = 0;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      const value = await originalRead(rel);
+      if (String(rel) === "derived-indexes/pages.json") {
+        reads += 1;
+        if (reads === 1) {
+          firstRead();
+          await release;
+        }
+      }
+      return value;
+    });
+
+    const first = syncPageIndexForPage({
+      slug: "a", title: "Alpha", summary: "A", owner: "alice", visibility: "private",
+    });
+    await started;
+    _resetLocks();
+    const second = syncPageIndexForPage({
+      slug: "b", title: "Beta", summary: "B", owner: "bob", visibility: "private",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(reads).toBe(1);
+    releaseRead();
+    await Promise.all([first, second]);
+
+    expect((await getPageIndex())?.a).toMatchObject({ owner: "alice", visibility: "private" });
+    expect((await getPageIndex())?.b).toMatchObject({ owner: "bob", visibility: "private" });
   });
 });

@@ -151,6 +151,15 @@ export async function stageResearchSource(
   // manifest entry, which cleanup tolerates; it cannot leave an undiscoverable
   // body containing source data.
   await withDurableLock(`research-staging:${owner}:${projectId}`, async () => {
+    const project = await getResearchProject(owner, projectId);
+    if (
+      !project
+      || project.deleteRequested
+      || project.cancelRequested
+      || project.status === "cancelled"
+    ) {
+      throw new Error("Research project was retired before its Source could be staged");
+    }
     await recordResearchStagingUnsafe(owner, projectId, reference);
     await getStorage().writeFile(sourcePath, source.text!);
   });
@@ -517,13 +526,23 @@ export async function commitResearchPage(
     // that the full lifecycle completed.
     await writeResearchPage(owner, id, outbox);
   } catch (error) {
+    const pageConflict = error instanceof Error && error.name === "LifecyclePageConflictError";
     await mutateResearchProject(owner, id, (project) => {
       const completion = project.completion;
       if (!completion || completion.writeClaimId !== claimId) return null;
+      if (pageConflict) {
+        delete project.completion;
+        project.status = "failed";
+        return project;
+      }
       delete completion.writeClaimedAt;
       delete completion.writeClaimId;
       return project;
     }).catch(() => undefined);
+    if (pageConflict) {
+      await deleteResearchOutbox(owner, id).catch(() => undefined);
+      await clearPageWrittenMarker(owner, id).catch(() => undefined);
+    }
     throw error;
   } finally {
     stopHeartbeat();

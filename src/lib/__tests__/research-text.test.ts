@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { appendThinkingLines, extractThinking, restrictResearchCitations } from "../research-text";
+import {
+  appendThinkingLines,
+  extractThinking,
+  hasAllowedResearchCitation,
+  restrictResearchCitations,
+} from "../research-text";
 
 describe("extractThinking", () => {
   it("collects every block and drops stray closers", () => {
@@ -57,6 +62,21 @@ describe("restrictResearchCitations", () => {
 
     expect(restrictResearchCitations(markdown, ["https://example.com/a"]))
       .toBe("Evidence: [launch](https://example.com/a \"Primary source\"), then claim.");
+  });
+});
+
+describe("hasAllowedResearchCitation", () => {
+  it("requires at least one exact fetched URL", () => {
+    expect(hasAllowedResearchCitation(
+      "See [evidence](https://example.com/a).",
+      ["https://example.com/a"],
+    )).toBe(true);
+    expect(hasAllowedResearchCitation("# Brief\n\nFacts.", ["https://example.com/a"]))
+      .toBe(false);
+    expect(hasAllowedResearchCitation(
+      "See https://example.com/other.",
+      ["https://example.com/a"],
+    )).toBe(false);
   });
 });
 

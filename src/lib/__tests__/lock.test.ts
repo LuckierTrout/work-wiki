@@ -316,7 +316,7 @@ describe("withDurableLock", () => {
   it("waits for a legacy holder to delete its lease during a rolling deploy", async () => {
     const lockPath = path.join(tempDir, "locks", "ingest-llm:alice.json");
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
-    await fs.writeFile(lockPath, JSON.stringify({ until: Date.now() - 1 }), "utf-8");
+    await fs.writeFile(lockPath, JSON.stringify({ until: Date.now() + 5_000 }), "utf-8");
     let entered = false;
 
     const waiting = withDurableLock("ingest-llm:alice", async () => {
@@ -327,5 +327,15 @@ describe("withDurableLock", () => {
     await fs.rm(lockPath);
     await waiting;
     expect(entered).toBe(true);
+  });
+
+  it("reclaims an expired legacy lease in the isolated v2 namespace", async () => {
+    const lockPath = path.join(tempDir, "locks", "ingest-llm:alice.json");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, JSON.stringify({ until: Date.now() - 1 }), "utf-8");
+
+    await expect(withDurableLock("ingest-llm:alice", async () => "reclaimed", 100))
+      .resolves.toBe("reclaimed");
+    expect(JSON.parse(await fs.readFile(lockPath, "utf-8"))).toMatchObject({ until: expect.any(Number) });
   });
 });

@@ -613,6 +613,24 @@ describe("research completion outbox", () => {
     )).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("refuses a late Source stage after DELETE removed the project", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await retireResearchProject("alice", created.id);
+
+    await expect(stageResearchSource("alice", created.id, {
+      url: "https://example.com/too-late",
+      title: "Too late",
+      text: "PRIVATE_LATE_BODY",
+    })).rejects.toThrow(/retired/i);
+
+    const dir = `tenants/${tenantForOwner("alice")}/research-outbox`;
+    const files = await getStorage().listFiles(dir).catch(() => []);
+    expect(files.map((entry) => entry.name).join("\n")).not.toContain(created.id);
+  });
+
   it("drops a leftover outbox when delete wins before the Page claim", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",

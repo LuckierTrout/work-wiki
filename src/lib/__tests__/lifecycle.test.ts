@@ -382,6 +382,63 @@ describe("writeWikiPageWithSideEffects", () => {
     expect(slugs).toEqual(expect.arrayContaining(["isolate-one", "isolate-two"]));
   });
 
+  it("serializes one Page and its derived metadata across simulated Worker isolates", async () => {
+    const initial = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Shared\n\nInitial.",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "same-page", title: "Shared", content: initial, summary: "Initial", crossRefSource: null,
+    }));
+    _setDurableLocksForTests(true);
+    const research = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Research title\n\nResearch body.",
+    );
+    const owner = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Owner title\n\nOwner body.",
+    );
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let paused!: () => void;
+    let release!: () => void;
+    const atIndex = new Promise<void>((resolve) => { paused = resolve; });
+    const continueIndex = new Promise<void>((resolve) => { release = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      if (pauseOnce && String(rel).endsWith("index.md")) {
+        pauseOnce = false;
+        paused();
+        await continueIndex;
+      }
+      return originalRead(rel);
+    });
+
+    const first = writeWikiPageWithSideEffects(makeOpts({
+      slug: "same-page", title: "Research title", content: research,
+      summary: "Research summary", expectedContent: initial, crossRefSource: null,
+    }));
+    await atIndex;
+    _resetLocks();
+    let ownerFinished = false;
+    const second = writeWikiPageWithSideEffects(makeOpts({
+      slug: "same-page", title: "Owner title", content: owner,
+      summary: "Owner summary", expectedContent: research, crossRefSource: null,
+    })).then((value) => {
+      ownerFinished = true;
+      return value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(ownerFinished).toBe(false);
+
+    release();
+    await Promise.all([first, second]);
+    expect((await readWikiPage("same-page"))?.content).toBe(owner);
+    expect((await listWikiPages()).find((entry) => entry.slug === "same-page"))
+      .toMatchObject({ title: "Owner title", summary: "Owner summary", owner: "alice", visibility: "private" });
+  }, 15_000);
+
   it("crossRefSource defaults to content when undefined", async () => {
     // Without an LLM key, findRelatedPages returns []. We just verify
     // it doesn't throw and completes successfully (exercising the

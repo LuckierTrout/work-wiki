@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -11,12 +11,14 @@ import {
   listIngestJobs,
   deleteIngestJob,
   cancelIngestJob,
+  claimIngestJob,
   retryIngestJob,
   INGEST_CANCELLED_COPY,
   INGEST_JOB_STALE_MS,
   INGEST_JOB_GC_TTL_MS,
 } from "../ingest-jobs";
 import { _resetStorage } from "../storage";
+import { _resetLocks } from "../lock";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -69,6 +71,38 @@ describe("ingest-jobs", () => {
   it("update is a no-op (null) for a missing job — never resurrects it", async () => {
     expect(await updateIngestJob("ghost", { status: "failed", error: "x" })).toBeNull();
     expect(await getIngestJob("ghost")).toBeNull();
+  });
+
+  it("allows only one cross-isolate queued-to-processing claim", async () => {
+    await createIngestJob({ jobId: "atomic-claim", owner: "alice", title: "Claim" });
+    const { getStorage } = await import("../storage");
+    const storage = getStorage();
+    const originalRead = storage.readFileWithEtag.bind(storage);
+    let firstRead!: () => void;
+    let releaseReads!: () => void;
+    const started = new Promise<void>((resolve) => { firstRead = resolve; });
+    const release = new Promise<void>((resolve) => { releaseReads = resolve; });
+    let reads = 0;
+    vi.spyOn(storage, "readFileWithEtag").mockImplementation(async (rel) => {
+      const value = await originalRead(rel);
+      if (String(rel).endsWith("atomic-claim.json") && reads < 2) {
+        reads += 1;
+        if (reads === 1) firstRead();
+        await release;
+      }
+      return value;
+    });
+
+    const first = claimIngestJob("atomic-claim", "alice");
+    await started;
+    _resetLocks();
+    const second = claimIngestJob("atomic-claim", "alice");
+    while (reads < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+    releaseReads();
+
+    const claims = await Promise.all([first, second]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+    expect((await getIngestJob("atomic-claim"))?.status).toBe("processing");
   });
 
   it("rejects a path-traversing job id", async () => {
