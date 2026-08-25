@@ -22,6 +22,7 @@ import { resolveAlias, buildAliasIndex, resetAliasIndex } from "../alias-index";
 import { serializeFrontmatter } from "../frontmatter";
 import { getStorage, _resetStorage } from "../storage";
 import { registerAgent, getAgent } from "../agents";
+import { _resetLocks, _setDurableLocksForTests } from "../lock";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors wiki.test.ts approach
@@ -42,7 +43,9 @@ beforeEach(async () => {
   // Isolate DATA_DIR so the per-tenant silo mirror (tenants/…, relative to the
   // data dir) and derived indexes land under tmp, not the repo cwd.
   process.env.DATA_DIR = tmpDir;
+  _resetLocks();
   _resetStorage();
+  _setDurableLocksForTests(false);
   await ensureDirectories();
 });
 
@@ -63,6 +66,7 @@ afterEach(async () => {
     process.env.DATA_DIR = originalDataDir;
   }
   _resetStorage();
+  _setDurableLocksForTests(false);
   await fs.rm(tmpDir, { recursive: true, force: true });
   resetAliasIndex();
 });
@@ -96,7 +100,9 @@ async function readIndex(): Promise<string> {
 describe("writeWikiPageWithSideEffects", () => {
   it("resumes side effects when Page bytes landed before the lifecycle receipt", async () => {
     const content = "# Recovered Page\n\nThe Page bytes landed first.\n";
-    await writeWikiPage("recovered-page", content);
+    // Production create order is silo first, flat compatibility copy second.
+    // Seed only the silo to reproduce a crash between those two writes.
+    await writeWikiPage("recovered-page", content, undefined, undefined, "yopedia");
     const receiptPath = "lifecycle-receipts/recovered-page.json";
     const options = makeOpts({
       slug: "recovered-page",
@@ -112,6 +118,8 @@ describe("writeWikiPageWithSideEffects", () => {
 
     expect((await listWikiPages()).filter((entry) => entry.slug === "recovered-page"))
       .toHaveLength(1);
+    expect(await fs.readFile(path.join(process.env.WIKI_DIR!, "recovered-page.md"), "utf-8"))
+      .toBe(content);
     expect(await getStorage().readFile(receiptPath)).toContain("research-recovered-page-v1");
     expect((await readLog())?.match(/ingest \| Recovered Page/g)).toHaveLength(1);
   });
@@ -335,6 +343,43 @@ describe("writeWikiPageWithSideEffects", () => {
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.slug)).toContain("first");
     expect(entries.map((e) => e.slug)).toContain("second");
+  });
+
+  it("serializes shared index read-modify-write across simulated Worker isolates", async () => {
+    _setDurableLocksForTests(true);
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let releaseRead!: () => void;
+    let firstIndexRead!: () => void;
+    const paused = new Promise<void>((resolve) => { firstIndexRead = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let indexReads = 0;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      if (String(rel).endsWith("index.md")) {
+        indexReads += 1;
+        if (indexReads === 1) {
+          firstIndexRead();
+          await release;
+        }
+      }
+      return originalRead(rel);
+    });
+
+    const first = writeWikiPageWithSideEffects(
+      makeOpts({ slug: "isolate-one", title: "Isolate One", crossRefSource: null }),
+    );
+    await paused;
+    _resetLocks();
+    const second = writeWikiPageWithSideEffects(
+      makeOpts({ slug: "isolate-two", title: "Isolate Two", crossRefSource: null }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(indexReads).toBe(1);
+
+    releaseRead();
+    await Promise.all([first, second]);
+    const slugs = (await listWikiPages()).map((entry) => entry.slug);
+    expect(slugs).toEqual(expect.arrayContaining(["isolate-one", "isolate-two"]));
   });
 
   it("crossRefSource defaults to content when undefined", async () => {

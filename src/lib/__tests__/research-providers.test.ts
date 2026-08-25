@@ -145,7 +145,7 @@ describe("refusing to fall back", () => {
 });
 
 describe("searching", () => {
-  it("keeps Tavily raw bodies out of the aggregate response", async () => {
+  it("streams Tavily raw bodies to the staging callback instead of aggregating them", async () => {
     const long = "x".repeat(12_000);
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
       results: [
@@ -160,11 +160,13 @@ describe("searching", () => {
       ],
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
 
+    const staged: Array<{ url: string; title: string; text: string }> = [];
     const results = await searchResearchProvider(
       "tavily",
       "  launch evidence  ",
       50,
       settings({ tavilyApiKey: "tavily-test" }),
+      { onInlineContent: async (source) => { staged.push(source); } },
     );
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({
@@ -174,13 +176,18 @@ describe("searching", () => {
       score: 0.8,
     });
     expect(results[0].content).toBeUndefined();
+    expect(staged).toEqual([{
+      url: "https://example.com/page",
+      title: "Useful source",
+      text: long,
+    }]);
 
     const [, init] = vi.mocked(fetch).mock.calls[0];
     expect(JSON.parse(String(init?.body))).toMatchObject({
       query: "launch evidence",
       max_results: 10,
       search_depth: "advanced",
-      include_raw_content: false,
+      include_raw_content: true,
     });
   });
 

@@ -2,7 +2,12 @@ import { afterEach, describe, it, expect, beforeEach } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { withDurableLock, withFileLock, _resetLocks } from "../lock";
+import {
+  withDurableLock,
+  withFileLock,
+  _resetLocks,
+  _setDurableLocksForTests,
+} from "../lock";
 import { _resetStorage } from "../storage";
 
 // ---------------------------------------------------------------------------
@@ -266,30 +271,61 @@ describe("withDurableLock", () => {
     previousDataDir = process.env.DATA_DIR;
     process.env.DATA_DIR = tempDir;
     _resetStorage();
+    _setDurableLocksForTests(true);
   });
 
   afterEach(async () => {
+    _setDurableLocksForTests(false);
     if (previousDataDir === undefined) delete process.env.DATA_DIR;
     else process.env.DATA_DIR = previousDataDir;
     _resetStorage();
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
-  it("rejects a simulated second isolate while the durable lease is held", async () => {
+  it("waits for a simulated first isolate and then enters", async () => {
     let release!: () => void;
+    let secondEntered = false;
     const held = withDurableLock("ingest-llm:alice", async () =>
-      new Promise<void>((resolve) => { release = resolve; }), 30_000);
+      new Promise<void>((resolve) => { release = resolve; }), 200);
     while (!release) await sleep(1);
 
     // A different Worker isolate has a different in-process lock map.
     _resetLocks();
-    await expect(withDurableLock("ingest-llm:alice", async () => undefined, 30_000))
-      .rejects.toThrow(/ingest lock busy/i);
+    const waiting = withDurableLock("ingest-llm:alice", async () => {
+      secondEntered = true;
+      return "next";
+    }, 200);
+    await sleep(30);
+    expect(secondEntered).toBe(false);
 
     release();
     await held;
-    _resetLocks();
-    await expect(withDurableLock("ingest-llm:alice", async () => "next", 30_000))
-      .resolves.toBe("next");
+    await expect(waiting).resolves.toBe("next");
+  });
+
+  it("fails closed rather than overwriting a malformed lease", async () => {
+    const lockPath = path.join(tempDir, "locks", "ingest-llm:alice.json");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, "{ malformed", "utf-8");
+
+    await expect(withDurableLock("ingest-llm:alice", async () => undefined, 100))
+      .rejects.toThrow(/malformed.*unsafe takeover/i);
+    expect(await fs.readFile(lockPath, "utf-8")).toBe("{ malformed");
+  });
+
+  it("waits for a legacy holder to delete its lease during a rolling deploy", async () => {
+    const lockPath = path.join(tempDir, "locks", "ingest-llm:alice.json");
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, JSON.stringify({ until: Date.now() - 1 }), "utf-8");
+    let entered = false;
+
+    const waiting = withDurableLock("ingest-llm:alice", async () => {
+      entered = true;
+    }, 100);
+    await sleep(25);
+    expect(entered).toBe(false);
+    await fs.rm(lockPath);
+    await waiting;
+    expect(entered).toBe(true);
   });
 });

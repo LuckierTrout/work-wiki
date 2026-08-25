@@ -109,7 +109,7 @@ import { _resetStorage, getStorage } from "../storage";
 import { enqueueTask, parseTask } from "../tasks";
 import type { IndexEntry } from "../types";
 import { addToVault } from "../vault";
-import { listWikiPages } from "../wiki";
+import { listWikiPages, writeWikiPage } from "../wiki";
 
 const mockedSearch = vi.mocked(searchResearchProvider);
 const mockedExtract = vi.mocked(extractResearchSourceText);
@@ -369,21 +369,28 @@ describe("deep research run — success", () => {
       snippet: "s",
       content: large,
     }]);
-    mockedLLM.mockImplementation(async (system) =>
-      system.startsWith("Extract only evidence")
-        ? "condensed evidence"
-        : "# Launch evidence\n\nA brief.");
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) {
+        return `condensed evidence ${"m".repeat(24_000)}`;
+      }
+      if (system.startsWith("Reduce these evidence notes")) return "reduced evidence";
+      return "# Launch evidence\n\nA brief.";
+    });
     const created = await project();
 
     await runResearchProject("alice", created.id);
 
-    const mapCalls = mockedLLM.mock.calls.filter(([, , options]) =>
-      options?.maxOutputTokens === 1_500);
+    const mapCalls = mockedLLM.mock.calls.filter(([system]) =>
+      system.startsWith("Extract only evidence"));
+    const reduceCalls = mockedLLM.mock.calls.filter(([system]) =>
+      system.startsWith("Reduce these evidence notes"));
     expect(mapCalls.length).toBeGreaterThan(1);
+    expect(reduceCalls.length).toBeGreaterThan(0);
     const mapPrompts = mapCalls.map(([, prompt]) => prompt);
     expect(mapPrompts.join("")).toContain("BEGIN-");
     expect(mapPrompts.join("")).toContain("-END");
-    expect(mockedLLM.mock.calls.at(-1)?.[1]).toContain("condensed evidence");
+    expect(reduceCalls.map(([, prompt]) => prompt).join("\n")).toContain("condensed evidence");
+    expect(mockedLLM.mock.calls.at(-1)?.[1]).toContain("reduced evidence");
     expect(mockedLLM.mock.calls.at(-1)?.[1].length).toBeLessThanOrEqual(101_000);
   });
 
@@ -408,6 +415,31 @@ describe("deep research run — success", () => {
     expect(stopped.status).toBe("cancelled");
     expect(mockedLLM).toHaveBeenCalledTimes(1);
     expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  it("fails visibly when hierarchical reduction makes no progress", async () => {
+    mockedSearch.mockResolvedValue([{
+      title: "Large source",
+      url: "https://example.com/large",
+      snippet: "s",
+      content: `BEGIN-${"x".repeat(500_000)}-END`,
+    }]);
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) return "m".repeat(30_000);
+      if (system.startsWith("Reduce these evidence notes")) return "r".repeat(100_000);
+      return "# should not synthesize";
+    });
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id))
+      .rejects.toThrow(/reduction did not converge/i);
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toMatch(/reduction did not converge/i);
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.startsWith("Reduce these evidence notes")).length).toBeLessThanOrEqual(8);
   });
 
   it("gives its slot back", async () => {
@@ -663,6 +695,23 @@ describe("deep research — one run per project", () => {
     expect(mockedWritePage).toHaveBeenCalledTimes(2);
   });
 
+  it("captures rerun Page bytes at queue time so a later owner edit wins", async () => {
+    const created = await project();
+    const first = await runResearchProject("alice", created.id);
+    const slug = first.pageSlugs[0];
+    const baseline = "---\ntitle: Launch evidence\n---\n\n# Original brief";
+    await writeWikiPage(slug, baseline);
+
+    await queueResearchProject("alice", created.id);
+    await writeWikiPage(slug, `${baseline}\n\nOwner note.`);
+    await runResearchProject("alice", created.id);
+
+    expect(mockedWritePage.mock.calls.at(-1)?.[0]).toMatchObject({
+      slug,
+      expectedContent: baseline,
+    });
+  });
+
   it("gives same-title projects distinct stable Page identities", async () => {
     const first = await project();
     const second = await project();
@@ -826,6 +875,26 @@ describe("deep research — an interrupted run gets an answer", () => {
     expect(failed?.status).toBe("failed");
     expect(failed?.error).toMatch(/lease file is unreadable/i);
     expect(failed?.progress?.message).toMatch(/repair the lease state/i);
+  });
+
+  it("does not rewrite a completed project when unrelated lease state is malformed", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "complete",
+      completion: {
+        phase: "done",
+        pageSlug: "research-launch-evidence",
+        sources: [],
+      },
+    });
+    const leasePath = path.join(tmpDir, "tenants", "alice", "research-leases.json");
+    await fs.mkdir(path.dirname(leasePath), { recursive: true });
+    await fs.writeFile(leasePath, "{ malformed", "utf-8");
+    const stored = await getResearchProject("alice", created.id);
+
+    await reconcileResearchProjects("alice", [stored!]);
+
+    expect((await getResearchProject("alice", created.id))?.status).toBe("complete");
   });
 
   // `shouldAdvanceTime` so the clock can jump past the abandonment window

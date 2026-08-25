@@ -571,6 +571,48 @@ describe("research completion outbox", () => {
     expect(await getResearchProject("alice", created.id)).toBeNull();
   });
 
+  it("serializes DELETE with a body write that follows its staging manifest", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    let bodyWriteStarted!: () => void;
+    let releaseBody!: () => void;
+    const started = new Promise<void>((resolve) => { bodyWriteStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseBody = resolve; });
+    vi.spyOn(storage, "writeFile").mockImplementation(async (rel, content) => {
+      if (rel.includes(`/research-outbox/staging-${created.id}-`) && !rel.endsWith(".manifest")) {
+        bodyWriteStarted();
+        await release;
+      }
+      return originalWrite(rel, content);
+    });
+
+    const staging = stageResearchSource("alice", created.id, {
+      url: "https://example.com/racy-private-draft",
+      title: "Racy private draft",
+      text: "SECRET_RACE_BODY",
+    });
+    await started;
+    let retired = false;
+    const retiring = retireResearchProject("alice", created.id).then((value) => {
+      retired = value;
+      return value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(retired).toBe(false);
+
+    releaseBody();
+    const staged = await staging;
+    await expect(retiring).resolves.toBe(true);
+    await expect(storage.readFile(staged.sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(storage.readFile(
+      `tenants/${tenantForOwner("alice")}/research-outbox/staging-${created.id}.manifest`,
+    )).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("drops a leftover outbox when delete wins before the Page claim", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",

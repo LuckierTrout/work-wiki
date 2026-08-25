@@ -38,8 +38,19 @@ export interface ResearchSearchResult {
   publishedAt?: string;
 }
 
+export interface ResearchSearchOptions {
+  /** Consume a provider-returned full body immediately. When supplied, the
+   * returned metadata omits `content`, so callers never retain all bodies. */
+  onInlineContent?: (source: { url: string; title: string; text: string }) => Promise<void>;
+}
+
 function boundedText(value: unknown, max: number): string {
   return typeof value === "string" ? value.trim().replace(/\s+/g, " ").slice(0, max) : "";
+}
+
+/** Full source text is whitespace-normalized but never truncated. */
+function fullText(value: unknown): string {
+  return typeof value === "string" ? value.trim().replace(/[ \t]+/g, " ") : "";
 }
 
 /** The persisted snippet's cap — one constant, so all three providers agree. */
@@ -156,6 +167,7 @@ async function tavilySearch(
   query: string,
   limit: number,
   settings: ResearchSettings,
+  options: ResearchSearchOptions,
 ): Promise<ResearchSearchResult[]> {
   // CHECKED HERE TOO, not only in `resolveResearchProvider`. This function is
   // reachable with an explicit `provider` argument — the runtime passes the
@@ -175,28 +187,111 @@ async function tavilySearch(
       search_depth: "advanced",
       max_results: limit,
       include_answer: false,
-      // Full inline bodies make `response.json()` retain every selected page at
-      // once. Read chosen URLs sequentially through the kernel extractor so the
-      // Worker holds and stages only one body at a time.
-      include_raw_content: false,
+      // Locked Epic 6 contract: Tavily-accessible source text is evidence too.
+      // The streaming path below spills each body before parsing the next one.
+      include_raw_content: true,
     }),
     signal: AbortSignal.timeout(45_000),
   });
-  const body = await checkedJson(response);
-  const results = Array.isArray(body.results) ? body.results : [];
-  return results.flatMap((value) => {
-    if (!value || typeof value !== "object") return [];
+  const normalize = async (value: unknown): Promise<ResearchSearchResult | null> => {
+    if (!value || typeof value !== "object") return null;
     const item = value as Record<string, unknown>;
     const url = safeUrl(item.url);
-    if (!url) return [];
-    return [{
-      title: boundedText(item.title, 300) || url,
+    if (!url) return null;
+    const title = boundedText(item.title, 300) || url;
+    const raw = fullText(item.raw_content);
+    if (raw && options.onInlineContent) {
+      await options.onInlineContent({ url, title, text: raw });
+    }
+    return {
+      title,
       url,
       snippet: boundedText(item.content, RESEARCH_SNIPPET_MAX),
+      ...(raw && !options.onInlineContent ? { content: raw } : {}),
       ...(typeof item.score === "number" ? { score: item.score } : {}),
       ...(boundedText(item.published_date, 80) ? { publishedAt: boundedText(item.published_date, 80) } : {}),
-    }];
-  });
+    };
+  };
+  if (!options.onInlineContent || !response.body) {
+    const body = await checkedJson(response);
+    const values = Array.isArray(body.results) ? body.results : [];
+    const normalized: ResearchSearchResult[] = [];
+    for (const value of values) {
+      const result = await normalize(value);
+      if (result) normalized.push(result);
+    }
+    return normalized;
+  }
+  if (!response.ok) {
+    await checkedJson(response);
+    return [];
+  }
+
+  // Tavily responds with one top-level `results` array. Parse and release one
+  // object at a time so only that result's raw body is resident while its
+  // staging callback runs.
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let prefix = "";
+  let inResults = false;
+  let object = "";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let finished = false;
+  const normalized: ResearchSearchResult[] = [];
+  const consume = async (text: string): Promise<void> => {
+    let offset = 0;
+    if (!inResults) {
+      prefix += text;
+      const match = /"results"\s*:\s*\[/.exec(prefix);
+      if (!match) {
+        if (prefix.length > 64 * 1024) throw new Error("Research provider returned invalid JSON");
+        return;
+      }
+      offset = match.index + match[0].length;
+      text = prefix;
+      prefix = "";
+      inResults = true;
+    }
+    for (let index = offset; index < text.length && !finished; index += 1) {
+      const char = text[index];
+      if (depth === 0) {
+        if (char === "]") {
+          finished = true;
+        } else if (char === "{") {
+          object = char;
+          depth = 1;
+          inString = false;
+          escaped = false;
+        }
+        continue;
+      }
+      object += char;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') inString = false;
+      } else if (char === '"') inString = true;
+      else if (char === "{") depth += 1;
+      else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const result = await normalize(JSON.parse(object) as unknown);
+          if (result) normalized.push(result);
+          object = "";
+        }
+      }
+    }
+  };
+  while (!finished) {
+    const next = await reader.read();
+    if (next.done) break;
+    await consume(decoder.decode(next.value, { stream: true }));
+  }
+  await consume(decoder.decode());
+  if (!inResults || !finished || depth !== 0) throw new Error("Research provider returned invalid JSON");
+  return normalized;
 }
 
 async function serpApiSearch(
@@ -321,11 +416,12 @@ export async function searchResearchProvider(
   query: string,
   limit = 8,
   settings: ResearchSettings = getResearchSettings(),
+  options: ResearchSearchOptions = {},
 ): Promise<ResearchSearchResult[]> {
   const cleaned = query.trim().slice(0, 1_000);
   if (!cleaned) throw new Error("Research query is required");
   const boundedLimit = Math.max(1, Math.min(10, Math.floor(limit)));
-  if (provider === "tavily") return tavilySearch(cleaned, boundedLimit, settings);
+  if (provider === "tavily") return tavilySearch(cleaned, boundedLimit, settings, options);
   if (provider === "serpapi") return serpApiSearch(cleaned, boundedLimit, settings);
   return searxngSearch(cleaned, boundedLimit, settings);
 }

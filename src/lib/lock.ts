@@ -51,6 +51,7 @@
 // ---------------------------------------------------------------------------
 
 const locks = new Map<string, Promise<unknown>>();
+let forceDurableLocksForTests = false;
 
 /**
  * Execute `fn` while holding an in-process lock for `key`.
@@ -90,22 +91,48 @@ export function _resetLocks(): void {
   locks.clear();
 }
 
+/** Force the R2 lease path under the filesystem test provider. Test-only. */
+export function _setDurableLocksForTests(enabled: boolean): void {
+  forceDurableLocksForTests = enabled;
+}
+
 interface DurableLease {
   token: string;
   until: number;
 }
 
-const DURABLE_LOCK_CAS_ATTEMPTS = 8;
+interface LegacyDurableLease {
+  until: number;
+}
 
-function parseDurableLease(raw: string): DurableLease | null {
+type ParsedDurableLease =
+  | { kind: "current"; lease: DurableLease }
+  | { kind: "legacy"; lease: LegacyDurableLease }
+  | { kind: "invalid" };
+
+const DURABLE_LOCK_CAS_ATTEMPTS = 64;
+const DURABLE_LOCK_POLL_MAX_MS = 1_000;
+const DURABLE_LOCK_WAIT_MAX_MS = 30 * 60 * 1000;
+
+function parseDurableLease(raw: string): ParsedDurableLease {
   try {
     const value = JSON.parse(raw) as Partial<DurableLease>;
-    return typeof value.token === "string" && typeof value.until === "number"
-      ? { token: value.token, until: value.until }
-      : null;
+    if (!Number.isFinite(value.until)) return { kind: "invalid" };
+    if (typeof value.token === "string" && value.token.length > 0) {
+      return { kind: "current", lease: { token: value.token, until: value.until! } };
+    }
+    // Rolling-deploy compatibility with the original `{ until }` lease. An
+    // active old worker still owns this key even though it cannot present a
+    // token; after its deadline the CAS below may safely replace it.
+    if (!("token" in value)) return { kind: "legacy", lease: { until: value.until! } };
+    return { kind: "invalid" };
   } catch {
-    return null;
+    return { kind: "invalid" };
   }
+}
+
+function pause(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -122,34 +149,66 @@ export async function withDurableLock<T>(
   fn: () => Promise<T>,
   ttlMs = 15 * 60 * 1000,
 ): Promise<T> {
-  const { getStorage } = await import("./storage");
+  const { getStorage, _getProviderType } = await import("./storage");
   const { isEnoent } = await import("./errors");
   const safe = key.replace(/[^a-zA-Z0-9._:-]/g, "_");
   const rel = `locks/${safe}.json`;
 
   return withFileLock(key, async () => {
     const storage = getStorage();
+    // Local Next.js uses one process and is already serialized by the chain
+    // above. The durable CAS lease is specifically for independent Workers
+    // sharing R2; avoiding it on fs also avoids four fsyncs per wiki mutation.
+    if (_getProviderType() !== "cloudflare-r2" && !forceDurableLocksForTests) {
+      return fn();
+    }
     const token = crypto.randomUUID();
     let acquired = false;
+    const waitStartedAt = Date.now();
 
-    for (let attempt = 0; attempt < DURABLE_LOCK_CAS_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < DURABLE_LOCK_CAS_ATTEMPTS;) {
       const now = Date.now();
       let etag: string | null = null;
-      let lease: DurableLease | null = null;
+      let parsed: ParsedDurableLease | null = null;
       try {
         const read = await storage.readFileWithEtag(rel);
         etag = read.etag;
-        lease = parseDurableLease(read.content);
+        parsed = parseDurableLease(read.content);
       } catch (error) {
         if (!isEnoent(error)) throw error;
       }
 
-      if (lease && lease.until > now) throw new Error("ingest lock busy");
+      if (parsed?.kind === "invalid") {
+        throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
+      }
+      if (parsed?.kind === "legacy") {
+        // An old holder releases by deleting this file and has no token with
+        // which to prove ownership. Never replace even an apparently expired
+        // legacy lease: the old holder could still finish late and delete a
+        // newer lease. Wait for its delete, or fail visibly at the bound.
+        if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
+          throw new Error(`Legacy durable lock ${key} did not become available`);
+        }
+        await pause(DURABLE_LOCK_POLL_MAX_MS);
+        continue;
+      }
+      const until = parsed?.kind === "current"
+        ? parsed.lease.until
+        : 0;
+      if (until > now) {
+        if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
+          throw new Error(`Durable lock ${key} did not become available`);
+        }
+        await pause(Math.max(10, Math.min(DURABLE_LOCK_POLL_MAX_MS, until - now)));
+        continue;
+      }
       const body = JSON.stringify({ token, until: now + ttlMs });
       acquired = etag === null
         ? await storage.writeFileIfAbsent(rel, body)
         : await storage.writeFileIfMatch(rel, body, etag);
       if (acquired) break;
+      attempt += 1;
+      await pause(Math.min(10 * attempt, 100));
     }
 
     if (!acquired) throw new Error("ingest lock busy");
@@ -162,7 +221,7 @@ export async function withDurableLock<T>(
         try {
           const read = await storage.readFileWithEtag(rel);
           const current = parseDurableLease(read.content);
-          if (current?.token !== token) return;
+          if (current.kind !== "current" || current.lease.token !== token) return;
           await storage.writeFileIfMatch(
             rel,
             JSON.stringify({ token, until: Date.now() + ttlMs }),
@@ -184,7 +243,7 @@ export async function withDurableLock<T>(
       try {
         const read = await storage.readFileWithEtag(rel);
         const current = parseDurableLease(read.content);
-        if (current?.token === token) {
+        if (current.kind === "current" && current.lease.token === token) {
           await storage.writeFileIfMatch(
             rel,
             JSON.stringify({ token, until: 0 }),

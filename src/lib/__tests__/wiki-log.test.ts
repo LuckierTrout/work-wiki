@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { appendToLog, readLog } from "../wiki-log";
+import { appendToLog, appendToLogOnce, readLog } from "../wiki-log";
 import type { LogOperation } from "../wiki-log";
 import { ensureDirectories, getWikiDir } from "../wiki";
-import { _resetLocks } from "../lock";
+import { _resetLocks, _setDurableLocksForTests } from "../lock";
 import { logger } from "../logger";
+import { _resetStorage, getStorage } from "../storage";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup
@@ -15,14 +16,19 @@ import { logger } from "../logger";
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
+let originalDataDir: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wiki-log-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
+  originalDataDir = process.env.DATA_DIR;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
+  process.env.DATA_DIR = tmpDir;
   _resetLocks();
+  _resetStorage();
+  _setDurableLocksForTests(false);
   await ensureDirectories();
 });
 
@@ -37,6 +43,10 @@ afterEach(async () => {
   } else {
     process.env.RAW_DIR = originalRawDir;
   }
+  if (originalDataDir === undefined) delete process.env.DATA_DIR;
+  else process.env.DATA_DIR = originalDataDir;
+  _resetStorage();
+  _setDurableLocksForTests(false);
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -223,6 +233,40 @@ describe("appendToLog", () => {
     for (let i = 0; i < 5; i++) {
       expect(content).toContain(`Details for item ${i}`);
     }
+  });
+
+  it("serializes append-once read and append across simulated Worker isolates", async () => {
+    _setDurableLocksForTests(true);
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let releaseRead!: () => void;
+    let firstRead!: () => void;
+    const paused = new Promise<void>((resolve) => { firstRead = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let logReads = 0;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      if (String(rel).endsWith("log.md")) {
+        logReads += 1;
+        if (logReads === 1) {
+          firstRead();
+          await release;
+        }
+      }
+      return originalRead(rel);
+    });
+
+    const first = appendToLogOnce("other", "First isolate", undefined, "first-op");
+    await paused;
+    _resetLocks();
+    const second = appendToLogOnce("other", "Second isolate", undefined, "second-op");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(logReads).toBe(1);
+
+    releaseRead();
+    await Promise.all([first, second]);
+    const content = await readLog();
+    expect(content).toContain("First isolate");
+    expect(content).toContain("Second isolate");
   });
 });
 

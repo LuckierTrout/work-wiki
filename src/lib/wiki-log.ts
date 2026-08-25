@@ -1,4 +1,4 @@
-import { withFileLock } from "./lock";
+import { withDurableLock } from "./lock";
 import { wikiRelPath, ensureDirectories } from "./wiki";
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
@@ -72,7 +72,7 @@ export async function appendToLog(
 ): Promise<void> {
   validateLogEntry(operation, title);
 
-  await withFileLock("log.md", async () => {
+  await withDurableLock("log.md", async () => {
     await ensureDirectories();
     await getStorage().appendFile(wikiRelPath("log.md"), logBlock(operation, title, details));
   });
@@ -87,7 +87,7 @@ export async function appendToLogOnce(
 ): Promise<void> {
   validateLogEntry(operation, title);
   const marker = `<!-- lifecycle-op:${idempotencyKey.replace(/--/g, "-")} -->`;
-  await withFileLock("log.md", async () => {
+  await withDurableLock("log.md", async () => {
     await ensureDirectories();
     let existing = "";
     try {

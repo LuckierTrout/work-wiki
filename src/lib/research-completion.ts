@@ -9,7 +9,7 @@ import {
 import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { logger } from "./logger";
 import { saveRawSourceFor } from "./raw";
-import { withFileLock } from "./lock";
+import { withDurableLock, withFileLock } from "./lock";
 import {
   deleteResearchProject,
   getResearchProject,
@@ -89,28 +89,26 @@ function stagingManifestPath(owner: string, id: string): string {
   return `${outboxDir(owner)}/staging-${id}.manifest`;
 }
 
-async function recordResearchStaging(
+async function recordResearchStagingUnsafe(
   owner: string,
   projectId: string,
   source: ResearchOutboxSource,
 ): Promise<void> {
-  await withFileLock(`research-staging:${owner}:${projectId}`, async () => {
-    const path = stagingManifestPath(owner, projectId);
-    let sources: ResearchOutboxSource[] = [];
-    try {
-      const parsed = JSON.parse(await getStorage().readFile(path)) as unknown;
-      if (Array.isArray(parsed)) {
-        sources = parsed.filter((value): value is ResearchOutboxSource =>
-          !!value && typeof value === "object" && typeof value.sourcePath === "string");
-      }
-    } catch (error) {
-      if (!isEnoent(error)) throw error;
+  const path = stagingManifestPath(owner, projectId);
+  let sources: ResearchOutboxSource[] = [];
+  try {
+    const parsed = JSON.parse(await getStorage().readFile(path)) as unknown;
+    if (Array.isArray(parsed)) {
+      sources = parsed.filter((value): value is ResearchOutboxSource =>
+        !!value && typeof value === "object" && typeof value.sourcePath === "string");
     }
-    if (!sources.some((value) => value.sourcePath === source.sourcePath)) {
-      sources.push(source);
-      await getStorage().writeFile(path, JSON.stringify(sources));
-    }
-  });
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+  if (!sources.some((value) => value.sourcePath === source.sourcePath)) {
+    sources.push(source);
+    await getStorage().writeFile(path, JSON.stringify(sources));
+  }
 }
 
 async function clearPageWrittenMarker(owner: string, id: string): Promise<void> {
@@ -152,8 +150,10 @@ export async function stageResearchSource(
   // Record the cleanup reference BEFORE the body. A crash can leave an empty
   // manifest entry, which cleanup tolerates; it cannot leave an undiscoverable
   // body containing source data.
-  await recordResearchStaging(owner, projectId, reference);
-  await getStorage().writeFile(sourcePath, source.text);
+  await withDurableLock(`research-staging:${owner}:${projectId}`, async () => {
+    await recordResearchStagingUnsafe(owner, projectId, reference);
+    await getStorage().writeFile(sourcePath, source.text!);
+  });
   return reference;
 }
 
@@ -162,27 +162,29 @@ export async function clearResearchStaging(
   projectId: string,
   sources: readonly Partial<ResearchOutboxSource>[] = [],
 ): Promise<void> {
-  let recorded: Partial<ResearchOutboxSource>[] = [];
-  try {
-    const parsed = JSON.parse(await getStorage().readFile(stagingManifestPath(owner, projectId))) as unknown;
-    if (Array.isArray(parsed)) recorded = parsed as Partial<ResearchOutboxSource>[];
-  } catch (error) {
-    if (!isEnoent(error)) logger.warn("research", `staging manifest unreadable for ${projectId}`, error);
-  }
-  const candidates = [...sources, ...recorded];
-  for (const source of candidates) {
-    if (!source.sourcePath?.includes("/research-outbox/staging-")) continue;
+  await withDurableLock(`research-staging:${owner}:${projectId}`, async () => {
+    let recorded: Partial<ResearchOutboxSource>[] = [];
     try {
-      await getStorage().deleteFile(source.sourcePath);
+      const parsed = JSON.parse(await getStorage().readFile(stagingManifestPath(owner, projectId))) as unknown;
+      if (Array.isArray(parsed)) recorded = parsed as Partial<ResearchOutboxSource>[];
     } catch (error) {
-      if (!isEnoent(error)) logger.warn("research", `staging cleanup skipped for ${source.sourcePath}`, error);
+      if (!isEnoent(error)) logger.warn("research", `staging manifest unreadable for ${projectId}`, error);
     }
-  }
-  try {
-    await getStorage().deleteFile(stagingManifestPath(owner, projectId));
-  } catch (error) {
-    if (!isEnoent(error)) logger.warn("research", `staging manifest cleanup skipped for ${projectId}`, error);
-  }
+    const candidates = [...sources, ...recorded];
+    for (const source of candidates) {
+      if (!source.sourcePath?.includes("/research-outbox/staging-")) continue;
+      try {
+        await getStorage().deleteFile(source.sourcePath);
+      } catch (error) {
+        if (!isEnoent(error)) logger.warn("research", `staging cleanup skipped for ${source.sourcePath}`, error);
+      }
+    }
+    try {
+      await getStorage().deleteFile(stagingManifestPath(owner, projectId));
+    } catch (error) {
+      if (!isEnoent(error)) logger.warn("research", `staging manifest cleanup skipped for ${projectId}`, error);
+    }
+  });
 }
 
 /** Spill one fetched body to its immutable Source snapshot. */
@@ -558,6 +560,7 @@ async function markResearchPageWritten(
       },
       pageSlugs: [...new Set([...(latest?.pageSlugs ?? existing.pageSlugs), outbox.pageSlug])],
       synthesis: outbox.synthesis,
+      runPageBaseline: null,
       ...(outbox.thinking.length > 0 ? { thinking: outbox.thinking } : {}),
       progress: {
         completedQueries: latest?.progress?.totalQueries

@@ -1,6 +1,6 @@
 import path from "path";
 import type { WikiPage, IndexEntry } from "./types";
-import { withFileLock } from "./lock";
+import { withDurableLock } from "./lock";
 import { logger } from "./logger";
 import { saveRevision } from "./revisions";
 import { isEnoent } from "./errors";
@@ -773,7 +773,7 @@ export async function listReadableWikiPages(
  * ```
  */
 export async function updateIndex(entries: IndexEntry[]): Promise<void> {
-  await withFileLock("index.md", async () => {
+  await withDurableLock("index.md", async () => {
     await updateIndexUnsafe(entries);
   });
 }
@@ -785,7 +785,7 @@ export async function updateIndex(entries: IndexEntry[]): Promise<void> {
  * This exists so that callers who already hold the lock (e.g.
  * `runPageLifecycleOp` in `lifecycle.ts`) can perform a read → mutate → write
  *
- * **Do not call from outside a `withFileLock("index.md", …)` block** — use
+ * **Do not call from outside a `withDurableLock("index.md", …)` block** — use
  * {@link updateIndex} instead.
  */
 export async function updateIndexUnsafe(entries: IndexEntry[]): Promise<void> {

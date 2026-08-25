@@ -52,6 +52,9 @@ export interface ResearchProject {
    * between the Page write and terminal `complete`.
    */
   completion?: ResearchCompletion;
+  /** Page bytes captured when this run was queued; the later commit may only
+   * replace exactly these bytes, so owner edits made during search win. */
+  runPageBaseline?: { slug: string; content: string | null };
   proposalId?: string;
   cancelRequested?: boolean;
   /**
@@ -305,6 +308,7 @@ export async function updateResearchProject(
     cancelRequested?: boolean;
     error?: string | null;
     completion?: ResearchCompletion | null;
+    runPageBaseline?: ResearchProject["runPageBaseline"] | null;
   },
 ): Promise<ResearchProject | null> {
   return mutateProject(owner, id, () => true, patch);
@@ -428,6 +432,14 @@ async function mutateProject(
     if (patch.completion !== undefined) {
       if (patch.completion) project.completion = patch.completion;
       else delete project.completion;
+    }
+    if (patch.runPageBaseline !== undefined) {
+      if (patch.runPageBaseline) {
+        project.runPageBaseline = {
+          slug: patch.runPageBaseline.slug.trim().slice(0, 240),
+          content: patch.runPageBaseline.content,
+        };
+      } else delete project.runPageBaseline;
     }
     return project;
   });

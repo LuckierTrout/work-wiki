@@ -23,7 +23,7 @@ import {
 import { syncPageIndexForPage, removePageIndexForSlug } from "./page-index";
 import { bumpDataVersion } from "./data-version";
 import { getStorage } from "./storage";
-import { withFileLock } from "./lock";
+import { withDurableLock } from "./lock";
 import { escapeRegex } from "./links";
 import { getErrorMessage, isEnoent } from "./errors";
 import { getVectorSearchSettings } from "./config";
@@ -501,12 +501,11 @@ async function runPageLifecycleOp(
   }
 
   // 3. Mutate the index. The read → mutate → write cycle is performed under
-  //    a single withFileLock("index.md") so that concurrent lifecycle ops
-  //    cannot clobber each other (TOCTOU race fix). We use updateIndexUnsafe
-  //    since we already hold the lock.
+  //    one durable index lock so concurrent Worker isolates cannot clobber
+  //    each other. We use updateIndexUnsafe since we already hold the lock.
   let postIndexEntries: IndexEntry[];
   let removedFromIndex = false;
-  await withFileLock("index.md", async () => {
+  await withDurableLock("index.md", async () => {
     const entries = await listWikiPages({ strict: true });
     if (op.kind === "write") {
       const existingIdx = entries.findIndex((e) => e.slug === slug);
@@ -838,7 +837,7 @@ export async function pruneStaleIndexEntry(
     return { removed: false };
   }
   let removed = false;
-  await withFileLock("index.md", async () => {
+  await withDurableLock("index.md", async () => {
     if (await readWikiPage(slug, { fresh: true, strict: true })) return;
     const entries = await listWikiPages({ strict: true });
     const filtered = entries.filter((entry) => entry.slug !== slug);
@@ -955,10 +954,28 @@ export async function writeWikiPageWithSideEffects(
     }
   }
 
-  const current = opts.idempotency
-    ? await readWikiPage(slug, { fresh: true, strict: true })
-    : null;
-  const pageAlreadyWritten = !!opts.idempotency && current?.content === content;
+  let pageAlreadyWritten = false;
+  if (opts.idempotency) {
+    let tenant = tenantForOwner(undefined);
+    try {
+      const fm = parseFrontmatter(content).data;
+      tenant = tenantForOwner(typeof fm.owner === "string" ? fm.owner : undefined);
+    } catch {
+      // The lifecycle uses the same default-tenant fallback below.
+    }
+    try {
+      pageAlreadyWritten = await getStorage().readFile(
+        tenantWikiRelPath(tenant, `${slug}.md`),
+      ) === content;
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+      try {
+        pageAlreadyWritten = await getStorage().readFile(wikiRelPath(`${slug}.md`)) === content;
+      } catch (flatError) {
+        if (!isEnoent(flatError)) throw flatError;
+      }
+    }
+  }
 
   const result = await runPageLifecycleOp(
     slug,

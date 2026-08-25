@@ -44,7 +44,7 @@ import {
 import { researchPageSlug } from "./research-slug";
 import { extractThinking, restrictResearchCitations } from "./research-text";
 import { loadPageConventions } from "./schema";
-import { isAgentScopedType, isArtifactType, listWikiPages, tenantForOwner } from "./wiki";
+import { isAgentScopedType, isArtifactType, listWikiPages, readWikiPage, tenantForOwner } from "./wiki";
 import { enqueueTask } from "./tasks";
 import { wrapUntrusted } from "./untrusted";
 
@@ -223,6 +223,13 @@ export async function queueResearchProject(
   if (project.completion?.phase === "done") {
     await deleteResearchOutbox(owner, id);
   }
+  const queuedSlug = researchPageSlug({ title: project.title, id });
+  const runPageBaseline = project.pageSlugs.includes(queuedSlug)
+    ? {
+        slug: queuedSlug,
+        content: (await readWikiPage(queuedSlug, { fresh: true, strict: true }))?.content ?? null,
+      }
+    : undefined;
   const updated = await mutateResearchProject(owner, id, (current) => {
     if (RESEARCH_IN_FLIGHT_STATUSES.includes(current.status)) {
       throw new Error("Research project is already running");
@@ -230,9 +237,14 @@ export async function queueResearchProject(
     if (current.completion && current.completion.phase !== "done") {
       throw new Error("Research project completion is still being delivered");
     }
+    if (current.updatedAt !== project.updatedAt) {
+      throw new Error("Research project changed while the rerun baseline was captured; retry");
+    }
     current.status = "queued";
     current.provider = provider;
     current.cancelRequested = false;
+    if (runPageBaseline) current.runPageBaseline = runPageBaseline;
+    else delete current.runPageBaseline;
     delete current.error;
     delete current.thinking;
     delete current.completion;
@@ -378,6 +390,20 @@ export async function reconcileResearchProjects(
   try {
     const outboxIds = new Set(await listResearchOutboxIds(owner));
     for (const project of projects) {
+      // A completed delivery owns no live research slot. Finish its cleanup
+      // before reading lease state so a malformed queue file cannot rewrite a
+      // durable success into `failed`.
+      if (project.completion?.phase === "done") {
+        if (outboxIds.has(project.id)) {
+          await deleteResearchOutbox(owner, project.id);
+          outboxIds.delete(project.id);
+        }
+        if (project.deleteRequested) {
+          await deleteResearchProject(owner, project.id);
+          changed = true;
+        }
+        continue;
+      }
       let held: boolean;
       try {
         held = await holdsResearchSlot(owner, project.id);
@@ -393,17 +419,6 @@ export async function reconcileResearchProjects(
           },
         });
         changed = true;
-        continue;
-      }
-      if (project.completion?.phase === "done") {
-        if (outboxIds.has(project.id)) {
-          await deleteResearchOutbox(owner, project.id);
-          outboxIds.delete(project.id);
-        }
-        if (project.deleteRequested) {
-          await deleteResearchProject(owner, project.id);
-          changed = true;
-        }
         continue;
       }
       if (project.completion || outboxIds.has(project.id)) {
@@ -794,11 +809,16 @@ async function researchEvidenceForSynthesis(
   // because many chunks preceded it.
   let layer = summaries;
   let pass = 1;
+  const maxReductionPasses = 8;
   const joinedLength = (values: readonly string[]) => values.reduce(
     (total, value, index) => total + value.length + (index > 0 ? 2 : 0),
     0,
   );
   while (joinedLength(layer) > RESEARCH_EVIDENCE_DIRECT_MAX) {
+    if (pass > maxReductionPasses) {
+      throw new Error("Evidence reduction did not converge within the safe pass limit");
+    }
+    const previousLength = joinedLength(layer);
     const units = layer.flatMap((summary) => {
       if (summary.length <= RESEARCH_EVIDENCE_CHUNK_MAX) return [summary];
       const parts: string[] = [];
@@ -842,6 +862,10 @@ async function researchEvidenceForSynthesis(
         { source: `web-research-reduced:${provider}` },
       ));
       await renewResearchSlot(owner, id);
+    }
+    const reducedLength = joinedLength(reduced);
+    if (reducedLength >= previousLength) {
+      throw new Error("Evidence reduction did not converge; refusing an unbounded synthesis loop");
     }
     layer = reduced;
     pass += 1;
@@ -1006,10 +1030,22 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       // follows, so "Query 2 of 3" is never rendered beside "(1 of 3)".
       await note(owner, id, index + 1, queries.length,
         `Query ${index + 1} of ${queries.length}: ${query}`);
-      const results: ResearchSearchResult[] = await searchResearchProvider(provider, query, 8);
+      const results: ResearchSearchResult[] = await searchResearchProvider(
+        provider,
+        query,
+        8,
+        undefined,
+        {
+          onInlineContent: async ({ url, title, text }) => {
+            if (providerStaged.has(url)) return;
+            providerStaged.set(url, await stageResearchSource(owner, id, { url, title, text }));
+          },
+        },
+      );
       // Legacy/custom adapters may still return inline bodies. Spill each one
       // immediately, then remove it from the result object before accumulating
-      // metadata across queries. Tavily itself no longer requests this shape.
+      // metadata across queries. Tavily uses the callback above to do this
+      // while its response stream is still being parsed.
       for (const result of results) {
         if (!result.content || providerStaged.has(result.url)) continue;
         providerStaged.set(result.url, await stageResearchSource(owner, id, {
@@ -1109,6 +1145,9 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
       thinking,
       sources,
       evidence: evidenceFromFetched(sources, results),
+      ...(initial.runPageBaseline?.slug === slug
+        ? { previousPageContent: initial.runPageBaseline.content }
+        : {}),
       ...(initial.vaultId ? { wikiId: initial.vaultId } : {}),
     });
     if (!committedPage) {

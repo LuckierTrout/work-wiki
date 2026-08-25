@@ -5,7 +5,7 @@ created: 2026-08-24
 status: done
 stepsCompleted: [1, 3, 4]
 followup_review_recommended: true
-review_loop_iteration: 3
+review_loop_iteration: 4
 baseline_revision: 6df2c30573d0a2dcbeabb3a0f65315d82a7698d9
 context:
   - AGENTS.md
@@ -204,7 +204,7 @@ Context7 before changing Tavily/SerpApi/SearXNG request shapes (`/websites/tavil
 - Given I open the confirm dialog and press Cancel, when the dialog closes, then no provider HTTP occurs and no Ingest job is created.
 - Given I confirm with a topic and ≥1 query from Graph, Review, or Deep Research mode, when the confirm lands, then a project is created with those queries and the active `wikiId`, a run is queued, and Deep Research mode shows the panel — not a draft-only “web search has not started” card.
 - Given a Review item’s Deep Research confirm succeeds, when I return to Review, then that item is still pending (not Skip’d).
-- Given Tavily is active and configured, when a query runs, then selected URLs are read sequentially through the kernel extractor and the complete extracted bodies reach synthesis without the 4_000-character snippet cap.
+- Given Tavily is active and configured, when a query runs, then `include_raw_content` is enabled and each complete returned body is streamed into durable staging before the next result is retained; URLs without returned bodies use the kernel extractor, and no 4_000-character snippet cap is applied to synthesis evidence.
 - Given SerpApi or SearXNG is the selected provider, when results return, then each http(s) URL is extracted via the kernel readability path before synthesis.
 - Given a run is collecting, when I have Deep Research open, then the panel shows query/fetch/synthesis progress and grows with content. Two collecting tasks are visually distinct.
 - Given three runs are collecting, when I confirm a fourth, then the fourth is `queued` (visible, not dropped) and starts only after a slot frees.
@@ -260,7 +260,7 @@ Context7 before changing Tavily/SerpApi/SearXNG request shapes (`/websites/tavil
 - [x] [Review][Patch] Hierarchically reduce every mapped evidence note instead of truncating later notes from a large reduce prompt [`src/lib/research-runtime.ts:756`]
 - [x] [Review][Patch] Record staged-body cleanup references before writing bytes and clear them on failure, interruption, cancellation, and DELETE [`src/lib/research-completion.ts:92`]
 - [x] [Review][Patch] Fail queued waiters visibly when the research lease file is malformed instead of treating them as already dispatched forever [`src/lib/research-runtime.ts:500`]
-- [x] [Review][Patch] Keep Tavily raw bodies out of the aggregate search response and stage any legacy inline bodies immediately before retaining metadata [`src/lib/research-providers.ts:180`]
+- [x] [Review][Patch] Keep Tavily `include_raw_content` enabled while streaming and staging one result body at a time before retaining metadata [`src/lib/research-providers.ts:180`]
 - [x] [Review][Patch] Clear and scope Activity/Research mutation state, errors, and finalizers when the active Wiki changes [`src/components/workbench/ActivityDock.tsx:56`]
 - [x] [Review][Defer] Legacy manual `sourceUrls` are accepted but automated runs replace them — deferred, pre-existing [`src/lib/research-runtime.ts:682`]
 - [x] [Review][Defer] The shared kernel URL guard does not resolve DNS before fetch, leaving a DNS-rebinding SSRF gap — deferred, pre-existing [`src/lib/url-safety.ts:95`]
@@ -270,7 +270,7 @@ Context7 before changing Tavily/SerpApi/SearXNG request shapes (`/websites/tavil
 Tagged in Intent Resolution. Repeat for the implementer:
 
 1. Reuse `yopedia-tasks` + a kernel max-3 lease. Do not add a wrangler Queue.
-2. Tavily remains the default search provider, but the accepted remediation overrides the frozen contract's `include_raw_content` transport detail: selected Tavily URLs now use the same sequential kernel readability extraction as SerpApi/SearXNG so full bodies reach synthesis without retaining eight raw pages in one provider response. Firecrawl is not the fetch layer.
+2. Tavily remains the default search provider and keeps the locked `include_raw_content` request. Returned bodies are parsed and staged one result at a time so full evidence reaches synthesis without retaining the result stack; Tavily URLs without a returned body fall back to the same sequential kernel extractor used by SerpApi/SearXNG. Firecrawl is not the fetch layer.
 3. Auto-Ingest copies the Chat save-to-wiki door (lifecycle + raw Source + `enqueueOrInline`), not memory-proposals.
 4. Research Page slug is `research-{slugify(title)}-{stable project-id suffix}` (not `wiki/queries/`). This 2026-08-24 review decision supersedes the earlier title-only assumption so same-title projects cannot overwrite each other while reruns remain stable.
 5. Panel may poll or SSE; Chat SSE event names stay unused.
@@ -314,6 +314,14 @@ None that block implementation. If an assumption is wrong, record the override i
 - independent verdict: pending against the next committed SHA
 - release gates: pending against that same next SHA
 - acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged
+
+### 2026-08-24 — Exact-head review remediation pass 4
+
+- patch: all findings from the `4f643c85` full-stack review applied: silo-first lifecycle recovery, completed-project malformed-lease isolation, waitable rolling-compatible durable locks, cross-isolate index/log serialization, queue-time rerun Page baselines, staging write/delete serialization, Tavily full-content streaming, and bounded/no-progress hierarchical reduction
+- evidence: focused tests include forced cross-isolate index/log and durable-lock races, malformed and legacy leases, manifest/body DELETE interleaving, queue-time owner edits, provider streaming, and a reducer branch plus non-convergence failure
+- independent verdict: pending against the next committed SHA
+- release gates: pending against that same next SHA
+- acceptance effect: none yet; no prior review or gate result transfers to the new SHA
 
 ### 2026-08-24 — Review pass
 - intent_gap: 0
