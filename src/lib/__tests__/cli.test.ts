@@ -985,6 +985,9 @@ describe("CLI command execution", () => {
     expect(logSpy).toHaveBeenCalledWith("Updated: test-page");
     expect(logSpy).toHaveBeenCalledWith("  Title: New Title");
     expect(logSpy).toHaveBeenCalledWith("  Cross-referenced: related-page");
+    expect(writeWikiPageWithSideEffects).toHaveBeenCalledWith(
+      expect.objectContaining({ validateNewLinkTargets: true }),
+    );
   });
 
   it("runUpdate() preserves existing title when --title omitted", async () => {

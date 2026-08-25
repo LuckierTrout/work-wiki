@@ -1408,6 +1408,56 @@ describe("deep research — remediations", () => {
     vi.useRealTimers();
   });
 
+  it("does not delete a project while stale recovery publishes a replacement lease", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await project();
+    await queueResearchProject("alice", created.id);
+    await drainResearchQueue("alice");
+    const reserved = await getResearchProject("alice", created.id);
+    const oldAttempt = reserved!.runAttemptId!;
+    const snapshot = await listResearchProjects("alice");
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+    await releaseResearchSlot("alice", created.id, oldAttempt);
+    expect(await activeResearchCount("alice")).toBe(0);
+
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    let replacementPublished!: () => void;
+    let resumeRotation!: () => void;
+    const published = new Promise<void>((resolve) => { replacementPublished = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeRotation = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => {
+        const wrote = await originalMatch(target, content, etag);
+        if (
+          pauseOnce
+          && wrote
+          && target.endsWith("research-leases.json")
+          && content.includes(created.id)
+        ) {
+          pauseOnce = false;
+          replacementPublished();
+          await resume;
+        }
+        return wrote;
+      },
+    );
+
+    const reconciling = reconcileResearchProjects("alice", snapshot);
+    await published;
+    const deleting = deleteResearchProject("alice", created.id);
+    resumeRotation();
+
+    await reconciling;
+    expect(await deleting).toBe(false);
+    const retained = await getResearchProject("alice", created.id);
+    expect(retained?.runAttemptId).toBeTruthy();
+    expect(retained?.runAttemptId).not.toBe(oldAttempt);
+    expect(await activeResearchCount("alice")).toBe(1);
+    vi.useRealTimers();
+  });
+
   it("reaps an expired rotated successor before deleting its stale-token tombstone", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const created = await project();

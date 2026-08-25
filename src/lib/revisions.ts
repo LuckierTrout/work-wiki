@@ -360,6 +360,7 @@ export async function deleteRevisions(slug: string, tenant?: string): Promise<vo
     // Already gone — nothing to do.
     if (!isEnoent(err)) {
       logger.warn("revisions", `unexpected error deleting revisions for "${slug}":`, err);
+      throw err;
     }
   }
 }

@@ -255,6 +255,58 @@ describe("mergePages", () => {
     matchSpy.mockRestore();
   }, 15_000);
 
+  it("resumes an earlier partial merge after a later merge advances the survivor generation", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", {
+      title: "Agent Harness",
+      body: "# Agent Harness\n\nSURVIVOR UNIQUE.",
+    });
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents)",
+      body: "# Harness (AI agents)\n\nFIRST ABSORBED UNIQUE.",
+    });
+    await seedPage("agent-test-rigs", {
+      title: "Agent Test Rigs",
+      body: "# Agent Test Rigs\n\nSECOND ABSORBED UNIQUE.",
+    });
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    let failFirstIndexCleanup = true;
+    vi.spyOn(storage, "writeFile").mockImplementation(async (target, content) => {
+      if (
+        failFirstIndexCleanup
+        && target === "wiki/index.md"
+        && !await storage.fileExists("tenants/alice/wiki/harness-ai-agents.md")
+      ) {
+        failFirstIndexCleanup = false;
+        throw new Error("index unavailable after first Page delete");
+      }
+      return originalWrite(target, content);
+    });
+
+    await expect(mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    })).rejects.toThrow(/index unavailable/i);
+    await mergePages({
+      from: "agent-test-rigs",
+      into: "agent-harness",
+      actor: "alice",
+    });
+    await mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    });
+
+    const survivor = await readWikiPageWithFrontmatter("agent-harness");
+    expect(survivor?.body.match(/FIRST ABSORBED UNIQUE\./g)).toHaveLength(1);
+    expect(survivor?.body.match(/SECOND ABSORBED UNIQUE\./g)).toHaveLength(1);
+    expect(await readWikiPage("harness-ai-agents")).toBeNull();
+    expect(await readWikiPage("agent-test-rigs")).toBeNull();
+  }, 15_000);
+
   it("serializes an absorbed-Page edit behind the complete merge lifecycle", async () => {
     mockedHasLLMKey.mockReturnValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
@@ -566,7 +618,14 @@ describe("mergePages", () => {
       }
       return originalDeleteDirectory(target);
     });
-    await deleteWikiPage("agent-harness", "alice");
+    await expect(deleteWikiPage("agent-harness", "alice"))
+      .rejects.toThrow(/revision cleanup unavailable/i);
+    expect(await readWikiPage("agent-harness")).not.toBeNull();
+    await storage.deleteFile("tenants/alice/wiki/agent-harness.md");
+    await storage.deleteFile("wiki/agent-harness.md");
+    await updateIndex(
+      (await listWikiPages({ strict: true })).filter((entry) => entry.slug !== "agent-harness"),
+    );
     await seedPage("agent-harness", {
       title: "Replacement",
       owner: "alice",
@@ -603,6 +662,14 @@ describe("mergePages", () => {
     expect((await readWikiPage("harness-ai-agents"))?.content).toBe(fromBefore);
     expect((await readWikiPage("agent-harness"))?.content).toBe(intoBefore);
     expect(await getStorage().readFile("tenants/bob/wiki/misfiled.md")).toBe(malformed);
+    let operationEntries: Array<{ name: string; isDirectory: boolean }> = [];
+    try {
+      operationEntries = await getStorage().listFiles("derived-indexes/merge-operations");
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error
+        && (error as NodeJS.ErrnoException).code === "ENOENT")) throw error;
+    }
+    expect(operationEntries).toHaveLength(0);
   }, 15_000);
 
   it("fails before mutation when one slug exists in multiple tenant silos", async () => {
@@ -692,6 +759,41 @@ describe("mergePages", () => {
       title: "Unrelated replacement",
       owner: "bob",
       body: "# Unrelated replacement\n\nBob's Page.",
+    });
+
+    await expect(writeWikiPageWithSideEffects({
+      slug: "late-linker",
+      title: "Late linker",
+      content: staleLinker!.content.replace(
+        "Content about Late linker.",
+        "See [old Page](harness-ai-agents.md).",
+      ),
+      summary: "Late link",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: staleLinker!.content,
+      author: "alice",
+      validateNewLinkTargets: true,
+    })).rejects.toThrow(/missing|replaced/i);
+
+    expect((await readWikiPage("late-linker"))?.content)
+      .not.toContain("harness-ai-agents.md");
+  }, 15_000);
+
+  it("rejects a stale link when the absorbed slug was recreated by the same owner", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    await seedPage("late-linker", { title: "Late linker" });
+    const staleLinker = await readWikiPageWithFrontmatter("late-linker", {
+      fresh: true,
+      strict: true,
+    });
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+    await seedPage("harness-ai-agents", {
+      title: "Unrelated replacement",
+      owner: "alice",
+      body: "# Unrelated replacement\n\nAlice's new Page.",
     });
 
     await expect(writeWikiPageWithSideEffects({

@@ -270,6 +270,24 @@ async function acquirePageLifecycleLocks<T>(
 
 const activePageLifecycleLockTokens = new WeakSet<object>();
 
+async function slugIsClaimedAsAliasByAnotherPage(
+  slug: string,
+  tenant: string,
+): Promise<boolean> {
+  for (const entry of await listWikiPages({ strict: true })) {
+    if (entry.slug === slug || tenantForOwner(entry.owner) !== tenant) continue;
+    const page = await readWikiPageWithFrontmatter(entry.slug, { fresh: true, strict: true });
+    if (!page) continue;
+    const aliases = Array.isArray(page.frontmatter.aliases)
+      ? page.frontmatter.aliases
+      : [];
+    if (aliases.some((alias) => (
+      typeof alias === "string" && alias.trim().toLowerCase() === slug.toLowerCase()
+    ))) return true;
+  }
+  return false;
+}
+
 /** Proof passed only while one Page's lifecycle lock is held by a coordinator. */
 export interface PageLifecycleLockHeld {
   readonly slugs: readonly string[];
@@ -360,16 +378,20 @@ async function runPageLifecycleOp(
           requiredSlug,
           { fresh: true, strict: true },
         );
+        const isDiscoveredLinkTarget = requiredSlug !== op.requiresExistingSlug
+          && op.validateNewLinkTargets;
         if (
           !source
           || (requiredSlug === op.requiresExistingSlug && op.requiresExistingTenant
             && tenantForOwner(
               typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
             ) !== op.requiresExistingTenant)
-          || (requiredSlug !== op.requiresExistingSlug && op.validateNewLinkTargets
+          || (isDiscoveredLinkTarget
             && tenantForOwner(
               typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
             ) !== writeTenant)
+          || (isDiscoveredLinkTarget
+            && await slugIsClaimedAsAliasByAnotherPage(requiredSlug, writeTenant!))
         ) {
           throw new LifecyclePageConflictError(
             slug,
@@ -571,6 +593,13 @@ async function runPageLifecycleOp(
       }
       // Owner/contributors unknown → falls back to the default tenant in step 3c.
     }
+    // Revision bytes are part of the hard-delete contract, not a derived index.
+    // Erase both layouts before removing the authoritative Page so a transient
+    // cleanup failure leaves a visible Page the operator can safely retry.
+    await Promise.all([
+      deleteRevisions(slug),
+      deleteRevisions(slug, tenantForOwner(deletedOwner)),
+    ]);
     // Delete from silo (primary target).
     const deleteTenant = tenantForOwner(deletedOwner);
     try {
@@ -591,10 +620,10 @@ async function runPageLifecycleOp(
     }
   }
 
-  // 2b–2d. Secondary storage cleanup. All steps are failure-tolerant (logged +
-  //        swallowed) so they never fail the op. On the delete path the three
-  //        independent ops (embedding, revisions, discussions) run CONCURRENTLY
-  //        instead of one-after-another to cut latency.
+  // 2b–2d. Secondary storage cleanup. Derived, recoverable steps are
+  //        failure-tolerant (logged + swallowed) so they never fail the op.
+  //        Revision erasure is intentionally absent here: it is a required
+  //        pre-delete step above because portable exports include tenant data.
   if (op.kind === "write") {
     // Skip embedding rendered artifacts (e.g. saved `html` outputs): they're
     // excluded from the search/query corpus, and their raw markup would pollute
@@ -626,11 +655,6 @@ async function runPageLifecycleOp(
   } else {
     const cleanups: { label: string; run: Promise<unknown> }[] = [
       { label: "embedding remove", run: removeEmbedding(slug) },
-      { label: "deleteRevisions", run: deleteRevisions(slug) },
-      {
-        label: "deleteTenantRevisions",
-        run: deleteRevisions(slug, tenantForOwner(deletedOwner)),
-      },
       { label: "deleteDiscussions", run: deleteDiscussions(slug) },
     ];
     const settled = await Promise.allSettled(cleanups.map((c) => c.run));

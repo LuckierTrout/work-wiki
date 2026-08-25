@@ -1424,6 +1424,40 @@ describe("read-only deployment — the page write doors", () => {
 describe("PUT /api/wiki/[slug] — the write precondition", () => {
   const ORIGINAL = "# Precondition\n\nwhat the other actor stored.\n";
 
+  async function seedSameOwnerRetiredAlias(prefix: string): Promise<string> {
+    const retired = `${prefix}-retired`;
+    const today = new Date().toISOString().slice(0, 10);
+    const common = {
+      created: today,
+      owner: "test-user",
+      visibility: "private",
+      authors: ["test-user"],
+      contributors: ["test-user"],
+    };
+    await writeWikiPageWithSideEffects({
+      slug: `${prefix}-survivor`,
+      title: "Survivor",
+      content: serializeFrontmatter(
+        { ...common, aliases: [retired] },
+        "# Survivor\n\nCanonical Page.",
+      ),
+      summary: "canonical",
+      logOp: "ingest",
+      crossRefSource: null,
+      author: "test-user",
+    });
+    await writeWikiPageWithSideEffects({
+      slug: retired,
+      title: "Replacement",
+      content: serializeFrontmatter(common, "# Replacement\n\nUnrelated replacement."),
+      summary: "replacement",
+      logOp: "ingest",
+      crossRefSource: null,
+      author: "test-user",
+    });
+    return retired;
+  }
+
   async function seed(slug: string): Promise<void> {
     const today = new Date().toISOString().slice(0, 10);
     await writeWikiPageWithSideEffects({
@@ -1483,6 +1517,60 @@ describe("PUT /api/wiki/[slug] — the write precondition", () => {
     const after = (await readWikiPageWithFrontmatter("pc-match"))!.content;
     expect(body.version).toBe(contentVersion(after));
     expect(body.version).not.toBe(contentVersion(before));
+  });
+
+  it("refuses a new link to a same-owner slug already claimed as a merged alias", async () => {
+    const retired = await seedSameOwnerRetiredAlias("put-link");
+    await seed("put-linker");
+    const before = (await readWikiPageWithFrontmatter("put-linker"))!.content;
+
+    const response = await put(
+      "put-linker",
+      formatIfMatch(contentVersion(before)),
+      `# Linker\n\nSee [the old Page](${retired}.md).`,
+    );
+
+    expect(response.status).not.toBe(200);
+    expect((await response.json()) as { error: string }).toEqual({
+      error: expect.stringMatching(/changed|conflict|missing|replaced/i),
+    });
+    expect((await readWikiPageWithFrontmatter("put-linker"))!.content).toBe(before);
+  });
+
+  it("refuses a revert that restores a same-owner merged-alias link", async () => {
+    const retired = await seedSameOwnerRetiredAlias("route-revert");
+    await seed("route-revert-linker");
+    const before = (await readWikiPageWithFrontmatter("route-revert-linker"))!.content;
+    const { saveRevision, listRevisions } = await import("@/lib/revisions");
+    await saveRevision(
+      "route-revert-linker",
+      serializeFrontmatter(
+        {
+          owner: "test-user",
+          visibility: "private",
+          authors: ["test-user"],
+        },
+        `# Linker\n\nSee [the old Page](${retired}.md).`,
+      ),
+      "test-user",
+      "stale link snapshot",
+    );
+    const timestamp = (await listRevisions("route-revert-linker"))[0].timestamp;
+    const { POST } = await import("@/app/api/wiki/[slug]/revisions/route");
+    const response = await POST(
+      new Request("http://localhost/api/wiki/route-revert-linker/revisions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "revert", timestamp }),
+      }),
+      { params: Promise.resolve({ slug: "route-revert-linker" }) },
+    );
+
+    expect(response.status).not.toBe(200);
+    expect((await response.json()) as { error: string }).toEqual({
+      error: expect.stringMatching(/missing|replaced/i),
+    });
+    expect((await readWikiPageWithFrontmatter("route-revert-linker"))!.content).toBe(before);
   });
 
   it("refuses a STALE save with 412 and writes nothing", async () => {

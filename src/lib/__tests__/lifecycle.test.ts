@@ -1002,6 +1002,33 @@ describe("deleteWikiPage", () => {
     expect(await listRevisions("rev-page", "yopedia")).toHaveLength(0);
   });
 
+  it("keeps the Page retryable when required tenant revision erasure fails", async () => {
+    await writeWikiPage("rev-page", "# Rev Page\n\nVersion 1.\n");
+    await updateIndex([
+      { title: "Rev Page", slug: "rev-page", summary: "Has revisions" },
+    ]);
+    await saveRevision("rev-page", "# Rev Page\n\nTenant history.\n", undefined, undefined, "yopedia");
+    const storage = getStorage();
+    const originalDeleteDirectory = storage.deleteDirectory.bind(storage);
+    let failTenantCleanup = true;
+    vi.spyOn(storage, "deleteDirectory").mockImplementation(async (target) => {
+      if (failTenantCleanup && target === "tenants/yopedia/wiki/.revisions/rev-page") {
+        failTenantCleanup = false;
+        throw new Error("tenant revision store unavailable");
+      }
+      return originalDeleteDirectory(target);
+    });
+
+    await expect(deleteWikiPage("rev-page"))
+      .rejects.toThrow(/tenant revision store unavailable/i);
+    expect(await readWikiPage("rev-page", { fresh: true, strict: true })).not.toBeNull();
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(1);
+
+    await deleteWikiPage("rev-page");
+    expect(await readWikiPage("rev-page", { fresh: true, strict: true })).toBeNull();
+    expect(await listRevisions("rev-page", "yopedia")).toHaveLength(0);
+  });
+
   // 17. Validates slug
   it("rejects empty slug on delete", async () => {
     await expect(deleteWikiPage("")).rejects.toThrow(/invalid slug/i);

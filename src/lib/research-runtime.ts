@@ -33,6 +33,7 @@ import {
   mutateResearchProject,
   updateResearchProject,
   updateResearchProjectIf,
+  withResearchProjectLifecycleFence,
   type ResearchProject,
   type ResearchProjectResult,
 } from "./research-projects";
@@ -707,27 +708,45 @@ export async function reconcileResearchProjects(
           await releaseExpiredResearchSlot(owner, project.id);
           changed = true;
         } else {
-          const replacement = await rotateResearchSlot(
+          const rotated = await withResearchProjectLifecycleFence(
             owner,
             project.id,
-            project.runAttemptId,
+            async () => {
+              const current = await getResearchProject(owner, project.id);
+              if (
+                !current
+                || current.status !== "queued"
+                || current.cancelRequested
+                || current.deleteRequested
+                || current.runAttemptId !== project.runAttemptId
+              ) return null;
+              const replacement = await rotateResearchSlot(
+                owner,
+                project.id,
+                project.runAttemptId!,
+              );
+              const replacementAttemptId = replacement?.attemptId;
+              if (!replacementAttemptId) return null;
+              const reserved = await updateResearchProjectIf(
+                owner,
+                project.id,
+                (candidate) => candidate.status === "queued"
+                  && !candidate.cancelRequested
+                  && !candidate.deleteRequested
+                  && candidate.runAttemptId === project.runAttemptId,
+                { runAttemptId: replacementAttemptId },
+              );
+              if (!reserved) {
+                if (replacement.acquired) {
+                  await releaseResearchSlot(owner, project.id, replacementAttemptId);
+                }
+                return null;
+              }
+              return { replacementAttemptId };
+            },
           );
-          const replacementAttemptId = replacement?.attemptId;
-          if (!replacementAttemptId) continue;
-          const reserved = await updateResearchProjectIf(
-            owner,
-            project.id,
-            (current) => current.status === "queued"
-              && !current.cancelRequested
-              && current.runAttemptId === project.runAttemptId,
-            { runAttemptId: replacementAttemptId },
-          );
-          if (!reserved) {
-            if (replacement.acquired) {
-              await releaseResearchSlot(owner, project.id, replacementAttemptId);
-            }
-            continue;
-          }
+          if (!rotated) continue;
+          const { replacementAttemptId } = rotated;
           try {
             const enqueued = await enqueueTask({
               kind: "run-research",
@@ -1273,35 +1292,46 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     const age = Date.now() - Date.parse(initial.updatedAt);
     if (!Number.isFinite(age) || age < RESEARCH_ABANDONED_AFTER_MS) return initial;
     const interruptedSnapshot = initial;
-    const replacement = interruptedSnapshot.runAttemptId
-      ? await rotateResearchSlot(owner, id, interruptedSnapshot.runAttemptId)
-      : null;
-    if (interruptedSnapshot.runAttemptId && !replacement?.attemptId) {
-      return (await getResearchProject(owner, id)) ?? initial;
-    }
-    const recovered = await updateResearchProjectIf(
-      owner,
-      id,
-      (project) => project.updatedAt === interruptedSnapshot.updatedAt
-        && project.status === interruptedSnapshot.status
-        && project.runAttemptId === interruptedSnapshot.runAttemptId,
-      {
-        status: "queued",
-        runAttemptId: replacement?.attemptId ?? null,
-        error: null,
-        progress: {
-          completedQueries: initial.progress?.completedQueries ?? 0,
-          totalQueries: initial.progress?.totalQueries ?? Math.max(1, initial.queries.length),
-          message: "Recovering an interrupted research run.",
+    const recovered = await withResearchProjectLifecycleFence(owner, id, async () => {
+      const current = await getResearchProject(owner, id);
+      if (
+        !current
+        || current.updatedAt !== interruptedSnapshot.updatedAt
+        || current.status !== interruptedSnapshot.status
+        || current.cancelRequested
+        || current.deleteRequested
+        || current.runAttemptId !== interruptedSnapshot.runAttemptId
+      ) return null;
+      const replacement = interruptedSnapshot.runAttemptId
+        ? await rotateResearchSlot(owner, id, interruptedSnapshot.runAttemptId)
+        : null;
+      if (interruptedSnapshot.runAttemptId && !replacement?.attemptId) return null;
+      const updated = await updateResearchProjectIf(
+        owner,
+        id,
+        (project) => project.updatedAt === interruptedSnapshot.updatedAt
+          && project.status === interruptedSnapshot.status
+          && !project.cancelRequested
+          && !project.deleteRequested
+          && project.runAttemptId === interruptedSnapshot.runAttemptId,
+        {
+          status: "queued",
+          runAttemptId: replacement?.attemptId ?? null,
+          error: null,
+          progress: {
+            completedQueries: interruptedSnapshot.progress?.completedQueries ?? 0,
+            totalQueries: interruptedSnapshot.progress?.totalQueries
+              ?? Math.max(1, interruptedSnapshot.queries.length),
+            message: "Recovering an interrupted research run.",
+          },
         },
-      },
-    );
-    if (!recovered) {
-      if (replacement?.acquired && replacement.attemptId) {
+      );
+      if (!updated && replacement?.acquired && replacement.attemptId) {
         await releaseResearchSlot(owner, id, replacement.attemptId);
       }
-      return (await getResearchProject(owner, id)) ?? initial;
-    }
+      return updated;
+    });
+    if (!recovered) return (await getResearchProject(owner, id)) ?? initial;
     initial = recovered;
   }
 

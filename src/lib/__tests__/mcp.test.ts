@@ -619,6 +619,34 @@ describe("MCP write tools", () => {
       expect(fileContent).toContain("New body content.");
     });
 
+    it("rejects a new link to a same-owner slug already claimed as a merged alias", async () => {
+      await writeTestPage(
+        "survivor",
+        "---\nowner: alice\naliases: [retired-target]\n---\n# Survivor\n\nCanonical Page.",
+      );
+      await writeTestPage(
+        "retired-target",
+        "---\nowner: alice\n---\n# Replacement\n\nUnrelated replacement.",
+      );
+      await writeTestPage(
+        "mcp-linker",
+        "---\nowner: alice\n---\n# MCP linker\n\nOriginal body.",
+      );
+      await writeIndex([
+        { title: "Survivor", slug: "survivor", summary: "canonical" },
+        { title: "Replacement", slug: "retired-target", summary: "replacement" },
+        { title: "MCP linker", slug: "mcp-linker", summary: "linker" },
+      ]);
+
+      await expect(handleUpdatePage({
+        slug: "mcp-linker",
+        content: "# MCP linker\n\nSee [the old Page](retired-target.md).",
+        author: "alice",
+      })).rejects.toThrow(/missing|replaced/i);
+      expect((await handleReadPage({ slug: "mcp-linker" })).content)
+        .not.toContain("retired-target.md");
+    });
+
     it("404 on missing page", async () => {
       await expect(
         handleUpdatePage({
@@ -4137,6 +4165,42 @@ describe("revert_revision", () => {
       timestamp: ts,
     });
     expect(result.slug).toBe("revert-default");
+  });
+
+  it("rejects a revision that restores a link to a same-owner merged alias", async () => {
+    await writeTestPage(
+      "revert-survivor",
+      "---\nowner: alice\naliases: [revert-retired]\n---\n# Survivor\n\nCanonical Page.",
+    );
+    await writeTestPage(
+      "revert-retired",
+      "---\nowner: alice\n---\n# Replacement\n\nUnrelated replacement.",
+    );
+    await writeTestPage(
+      "mcp-revert-linker",
+      "---\nowner: alice\n---\n# MCP revert linker\n\nCurrent body.",
+    );
+    await writeIndex([
+      { title: "Survivor", slug: "revert-survivor", summary: "canonical" },
+      { title: "Replacement", slug: "revert-retired", summary: "replacement" },
+      { title: "MCP revert linker", slug: "mcp-revert-linker", summary: "linker" },
+    ]);
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision(
+      "mcp-revert-linker",
+      "---\nowner: alice\n---\n# MCP revert linker\n\nSee [old](revert-retired.md).",
+      "alice",
+      "stale link snapshot",
+    );
+    const list = await handleListRevisions({ slug: "mcp-revert-linker" });
+
+    await expect(handleRevertRevision({
+      slug: "mcp-revert-linker",
+      timestamp: list.revisions[0].timestamp,
+      author: "alice",
+    })).rejects.toThrow(/missing|replaced/i);
+    expect((await handleReadPage({ slug: "mcp-revert-linker" })).content)
+      .not.toContain("revert-retired.md");
   });
 
   it("throws for a nonexistent page", async () => {

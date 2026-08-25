@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { strToU8, unzipSync, zipSync } from "fflate";
 import { serializeFrontmatter } from "../frontmatter";
 import { buildPortableArchive, importPortableArchive, inspectPortableArchive } from "../portable-archive";
+import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { _resetStorage, getStorage } from "../storage";
 import { listWikiPages, updateIndex, writeWikiPage } from "../wiki";
 
@@ -220,7 +221,7 @@ describe("portable owner archive", () => {
     expect(await getStorage().readFile("tenants/bob/wiki/z-conflict.md")).toBe(bob);
   });
 
-  it("keeps a same-owner Page that appears before a skip import acquires its snapshot", async () => {
+  it("holds the merge fence while a skip import acquires its collision snapshot", async () => {
     const archived = serializeFrontmatter(
       { owner: "alice", visibility: "private" },
       "# Atlas\n\nArchived bytes.",
@@ -232,13 +233,53 @@ describe("portable owner archive", () => {
       { owner: "alice", visibility: "private" },
       "# Atlas\n\nNewly committed bytes.",
     );
-    await getStorage().writeFile("tenants/alice/wiki/atlas.md", newer);
+    const storage = getStorage();
+    const originalReadAsset = storage.readAsset.bind(storage);
+    let observedMissingSnapshot!: () => void;
+    let resumeSnapshot!: () => void;
+    const snapshotObserved = new Promise<void>((resolve) => { observedMissingSnapshot = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeSnapshot = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "readAsset").mockImplementation(async (target) => {
+      try {
+        return await originalReadAsset(target);
+      } catch (error) {
+        if (
+          pauseOnce
+          && target === "tenants/alice/wiki/atlas.md"
+          && error instanceof Error
+          && "code" in error
+          && (error as NodeJS.ErrnoException).code === "ENOENT"
+        ) {
+          pauseOnce = false;
+          observedMissingSnapshot();
+          await resume;
+        }
+        throw error;
+      }
+    });
 
-    const result = await importPortableArchive("alice", buffer(archive.bytes), "skip");
+    const importing = importPortableArchive("alice", buffer(archive.bytes), "skip");
+    await snapshotObserved;
+    let published = false;
+    const writing = writeWikiPageWithSideEffects({
+      slug: "atlas",
+      title: "Atlas",
+      content: newer,
+      summary: "Newly committed bytes.",
+      logOp: "edit",
+      crossRefSource: null,
+      author: "alice",
+    }).then(() => { published = true; });
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(published).toBe(false);
+    resumeSnapshot();
+    const result = await importing;
+    await writing;
 
-    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.imported).toBeGreaterThanOrEqual(1);
     expect(await getStorage().readFile("tenants/alice/wiki/atlas.md")).toBe(newer);
-  });
+  }, 15_000);
 
   it("rejects an oversized manifest before allocating its expanded payload", async () => {
     const oversized = zipSync({

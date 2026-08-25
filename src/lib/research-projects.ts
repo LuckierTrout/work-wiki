@@ -1,7 +1,8 @@
 import { ClientInputError, isEnoent } from "./errors";
-import { withFileLock } from "./lock";
+import { withDurableLock, withFileLock } from "./lock";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
+import { hasResearchSlot } from "./research-concurrency";
 
 const CAS_ATTEMPTS = 8;
 
@@ -463,10 +464,25 @@ async function mutateProject(
   });
 }
 
+export async function withResearchProjectLifecycleFence<T>(
+  owner: string,
+  id: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const ownerTenant = tenantForOwner(owner);
+  validateTenant(ownerTenant);
+  return withDurableLock(`research-project-lifecycle:${ownerTenant}:${id}`, fn);
+}
+
 export async function deleteResearchProject(owner: string, id: string): Promise<boolean> {
-  return lockedMutation(owner, (projects) => {
-    const next = projects.filter((project) => project.id !== id);
-    if (next.length === projects.length) return { projects, result: false };
-    return { projects: next, result: true };
+  return withResearchProjectLifecycleFence(owner, id, async () => {
+    // Recheck under the same fence used by lease rotation. A caller's earlier
+    // release/confirm can otherwise race a recovery that publishes a successor.
+    if (await hasResearchSlot(owner, id)) return false;
+    return lockedMutation(owner, (projects) => {
+      const next = projects.filter((project) => project.id !== id);
+      if (next.length === projects.length) return { projects, result: false };
+      return { projects: next, result: true };
+    });
   });
 }

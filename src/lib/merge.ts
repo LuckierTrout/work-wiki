@@ -181,13 +181,10 @@ async function repointBacklinks(
       ? { slug: src, ...pageSnapshot(physicalPage.content, src) }
       : await readWikiPageWithFrontmatter(src, { fresh: true, strict: true });
     if (!page) {
-      // `src` was named as a linker by the index / page list, so a null read is
-      // NOT an expected "no such page" — `readWikiPage` also collapses transient
-      // storage faults to null. Abort rather than let the later hard-delete
-      // strip an un-re-pointed link; `from` is left intact and the merge retries.
-      throw new Error(
-        `merge aborted: backlink source "${src}" could not be read while re-pointing links from "${fromSlug}" to "${intoSlug}"`,
-      );
+      // The authoritative physical scan above completed successfully, so an
+      // index-only candidate is a stale derived row rather than an unread Page.
+      // Skip it; the merge's own delete/index cleanup will converge the row.
+      continue;
     }
     const updated = page.content.replace(re, `$1${intoSlug}.md`);
     if (updated === page.content) continue;
@@ -240,7 +237,12 @@ async function survivorDescendsFromMergedContent(
   if (currentContent === mergedContent) return true;
   const mergedGeneration = pageSnapshot(mergedContent, slug).frontmatter.merge_generation;
   if (typeof mergedGeneration === "string") {
-    return pageSnapshot(currentContent, slug).frontmatter.merge_generation === mergedGeneration;
+    const currentGeneration = pageSnapshot(currentContent, slug).frontmatter.merge_generation;
+    if (currentGeneration === mergedGeneration) return true;
+    // A normal edit preserves the marker. Only another completed merge is
+    // allowed to advance it and prove ancestry through revision history; an
+    // unmarked same-owner recreation must not inherit stale revisions.
+    if (typeof currentGeneration !== "string") return false;
   }
   for (const revisionTenant of [tenant, undefined]) {
     for (const revision of await listRevisions(slug, revisionTenant)) {
@@ -422,6 +424,10 @@ async function mergePagesWhileSourceLocked({
   }
 
   if (!receipt) {
+    // Reject canonical storage drift before publishing immutable merge inputs.
+    // Otherwise a repair plus an intervening Page edit could strand a stale
+    // receipt that no future retry is allowed to retire.
+    await validateCanonicalPageStorage();
     // Fold exactly once. The durable operation receipt below preserves this
     // plan across backlink/delete failures, so Retry never folds the absorbed
     // Page into an already-merged survivor a second time.
