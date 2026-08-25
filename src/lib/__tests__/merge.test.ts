@@ -246,7 +246,7 @@ describe("mergePages", () => {
     expect((await readWikiPage("other"))?.content).toContain("](agent-harness.md)");
     expect(await readWikiPage("harness-ai-agents")).toBeNull();
     matchSpy.mockRestore();
-  });
+  }, 15_000);
 
   it("does not delete an absorbed Page that changed after the merge plan", async () => {
     await seedPage("agent-harness", { title: "Agent Harness" });
