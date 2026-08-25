@@ -152,13 +152,20 @@ async function withSlotRenewal<T>(
   id: string,
   work: () => Promise<T>,
 ): Promise<T> {
+  let renewalFailure: unknown = null;
   const timer = setInterval(() => {
-    void renewResearchSlot(owner, id).catch(() => {
-      // The TTL is the backstop — see `renewResearchSlot`.
+    void renewResearchSlot(owner, id).catch((error) => {
+      renewalFailure ??= error;
     });
   }, Math.max(1_000, Math.floor(RESEARCH_SLOT_TTL_MS / 3)));
   try {
-    return await work();
+    const result = await work();
+    if (renewalFailure) throw renewalFailure;
+    // Close the timer/result race with one terminal renewal. If the reaper
+    // removed this claim while the provider call was in flight, no Page or
+    // Source mutation after this boundary is allowed to proceed.
+    await renewResearchSlot(owner, id);
+    return result;
   } finally {
     clearInterval(timer);
   }
@@ -422,7 +429,20 @@ export async function reconcileResearchProjects(
         continue;
       }
       if (project.completion || outboxIds.has(project.id)) {
-        await drainResearchOutbox(owner, project.id);
+        try {
+          await drainResearchOutbox(owner, project.id);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await updateResearchProject(owner, project.id, {
+            status: "failed",
+            error: message,
+            progress: {
+              completedQueries: project.progress?.completedQueries ?? 0,
+              totalQueries: project.progress?.totalQueries ?? Math.max(1, project.queries.length),
+              message: "Research delivery is blocked. Repair the reported lock, then retry.",
+            },
+          });
+        }
         changed = true;
         outboxIds.delete(project.id);
         continue;
@@ -480,6 +500,7 @@ export async function reconcileResearchProjects(
           message: "Interrupted.",
         },
       });
+      await releaseResearchSlot(owner, project.id);
       changed = true;
     }
     for (const orphanId of outboxIds) {

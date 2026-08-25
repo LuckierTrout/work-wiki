@@ -105,6 +105,31 @@ describe("page-index", () => {
     expect(await getPageIndexDirtySlugs()).toEqual(new Set([victim]));
   });
 
+  it("recovers and clears a hashed marker written by the previous release", async () => {
+    const slug = "rolling-private";
+    await getStorage().writeFile(
+      `derived-indexes/pages-dirty/v2-${await sourceSha256(slug)}`,
+      slug,
+    );
+
+    expect(await getPageIndexDirtySlugs()).toEqual(new Set([slug]));
+    await clearPageIndexDirty(slug);
+    expect(await getPageIndexDirtySlugs()).toEqual(new Set());
+  });
+
+  it("does not clear a previous-release marker through its colliding raw slug", async () => {
+    const victim = "rolling-victim";
+    const collidingSlug = `v2-${await sourceSha256(victim)}`;
+    await getStorage().writeFile(
+      `derived-indexes/pages-dirty/${collidingSlug}`,
+      victim,
+    );
+
+    await clearPageIndexDirty(collidingSlug);
+
+    expect(await getPageIndexDirtySlugs()).toEqual(new Set([victim]));
+  });
+
   it("syncPageIndexForPage / remove NO-OP until the index is seeded", async () => {
     await createPage("a", "owner: alice");
     await syncPageIndexForPage({ slug: "a", title: "A", summary: "s", owner: "alice" });

@@ -408,9 +408,16 @@ describe("ingest", () => {
     expect(page!.content).toContain("SECOND CREATOR BODY");
     expect(page!.content).not.toContain("FIRST CREATOR BODY");
     expect(page!.frontmatter.owner).toBe("bob");
-    await expect(
-      getStorage().fileExists("tenants/alice/wiki/lease-loss.md"),
-    ).resolves.toBe(false);
+    // Alice may have completed her silo create before losing the one global
+    // flat claim. Even with that crash-left orphan present, her caller hint
+    // must still resolve the committed/indexed Bob Page.
+    await expect(getStorage().fileExists("tenants/alice/wiki/lease-loss.md"))
+      .resolves.toBe(true);
+    expect((await readWikiPageWithFrontmatter("lease-loss", {
+      fresh: true,
+      strict: true,
+      owner: "alice",
+    }))?.frontmatter.owner).toBe("bob");
     _resetLocks();
   }, 15_000);
 

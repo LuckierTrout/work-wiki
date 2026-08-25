@@ -27,6 +27,7 @@ const PAGE_INDEX_LOCK = "page-index";
 const PAGE_INDEX_PATH = "derived-indexes/pages.json";
 const PAGE_INDEX_DIRTY_PATH = "derived-indexes/pages-dirty";
 const CURRENT_DIRTY_MARKER = /^\.v2-[0-9a-f]{64}$/;
+const PREVIOUS_DIRTY_MARKER = /^v2-[0-9a-f]{64}$/;
 
 export type PageMetaIndex = Record<string, IndexEntry>;
 
@@ -35,6 +36,10 @@ async function dirtyMarkerPath(slug: string): Promise<string> {
   // marker can never collide with a legacy root marker whose filename was the
   // raw slug.
   return `${PAGE_INDEX_DIRTY_PATH}/.v2-${await sourceSha256(slug)}`;
+}
+
+async function previousDirtyMarkerPath(slug: string): Promise<string> {
+  return `${PAGE_INDEX_DIRTY_PATH}/v2-${await sourceSha256(slug)}`;
 }
 
 export async function markPageIndexDirty(slug: string): Promise<void> {
@@ -47,6 +52,18 @@ export async function markPageIndexDirty(slug: string): Promise<void> {
 export async function clearPageIndexDirty(slug: string): Promise<void> {
   try {
     await getStorage().deleteFile(await dirtyMarkerPath(slug));
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+  // Clear a marker written by the immediately previous hashed-marker release,
+  // but only when its payload proves it belongs to this slug. Its filename is
+  // also a valid legacy raw slug, so unconditional deletion would clear a
+  // different Page's privacy fence.
+  const previousPath = await previousDirtyMarkerPath(slug);
+  try {
+    if (await getStorage().readFile(previousPath) === slug) {
+      await getStorage().deleteFile(previousPath);
+    }
   } catch (error) {
     if (!isEnoent(error)) throw error;
   }
@@ -63,7 +80,13 @@ export async function clearPageIndexDirty(slug: string): Promise<void> {
     .find((entry) => entry.name === legacyLeaf);
   if (legacyEntry && !legacyEntry.isDirectory) {
     try {
-      await getStorage().deleteFile(`${legacyParent}/${legacyLeaf}`);
+      const legacyPath = `${legacyParent}/${legacyLeaf}`;
+      const isPreviousMarkerForAnotherSlug = slash < 0
+        && PREVIOUS_DIRTY_MARKER.test(legacyLeaf)
+        && await previousDirtyMarkerPath(await getStorage().readFile(legacyPath)) === legacyPath;
+      if (!isPreviousMarkerForAnotherSlug) {
+        await getStorage().deleteFile(legacyPath);
+      }
     } catch (error) {
       if (!isEnoent(error)) throw error;
     }
@@ -89,6 +112,18 @@ export async function getPageIndexDirtySlugs(): Promise<Set<string>> {
             throw new Error(`Invalid Page-index dirty marker: ${entry.name}`);
           }
           slugs.add(slug);
+        } else if (legacyPrefix === "" && PREVIOUS_DIRTY_MARKER.test(entry.name)) {
+          const markerPath = `${prefix}/${entry.name}`;
+          const payload = await storage.readFile(markerPath);
+          if (await previousDirtyMarkerPath(payload) === markerPath) {
+            // Marker written by the immediately previous hashed-marker release.
+            slugs.add(payload);
+          } else {
+            // Ambiguous/corrupt: the filename is also a valid legacy raw slug.
+            // Fence both interpretations rather than trusting stale metadata.
+            slugs.add(entry.name);
+            slugs.add(payload);
+          }
         } else {
           // Raw-slug markers from the prior version. Walking directories also
           // recovers the exact nested markers that version failed to surface.

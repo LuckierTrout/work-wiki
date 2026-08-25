@@ -94,6 +94,12 @@ export interface WritePageOptions {
   /** Refuse to overwrite unless the authoritative Page still has these bytes. */
   expectedContent?: string;
   /**
+   * Refuse this write unless another Page still exists while both lifecycle
+   * locks are held. Cross-reference injection uses this to make the source
+   * existence check and linker mutation atomic with source deletion.
+   */
+  requiresExistingSlug?: string;
+  /**
    * Durable crash-recovery receipt. When the target Page already has `content`
    * but this exact receipt is absent, lifecycle resumes its idempotent side
    * effects instead of mistaking Page bytes for completion.
@@ -157,6 +163,7 @@ type PageLifecycleOp =
       revisionReason?: string;
       createOnly?: boolean;
       expectedContent?: string;
+      requiresExistingSlug?: string;
     }
   | {
       kind: "delete";
@@ -264,6 +271,16 @@ async function runPageLifecycleOp(
   let postIndexEntries!: IndexEntry[];
   let removedFromIndex = false;
   const mutatePrimaryAndIndexes = async (): Promise<void> => {
+    if (
+      op.kind === "write"
+      && op.requiresExistingSlug
+      && !(await readWikiPage(op.requiresExistingSlug, { fresh: true, strict: true }))
+    ) {
+      throw new LifecyclePageConflictError(
+        slug,
+        `cannot link to missing Page "${op.requiresExistingSlug}"`,
+      );
+    }
 
   // --- Silo-primary: resolve the write tenant from content frontmatter ---
   let writeTenant: string | undefined;
@@ -341,18 +358,19 @@ async function runPageLifecycleOp(
         if (!created) logger.warn("wiki", `flat compatibility copy appeared for "${slug}"`);
       }
     } else if (op.createOnly) {
-      // The flat compatibility object is the global slug claim shared by all
-      // tenant silos. Claim it first so a lease-lost Alice create cannot
-      // succeed beside a completed Bob Page and then replace the one global
-      // Page-index entry. A false result is a global conflict, not a warning.
-      const flatCreated = await createWikiPage(slug, op.content);
-      if (!flatCreated) throw new LifecyclePageConflictError(slug, "already exists");
-
-      // The tenant silo remains the authoritative read target after the global
-      // claim. Under the durable per-slug lock this cannot race; a failure is
-      // surfaced rather than silently publishing a split identity.
+      // Publish the authoritative silo first. If that write fails, no global
+      // Page exists and an outbox retry can safely try again. A completed silo
+      // with no flat copy is recoverable through the caller's owner hint.
       const created = await createWikiPage(slug, op.content, writeTenant);
       if (!created) throw new LifecyclePageConflictError(slug, "already exists");
+
+      // The flat compatibility object is the one global slug claim shared by
+      // every tenant. A competing owner that completed after this callback
+      // lost its lease makes this a hard conflict, so the orphan silo cannot
+      // replace global Page identity or its Page-index entry. Read routing
+      // consults the global index/flat owner before any caller owner hint.
+      const flatCreated = await createWikiPage(slug, op.content);
+      if (!flatCreated) throw new LifecyclePageConflictError(slug, "already exists");
     } else if (op.expectedContent !== undefined) {
       const tenant = writeTenant ?? tenantForOwner(undefined);
       const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
@@ -770,6 +788,11 @@ async function runPageLifecycleOp(
   };
   if (pageLockAlreadyHeld) {
     await mutatePrimaryAndIndexes();
+  } else if (op.kind === "write" && op.requiresExistingSlug) {
+    await withPageLifecycleLocks(
+      [slug, op.requiresExistingSlug],
+      mutatePrimaryAndIndexes,
+    );
   } else {
     await withDurableLock(`page-lifecycle:${slug}`, mutatePrimaryAndIndexes);
   }
@@ -790,7 +813,12 @@ async function runPageLifecycleOp(
         sourceForCrossRef,
         refreshedEntries,
       );
-      crossRefedSlugs = await updateRelatedPages(slug, op.title, relatedSlugs);
+      crossRefedSlugs = await updateRelatedPages(
+        slug,
+        op.title,
+        relatedSlugs,
+        { requireSource: true },
+      );
     }
   } else {
     // Strip links to the deleted page from every other page. Read all pages
@@ -1047,6 +1075,7 @@ async function writeWikiPageWithSideEffectsInternal(
       revisionReason: opts.revisionReason,
       createOnly: opts.createOnly,
       expectedContent: opts.expectedContent,
+      requiresExistingSlug: opts.requiresExistingSlug,
     },
     logOp,
     ({ crossRefedSlugs }) => logDetails?.({ updatedSlugs: crossRefedSlugs }),

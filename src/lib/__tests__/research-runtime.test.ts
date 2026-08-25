@@ -1089,6 +1089,29 @@ describe("deep research — remediations", () => {
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
+  it("writes no Page when its research slot is lost during synthesis", async () => {
+    const created = await project();
+    let synthesisStarted!: () => void;
+    let finishSynthesis!: (value: string) => void;
+    const started = new Promise<void>((resolve) => { synthesisStarted = resolve; });
+    const response = new Promise<string>((resolve) => { finishSynthesis = resolve; });
+    mockedLLM.mockImplementation(async () => {
+      synthesisStarted();
+      return response;
+    });
+
+    const running = runResearchProject("alice", created.id);
+    await started;
+    await releaseResearchSlot("alice", created.id);
+    finishSynthesis(
+      "# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief).",
+    );
+
+    await expect(running).rejects.toThrow(/slot.*lost/i);
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect((await getResearchProject("alice", created.id))?.status).toBe("failed");
+  });
+
   it("keeps a collecting worker's lease until that worker exits", async () => {
     const created = await project();
     await updateResearchProject("alice", created.id, { status: "collecting" });

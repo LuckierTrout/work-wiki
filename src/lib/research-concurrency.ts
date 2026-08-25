@@ -75,7 +75,7 @@ function isSlot(value: unknown): value is ResearchSlot {
   );
 }
 
-function parseSlots(raw: string, now: number): ResearchSlot[] {
+function parseSlots(raw: string): ResearchSlot[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -88,7 +88,10 @@ function parseSlots(raw: string, now: number): ResearchSlot[] {
   if (!parsed.every(isSlot)) {
     throw new ResearchLeaseError("Research lease entry is invalid.");
   }
-  return parsed.filter((slot) => slot.expiresAt > now);
+  // Retain expired claims until the project reaper explicitly fails/releases
+  // them. Dropping one during ordinary admission lets a fourth run start while
+  // a partitioned but still-running holder is finishing a long provider call.
+  return parsed;
 }
 
 /**
@@ -111,7 +114,7 @@ export async function applyResearchLeaseMutation<T>(
     try {
       const read = await storage.readFileWithEtag(path);
       etag = read.etag;
-      slots = parseSlots(read.content, now);
+      slots = parseSlots(read.content);
     } catch (error) {
       if (error instanceof ResearchLeaseError) throw error;
       if (!isEnoent(error)) {
@@ -179,7 +182,9 @@ export async function acquireResearchSlot(
 export async function renewResearchSlot(owner: string, projectId: string): Promise<void> {
   await lockedMutation(owner, (slots, now) => {
     const existing = slots.find((slot) => slot.projectId === projectId);
-    if (!existing) return { slots, result: undefined };
+    if (!existing) {
+      throw new ResearchLeaseError(`Research slot for ${projectId} was lost.`);
+    }
     existing.expiresAt = now + RESEARCH_SLOT_TTL_MS;
     return { slots, result: undefined };
   });
@@ -203,12 +208,12 @@ export async function releaseResearchSlot(owner: string, projectId: string): Pro
   }
 }
 
-/** How many runs currently hold a slot, expired ones excluded. */
+/** How many claims still reserve capacity, until release or explicit reaping. */
 export async function activeResearchCount(owner: string): Promise<number> {
   const storage = getStorage();
   try {
     const read = await storage.readFileWithEtag(leasePath(owner));
-    return parseSlots(read.content, Date.now()).length;
+    return parseSlots(read.content).length;
   } catch (error) {
     if (isEnoent(error)) return 0;
     throw error instanceof ResearchLeaseError
@@ -228,7 +233,10 @@ export async function holdsResearchSlot(owner: string, projectId: string): Promi
   try {
     const storage = getStorage();
     const read = await storage.readFileWithEtag(leasePath(owner));
-    return parseSlots(read.content, Date.now()).some((slot) => slot.projectId === projectId);
+    const now = Date.now();
+    return parseSlots(read.content).some(
+      (slot) => slot.projectId === projectId && slot.expiresAt > now,
+    );
   } catch (error) {
     if (isEnoent(error)) return false;
     throw error instanceof ResearchLeaseError

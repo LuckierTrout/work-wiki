@@ -123,6 +123,7 @@ export async function updateRelatedPages(
   newSlug: string,
   newTitle: string,
   relatedSlugs: string[],
+  options: { requireSource?: boolean } = {},
 ): Promise<string[]> {
   return withFileLock("cross-ref", async () => {
     const updatedSlugs: string[] = [];
@@ -186,6 +187,7 @@ export async function updateRelatedPages(
           crossRefSource: null,
           author: "system",
           expectedContent: meta.content,
+          ...(options.requireSource ? { requiresExistingSlug: newSlug } : {}),
         });
         updatedSlugs.push(slug);
         updated = true;

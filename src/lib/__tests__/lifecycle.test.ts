@@ -506,6 +506,46 @@ describe("writeWikiPageWithSideEffects", () => {
     expect(page?.body).not.toContain("Alice crash-left orphan");
   });
 
+  it("leaves no global Page when authoritative create fails and succeeds on retry", async () => {
+    const content = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Partial\n\nRetryable publication.\n",
+    );
+    const options = makeOpts({
+      slug: "partial-create",
+      title: "Partial",
+      content,
+      crossRefSource: null,
+      createOnly: true,
+    });
+    const storage = getStorage();
+    const originalCreate = storage.writeFileIfAbsent.bind(storage);
+    let failSilo = true;
+    const createSpy = vi.spyOn(storage, "writeFileIfAbsent").mockImplementation(
+      async (target, body) => {
+        if (failSilo && target === "tenants/alice/wiki/partial-create.md") {
+          throw new Error("silo unavailable");
+        }
+        return originalCreate(target, body);
+      },
+    );
+
+    await expect(writeWikiPageWithSideEffects(options)).rejects.toThrow("silo unavailable");
+    await expect(storage.fileExists("wiki/partial-create.md")).resolves.toBe(false);
+    await expect(readWikiPage("partial-create", { fresh: true, strict: true }))
+      .resolves.toBeNull();
+
+    failSilo = false;
+    await expect(writeWikiPageWithSideEffects(options)).resolves.toMatchObject({
+      slug: "partial-create",
+    });
+    createSpy.mockRestore();
+    expect((await readWikiPageWithFrontmatter("partial-create", {
+      fresh: true,
+      strict: true,
+    }))?.frontmatter.owner).toBe("alice");
+  });
+
   it("fails a slug authorization check closed when its authoritative silo cannot be read", async () => {
     const content = serializeFrontmatter(
       { owner: "alice", visibility: "private" },

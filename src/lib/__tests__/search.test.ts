@@ -50,7 +50,7 @@ import { serializeFrontmatter } from "../frontmatter";
 import { isAgentScopedType, isArtifactType } from "../wiki";
 import type { AgentProfile } from "../types";
 import { _resetStorage, getStorage } from "../storage";
-import { writeWikiPageWithSideEffects } from "../lifecycle";
+import { deleteWikiPage, writeWikiPageWithSideEffects } from "../lifecycle";
 import { relatedByVector, searchByVector } from "../embeddings";
 import { hasLLMKey, callLLM } from "../llm";
 
@@ -796,6 +796,57 @@ describe("updateRelatedPages", () => {
     expect(stored).toContain("Owner edit wins.");
     expect(stored).toContain("[New Page](new-page.md)");
     expect(stored).not.toContain("Initial body.");
+  });
+
+  it("does not recreate a backlink when its source is deleted during delayed injection", async () => {
+    await ensureDirectories();
+    await writeWikiPageWithSideEffects({
+      slug: "source-race",
+      title: "Source Race",
+      content: "# Source Race\n\nDelete me.\n",
+      summary: "Delete me",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await writeWikiPageWithSideEffects({
+      slug: "linker-race",
+      title: "Linker Race",
+      content: "# Linker Race\n\nKeep me.\n",
+      summary: "Keep me",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let relatedRead!: () => void;
+    let resumeRelatedRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { relatedRead = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeRelatedRead = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      const value = await originalRead(rel);
+      if (pauseOnce && String(rel).endsWith("wiki/linker-race.md")) {
+        pauseOnce = false;
+        relatedRead();
+        await resume;
+      }
+      return value;
+    });
+
+    const crossRef = updateRelatedPages(
+      "source-race",
+      "Source Race",
+      ["linker-race"],
+      { requireSource: true },
+    );
+    await readStarted;
+    await deleteWikiPage("source-race", "alice");
+    resumeRelatedRead();
+
+    await expect(crossRef).resolves.toEqual([]);
+    expect((await readWikiPage("linker-race"))?.content)
+      .not.toContain("[Source Race](source-race.md)");
   });
 
   it("never appends a See-also to an HTML artifact", async () => {

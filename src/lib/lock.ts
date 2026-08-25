@@ -211,6 +211,15 @@ export async function withDurableLock<T>(
         const legacyHolderStillOwnsPath = acceptsTokenlessLegacy
           && parsed !== null
           && parsed.lease.until !== 0;
+        if (legacyHolderStillOwnsPath && until <= now) {
+          // The bridge cannot be taken over safely: a renewal outage can leave
+          // the original callback alive past this timestamp. Fail immediately
+          // and visibly instead of overlapping it or making a request hang for
+          // the full acquisition ceiling.
+          throw new Error(
+            `Durable lock ${key} expired without release; operator recovery required`,
+          );
+        }
         if (legacyHolderStillOwnsPath || until > now) {
           if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
             throw new Error(`Durable lock ${key} did not become available`);

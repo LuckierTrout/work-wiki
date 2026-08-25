@@ -100,9 +100,10 @@ describe("research concurrency lease", () => {
     expect(await activeResearchCount("bob")).toBe(1);
   });
 
-  it("reaps a slot whose holder died without releasing", async () => {
-    // Three evicted isolates would otherwise wedge Deep Research permanently,
-    // with no surface to unwedge it from.
+  it("retains an expired claim until the project reaper releases it", async () => {
+    // Admission cannot distinguish an evicted isolate from a provider callback
+    // still finishing after renewal loss. The project reconciler owns the
+    // later visible-failure + release transition.
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
     await acquireResearchSlot("alice", "p1");
@@ -112,8 +113,8 @@ describe("research concurrency lease", () => {
 
     vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
 
-    expect(await activeResearchCount("alice")).toBe(0);
-    expect((await acquireResearchSlot("alice", "p4")).granted).toBe(true);
+    expect(await activeResearchCount("alice")).toBe(3);
+    expect((await acquireResearchSlot("alice", "p4")).granted).toBe(false);
   });
 
   it("keeps a long but live run out of the reaper", async () => {
@@ -130,8 +131,9 @@ describe("research concurrency lease", () => {
     expect(await activeResearchCount("alice")).toBe(1);
   });
 
-  it("renews nothing for a project that holds no slot", async () => {
-    await renewResearchSlot("alice", "ghost");
+  it("fails visibly when a live worker tries to renew a reaped slot", async () => {
+    await expect(renewResearchSlot("alice", "ghost"))
+      .rejects.toThrow(/slot.*lost/i);
     expect(await activeResearchCount("alice")).toBe(0);
   });
 

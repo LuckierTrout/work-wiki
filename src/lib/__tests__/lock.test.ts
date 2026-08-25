@@ -309,7 +309,7 @@ describe("withDurableLock", () => {
     let release!: () => void;
     let secondEntered = false;
     const held = withDurableLock("ingest-llm:alice", async () =>
-      new Promise<void>((resolve) => { release = resolve; }), 200);
+      new Promise<void>((resolve) => { release = resolve; }), 2_000);
     while (!release) await sleep(1);
 
     // A different Worker isolate has a different in-process lock map.
@@ -317,7 +317,7 @@ describe("withDurableLock", () => {
     const waiting = withDurableLock("ingest-llm:alice", async () => {
       secondEntered = true;
       return "next";
-    }, 200);
+    }, 2_000);
     await sleep(30);
     expect(secondEntered).toBe(false);
 
@@ -326,7 +326,7 @@ describe("withDurableLock", () => {
     await expect(waiting).resolves.toBe("next");
   });
 
-  it("does not overlap callbacks when heartbeat renewal fails past the TTL", async () => {
+  it("fails a waiter visibly without overlap when heartbeat renewal fails past the TTL", async () => {
     const storage = getStorage();
     const originalMatch = storage.writeFileIfMatch.bind(storage);
     let blockRenewals = false;
@@ -356,13 +356,16 @@ describe("withDurableLock", () => {
     const waiting = withDurableLock("renewal-loss", async () => {
       secondEntered = true;
     }, 60);
-    await sleep(80);
+    await expect(waiting).rejects.toThrow(/expired without release.*operator recovery/i);
     expect(secondEntered).toBe(false);
 
     blockRenewals = false;
     release();
     await held;
-    await waiting;
+    _resetLocks();
+    await withDurableLock("renewal-loss", async () => {
+      secondEntered = true;
+    }, 60);
     expect(secondEntered).toBe(true);
   });
 
@@ -392,7 +395,7 @@ describe("withDurableLock", () => {
     expect(entered).toBe(true);
   });
 
-  it("waits for an expired tokenless legacy holder to delete instead of taking it over", async () => {
+  it("fails visibly on an expired tokenless legacy holder instead of taking it over", async () => {
     const lockPath = path.join(tempDir, "locks", "ingest-llm:alice.json");
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
     await fs.writeFile(lockPath, JSON.stringify({ until: Date.now() - 1 }), "utf-8");
@@ -402,15 +405,19 @@ describe("withDurableLock", () => {
       entered = true;
       return "after-delete";
     }, 100);
-    await sleep(25);
+    await expect(waiting).rejects.toThrow(/expired without release.*operator recovery/i);
     expect(entered).toBe(false);
 
     await fs.rm(lockPath);
-    await expect(waiting).resolves.toBe("after-delete");
+    _resetLocks();
+    await expect(withDurableLock("ingest-llm:alice", async () => {
+      entered = true;
+      return "after-delete";
+    }, 100)).resolves.toBe("after-delete");
     expect(JSON.parse(await fs.readFile(lockPath, "utf-8"))).toMatchObject({ until: expect.any(Number) });
   });
 
-  it("does not take over an expired token lease until its holder releases", async () => {
+  it("fails visibly on an expired token lease until its holder releases", async () => {
     const rel = "locks/ingest-llm:alice.json";
     const lockPath = path.join(tempDir, rel);
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
@@ -422,7 +429,7 @@ describe("withDurableLock", () => {
       entered = true;
       return "entered";
     }, 100);
-    await sleep(25);
+    await expect(waiting).rejects.toThrow(/expired without release.*operator recovery/i);
     expect(entered).toBe(false);
 
     const stale = await storage.readFileWithEtag(rel);
@@ -431,6 +438,10 @@ describe("withDurableLock", () => {
       JSON.stringify({ token: "old-worker", until: 0 }),
       stale.etag,
     )).resolves.toBe(true);
-    await expect(waiting).resolves.toBe("entered");
+    _resetLocks();
+    await expect(withDurableLock("ingest-llm:alice", async () => {
+      entered = true;
+      return "entered";
+    }, 100)).resolves.toBe("entered");
   });
 });
