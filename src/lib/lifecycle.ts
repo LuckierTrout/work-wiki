@@ -381,18 +381,36 @@ async function runPageLifecycleOp(
         );
         const isDiscoveredLinkTarget = requiredSlug !== op.requiresExistingSlug
           && op.validateNewLinkTargets;
+        if (isDiscoveredLinkTarget) {
+          // A wikilink to a slug that was never a Page is a dangling link.
+          // Owner create, Lint, and Graph seeding all write those on purpose.
+          // Refuse only a same-tenant alias claim or a live Page in another
+          // tenant — those are replaced or cross-owner identities, not gaps.
+          if (await slugIsClaimedAsAliasByAnotherPage(requiredSlug, writeTenant!)) {
+            throw new LifecyclePageConflictError(
+              slug,
+              `cannot link to missing or replaced Page "${requiredSlug}"`,
+            );
+          }
+          if (
+            source
+            && tenantForOwner(
+              typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
+            ) !== writeTenant
+          ) {
+            throw new LifecyclePageConflictError(
+              slug,
+              `cannot link to missing or replaced Page "${requiredSlug}"`,
+            );
+          }
+          continue;
+        }
         if (
           !source
           || (requiredSlug === op.requiresExistingSlug && op.requiresExistingTenant
             && tenantForOwner(
               typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
             ) !== op.requiresExistingTenant)
-          || (isDiscoveredLinkTarget
-            && tenantForOwner(
-              typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
-            ) !== writeTenant)
-          || (isDiscoveredLinkTarget
-            && await slugIsClaimedAsAliasByAnotherPage(requiredSlug, writeTenant!))
         ) {
           throw new LifecyclePageConflictError(
             slug,

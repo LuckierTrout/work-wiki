@@ -191,6 +191,15 @@ describe("POST /api/wiki — yopedia metadata", () => {
     expect(await readWikiPage("post-create-linker")).toBeNull();
   });
 
+  it("creates a page that wikilinks a slug that does not exist yet", async () => {
+    const res = await callPost({
+      slug: "hub",
+      content: "# Hub\n\nSee [[spoke]].",
+    });
+    expect(res.status).toBe(201);
+    expect((await readWikiPage("hub"))?.content).toContain("[[spoke]]");
+  });
+
   it("sets default expiry to ~90 days from creation date", async () => {
     const res = await callPost({
       slug: "expiry-check",
