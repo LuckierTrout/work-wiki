@@ -1466,6 +1466,8 @@ so that findings join the compiled wiki.
 
 Sidecar extract for office/PDF/EPUB, inbound email, Plaud OAuth, media preview, Mermaid/KaTeX.
 
+**Status (2026-08-25):** Closed. Stories 7.1–7.5 and 7.7–7.8 are done. Story 7.6 is deferred (no consumer OAuth list/pull HTTP). Retrospective stays optional.
+
 ### Story 7.1: Sidecar claims kernel extract jobs
 
 As Christian,
@@ -1584,6 +1586,8 @@ so that I am not limited to file upload.
 **When** the attempt ends
 **Then** it fails closed
 **And** there are no partial Wiki Page writes from that pull
+
+**Status (2026-08-25):** Deferred. Plaud publishes no consumer OAuth list/pull HTTP. Epic 7 is closed on 7.1–7.5 and 7.7–7.8. Do not rewrite these ACs to email or unofficial `api.plaud.ai`. A later official-MCP pull is a new story.
 
 ### Story 7.7: Image lightbox and AV player
 

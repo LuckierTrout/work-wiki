@@ -189,6 +189,12 @@ deferred:
   surroundings are unaffected: Plaud upload, `origin: "plaud"`, and the meeting
   Todo rules are Epic 4 features and still work, and `rememberExtractMeeting`
   carries the Plaud meeting flag across the new extract hop.
+- 2026-08-25 — **Story 7.6 deferred; Epic 7 closed.** Owner decision: leave the
+  `<intent-contract>` and 7.6 ACs unchanged, set
+  `7-6-plaud-oauth-list-and-pull` to `deferred` and `epic-7` to `done` in
+  `sprint-status.yaml`. Implemented scope is 7.1–7.5 and 7.7–7.8. Replacement
+  paths (inbound email, Plaud upload, a later official-MCP story) are not a
+  rewrite of this contract.
 
 ## Review Triage Log
 
@@ -277,4 +283,4 @@ Status: done
 - `cargo test --manifest-path sidecar/extract/Cargo.toml`: **31 passed** (23 unit + 8 fixtures)
 - UI: Preview/Chat/Settings behaviour is pinned by mounted suites. No live sidecar + R2 golden-path browser pass in this run.
 
-**Residual risks:** Story 7.6 remains unimplemented. Generic `ingestUrl` still Worker-parses PDFs (deferred). No live extract golden path against a running sidecar was exercised here.
+**Residual risks:** Story 7.6 is `deferred` (no consumer OAuth list/pull HTTP). Generic `ingestUrl` still Worker-parses PDFs (deferred). No live extract golden path against a running sidecar was exercised here.

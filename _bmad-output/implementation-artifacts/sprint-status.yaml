@@ -3,7 +3,9 @@
 # Epic Status:
 #   - backlog: Epic not yet started
 #   - in-progress: Epic actively being worked on
-#   - done: All stories in epic completed
+#   - done: All stories in epic completed, or remaining stories are
+#     `deferred` with a recorded reason. Epic 7 is done with Story 7.6
+#     deferred (Plaud publishes no consumer OAuth list/pull HTTP).
 
 # Story Status:
 #   - backlog: Story only exists in epic file
@@ -13,6 +15,8 @@
 #   - done: Implementation complete. This is not retrospective acceptance.
 #     Epic 5 stories 5.1–5.10 stay done while epic-5-retro-2026-08-23.md
 #     remains verdict: rejected.
+#   - deferred: Will not be implemented now. Requires a recorded reason.
+#     Does not keep the epic in backlog when every other story is done.
 
 # Retrospective Status:
 #   - optional: Can be completed but not required. Epic 4 has no retro
@@ -34,7 +38,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-24-2026 15:13
+last_updated: 08-25-2026 18:37
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -109,18 +113,18 @@ development_status:
   6-5-research-page-thinking-auto-ingest: done
   epic-6-retrospective: done
 
-  # epic-7 stays `backlog` while 7-6 is open. Seven of its eight stories are
-  # implemented; 7.6 hit its own Block If — Plaud publishes no account-level API
-  # to list or pull recordings, and the documented OAuth belongs to a partner
-  # platform with no such endpoint (see the spec's Change Log). Marking the epic
-  # done would record a scope it does not have.
-  epic-7: backlog
+  # epic-7 is `done` with 7.6 `deferred` (2026-08-25 owner decision). Seven
+  # stories shipped; 7.6 stays unimplemented — Plaud publishes no account-level
+  # list/pull HTTP, and the documented OAuth is Embedded (partner/OEM), not a
+  # consumer library (spec Change Log). Do not rewrite 7.6 to email or unofficial
+  # api.plaud.ai. A later official-MCP pull is a new story, not this key.
+  epic-7: done
   7-1-sidecar-claims-kernel-extract-jobs: done
   7-2-pdf-extract-cache-and-mineru: done
   7-3-docx-pptx-and-spreadsheet-extract: done
   7-4-epub-mobi-extract: done
   7-5-inbound-email-intake: done
-  7-6-plaud-oauth-list-and-pull: backlog
+  7-6-plaud-oauth-list-and-pull: deferred
   7-7-image-lightbox-and-av-player: done
   7-8-mermaid-and-katex-in-preview: done
   epic-7-retrospective: optional
