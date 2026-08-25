@@ -120,21 +120,34 @@ describe("research concurrency lease", () => {
   it("keeps a long but live run out of the reaper", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
-    await acquireResearchSlot("alice", "p1");
+    const grant = await acquireResearchSlot("alice", "p1");
 
     // Two thirds of the way to expiry, twice — a run that renews as it makes
     // progress outlives a TTL shorter than the run itself.
     vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS * 0.66));
-    await renewResearchSlot("alice", "p1");
+    await renewResearchSlot("alice", "p1", grant.attemptId!);
     vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS * 0.66));
 
     expect(await activeResearchCount("alice")).toBe(1);
   });
 
   it("fails visibly when a live worker tries to renew a reaped slot", async () => {
-    await expect(renewResearchSlot("alice", "ghost"))
+    await expect(renewResearchSlot("alice", "ghost", "missing-attempt"))
       .rejects.toThrow(/slot.*lost/i);
     expect(await activeResearchCount("alice")).toBe(0);
+  });
+
+  it("does not let an old attempt renew or release a replacement attempt", async () => {
+    const first = await acquireResearchSlot("alice", "p1");
+    await releaseResearchSlot("alice", "p1", first.attemptId);
+    const replacement = await acquireResearchSlot("alice", "p1");
+
+    await expect(renewResearchSlot("alice", "p1", first.attemptId!))
+      .rejects.toThrow(/slot.*lost/i);
+    expect(await releaseResearchSlot("alice", "p1", first.attemptId)).toBe(false);
+    expect(await activeResearchCount("alice")).toBe(1);
+    await expect(renewResearchSlot("alice", "p1", replacement.attemptId!))
+      .resolves.toBeUndefined();
   });
 
   it("refuses rather than admits when the lease file is unreadable", async () => {

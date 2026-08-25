@@ -42,6 +42,11 @@ export class ResearchLeaseError extends Error {
 
 interface ResearchSlot {
   projectId: string;
+  /**
+   * One execution attempt, not merely one project. Queue redelivery reuses the
+   * same attempt, while a retry after reaping receives a new fence token.
+   */
+  attemptId?: string;
   acquiredAt: number;
   expiresAt: number;
 }
@@ -53,6 +58,8 @@ export interface ResearchSlotGrant {
   /** How many slots are held INCLUDING this one when granted. */
   active: number;
   limit: number;
+  /** Present on every granted current-format lease. */
+  attemptId?: string;
 }
 
 function leasePath(owner: string): string {
@@ -70,6 +77,7 @@ function isSlot(value: unknown): value is ResearchSlot {
   const slot = value as Record<string, unknown>;
   return (
     typeof slot.projectId === "string" &&
+    (slot.attemptId === undefined || (typeof slot.attemptId === "string" && slot.attemptId.length > 0)) &&
     typeof slot.acquiredAt === "number" &&
     typeof slot.expiresAt === "number"
   );
@@ -155,10 +163,25 @@ export async function acquireResearchSlot(
   return lockedMutation<ResearchSlotGrant>(owner, (slots, now) => {
     const existing = slots.find((slot) => slot.projectId === projectId);
     if (existing) {
+      // A previous release wrote project-only leases. It may still belong to
+      // an old Worker, so a new build cannot safely invent its attempt token.
+      // Reconciliation releases it after the project is visibly abandoned.
+      if (!existing.attemptId) {
+        return {
+          slots,
+          result: { granted: false, acquired: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
+        };
+      }
       existing.expiresAt = now + RESEARCH_SLOT_TTL_MS;
       return {
         slots,
-        result: { granted: true, acquired: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
+        result: {
+          granted: true,
+          acquired: false,
+          active: slots.length,
+          limit: MAX_CONCURRENT_RESEARCH,
+          attemptId: existing.attemptId,
+        },
       };
     }
     if (slots.length >= MAX_CONCURRENT_RESEARCH) {
@@ -167,22 +190,33 @@ export async function acquireResearchSlot(
         result: { granted: false, acquired: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
       };
     }
+    const attemptId = crypto.randomUUID();
     const next = [
       ...slots,
-      { projectId, acquiredAt: now, expiresAt: now + RESEARCH_SLOT_TTL_MS },
+      { projectId, attemptId, acquiredAt: now, expiresAt: now + RESEARCH_SLOT_TTL_MS },
     ];
     return {
       slots: next,
-      result: { granted: true, acquired: true, active: next.length, limit: MAX_CONCURRENT_RESEARCH },
+      result: {
+        granted: true,
+        acquired: true,
+        active: next.length,
+        limit: MAX_CONCURRENT_RESEARCH,
+        attemptId,
+      },
     };
   });
 }
 
 /** Push this project's slot expiry out. Called as a run makes progress. */
-export async function renewResearchSlot(owner: string, projectId: string): Promise<void> {
+export async function renewResearchSlot(
+  owner: string,
+  projectId: string,
+  attemptId: string,
+): Promise<void> {
   await lockedMutation(owner, (slots, now) => {
     const existing = slots.find((slot) => slot.projectId === projectId);
-    if (!existing) {
+    if (!existing || existing.attemptId !== attemptId) {
       throw new ResearchLeaseError(`Research slot for ${projectId} was lost.`);
     }
     existing.expiresAt = now + RESEARCH_SLOT_TTL_MS;
@@ -195,16 +229,24 @@ export async function renewResearchSlot(owner: string, projectId: string): Promi
  *
  * Never throws: this runs in a `finally`, and a release that threw would
  * replace the run's real outcome with a storage complaint about a counter.
- * The TTL covers a release that does not land.
+ * Terminal-project reconciliation retries a release that does not land.
  */
-export async function releaseResearchSlot(owner: string, projectId: string): Promise<void> {
+export async function releaseResearchSlot(
+  owner: string,
+  projectId: string,
+  attemptId?: string,
+): Promise<boolean> {
   try {
-    await lockedMutation(owner, (slots) => {
-      const next = slots.filter((slot) => slot.projectId !== projectId);
-      return { slots: next, result: undefined };
+    return await lockedMutation(owner, (slots) => {
+      const next = slots.filter((slot) =>
+        slot.projectId !== projectId
+        || (attemptId !== undefined && slot.attemptId !== attemptId));
+      return { slots: next, result: next.length !== slots.length };
     });
   } catch {
-    // The TTL is the backstop.
+    // Reconciliation retries terminal releases. Never replace the run's real
+    // outcome with this cleanup failure.
+    return false;
   }
 }
 

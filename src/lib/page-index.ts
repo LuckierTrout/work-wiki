@@ -55,18 +55,11 @@ export async function clearPageIndexDirty(slug: string): Promise<void> {
   } catch (error) {
     if (!isEnoent(error)) throw error;
   }
-  // Clear a marker written by the immediately previous hashed-marker release,
-  // but only when its payload proves it belongs to this slug. Its filename is
-  // also a valid legacy raw slug, so unconditional deletion would clear a
-  // different Page's privacy fence.
-  const previousPath = await previousDirtyMarkerPath(slug);
-  try {
-    if (await getStorage().readFile(previousPath) === slug) {
-      await getStorage().deleteFile(previousPath);
-    }
-  } catch (error) {
-    if (!isEnoent(error)) throw error;
-  }
+  // Previous-format root markers are intentionally retained during the rolling
+  // window. Their filename is also a valid raw-slug marker, and Storage has no
+  // compare-and-delete: an old writer could replace the payload between our
+  // read and delete and lose a different Page's privacy fence. A later gated
+  // migration can remove these only after old writers are drained.
   // Rolling compatibility for raw-slug markers written by the prior version.
   // Inspect the parent first: `queries` can be both a valid Page slug and the
   // directory holding a nested legacy marker, and unlinking that directory
@@ -81,10 +74,7 @@ export async function clearPageIndexDirty(slug: string): Promise<void> {
   if (legacyEntry && !legacyEntry.isDirectory) {
     try {
       const legacyPath = `${legacyParent}/${legacyLeaf}`;
-      const isPreviousMarkerForAnotherSlug = slash < 0
-        && PREVIOUS_DIRTY_MARKER.test(legacyLeaf)
-        && await previousDirtyMarkerPath(await getStorage().readFile(legacyPath)) === legacyPath;
-      if (!isPreviousMarkerForAnotherSlug) {
+      if (!(slash < 0 && PREVIOUS_DIRTY_MARKER.test(legacyLeaf))) {
         await getStorage().deleteFile(legacyPath);
       }
     } catch (error) {

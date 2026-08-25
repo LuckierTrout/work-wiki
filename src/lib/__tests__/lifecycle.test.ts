@@ -546,6 +546,44 @@ describe("writeWikiPageWithSideEffects", () => {
     }))?.frontmatter.owner).toBe("alice");
   });
 
+  it("compensates a new silo when the global slug claim is already held", async () => {
+    const alice = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Shared\n\nAlice.\n",
+    );
+    const storage = getStorage();
+    const originalCreate = storage.writeFileIfAbsent.bind(storage);
+    let injectClaim = true;
+    const createSpy = vi.spyOn(storage, "writeFileIfAbsent").mockImplementation(async (target, body) => {
+      const created = await originalCreate(target, body);
+      if (injectClaim && target === "tenants/alice/wiki/claimed-create.md") {
+        injectClaim = false;
+        await storage.writeFile(
+          "wiki/claimed-create.md",
+          serializeFrontmatter({ owner: "bob", visibility: "private" }, "# Shared\n\nBob.\n"),
+        );
+      }
+      return created;
+    });
+    const options = makeOpts({
+      slug: "claimed-create",
+      title: "Shared",
+      content: alice,
+      crossRefSource: null,
+      createOnly: true,
+    });
+
+    await expect(writeWikiPageWithSideEffects(options)).rejects.toThrow(/already exists/i);
+    await expect(storage.fileExists("tenants/alice/wiki/claimed-create.md"))
+      .resolves.toBe(false);
+
+    await storage.deleteFile("wiki/claimed-create.md");
+    await expect(writeWikiPageWithSideEffects(options)).resolves.toMatchObject({
+      slug: "claimed-create",
+    });
+    createSpy.mockRestore();
+  });
+
   it("fails a slug authorization check closed when its authoritative silo cannot be read", async () => {
     const content = serializeFrontmatter(
       { owner: "alice", visibility: "private" },

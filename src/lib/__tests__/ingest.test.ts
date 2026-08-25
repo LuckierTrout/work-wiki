@@ -409,10 +409,11 @@ describe("ingest", () => {
     expect(page!.content).not.toContain("FIRST CREATOR BODY");
     expect(page!.frontmatter.owner).toBe("bob");
     // Alice may have completed her silo create before losing the one global
-    // flat claim. Even with that crash-left orphan present, her caller hint
-    // must still resolve the committed/indexed Bob Page.
+    // flat claim. The lifecycle compensates those exact bytes so the losing
+    // tenant cannot retain a split Page identity.
     await expect(getStorage().fileExists("tenants/alice/wiki/lease-loss.md"))
-      .resolves.toBe(true);
+      .resolves.toBe(false);
+    // Her caller hint must still resolve the committed/indexed Bob Page.
     expect((await readWikiPageWithFrontmatter("lease-loss", {
       fresh: true,
       strict: true,
@@ -1885,7 +1886,13 @@ describe("cross-referencing", () => {
   describe("ingest with cross-referencing", () => {
     it("returns multiple wikiPages when cross-refs are updated", async () => {
       // Pre-populate the wiki with an existing page
-      await writeWikiPage("ai", "# AI\n\nContent about artificial intelligence.");
+      await writeWikiPage(
+        "ai",
+        serializeFrontmatter(
+          { owner: "system", visibility: "public" },
+          "# AI\n\nContent about artificial intelligence.",
+        ),
+      );
 
       // Set up index with the existing page
       const { updateIndex } = await import("../wiki");

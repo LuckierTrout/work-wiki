@@ -22,6 +22,21 @@ describe("extractThinking", () => {
       content: "",
     });
   });
+
+  it("keeps attributed and nested thinking private", () => {
+    expect(extractThinking(
+      'before<thinking type="analysis">outer<thinking>inner</thinking>end</thinking>after',
+    )).toEqual({
+      thinking: "outerinnerend",
+      content: "beforeafter",
+    });
+  });
+
+  it("fails closed on an opener missing its closing bracket", () => {
+    const result = extractThinking("public\n<thinking secret");
+    expect(result.content).toBe("public");
+    expect(result.thinking).toContain("thinking secret");
+  });
 });
 
 describe("restrictResearchCitations", () => {

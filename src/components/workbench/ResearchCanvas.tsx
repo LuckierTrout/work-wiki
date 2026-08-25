@@ -78,6 +78,7 @@ export function ResearchCanvas({
     setProjects([]);
     setError(null);
     setStartError(null);
+    setStarting(false);
   }, [wikiId]);
 
   const load = useCallback(async () => {
@@ -106,7 +107,7 @@ export function ResearchCanvas({
   // interval against it would be a request every few seconds for the life of
   // the session; a queued project matters too, since the thing being waited for
   // is precisely a transition this panel cannot otherwise learn about.
-  const streaming = projects.some(researchIsPolling);
+  const streaming = error !== null || projects.some(researchIsPolling);
   useEffect(() => {
     if (!active || !streaming) return;
     const timer = setInterval(() => {
@@ -404,7 +405,10 @@ function ResearchTask({
           Cancel
         </button>
       ) : null}
-      {!live && !readOnly && ["draft", "failed", "cancelled"].includes(project.status) ? (
+      {!live
+        && !readOnly
+        && ["draft", "failed", "cancelled"].includes(project.status)
+        && (!project.completion || project.deliveryBlocked) ? (
         <button type="button" className="wb-set-action" onClick={onRun}>
           {project.status === "draft" ? "Start" : "Retry"}
         </button>

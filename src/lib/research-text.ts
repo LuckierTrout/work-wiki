@@ -15,18 +15,44 @@ import { fromMarkdown } from "mdast-util-from-markdown";
  */
 export function extractThinking(text: string): { thinking: string; content: string } {
   const blocks: string[] = [];
-  let content = text.replace(/<thinking>([\s\S]*?)<\/thinking>/gi, (_, body: string) => {
-    const trimmed = body.trim();
-    if (trimmed) blocks.push(trimmed);
-    return "";
-  });
-  content = content.replace(/<thinking>([\s\S]*)$/i, (_, body: string) => {
-    const trimmed = String(body).trim();
-    if (trimmed) blocks.push(trimmed);
-    return "";
-  });
-  content = content.replace(/<\/thinking>/gi, "").trim();
-  return { thinking: blocks.join("\n\n"), content };
+  const visible: string[] = [];
+  const token = /<\/?thinking\b[^>]*>/gi;
+  let depth = 0;
+  let cursor = 0;
+  let privateText = "";
+  let match: RegExpExecArray | null;
+  while ((match = token.exec(text))) {
+    const between = text.slice(cursor, match.index);
+    if (depth > 0) privateText += between;
+    else visible.push(between);
+    const closing = /^<\//.test(match[0]);
+    if (closing) {
+      if (depth > 0) depth -= 1;
+      if (depth === 0 && privateText.trim()) {
+        blocks.push(privateText.trim());
+        privateText = "";
+      }
+    } else {
+      depth += 1;
+    }
+    cursor = match.index + match[0].length;
+  }
+  const tail = text.slice(cursor);
+  if (depth > 0) {
+    privateText += tail;
+    if (privateText.trim()) blocks.push(privateText.trim());
+  } else {
+    // A malformed opener without `>` is still private from that point onward.
+    const malformed = tail.search(/<thinking\b/i);
+    if (malformed >= 0) {
+      visible.push(tail.slice(0, malformed));
+      const hidden = tail.slice(malformed).trim();
+      if (hidden) blocks.push(hidden);
+    } else {
+      visible.push(tail);
+    }
+  }
+  return { thinking: blocks.join("\n\n"), content: visible.join("").trim() };
 }
 
 function normalizeUrl(url: string): string | null {

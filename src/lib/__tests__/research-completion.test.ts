@@ -12,6 +12,7 @@ import { _resetLocks } from "../lock";
 import {
   RESEARCH_PAGE_WRITE_STALE_MS,
   commitResearchPage,
+  clearResearchStaging,
   drainResearchOutbox,
   listResearchOutboxIds,
   loadResearchOutbox,
@@ -20,7 +21,7 @@ import {
   stageResearchSource,
   researchFrontmatter,
 } from "../research-completion";
-import { createIngestJobIfAbsent } from "../ingest-jobs";
+import { createIngestJobIfAbsent, getIngestJob, updateIngestJob } from "../ingest-jobs";
 import {
   createResearchProject,
   deleteResearchProject,
@@ -90,6 +91,22 @@ afterEach(async () => {
 });
 
 describe("research completion outbox", () => {
+  it("discovers staged bodies when their manifest is malformed", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const staged = await stageResearchSource("alice", created.id, OUTBOX.sources[0]);
+    await getStorage().writeFile(
+      `tenants/alice/research-outbox/staging-${created.id}.manifest`,
+      "{ malformed",
+    );
+
+    await clearResearchStaging("alice", created.id);
+
+    await expect(getStorage().fileExists(staged.sourcePath)).resolves.toBe(false);
+  });
+
   it("refuses the Page when cancel wins the claim", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",
@@ -224,6 +241,41 @@ describe("research completion outbox", () => {
     expect(mockedEnqueue).toHaveBeenCalledTimes(1);
     expect(mockedEnqueue).toHaveBeenCalledWith(expect.objectContaining({ jobId }));
     expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("done");
+  });
+
+  it("does not regress a job completed by a fast queue consumer", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [{
+          url: OUTBOX.sources[0].url,
+          title: OUTBOX.sources[0].title,
+          slug: "research-example-com-launch-brief",
+          sha: await sourceSha256(OUTBOX.sources[0].text),
+        }],
+      },
+    });
+    mockedEnqueue.mockImplementationOnce(async (task) => {
+      if (task.kind === "ingest") {
+        if (!task.jobId) throw new Error("missing ingest job id");
+        await updateIngestJob(task.jobId, { status: "done", stage: "complete", slug: "launch" });
+      }
+      return true;
+    });
+
+    await drainResearchOutbox("alice", created.id);
+
+    const task = mockedEnqueue.mock.calls[0]?.[0];
+    expect(task?.kind).toBe("ingest");
+    if (!task || task.kind !== "ingest") throw new Error("missing ingest task");
+    if (!task.jobId) throw new Error("missing ingest job id");
+    expect(await getIngestJob(task.jobId)).toMatchObject({ status: "done", stage: "complete" });
   });
 
   it("does not let a concurrent drain un-ingest a source the other drain finished", async () => {

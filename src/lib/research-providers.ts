@@ -163,6 +163,45 @@ export function selectResearchProvider(
   return settings.provider ?? DEFAULT_RESEARCH_PROVIDER;
 }
 
+/** Locate the top-level Tavily `results` array without matching quoted data. */
+function topLevelResultsStart(jsonPrefix: string): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let stringStart = -1;
+  for (let index = 0; index < jsonPrefix.length; index += 1) {
+    const char = jsonPrefix[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') {
+        inString = false;
+        if (depth !== 1) continue;
+        let key: unknown;
+        try {
+          key = JSON.parse(jsonPrefix.slice(stringStart, index + 1));
+        } catch {
+          continue;
+        }
+        if (key !== "results") continue;
+        let cursor = index + 1;
+        while (/\s/.test(jsonPrefix[cursor] ?? "")) cursor += 1;
+        if (jsonPrefix[cursor] !== ":") continue;
+        cursor += 1;
+        while (/\s/.test(jsonPrefix[cursor] ?? "")) cursor += 1;
+        if (jsonPrefix[cursor] === "[") return cursor + 1;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      stringStart = index;
+    } else if (char === "{") depth += 1;
+    else if (char === "}") depth -= 1;
+  }
+  return null;
+}
+
 async function tavilySearch(
   query: string,
   limit: number,
@@ -244,12 +283,12 @@ async function tavilySearch(
     let offset = 0;
     if (!inResults) {
       prefix += text;
-      const match = /"results"\s*:\s*\[/.exec(prefix);
-      if (!match) {
+      const start = topLevelResultsStart(prefix);
+      if (start === null) {
         if (prefix.length > 64 * 1024) throw new Error("Research provider returned invalid JSON");
         return;
       }
-      offset = match.index + match[0].length;
+      offset = start;
       text = prefix;
       prefix = "";
       inResults = true;

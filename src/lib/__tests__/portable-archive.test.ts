@@ -5,6 +5,7 @@ import path from "node:path";
 import { serializeFrontmatter } from "../frontmatter";
 import { buildPortableArchive, importPortableArchive, inspectPortableArchive } from "../portable-archive";
 import { _resetStorage, getStorage } from "../storage";
+import { updateIndex, writeWikiPage } from "../wiki";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -72,6 +73,40 @@ describe("portable owner archive", () => {
     await getStorage().writeFile("tenants/alice/settings.json", "{}");
     const archive = await buildPortableArchive("alice");
     await expect(inspectPortableArchive("bob", buffer(archive.bytes))).rejects.toThrow(/different owner/i);
+  });
+
+  it("round-trips a nested queries Page through ownership checks and index rebuild", async () => {
+    const page = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Saved answer\n\nPrivate answer.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/queries/saved-answer.md", page);
+    const archive = await buildPortableArchive("alice");
+    await getStorage().deleteDirectory("tenants/alice");
+
+    await importPortableArchive("alice", buffer(archive.bytes), "overwrite");
+
+    expect(await getStorage().readFile("tenants/alice/wiki/queries/saved-answer.md")).toBe(page);
+    expect(await getStorage().readFile("wiki/queries/saved-answer.md")).toBe(page);
+  });
+
+  it("refuses a nested queries Page already owned by another tenant", async () => {
+    const alice = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Saved answer\n\nAlice.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/queries/saved-answer.md", alice);
+    const archive = await buildPortableArchive("alice");
+    await getStorage().deleteDirectory("tenants/alice");
+    const bob = serializeFrontmatter(
+      { owner: "bob", visibility: "private" },
+      "# Saved answer\n\nBob.",
+    );
+    await writeWikiPage("queries/saved-answer", bob);
+    await updateIndex([{ slug: "queries/saved-answer", title: "Saved answer", summary: "Bob", owner: "bob" }]);
+
+    await expect(importPortableArchive("alice", buffer(archive.bytes), "overwrite"))
+      .rejects.toThrow(/another owner/i);
   });
 });
 

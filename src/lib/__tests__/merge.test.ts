@@ -24,7 +24,7 @@ import { resetSourceIndex } from "../source-index";
 import { resetAliasIndex, resolveAlias } from "../alias-index";
 import { rebuildBacklinkIndex } from "../backlink-index";
 import { listThreads } from "../talk";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import { hasLLMKey, callLLM } from "../llm";
 import type { SourceEntry } from "../types";
 
@@ -173,6 +173,34 @@ describe("mergePages", () => {
     expect(other!.content).toContain("](agent-harness.md)");
     expect(other!.content).not.toContain("](harness-ai-agents.md)");
   }, 15_000);
+
+  it("does not move backlinks when the survivor compare-and-set loses", async () => {
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    await seedPage("other", {
+      title: "Other",
+      body: "# Other\n\nSee the [harness](harness-ai-agents.md) page.",
+    });
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    const matchSpy = vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => target === "tenants/alice/wiki/agent-harness.md"
+        ? false
+        : originalMatch(target, content, etag),
+    );
+
+    await expect(mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    })).rejects.toThrow(/changed/i);
+
+    const other = await readWikiPage("other");
+    expect(other?.content).toContain("](harness-ai-agents.md)");
+    expect(other?.content).not.toContain("](agent-harness.md)");
+    expect(await readWikiPage("harness-ai-agents")).not.toBeNull();
+    matchSpy.mockRestore();
+  });
 
   it("re-points via the precomputed backlink index when it's present (the production fast path)", async () => {
     await seedPage("agent-harness", { title: "Agent Harness" });

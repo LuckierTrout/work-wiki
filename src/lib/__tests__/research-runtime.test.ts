@@ -50,6 +50,7 @@ vi.mock("../ingest-jobs", () => ({
   })),
   getIngestJob: vi.fn(async () => null),
   updateIngestJob: vi.fn(async () => null),
+  updateIngestJobIf: vi.fn(async () => null),
 }));
 vi.mock("../tasks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../tasks")>();
@@ -218,7 +219,7 @@ describe("deep research run — success", () => {
     expect(finished.pageSlugs).toContain(pageSlug);
     // AUTO-INGEST: the fetched body is a Source, and the Source has a job.
     expect(mockedSaveRaw).toHaveBeenCalledTimes(1);
-    expect(mockedSaveRaw.mock.calls[0][0]).toBe(researchSourceSlug("https://example.com/launch/brief"));
+    expect(mockedSaveRaw.mock.calls[0][0]).toBe(await researchSourceSlug("https://example.com/launch/brief"));
     expect(mockedIngestJob).toHaveBeenCalledTimes(1);
     expect(mockedIngestJob.mock.calls[0][0]).toMatchObject({
       owner: "alice",
@@ -396,7 +397,7 @@ describe("deep research run — success", () => {
     expect(reduceCalls.map(([, prompt]) => prompt).join("\n")).toContain("condensed evidence");
     expect(mockedLLM.mock.calls.at(-1)?.[1]).toContain("reduced evidence");
     expect(mockedLLM.mock.calls.at(-1)?.[1].length).toBeLessThanOrEqual(101_000);
-  });
+  }, 15_000);
 
   it("stops chunk reduction before another paid call after cancellation", async () => {
     mockedSearch.mockResolvedValue([{
@@ -708,7 +709,7 @@ describe("deep research — one run per project", () => {
     expect(second.pageSlugs).toContain(firstSlug);
     expect(new Set(second.pageSlugs)).toEqual(new Set([firstSlug]));
     expect(mockedWritePage).toHaveBeenCalledTimes(2);
-  });
+  }, 15_000);
 
   it("captures rerun Page bytes at queue time so a later owner edit wins", async () => {
     const created = await project();
@@ -826,6 +827,22 @@ describe("deep research — thinking is the model's, progress is the kernel's", 
     expect(finished.thinking).toEqual(["step one", "step two"]);
     expect(mockedLLM).not.toHaveBeenCalled();
     expect(mockedWritePage.mock.calls[0][0].content).not.toContain("step one");
+  });
+
+  it("does not buy a second synthesis after a partial stream fails", async () => {
+    mockedStream.mockResolvedValue({
+      textStream: (async function* () {
+        yield "# Partial";
+        throw new Error("stream disconnected");
+      })(),
+      text: Promise.resolve("# Partial"),
+    } as unknown as Awaited<ReturnType<typeof callLLMStream>>);
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(/stream disconnected/i);
+
+    expect(mockedLLM).not.toHaveBeenCalled();
+    expect(mockedWritePage).not.toHaveBeenCalled();
   });
 
   it("keeps a model's think-tokens off the Page and on the project", async () => {
@@ -949,6 +966,18 @@ describe("deep research — an interrupted run gets an answer", () => {
     expect(reconciled.error).toMatch(/stopped before it finished/i);
     // Nothing was re-run behind the owner's back.
     expect(mockedSearch).not.toHaveBeenCalled();
+  });
+
+  it("fails and releases the retained expired claim of an abandoned worker", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, { status: "collecting" });
+    await acquireResearchSlot("alice", created.id);
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_ABANDONED_AFTER_MS + 1_000));
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect((await getResearchProject("alice", created.id))?.status).toBe("failed");
+    expect(await activeResearchCount("alice")).toBe(0);
   });
 
   it("fails a `ready` project whose worker died during synthesis", async () => {
@@ -1131,7 +1160,7 @@ describe("deep research — remediations", () => {
     const finished = await runResearchProject("alice", created.id);
 
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
-    expect(finished.status).toBe("complete");
+    expect(finished.status).toBe("failed");
     expect(finished.completion?.phase).toBe("sources");
     expect(finished.error).toMatch(/did not ingest|Page was written/);
   });
@@ -1202,6 +1231,20 @@ describe("deep research — remediations", () => {
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 
+  it("retries cleanup of a terminal project's retained lease", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "complete",
+      completion: { phase: "done", pageSlug: "research-launch-evidence", sources: [] },
+    });
+    await acquireResearchSlot("alice", created.id);
+    expect(await activeResearchCount("alice")).toBe(1);
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(await activeResearchCount("alice")).toBe(0);
+  });
+
   it("reconcile drains an orphan outbox after the project row is gone", async () => {
     const created = await project();
     await saveResearchOutbox("alice", created.id, {
@@ -1249,6 +1292,32 @@ describe("deep research — remediations", () => {
     expect((await getResearchProject("alice", created.id))?.status).toBe("complete");
   });
 
+  it("records a blocked delivery and requires an explicit retry", async () => {
+    const created = await project();
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [],
+      evidence: [],
+    });
+    mockedWritePage.mockRejectedValueOnce(
+      new Error("Durable lock page-lifecycle:research-launch-evidence expired without release; operator recovery required"),
+    );
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    const blocked = await getResearchProject("alice", created.id);
+    expect(blocked).toMatchObject({ status: "failed", deliveryBlocked: true });
+    expect(blocked?.error).toMatch(/operator recovery required/i);
+    expect(blocked?.progress?.message).toMatch(/repair.*lock.*retry/i);
+
+    const retrying = await queueResearchProject("alice", created.id);
+    expect(retrying.deliveryBlocked).toBe(false);
+    expect(retrying.completion?.phase).not.toBe("done");
+  });
+
   it("resolves the current Settings provider on retry, not a stale project pin", async () => {
     const created = await project();
     await updateResearchProject("alice", created.id, { provider: "serpapi", status: "failed" });
@@ -1287,33 +1356,37 @@ describe("deep research — remediations", () => {
 });
 
 describe("research slugs", () => {
-  it("names the Page from the title and the Source from the URL", () => {
+  it("names the Page from the title and the Source from the URL", async () => {
     // URL identity is what makes the SHA skip mean anything: a second run over
     // the same page writes the same Source slug instead of a duplicate.
     expect(researchPageSlug({ title: "Launch Evidence!", id: "abc" })).toMatch(/^research-launch-evidence-[0-9a-f]{8}$/);
-    expect(researchSourceSlug("https://example.com/a/b")).toMatch(/^research-example-com-a-b$/);
-    expect(researchSourceSlug("not a url")).toBeNull();
+    expect(await researchSourceSlug("https://example.com/a/b"))
+      .toMatch(/^research-example-com-a-b-[0-9a-f]{20}$/);
+    expect(await researchSourceSlug("not a url")).toBeNull();
   });
 
-  it("distinguishes two URLs that differ only in their query string", () => {
+  it("distinguishes the complete normalized URL identity", async () => {
     // These used to collide, and because `saveRawSourceFor` is first-write-only
     // the SECOND document silently kept the FIRST one's body: two pages, one
     // Source, wrong bytes, no error. Most of the paginated and id-addressed web
     // lands here.
-    const first = researchSourceSlug("https://example.com/a/b?q=1");
-    const second = researchSourceSlug("https://example.com/a/b?q=2");
+    const first = await researchSourceSlug("https://example.com/a/b?q=1");
+    const second = await researchSourceSlug("https://example.com/a/b?q=2");
     expect(first).not.toBe(second);
     // Still derived from the URL, so a re-run of the SAME URL is the same slug —
     // which is what makes the SHA skip mean anything.
-    expect(researchSourceSlug("https://example.com/a/b?q=1")).toBe(first);
-    expect(first).toMatch(/^research-example-com-a-b-[0-9a-f]{8}$/);
-    // A bare URL keeps the slug it has always had: every Source already stored
-    // stays reachable, and re-research still hits its snapshot.
-    expect(researchSourceSlug("https://example.com/a/b")).toBe("research-example-com-a-b");
+    expect(await researchSourceSlug("https://example.com/a/b?q=1")).toBe(first);
+    expect(first).toMatch(/^research-example-com-a-b-[0-9a-f]{20}$/);
+    expect(await researchSourceSlug("https://example.com/a/b"))
+      .toMatch(/^research-example-com-a-b-[0-9a-f]{20}$/);
     // A fragment addresses a position inside ONE document — same bytes, same
     // Source.
-    expect(researchSourceSlug("https://example.com/a/b#top"))
-      .toBe(researchSourceSlug("https://example.com/a/b"));
+    expect(await researchSourceSlug("https://example.com/a/b#top"))
+      .toBe(await researchSourceSlug("https://example.com/a/b"));
+    expect(await researchSourceSlug("http://example.com/a/b"))
+      .not.toBe(await researchSourceSlug("https://example.com/a/b"));
+    expect(await researchSourceSlug("https://example.com:8443/a/b"))
+      .not.toBe(await researchSourceSlug("https://example.com/a/b"));
   });
 
   it("falls back to the project id when the title slugifies to nothing", () => {

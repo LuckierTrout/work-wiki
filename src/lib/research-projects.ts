@@ -63,6 +63,10 @@ export interface ResearchProject {
    * goes stale so an orphan outbox can complete ingest.
    */
   deleteRequested?: boolean;
+  /** Automatic delivery reconciliation stopped on an operator-recovery fault. */
+  deliveryBlocked?: boolean;
+  /** Fence token shared with the Research lease for the current execution. */
+  runAttemptId?: string;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -306,6 +310,8 @@ export async function updateResearchProject(
     thinking?: readonly string[] | null;
     proposalId?: string | null;
     cancelRequested?: boolean;
+    deliveryBlocked?: boolean;
+    runAttemptId?: string | null;
     error?: string | null;
     completion?: ResearchCompletion | null;
     runPageBaseline?: ResearchProject["runPageBaseline"] | null;
@@ -425,6 +431,11 @@ async function mutateProject(
       else delete project.proposalId;
     }
     if (patch.cancelRequested !== undefined) project.cancelRequested = patch.cancelRequested;
+    if (patch.deliveryBlocked !== undefined) project.deliveryBlocked = patch.deliveryBlocked;
+    if (patch.runAttemptId !== undefined) {
+      if (patch.runAttemptId?.trim()) project.runAttemptId = patch.runAttemptId;
+      else delete project.runAttemptId;
+    }
     if (patch.error !== undefined) {
       if (patch.error?.trim()) project.error = patch.error.trim().slice(0, 2_000);
       else delete project.error;

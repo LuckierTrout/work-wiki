@@ -52,13 +52,16 @@ const BODY = {
 
 describe("POST /api/research failure classification", () => {
   let savedReadOnly: string | undefined;
+  let savedProvider: string | undefined;
 
   beforeEach(() => {
     vi.clearAllMocks();
     savedReadOnly = process.env.YOPEDIA_READONLY;
+    savedProvider = process.env.RESEARCH_PROVIDER;
     // Cleared rather than inherited: a value exported in a developer's shell
     // would otherwise turn every case below into a 403.
     delete process.env.YOPEDIA_READONLY;
+    delete process.env.RESEARCH_PROVIDER;
     mockedPrincipal.mockResolvedValue({ handle: "alice" } as Awaited<
       ReturnType<typeof getPrincipal>
     >);
@@ -67,6 +70,8 @@ describe("POST /api/research failure classification", () => {
   afterEach(() => {
     if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
     else process.env.YOPEDIA_READONLY = savedReadOnly;
+    if (savedProvider === undefined) delete process.env.RESEARCH_PROVIDER;
+    else process.env.RESEARCH_PROVIDER = savedProvider;
   });
 
   it("403s on a read-only deployment without reaching the store", async () => {
@@ -186,6 +191,24 @@ describe("POST /api/research failure classification", () => {
     await GET(new Request("http://localhost/api/research"));
 
     expect(mockedReconcile).toHaveBeenCalledWith("alice", []);
+  });
+
+  it("keeps project history visible when the provider env is invalid", async () => {
+    process.env.RESEARCH_PROVIDER = "unsupported";
+    mockedList.mockResolvedValue([{ id: "p1" }] as Awaited<ReturnType<typeof listResearchProjects>>);
+    mockedReconcile.mockImplementation(async (_owner, projects) => [...projects]);
+
+    const response = await GET(new Request("http://localhost/api/research"));
+    const body = await response.json() as {
+      projects: Array<{ id: string }>;
+      activeProvider: null;
+      providerConfigurationError: string;
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.projects).toEqual([{ id: "p1" }]);
+    expect(body.activeProvider).toBeNull();
+    expect(body.providerConfigurationError).toMatch(/unsupported/i);
   });
 
   it("does not reconcile on a read-only deployment", async () => {

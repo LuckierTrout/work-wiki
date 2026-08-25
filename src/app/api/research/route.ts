@@ -26,7 +26,13 @@ export async function GET(request: Request) {
     // selection with no credential is the "fails visibly" case, and a panel
     // holding only the available list would show a green "SerpApi, Tavily" and
     // no hint about the run that is about to refuse.
-    const activeProvider = selectResearchProvider();
+    let activeProvider: ReturnType<typeof selectResearchProvider> | null = null;
+    let providerConfigurationError: string | null = null;
+    try {
+      activeProvider = selectResearchProvider();
+    } catch (error) {
+      providerConfigurationError = getErrorMessage(error);
+    }
     // The panel's poll is also where an interrupted run gets its answer: a
     // `queued` project whose wake-up was lost is re-dispatched, and a
     // `collecting` one whose worker died is failed visibly rather than left
@@ -45,7 +51,8 @@ export async function GET(request: Request) {
       projects: filterResearchProjects(projects, wikiId),
       availableProviders,
       activeProvider,
-      activeProviderConfigured: availableProviders.includes(activeProvider),
+      activeProviderConfigured: activeProvider !== null && availableProviders.includes(activeProvider),
+      providerConfigurationError,
     });
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });

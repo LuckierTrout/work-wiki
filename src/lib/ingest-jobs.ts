@@ -268,6 +268,42 @@ export async function updateIngestJob(
 }
 
 /**
+ * Merge a patch only while the durable job still satisfies `predicate`.
+ * Queue producers use this after enqueue so a fast consumer's processing or
+ * terminal checkpoint can never be regressed to queued.
+ */
+export async function updateIngestJobIf(
+  jobId: string,
+  predicate: (job: IngestJob) => boolean,
+  patch: IngestJobPatch,
+): Promise<IngestJob | null> {
+  return withFileLock(`ingest-job:${jobId}`, async () => {
+    const storage = getStorage();
+    const rel = relPathFor(jobId);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      let read: Awaited<ReturnType<typeof storage.readFileWithEtag>>;
+      try {
+        read = await storage.readFileWithEtag(rel);
+      } catch (error) {
+        if (isEnoent(error)) return null;
+        throw error;
+      }
+      const job = JSON.parse(read.content) as IngestJob;
+      if (!predicate(job)) return job;
+      const updated: IngestJob = {
+        ...job,
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      if (await storage.writeFileIfMatch(rel, JSON.stringify(updated), read.etag)) {
+        return updated;
+      }
+    }
+    throw new Error("Ingest job was busy; retry the update");
+  });
+}
+
+/**
  * Claim a queued or retrying job for this isolate. Returns null if another
  * worker already holds it, it is terminal, cancelled, or source-deleted.
  */

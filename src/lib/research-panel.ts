@@ -36,6 +36,7 @@ export const RESEARCH_ACTIVE_STATUSES: readonly ResearchProjectStatus[] = [
  * freezes at "N still pending" and never retries.
  */
 export function researchIsPolling(project: ResearchProject): boolean {
+  if (project.deliveryBlocked) return false;
   if (RESEARCH_ACTIVE_STATUSES.includes(project.status)) return true;
   return project.completion !== undefined && project.completion.phase !== "done";
 }

@@ -252,14 +252,9 @@ export async function mergePages({
   fm.valid_from = today;
   fm.expiry = expiry.toISOString().slice(0, 10);
 
-  // 3. Re-point backlinks BEFORE deleting `from`.
-  const repointedBacklinksFrom = await repointBacklinks(
-    fromSlug,
-    intoSlug,
-    actor,
-  );
-
-  // 4. Write the survivor. Defensive: if the folded body itself references the
+  // 3. Write the survivor before touching linkers. If its compare-and-set loses
+  // to an owner edit, no backlink has moved away from the still-existing
+  // absorbed Page. Defensive: if the folded body itself references the
   // absorbed slug, re-point that too — the delete-strip below only touches
   // OTHER pages, never the survivor.
   mergedBody = mergedBody.replace(
@@ -277,6 +272,15 @@ export async function mergePages({
     author: actor,
     expectedContent: into.content,
   });
+
+  // 4. Re-point backlinks only after the survivor is durable, and before
+  // deleting `from`. A later linker failure leaves two valid Pages rather than
+  // links that point away from the still-existing absorbed Page.
+  const repointedBacklinksFrom = await repointBacklinks(
+    fromSlug,
+    intoSlug,
+    actor,
+  );
 
   // A fold that leaves the survivor disputed used to auto-open a talk
   // reconciliation thread here. Removed with the other two call sites (DW-230):

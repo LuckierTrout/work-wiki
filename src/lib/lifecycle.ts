@@ -99,6 +99,10 @@ export interface WritePageOptions {
    * existence check and linker mutation atomic with source deletion.
    */
   requiresExistingSlug?: string;
+  /** Tenant the required source must still belong to. */
+  requiresExistingTenant?: string;
+  /** Tenant the target Page must still belong to at mutation time. */
+  requiredTargetTenant?: string;
   /**
    * Durable crash-recovery receipt. When the target Page already has `content`
    * but this exact receipt is absent, lifecycle resumes its idempotent side
@@ -164,6 +168,8 @@ type PageLifecycleOp =
       createOnly?: boolean;
       expectedContent?: string;
       requiresExistingSlug?: string;
+      requiresExistingTenant?: string;
+      requiredTargetTenant?: string;
     }
   | {
       kind: "delete";
@@ -271,15 +277,34 @@ async function runPageLifecycleOp(
   let postIndexEntries!: IndexEntry[];
   let removedFromIndex = false;
   const mutatePrimaryAndIndexes = async (): Promise<void> => {
-    if (
-      op.kind === "write"
-      && op.requiresExistingSlug
-      && !(await readWikiPage(op.requiresExistingSlug, { fresh: true, strict: true }))
-    ) {
-      throw new LifecyclePageConflictError(
-        slug,
-        `cannot link to missing Page "${op.requiresExistingSlug}"`,
+    if (op.kind === "write" && op.requiredTargetTenant) {
+      const target = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      if (
+        !target
+        || tenantForOwner(
+          typeof target.frontmatter.owner === "string" ? target.frontmatter.owner : undefined,
+        ) !== op.requiredTargetTenant
+      ) {
+        throw new LifecyclePageConflictError(slug, "target Page changed owner");
+      }
+    }
+    if (op.kind === "write" && op.requiresExistingSlug) {
+      const source = await readWikiPageWithFrontmatter(
+        op.requiresExistingSlug,
+        { fresh: true, strict: true },
       );
+      if (
+        !source
+        || (op.requiresExistingTenant
+          && tenantForOwner(
+            typeof source.frontmatter.owner === "string" ? source.frontmatter.owner : undefined,
+          ) !== op.requiresExistingTenant)
+      ) {
+        throw new LifecyclePageConflictError(
+          slug,
+          `cannot link to missing or replaced Page "${op.requiresExistingSlug}"`,
+        );
+      }
     }
 
   // --- Silo-primary: resolve the write tenant from content frontmatter ---
@@ -358,19 +383,45 @@ async function runPageLifecycleOp(
         if (!created) logger.warn("wiki", `flat compatibility copy appeared for "${slug}"`);
       }
     } else if (op.createOnly) {
-      // Publish the authoritative silo first. If that write fails, no global
-      // Page exists and an outbox retry can safely try again. A completed silo
-      // with no flat copy is recoverable through the caller's owner hint.
+      const flatPath = wikiRelPath(`${slug}.md`);
+      if (await storageFileExists(flatPath)) {
+        throw new LifecyclePageConflictError(slug, "already exists");
+      }
+
+      // Publish the authoritative silo first. If the compatibility claim then
+      // fails, compensate the exact silo bytes while this slug lock is still
+      // held; a split identity must not strand every later retry.
       const created = await createWikiPage(slug, op.content, writeTenant);
       if (!created) throw new LifecyclePageConflictError(slug, "already exists");
 
-      // The flat compatibility object is the one global slug claim shared by
-      // every tenant. A competing owner that completed after this callback
-      // lost its lease makes this a hard conflict, so the orphan silo cannot
-      // replace global Page identity or its Page-index entry. Read routing
-      // consults the global index/flat owner before any caller owner hint.
-      const flatCreated = await createWikiPage(slug, op.content);
-      if (!flatCreated) throw new LifecyclePageConflictError(slug, "already exists");
+      let publicationError: unknown = null;
+      try {
+        const flatCreated = await createWikiPage(slug, op.content);
+        if (!flatCreated) publicationError = new LifecyclePageConflictError(slug, "already exists");
+      } catch (error) {
+        // A provider timeout can be ambiguous. Exact bytes at the claim path
+        // prove this identity landed; recovery may continue instead of
+        // compensating the authoritative half of a completed publication.
+        try {
+          if (await getStorage().readFile(flatPath) !== op.content) publicationError = error;
+        } catch {
+          publicationError = error;
+        }
+      }
+      if (publicationError) {
+        const tenant = writeTenant ?? tenantForOwner(undefined);
+        const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
+        try {
+          if (await getStorage().readFile(siloPath) === op.content) {
+            await getStorage().deleteFile(siloPath);
+          }
+        } catch (cleanupError) {
+          if (!isEnoent(cleanupError)) {
+            logger.warn("wiki", `create compensation failed for "${slug}"`, cleanupError);
+          }
+        }
+        throw publicationError;
+      }
     } else if (op.expectedContent !== undefined) {
       const tenant = writeTenant ?? tenantForOwner(undefined);
       const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
@@ -807,7 +858,16 @@ async function runPageLifecycleOp(
       const sourceForCrossRef = op.crossRefSource ?? op.content;
       // Use entries captured inside the lock to avoid TOCTOU — a concurrent
       // ingest between the lock release and a fresh read could produce stale data.
-      const refreshedEntries = postIndexEntries!;
+      let sourceTenant = tenantForOwner(undefined);
+      try {
+        const fm = parseFrontmatter(op.content).data;
+        sourceTenant = tenantForOwner(typeof fm.owner === "string" ? fm.owner : undefined);
+      } catch {
+        // The write path used the same default-tenant fallback.
+      }
+      const refreshedEntries = postIndexEntries!.filter(
+        (entry) => tenantForOwner(entry.owner) === sourceTenant,
+      );
       const relatedSlugs = await findRelatedPages(
         slug,
         sourceForCrossRef,
@@ -817,7 +877,7 @@ async function runPageLifecycleOp(
         slug,
         op.title,
         relatedSlugs,
-        { requireSource: true },
+        { requireSource: true, tenant: sourceTenant },
       );
     }
   } else {
@@ -1076,6 +1136,8 @@ async function writeWikiPageWithSideEffectsInternal(
       createOnly: opts.createOnly,
       expectedContent: opts.expectedContent,
       requiresExistingSlug: opts.requiresExistingSlug,
+      requiresExistingTenant: opts.requiresExistingTenant,
+      requiredTargetTenant: opts.requiredTargetTenant,
     },
     logOp,
     ({ crossRefedSlugs }) => logDetails?.({ updatedSlugs: crossRefedSlugs }),

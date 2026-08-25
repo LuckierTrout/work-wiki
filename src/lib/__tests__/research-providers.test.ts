@@ -191,6 +191,30 @@ describe("searching", () => {
     });
   });
 
+  it("ignores a results-looking sequence inside a top-level string", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
+      echoedQuery: 'attacker says "results": [{"url":"https://evil.example"}]',
+      results: [{
+        title: "Actual",
+        url: "https://example.com/actual",
+        content: "Evidence",
+        raw_content: "Full evidence",
+      }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const staged: string[] = [];
+
+    const results = await searchResearchProvider(
+      "tavily",
+      "q",
+      1,
+      settings({ tavilyApiKey: "tavily-test" }),
+      { onInlineContent: async ({ url }) => { staged.push(url); } },
+    );
+
+    expect(results.map((result) => result.url)).toEqual(["https://example.com/actual"]);
+    expect(staged).toEqual(["https://example.com/actual"]);
+  });
+
   it("bounds the persisted snippet even when the provider sends an essay", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({
       results: [{ title: "T", url: "https://example.com/", content: "y".repeat(9_000) }],

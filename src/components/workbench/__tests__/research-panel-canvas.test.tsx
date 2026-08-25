@@ -205,6 +205,22 @@ describe("Research Panel — the task board", () => {
     vi.useRealTimers();
   });
 
+  it("retries when the initial list request fails", async () => {
+    send
+      .mockRejectedValueOnce(new Error("first load failed"))
+      .mockResolvedValue({ projects: [] });
+    vi.useFakeTimers();
+
+    render(<ResearchCanvas wikiId="current" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("first load failed")).toBeTruthy();
+    await act(async () => { await vi.advanceTimersByTimeAsync(RESEARCH_POLL_MS + 10); });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("first load failed")).toBeNull();
+
+    vi.useRealTimers();
+  });
+
   it("asks the list door for the rail's wiki", async () => {
     send.mockResolvedValue({ projects: [] });
 
@@ -398,6 +414,7 @@ describe("Research Panel — starting a run", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start Deep Research" }));
 
     rerender(<ResearchCanvas wikiId="6f1b7e10-0000-4000-8000-000000000001" />);
+    expect(screen.getByRole("button", { name: "Start Deep Research" })).toBeTruthy();
     resolveCreate?.({ project: { id: "new-1" } });
 
     await waitFor(() => expect(send).toHaveBeenCalledWith(
@@ -451,6 +468,24 @@ describe("Research Panel — starting a run", () => {
       await vi.advanceTimersByTimeAsync(RESEARCH_POLL_MS + 10);
     });
     expect(send.mock.calls.length).toBeGreaterThan(1);
+
+    vi.useRealTimers();
+  });
+
+  it("stops automatic polling for an operator-blocked delivery", async () => {
+    send.mockResolvedValue({
+      projects: [project({
+        status: "failed",
+        deliveryBlocked: true,
+        completion: { phase: "page", pageSlug: "research-x", sources: [] },
+      })],
+    });
+    vi.useFakeTimers();
+
+    render(<ResearchCanvas wikiId="current" />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(RESEARCH_POLL_MS * 3); });
+    expect(send).toHaveBeenCalledTimes(1);
 
     vi.useRealTimers();
   });

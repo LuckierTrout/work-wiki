@@ -105,7 +105,7 @@ describe("page-index", () => {
     expect(await getPageIndexDirtySlugs()).toEqual(new Set([victim]));
   });
 
-  it("recovers and clears a hashed marker written by the previous release", async () => {
+  it("recovers and retains a previous-release marker until old writers drain", async () => {
     const slug = "rolling-private";
     await getStorage().writeFile(
       `derived-indexes/pages-dirty/v2-${await sourceSha256(slug)}`,
@@ -114,7 +114,7 @@ describe("page-index", () => {
 
     expect(await getPageIndexDirtySlugs()).toEqual(new Set([slug]));
     await clearPageIndexDirty(slug);
-    expect(await getPageIndexDirtySlugs()).toEqual(new Set());
+    expect(await getPageIndexDirtySlugs()).toEqual(new Set([slug]));
   });
 
   it("does not clear a previous-release marker through its colliding raw slug", async () => {

@@ -175,7 +175,7 @@ export async function importPortableArchive(
   const collisionSet = new Set(inspection.collisions);
   const existingEntries = await listWikiPages();
   const archivePageSlugs = inspection.manifest.files.flatMap((entry) => {
-    const match = /^wiki\/([^/]+)\.md$/.exec(entry.path);
+    const match = /^wiki\/(.+)\.md$/.exec(entry.path);
     return match && !["index", "log"].includes(match[1]) ? [match[1]] : [];
   });
   for (const slug of archivePageSlugs) {
@@ -214,7 +214,7 @@ export async function importPortableArchive(
         );
       }
     };
-    const pageMatch = /^wiki\/([^/]+)\.md$/.exec(entry.path);
+    const pageMatch = /^wiki\/(.+)\.md$/.exec(entry.path);
     if (pageMatch && !["index", "log"].includes(pageMatch[1])) {
       await withDurableLock(`page-lifecycle:${pageMatch[1]}`, async () => {
         const current = (await listWikiPages({ strict: true }))
@@ -234,12 +234,25 @@ export async function importPortableArchive(
   // truth, so a restore must seed it before rebuilding the derived indexes.
   await withDurableLock("index.md", async () => {
     const ownerEntries: IndexEntry[] = [];
-    for (const entry of await getStorage().listFiles(`tenants/${tenant(owner)}/wiki`)) {
-      if (entry.isDirectory || !entry.name.endsWith(".md") || entry.name.startsWith(".")) continue;
-      const slug = entry.name.slice(0, -3);
+    const wikiRoot = `tenants/${tenant(owner)}/wiki`;
+    const listPagePaths = async (prefix: string, relative = ""): Promise<string[]> => {
+      const found: string[] = [];
+      for (const entry of await getStorage().listFiles(prefix)) {
+        if (entry.name.startsWith(".")) continue;
+        const nextRelative = relative ? `${relative}/${entry.name}` : entry.name;
+        if (entry.isDirectory) {
+          found.push(...await listPagePaths(`${prefix}/${entry.name}`, nextRelative));
+        } else if (entry.name.endsWith(".md")) {
+          found.push(nextRelative);
+        }
+      }
+      return found;
+    };
+    for (const pagePath of await listPagePaths(wikiRoot)) {
+      const slug = pagePath.slice(0, -3);
       if (["index", "log"].includes(slug)) continue;
       validateSlug(slug);
-      const content = await getStorage().readFile(`tenants/${tenant(owner)}/wiki/${entry.name}`);
+      const content = await getStorage().readFile(`${wikiRoot}/${pagePath}`);
       const parsed = parseFrontmatter(content);
       if (tenantForOwner(typeof parsed.data.owner === "string" ? parsed.data.owner : undefined) !== tenant(owner)) {
         throw new Error(`Restored page owner does not match archive tenant: ${slug}`);

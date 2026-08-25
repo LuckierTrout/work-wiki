@@ -849,6 +849,40 @@ describe("updateRelatedPages", () => {
       .not.toContain("[Source Race](source-race.md)");
   });
 
+  it("does not inject a private source title into another tenant's Page", async () => {
+    await ensureDirectories();
+    await writeWikiPageWithSideEffects({
+      slug: "alice-source",
+      title: "Alice secret",
+      content: serializeFrontmatter(
+        { owner: "alice", visibility: "private" },
+        "# Alice secret\n\nPrivate.",
+      ),
+      summary: "Private",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await writeWikiPageWithSideEffects({
+      slug: "bob-target",
+      title: "Bob target",
+      content: serializeFrontmatter(
+        { owner: "bob", visibility: "private" },
+        "# Bob target\n\nBob.",
+      ),
+      summary: "Bob",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    await expect(updateRelatedPages(
+      "alice-source",
+      "Alice secret",
+      ["bob-target"],
+      { requireSource: true, tenant: "alice" },
+    )).resolves.toEqual([]);
+    expect((await readWikiPage("bob-target"))?.content).not.toContain("Alice secret");
+  });
+
   it("never appends a See-also to an HTML artifact", async () => {
     await ensureDirectories();
     await writeWikiPage(

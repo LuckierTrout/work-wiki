@@ -1,4 +1,5 @@
 import { slugify } from "./slugify";
+import { sourceSha256 } from "./source-sha256";
 
 /** The research Page's slug. Flat, because only `queries/` may nest. */
 export function researchPageSlug(project: { title: string; id: string }): string {
@@ -7,12 +8,8 @@ export function researchPageSlug(project: { title: string; id: string }): string
 }
 
 /**
- * A short, stable, sync digest of a string. FNV-1a, hex, 8 characters.
- *
- * Sync on purpose: {@link researchSourceSlug} is called from a `map` and from
- * assertions, and `crypto.subtle.digest` would make the slug async everywhere to
- * disambiguate a query string. Not a security boundary — nothing authenticates
- * on this value, it only has to differ when its input differs.
+ * A short, stable digest for the Page id suffix. FNV-1a, hex, 8 characters.
+ * Not a security boundary — nothing authenticates on this value.
  */
 function shortDigest(value: string): string {
   let hash = 0x811c9dc5;
@@ -30,14 +27,16 @@ function shortDigest(value: string): string {
  * its identity in the query onto one slug, and because `saveRawSourceFor` is
  * first-write-only the second document silently kept the first one's body.
  */
-export function researchSourceSlug(url: string): string | null {
+export async function researchSourceSlug(url: string): Promise<string | null> {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return null;
   }
-  const base = slugify(`${parsed.hostname}${parsed.pathname}`).slice(0, 80).replace(/-+$/, "");
+  parsed.hash = "";
+  const normalized = parsed.href;
+  const base = slugify(`${parsed.host}${parsed.pathname}`).slice(0, 80).replace(/-+$/, "");
   if (!base) return null;
-  return parsed.search ? `research-${base}-${shortDigest(parsed.search)}` : `research-${base}`;
+  return `research-${base}-${(await sourceSha256(normalized)).slice(0, 20)}`;
 }

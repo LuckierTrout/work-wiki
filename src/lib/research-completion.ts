@@ -4,6 +4,7 @@ import {
   createIngestJobIfAbsent,
   getIngestJob,
   updateIngestJob,
+  updateIngestJobIf,
   type IngestJob,
 } from "./ingest-jobs";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
@@ -69,6 +70,8 @@ interface ResearchOutbox {
    * is a pre-write staging file: if the project is gone, drop it.
    */
   claimed?: boolean;
+  /** Execution fence for the run that produced this outbox. */
+  attemptId?: string;
 }
 
 function outboxDir(owner: string): string {
@@ -140,9 +143,10 @@ export async function stageResearchSource(
   owner: string,
   projectId: string,
   source: FetchedSource,
+  attemptId?: string,
 ): Promise<ResearchOutboxSource> {
   if (typeof source.text !== "string") throw new Error(`Source body missing for ${source.url}`);
-  const slug = researchSourceSlug(source.url);
+  const slug = await researchSourceSlug(source.url);
   if (!slug) throw new Error(`Invalid research Source URL: ${source.url}`);
   const sha = await sourceSha256(source.text);
   const sourcePath = `${outboxDir(owner)}/staging-${projectId}-${slug}-${sha}.md`;
@@ -154,6 +158,7 @@ export async function stageResearchSource(
     const project = await getResearchProject(owner, projectId);
     if (
       !project
+      || (attemptId !== undefined && project.runAttemptId !== attemptId)
       || project.deleteRequested
       || project.cancelRequested
       || project.status === "cancelled"
@@ -179,7 +184,16 @@ export async function clearResearchStaging(
     } catch (error) {
       if (!isEnoent(error)) logger.warn("research", `staging manifest unreadable for ${projectId}`, error);
     }
-    const candidates = [...sources, ...recorded];
+    // The manifest can itself be corrupt after bodies landed. Discover direct
+    // staging objects by the validated project prefix so cleanup does not lose
+    // its only references and retain fetched web content indefinitely.
+    const discovered: Partial<ResearchOutboxSource>[] = [];
+    const prefix = `staging-${projectId}-`;
+    for (const entry of await getStorage().listFiles(outboxDir(owner))) {
+      if (entry.isDirectory || !entry.name.startsWith(prefix) || !entry.name.endsWith(".md")) continue;
+      discovered.push({ sourcePath: `${outboxDir(owner)}/${entry.name}` });
+    }
+    const candidates = [...sources, ...recorded, ...discovered];
     for (const source of candidates) {
       if (!source.sourcePath?.includes("/research-outbox/staging-")) continue;
       try {
@@ -202,7 +216,7 @@ export async function persistResearchSource(
   source: FetchedSource,
 ): Promise<ResearchOutboxSource> {
   if (typeof source.text !== "string") throw new Error(`Source body missing for ${source.url}`);
-  const slug = researchSourceSlug(source.url);
+  const slug = await researchSourceSlug(source.url);
   if (!slug) throw new Error(`Invalid research Source URL: ${source.url}`);
   const sha = await sourceSha256(source.text);
   await saveRawSourceFor(slug, sha, source.text, { owner });
@@ -376,6 +390,9 @@ export async function commitResearchPage(
 ): Promise<ResearchProject | null> {
   const existing = await getResearchProject(owner, id);
   if (!existing) return null;
+  if (input.attemptId && existing.runAttemptId !== input.attemptId) {
+    throw new Error("Research attempt was replaced before Page commit");
+  }
   if (existing.deleteRequested && !existing.completion) {
     await deleteResearchOutbox(owner, id);
     await deleteResearchProject(owner, id);
@@ -412,6 +429,9 @@ export async function commitResearchPage(
     await deleteResearchOutbox(owner, id);
     return null;
   }
+  if (input.attemptId && afterSave.runAttemptId !== input.attemptId) {
+    throw new Error("Research attempt was replaced before Page commit");
+  }
   if (
     afterSave.deleteRequested
     && !researchWriteClaimIsFresh(afterSave.completion?.writeClaimedAt)
@@ -435,6 +455,7 @@ export async function commitResearchPage(
 
   const claimId = crypto.randomUUID();
   const claimed = await mutateResearchProject(owner, id, (project) => {
+    if (input.attemptId && project.runAttemptId !== input.attemptId) return null;
     if (project.deleteRequested && !project.completion) return null;
     if ((project.cancelRequested || project.status === "cancelled") && !project.completion) {
       return null;
@@ -483,6 +504,7 @@ export async function commitResearchPage(
   const stopHeartbeat = startWriteClaimHeartbeat(owner, id, claimId);
   try {
     const authorized = await mutateResearchProject(owner, id, (project) => {
+      if (input.attemptId && project.runAttemptId !== input.attemptId) return null;
       if (project.completion?.writeClaimId !== claimId) return null;
       if (project.cancelRequested || project.status === "cancelled" || project.deleteRequested) {
         return null;
@@ -710,11 +732,19 @@ async function dispatchSourceIngest(
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await updateIngestJob(jobId, { status: "failed", error: message }).catch(() => undefined);
+      await updateIngestJobIf(
+        jobId,
+        (job) => job.status === "queued" && job.stage === "dispatch-pending",
+        { status: "failed", error: message },
+      ).catch(() => undefined);
       throw error;
     }
     if (enqueued) {
-      await updateIngestJob(jobId, { status: "queued", stage: "queued", error: undefined });
+      await updateIngestJobIf(
+        jobId,
+        (job) => job.status === "queued" && job.stage === "dispatch-pending",
+        { status: "queued", stage: "queued", error: undefined },
+      );
       return;
     }
     const { ingest } = await import("./ingest");
@@ -770,7 +800,14 @@ export async function drainResearchOutbox(
     }
     return project;
   }
-  if (!outbox) return project;
+  if (!outbox) {
+    if (project.deleteRequested) {
+      await clearPageWrittenMarker(owner, id);
+      await deleteResearchProject(owner, id);
+      return null;
+    }
+    return project;
+  }
 
   let current = project;
   if (!current.completion || current.completion.phase === "page") {
@@ -819,7 +856,7 @@ export async function drainResearchOutbox(
       phase: failed.length === 0 ? "done" : "sources",
       sources,
     };
-    project.status = "complete";
+    project.status = failed.length === 0 ? "complete" : "failed";
     delete project.proposalId;
     if (failed.length === 0) {
       delete project.error;

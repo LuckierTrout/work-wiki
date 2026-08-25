@@ -123,7 +123,7 @@ export async function updateRelatedPages(
   newSlug: string,
   newTitle: string,
   relatedSlugs: string[],
-  options: { requireSource?: boolean } = {},
+  options: { requireSource?: boolean; tenant?: string } = {},
 ): Promise<string[]> {
   return withFileLock("cross-ref", async () => {
     const updatedSlugs: string[] = [];
@@ -187,7 +187,13 @@ export async function updateRelatedPages(
           crossRefSource: null,
           author: "system",
           expectedContent: meta.content,
-          ...(options.requireSource ? { requiresExistingSlug: newSlug } : {}),
+          ...(options.requireSource
+            ? {
+                requiresExistingSlug: newSlug,
+                requiresExistingTenant: options.tenant,
+                requiredTargetTenant: options.tenant,
+              }
+            : {}),
         });
         updatedSlugs.push(slug);
         updated = true;
