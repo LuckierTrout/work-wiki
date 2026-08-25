@@ -461,5 +461,5 @@ action_items:
       followup_review_recommended until a fresh independent same-SHA review plus typecheck,
       lint, full Vitest, production, Cloudflare, and authenticated browser gates pass."
     owner: "Delivery / architecture"
-    status: in-progress
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
