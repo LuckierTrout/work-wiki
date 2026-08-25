@@ -288,8 +288,19 @@ None that block implementation. If an assumption is wrong, record the override i
 - Existing suites that pin Firecrawl-only External Sources, research-provider fallback, and memory-proposal completion must be updated to the new contract — do not leave them as silent regressions.
 - Browser: Settings External Sources (Tavily default + Firecrawl still present); Graph/Review confirm Cancel vs Confirm; Deep Research empty copy; a mocked/dev run that shows panel progress; read-only start disabled. If a live provider key is absent, use mocked provider tests for fetch/synthesis and still click the Workbench empty/confirm/disabled paths.
 - Do not claim done on a fill-only draft card.
+- **2026-08-25 freeze / acceptance proof (outside `<intent-contract>`):** product remediations are frozen at the commit that records this note. A live provider-backed Page/Activity run on Cloudflare is waived for the Epic 6 delivery-review gate. Same-SHA acceptance proof is a bounded independent review of Stories 6.1–6.5 plus remediations 1–7, mocked create → Queue → consumer coverage, and the six local commands (`tsc --noEmit`, lint, full Vitest, production build, Cloudflare build, authenticated e2e). Do not split the research orchestrator as a precondition of this gate. Pre-existing kernel races that do not break Deep Research delivery are deferred, not new Epic 6 remediations. This note does not flip `followup_review_recommended` or the retrospective verdict.
 
 ## Review Triage Log
+
+### 2026-08-25 — Delivery-review freeze
+
+- product remediations frozen; this note is docs-only
+- independent verdict: pending against this freeze SHA
+- release gates: pending against this freeze SHA
+- live Cloudflare provider-backed Page/Activity run: waived (mocked create → Queue → consumer plus the six local gates remain required)
+- research-orchestrator split: deferred past this gate
+- review bound: Stories 6.1–6.5 and remediations 1–7; kernel races that do not break Deep Research delivery are deferred
+- acceptance effect: none yet; `followup_review_recommended` remains true and the retrospective remains rejected until the pending review and six local gates pass on this SHA
 
 ### 2026-08-24 — Full-stack remediation patch pass
 
@@ -424,3 +435,4 @@ Closed outside `<intent-contract>`. `followup_review_recommended` stays true unt
 - `vaultId` is the Workbench Wiki UUID. List, Page `wiki:`, Ingest `wikiId`, and Activity tags honour it. Graph/Review always start a created run, then fence only the UI.
 - Synthesis thinking persists from `callLLMStream`. A failed poll keeps rows and keeps polling. Research extract uses `maxContentLength: null`.
 - Race, fault, delivery, and browser-path gates live beside the existing research suites. The live Tavily row skips when no key is present.
+- **2026-08-25 owner freeze:** no further product remediations until the bounded same-SHA review and six local gates complete. The live Cloudflare provider-backed run named in retrospective action 7 is waived. The research-orchestrator split named in action 8 is deferred past this gate.
