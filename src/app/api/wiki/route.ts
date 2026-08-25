@@ -148,6 +148,7 @@ export async function POST(req: Request) {
       logOp: "ingest",
       crossRefSource: content,
       author: authorStr,
+      createOnly: true,
       logDetails: (ctx) =>
         `created · found ${ctx.updatedSlugs.length} cross-ref(s)`,
     });

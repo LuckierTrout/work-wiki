@@ -260,6 +260,7 @@ export async function cascadeDeleteSource(input: {
         logOp: "edit",
         crossRefSource: null,
         author: input.owner,
+        expectedContent: page.content,
         logDetails: () => `dropped source ${input.path} from "${slug}"`,
       });
       updatedPages.push(slug);

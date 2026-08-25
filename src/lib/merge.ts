@@ -140,6 +140,7 @@ async function repointBacklinks(
       logOp: "edit",
       crossRefSource: null, // a link re-point shouldn't re-run cross-ref
       author: actor,
+      expectedContent: page.content,
     });
     repointed.push(src);
   }
@@ -274,6 +275,7 @@ export async function mergePages({
     logOp: "edit",
     crossRefSource: null,
     author: actor,
+    expectedContent: into.content,
   });
 
   // A fold that leaves the survivor disputed used to auto-open a talk

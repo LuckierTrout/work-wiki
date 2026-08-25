@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, beforeEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -8,7 +8,7 @@ import {
   _resetLocks,
   _setDurableLocksForTests,
 } from "../lock";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 
 // ---------------------------------------------------------------------------
 // Reset locks between tests
@@ -337,5 +337,37 @@ describe("withDurableLock", () => {
     await expect(withDurableLock("ingest-llm:alice", async () => "reclaimed", 100))
       .resolves.toBe("reclaimed");
     expect(JSON.parse(await fs.readFile(lockPath, "utf-8"))).toMatchObject({ until: expect.any(Number) });
+  });
+
+  it("fences a stale v1 heartbeat before entering the v2 callback", async () => {
+    const rel = "locks/ingest-llm:alice.json";
+    const lockPath = path.join(tempDir, rel);
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
+    await fs.writeFile(lockPath, JSON.stringify({ token: "old-worker", until: Date.now() - 1 }), "utf-8");
+
+    const storage = getStorage();
+    const stale = await storage.readFileWithEtag(rel);
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    let oldHeartbeatRenewed: boolean | undefined;
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(async (target, content, etag) => {
+      const written = await originalMatch(target, content, etag);
+      const next = JSON.parse(content) as { token?: string };
+      if (target === rel && written && next.token !== "old-worker" && oldHeartbeatRenewed === undefined) {
+        oldHeartbeatRenewed = await originalMatch(
+          rel,
+          JSON.stringify({ token: "old-worker", until: Date.now() + 10_000 }),
+          stale.etag,
+        );
+      }
+      return written;
+    });
+
+    await expect(withDurableLock("ingest-llm:alice", async () => {
+      expect(oldHeartbeatRenewed).toBe(false);
+      expect(JSON.parse(await fs.readFile(lockPath, "utf-8"))).toMatchObject({
+        token: expect.not.stringMatching(/^old-worker$/),
+      });
+      return "entered";
+    }, 500)).resolves.toBe("entered");
   });
 });

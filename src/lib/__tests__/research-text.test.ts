@@ -78,6 +78,17 @@ describe("hasAllowedResearchCitation", () => {
       ["https://example.com/a"],
     )).toBe(false);
   });
+
+  it("requires a rendered citation rather than hidden or example text", () => {
+    const allowed = ["https://example.com/a"];
+    expect(hasAllowedResearchCitation("<!-- https://example.com/a -->", allowed)).toBe(false);
+    expect(hasAllowedResearchCitation("```text\nhttps://example.com/a\n```", allowed)).toBe(false);
+    expect(hasAllowedResearchCitation("`https://example.com/a`", allowed)).toBe(false);
+    expect(hasAllowedResearchCitation("[unused]: https://example.com/a", allowed)).toBe(false);
+    expect(hasAllowedResearchCitation("See [source][used].\n\n[used]: https://example.com/a", allowed)).toBe(true);
+    expect(hasAllowedResearchCitation("Visible https://example.com/a", allowed)).toBe(true);
+    expect(hasAllowedResearchCitation('<a href="https://example.com/a">Source</a>', allowed)).toBe(true);
+  });
 });
 
 describe("appendThinkingLines", () => {

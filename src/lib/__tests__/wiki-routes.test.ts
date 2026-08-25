@@ -15,8 +15,12 @@ import {
   readWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
+  tenantForOwner,
+  writeWikiPage,
   writeWikiPageWithSideEffects,
 } from "../wiki";
+import { withDurableLock } from "../lock";
+import { getStorage } from "../storage";
 import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
@@ -1498,6 +1502,36 @@ describe("PUT /api/wiki/[slug] — the write precondition", () => {
     // never silently dropped on top.
     expect(await storedBody("pc-stale")).toContain("theirs.");
     expect(await storedBody("pc-stale")).not.toContain("my draft.");
+  });
+
+  it("maps a Page change after the header check to the same 412 conflict", async () => {
+    const slug = "pc-race";
+    await seed(slug);
+    const before = (await readWikiPageWithFrontmatter(slug))!.content;
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let sawRouteRead!: () => void;
+    const routeRead = new Promise<void>((resolve) => { sawRouteRead = resolve; });
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (filePath) => {
+      const content = await originalRead(filePath);
+      if (filePath.endsWith(`/${slug}.md`)) sawRouteRead();
+      return content;
+    });
+
+    let response!: Promise<Response>;
+    await withDurableLock(`page-lifecycle:${slug}`, async () => {
+      response = put(slug, formatIfMatch(contentVersion(before)));
+      await routeRead;
+      const newer = before.replace(ORIGINAL, "# Theirs\n\nnewer owner edit.\n");
+      await writeWikiPage(slug, newer, "other-editor", undefined, tenantForOwner("test-user"));
+      await writeWikiPage(slug, newer, "other-editor");
+    });
+
+    const result = await response;
+    expect(result.status).toBe(412);
+    expect(await result.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    expect(await storedBody(slug)).toContain("newer owner edit.");
+    readSpy.mockRestore();
   });
 
   it("refuses a save with NO precondition with 428, and writes nothing", async () => {

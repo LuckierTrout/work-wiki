@@ -73,6 +73,7 @@ export async function regenerateOverview(owner: string): Promise<void> {
     logOp: "edit",
     crossRefSource: null,
     author: owner,
+    ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
     logDetails: () => "regenerated overview.md",
   });
 }
@@ -203,6 +204,7 @@ export async function ensureSourceSummary(input: {
     logOp: "ingest",
     crossRefSource: null,
     author: input.actor,
+    ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
     logDetails: () => `source summary for ${input.sourcePath}`,
   });
   return slug;
@@ -211,7 +213,7 @@ export async function ensureSourceSummary(input: {
 async function findExistingSourceSummary(
   sourcePath: string,
   rawId?: string,
-): Promise<{ slug: string; frontmatter: Record<string, unknown> } | null> {
+): Promise<{ slug: string; frontmatter: Record<string, unknown>; content: string } | null> {
   const pages = await listWikiPages();
   for (const entry of pages) {
     if (BOOKKEEPING.has(entry.slug)) continue;
@@ -228,7 +230,7 @@ async function findExistingSourceSummary(
         item.url === sourcePath || (rawId ? item.raw_id === rawId : false),
     );
     if (cites) {
-      return { slug: entry.slug, frontmatter: page.frontmatter };
+      return { slug: entry.slug, frontmatter: page.frontmatter, content: page.content };
     }
   }
   return null;

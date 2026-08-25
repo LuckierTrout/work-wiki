@@ -407,6 +407,7 @@ export async function runCreate(slug: string, title: string, tags?: string[]): P
     summary,
     logOp: "ingest",
     crossRefSource: body.trim(),
+    createOnly: true,
   });
 
   console.log(`Created: ${result.slug}`);
@@ -463,6 +464,7 @@ export async function runUpdate(slug: string, title?: string, tags?: string[]): 
     summary,
     logOp: "edit",
     crossRefSource: body.trim(),
+    expectedContent: existing.content,
   });
 
   console.log(`Updated: ${result.slug}`);
@@ -677,4 +679,3 @@ main().catch((err: unknown) => {
   }
   process.exit(1);
 });
-

@@ -166,84 +166,85 @@ export async function withDurableLock<T>(
       return fn();
     }
     const token = crypto.randomUUID();
-    let acquired = false;
     const waitStartedAt = Date.now();
+    const acquire = async (path: string, acceptsTokenlessLegacy: boolean): Promise<void> => {
+      for (let attempt = 0; attempt < DURABLE_LOCK_CAS_ATTEMPTS;) {
+        const now = Date.now();
+        let etag: string | null = null;
+        let parsed: ParsedDurableLease | null = null;
+        try {
+          const read = await storage.readFileWithEtag(path);
+          etag = read.etag;
+          parsed = parseDurableLease(read.content);
+        } catch (error) {
+          if (!isEnoent(error)) throw error;
+        }
+        if (parsed?.kind === "invalid" || (parsed?.kind === "legacy" && !acceptsTokenlessLegacy)) {
+          throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
+        }
+        const until = parsed?.kind === "current" || parsed?.kind === "legacy"
+          ? parsed.lease.until
+          : 0;
+        if (until > now) {
+          if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
+            throw new Error(`Durable lock ${key} did not become available`);
+          }
+          await pause(Math.max(10, Math.min(DURABLE_LOCK_POLL_MAX_MS, until - now)));
+          continue;
+        }
+        const body = JSON.stringify({ token, until: now + ttlMs });
+        const acquired = etag === null
+          ? await storage.writeFileIfAbsent(path, body)
+          : await storage.writeFileIfMatch(path, body, etag);
+        if (acquired) return;
+        attempt += 1;
+        await pause(Math.min(10 * attempt, 100));
+      }
+      throw new Error("ingest lock busy");
+    };
 
-    for (let attempt = 0; attempt < DURABLE_LOCK_CAS_ATTEMPTS;) {
-      const now = Date.now();
-      let legacy: ParsedDurableLease | null = null;
+    const renew = async (path: string, recreateIfMissing: boolean): Promise<boolean> => {
+      const body = JSON.stringify({ token, until: Date.now() + ttlMs });
       try {
-        legacy = parseDurableLease((await storage.readFileWithEtag(legacyRel)).content);
+        const read = await storage.readFileWithEtag(path);
+        const current = parseDurableLease(read.content);
+        if (current.kind !== "current" || current.lease.token !== token) return false;
+        return storage.writeFileIfMatch(path, body, read.etag);
       } catch (error) {
         if (!isEnoent(error)) throw error;
+        return recreateIfMissing ? storage.writeFileIfAbsent(path, body) : false;
       }
-      if (legacy?.kind === "invalid") {
-        throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
-      }
-      if (
-        (legacy?.kind === "legacy" || legacy?.kind === "current")
-        && legacy.lease.until > now
-      ) {
-        if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
-          throw new Error(`Legacy durable lock ${key} did not become available`);
-        }
-        await pause(Math.max(
-          10,
-          Math.min(DURABLE_LOCK_POLL_MAX_MS, legacy.lease.until - now),
-        ));
-        continue;
-      }
-      let etag: string | null = null;
-      let parsed: ParsedDurableLease | null = null;
+    };
+
+    const release = async (path: string): Promise<void> => {
       try {
-        const read = await storage.readFileWithEtag(rel);
-        etag = read.etag;
-        parsed = parseDurableLease(read.content);
-      } catch (error) {
-        if (!isEnoent(error)) throw error;
-      }
-
-      if (parsed?.kind === "invalid") {
-        throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
-      }
-      if (parsed?.kind === "legacy") {
-        throw new Error(`Durable lock ${key} is malformed; refusing an unsafe takeover`);
-      }
-      const until = parsed?.kind === "current"
-        ? parsed.lease.until
-        : 0;
-      if (until > now) {
-        if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
-          throw new Error(`Durable lock ${key} did not become available`);
+        const read = await storage.readFileWithEtag(path);
+        const current = parseDurableLease(read.content);
+        if (current.kind === "current" && current.lease.token === token) {
+          await storage.writeFileIfMatch(path, JSON.stringify({ token, until: 0 }), read.etag);
         }
-        await pause(Math.max(10, Math.min(DURABLE_LOCK_POLL_MAX_MS, until - now)));
-        continue;
+      } catch (error) {
+        if (!isEnoent(error)) {
+          // Lease expiry is the backstop; never replace the callback outcome.
+        }
       }
-      const body = JSON.stringify({ token, until: now + ttlMs });
-      acquired = etag === null
-        ? await storage.writeFileIfAbsent(rel, body)
-        : await storage.writeFileIfMatch(rel, body, etag);
-      if (acquired) break;
-      attempt += 1;
-      await pause(Math.min(10 * attempt, 100));
-    }
+    };
 
-    if (!acquired) throw new Error("ingest lock busy");
+    // Fence the old namespace first. Once this CAS lands, a previously read v1
+    // token lease cannot heartbeat with its stale etag while we acquire v2.
+    // Keeping the bridge alive also makes old workers wait for this callback.
+    await acquire(legacyRel, true);
+    let acquiredV2 = false;
 
     let renewing = false;
-    const heartbeat = setInterval(() => {
+    let heartbeatInFlight: Promise<void> = Promise.resolve();
+    const runHeartbeat = (): void => {
       if (renewing) return;
       renewing = true;
-      void (async () => {
+      heartbeatInFlight = (async () => {
         try {
-          const read = await storage.readFileWithEtag(rel);
-          const current = parseDurableLease(read.content);
-          if (current.kind !== "current" || current.lease.token !== token) return;
-          await storage.writeFileIfMatch(
-            rel,
-            JSON.stringify({ token, until: Date.now() + ttlMs }),
-            read.etag,
-          );
+          await renew(legacyRel, true);
+          if (acquiredV2) await renew(rel, false);
         } catch {
           // Acquisition remains fail-closed until the current expiry. A later
           // heartbeat retries; TTL is the crash-recovery backstop.
@@ -251,27 +252,27 @@ export async function withDurableLock<T>(
           renewing = false;
         }
       })();
-    }, Math.max(1_000, Math.floor(ttlMs / 3)));
+    };
+    let heartbeat = setInterval(runHeartbeat, Math.max(10, Math.floor(ttlMs / 3)));
 
     try {
+      await acquire(rel, false);
+      acquiredV2 = true;
+      // A tokenless v1 holder can only delete rather than compare-and-delete.
+      // Close that rolling-deploy window immediately before entry by restoring
+      // and verifying the bridge. If another holder won it, fail closed.
+      clearInterval(heartbeat);
+      await heartbeatInFlight;
+      if (!await renew(legacyRel, true) || !await renew(rel, false)) {
+        throw new Error(`Durable lock ${key} lost its migration fence`);
+      }
+      heartbeat = setInterval(runHeartbeat, Math.max(10, Math.floor(ttlMs / 3)));
       return await fn();
     } finally {
       clearInterval(heartbeat);
-      try {
-        const read = await storage.readFileWithEtag(rel);
-        const current = parseDurableLease(read.content);
-        if (current.kind === "current" && current.lease.token === token) {
-          await storage.writeFileIfMatch(
-            rel,
-            JSON.stringify({ token, until: 0 }),
-            read.etag,
-          );
-        }
-      } catch (error) {
-        if (!isEnoent(error)) {
-          // Lease expiry is the backstop; never replace the callback outcome.
-        }
-      }
+      await heartbeatInFlight;
+      if (acquiredV2) await release(rel);
+      await release(legacyRel);
     }
   });
 }

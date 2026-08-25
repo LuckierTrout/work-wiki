@@ -173,7 +173,7 @@ export function restrictResearchCitations(
   return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
 }
 
-/** True when the published markdown contains at least one exact fetched URL. */
+/** True when the rendered markdown contains at least one exact fetched URL. */
 export function hasAllowedResearchCitation(
   markdown: string,
   allowedUrls: readonly string[],
@@ -181,19 +181,65 @@ export function hasAllowedResearchCitation(
   const allowed = new Set(
     allowedUrls.map(normalizeUrl).filter((url): url is string => url !== null),
   );
-  const candidates = markdown.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
-  return candidates.some((candidate) => {
-    let href = candidate;
-    while (/[.,;:!?]$/.test(href)) href = href.slice(0, -1);
-    while (
-      href.endsWith(")")
-      && (href.match(/\(/g)?.length ?? 0) < (href.match(/\)/g)?.length ?? 0)
-    ) {
-      href = href.slice(0, -1);
+  if (allowed.size === 0) return false;
+
+  type MdNode = {
+    type: string;
+    value?: string;
+    url?: string;
+    identifier?: string;
+    children?: MdNode[];
+  };
+  const root = fromMarkdown(markdown) as unknown as MdNode;
+  const allowedDefinitions = new Set<string>();
+
+  const collectDefinitions = (node: MdNode): void => {
+    if (node.type === "definition" && node.url && isAllowed(node.url, allowed)) {
+      allowedDefinitions.add((node.identifier ?? "").toLowerCase());
     }
-    const normalized = normalizeUrl(href);
-    return normalized !== null && allowed.has(normalized);
-  });
+    for (const child of node.children ?? []) collectDefinitions(child);
+  };
+  collectDefinitions(root);
+
+  const visibleTextContainsAllowedUrl = (value: string): boolean => {
+    const candidates = value.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+    return candidates.some((candidate) => {
+      let href = candidate;
+      while (/[.,;:!?]$/.test(href)) href = href.slice(0, -1);
+      while (
+        href.endsWith(")")
+        && (href.match(/\(/g)?.length ?? 0) < (href.match(/\)/g)?.length ?? 0)
+      ) {
+        href = href.slice(0, -1);
+      }
+      return isAllowed(href, allowed);
+    });
+  };
+
+  const visit = (node: MdNode): boolean => {
+    // Images are not evidence citations, and code/comments are not rendered
+    // evidence. Do not descend into link labels either: the link destination is
+    // the citation contract, not URL-looking label text paired with another URL.
+    if (node.type === "image" || node.type === "imageReference"
+      || node.type === "code" || node.type === "inlineCode"
+      || node.type === "definition") return false;
+    if (node.type === "link") return Boolean(node.url && isAllowed(node.url, allowed));
+    if (node.type === "linkReference") {
+      return allowedDefinitions.has((node.identifier ?? "").toLowerCase());
+    }
+    if (node.type === "html") {
+      const value = node.value ?? "";
+      if (/^\s*<!--/.test(value)) return false;
+      const anchors = value.matchAll(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>/gi);
+      return Array.from(anchors).some((match) => isAllowed(match[1], allowed));
+    }
+    if (node.type === "text" && node.value && visibleTextContainsAllowedUrl(node.value)) {
+      return true;
+    }
+    return (node.children ?? []).some(visit);
+  };
+
+  return visit(root);
 }
 
 /** Newest `limit` thinking lines, in order, each trimmed and bounded. */

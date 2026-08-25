@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -8,7 +8,10 @@ import {
   ensureDirectories,
   readWikiPageWithFrontmatter,
   writeWikiPage,
+  wikiRelPath,
 } from "../wiki";
+import { withDurableLock } from "../lock";
+import { getStorage } from "../storage";
 import { serializeFrontmatter } from "../frontmatter";
 import { resetAliasIndex } from "../alias-index";
 import { listThreads } from "../talk";
@@ -393,5 +396,42 @@ describe("patchMetadata — disputed transition", () => {
     });
 
     expect(await listThreads("already-disputed")).toEqual([]);
+  });
+});
+
+describe("patchMetadata — concurrent Page edits", () => {
+  it("refuses a stale metadata rebuild instead of restoring the old body", async () => {
+    const slug = "metadata-race";
+    await seedPage(slug, "alice", "html");
+    const storage = getStorage();
+    const target = wikiRelPath(`${slug}.md`);
+    const originalRead = storage.readFile.bind(storage);
+    let sawInitialRead!: () => void;
+    const initialRead = new Promise<void>((resolve) => { sawInitialRead = resolve; });
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (filePath) => {
+      const content = await originalRead(filePath);
+      if (filePath === target) sawInitialRead();
+      return content;
+    });
+
+    let patch!: Promise<unknown>;
+    await withDurableLock(`page-lifecycle:${slug}`, async () => {
+      patch = patchMetadata({
+        slug,
+        metadata: { confidence: 0.9 },
+        principal: { id: "u_alice", handle: "alice" },
+      });
+      await initialRead;
+      const current = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      await writeWikiPage(
+        slug,
+        serializeFrontmatter(current!.frontmatter, "# Test Page\n\nOwner's newer body.\n"),
+      );
+    });
+
+    await expect(patch).rejects.toMatchObject({ name: "LifecyclePageConflictError" });
+    expect((await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true }))!.body)
+      .toContain("Owner's newer body.");
+    readSpy.mockRestore();
   });
 });

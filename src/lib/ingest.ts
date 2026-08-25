@@ -1480,6 +1480,7 @@ async function attachIngestTrigger(
     logOp: "ingest",
     crossRefSource: null, // skip the cross-ref LLM — pure dedup attach
     author: triggeredBy,
+    expectedContent: existing.content,
     logDetails: () => `dedup: attached trigger to existing page "${slug}"`,
   });
 
@@ -2226,6 +2227,7 @@ export async function ingest(
       logOp: "ingest",
       crossRefSource: content,
       author: actor,
+      ...(existing ? { expectedContent: existing.content } : {}),
       logDetails: ({ updatedSlugs }) =>
         `slug: ${slug} · updated ${updatedSlugs.length} related page(s)`,
     });

@@ -5,7 +5,7 @@ created: 2026-08-24
 status: done
 stepsCompleted: [1, 3, 4]
 followup_review_recommended: true
-review_loop_iteration: 5
+review_loop_iteration: 6
 baseline_revision: 6df2c30573d0a2dcbeabb3a0f65315d82a7698d9
 context:
   - AGENTS.md
@@ -327,6 +327,15 @@ None that block implementation. If an assumption is wrong, record the override i
 
 - patch: all findings from the `ee45c611` full-stack review applied: atomic cross-isolate Ingest claims, per-Page lifecycle serialization and owner-edit CAS recovery, terminal/draft malformed-lease isolation, late-stage DELETE fencing, reclaimable rolling-deploy leases, archive index freshness, durable Page-metadata indexing, and enforced exact fetched-URL citations
 - evidence: focused tests cover duplicate Ingest claims, same-slug lifecycle/index races, seeded private metadata races, expired and active legacy leases, late Source staging after DELETE, owner-edit retry recovery, uncited synthesis refusal, and malformed lease state beside legacy terminal projects
+- independent verdict: pending against the next committed SHA
+- release gates: pending against that same next SHA
+- acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged
+
+### 2026-08-24 — Exact-head review remediation pass 6
+
+- patch: all findings from the `480d73fa` full-stack review applied: cross-reference lock-order deadlock removal, conditional/retried related-Page and backlink-strip writes, metadata and owner PUT stale-write fencing, v1-to-v2 durable-lock bridge fencing, and rendered-citation validation
+- hardening: every production lifecycle read-modify-write caller now supplies its exact source bytes, while create-only doors refuse a concurrent creator; a conflict fails closed instead of restoring stale Page content
+- evidence: focused tests force the related-Page owner race, metadata race, post-header-check PUT race, and stale-v1-heartbeat race; Markdown tests reject URLs in comments, code, and unused definitions
 - independent verdict: pending against the next committed SHA
 - release gates: pending against that same next SHA
 - acceptance effect: none yet; the rejected retrospective verdict and in-progress delivery-review gate remain unchanged

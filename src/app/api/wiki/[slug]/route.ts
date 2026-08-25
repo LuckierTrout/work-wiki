@@ -17,6 +17,7 @@ import { getErrorMessage } from "@/lib/errors";
 import { patchMetadata } from "@/lib/patch-metadata";
 import {
   IF_MATCH_HEADER,
+  WRITE_CONFLICT_COPY,
   checkWritePrecondition,
   contentVersion,
 } from "@/lib/write-precondition";
@@ -307,6 +308,9 @@ export async function PUT(
     // read-only would be answered as a 400 about the slug.
     if (isReadOnlyError(err)) {
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
+    }
+    if (err instanceof Error && err.name === "LifecyclePageConflictError") {
+      return NextResponse.json({ error: WRITE_CONFLICT_COPY }, { status: 412 });
     }
     const message = getErrorMessage(err);
     const status = message.toLowerCase().startsWith("invalid slug") ? 400 : 500;

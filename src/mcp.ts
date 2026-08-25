@@ -264,6 +264,7 @@ export async function handleCreatePage(args: {
     logOp: "ingest",
     author: args.author,
     crossRefSource: args.content,
+    createOnly: true,
   });
 
   return { slug: args.slug, title, created: true };
@@ -343,6 +344,7 @@ export async function handleUpdatePage(args: {
     logOp: "edit",
     author: args.author,
     crossRefSource: callerBody,
+    expectedContent: existingPage.content,
   });
 
   return { slug: args.slug, title, updated: true };
@@ -1399,6 +1401,7 @@ export async function handleRevertRevision(args: {
     logOp: "edit",
     author,
     crossRefSource: revisionContent,
+    expectedContent: existing.content,
   });
 
   return { slug: result.slug, updatedSlugs: result.updatedSlugs };

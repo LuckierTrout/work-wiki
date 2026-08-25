@@ -182,6 +182,7 @@ export async function patchMetadata(
     logOp: "edit",
     crossRefSource: null,
     author: authorStr,
+    expectedContent: existing.content,
     logDetails: () => `metadata updated via PATCH`,
   });
 

@@ -2,6 +2,7 @@ import { callLLM, hasLLMKey } from "./llm";
 import { QUERY_MAX_OUTPUT_TOKENS, LISTED_OTHER_PAGES } from "./constants";
 import {
   listReadableWikiPages,
+  readWikiPageWithFrontmatter,
   writeWikiPageWithSideEffects,
   withPageCache,
   isAgentScopedType,
@@ -503,6 +504,7 @@ export async function saveAnswerToWiki(
     frontmatterData,
     pageContent,
   );
+  const existing = await readWikiPageWithFrontmatter(slug);
 
   // Hand off to the unified write pipeline. For markdown we pass the original
   // answer `content` as the cross-ref source so the related-pages prompt sees
@@ -516,6 +518,7 @@ export async function saveAnswerToWiki(
     logOp: "save",
     crossRefSource: isArtifact ? null : content,
     author: author ?? owner ?? "system",
+    ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
     logDetails: ({ updatedSlugs }) =>
       `query answer saved as ${slug} · linked ${updatedSlugs.length} related page(s)`,
   });

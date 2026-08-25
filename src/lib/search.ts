@@ -128,11 +128,13 @@ export async function updateRelatedPages(
     const updatedSlugs: string[] = [];
 
     for (const slug of relatedSlugs) {
+      let updated = false;
+      for (let attempt = 0; attempt < 3 && !updated; attempt += 1) {
       // Never append markdown cross-references to an HTML artifact — its body is
       // a self-contained document, and the "See also" markdown would render as
       // literal text below it. (Read frontmatter only for this type check.)
-      const meta = await readWikiPageWithFrontmatter(slug);
-      if (!meta) continue;
+      const meta = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      if (!meta) break;
       if (
         isArtifactType(
           typeof meta.frontmatter.type === "string"
@@ -140,53 +142,59 @@ export async function updateRelatedPages(
             : undefined,
         )
       ) {
-        continue;
+        break;
       }
 
       // Operate on the FULL file content (frontmatter + body) so the write-back
       // preserves the frontmatter block — writeWikiPageWithSideEffects writes
       // verbatim, and `readWikiPageWithFrontmatter.body` would have stripped
       // the frontmatter.
-      const page = await readWikiPage(slug);
-      if (!page) continue;
-
       // Skip if already links to the new page (use proper link detection
       // rather than substring matching to avoid false positives when the slug
       // appears in prose without being a wiki link).
-      if (hasLinkTo(page.content, newSlug)) continue;
+      if (hasLinkTo(meta.content, newSlug)) break;
 
       const link = `[${newTitle}](${newSlug}.md)`;
       let updatedContent: string;
 
       // Check if there's already a "See also" section
       const seeAlsoPattern = /^(\*\*See also:\*\*.*)$/m;
-      const seeAlsoMatch = page.content.match(seeAlsoPattern);
+      const seeAlsoMatch = meta.content.match(seeAlsoPattern);
 
       if (seeAlsoMatch) {
         // Append to existing "See also" line
-        updatedContent = page.content.replace(
+        updatedContent = meta.content.replace(
           seeAlsoPattern,
           `${seeAlsoMatch[1]}, ${link}`,
         );
       } else {
         // Add a new "See also" section at the end
-        updatedContent = `${page.content.trimEnd()}\n\n**See also:** ${link}\n`;
+        updatedContent = `${meta.content.trimEnd()}\n\n**See also:** ${link}\n`;
       }
 
-      await writeWikiPageWithSideEffects({
-        slug,
-        title: meta.frontmatter.title as string || slug,
-        content: updatedContent,
-        summary: (() => {
-          const m = meta.body.match(/^#\s+.+\n+(.+)/m);
-          return m ? m[1].slice(0, 120) : slug;
-        })(),
-        logOp: "edit",
-        logDetails: () => `cross-reference update from "${newSlug}"`,
-        crossRefSource: null,
-        author: "system",
-      });
-      updatedSlugs.push(slug);
+      try {
+        await writeWikiPageWithSideEffects({
+          slug,
+          title: meta.frontmatter.title as string || slug,
+          content: updatedContent,
+          summary: (() => {
+            const m = meta.body.match(/^#\s+.+\n+(.+)/m);
+            return m ? m[1].slice(0, 120) : slug;
+          })(),
+          logOp: "edit",
+          logDetails: () => `cross-reference update from "${newSlug}"`,
+          crossRefSource: null,
+          author: "system",
+          expectedContent: meta.content,
+        });
+        updatedSlugs.push(slug);
+        updated = true;
+      } catch (error) {
+        if (!(error instanceof Error && error.name === "LifecyclePageConflictError")) {
+          throw error;
+        }
+      }
+      }
     }
 
     return updatedSlugs;

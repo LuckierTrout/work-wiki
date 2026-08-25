@@ -82,6 +82,8 @@ export interface WritePageOptions {
   crossRefSource?: string | null;
   /** Who made this change — stored in the revision sidecar for attribution. */
   author?: string;
+  /** Optional revision-sidecar reason for internal conditional rewrites. */
+  revisionReason?: string;
   /** Refuse to overwrite the tenant-primary Page when it already exists. */
   createOnly?: boolean;
   /** Refuse to overwrite unless the authoritative Page still has these bytes. */
@@ -147,6 +149,7 @@ type PageLifecycleOp =
       crossRefSource?: string | null;
       /** Who made this change — stored in the revision sidecar. */
       author?: string;
+      revisionReason?: string;
       createOnly?: boolean;
       expectedContent?: string;
     }
@@ -237,7 +240,9 @@ async function runPageLifecycleOp(
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
   validateSlug(slug);
-  return withDurableLock(`page-lifecycle:${slug}`, async () => {
+  let postIndexEntries!: IndexEntry[];
+  let removedFromIndex = false;
+  await withDurableLock(`page-lifecycle:${slug}`, async () => {
 
   // --- Silo-primary: resolve the write tenant from content frontmatter ---
   let writeTenant: string | undefined;
@@ -336,7 +341,7 @@ async function runPageLifecycleOp(
           op.content,
           op.expectedContent,
           op.author,
-          "conditional lifecycle edit",
+          op.revisionReason ?? "conditional lifecycle edit",
           tenant,
         );
         if (!siloUpdated) throw new LifecyclePageConflictError(slug);
@@ -346,7 +351,7 @@ async function runPageLifecycleOp(
             op.content,
             op.expectedContent,
             op.author,
-            "conditional lifecycle edit",
+            op.revisionReason ?? "conditional lifecycle edit",
           );
           if (!flatUpdated && !await storageFileExists(wikiRelPath(`${slug}.md`))) {
             await createWikiPage(slug, op.content);
@@ -363,7 +368,7 @@ async function runPageLifecycleOp(
           op.content,
           op.expectedContent,
           op.author,
-          "conditional lifecycle edit",
+          op.revisionReason ?? "conditional lifecycle edit",
         );
         if (!flatUpdated) throw new LifecyclePageConflictError(slug);
         await writeWikiPage(slug, op.content, op.author, "conditional lifecycle silo repair", tenant);
@@ -493,8 +498,6 @@ async function runPageLifecycleOp(
   // 3. Mutate the index. The read → mutate → write cycle is performed under
   //    one durable index lock so concurrent Worker isolates cannot clobber
   //    each other. We use updateIndexUnsafe since we already hold the lock.
-  let postIndexEntries: IndexEntry[];
-  let removedFromIndex = false;
   await withDurableLock("index.md", async () => {
     const entries = await listWikiPages({ strict: true });
     if (op.kind === "write") {
@@ -729,6 +732,7 @@ async function runPageLifecycleOp(
       logger.warn("vault", `vault cleanup skipped for "${slug}":`, err);
     }
   }
+  });
 
   // 4. Cross-reference other pages.
   //    - write: discover related pages and add backlinks TO this slug.
@@ -763,19 +767,26 @@ async function runPageLifecycleOp(
     await mapWithConcurrency(linkers, LIFECYCLE_CONCURRENCY, async ({ entry, page }) => {
       const updated = stripBacklinksTo(slug, page!.content);
       if (updated !== page!.content) {
-        // Resolve the stripped page's tenant so writeWikiPage targets the silo directly.
-        let stripTenant: string | undefined;
         try {
-          const ownerVal = parseFrontmatter(updated).data.owner;
-          stripTenant = tenantForOwner(typeof ownerVal === "string" ? ownerVal : undefined);
-        } catch {
-          stripTenant = tenantForOwner(undefined);
+          await writeWikiPageWithSideEffects({
+            slug: entry.slug,
+            title: entry.title,
+            content: updated,
+            summary: entry.summary,
+            logOp: "edit",
+            logDetails: () => `backlink strip after deleting "${slug}"`,
+            crossRefSource: null,
+            author: "system",
+            revisionReason: "backlink strip",
+            expectedContent: page!.content,
+          });
+          strippedBacklinksFrom.push(entry.slug);
+        } catch (error) {
+          if (!(error instanceof Error && error.name === "LifecyclePageConflictError")) {
+            throw error;
+          }
+          logger.warn("wiki", `backlink strip skipped after concurrent edit of "${entry.slug}"`);
         }
-        // Silo-primary write for the stripped page.
-        await writeWikiPage(entry.slug, updated, "system", "backlink strip", stripTenant);
-        // Also write flat copy (transition — removable after #869).
-        await writeWikiPage(entry.slug, updated, "system", "backlink strip");
-        strippedBacklinksFrom.push(entry.slug);
       }
     });
   }
@@ -811,7 +822,6 @@ async function runPageLifecycleOp(
   }
 
   return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };
-  });
 }
 
 /**
@@ -977,6 +987,7 @@ export async function writeWikiPageWithSideEffects(
       summary,
       crossRefSource: opts.crossRefSource,
       author: opts.author,
+      revisionReason: opts.revisionReason,
       createOnly: opts.createOnly,
       expectedContent: opts.expectedContent,
     },

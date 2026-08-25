@@ -239,6 +239,7 @@ export async function fixMissingCrossRef(
     logDetails: () => `auto-fix: added cross-reference to ${targetSlug}.md`,
     crossRefSource: null, // skip cross-ref discovery — we're adding a specific link
     author,
+    expectedContent: sourcePage.content,
   });
 
   return {
@@ -304,6 +305,7 @@ export async function fixContradiction(
       `auto-fix: resolved contradiction with ${targetSlug}.md`,
     crossRefSource: null,
     author,
+    expectedContent: sourcePage.content,
   });
 
   return {
@@ -386,6 +388,7 @@ export async function fixMissingConceptPage(
       `auto-fix: created stub page for missing concept "${concept}"`,
     crossRefSource: content,
     author,
+    createOnly: true,
   });
 
   return {
@@ -602,6 +605,7 @@ export async function fixStalePage(slug: string, author = "lint-fix"): Promise<F
       `auto-fix: extended expiry to ${expiryStr}, verified as of ${validFromStr}`,
     crossRefSource: null,
     author,
+    expectedContent: page.content,
   });
 
   return {
@@ -697,6 +701,7 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
         : `auto-fix: unmigrated page already has all work-wiki fields`,
     crossRefSource: null,
     author,
+    expectedContent: page.content,
   });
 
   return {
@@ -750,6 +755,7 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
     logDetails: () => `auto-fix: cleared dangling supersedes "${supersedes}"`,
     crossRefSource: null,
     author,
+    expectedContent: page.content,
   });
 
   return {

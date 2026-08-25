@@ -49,7 +49,8 @@ import { createVault, addToVault, vaultIdFor } from "../vault";
 import { serializeFrontmatter } from "../frontmatter";
 import { isAgentScopedType, isArtifactType } from "../wiki";
 import type { AgentProfile } from "../types";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { relatedByVector, searchByVector } from "../embeddings";
 import { hasLLMKey, callLLM } from "../llm";
 
@@ -750,6 +751,51 @@ describe("updateRelatedPages", () => {
     expect(page!.content).toContain("owner: alice");
     expect(page!.content).toContain("visibility: private");
     expect(page!.content).toContain("**See also:** [New Page](new-page.md)");
+  });
+
+  it("retries on a concurrent owner edit instead of restoring stale bytes", async () => {
+    await ensureDirectories();
+    const initial = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Owned\n\nInitial body.",
+    );
+    await writeWikiPage("owned-race", initial);
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let staleRead!: () => void;
+    let releaseRead!: () => void;
+    const readStarted = new Promise<void>((resolve) => { staleRead = resolve; });
+    const release = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "readFile").mockImplementation(async (rel) => {
+      const value = await originalRead(rel);
+      if (pauseOnce && String(rel).endsWith("wiki/owned-race.md")) {
+        pauseOnce = false;
+        staleRead();
+        await release;
+      }
+      return value;
+    });
+
+    const crossRef = updateRelatedPages("new-page", "New Page", ["owned-race"]);
+    await readStarted;
+    const ownerBody = initial.replace("Initial body.", "Owner edit wins.");
+    await writeWikiPageWithSideEffects({
+      slug: "owned-race",
+      title: "Owned",
+      content: ownerBody,
+      summary: "Owner edit",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: initial,
+    });
+    releaseRead();
+
+    await expect(crossRef).resolves.toEqual(["owned-race"]);
+    const stored = (await readWikiPage("owned-race"))!.content;
+    expect(stored).toContain("Owner edit wins.");
+    expect(stored).toContain("[New Page](new-page.md)");
+    expect(stored).not.toContain("Initial body.");
   });
 
   it("never appends a See-also to an HTML artifact", async () => {

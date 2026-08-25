@@ -123,6 +123,7 @@ async function appendSourceFigures(
     logDetails: () => `preserved embedded figures from ${records.length} document source(s)`,
     crossRefSource: null,
     author: owner,
+    expectedContent: page.content,
   });
 }
 

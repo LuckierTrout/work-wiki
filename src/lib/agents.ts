@@ -828,6 +828,9 @@ export async function updateAgent(
         logOp: "other",
         crossRefSource: null,
         author: id,
+        ...(existingPage
+          ? { expectedContent: existingPage.content }
+          : { createOnly: true }),
       });
 
       // Append slug to the right list (avoid duplicates)
@@ -971,6 +974,7 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
       logOp: "other",
       crossRefSource: null, // skip cross-ref for seeded agent pages
       author: options.id,
+      ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
     });
 
     // Bucket the slug into the right page list
