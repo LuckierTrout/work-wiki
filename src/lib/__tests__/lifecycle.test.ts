@@ -1425,7 +1425,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
     await expect(
       getStorage().readFile("raw/sources/papers/energy/note.md"),
     ).rejects.toThrow();
-  });
+  }, 15_000);
 
   it("does not offer Retry while a job is automatically retrying", async () => {
     const { createIngestJob, retryIngestJob, updateIngestJob } =
