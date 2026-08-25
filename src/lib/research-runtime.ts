@@ -3,6 +3,7 @@ import { logger } from "./logger";
 import {
   acquireResearchSlot,
   holdsResearchSlot,
+  hasResearchSlot,
   releaseResearchSlot,
   releaseExpiredResearchSlot,
   rotateResearchSlot,
@@ -287,7 +288,7 @@ async function releaseResearchSlotAndConfirmGone(
 ): Promise<boolean> {
   await releaseResearchSlot(owner, projectId, attemptId);
   try {
-    return !(await holdsResearchSlot(owner, projectId, attemptId));
+    return !(await hasResearchSlot(owner, projectId, attemptId));
   } catch {
     return false;
   }

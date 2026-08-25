@@ -11,7 +11,11 @@ vi.mock("../llm", () => ({
 
 import { mergePages } from "../merge";
 import { aliasRedirectForMissing } from "../page-redirect";
-import { writeWikiPageWithSideEffects } from "../lifecycle";
+import {
+  deleteWikiPageWhileLocked,
+  withPageLifecycleLocks,
+  writeWikiPageWithSideEffects,
+} from "../lifecycle";
 import {
   ensureDirectories,
   listWikiPages,
@@ -371,6 +375,55 @@ describe("mergePages", () => {
 
     expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(settled.filter((result) => result.status === "rejected")).toHaveLength(1);
+  }, 15_000);
+
+  it("serializes disjoint cross-linked merges without a lock cycle", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("alpha", {
+      title: "Alpha",
+      body: "# Alpha\n\nSee [charlie](charlie.md).",
+    });
+    await seedPage("beta", { title: "Beta" });
+    await seedPage("charlie", {
+      title: "Charlie",
+      body: "# Charlie\n\nSee [alpha](alpha.md).",
+    });
+    await seedPage("delta", { title: "Delta" });
+
+    const settled = await Promise.allSettled([
+      mergePages({ from: "alpha", into: "beta", actor: "alice" }),
+      mergePages({ from: "charlie", into: "delta", actor: "alice" }),
+    ]);
+
+    expect(settled.every((result) => result.status === "fulfilled")).toBe(true);
+  }, 15_000);
+
+  it("refuses a completed delete receipt when the source Page reappears", async () => {
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    const original = await readWikiPage("harness-ai-agents");
+    const receiptPath = "derived-indexes/test-delete-receipt.json";
+    await withPageLifecycleLocks(["harness-ai-agents"], (held) =>
+      deleteWikiPageWhileLocked(
+        "harness-ai-agents",
+        held,
+        "alice",
+        original!.content,
+        { key: "test-delete", receiptPath },
+      ));
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents)",
+      body: "# Harness (AI agents)\n\nContent about Harness (AI agents).",
+    });
+
+    await expect(withPageLifecycleLocks(["harness-ai-agents"], (held) =>
+      deleteWikiPageWhileLocked(
+        "harness-ai-agents",
+        held,
+        "alice",
+        original!.content,
+        { key: "test-delete", receiptPath },
+      ))).rejects.toThrow(/reappeared/i);
+    expect(await readWikiPage("harness-ai-agents")).not.toBeNull();
   }, 15_000);
 
   it("resumes delete lifecycle side effects when Page bytes were already removed", async () => {

@@ -1350,6 +1350,33 @@ describe("deep research — remediations", () => {
     });
   });
 
+  it("retains an expired DELETE tombstone when durable release writes keep losing", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      runAttemptId: grant.attemptId,
+    });
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => target.endsWith("research-leases.json")
+        ? false
+        : originalMatch(target, content, etag),
+    );
+
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      deleteRequested: true,
+      runAttemptId: grant.attemptId,
+    });
+    expect(await activeResearchCount("alice")).toBe(1);
+    vi.useRealTimers();
+  });
+
   it("keeps the Page and reports pending Source promotion after a storage failure", async () => {
     mockedSaveRaw.mockRejectedValue(new Error("disk full"));
     const created = await project();

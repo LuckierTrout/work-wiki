@@ -1123,6 +1123,12 @@ export async function deleteWikiPageWhileLocked(
         result?: DeletePageResult;
       };
       if (receipt.key === idempotency.key && receipt.result?.slug === slug) {
+        if (await readWikiPage(slug, { fresh: true, strict: true })) {
+          throw new LifecyclePageConflictError(
+            slug,
+            "reappeared after a completed delete",
+          );
+        }
         return receipt.result;
       }
     } catch (error) {

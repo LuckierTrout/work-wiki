@@ -40,11 +40,11 @@ import {
   withPageLifecycleLocks,
   type PageLifecycleLockHeld,
 } from "./lifecycle";
-import { getBacklinkIndex } from "./backlink-index";
 import { escapeRegex } from "./links";
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
 import { sourceSha256 } from "./source-sha256";
+import { withDurableLock } from "./lock";
 
 export interface MergePagesArgs {
   /** Slug of the page to absorb — deleted after the merge. */
@@ -121,15 +121,14 @@ async function repointBacklinks(
   // it's absent (fresh store / not yet built), fall back to scanning every page
   // for the link — a merge is infrequent, so the O(pages) scan is acceptable and
   // keeps the re-point correct rather than silently stripping links on delete.
-  const index = await getBacklinkIndex();
-  const candidates = index
-    ? index[fromSlug] ?? []
-    : (await listWikiPages()).map((e) => e.slug);
+  // Merge correctness cannot trust the fail-soft backlink index. This path is
+  // rare, so scan every current Page and let expected-content CAS fence edits.
+  const candidates = (await listWikiPages({ strict: true })).map((e) => e.slug);
   const linkers = candidates.filter((s) => s !== fromSlug && s !== intoSlug);
   const re = new RegExp(`\\]\\(${escapeRegex(fromSlug)}\\.md\\)`, "g");
   const repointed: string[] = [];
   for (const src of linkers) {
-    const page = await readWikiPageWithFrontmatter(src);
+    const page = await readWikiPageWithFrontmatter(src, { fresh: true, strict: true });
     if (!page) {
       // `src` was named as a linker by the index / page list, so a null read is
       // NOT an expected "no such page" — `readWikiPage` also collapses transient
@@ -220,12 +219,15 @@ export async function mergePages({
   if (fromSlug === intoSlug) {
     throw new Error("cannot merge a page into itself");
   }
-  return withPageLifecycleLocks([fromSlug, intoSlug], (held) => mergePagesWhileSourceLocked({
-    from: fromSlug,
-    into: intoSlug,
-    actor,
-    bypassOwnerCheck,
-  }, held));
+  // One merge coordinator at a time. Pair locks alone can deadlock when two
+  // disjoint merges later acquire one another's backlink Pages.
+  return withDurableLock("merge-pages", () =>
+    withPageLifecycleLocks([fromSlug, intoSlug], (held) => mergePagesWhileSourceLocked({
+      from: fromSlug,
+      into: intoSlug,
+      actor,
+      bypassOwnerCheck,
+    }, held)));
 }
 
 async function mergePagesWhileSourceLocked({
@@ -416,6 +418,7 @@ async function mergePagesWhileSourceLocked({
         receiptPath: `${operationPath}.${receipt.generation}.delete`,
       },
     );
+    await repointBacklinks(fromSlug, intoSlug, actor);
     await completeMergeOperation(operationPath, receipt);
     return { fromSlug, intoSlug, disputed: receipt.disputed, repointedBacklinksFrom: [] };
   }
@@ -475,6 +478,10 @@ async function mergePagesWhileSourceLocked({
       receiptPath: `${operationPath}.${receipt.generation}.delete`,
     },
   );
+  // Catch a linker edit that landed after the pre-delete repoint snapshot.
+  for (const slug of await repointBacklinks(fromSlug, intoSlug, actor)) {
+    if (!repointedBacklinksFrom.includes(slug)) repointedBacklinksFrom.push(slug);
+  }
   await completeMergeOperation(operationPath, receipt);
 
   return { fromSlug, intoSlug, disputed: receipt.disputed, repointedBacklinksFrom };

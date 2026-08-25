@@ -360,6 +360,26 @@ export async function activeResearchCount(owner: string): Promise<number> {
   }
 }
 
+/** Does the durable registry still contain this claim, expired or live? */
+export async function hasResearchSlot(
+  owner: string,
+  projectId: string,
+  attemptId?: string,
+): Promise<boolean> {
+  try {
+    const read = await getStorage().readFileWithEtag(leasePath(owner));
+    return parseSlots(read.content).some(
+      (slot) => slot.projectId === projectId
+        && (attemptId === undefined || slot.attemptId === attemptId),
+    );
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw error instanceof ResearchLeaseError
+      ? error
+      : new ResearchLeaseError("Research lease file could not be read.");
+  }
+}
+
 /**
  * Is a live run holding a slot for this project?
  *
