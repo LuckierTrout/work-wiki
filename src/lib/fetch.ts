@@ -138,6 +138,7 @@ export async function pdfToText(buffer: ArrayBuffer): Promise<string> {
 async function extractPdfText(
   buffer: ArrayBuffer,
   fallbackTitle: string,
+  maxContentLength: number | null = MAX_CONTENT_LENGTH,
 ): Promise<{ title: string; content: string }> {
   const trimmed = (await pdfToText(buffer)).trim();
   if (!trimmed) {
@@ -152,10 +153,9 @@ async function extractPdfText(
     fallbackTitle;
   const title = firstLine.length > 200 ? firstLine.slice(0, 200) : firstLine;
 
-  const content =
-    trimmed.length > MAX_CONTENT_LENGTH
-      ? trimmed.slice(0, MAX_CONTENT_LENGTH) + "\n\n[Content truncated]"
-      : trimmed;
+  const content = maxContentLength !== null && trimmed.length > maxContentLength
+    ? trimmed.slice(0, maxContentLength) + "\n\n[Content truncated]"
+    : trimmed;
 
   return { title: title || fallbackTitle, content };
 }
@@ -262,6 +262,9 @@ export async function fetchUrlContent(
       buffer,
       new URL(url).pathname.split("/").pop()?.replace(/\.pdf$/i, "") ??
         "PDF Document",
+      options?.maxContentLength === null
+        ? null
+        : (options?.maxContentLength ?? MAX_CONTENT_LENGTH),
     );
   }
 

@@ -214,6 +214,20 @@ describe("parseTask", () => {
     expect(parseTask({ kind: "ingest" })).toBeNull();
   });
 
+  it("accepts a canonical stored Source reference without duplicating its body", () => {
+    expect(parseTask({
+      kind: "ingest",
+      sourcePath: "raw/sources/research-example-com-page/abc123.md",
+      sourceType: "url",
+      sourceUrl: "https://example.com/page",
+    })).toMatchObject({
+      kind: "ingest",
+      sourcePath: "raw/sources/research-example-com-page/abc123.md",
+      sourceType: "url",
+    });
+    expect(parseTask({ kind: "ingest", sourcePath: "../secrets.md" })).toBeNull();
+  });
+
   it("accepts an ingest task with only a staged descriptor (no url/content)", () => {
     expect(
       parseTask({

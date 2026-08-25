@@ -90,7 +90,7 @@ export function availableResearchProviders(
   const providers: ResearchProvider[] = [];
   if (settings.tavilyApiKey) providers.push("tavily");
   if (settings.serpApiKey) providers.push("serpapi");
-  if (settings.searxngBaseUrl) providers.push("searxng");
+  if (safeUrl(settings.searxngBaseUrl)) providers.push("searxng");
   return providers;
 }
 
@@ -111,6 +111,13 @@ export class ResearchProviderUnconfiguredError extends Error {
     super(researchProviderMissingCopy(provider));
     this.name = "ResearchProviderUnconfiguredError";
     this.provider = provider;
+  }
+}
+
+export class ResearchProviderOverrideError extends Error {
+  constructor(readonly value: string) {
+    super(`RESEARCH_PROVIDER is set to unsupported value "${value}". Use tavily, serpapi, or searxng.`);
+    this.name = "ResearchProviderOverrideError";
   }
 }
 
@@ -147,6 +154,9 @@ export function selectResearchProvider(
   preferred?: string | null,
   settings: ResearchSettings = getResearchSettings(),
 ): ResearchProvider {
+  if (settings.invalidEnvProvider) {
+    throw new ResearchProviderOverrideError(settings.invalidEnvProvider);
+  }
   if (settings.envProvider) return settings.envProvider;
   const wanted = typeof preferred === "string" ? preferred.trim().toLowerCase() : "";
   if ((RESEARCH_PROVIDERS as readonly string[]).includes(wanted)) {

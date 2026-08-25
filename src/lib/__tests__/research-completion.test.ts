@@ -61,6 +61,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
   _resetStorage();
@@ -94,6 +95,27 @@ describe("research completion outbox", () => {
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect(committed?.completion?.phase).toBe("sources");
     expect(committed?.pageSlugs).toContain("research-launch-evidence");
+  });
+
+  it("rechecks cancellation after winning the claim and before calling the Page writer", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    const storage = getStorage();
+    const writeFile = storage.writeFile.bind(storage);
+    vi.spyOn(storage, "writeFile").mockImplementation(async (relPath, content) => {
+      await writeFile(relPath, content);
+      if (relPath.endsWith(`${created.id}.json`) && content.includes('"claimed":true')) {
+        await cancelResearchProject("alice", created.id);
+      }
+    });
+
+    const committed = await commitResearchPage("alice", created.id, OUTBOX);
+
+    expect(committed?.status).toBe("cancelled");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 
   it("uses one deterministic job id across concurrent drains", async () => {
@@ -130,6 +152,10 @@ describe("research completion outbox", () => {
       "abc",
     );
     expect(ingest[0]).toMatchObject({ jobId: expected });
+    expect(ingest[0]).toMatchObject({
+      sourcePath: "raw/sources/research-example-com-launch-brief/abc.md",
+    });
+    expect(ingest[0]).not.toHaveProperty("content");
     expect((await getResearchProject("alice", created.id))?.completion?.sources[0]?.jobId)
       .toBe(expected);
   });
@@ -349,6 +375,31 @@ describe("research completion outbox", () => {
 
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
     expect((await getResearchProject("alice", created.id))?.completion?.phase).toBe("sources");
+  });
+
+  it("resumes after a crash checkpoint without replaying Page lifecycle side effects", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [],
+        writeClaimedAt: new Date(Date.now() - RESEARCH_PAGE_WRITE_STALE_MS - 1_000).toISOString(),
+        writeClaimId: "dead-writer",
+      },
+    });
+    await getStorage().writeFile(
+      `tenants/${tenantForOwner("alice")}/research-outbox/${created.id}.json.page-written`,
+      JSON.stringify({ completedAt: new Date().toISOString(), claimId: "dead-writer" }),
+    );
+
+    const resumed = await commitResearchPage("alice", created.id, OUTBOX);
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(resumed?.completion?.phase).toBe("sources");
   });
 
   it("drains an orphan outbox after the project row is gone", async () => {

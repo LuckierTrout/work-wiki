@@ -40,6 +40,13 @@ describe("restrictResearchCitations", () => {
     expect(fenced).toContain("https://example.com/a");
     expect(fenced).toContain("html");
   });
+
+  it("preserves allowed link titles and surrounding punctuation", () => {
+    const markdown = "Evidence: [launch](https://example.com/a \"Primary source\"), then [claim](https://evil.example/x \"Invented\").";
+
+    expect(restrictResearchCitations(markdown, ["https://example.com/a"]))
+      .toBe("Evidence: [launch](https://example.com/a \"Primary source\"), then claim.");
+  });
 });
 
 describe("appendThinkingLines", () => {

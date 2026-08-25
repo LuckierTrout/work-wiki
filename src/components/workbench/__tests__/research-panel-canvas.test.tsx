@@ -314,6 +314,20 @@ describe("Research Panel — thinking", () => {
     fireEvent.click(summary);
     expect(screen.getByText(/Wrote research-launch-evidence/)).toBeTruthy();
   });
+
+  it("lets the owner collapse live thinking while the run keeps polling", async () => {
+    send.mockResolvedValue({
+      projects: [project({ status: "collecting", thinking: ["Working through evidence"] })],
+    });
+
+    render(<ResearchCanvas wikiId="current" />);
+
+    const summary = await screen.findByText("Thinking");
+    const details = summary.closest("details")!;
+    expect(details.open).toBe(true);
+    fireEvent.click(summary);
+    expect(details.open).toBe(false);
+  });
 });
 
 describe("Research Panel — starting a run", () => {

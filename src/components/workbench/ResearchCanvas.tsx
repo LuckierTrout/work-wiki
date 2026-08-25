@@ -307,6 +307,7 @@ function ResearchTask({
   const thinking = Array.isArray(project.thinking) ? project.thinking : [];
   const live = RESEARCH_ACTIVE_STATUSES.includes(project.status);
   const lines = tail(thinking);
+  const [liveThinkingOpen, setLiveThinkingOpen] = useState(true);
 
   // FOLLOW THE NEWEST LINE. `useLayoutEffect` so the scroll happens in the same
   // frame the new line paints — in a plain effect the viewport visibly lands on
@@ -352,33 +353,31 @@ function ResearchTask({
 
       {/* NO CHROME WHEN THERE IS NO THINKING — the Chat rule, kept. */}
       {thinking.length > 0 ? (
-        live ? (
-          // The live viewport: five lines, newer more opaque, `aria-live` polite.
-          // Chat's classes verbatim, so there is one thinking style to maintain
-          // and this panel does not restyle it.
-          <div
-            className="wb-chat-thinking wb-chat-thinking--live"
-            aria-live="polite"
-            ref={liveRef}
-          >
-            {lines.map((line, index, all) => (
-              <p key={`${line}-${index}`} style={{ opacity: (index + 1) / all.length }}>
-                {line}
-              </p>
-            ))}
-          </div>
-        ) : (
-          // Collapsed after the run, and expandable — the same `<details>` Chat
-          // uses for a finished turn's stored thinking.
-          <details
-            className="wb-chat-thinking"
-            open={thinkingOpen}
-            onToggle={(event) => onToggleThinking((event.target as HTMLDetailsElement).open)}
-          >
-            <summary>Thinking</summary>
-            <pre>{thinking.join("\n")}</pre>
-          </details>
-        )
+        <details
+          className="wb-chat-thinking"
+          open={live ? liveThinkingOpen : thinkingOpen}
+          onToggle={(event) => {
+            const open = (event.currentTarget as HTMLDetailsElement).open;
+            if (live) setLiveThinkingOpen(open);
+            onToggleThinking(open);
+          }}
+        >
+          <summary>Thinking</summary>
+          {live ? (
+            // The live viewport: five lines, newer more opaque, `aria-live` polite.
+            <div
+              className="wb-chat-thinking--live"
+              aria-live="polite"
+              ref={liveRef}
+            >
+              {lines.map((line, index, all) => (
+                <p key={`${line}-${index}`} style={{ opacity: (index + 1) / all.length }}>
+                  {line}
+                </p>
+              ))}
+            </div>
+          ) : <pre>{thinking.join("\n")}</pre>}
+        </details>
       ) : null}
 
       {live && !readOnly ? (

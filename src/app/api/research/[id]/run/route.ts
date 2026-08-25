@@ -11,6 +11,7 @@ import {
 } from "@/lib/research-runtime";
 import {
   availableResearchProviders,
+  ResearchProviderOverrideError,
   ResearchProviderUnconfiguredError,
 } from "@/lib/research-providers";
 
@@ -87,7 +88,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     // without ever silently switching. 400 by TYPE rather than by matching the
     // sentence, the `ClientInputError` idiom from the create route.
     const status =
-      error instanceof ResearchProviderUnconfiguredError
+      error instanceof ResearchProviderUnconfiguredError || error instanceof ResearchProviderOverrideError
         ? 400
         : /not found/i.test(message)
           ? 404

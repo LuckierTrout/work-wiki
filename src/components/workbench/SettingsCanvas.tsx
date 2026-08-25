@@ -580,7 +580,8 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   function researchProviderRow() {
     const id = field("researchProvider");
     const hintId = `${id}-hint`;
-    const envPinned = stored.envResearchProvider !== null;
+    const invalidEnv = stored.envResearchProviderInvalid ?? null;
+    const envPinned = stored.envResearchProvider !== null || invalidEnv !== null;
     const selected = draftResearchProvider(values, stored);
     const configured = draftResearchProviderConfigured(values, stored);
     return (
@@ -617,7 +618,9 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           ))}
         </select>
         <span className="wb-set-hint" id={hintId}>
-          {envPinned
+          {invalidEnv
+            ? `RESEARCH_PROVIDER is set to unsupported value “${invalidEnv}”. No Deep Research run will start until the environment is corrected.`
+            : envPinned
             ? `RESEARCH_PROVIDER is set to ${researchProviderLabel(selected)} and wins over this box.`
             : configured
               ? `${researchProviderLabel(selected)} is configured and will run the next Deep Research.`

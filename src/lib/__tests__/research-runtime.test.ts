@@ -74,6 +74,7 @@ import { saveRawSourceFor } from "../raw";
 import {
   acquireResearchSlot,
   activeResearchCount,
+  releaseResearchSlot,
   RESEARCH_SLOT_TTL_MS,
 } from "../research-concurrency";
 import {
@@ -188,15 +189,16 @@ describe("deep research run — success", () => {
     expect(finished.status).toBe("complete");
     expect(finished.synthesis).toContain("# Launch evidence");
     // ONE Page, through the lifecycle writer — not a second Page writer, and
-    // not a memory proposal. `research-{slugify(title)}`.
+    // not a memory proposal. The stable project suffix prevents title collisions.
     expect(mockedWritePage).toHaveBeenCalledTimes(1);
+    const pageSlug = researchPageSlug({ title: created.title, id: created.id });
     expect(mockedWritePage.mock.calls[0][0]).toMatchObject({
-      slug: "research-launch-evidence",
+      slug: pageSlug,
       title: "Launch evidence",
       author: "research-agent",
     });
     // The Page slug is recorded on the project, so the panel can open it.
-    expect(finished.pageSlugs).toContain("research-launch-evidence");
+    expect(finished.pageSlugs).toContain(pageSlug);
     // AUTO-INGEST: the fetched body is a Source, and the Source has a job.
     expect(mockedSaveRaw).toHaveBeenCalledTimes(1);
     expect(mockedSaveRaw.mock.calls[0][0]).toBe(researchSourceSlug("https://example.com/launch/brief"));
@@ -328,6 +330,49 @@ describe("deep research run — success", () => {
     expect(mockedSaveRaw).toHaveBeenCalledTimes(RESEARCH_SOURCE_FETCH_MAX);
   });
 
+  it("balances the fetch budget across every query", async () => {
+    mockedSearch.mockImplementation(async (_provider, query) =>
+      Array.from({ length: 8 }, (_, index) => ({
+        title: `${query} result ${index}`,
+        url: `https://example.com/${query}/${index}`,
+        snippet: "s",
+        content: `${query.toUpperCase()} BODY ${index}`,
+      })));
+    const created = await project({ queries: ["first", "second"] });
+
+    await runResearchProject("alice", created.id);
+
+    const savedSlugs = mockedSaveRaw.mock.calls.map(([slug]) => slug);
+    expect(savedSlugs).toHaveLength(RESEARCH_SOURCE_FETCH_MAX);
+    expect(savedSlugs.some((slug) => slug.includes("first"))).toBe(true);
+    expect(savedSlugs.some((slug) => slug.includes("second"))).toBe(true);
+  });
+
+  it("condenses every chunk when evidence is too large for one synthesis prompt", async () => {
+    const large = `BEGIN-${"x".repeat(600_000)}-END`;
+    mockedSearch.mockResolvedValue([{
+      title: "Large source",
+      url: "https://example.com/large",
+      snippet: "s",
+      content: large,
+    }]);
+    mockedLLM.mockImplementation(async (system) =>
+      system.startsWith("Extract only evidence")
+        ? "condensed evidence"
+        : "# Launch evidence\n\nA brief.");
+    const created = await project();
+
+    await runResearchProject("alice", created.id);
+
+    const mapCalls = mockedLLM.mock.calls.filter(([, , options]) =>
+      options?.maxOutputTokens === 1_500);
+    expect(mapCalls.length).toBeGreaterThan(1);
+    const mapPrompts = mapCalls.map(([, prompt]) => prompt);
+    expect(mapPrompts.join("")).toContain("BEGIN-");
+    expect(mapPrompts.join("")).toContain("-END");
+    expect(mockedLLM.mock.calls.at(-1)?.[1]).toContain("condensed evidence");
+  });
+
   it("gives its slot back", async () => {
     const created = await project();
     await runResearchProject("alice", created.id);
@@ -410,6 +455,19 @@ describe("deep research run — failure and cancellation", () => {
     expect(finished.status).toBe("failed");
     expect(finished.error).toMatch(/no credential/);
     expect(mockedSearch).not.toHaveBeenCalled();
+    expect(await activeResearchCount("alice")).toBe(0);
+  });
+
+  it("releases a slot preclaimed by the dispatcher when provider resolution fails", async () => {
+    const created = await project();
+    await acquireResearchSlot("alice", created.id);
+    mockedResolve.mockImplementation(() => {
+      throw new Error("Deep Research provider override is invalid.");
+    });
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("failed");
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
@@ -552,6 +610,28 @@ describe("deep research — one run per project", () => {
     const queued = await queueResearchProject("alice", created.id);
 
     expect(queued.status).toBe("queued");
+  });
+
+  it("reruns a completed project with the same Page identity", async () => {
+    const created = await project();
+    const first = await runResearchProject("alice", created.id);
+    const firstSlug = first.pageSlugs[0];
+
+    await queueResearchProject("alice", created.id);
+    const second = await runResearchProject("alice", created.id);
+
+    expect(second.status).toBe("complete");
+    expect(second.pageSlugs).toContain(firstSlug);
+    expect(new Set(second.pageSlugs)).toEqual(new Set([firstSlug]));
+    expect(mockedWritePage).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives same-title projects distinct stable Page identities", async () => {
+    const first = await project();
+    const second = await project();
+
+    expect(researchPageSlug(first)).not.toBe(researchPageSlug(second));
+    expect(researchPageSlug(first)).toBe(researchPageSlug(first));
   });
 
   it("dispatches a queued project once, however many times it is drained", async () => {
@@ -858,13 +938,15 @@ describe("deep research — remediations", () => {
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
-  it("releases a held lease when the project is deleted", async () => {
+  it("keeps a collecting worker's lease until that worker exits", async () => {
     const created = await project();
     await updateResearchProject("alice", created.id, { status: "collecting" });
     await acquireResearchSlot("alice", created.id);
 
     expect(await retireResearchProject("alice", created.id)).toBe(true);
     expect(await getResearchProject("alice", created.id)).toBeNull();
+    expect(await activeResearchCount("alice")).toBe(1);
+    await releaseResearchSlot("alice", created.id);
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
@@ -1035,7 +1117,7 @@ describe("research slugs", () => {
   it("names the Page from the title and the Source from the URL", () => {
     // URL identity is what makes the SHA skip mean anything: a second run over
     // the same page writes the same Source slug instead of a duplicate.
-    expect(researchPageSlug({ title: "Launch Evidence!", id: "abc" })).toBe("research-launch-evidence");
+    expect(researchPageSlug({ title: "Launch Evidence!", id: "abc" })).toMatch(/^research-launch-evidence-[0-9a-f]{8}$/);
     expect(researchSourceSlug("https://example.com/a/b")).toMatch(/^research-example-com-a-b$/);
     expect(researchSourceSlug("not a url")).toBeNull();
   });
@@ -1062,6 +1144,6 @@ describe("research slugs", () => {
   });
 
   it("falls back to the project id when the title slugifies to nothing", () => {
-    expect(researchPageSlug({ title: "!!!", id: "0123456789abcdef" })).toBe("research-0123456789ab");
+    expect(researchPageSlug({ title: "!!!", id: "0123456789abcdef" })).toMatch(/^research-untitled-[0-9a-f]{8}$/);
   });
 });

@@ -44,7 +44,11 @@ const request = (body: unknown) =>
     body: JSON.stringify(body),
   });
 
-const BODY = { title: "Launch research", question: "What supports the date?" };
+const BODY = {
+  title: "Launch research",
+  question: "What supports the date?",
+  queries: ["launch date evidence"],
+};
 
 describe("POST /api/research failure classification", () => {
   let savedReadOnly: string | undefined;
@@ -146,6 +150,34 @@ describe("POST /api/research failure classification", () => {
 
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({ project: { id: "p1" } });
+  });
+
+  it.each([
+    ["malformed JSON", "{ not json"],
+    ["JSON null", "null"],
+    ["JSON array", "[]"],
+  ])("400s %s instead of reporting a server failure", async (_label, body) => {
+    const response = await POST(new Request("http://localhost/api/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    }));
+
+    expect(response.status).toBe(400);
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["blank title", { ...BODY, title: "  " }],
+    ["blank question", { ...BODY, question: "  " }],
+    ["no queries", { ...BODY, queries: [] }],
+    ["non-string query", { ...BODY, queries: [42] }],
+    ["non-string Wiki id", { ...BODY, vaultId: 42 }],
+  ])("400s %s", async (_label, body) => {
+    const response = await POST(request(body));
+
+    expect(response.status).toBe(400);
+    expect(mockedCreate).not.toHaveBeenCalled();
   });
 
   it("reconciles interrupted runs on the panel's read", async () => {

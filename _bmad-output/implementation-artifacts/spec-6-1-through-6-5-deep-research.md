@@ -5,7 +5,7 @@ created: 2026-08-24
 status: done
 stepsCompleted: [1, 3, 4]
 followup_review_recommended: true
-review_loop_iteration: 0
+review_loop_iteration: 1
 baseline_revision: 6df2c30573d0a2dcbeabb3a0f65315d82a7698d9
 context:
   - AGENTS.md
@@ -22,25 +22,24 @@ warnings:
   - oversized
 deferred:
   - summary: >-
-      The research lease file is last-write-wins, so two isolates can over-admit
-      under a concurrent acquire.
+      Legacy manual sourceUrls can still be entered in Knowledge Studio, but an
+      automated run replaces them with provider results.
     evidence: |-
-      acquireResearchSlot reads then writes tenants/{t}/research-leases.json
-      without compare-and-swap, the same kernel JSON pattern as other stores.
-      The three-slot ceiling is therefore best-effort across isolates, not
-      linearizable.
+      This predates Epic 6 and is not part of the Workbench confirmed-run path.
+      The independent review recorded it in deferred-work.md for later Studio
+      cleanup.
     location: >-
-      src/lib/research-concurrency.ts
+      src/components/KnowledgeStudio.tsx
     severity: medium
   - summary: >-
-      DELETE /api/research/:id does not release a held research slot, so a
-      deleted in-flight run occupies a slot until TTL.
+      The shared URL safety guard validates the address text but does not pin a
+      DNS resolution through the outbound request, leaving a rebinding gap.
     evidence: |-
-      The DELETE handler calls deleteResearchProject only. Slot release lives
-      on cancel and on runResearchProject's finally, not on delete. The panel
-      has no delete control; the API door still leaks a slot until TTL.
+      This is a shared kernel issue rather than a Deep Research-only regression.
+      The independent review recorded it in deferred-work.md for a dedicated
+      network-boundary remediation.
     location: >-
-      src/app/api/research/[id]/route.ts
+      src/lib/url-safety.ts
     severity: medium
 ---
 
@@ -217,6 +216,33 @@ Context7 before changing Tavily/SerpApi/SearXNG request shapes (`/websites/tavil
 - Given the deployment is read-only, when I POST create or run, then 403 and the store is untouched.
 - Given no principal, when I GET/POST research APIs, then 401 `Sign in required.`
 
+### Review Findings
+
+- [x] [Review][Patch] Add a stable project-ID suffix to research Page slugs so same-title projects cannot overwrite each other and completed-project reruns target their own Page [`src/lib/research-slug.ts:4`]
+- [x] [Review][Patch] Make queue/start transitions atomic so a stale start cannot move an already-collecting project back to queued [`src/lib/research-runtime.ts:172`]
+- [x] [Review][Patch] Acquire admission before exposing a project as collecting, while preserving per-project lease idempotency [`src/lib/research-runtime.ts:620`]
+- [x] [Review][Patch] Release a claimed slot when provider resolution fails before the worker enters its guarded run [`src/lib/research-runtime.ts:633`]
+- [x] [Review][Patch] Do not release a collecting or synthesizing project's slot while DELETE is only requesting retirement [`src/lib/research-runtime.ts:250`]
+- [x] [Review][Patch] Recheck cancellation after the Page-write claim and before lifecycle side effects [`src/lib/research-completion.ts:314`]
+- [x] [Review][Patch] Queue stored Source references instead of full page bodies that can exceed Cloudflare Queues' message limit [`src/lib/research-completion.ts:437`]
+- [x] [Review][Patch] Make Source ingest dispatch idempotent and persist retryable job state and Source paths on enqueue failures [`src/lib/research-completion.ts:417`]
+- [x] [Review][Patch] Allocate the eight-source evidence budget across confirmed queries instead of letting the first query monopolize it [`src/lib/research-runtime.ts:682`]
+- [x] [Review][Patch] Parse Markdown citations structurally so link titles and punctuation cannot bypass or incorrectly trip the URL allowlist [`src/lib/research-text.ts:52`]
+- [x] [Review][Patch] Honor Deep Research's uncapped extraction option for PDF sources [`src/lib/fetch.ts:138`]
+- [x] [Review][Patch] Bound synthesis through chunked or hierarchical processing without discarding source text [`src/lib/research-runtime.ts:754`]
+- [x] [Review][Patch] Treat malformed SearXNG URLs as unconfigured in both Settings and provider availability [`src/lib/research-providers.ts:87`]
+- [x] [Review][Patch] Fail closed on an invalid `RESEARCH_PROVIDER` environment override instead of silently selecting another provider [`src/lib/config.ts:1402`]
+- [x] [Review][Patch] Return 400 for malformed/non-object research bodies, blank editable fields, missing confirmed queries, and invalid Wiki field types [`src/app/api/research/route.ts:70`]
+- [x] [Review][Patch] Make live Research thinking collapsible while retaining follow-newest and reduced-motion behavior [`src/components/workbench/ResearchCanvas.tsx:353`]
+- [x] [Review][Patch] Preserve the still-routable Studio Vault creation contract or migrate that caller to Workbench Wiki ids [`src/components/KnowledgeStudio.tsx:624`]
+- [x] [Review][Patch] Remove or migrate Studio's now-invalid manual Synthesize action [`src/components/KnowledgeStudio.tsx:707`]
+- [x] [Review][Patch] Remove Studio's cosmetic per-run provider selector or render the Settings-selected provider read-only [`src/components/KnowledgeStudio.tsx:597`]
+- [x] [Review][Patch] Fence Activity polling so a late response from the prior Wiki cannot replace the current Wiki's jobs [`src/components/workbench/ActivityDock.tsx:37`]
+- [x] [Review][Patch] Fail closed when the durable research lease contains malformed active entries [`src/lib/research-concurrency.ts:76`]
+- [x] [Review][Patch] Make Page-write recovery idempotent across a crash between lifecycle write and completion checkpoint [`src/lib/research-completion.ts:314`]
+- [x] [Review][Defer] Legacy manual `sourceUrls` are accepted but automated runs replace them — deferred, pre-existing [`src/lib/research-runtime.ts:682`]
+- [x] [Review][Defer] The shared kernel URL guard does not resolve DNS before fetch, leaving a DNS-rebinding SSRF gap — deferred, pre-existing [`src/lib/url-safety.ts:95`]
+
 ## Assumptions (Fast path)
 
 Tagged in Intent Resolution. Repeat for the implementer:
@@ -224,7 +250,7 @@ Tagged in Intent Resolution. Repeat for the implementer:
 1. Reuse `yopedia-tasks` + a kernel max-3 lease. Do not add a wrangler Queue.
 2. Tavily `include_raw_content` on; SerpApi/SearXNG extract with kernel readability; Firecrawl is not the fetch layer.
 3. Auto-Ingest copies the Chat save-to-wiki door (lifecycle + raw Source + `enqueueOrInline`), not memory-proposals.
-4. Research Page slug stays `research-{slugify(title)}` (not `wiki/queries/`).
+4. Research Page slug is `research-{slugify(title)}-{stable project-id suffix}` (not `wiki/queries/`). This 2026-08-24 review decision supersedes the earlier title-only assumption so same-title projects cannot overwrite each other while reruns remain stable.
 5. Panel may poll or SSE; Chat SSE event names stay unused.
 6. SerpApi default engine remains `google`.
 7. Workbench run POST returns before the job finishes (202 + stream/poll). Today’s inline-complete-in-POST is test/dev fallback only and still honors the lease.
@@ -242,6 +268,14 @@ None that block implementation. If an assumption is wrong, record the override i
 - Do not claim done on a fill-only draft card.
 
 ## Review Triage Log
+
+### 2026-08-24 — Full-stack remediation patch pass
+
+- patch: 22 applied and regression-tested
+- defer: 2 pre-existing items recorded in `deferred-work.md`
+- independent verdict: pending against the final committed SHA
+- release gates: pending against that same SHA
+- acceptance effect: none yet; `followup_review_recommended` remains true and the Epic 6 retrospective remains rejected until both pending proof sets pass
 
 ### 2026-08-24 — Review pass
 - intent_gap: 0

@@ -1391,6 +1391,7 @@ export function getFirecrawlSettings(): FirecrawlSettings {
 export interface ResearchSettings {
   provider: ResearchProviderId | null;
   envProvider: ResearchProviderId | null;
+  invalidEnvProvider: string | null;
   tavilyApiKey: string | null;
   serpApiKey: string | null;
   serpApiEngine: string;
@@ -1402,17 +1403,15 @@ export interface ResearchSettings {
 export function getResearchSettings(): ResearchSettings {
   const cfg = loadConfigSync();
   const envProviderRaw = nonEmpty(process.env.RESEARCH_PROVIDER);
-  // An env value that is not one of the three is IGNORED rather than fatal: it
-  // cannot be corrected from any surface, and refusing every research run over
-  // a typo in a variable the owner may not control would leave no way through.
-  // The stored select still decides, and the surface still shows what it holds.
   const envProvider = isResearchProviderId(envProviderRaw) ? envProviderRaw : null;
+  const invalidEnvProvider = envProviderRaw && !envProvider ? envProviderRaw : null;
   const storedProvider = isResearchProviderId(cfg.researchProvider)
     ? cfg.researchProvider
     : null;
   return {
     provider: envProvider ?? storedProvider,
     envProvider,
+    invalidEnvProvider,
     tavilyApiKey:
       nonEmpty(process.env.TAVILY_API_KEY) ?? nonEmpty(cfg.tavilyApiKey),
     serpApiKey:
@@ -1615,6 +1614,7 @@ export function getWorkbenchSettings(
       ? cfg.researchProvider
       : null,
     envResearchProvider: research.envProvider,
+    envResearchProviderInvalid: research.invalidEnvProvider,
     // BOOLEANS, not the keys — AD-23. `getResearchSettings` holds the values and
     // never crosses this boundary.
     hasTavilyApiKey: nonEmpty(cfg.tavilyApiKey) !== null,

@@ -22,7 +22,16 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   }
   try {
     const { id } = await params;
-    const body = (await request.json()) as Record<string, unknown>;
+    let parsed: unknown;
+    try {
+      parsed = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 });
+    }
+    const body = parsed as Record<string, unknown>;
     const keys = Object.keys(body);
     if (keys.some((key) => !OWNER_PATCH.has(key))) {
       return NextResponse.json(
@@ -34,9 +43,17 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       if (body[field] !== undefined && typeof body[field] !== "string") {
         return NextResponse.json({ error: `${field} must be text` }, { status: 400 });
       }
+      if (typeof body[field] === "string" && !body[field].trim()) {
+        return NextResponse.json({ error: `${field} cannot be blank` }, { status: 400 });
+      }
     }
-    if (body.queries !== undefined && (!Array.isArray(body.queries) || body.queries.some((value) => typeof value !== "string"))) {
-      return NextResponse.json({ error: "queries must be a list of strings" }, { status: 400 });
+    if (body.queries !== undefined) {
+      if (!Array.isArray(body.queries) || body.queries.some((value) => typeof value !== "string")) {
+        return NextResponse.json({ error: "queries must be a list of strings" }, { status: 400 });
+      }
+      if (!body.queries.some((value) => value.trim())) {
+        return NextResponse.json({ error: "At least one research query is required." }, { status: 400 });
+      }
     }
     const project = await updateResearchProjectIf(
       principal.handle,

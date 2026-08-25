@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   ACTIVITY_CANCEL_BODY,
@@ -33,8 +33,10 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestSequence = useRef(0);
 
   const refresh = useCallback(async () => {
+    const sequence = ++requestSequence.current;
     try {
       const scope = wikiId?.trim() && wikiId !== "current" ? wikiId.trim() : "";
       const path = scope
@@ -43,6 +45,7 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
       const body = await send<{ rows?: ActivityRow[] }>(path, {
         method: "GET",
       });
+      if (sequence !== requestSequence.current) return;
       setRows(Array.isArray(body.rows) ? body.rows : []);
     } catch {
       // poll fail-soft — the last rows stay on screen
@@ -50,6 +53,7 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
   }, [wikiId]);
 
   useEffect(() => {
+    requestSequence.current += 1;
     setRows([]);
   }, [wikiId]);
 

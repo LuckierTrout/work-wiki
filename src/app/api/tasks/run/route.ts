@@ -51,6 +51,7 @@ import { createOwnerBackup, summarizeBackup, verifyOwnerBackup } from "@/lib/bac
 import { recordOperationSafe } from "@/lib/operation-ledger";
 import { compileKnowledgePage } from "@/lib/knowledge-compilation";
 import { runResearchProject } from "@/lib/research-runtime";
+import { getStorage } from "@/lib/storage";
 
 /**
  * POST /api/tasks/run — execute one agent task.
@@ -462,6 +463,10 @@ export async function POST(req: Request) {
     } else if (task.url) {
       if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingestUrl(task.url, opts);
+    } else if (task.sourcePath && !task.content) {
+      const stored = await getStorage().readFile(task.sourcePath);
+      if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
+      result = await ingest(task.title?.trim() || "Untitled", stored, opts);
     } else {
       if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingest(task.title?.trim() || "Untitled", task.content ?? "", opts);

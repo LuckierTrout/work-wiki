@@ -681,6 +681,7 @@ export interface WorkbenchSettingsPayload {
    */
   researchProvider: ResearchProviderId | null;
   envResearchProvider: ResearchProviderId | null;
+  envResearchProviderInvalid?: string | null;
   hasTavilyApiKey: boolean;
   hasSerpApiKey: boolean;
   serpApiEngine: string | null;
@@ -793,6 +794,7 @@ export function isWorkbenchSettingsPayload(
     nullableString("serpApiEngine") &&
     nullableString("searxngBaseUrl") &&
     nullableString("envSearxngBaseUrl") &&
+    (payload.envResearchProviderInvalid === undefined || nullableString("envResearchProviderInvalid")) &&
     nullableString("searxngCategories") &&
     // The two provider names are checked against the LIST, not merely for
     // being strings: an unknown id would seed the select with a value it has
@@ -2043,12 +2045,17 @@ export function draftResearchProviderConfigured(
   draft: SettingsDraft,
   payload: WorkbenchSettingsValues,
 ): boolean {
+  if (payload.envResearchProviderInvalid) return false;
   const provider = draftResearchProvider(draft, payload);
   if (provider === "searxng") {
-    return (
-      payload.envSearxngBaseUrl !== null ||
-      draftText(draft.searxngBaseUrl) !== null
-    );
+    const value = payload.envSearxngBaseUrl ?? draftText(draft.searxngBaseUrl);
+    if (!value) return false;
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
   }
   const typed = secretPatchValue(
     provider === "tavily" ? draft.tavilyApiKey : draft.serpApiKey,

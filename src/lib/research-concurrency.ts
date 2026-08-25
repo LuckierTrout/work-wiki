@@ -48,6 +48,8 @@ interface ResearchSlot {
 
 export interface ResearchSlotGrant {
   granted: boolean;
+  /** True only when this call added the slot; false for an existing lease. */
+  acquired: boolean;
   /** How many slots are held INCLUDING this one when granted. */
   active: number;
   limit: number;
@@ -83,7 +85,10 @@ function parseSlots(raw: string, now: number): ResearchSlot[] {
   if (!Array.isArray(parsed)) {
     throw new ResearchLeaseError("Research lease file is not a list.");
   }
-  return parsed.filter(isSlot).filter((slot) => slot.expiresAt > now);
+  if (!parsed.every(isSlot)) {
+    throw new ResearchLeaseError("Research lease entry is invalid.");
+  }
+  return parsed.filter((slot) => slot.expiresAt > now);
 }
 
 /**
@@ -150,13 +155,13 @@ export async function acquireResearchSlot(
       existing.expiresAt = now + RESEARCH_SLOT_TTL_MS;
       return {
         slots,
-        result: { granted: true, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
+        result: { granted: true, acquired: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
       };
     }
     if (slots.length >= MAX_CONCURRENT_RESEARCH) {
       return {
         slots,
-        result: { granted: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
+        result: { granted: false, acquired: false, active: slots.length, limit: MAX_CONCURRENT_RESEARCH },
       };
     }
     const next = [
@@ -165,7 +170,7 @@ export async function acquireResearchSlot(
     ];
     return {
       slots: next,
-      result: { granted: true, active: next.length, limit: MAX_CONCURRENT_RESEARCH },
+      result: { granted: true, acquired: true, active: next.length, limit: MAX_CONCURRENT_RESEARCH },
     };
   });
 }

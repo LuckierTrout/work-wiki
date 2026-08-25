@@ -29,7 +29,10 @@ import { POST } from "@/app/api/research/[id]/run/route";
 import { DELETE, PATCH } from "@/app/api/research/[id]/route";
 import { getPrincipal } from "@/lib/auth";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
-import { ResearchProviderUnconfiguredError } from "@/lib/research-providers";
+import {
+  ResearchProviderOverrideError,
+  ResearchProviderUnconfiguredError,
+} from "@/lib/research-providers";
 import { getResearchProject, updateResearchProject, updateResearchProjectIf } from "@/lib/research-projects";
 import {
   cancelResearchProject,
@@ -151,6 +154,16 @@ describe("POST /api/research/[id]/run", () => {
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 
+  it("400s an unsupported deployment provider override without enqueueing", async () => {
+    mockedQueue.mockRejectedValue(new ResearchProviderOverrideError("firecrawl"));
+
+    const response = await POST(runRequest(), ctx());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: expect.stringMatching(/unsupported value/i) });
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
   it("404s a project that is not there and 409s one already running", async () => {
     mockedQueue.mockRejectedValue(new Error("Research project not found"));
     expect((await POST(runRequest(), ctx())).status).toBe(404);
@@ -223,6 +236,31 @@ describe("PATCH and DELETE /api/research/[id]", () => {
 
     expect((await PATCH(patchRequest({ status: "complete" }), { params })).status).toBe(400);
     expect((await PATCH(patchRequest({ synthesis: "# Invented" }), { params })).status).toBe(400);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["malformed JSON", "{not json"],
+    ["JSON null", "null"],
+    ["JSON array", "[]"],
+  ])("400s %s PATCH input", async (_label, body) => {
+    const response = await PATCH(new Request("http://localhost/api/research/p1", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body,
+    }), { params });
+
+    expect(response.status).toBe(400);
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["blank title", { title: "  " }],
+    ["blank question", { question: "  " }],
+    ["empty query set", { queries: [] }],
+    ["non-string query", { queries: [7] }],
+  ])("400s %s PATCH input", async (_label, body) => {
+    expect((await PATCH(patchRequest(body), { params })).status).toBe(400);
     expect(mockedUpdate).not.toHaveBeenCalled();
   });
 

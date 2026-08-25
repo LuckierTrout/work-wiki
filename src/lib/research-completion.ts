@@ -66,6 +66,28 @@ function outboxPath(owner: string, id: string): string {
   return `${outboxDir(owner)}/${id}.json`;
 }
 
+function pageWrittenPath(owner: string, id: string): string {
+  return `${outboxPath(owner, id)}.page-written`;
+}
+
+async function pageWriteAlreadyCompleted(owner: string, id: string): Promise<boolean> {
+  try {
+    await getStorage().readFile(pageWrittenPath(owner, id));
+    return true;
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw error;
+  }
+}
+
+async function clearPageWrittenMarker(owner: string, id: string): Promise<void> {
+  try {
+    await getStorage().deleteFile(pageWrittenPath(owner, id));
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+}
+
 export async function saveResearchOutbox(
   owner: string,
   id: string,
@@ -326,7 +348,29 @@ export async function commitResearchPage(
       await deleteResearchProject(owner, id);
       return null;
     }
-    await writeResearchPage(owner, outbox);
+    if (latest.cancelRequested || latest.status === "cancelled") {
+      const cancelled = await mutateResearchProject(owner, id, (project) => {
+        if (project.completion?.writeClaimId !== claimId) return null;
+        delete project.completion;
+        project.status = "cancelled";
+        project.progress = {
+          completedQueries: project.progress?.completedQueries ?? 0,
+          totalQueries: project.progress?.totalQueries ?? project.queries.length,
+          message: "Cancelled before the Page write.",
+        };
+        return project;
+      });
+      await deleteResearchOutbox(owner, id);
+      await clearPageWrittenMarker(owner, id);
+      return cancelled;
+    }
+    if (!await pageWriteAlreadyCompleted(owner, id)) {
+      await writeResearchPage(owner, outbox);
+      await getStorage().writeFile(
+        pageWrittenPath(owner, id),
+        JSON.stringify({ completedAt: new Date().toISOString(), claimId }),
+      );
+    }
   } catch (error) {
     await mutateResearchProject(owner, id, (project) => {
       const completion = project.completion;
@@ -340,7 +384,11 @@ export async function commitResearchPage(
     stopHeartbeat();
   }
 
-  return markResearchPageWritten(owner, id, existing, outbox, sources, claimId);
+  const marked = await markResearchPageWritten(owner, id, existing, outbox, sources, claimId);
+  if (marked?.completion?.phase === "sources" || marked?.completion?.phase === "done") {
+    await clearPageWrittenMarker(owner, id);
+  }
+  return marked;
 }
 
 async function markResearchPageWritten(
@@ -440,7 +488,6 @@ async function dispatchSourceIngest(
   source: FetchedSource,
   meta: ResearchCompletionSource,
   wikiId?: string,
-  options?: { retryQueuedJob?: boolean },
 ): Promise<void> {
   const jobId = meta.jobId ?? await researchIngestJobId(projectId, meta.slug, meta.sha);
   await saveRawSourceFor(meta.slug, meta.sha, source.text, { owner });
@@ -448,9 +495,8 @@ async function dispatchSourceIngest(
   const existingJob = await getIngestJob(jobId);
   if (existingJob?.status === "done" || existingJob?.status === "skipped") return;
   if (existingJob?.status === "processing" || existingJob?.status === "retrying") return;
-  const retryQueued = options?.retryQueuedJob === true || Boolean(meta.error);
-  if (existingJob?.status === "queued" && !retryQueued && ingestJobIsFresh(existingJob)) {
-    throw new Error("Ingest job is being queued.");
+  if (existingJob?.status === "queued" && ingestJobIsFresh(existingJob)) {
+    return;
   }
   if (!existingJob) {
     const minted = await createIngestJobIfAbsent({
@@ -458,35 +504,40 @@ async function dispatchSourceIngest(
       owner,
       title: source.title || source.url,
       url: source.url,
+      sourceRel: sourcePath,
       sourceType: "url",
       contentSha256: meta.sha,
       ...(wikiId ? { wikiId } : {}),
     });
-    if (!minted.created && !retryQueued) {
-      throw new Error("Ingest job is being queued.");
-    }
+    if (!minted.created) return;
   }
-  if (existingJob?.status === "failed") {
+  if (existingJob?.status === "failed" || existingJob?.status === "queued") {
     await updateIngestJob(jobId, { status: "queued", error: undefined });
   }
   const title = source.title || source.url;
-  const enqueued = await enqueueTask({
-    kind: "ingest",
-    title,
-    content: source.text,
-    owner,
-    author: owner,
-    triggeredBy: owner,
-    tags: wikiId ? ["research", `wiki:${wikiId}`] : ["research"],
-    jobId,
-    sourceType: "url",
-    sourceUrl: source.url,
-    sourcePath,
-    contentSha256: meta.sha,
-  });
+  let enqueued: boolean;
+  try {
+    enqueued = await enqueueTask({
+      kind: "ingest",
+      title,
+      owner,
+      author: owner,
+      triggeredBy: owner,
+      tags: wikiId ? ["research", `wiki:${wikiId}`] : ["research"],
+      jobId,
+      sourceType: "url",
+      sourceUrl: source.url,
+      sourcePath,
+      contentSha256: meta.sha,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateIngestJob(jobId, { status: "failed", error: message }).catch(() => undefined);
+    throw error;
+  }
   if (!enqueued) {
     const { ingest } = await import("./ingest");
-    await ingest(title, source.text, {
+    const result = await ingest(title, source.text, {
       owner,
       author: owner,
       triggeredBy: owner,
@@ -496,6 +547,12 @@ async function dispatchSourceIngest(
       sourcePath,
       contentSha256: meta.sha,
       jobId,
+    });
+    await updateIngestJob(jobId, {
+      status: result.skipped ? "skipped" : "done",
+      stage: "complete",
+      slug: result.primarySlug,
+      error: undefined,
     });
   }
 }
@@ -591,6 +648,7 @@ export async function drainResearchOutbox(
   const done = updated?.completion?.phase === "done";
   if (done) {
     await deleteResearchOutbox(owner, id);
+    await clearPageWrittenMarker(owner, id);
     if (updated.deleteRequested || current.deleteRequested) {
       await deleteResearchProject(owner, id);
     }
@@ -628,9 +686,7 @@ async function drainOrphanOutbox(
         continue;
       }
       try {
-        await dispatchSourceIngest(owner, id, fetched, meta, outbox.wikiId, {
-          retryQueuedJob: true,
-        });
+        await dispatchSourceIngest(owner, id, fetched, meta, outbox.wikiId);
       } catch (error) {
         failed += 1;
         logger.warn("research", `orphan source ingest skipped for ${meta.url}`, error);

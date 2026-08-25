@@ -3815,3 +3815,8 @@ status: open
 - The client's 15s `send`/`sendForm` deadline wraps a server URL fetch that already uses the same 15s budget. A slow but valid HTML fetch can surface as an unconfirmed write while the route still finishes and stores. [`src/lib/workbench-request.ts:33`]
 - When store succeeds and enqueue returns `queued: false`, the batch sentence still says "Ingest is queued." The client treats any 2xx as stored. [`src/lib/workbench-intake-client.ts:117`]
 - `fetchUrlContent` skips the content-type allowlist when the response omits Content-Type (`if (mimeType && !allowed.includes)`). Pre-existing empty-header behaviour; this story only passed a narrowed list. [`src/lib/fetch.ts:232`]
+
+## Deferred from: code review of spec-6-1-through-6-5-deep-research.md (2026-08-24)
+
+- Legacy manual `sourceUrls` are accepted by research creation, but automated runs replace them with provider results. This behavior predates Epic 6's Workbench flow and belongs to the out-of-scope Knowledge Studio research desk. [`src/lib/research-runtime.ts:682`]
+- The shared kernel URL guard rejects literal private/reserved hosts but does not resolve DNS before fetch, leaving a DNS-rebinding SSRF gap. This predates Epic 6 and affects the shared fetch path rather than only Deep Research. [`src/lib/url-safety.ts:95`]

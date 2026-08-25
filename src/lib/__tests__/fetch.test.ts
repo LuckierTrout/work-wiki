@@ -173,6 +173,29 @@ describe("fetchUrlContent", () => {
     expect(mockCleanup).toHaveBeenCalled();
   });
 
+  it("does not truncate PDF text when the caller explicitly removes the content cap", async () => {
+    const long = `Document title\n${"x".repeat(MAX_CONTENT_LENGTH + 1_000)}`;
+    const docProxy = { cleanup: mockCleanup };
+    mockGetDocumentProxy.mockResolvedValue(docProxy);
+    mockExtractText.mockResolvedValue({ totalPages: 1, text: long });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/pdf" }),
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(100)),
+      }),
+    );
+
+    const result = await fetchUrlContent("https://example.com/full.pdf", {
+      maxContentLength: null,
+    });
+
+    expect(result.content).toHaveLength(long.length);
+    expect(result.content).not.toContain("[Content truncated]");
+  });
+
   it("rejects PDF with no extractable text layer", async () => {
     const pdfBytes = new ArrayBuffer(100);
     const docProxy = { cleanup: mockCleanup };

@@ -1156,17 +1156,16 @@ describe("the Deep Research provider resolves from the same config the surface s
     });
   });
 
-  it("ignores a RESEARCH_PROVIDER nobody can correct", async () => {
-    // A typo in a variable the owner may not control must not refuse every
-    // research run forever — there would be no way through from any surface.
+  it("fails closed on a RESEARCH_PROVIDER nobody can correct in Settings", async () => {
     await store({ researchProvider: "tavily", tavilyApiKey: "tvly-stored" });
     process.env.RESEARCH_PROVIDER = "firecrawl";
     _resetConfigCache();
     await loadConfig();
 
     const { resolveResearchProvider } = await import("../research-providers");
-    expect(resolveResearchProvider()).toBe("tavily");
+    expect(() => resolveResearchProvider()).toThrow(/unsupported value/i);
     expect(getWorkbenchSettings(false).envResearchProvider).toBeNull();
+    expect(getWorkbenchSettings(false).envResearchProviderInvalid).toBe("firecrawl");
   });
 
   it("takes an env key over a stored one, field by field", async () => {

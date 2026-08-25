@@ -37,6 +37,7 @@ function settings(overrides: Partial<ResearchSettings> = {}): ResearchSettings {
   return {
     provider: null,
     envProvider: null,
+    invalidEnvProvider: null,
     tavilyApiKey: null,
     serpApiKey: null,
     serpApiEngine: "google",
@@ -92,10 +93,11 @@ describe("choosing a research provider", () => {
     expect(selectResearchProvider("firecrawl", settings({ provider: "serpapi" }))).toBe("serpapi");
   });
 
-  it("ignores an unusable RESEARCH_PROVIDER rather than failing every run", () => {
+  it("fails closed on an unsupported RESEARCH_PROVIDER", () => {
     process.env.RESEARCH_PROVIDER = "firecrawl";
     process.env.TAVILY_API_KEY = "tavily-test";
-    expect(selectResearchProvider()).toBe("tavily");
+    expect(() => selectResearchProvider()).toThrow(/unsupported value/i);
+    expect(() => resolveResearchProvider()).toThrow(/unsupported value/i);
   });
 });
 
@@ -126,6 +128,14 @@ describe("refusing to fall back", () => {
     process.env.FIRECRAWL_API_KEY = "firecrawl-test";
     expect(availableResearchProviders()).toEqual([]);
     expect(() => resolveResearchProvider()).toThrow(ResearchProviderUnconfiguredError);
+  });
+
+  it("does not advertise a malformed SearXNG URL as configured", () => {
+    const malformed = settings({ provider: "searxng", searxngBaseUrl: "not a url" });
+
+    expect(availableResearchProviders(malformed)).toEqual([]);
+    expect(() => resolveResearchProvider(undefined, malformed))
+      .toThrow(ResearchProviderUnconfiguredError);
   });
 
   it("no longer claims the Firecrawl key is for Deep Research", () => {

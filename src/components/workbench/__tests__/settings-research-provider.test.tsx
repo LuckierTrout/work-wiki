@@ -189,6 +189,19 @@ describe("the Deep Research provider select", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("fails closed and explains an unsupported env override", async () => {
+    await mount(payload({
+      researchProvider: "tavily",
+      envResearchProviderInvalid: "firecrawl",
+      hasTavilyApiKey: true,
+    }));
+
+    const select = providerSelect();
+    expect(select.getAttribute("aria-disabled")).toBe("true");
+    expect(announcedFor(select)).toContain("unsupported value");
+    expect(announcedFor(select)).toContain("firecrawl");
+  });
+
   it("refuses the SearXNG instance URL box when the env pins it", async () => {
     // The hint said the env wins while the box still took typing, and a Save
     // stored what was typed: a value every run would ignore. The URL is

@@ -17,6 +17,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Queue } from "@cloudflare/workers-types";
 import { logger } from "./logger";
 import type { EmailIngestMetadata } from "./email-ingest";
+import { workbenchSourcePath } from "./source-delete";
 
 /**
  * A unit of asynchronous agent work. Discriminated by `kind` so the executor
@@ -335,6 +336,11 @@ export function parseTask(body: unknown): Task | null {
     case "ingest": {
       const hasUrl = typeof t.url === "string" && t.url.trim() !== "";
       const hasContent = typeof t.content === "string" && t.content.trim() !== "";
+      const sourcePath = typeof t.sourcePath === "string"
+        ? workbenchSourcePath(t.sourcePath)
+        : null;
+      if (typeof t.sourcePath === "string" && !sourcePath) return null;
+      const hasStoredSource = sourcePath !== null;
       // Validate a staged-upload descriptor: a non-empty key + an allowed kind.
       let staged: Extract<Task, { kind: "ingest" }>["staged"];
       if (t.staged && typeof t.staged === "object") {
@@ -386,10 +392,10 @@ export function parseTask(body: unknown): Task | null {
         if (attachments.length === 0) attachments = undefined;
       }
       const rebuildEmbeddings = t.rebuildEmbeddings === true;
-      if (!hasUrl && !hasContent && !staged && !attachments && !rebuildEmbeddings) {
+      if (!hasUrl && !hasContent && !hasStoredSource && !staged && !attachments && !rebuildEmbeddings) {
         return null; // need a source
       }
-      if (rebuildEmbeddings && (hasUrl || hasContent || staged || attachments)) {
+      if (rebuildEmbeddings && (hasUrl || hasContent || hasStoredSource || staged || attachments)) {
         return null;
       }
       // Reject incoherent combinations so the consumer's branch-order precedence
@@ -469,9 +475,7 @@ export function parseTask(body: unknown): Task | null {
           : {}),
         ...(origin ? { origin } : {}),
         ...(t.reuseAnalysis === true ? { reuseAnalysis: true } : {}),
-        ...(typeof t.sourcePath === "string" && t.sourcePath.trim()
-          ? { sourcePath: t.sourcePath.slice(0, 1_000) }
-          : {}),
+        ...(sourcePath ? { sourcePath: sourcePath.slice(0, 1_000) } : {}),
         ...(typeof t.contentSha256 === "string" && t.contentSha256.trim()
           ? { contentSha256: t.contentSha256 }
           : {}),

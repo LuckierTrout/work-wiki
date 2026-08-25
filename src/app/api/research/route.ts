@@ -68,13 +68,36 @@ export async function POST(request: Request) {
     );
   }
   try {
-    const body = (await request.json()) as Record<string, unknown>;
-    if (typeof body.title !== "string" || typeof body.question !== "string") {
+    let parsed: unknown;
+    try {
+      parsed = await request.json();
+    } catch {
+      return NextResponse.json({ error: "Request body must be JSON." }, { status: 400 });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 });
+    }
+    const body = parsed as Record<string, unknown>;
+    if (
+      typeof body.title !== "string" || !body.title.trim() ||
+      typeof body.question !== "string" || !body.question.trim()
+    ) {
       return NextResponse.json({ error: "title and question are required" }, { status: 400 });
     }
     for (const field of ["queries", "sourceUrls", "pageSlugs"] as const) {
       if (body[field] !== undefined && (!Array.isArray(body[field]) || body[field].some((value) => typeof value !== "string"))) {
         return NextResponse.json({ error: `${field} must be a list of strings` }, { status: 400 });
+      }
+    }
+    if (
+      !Array.isArray(body.queries) ||
+      !body.queries.some((value) => typeof value === "string" && value.trim())
+    ) {
+      return NextResponse.json({ error: "At least one research query is required." }, { status: 400 });
+    }
+    for (const field of ["vaultId", "wikiId"] as const) {
+      if (body[field] !== undefined && typeof body[field] !== "string") {
+        return NextResponse.json({ error: `${field} must be text` }, { status: 400 });
       }
     }
     const project = await createResearchProject(principal.handle, {

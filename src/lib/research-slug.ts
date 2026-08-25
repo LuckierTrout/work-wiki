@@ -2,7 +2,8 @@ import { slugify } from "./slugify";
 
 /** The research Page's slug. Flat, because only `queries/` may nest. */
 export function researchPageSlug(project: { title: string; id: string }): string {
-  return `research-${slugify(project.title) || project.id.slice(0, 12)}`;
+  const title = slugify(project.title) || "untitled";
+  return `research-${title}-${shortDigest(project.id)}`;
 }
 
 /**

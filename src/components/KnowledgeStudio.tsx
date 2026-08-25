@@ -251,7 +251,6 @@ export function KnowledgeStudio() {
           <ResearchPanel
             projects={projects}
             providers={researchProviders}
-            vaults={vaults}
             setProjects={setProjects}
             onEvidence={setEvidence}
             setFeedback={setFeedback}
@@ -582,14 +581,12 @@ function InsightsPanel({
 function ResearchPanel({
   projects,
   providers,
-  vaults,
   setProjects,
   onEvidence,
   setFeedback,
 }: {
   projects: ResearchProject[];
   providers: ResearchProvider[];
-  vaults: Vault[];
   setProjects: React.Dispatch<React.SetStateAction<ResearchProject[]>>;
   onEvidence: (value: Evidence) => void;
   setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
@@ -598,14 +595,8 @@ function ResearchPanel({
   const [question, setQuestion] = useState("");
   const [queries, setQueries] = useState("");
   const [sourceUrls, setSourceUrls] = useState("");
-  const [vaultId, setVaultId] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
-  const [provider, setProvider] = useState<ResearchProvider | "">(providers[0] ?? "");
   const { slugTenants } = useSlugTenants();
-
-  useEffect(() => {
-    if (!provider && providers[0]) setProvider(providers[0]);
-  }, [provider, providers]);
 
   useEffect(() => {
     const active = projects.filter((project) => ["queued", "collecting", "ready"].includes(project.status));
@@ -628,26 +619,16 @@ function ResearchPanel({
       const data = await requestJson<{ project: ResearchProject }>("/api/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, question, queries: parseLines(queries), sourceUrls: parseLines(sourceUrls), ...(vaultId ? { vaultId } : {}) }),
+        body: JSON.stringify({ title, question, queries: parseLines(queries), sourceUrls: parseLines(sourceUrls) }),
       });
       setProjects((current) => [data.project, ...current]);
-      setTitle(""); setQuestion(""); setQueries(""); setSourceUrls(""); setVaultId("");
+      setTitle(""); setQuestion(""); setQueries(""); setSourceUrls("");
       setFeedback({ ok: true, message: "Research brief saved." });
     } catch (error) {
       setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t create the research brief." });
     } finally {
       setBusy(null);
     }
-  }
-
-  async function patchProject(id: string, patch: Record<string, unknown>) {
-    const data = await requestJson<{ project: ResearchProject }>(`/api/research/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    });
-    setProjects((current) => current.map((project) => project.id === id ? data.project : project));
-    return data.project;
   }
 
   async function collect(project: ResearchProject) {
@@ -704,23 +685,6 @@ function ResearchPanel({
     }
   }
 
-  async function synthesize(project: ResearchProject) {
-    setBusy(`synthesize:${project.id}`);
-    try {
-      const result = await requestJson<{ answer: string }>("/api/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: project.question, format: "prose", scope: project.vaultId ? `vault:${project.vaultId}` : "mine" }),
-      });
-      await patchProject(project.id, { status: "complete", synthesis: result.answer });
-      setFeedback({ ok: true, message: "Research synthesis saved to the brief with the query citations." });
-    } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t synthesize the research brief." });
-    } finally {
-      setBusy(null);
-    }
-  }
-
   async function remove(project: ResearchProject) {
     if (!window.confirm(`Delete the research brief “${project.title}”? This does not delete ingested sources.`)) return;
     setBusy(`delete:${project.id}`);
@@ -742,15 +706,14 @@ function ResearchPanel({
         <h3>Plan the question, collect the corpus, then synthesize with citations.</h3>
         <p>Research briefs persist independently from chat, so the question, source plan, scope, and final synthesis stay together.</p>
         <div className="studio-action-row">
-          <label><span className="receipt">Automated provider</span><select className="studio-input" value={provider} onChange={(event) => setProvider(event.target.value as ResearchProvider | "")}><option value="">Use configured default</option>{providers.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+          <small>The automated provider is selected in Workbench Settings{providers.length > 0 ? ` (${providers.join(", ")} configured)` : ""}.</small>
           {providers.length === 0 ? <small>No web-research provider is configured. Manual URL collection still works.</small> : null}
         </div>
       </section>
       <form className="studio-form-grid" onSubmit={createProject}>
         <label><span>Brief title</span><input className="studio-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Vendor landscape" required /></label>
-        <label><span>Vault scope</span><select className="studio-input" value={vaultId} onChange={(event) => setVaultId(event.target.value)}><option value="">All my knowledge</option>{vaults.map((vault) => <option key={vault.id} value={vault.id}>{vault.name}</option>)}</select></label>
         <label className="wide"><span>Research question</span><textarea className="studio-input" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="What decision should this research inform?" required /></label>
-        <label><span>Search prompts · one per line</span><textarea className="studio-input" rows={4} value={queries} onChange={(event) => setQueries(event.target.value)} placeholder="Key competitors\nPricing signals" /></label>
+        <label><span>Search prompts · one per line</span><textarea className="studio-input" rows={4} value={queries} onChange={(event) => setQueries(event.target.value)} placeholder="Key competitors\nPricing signals" required /></label>
         <label><span>Source URLs · one per line</span><textarea className="studio-input" rows={4} value={sourceUrls} onChange={(event) => setSourceUrls(event.target.value)} placeholder="https://example.com/report" /></label>
         <div className="wide studio-form-submit"><button className="btn primary" disabled={busy === "create"}>{busy === "create" ? "Saving…" : "Create research brief"}</button></div>
       </form>
@@ -770,7 +733,6 @@ function ResearchPanel({
               <button className="btn primary" type="button" onClick={() => void runAutomated(project)} disabled={busy !== null || providers.length === 0 || ["queued", "collecting", "ready"].includes(project.status)}>{busy === `run:${project.id}` ? "Starting…" : project.status === "failed" || project.status === "cancelled" ? "Retry research" : "Run research"}</button>
               {["queued", "collecting", "ready"].includes(project.status) ? <button className="btn ghost" type="button" onClick={() => void cancel(project)} disabled={busy !== null}>{busy === `cancel:${project.id}` ? "Cancelling…" : "Cancel"}</button> : null}
               <button className="btn ghost" type="button" onClick={() => void collect(project)} disabled={busy !== null}>{busy === `collect:${project.id}` ? "Collecting…" : `Collect ${project.sourceUrls.length} URLs`}</button>
-              <button className="btn primary" type="button" onClick={() => void synthesize(project)} disabled={busy !== null}>{busy === `synthesize:${project.id}` ? "Synthesizing…" : "Synthesize"}</button>
               <button className="studio-danger-button" type="button" onClick={() => void remove(project)} disabled={busy !== null}>Delete</button>
             </div>
             {project.progress ? <div className="studio-note"><strong>{project.progress.completedQueries}/{project.progress.totalQueries} searches</strong><span>{project.progress.message}</span></div> : null}

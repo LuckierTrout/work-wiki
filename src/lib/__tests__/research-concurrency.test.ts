@@ -58,7 +58,7 @@ describe("research concurrency lease", () => {
     expect(third.active).toBe(3);
     // The refusal reports the ceiling so the caller can SAY what it is waiting
     // behind — the panel's "waiting for a free research slot (3 of 3 running)".
-    expect(fourth).toEqual({ granted: false, active: 3, limit: 3 });
+    expect(fourth).toEqual({ granted: false, acquired: false, active: 3, limit: 3 });
     expect(await activeResearchCount("alice")).toBe(3);
   });
 
@@ -142,6 +142,18 @@ describe("research concurrency lease", () => {
 
     await expect(acquireResearchSlot("alice", "p1")).rejects.toBeInstanceOf(ResearchLeaseError);
     expect(await holdsResearchSlot("alice", "p1")).toBe(true);
+  });
+
+  it("fails closed when one entry in an otherwise valid lease list is malformed", async () => {
+    const target = path.join(tmpDir, "tenants", "alice", "research-leases.json");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, JSON.stringify([
+      { projectId: "p1", acquiredAt: Date.now(), expiresAt: Date.now() + 60_000 },
+      { projectId: "broken", acquiredAt: "yesterday", expiresAt: Date.now() + 60_000 },
+    ]), "utf-8");
+
+    await expect(acquireResearchSlot("alice", "p2")).rejects.toBeInstanceOf(ResearchLeaseError);
+    await expect(activeResearchCount("alice")).rejects.toBeInstanceOf(ResearchLeaseError);
   });
 
   it("admits only one of two last-slot racers without the in-process lock", async () => {
