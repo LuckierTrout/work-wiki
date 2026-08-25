@@ -17,6 +17,7 @@ vi.mock("@/lib/ingest-async", () => ({ enqueueOrInline: vi.fn() }));
 vi.mock("@/lib/ingest-jobs", () => ({
   createIngestJob: vi.fn(),
   getIngestJob: vi.fn(),
+  updateIngestJob: vi.fn(),
 }));
 vi.mock("@/lib/ingest-staging", () => ({
   stageText: vi.fn(),
@@ -33,6 +34,14 @@ vi.mock("@/lib/ingest-staging", () => ({
     ) => `raw/uploads/job/${filename}`,
   ),
 }));
+vi.mock("@/lib/extract-dispatch", () => ({
+  enqueueExtract: vi.fn(async () => ({
+    path: "sources/report/abc.pdf",
+    jobId: "job-extract",
+    extractId: "extract-1",
+    storedBytes: true,
+  })),
+}));
 vi.mock("@/lib/email-ingest", async (original) => ({
   ...(await original<typeof import("@/lib/email-ingest")>()),
   loadEmailIngestConfig: vi.fn(),
@@ -45,6 +54,7 @@ import { createIngestJob, getIngestJob } from "@/lib/ingest-jobs";
 import { loadEmailIngestConfig, MAX_EMAIL_DOCUMENTS } from "@/lib/email-ingest";
 import { getAgent } from "@/lib/agents";
 import { getVault, vaultOwnedBy } from "@/lib/vault";
+import { enqueueExtract } from "@/lib/extract-dispatch";
 
 const mockedPrincipal = vi.mocked(getServicePrincipal);
 const mockedEnqueue = vi.mocked(enqueueOrInline);
@@ -55,6 +65,7 @@ const mockedGetAgent = vi.mocked(getAgent);
 const mockedGetVault = vi.mocked(getVault);
 const mockedVaultOwnedBy = vi.mocked(vaultOwnedBy);
 const mockedStageBytes = vi.mocked(stageBytes);
+const mockedEnqueueExtract = vi.mocked(enqueueExtract);
 
 function request(overrides: Record<string, unknown> = {}) {
   return new Request("http://localhost/api/email/ingest", {
@@ -266,36 +277,99 @@ describe("POST /api/email/ingest", () => {
     });
   }
 
-  it("stages each attachment's own bytes under its own indexed key", async () => {
+  /**
+   * Epic 7 split this door in two. An attachment an extract crate reads leaves
+   * as its own Source on the sidecar; everything else still stages onto the
+   * message job. Asserting BOTH halves off one mixed fixture is the point --
+   * either half alone would stay green while the other silently swallowed a
+   * file, which is the exact loss `.yoyo/learnings.md` names for this door.
+   */
+  it("routes a PDF attachment to extract and stages only the rest with its own bytes", async () => {
     const { POST } = await import("@/app/api/email/ingest/route");
     const response = await POST(mixedAttachmentRequest());
     expect(response.status).toBe(200);
 
-    expect(mockedStageBytes).toHaveBeenCalledTimes(2);
-    // Call order is array order: `attachmentBytes.map(async (...) => ({ key:
-    // await stageBytes(...) }))` invokes `stageBytes` synchronously inside each
-    // callback, before the first `await` yields, so call index IS attachment
-    // index and the pairing can be read straight off `mock.calls`.
-    const staged = mockedStageBytes.mock.calls.map(
-      ([jobId, filename, fallback, bytes]) => ({
-        jobId,
-        filename,
-        fallback,
-        bytes: new Uint8Array(bytes as ArrayBuffer),
-      }),
-    );
-    expect(staged[0]).toMatchObject({
-      filename: "1-report.pdf",
-      fallback: "attachment-1",
-      bytes: FIRST_BYTES,
+    expect(mockedEnqueueExtract).toHaveBeenCalledTimes(1);
+    const [extracted] = mockedEnqueueExtract.mock.calls[0]!;
+    expect(extracted).toMatchObject({
+      owner: "LuckierTrout",
+      filename: "report.pdf",
+      format: "pdf",
+      ext: "pdf",
     });
-    expect(staged[1]).toMatchObject({
-      filename: "2-metrics.csv",
-      fallback: "attachment-2",
+    // The BYTES, not just the name: a diversion that posted an empty buffer
+    // would store a Source that can never extract.
+    expect(new Uint8Array(extracted.bytes)).toEqual(FIRST_BYTES);
+    // Email provenance survives the hop -- Activity shows the message it
+    // arrived on, not an orphan upload.
+    expect(extracted.email).toMatchObject({
+      messageId: "<message-mixed-attachments@example.com>",
+      subject: "Quarterly review",
+    });
+
+    // The CSV is untouched by the split, and re-indexed from 1: it is now the
+    // first staged attachment, not the second.
+    expect(mockedStageBytes).toHaveBeenCalledTimes(1);
+    const [jobId, filename, fallback, bytes] = mockedStageBytes.mock.calls[0]!;
+    expect({ filename, fallback, bytes: new Uint8Array(bytes as ArrayBuffer) }).toMatchObject({
+      filename: "1-metrics.csv",
+      fallback: "attachment-1",
       bytes: SECOND_BYTES,
     });
-    // One job, both attachments.
-    expect(new Set(staged.map((call) => call.jobId)).size).toBe(1);
+    expect(jobId).toMatch(/^email-/);
+    // Stamped ONCE on arrival and carried onto every record the message
+    // produces: an emailed PDF is parked behind an extract that may not compile
+    // for minutes, and a page dated by the compile would put the sidecar's
+    // clock on the owner's correspondence.
+    expect(extracted.email?.receivedAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
+    );
+    expect(mockedCreateJob.mock.calls[0]![0].email?.receivedAt).toBe(
+      extracted.email?.receivedAt,
+    );
+  });
+
+  it("fails a lost attachment visibly instead of dropping it from both paths", async () => {
+    // An attachment routed to extract is REMOVED from the staged list, so a
+    // queueing failure that only logged left the sender a 200 saying the mail
+    // was accepted with no Source, no row and no sentence anywhere. The message
+    // body must still compile — one bad attachment cannot 500 the delivery and
+    // make the inbound Worker redeliver it.
+    mockedEnqueueExtract.mockResolvedValueOnce({
+      path: "sources/report/abc.pdf",
+      jobId: "job-extract",
+      extractId: "extract-1",
+      storedBytes: true,
+      error: "the job store refused the write",
+    } as never);
+
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(mixedAttachmentRequest());
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      accepted: boolean;
+      extractIds?: string[];
+      failedAttachments?: { filename: string; error: string }[];
+    };
+    // Reported, not silently absent from `extractIds`.
+    expect(body.accepted).toBe(true);
+    expect(body.extractIds).toBeUndefined();
+    expect(body.failedAttachments).toEqual([
+      { filename: "report.pdf", error: "the job store refused the write" },
+    ]);
+
+    // …and it has a row of its own, so Activity shows which file was lost.
+    const failedRow = mockedCreateJob.mock.calls
+      .map((call) => call[0])
+      .find((input) => input.kind === "extract");
+    expect(failedRow).toMatchObject({
+      kind: "extract",
+      source: "email",
+      sourceRel: "sources/report/abc.pdf",
+    });
+
+    // The message body still went to Ingest.
+    expect(mockedEnqueue).toHaveBeenCalledTimes(1);
   });
 
   /**
@@ -323,8 +397,10 @@ describe("POST /api/email/ingest", () => {
       expect.stringMatching(/^email-/),
       expect.objectContaining({
         email: expect.objectContaining({ attachmentNames: expectedNames }),
+        // The PDF left for the sidecar, so the message task carries only the
+        // CSV. All three names still travel on `email.attachmentNames`: the
+        // record of what arrived is not the record of what this task compiles.
         attachments: [
-          expect.objectContaining({ filename: "report.pdf", contentType: "application/pdf" }),
           expect.objectContaining({ filename: "metrics.csv", contentType: "text/csv" }),
         ],
       }),

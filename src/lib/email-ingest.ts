@@ -28,6 +28,15 @@ export interface EmailIngestMetadata {
   subject: string;
   messageId: string;
   attachmentNames: string[];
+  /**
+   * When the message arrived, ISO-8601. Stamped by the route on receipt.
+   *
+   * OPTIONAL because records written before Epic 7 do not have one, and an
+   * absent value must read as "unknown" rather than as the epoch. It exists so
+   * an emailed PDF, whose extract may not compile for minutes, is dated by the
+   * mail rather than by whenever the sidecar got round to it.
+   */
+  receivedAt?: string;
 }
 
 const DEFAULT_CONFIG: EmailIngestConfig = {

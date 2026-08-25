@@ -860,6 +860,15 @@ export function extractDocumentText(input: {
     };
   }
 
+  if (format === "xls") {
+    // The legacy binary workbook is a compound-file container, not an OOXML
+    // zip, so `openOfficeArchive` below would fail on it with a message about
+    // a missing archive entry. It has no reader here on purpose: Epic 7 routes
+    // every spreadsheet through the sidecar's `calamine` pass, and this module
+    // is no longer the extract path for office binaries.
+    throw new ClientInputError(".xls extraction runs in the local sidecar.");
+  }
+
   const files = openOfficeArchive(bytes, format);
   const core = coreProperties(files);
   const extracted = format === "docx"

@@ -4,29 +4,35 @@ vi.mock("@/lib/auth", () => ({
   getPrincipal: vi.fn(),
   getServicePrincipal: vi.fn(() => null),
 }));
-vi.mock("@/lib/ingest", () => ({ ingestPdf: vi.fn() }));
-// Queue absent (off-Workers) → every request runs ingestPdf inline. The other
-// helpers are stubbed so the route never touches real storage in tests.
-vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn(async () => false) }));
-vi.mock("@/lib/ingest-jobs", () => ({
-  createIngestJob: vi.fn(async () => ({})),
-  updateIngestJob: vi.fn(async () => ({})),
+vi.mock("@/lib/fetch", async (orig) => ({
+  ...(await orig<typeof import("@/lib/fetch")>()),
+  fetchPdfBytes: vi.fn(async () => ({
+    bytes: new Uint8Array([1, 2, 3]).buffer,
+    filename: "doc.pdf",
+    title: "doc",
+  })),
 }));
-vi.mock("@/lib/ingest-staging", () => ({
-  stageBytes: vi.fn(async () => "raw/uploads/job/document.pdf"),
+vi.mock("@/lib/extract-dispatch", () => ({
+  enqueueExtract: vi.fn(async () => ({
+    path: "raw/sources/report/abc.pdf",
+    jobId: "job",
+    extractId: "extract",
+    error: null,
+  })),
 }));
+vi.mock("@/lib/source-sha256", () => ({ bytesSha256: vi.fn(async () => "ab".repeat(32)) }));
 
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
-import { ingestPdf } from "@/lib/ingest";
-import { enqueueTask } from "@/lib/tasks";
+import { enqueueExtract } from "@/lib/extract-dispatch";
+import { fetchPdfBytes } from "@/lib/fetch";
 import { ClientInputError } from "@/lib/errors";
 import { POST } from "@/app/api/ingest/pdf/route";
 
-const mockedEnqueue = vi.mocked(enqueueTask);
+const mockedExtract = vi.mocked(enqueueExtract);
+const mockedFetchPdf = vi.mocked(fetchPdfBytes);
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedServicePrincipal = vi.mocked(getServicePrincipal);
-const mockedIngestPdf = vi.mocked(ingestPdf);
 
 function jsonReq(body: unknown): Request {
   return new Request("http://localhost/api/ingest/pdf", {
@@ -39,8 +45,11 @@ function jsonReq(body: unknown): Request {
 beforeEach(() => {
   vi.clearAllMocks();
   mockedPrincipal.mockResolvedValue({ handle: "alice", id: "alice" } as never);
-  mockedIngestPdf.mockResolvedValue({ primarySlug: "doc", wikiPages: ["doc"] } as never);
-  mockedEnqueue.mockResolvedValue(false); // off-Workers → inline
+  mockedFetchPdf.mockResolvedValue({
+    bytes: new Uint8Array([1, 2, 3]).buffer,
+    filename: "doc.pdf",
+    title: "doc",
+  });
 });
 
 describe("POST /api/ingest/pdf", () => {
@@ -48,7 +57,8 @@ describe("POST /api/ingest/pdf", () => {
     mockedPrincipal.mockResolvedValue(null);
     const res = await POST(jsonReq({ pdfUrl: "https://example.com/doc.pdf" }) as never);
     expect(res.status).toBe(401);
-    expect(mockedIngestPdf).not.toHaveBeenCalled();
+    expect(mockedFetchPdf).not.toHaveBeenCalled();
+    expect(mockedExtract).not.toHaveBeenCalled();
   });
 
   it("400 when pdfUrl is missing or not a URL", async () => {
@@ -56,38 +66,46 @@ describe("POST /api/ingest/pdf", () => {
     expect((await POST(jsonReq({ pdfUrl: "not-a-url" }) as never)).status).toBe(400);
   });
 
-  it("ingests by URL with session attribution", async () => {
+  it("fetches a URL PDF and enqueues extract with session attribution", async () => {
     const res = await POST(jsonReq({ pdfUrl: "https://example.com/doc.pdf", title: "My Doc" }) as never);
     expect(res.status).toBe(200);
-    expect(mockedIngestPdf).toHaveBeenCalledWith(
-      { pdfUrl: "https://example.com/doc.pdf" },
-      expect.objectContaining({ owner: "alice", author: "alice", title: "My Doc" }),
+    expect(mockedFetchPdf).toHaveBeenCalledWith("https://example.com/doc.pdf");
+    expect(mockedExtract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "alice",
+        format: "pdf",
+        filename: "doc.pdf",
+        title: "My Doc",
+        sourceUrl: "https://example.com/doc.pdf",
+      }),
     );
   });
 
-  it("passes tags from JSON body", async () => {
+  it("passes tags from JSON body onto the extract job", async () => {
     await POST(jsonReq({ pdfUrl: "https://example.com/doc.pdf", tags: ["research", "ai"] }) as never);
-    expect(mockedIngestPdf).toHaveBeenCalledWith(
-      { pdfUrl: "https://example.com/doc.pdf" },
+    expect(mockedExtract).toHaveBeenCalledWith(
       expect.objectContaining({ tags: ["research", "ai"] }),
     );
   });
 
-  it("maps a ClientInputError (empty text layer / oversized) to 400", async () => {
-    mockedIngestPdf.mockRejectedValue(new ClientInputError("PDF has no extractable text layer."));
-    const res = await POST(jsonReq({ pdfUrl: "https://example.com/scanned.pdf" }) as never);
+  it("maps a ClientInputError from the fetch (oversized / wrong type) to 400", async () => {
+    mockedFetchPdf.mockRejectedValue(new ClientInputError("PDF too large (21.0 MB). Maximum: 20 MB."));
+    const res = await POST(jsonReq({ pdfUrl: "https://example.com/huge.pdf" }) as never);
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toContain("no extractable text layer");
+    expect(body.error).toContain("too large");
   });
 
   it("maps an unexpected error (e.g. storage outage) to 500, not 400", async () => {
-    mockedIngestPdf.mockRejectedValue(new Error("R2 unavailable"));
+    mockedFetchPdf.mockRejectedValue(new Error("R2 unavailable"));
     const res = await POST(jsonReq({ pdfUrl: "https://example.com/doc.pdf" }) as never);
     expect(res.status).toBe(500);
   });
 
-  it("ingests via multipart file upload", async () => {
+  it("hands an UPLOADED pdf to the extract job, never to a Worker parse", async () => {
+    // Epic 7. This test used to assert `ingestPdf` ran inline on the uploaded
+    // bytes — the Worker-side `unpdf` parse the epic moved to the sidecar's
+    // Rust crate. The URL door above now fetches bytes and takes this same path.
     const file = new File(["fake-pdf-bytes"], "report.pdf", { type: "application/pdf" });
     const form = new FormData();
     form.append("file", file);
@@ -100,10 +118,14 @@ describe("POST /api/ingest/pdf", () => {
 
     const res = await POST(req as never);
     expect(res.status).toBe(200);
-    expect(mockedIngestPdf).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: "report.pdf" }),
-      expect.objectContaining({ owner: "alice", author: "alice", title: "My Report" }),
-    );
+    expect(mockedExtract).toHaveBeenCalledTimes(1);
+    expect(mockedExtract.mock.calls[0][0]).toMatchObject({
+      owner: "alice",
+      format: "pdf",
+      filename: "report.pdf",
+      title: "My Report",
+    });
+    expect(mockedFetchPdf).not.toHaveBeenCalled();
   });
 
   it("400 when multipart file is missing", async () => {
@@ -121,9 +143,8 @@ describe("POST /api/ingest/pdf", () => {
     mockedServicePrincipal.mockReturnValue({ id: "service:bot", handle: "bot" });
     const res = await POST(jsonReq({ pdfUrl: "https://example.com/doc.pdf" }) as never);
     expect(res.status).toBe(200);
-    expect(mockedIngestPdf).toHaveBeenCalledWith(
-      { pdfUrl: "https://example.com/doc.pdf" },
-      expect.objectContaining({ owner: "bot", author: "bot", triggeredBy: "bot" }),
+    expect(mockedExtract).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "bot", sourceUrl: "https://example.com/doc.pdf" }),
     );
   });
 
@@ -132,31 +153,30 @@ describe("POST /api/ingest/pdf", () => {
     // getPrincipal returns alice (Clerk session) — should use alice, not bot
     const res = await POST(jsonReq({ pdfUrl: "https://example.com/doc.pdf" }) as never);
     expect(res.status).toBe(200);
-    expect(mockedIngestPdf).toHaveBeenCalledWith(
-      { pdfUrl: "https://example.com/doc.pdf" },
-      expect.objectContaining({ owner: "alice", author: "alice" }),
+    expect(mockedExtract).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: "alice" }),
     );
   });
 
-  it("queues a URL PDF as a source:pdf task (on Workers) and returns jobId", async () => {
-    mockedEnqueue.mockResolvedValue(true);
+  it("does NOT enqueue a Worker source:pdf task for a URL PDF", async () => {
     const res = await POST(jsonReq({ pdfUrl: "https://example.com/doc.pdf" }) as never);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.queued).toBe(true);
-    expect(typeof data.jobId).toBe("string");
-    expect(mockedEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "ingest",
-        url: "https://example.com/doc.pdf",
-        source: "pdf",
-      }),
-    );
-    expect(mockedIngestPdf).not.toHaveBeenCalled();
+    expect(data.extract).toBe(true);
+    expect(mockedExtract).toHaveBeenCalledTimes(1);
+    expect(mockedExtract.mock.calls[0][0]).toMatchObject({
+      format: "pdf",
+      sourceUrl: "https://example.com/doc.pdf",
+    });
   });
 
-  it("stages an uploaded PDF to R2 and enqueues a staged task", async () => {
-    mockedEnqueue.mockResolvedValue(true);
+  it("does NOT stage an uploaded PDF for the Worker, even where a queue exists", async () => {
+    // The replaced pin asserted a `staged: { kind: "pdf" }` task — the payload
+    // `/api/tasks/run` used to parse on the Worker. On Workers or not, an
+    // uploaded PDF now takes exactly one path: stored bytes plus an extract
+    // job. `queued: true` still means "the sidecar has work", not "a Worker
+    // will parse this".
     const file = new File(["fake-pdf-bytes"], "report.pdf", { type: "application/pdf" });
     const form = new FormData();
     form.append("file", file);
@@ -164,13 +184,9 @@ describe("POST /api/ingest/pdf", () => {
 
     const res = await POST(req as never);
     expect(res.status).toBe(200);
-    expect((await res.json()).queued).toBe(true);
-    expect(mockedEnqueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "ingest",
-        staged: expect.objectContaining({ kind: "pdf", filename: "report.pdf" }),
-      }),
-    );
-    expect(mockedIngestPdf).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(body.queued).toBe(true);
+    expect(body.extract).toBe(true);
+    expect(mockedFetchPdf).not.toHaveBeenCalled();
   });
 });

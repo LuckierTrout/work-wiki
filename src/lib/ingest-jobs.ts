@@ -35,7 +35,14 @@ export type IngestJobStage =
 
 export const INGEST_CANCELLED_COPY = "Cancelled — no pages were written.";
 
-export type IngestJobKind = "ingest" | "embed";
+/**
+ * `extract` is the Epic 7 arm: a binary arrival's job is created under this
+ * kind and parked while the sidecar claims the matching extract record. It
+ * becomes `ingest` the moment the extracted text is in the kernel, which is
+ * what makes "compile only after extract text exists" a property of the job
+ * record rather than of whoever happens to call the queue next.
+ */
+export type IngestJobKind = "ingest" | "embed" | "extract";
 export type IngestJobOrigin = "plaud";
 
 /**

@@ -1,15 +1,28 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal } from "@/lib/auth";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
-import { extractDocumentTextAsync, isSupportedDocument } from "@/lib/document-extract";
+import {
+  detectDocumentFormat,
+  extractDocumentTextAsync,
+  isSupportedDocument,
+} from "@/lib/document-extract";
+import { enqueueExtract } from "@/lib/extract-dispatch";
+import { bytesSha256 } from "@/lib/source-sha256";
+import {
+  intakeRequiresExtract,
+  intakeSourceSlug,
+  type IntakeExtractFormat,
+  type IntakeFormat,
+} from "@/lib/workbench-intake";
 import { ingest } from "@/lib/ingest";
 import { enqueueOrInline } from "@/lib/ingest-async";
-import { createIngestJob, getIngestJob } from "@/lib/ingest-jobs";
+import { createIngestJob, getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { stageBytes, stageText } from "@/lib/ingest-staging";
 import type { Task } from "@/lib/tasks";
 import {
   MAX_EMAIL_CONTENT_CHARS,
   MAX_EMAIL_DOCUMENTS,
+  type EmailIngestMetadata,
   emailJobId,
   loadEmailIngestConfig,
   normalizeEmailAddress,
@@ -62,6 +75,50 @@ function parseSkippedCount(value: unknown): number | undefined {
         ? Number(value)
         : NaN;
   return Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : undefined;
+}
+
+/**
+ * Give a lost attachment a failed Activity row of its own.
+ *
+ * BEST-EFFORT BY CONSTRUCTION. This runs on the path where writing an extract
+ * record has already failed once, so the same store may well refuse again — and
+ * a throw here would turn one lost attachment into a 500 that makes the inbound
+ * Worker redeliver the whole message. A logged warning is the floor; the row is
+ * the improvement.
+ *
+ * `kind: "extract"` so Activity's Retry re-offers the extract rather than
+ * decoding the stored bytes as UTF-8 text.
+ */
+async function recordFailedAttachment(input: {
+  owner: string;
+  title: string;
+  sourceRel?: string;
+  error: string;
+  email: EmailIngestMetadata;
+}): Promise<void> {
+  try {
+    const jobId = crypto.randomUUID();
+    await createIngestJob({
+      jobId,
+      owner: input.owner,
+      title: input.title,
+      source: "email",
+      email: input.email,
+      kind: "extract",
+      ...(input.sourceRel ? { sourceRel: input.sourceRel } : {}),
+    });
+    await updateIngestJob(jobId, {
+      status: "failed",
+      stage: "extracting",
+      error: input.error,
+    });
+  } catch (error) {
+    logger.warn(
+      "email-ingest",
+      `could not record a failed row for "${input.title}"`,
+      error,
+    );
+  }
 }
 
 async function parsePayload(request: Request): Promise<EmailPayload> {
@@ -230,12 +287,101 @@ export async function POST(request: Request) {
       });
     }
 
-    const attachmentBytes = await Promise.all(
+    const allAttachmentBytes = await Promise.all(
       attachments.map(async (file) => ({
         file,
         bytes: await file.arrayBuffer(),
       })),
     );
+
+    // `receivedAt` is stamped ONCE, here, and carried onto every record this
+    // message produces. An emailed PDF is parked behind an extract job that may
+    // not compile for minutes, and a page dated by the compile would put the
+    // sidecar's clock on the owner's correspondence.
+    const email: EmailIngestMetadata = {
+      from,
+      to,
+      subject,
+      messageId,
+      attachmentNames,
+      receivedAt: new Date().toISOString(),
+    };
+
+    // BINARIES LEAVE HERE AS THEIR OWN SOURCES (Story 7.5). A PDF or DOCX that
+    // arrived by mail used to be parsed on the Worker and glued onto the
+    // message body; Epic 7 moved those parsers to the sidecar, so each one is
+    // stored under `raw/sources/` and parked behind its own extract job. That
+    // also stops one corrupt attachment from failing the whole message: the
+    // note still compiles, and the attachment fails visibly on its own row.
+    //
+    // The rest — CSV, ZIP, the text formats — keep the inline path below,
+    // because no crate reads them and there is nothing for the sidecar to do.
+    const extractable = allAttachmentBytes.filter(({ file }) =>
+      intakeRequiresExtract(
+        (detectDocumentFormat(file.name, file.type) ?? "") as IntakeFormat,
+      ),
+    );
+    const attachmentBytes = allAttachmentBytes.filter(
+      (item) => !extractable.includes(item),
+    );
+    const extractIds: string[] = [];
+    // Attachments that reached neither the extract queue nor the staged path.
+    // They are ANSWERED, not dropped: an attachment removed from `extractable`
+    // is also absent from `attachmentBytes`, so a failure that only logged left
+    // the sender a 200 saying the mail was accepted with no Source, no row and
+    // no sentence anywhere — the silent drop this epic forbids.
+    const failedAttachments: { filename: string; error: string }[] = [];
+    for (const { file, bytes } of extractable) {
+      const format = detectDocumentFormat(file.name, file.type) as IntakeExtractFormat;
+      const title = `${subject} — ${file.name}`.trim();
+      try {
+        const queued = await enqueueExtract({
+          owner: contentOwner,
+          slug: intakeSourceSlug(file.name),
+          bytesSha256: await bytesSha256(bytes),
+          ext: format,
+          format,
+          filename: file.name,
+          title,
+          bytes,
+          email,
+          ...(validVaultId ? { vaultId: validVaultId } : {}),
+        });
+        // `enqueueExtract` reports this failure WITHOUT throwing: the bytes
+        // landed, the job records did not. The Source is real and reachable, so
+        // the row it deserves is written here rather than inferred later.
+        if (queued.error) {
+          failedAttachments.push({ filename: file.name, error: queued.error });
+          await recordFailedAttachment({
+            owner: principal.handle,
+            title,
+            sourceRel: queued.path,
+            error: queued.error,
+            email,
+          });
+          continue;
+        }
+        extractIds.push(queued.extractId);
+      } catch (error) {
+        // The message is still worth compiling — one bad attachment must not
+        // 500 and make the sender's Worker retry the whole delivery. But it
+        // gets a failed Activity row, so the owner can see which one was lost.
+        const message = getErrorMessage(error);
+        logger.error(
+          "email-ingest",
+          `could not queue extract for attachment "${file.name}"`,
+          error,
+        );
+        failedAttachments.push({ filename: file.name, error: message });
+        await recordFailedAttachment({
+          owner: principal.handle,
+          title,
+          error: message,
+          email,
+        });
+      }
+    }
+
     const stagedAttachments = await Promise.all(
       attachmentBytes.map(async ({ file, bytes }, index) => ({
         key: await stageBytes(jobId, `${index + 1}-${file.name}`, `attachment-${index + 1}`, bytes),
@@ -244,7 +390,6 @@ export async function POST(request: Request) {
       })),
     );
 
-    const email = { from, to, subject, messageId, attachmentNames };
     await createIngestJob({
       jobId,
       owner: principal.handle,
@@ -323,6 +468,11 @@ export async function POST(request: Request) {
       accepted: true,
       supportedAttachmentCount: attachments.length,
       skippedAttachmentCount,
+      ...(extractIds.length ? { extractIds } : {}),
+      // Reported, not just logged. The status stays whatever the body's own
+      // compile answered — the message did arrive — but a caller that reads
+      // this field can tell that one attachment did not.
+      ...(failedAttachments.length ? { failedAttachments } : {}),
     }, { status: response.status });
   } catch (error) {
     // Mid-request flag flip: the gate above already answered for a deployment

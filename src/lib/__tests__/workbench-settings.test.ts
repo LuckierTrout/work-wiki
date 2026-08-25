@@ -320,6 +320,16 @@ function emptyPayload(): WorkbenchSettingsPayload {
     envSearxngBaseUrl: null,
     searxngCategories: null,
     envResearchProviders: [],
+    // Intake and MinerU on a fresh deployment: no inbound address configured,
+    // the door switched off, no `raw/parsed/` copies, and MinerU `off` with no
+    // credential. `off` is the fail-closed default and the value an absent or
+    // unreadable stored mode resolves to.
+    inboundEmailAddress: null,
+    inboundEmailEnabled: false,
+    intakeKeepParsed: false,
+    mineruMode: "off",
+    mineruLocalBaseUrl: null,
+    hasMinerUApiKey: false,
     language: SETTINGS_LANGUAGE_VALUE,
     readOnly: false,
   };
@@ -360,11 +370,14 @@ describe("the settings nav vocabulary", () => {
     }
   });
 
-  it("marks exactly the three unbuilt categories as pending, each with one sentence", () => {
+  it("marks exactly the one unbuilt category as pending, with one sentence", () => {
     const pending = SETTINGS_CATEGORIES.filter((c) => c.pending !== null).map((c) => c.id);
     // Listed, not required to function. A category that rendered nothing would
     // be a dead nav row; one that rendered a stub would lie about what works.
-    expect(pending.sort()).toEqual(["api-mcp", "intake", "mineru"]);
+    //
+    // Epic 7 built Intake and MinerU PDF, so both left this list. `api-mcp` is
+    // Epic 8's and stays — clearing it would promise a pane with no controls.
+    expect(pending.sort()).toEqual(["api-mcp"]);
     for (const category of SETTINGS_CATEGORIES) {
       if (category.pending === null) continue;
       expect(category.pending.endsWith(".")).toBe(true);
@@ -2735,6 +2748,36 @@ describe("applyWorkbenchSettings", () => {
       applyWorkbenchSettings({}, { customBaseUrl: "  https://api.example/v1  " }),
     ).toEqual({ customBaseUrl: "https://api.example/v1" });
   });
+
+  it("persists the Intake and MinerU choices, and only on Save", () => {
+    // The whole point of the draft is that picking Cloud in the select does
+    // nothing until Save — so the two halves are tested together: the body the
+    // draft produces, and the merge that body lands through.
+    const seeded = settingsDraftFromPayload(emptyPayload());
+    const body = settingsSaveBody({
+      ...seeded,
+      mineruMode: "cloud",
+      mineruLocalBaseUrl: "http://127.0.0.1:9000",
+      intakeKeepParsed: true,
+    });
+    expect(body).toMatchObject({
+      mineruMode: "cloud",
+      mineruLocalBaseUrl: "http://127.0.0.1:9000",
+      intakeKeepParsed: true,
+    });
+    // Nothing was stored by building the body; the merge is what stores.
+    expect(applyWorkbenchSettings({}, body)).toMatchObject({
+      mineruMode: "cloud",
+      mineruLocalBaseUrl: "http://127.0.0.1:9000",
+      intakeKeepParsed: true,
+    });
+    // An untouched key never rides, so a keep-parsed tick cannot delete a
+    // stored MinerU token.
+    expect("mineruApiKey" in body).toBe(false);
+    expect(
+      applyWorkbenchSettings({ mineruApiKey: "mk-1" }, body).mineruApiKey,
+    ).toBe("mk-1");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4524,11 +4567,15 @@ describe("the Settings components stay inside the shell", () => {
     // Every control a read-only deployment refuses routes its description
     // through `describedBy`, which APPENDS the save bar's read-only sentence to
     // the control's own hint — `aria-describedby` takes a space-separated list,
-    // so the hint is kept rather than replaced. Six call sites now: the two
-    // provider pickers, the vector switch, `textRow`, `secretRow` (DW-307) and
-    // the Deep Research provider picker, whose hint carries both the env-pinned
-    // note and the "this provider has no credential" refusal.
-    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(6);
+    // so the hint is kept rather than replaced. NINE call sites now: the two
+    // provider pickers, the vector switch, `textRow`, `secretRow` (DW-307),
+    // the Deep Research provider picker — whose hint carries both the
+    // env-pinned note and the "this provider has no credential" refusal — and
+    // Epic 7's three: Intake's keep-parsed checkbox, MinerU's enable checkbox
+    // and MinerU's mode select, whose description IS the orange
+    // leave-the-machine warning and so must be announced rather than merely
+    // rendered beside the control.
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(9);
     expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
     expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
     // Each row builder wires its own hint; none of them renders a bare span.
@@ -4566,9 +4613,13 @@ describe("the Settings components stay inside the shell", () => {
     expect(disabledProps).toHaveLength(1);
     expect(canvas).toContain("disabled={saving || payload.readOnly || !dirty}");
 
-    // Both provider pickers and the vector switch, each with the attribute…
+    // Every control the read-only flag alone refuses carries the attribute:
+    // the two provider pickers, and Epic 7's Intake keep-parsed checkbox,
+    // MinerU enable checkbox and MinerU mode select. Counted rather than
+    // enumerated so a new refusable control cannot be added without this
+    // number moving — the vector switch has its own compound predicate below.
     expect(canvas.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
-      2,
+      5,
     );
     expect(canvas).toContain("aria-disabled={vectorRefused || undefined}");
     // …and each with a handler that COMMITS NOTHING when the control is

@@ -29,9 +29,25 @@ import { logger } from "./logger";
  */
 export const RAW_SOURCES_DIR = "sources";
 
+/**
+ * The OPTIONAL keep of extractor output (Story 7.2's Intake checkbox).
+ *
+ * Not a second vault and not a Source: the system of record for a binary
+ * arrival is still the immutable bytes under `raw/sources/`, and the Markdown
+ * the sidecar produced is written beside them as `raw/sources/<slug>/<id>.md`
+ * whether or not this keep is on. This directory is a debugging convenience —
+ * "show me exactly what the parser saw" — which is why nothing reads it back.
+ */
+export const RAW_PARSED_DIR = "parsed";
+
 /** Storage-relative path for something under `raw/sources/`. */
 export function rawSourceRelPath(rest: string): string {
   return rawRelPath(`${RAW_SOURCES_DIR}/${rest}`);
+}
+
+/** Storage-relative path for something under `raw/parsed/`. */
+export function rawParsedRelPath(rest: string): string {
+  return rawRelPath(`${RAW_PARSED_DIR}/${rest}`);
 }
 
 /** Storage-relative path for something under `tenants/<tenant>/raw/sources/`. */
@@ -141,6 +157,132 @@ async function storeRawSource(
   await mirrorSourceToSilo(rest, content, options?.owner);
   await bumpDataVersion();
   return true;
+}
+
+/**
+ * The binary twin of {@link storeRawSource}.
+ *
+ * A PDF, a DOCX or a JPEG is not text and must not be round-tripped through a
+ * UTF-8 string on the way to storage — `writeFile` would mangle every byte that
+ * is not valid UTF-8, and the sidecar would then be handed a corrupt document
+ * to parse. `writeAsset` is the provider's binary door, and this keeps the rest
+ * of the arrival contract identical: first-write-only, silo mirror, one
+ * `dataVersion` bump.
+ *
+ * THE SILO MIRROR IS NOT OPTIONAL HERE, despite an earlier comment on this
+ * function claiming "Files resolves binaries through the flat key". It does
+ * not: {@link resolveWorkbenchFile} resolves `raw/` strictly inside
+ * `tenants/<tenant>/raw/` and never falls back to the shared flat tree (DW-40),
+ * the same rule the string writer above mirrors for. Without this a stored
+ * image was invisible in Files and its bytes unreachable through the media
+ * door — the two things Story 7.7 exists to provide.
+ */
+async function storeRawSourceBytes(
+  rest: string,
+  bytes: ArrayBuffer,
+  options?: SaveRawSourceOptions,
+): Promise<boolean> {
+  await ensureDirectories();
+  const rel = rawSourceRelPath(rest);
+  if (await alreadyStored(rel)) {
+    // Repair a missing mirror even when the flat bytes are already there, for
+    // the reason {@link storeRawSource} documents: the watcher is
+    // forward-only, so a mirror that failed once would otherwise never land.
+    const repaired = await mirrorSourceBytesToSilo(rest, bytes, options?.owner);
+    if (repaired) await bumpDataVersion();
+    return false;
+  }
+  await getStorage().writeAsset(rel, bytes);
+  await mirrorSourceBytesToSilo(rest, bytes, options?.owner);
+  await bumpDataVersion();
+  return true;
+}
+
+/**
+ * The binary twin of {@link mirrorSourceToSilo} — same fail-soft contract, and
+ * `writeAsset` rather than `writeFile` because a PNG is not a UTF-8 string.
+ *
+ * The bytes are mirrored from the CALLER's buffer rather than re-read from the
+ * flat key: this writer is first-write-only over a content-addressed name, so
+ * the buffer in hand and the stored object are the same bytes by construction.
+ */
+async function mirrorSourceBytesToSilo(
+  rest: string,
+  bytes: ArrayBuffer,
+  owner: string | null | undefined,
+): Promise<boolean> {
+  if (!owner) return false;
+  try {
+    const rel = tenantRawSourceRelPath(tenantForOwner(owner), rest);
+    if (await alreadyStored(rel)) return false;
+    await getStorage().writeAsset(rel, bytes);
+    return true;
+  } catch (err) {
+    logger.warn("raw", `silo mirror failed for raw source bytes "${rest}"`, err);
+    return false;
+  }
+}
+
+/**
+ * Save the immutable BYTES of one binary arrival at
+ * `raw/sources/<slug>/<rawId>.<ext>`.
+ *
+ * `rawId` is the SHA-256 of those bytes, which is what makes a re-drop of the
+ * same PDF land on the key it already occupies instead of minting a second
+ * snapshot — and what lets the extracted Markdown sit beside it at
+ * `<slug>/<rawId>.md` without a separate identity to keep in sync.
+ */
+export async function saveRawSourceBytes(
+  slug: string,
+  rawId: string,
+  ext: string,
+  bytes: ArrayBuffer,
+  options?: SaveRawSourceOptions,
+): Promise<{ path: string; rel: string; created: boolean }> {
+  validateSlug(slug);
+  if (!RAW_ID_RE.test(rawId)) {
+    throw new Error("Invalid raw id: must be a hex hash");
+  }
+  if (!/^[a-z0-9]{1,8}$/.test(ext)) {
+    throw new Error("Invalid raw source extension");
+  }
+  const rest = `${slug}/${rawId}.${ext}`;
+  const created = await storeRawSourceBytes(rest, bytes, options);
+  return {
+    path: `${getRawDir()}/${RAW_SOURCES_DIR}/${rest}`,
+    rel: rawSourceRelPath(rest),
+    created,
+  };
+}
+
+/** Read stored binary Source bytes back for the extract-bytes door. */
+export async function readRawSourceBytes(rel: string): Promise<ArrayBuffer> {
+  return getStorage().readAsset(rel);
+}
+
+/**
+ * Keep a copy of what the extractor produced under `raw/parsed/`.
+ *
+ * FAIL-SOFT by contract: the caller has already written the extracted text to
+ * the Source location that Ingest reads, so a rejected keep must not turn a
+ * successful extract into a failed one.
+ */
+export async function saveParsedMarkdown(
+  slug: string,
+  rawId: string,
+  content: string,
+): Promise<string | null> {
+  try {
+    validateSlug(slug);
+    if (!RAW_ID_RE.test(rawId)) return null;
+    await ensureDirectories();
+    const rel = rawParsedRelPath(`${slug}/${rawId}.md`);
+    await getStorage().writeFile(rel, content);
+    return rel;
+  } catch (error) {
+    logger.warn("raw", `parsed keep failed for "${slug}/${rawId}"`, error);
+    return null;
+  }
 }
 
 /**

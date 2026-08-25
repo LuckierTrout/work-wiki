@@ -690,4 +690,12 @@ if (isMain) {
       `work-wiki sidecar listening on http://${SIDECAR_HOST}:${SIDECAR_PORT}\n`,
     );
   });
+  // Extract is a second capability of the SAME process, started after the
+  // listener so a Chat health probe never waits on a document parse. It is a
+  // client of the kernel, not a route on this server: nothing outside this
+  // machine can ask the sidecar to parse anything.
+  const { startExtractLoop } = await import("./extract-loop.mjs");
+  startExtractLoop({
+    log: (message) => process.stdout.write(`${message}\n`),
+  });
 }

@@ -52,6 +52,85 @@ import { recordOperationSafe } from "@/lib/operation-ledger";
 import { compileKnowledgePage } from "@/lib/knowledge-compilation";
 import { runResearchProject } from "@/lib/research-runtime";
 import { getStorage } from "@/lib/storage";
+import { fetchPdfBytes } from "@/lib/fetch";
+import { enqueueExtract } from "@/lib/extract-dispatch";
+import { bytesSha256 } from "@/lib/source-sha256";
+import {
+  intakeRequiresExtract,
+  intakeSourceSlug,
+  type IntakeExtractFormat,
+  type IntakeFormat,
+} from "@/lib/workbench-intake";
+import { detectDocumentFormat } from "@/lib/document-extract";
+
+/**
+ * What {@link divertToExtract} decided about one queued binary.
+ *
+ * THREE ANSWERS, NOT TWO. A boolean conflated the two "no" cases, and they call
+ * for opposite handling: `"skipped"` is a CSV or an image the caller should go
+ * on and ingest itself, while `"failed"` is a document that belongs to the
+ * sidecar and did not get there. Collapsing them sent the failure down the
+ * caller's fallback, which deletes the staging blob after it runs — so a
+ * document with no extract record anywhere had its only remaining copy removed
+ * on the way to a Worker parse this build no longer owns.
+ */
+type DivertOutcome = "diverted" | "skipped" | "failed";
+
+/**
+ * Hand a queued binary to the sidecar instead of parsing it on the Worker.
+ *
+ * `"skipped"` — leaving the caller's existing path untouched — for anything no
+ * extract crate reads (CSV, ZIP, plain text, images, which keep the vision
+ * path). `"diverted"` once the bytes are stored AND a record exists, including
+ * the sidecar-down case: the row is visibly failed with the locked sentence and
+ * re-offered when a poller returns, which is a better answer than a Worker
+ * parse this build no longer has.
+ *
+ * `enqueueExtract` REPORTS ONE FAILURE WITHOUT THROWING: bytes stored, job
+ * records not written. That is `"failed"`, and the caller turns it into a 5xx
+ * so the queue redelivers — the bytes are content-addressed, so the retry lands
+ * on the same key and costs nothing.
+ */
+async function divertToExtract(input: {
+  owner: string;
+  title: string;
+  filename: string;
+  contentType?: string;
+  bytes: ArrayBuffer;
+  ingestJobId?: string;
+  vaultId?: string;
+  tags?: string[];
+}): Promise<DivertOutcome> {
+  const format = detectDocumentFormat(input.filename, input.contentType);
+  if (!format || !intakeRequiresExtract(format as IntakeFormat)) return "skipped";
+  if (!input.owner) return "skipped";
+  try {
+    const queued = await enqueueExtract({
+      owner: input.owner,
+      slug: intakeSourceSlug(input.filename),
+      bytesSha256: await bytesSha256(input.bytes),
+      ext: format,
+      format: format as IntakeExtractFormat,
+      filename: input.filename,
+      title: input.title,
+      bytes: input.bytes,
+      ...(input.ingestJobId ? { ingestJobId: input.ingestJobId } : {}),
+      ...(input.vaultId ? { vaultId: input.vaultId } : {}),
+      ...(input.tags?.length ? { tags: input.tags } : {}),
+    });
+    if (queued.error) {
+      logger.error(
+        "tasks",
+        `stored "${input.filename}" but no extract record exists: ${queued.error}`,
+      );
+      return "failed";
+    }
+    return "diverted";
+  } catch (error) {
+    logger.error("tasks", `could not divert "${input.filename}" to extract`, error);
+    return "failed";
+  }
+}
 
 /**
  * POST /api/tasks/run — execute one agent task.
@@ -398,6 +477,39 @@ export async function POST(req: Request) {
       await updateIngestJob(task.jobId, { status: "processing", stage: "extracting" });
     }
 
+    // LEGACY TASKS ONLY (Story 7.5). Every door now parks extract-crate
+    // binaries on the sidecar before anything is enqueued, so a staged PDF or
+    // office file reaching the consumer means a task was written by an older
+    // build and is still in the queue. Diverting it here — rather than calling
+    // the parsers the Worker no longer owns — is what makes the cutover safe to
+    // deploy without draining the queue first.
+    if (task.staged && (task.staged.kind === "pdf" || task.staged.kind === "document")) {
+      const { key, filename, contentType } = task.staged;
+      const diverted = await divertToExtract({
+        owner: task.owner ?? triggeredBy ?? task.author ?? "",
+        title: task.title?.trim() || filename || "Document",
+        filename: filename || (task.staged.kind === "pdf" ? "document.pdf" : "document"),
+        contentType,
+        bytes: await readStagedBytes(key),
+        ...(task.jobId ? { ingestJobId: task.jobId } : {}),
+        ...(task.vaultId ? { vaultId: task.vaultId } : {}),
+        ...(task.tags?.length ? { tags: task.tags } : {}),
+      });
+      if (diverted === "diverted") {
+        await deleteStaged(key).catch(() => {});
+        return NextResponse.json({ ok: true, extract: true });
+      }
+      if (diverted === "failed") {
+        // 5xx, so the consumer redelivers rather than acking a document that
+        // now exists only as a staging blob. Falling through would ingest it on
+        // the Worker and then delete that blob — the one copy left.
+        return NextResponse.json(
+          { error: "could not queue the document for extract" },
+          { status: 503 },
+        );
+      }
+    }
+
     // Route to the right ingest path:
     //  - staged: uploaded bytes/text in R2 (delete the blob after, best-effort);
     //  - source pdf/image with a url: the URL PDF/image path (not generic);
@@ -409,6 +521,26 @@ export async function POST(req: Request) {
       if (task.staged) combined = await readStagedText(task.staged.key);
       for (const attachment of task.attachments) {
         const bytes = await readStagedBytes(attachment.key);
+        // A task enqueued by an older build can still carry a PDF here. The
+        // Worker no longer owns those parsers, so hand it to the sidecar as its
+        // own Source rather than gluing an empty extract onto the message.
+        const diverted = await divertToExtract({
+          owner: task.owner ?? triggeredBy ?? task.author ?? "",
+          title: `${task.title?.trim() || "Emailed document"} — ${attachment.filename}`,
+          filename: attachment.filename,
+          contentType: attachment.contentType,
+          bytes,
+          ...(task.vaultId ? { vaultId: task.vaultId } : {}),
+        });
+        if (diverted === "diverted") continue;
+        if (diverted === "failed") {
+          // Same reasoning as the staged branch: retry the message rather than
+          // glue an unparsed attachment onto the compiled mail.
+          return NextResponse.json(
+            { error: "could not queue the attachment for extract" },
+            { status: 503 },
+          );
+        }
         const extracted = await extractDocumentTextAsync({
           bytes,
           filename: attachment.filename,
@@ -461,8 +593,27 @@ export async function POST(req: Request) {
         result = await ingest(task.title?.trim() || "Untitled", text, opts);
       }
     } else if (task.source === "pdf" && task.url) {
-      if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
-      result = await ingestPdf({ pdfUrl: task.url }, opts);
+      // Leftover `source:pdf` tasks from before the vault door fetched-then-
+      // extracted. Fetch the bytes here and park them on the sidecar — do not
+      // call ingestPdf / unpdf on the Worker.
+      const fetched = await fetchPdfBytes(task.url);
+      const diverted = await divertToExtract({
+        owner: task.owner ?? triggeredBy ?? task.author ?? "",
+        title: task.title?.trim() || fetched.title,
+        filename: fetched.filename,
+        contentType: "application/pdf",
+        bytes: fetched.bytes,
+        ...(task.jobId ? { ingestJobId: task.jobId } : {}),
+        ...(task.vaultId ? { vaultId: task.vaultId } : {}),
+        ...(task.tags?.length ? { tags: task.tags } : {}),
+      });
+      if (diverted === "diverted") {
+        return NextResponse.json({ ok: true, extract: true });
+      }
+      return NextResponse.json(
+        { error: "could not queue the document for extract" },
+        { status: 503 },
+      );
     } else if (task.source === "image" && task.url) {
       if (task.jobId) await updateIngestJob(task.jobId, { stage: "synthesizing" });
       result = await ingestImage({ imageUrl: task.url }, opts);

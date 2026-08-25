@@ -4,9 +4,20 @@ This Worker receives Cloudflare Email Routing events, checks the owner-managed
 allowlist in `YOPEDIA_CONFIG`, parses the MIME body, and submits trusted text and
 supported document attachments to the main work-wiki Worker through a service binding.
 
-Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI,
-Org, and RTF attachments are forwarded to the main Worker, staged in R2, and
-extracted by the task queue. The Worker carries at most ten supported documents
+Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX/XLS, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI,
+Org, and RTF attachments are forwarded to the main Worker, where they split by
+format:
+
+- **PDF, DOCX, PPTX, XLSX/XLS, ODS, EPUB and MOBI** become **Sources of their
+  own** under `raw/sources/`, each parked behind a sidecar extract job (Epic 7).
+  They are no longer parsed on the Worker and no longer glued onto the message
+  body, so one corrupt attachment fails on its own Activity row while the note
+  still compiles. Their stored bytes survive a failed extract.
+- **Everything else** (Markdown, TXT, HTML, CSV, ZIP, ODT, ODP, Org, RTF) is
+  staged in R2 and extracted by the task queue as before, because no extract
+  crate reads those formats.
+
+The Worker carries at most ten supported documents
 out of one message, and records the first twenty attachment names — forwarded or
 not — in activity history; names past the twentieth are not recorded at all. The
 acknowledgement reports the two losses separately: parts in an unsupported

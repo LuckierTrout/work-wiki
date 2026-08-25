@@ -562,6 +562,36 @@ export async function readWorkbenchFile(
 }
 
 /**
+ * Read the RAW BYTES behind a display path (Story 7.7).
+ *
+ * The byte twin of {@link readWorkbenchFile}, and it exists because an image or
+ * an audio file is not a string: `readFile` decodes UTF-8, which corrupts a PNG
+ * on the way through. It goes through the SAME {@link resolveWorkbenchFile}, so
+ * the media door's reach is identical to the Preview's by construction rather
+ * than by two validators that agree today.
+ *
+ * Artifacts are refused outright rather than re-encoded. They are always `.md`,
+ * so a media request naming one is asking for something that does not exist.
+ */
+export async function readWorkbenchFileBytes(
+  owner: string,
+  wikiId: string | null,
+  displayPath: string,
+  options: WorkbenchFileOptions,
+): Promise<ArrayBuffer | null> {
+  const resolved = await resolveWorkbenchFile(owner, wikiId, displayPath, options);
+  if (!resolved || resolved.kind !== "key") return null;
+  try {
+    return await getStorage().readAsset(resolved.key);
+  } catch (error) {
+    if (!isEnoent(error)) {
+      logger.error("workbench-files", `readAsset failed for "${displayPath}"`, error);
+    }
+    return null;
+  }
+}
+
+/**
  * Does a display path name a file the caller may read — WITHOUT buffering it?
  *
  * For a format the Preview cannot render (a PDF, an image, an extensionless

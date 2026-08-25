@@ -3,7 +3,16 @@ import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { detectDocumentFormat } from "@/lib/document-extract";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { enqueueExtract } from "@/lib/extract-dispatch";
 import { ingestDocument, type IngestOptions } from "@/lib/ingest";
+import { bytesSha256 } from "@/lib/source-sha256";
+import {
+  intakeFileTitle,
+  intakeRequiresExtract,
+  intakeSourceSlug,
+  type IntakeExtractFormat,
+  type IntakeFormat,
+} from "@/lib/workbench-intake";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { stageBytes } from "@/lib/ingest-staging";
@@ -51,7 +60,7 @@ export async function POST(request: NextRequest) {
     const format = detectDocumentFormat(file.name, file.type);
     if (!format) {
       return NextResponse.json(
-        { error: "Unsupported document type. Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, or RTF." },
+        { error: "Unsupported document type. Use Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX/XLS, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, or RTF." },
         { status: 400 },
       );
     }
@@ -92,6 +101,41 @@ export async function POST(request: NextRequest) {
     }
 
     const bytes = await file.arrayBuffer();
+
+    // PDF / OFFICE / EBOOK LEAVE HERE. Epic 7 moved those parsers off the
+    // Worker and into the sidecar's Rust crate, so this door stores the bytes
+    // and parks a compile behind an extract job rather than staging them for
+    // `ingestDocument` to parse inline. Formats the crate does not read (CSV,
+    // ZIP, ODT/ODP, Org, RTF, and the text formats) keep the existing path —
+    // storing bytes nothing can extract would be a slower way to lose them.
+    if (intakeRequiresExtract(format as IntakeFormat)) {
+      const digest = await bytesSha256(bytes);
+      const queued = await enqueueExtract({
+        owner: principal.handle,
+        slug: intakeSourceSlug(file.name),
+        bytesSha256: digest,
+        ext: format,
+        format: format as IntakeExtractFormat,
+        filename: file.name,
+        title: options.title ?? intakeFileTitle(file.name),
+        bytes,
+        ...(vaultId ? { vaultId } : {}),
+        ...(options.tags?.length ? { tags: options.tags } : {}),
+      });
+      return NextResponse.json(
+        {
+          queued: !queued.error && !queued.sidecarDown,
+          extract: true,
+          ...(queued.sidecarDown ? { sidecarDown: true } : {}),
+          path: queued.path,
+          jobId: queued.jobId,
+          extractId: queued.extractId,
+          ...(queued.error ? { error: queued.error } : {}),
+        },
+        { status: queued.error ? 202 : 200 },
+      );
+    }
+
     const jobId = crypto.randomUUID();
     await createIngestJob({
       jobId,

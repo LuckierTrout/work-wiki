@@ -109,15 +109,20 @@ development_status:
   6-5-research-page-thinking-auto-ingest: done
   epic-6-retrospective: done
 
+  # epic-7 stays `backlog` while 7-6 is open. Seven of its eight stories are
+  # implemented; 7.6 hit its own Block If — Plaud publishes no account-level API
+  # to list or pull recordings, and the documented OAuth belongs to a partner
+  # platform with no such endpoint (see the spec's Change Log). Marking the epic
+  # done would record a scope it does not have.
   epic-7: backlog
-  7-1-sidecar-claims-kernel-extract-jobs: backlog
-  7-2-pdf-extract-cache-and-mineru: backlog
-  7-3-docx-pptx-and-spreadsheet-extract: backlog
-  7-4-epub-mobi-extract: backlog
-  7-5-inbound-email-intake: backlog
+  7-1-sidecar-claims-kernel-extract-jobs: done
+  7-2-pdf-extract-cache-and-mineru: done
+  7-3-docx-pptx-and-spreadsheet-extract: done
+  7-4-epub-mobi-extract: done
+  7-5-inbound-email-intake: done
   7-6-plaud-oauth-list-and-pull: backlog
-  7-7-image-lightbox-and-av-player: backlog
-  7-8-mermaid-and-katex-in-preview: backlog
+  7-7-image-lightbox-and-av-player: done
+  7-8-mermaid-and-katex-in-preview: done
   epic-7-retrospective: optional
 
   epic-8: backlog

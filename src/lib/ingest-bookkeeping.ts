@@ -142,7 +142,7 @@ export async function ensureSourceSummary(input: {
   sourceText: string;
   sourcePath: string;
   sourceUrl?: string;
-  sourceType: "url" | "text" | "x-mention" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
+  sourceType: "url" | "text" | "x-mention" | "image" | "pdf" | "docx" | "pptx" | "xlsx" | "xls" | "csv" | "md" | "txt" | "html" | "zip" | "youtube" | "email" | "odt" | "ods" | "odp" | "epub" | "org" | "rtf" | "mobi";
   rawId?: string;
   origin?: SourceEntry["origin"];
 }): Promise<string> {

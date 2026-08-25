@@ -7,6 +7,10 @@ import {
   workbenchMode,
 } from "@/lib/workbench-modes";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
+import {
+  SEARCH_IMAGES_HEADING,
+  partitionSearchImages,
+} from "@/lib/search-images";
 import type { SearchHit } from "@/lib/chat-contract";
 
 export interface SearchCanvasProps {
@@ -28,6 +32,9 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
   const [vectorNote, setVectorNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const searchSeq = useRef(0);
+  // The two halves of one list. Recomputed per render rather than stored, so
+  // there is no second copy of the results to fall out of step with `hits`.
+  const { images, rest } = partitionSearchImages(hits ?? []);
 
   async function runSearch(value: string) {
     const trimmed = value.trim();
@@ -96,9 +103,34 @@ export function SearchCanvas({ wikiId, onDockPreview }: SearchCanvasProps) {
       {hits && hits.length === 0 && !busy ? (
         <p className="wb-empty">No matching Pages or Sources.</p>
       ) : null}
-      {hits && hits.length > 0 ? (
+      {/* The image section (Story 7.7). WHICH hits are in it — and therefore
+          which leave the list below — is one executed partition, so a hit
+          cannot appear twice or vanish from both. Rank order is the search
+          route's, preserved in each half. */}
+      {images.length > 0 ? (
+        <section className="wb-search-images" aria-label={SEARCH_IMAGES_HEADING}>
+          <h3 className="wb-search-images-heading">{SEARCH_IMAGES_HEADING}</h3>
+          <ul className="wb-search-image-grid">
+            {images.map(({ hit, src }) => (
+              <li key={`img:${hit.path}:${hit.score}`}>
+                <button
+                  type="button"
+                  className="wb-search-image"
+                  onClick={() => onDockPreview(selectionFromContentPath(hit.path))}
+                >
+                  {/* Owner-gated bytes from our own routes, so a plain <img>. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={src} alt={hit.title} loading="lazy" />
+                  <span className="wb-search-hit-title">{hit.title}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {rest.length > 0 ? (
         <ul className="wb-search-hits">
-          {hits.map((hit) => (
+          {rest.map((hit) => (
             <li key={`${hit.path}:${hit.score}`}>
               <button
                 type="button"

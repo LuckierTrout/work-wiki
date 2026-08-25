@@ -206,7 +206,7 @@ export function EmailIngestSettings() {
               <li>Body text and links are synthesized.</li>
               <li>Progress appears under Recent ingests.</li>
               <li>
-                Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB,
+                Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX/XLS, CSV, ZIP, ODT/ODS/ODP, EPUB,
                 MOBI, Org, and RTF attachments are included.
               </li>
               <li>A final receipt reports success or failure.</li>

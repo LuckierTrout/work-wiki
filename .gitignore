@@ -39,5 +39,11 @@ _bmad/render/
 /blob-report/
 /playwright/.cache/
 
+# Rust build output for the sidecar's extract crate, and the PDF parse cache
+# the extract binary keys on SHA-256.
+/sidecar/extract/target/
+/sidecar/.extract-cache/
+/sidecar/.extract-tmp/
+
 # clerk configuration (can include secrets)
 /.clerk/

@@ -114,6 +114,9 @@ export function ActivityDock({ readOnly = false, wikiId = null }: ActivityDockPr
                     <span className="wb-activity-status">{row.displayStatus}</span>
                   </div>
                   {row.error && <p className="wb-activity-error">{row.error}</p>}
+                  {/* Beside the error, not styled as one: this line is the
+                      reassuring half — the extract failed, the Source did not. */}
+                  {row.note && <p className="wb-activity-note">{row.note}</p>}
                   {!readOnly && (
                     <div className="wb-activity-actions">
                       {row.canCancel && (

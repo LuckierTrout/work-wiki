@@ -8,7 +8,11 @@
 import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import { Mermaid } from "@/components/Mermaid";
 import { urlTransform } from "@/lib/markdown-url";
+import { fencedCodeText } from "@/lib/markdown-fence";
 import {
   WIKILINK_MISSING_COPY,
   type PreviewFormat,
@@ -23,13 +27,20 @@ import {
 } from "@/lib/workbench-wikilinks";
 
 /**
- * The rendered Preview body: GFM plus `[[wikilinks]]`, and nothing else.
+ * The rendered Preview body: GFM, `[[wikilinks]]`, math, diagrams and images.
  *
- * Deliberately NOT the app's long-form article renderer, which wires KaTeX
- * unconditionally and reaches the diagram client boundary — both are Epic 7
- * Story 7.8's, and neither belongs in the Workbench chunk. So the plugin list
- * here is exactly `remarkGfm` and the wikilink pass, with no html-stage plugins
- * at all.
+ * STILL NOT the app's long-form article renderer (Story 7.8). What that
+ * component carries besides the plugins is chrome this column must not inherit
+ * — its own prose wrapper and its own reading treatment, the
+ * heading-id scheme an in-page Table of Contents anchors to, and `next/link`
+ * navigation out of the shell to the article route. Importing it here would
+ * have taken all of that with it and undone the type lock (UX-DR2) in the same
+ * move.
+ *
+ * What IS shared is the mechanism, not the surface: the same `remark-math` +
+ * `rehype-katex` pair, the same `Mermaid` client boundary, and one fence walk
+ * in `@/lib/markdown-fence`. So a `$…$` renders the same maths here as it does
+ * on an article, and neither file owns a second copy of how to find a fence.
  *
  * The reading face is not named here: it is a `--wb-*` token applied by the
  * `.wb-preview-body` rules in `globals.css`, which is what keeps every file in
@@ -44,6 +55,14 @@ export interface PreviewBodyProps {
   readableSlugs: ReadonlySet<string>;
   /** Re-points the shell's selection at a page. Never a route change. */
   onOpenPage: (slug: string) => void;
+  /**
+   * Open the one lightbox over an `![](…)` the owner clicked.
+   *
+   * Optional, and its absence is what makes the image inert rather than
+   * clickable: a mount with nowhere to put an overlay must not render a control
+   * that does nothing when pressed.
+   */
+  onOpenImage?: (image: { src: string; alt: string }) => void;
 }
 
 /**
@@ -62,6 +81,7 @@ export function PreviewBody({
   content,
   readableSlugs,
   onOpenPage,
+  onOpenImage,
 }: PreviewBodyProps) {
   if (format === "text") {
     // Plain text is shown as it is, not parsed: a `.txt` source that happens to
@@ -71,7 +91,13 @@ export function PreviewBody({
 
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkWikilinks]}
+      // `remarkMath` runs AFTER `remarkGfm` and before the wikilink pass, and
+      // `rehypeKatex` is the only html-stage plugin: math is parsed in the
+      // markdown stage and typeset in the html stage, which is the pairing the
+      // article surface already uses. A `$…$` inside a code fence is untouched,
+      // because remark-math never descends into one.
+      remarkPlugins={[remarkGfm, remarkMath, remarkWikilinks]}
+      rehypePlugins={[rehypeKatex]}
       urlTransform={previewUrlTransform}
       components={{
         // `node` is react-markdown's own mdast handle. It is destructured out
@@ -129,6 +155,44 @@ export function PreviewBody({
               onClick={() => onOpenPage(slug)}
             >
               {children}
+            </button>
+          );
+        },
+        pre: ({ children, node: _node, ...props }) => {
+          const chart = fencedCodeText(children, "mermaid");
+          // `Mermaid` renders the source as a code block when the definition
+          // does not parse, so a broken diagram degrades to what it would have
+          // been anyway rather than to a blank.
+          if (chart !== null) return <Mermaid chart={chart} />;
+          return <pre {...props}>{children}</pre>;
+        },
+        img: ({ src, alt, node: _node, ...props }) => {
+          if (typeof src !== "string") return null;
+          const label = alt ?? "";
+          const image = (
+            // Owner-gated bytes from our own routes, never a configured
+            // next/image loader, so a plain element is what belongs here.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              className="wb-preview-image"
+              src={src}
+              alt={label}
+              loading="lazy"
+              {...props}
+            />
+          );
+          // Inert without somewhere to open (see `onOpenImage`), and a BUTTON
+          // rather than a click handler on the image itself when there is: the
+          // lightbox has to be reachable from the keyboard, and only a real
+          // control puts it in the tab order and answers Enter and Space.
+          if (!onOpenImage) return image;
+          return (
+            <button
+              type="button"
+              className="wb-preview-image-button"
+              onClick={() => onOpenImage({ src, alt: label })}
+            >
+              {image}
             </button>
           );
         },

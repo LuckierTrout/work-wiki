@@ -20,6 +20,11 @@ export const DOCUMENT_FORMATS = [
   "docx",
   "pptx",
   "xlsx",
+  // The legacy binary workbook. Added in Epic 7 because `calamine` in the
+  // sidecar extract crate reads XLS through the same `open_workbook` call it
+  // uses for XLSX and ODS — leaving it out would have made "every sheet of
+  // every workbook" true for two of the three spellings.
+  "xls",
   "csv",
   "md",
   "txt",
@@ -40,6 +45,7 @@ export const MIME_FORMATS: Record<string, DocumentFormat> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-excel": "xls",
   "text/csv": "csv",
   "application/csv": "csv",
   "text/markdown": "md",
@@ -117,6 +123,7 @@ export const DOCUMENT_FORMAT_LABELS: Record<DocumentFormat, string> = {
   docx: "DOCX",
   pptx: "PPTX",
   xlsx: "XLSX",
+  xls: "XLS",
   csv: "CSV",
   md: "Markdown",
   txt: "TXT",

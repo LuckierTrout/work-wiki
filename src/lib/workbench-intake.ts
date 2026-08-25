@@ -3,15 +3,26 @@
  * URL is allowed to bring in, what the refusal says, and what the stored key is
  * called.
  *
- * A NARROWER DOOR than the vault's `/api/ingest/document`. That route accepts
- * DOCX, PPTX, XLSX, PDF, EPUB, MOBI and friends because the kernel can extract
- * them; this one must fail every one of those visibly (Epic 2 runs no sidecar
- * extract — that is Epic 7). So the tables below are a separate, smaller
- * allowlist, and `document-formats.ts` is imported only for the two pure
- * helpers that keep this module from re-deriving a lookup rule (`ownLookup`'s
- * prototype guard) and for the LABEL of whatever was refused. The vault's
- * format table itself is untouched: shrinking it would break the `/ingest`
- * page, email intake and the Worker parity tests.
+ * THREE CLASSES OF ARRIVAL, and the difference between them is the whole point
+ * of the tables below:
+ *
+ *   - TEXT (`md` / `txt` / `html`, and the in-app URL) is stored and compiled
+ *     immediately. It never touches the sidecar.
+ *   - EXTRACT (PDF, DOCX, PPTX, XLSX/XLS/ODS, EPUB/MOBI) is stored as bytes and
+ *     parked behind an extract job the sidecar claims (Story 7.1). The door
+ *     accepts it even when the sidecar is down — the bytes are the Source, and
+ *     failing the arrival would lose them to save an error message.
+ *   - MEDIA (browser-renderable images, audio, video) is stored as bytes for
+ *     Preview. There is no crate that turns a JPEG into prose, so it queues no
+ *     extract job and compiles nothing; it is visible in Files and playable in
+ *     Preview, which is what Story 7.7 asks of it.
+ *
+ * Epic 2 shipped this module as a NARROWER door than the vault's
+ * `/api/ingest/document`, refusing every binary on the grounds that no
+ * extractor existed. Epic 7 builds the extractor, so the refusal it was
+ * standing in for is gone — but the door is still not the vault's: `csv`,
+ * `zip`, `odt`, `odp`, `org` and `rtf` stay out because no sidecar crate reads
+ * them, and letting them in would store bytes nothing can ever compile.
  *
  * Pure and client-safe on purpose — no storage, no `node:` imports — so the
  * picker in the browser and the route on the server classify with the same
@@ -32,11 +43,30 @@ import { WORKBENCH_FILE_MAX_DEPTH } from "./workbench-tree";
 // What may come in
 // ---------------------------------------------------------------------------
 
-/** The three shapes of text this door stores. Everything else is refused. */
-export type IntakeFormat = "md" | "txt" | "html";
+/** Stored as text and compiled on arrival. No sidecar involvement. */
+export type IntakeTextFormat = "md" | "txt" | "html";
 
-/** Filename extensions this door accepts, and the format each one names. */
-export const INTAKE_EXTENSIONS: Record<string, IntakeFormat> = {
+/** Stored as bytes; a sidecar extract job stands between them and Ingest. */
+export type IntakeExtractFormat =
+  | "pdf"
+  | "docx"
+  | "pptx"
+  | "xlsx"
+  | "xls"
+  | "ods"
+  | "epub"
+  | "mobi";
+
+/** Stored as bytes for Preview. Nothing extracts prose from them in v1. */
+export type IntakeMediaFormat = "image" | "video" | "audio";
+
+export type IntakeFormat =
+  | IntakeTextFormat
+  | IntakeExtractFormat
+  | IntakeMediaFormat;
+
+/** Filename extensions the TEXT door accepts, and the format each one names. */
+export const INTAKE_TEXT_EXTENSIONS: Record<string, IntakeTextFormat> = {
   md: "md",
   markdown: "md",
   mdown: "md",
@@ -46,6 +76,59 @@ export const INTAKE_EXTENSIONS: Record<string, IntakeFormat> = {
   htm: "html",
 };
 
+/**
+ * Extensions the sidecar's Rust crate can read, and the format each names.
+ *
+ * DERIVED FROM THE CRATE, not from the vault's table: `pdf-extract`,
+ * `docx-rs`, `calamine` (XLSX/XLS/ODS), the PPTX ZIP+XML pass and the ebook
+ * pass are exactly these eight. Adding a ninth here without a matching arm in
+ * `sidecar/extract` stores bytes that will always fail extract.
+ */
+export const INTAKE_EXTRACT_EXTENSIONS: Record<string, IntakeExtractFormat> = {
+  pdf: "pdf",
+  docx: "docx",
+  pptx: "pptx",
+  xlsx: "xlsx",
+  xls: "xls",
+  ods: "ods",
+  epub: "epub",
+  mobi: "mobi",
+};
+
+/**
+ * Media extensions Preview can render or play in-pane.
+ *
+ * SVG is deliberately in the image list and deliberately never inlined: the
+ * Preview shows it through an `<img>`, which does not execute script in the
+ * document, and `raw/sources` bytes are served through the authenticated asset
+ * door rather than as a same-origin document.
+ */
+export const INTAKE_MEDIA_EXTENSIONS: Record<string, IntakeMediaFormat> = {
+  png: "image",
+  jpg: "image",
+  jpeg: "image",
+  gif: "image",
+  webp: "image",
+  svg: "image",
+  avif: "image",
+  mp4: "video",
+  webm: "video",
+  mov: "video",
+  m4v: "video",
+  mp3: "audio",
+  m4a: "audio",
+  wav: "audio",
+  ogg: "audio",
+  flac: "audio",
+};
+
+/** Every extension this door accepts, and the format each one names. */
+export const INTAKE_EXTENSIONS: Record<string, IntakeFormat> = {
+  ...INTAKE_TEXT_EXTENSIONS,
+  ...INTAKE_EXTRACT_EXTENSIONS,
+  ...INTAKE_MEDIA_EXTENSIONS,
+};
+
 /** Content types this door accepts, and the format each one names. */
 export const INTAKE_MIME_TYPES: Record<string, IntakeFormat> = {
   "text/markdown": "md",
@@ -53,7 +136,133 @@ export const INTAKE_MIME_TYPES: Record<string, IntakeFormat> = {
   "text/plain": "txt",
   "text/html": "html",
   "application/xhtml+xml": "html",
+  "application/pdf": "pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+    "docx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation":
+    "pptx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.oasis.opendocument.spreadsheet": "ods",
+  "application/epub+zip": "epub",
+  "application/x-mobipocket-ebook": "mobi",
+  "image/png": "image",
+  "image/jpeg": "image",
+  "image/gif": "image",
+  "image/webp": "image",
+  "image/svg+xml": "image",
+  "image/avif": "image",
+  "video/mp4": "video",
+  "video/webm": "video",
+  "video/quicktime": "video",
+  "audio/mpeg": "audio",
+  "audio/mp4": "audio",
+  "audio/wav": "audio",
+  "audio/ogg": "audio",
+  "audio/flac": "audio",
 };
+
+/**
+ * The accepted-format grid Settings → Intake renders (Story 7.5).
+ *
+ * DERIVED from the three tables above rather than typed beside them. A
+ * hand-written list on the Settings pane would be a second inventory of what
+ * this door accepts — it would drift the first time a format was added, and it
+ * would drift in the worst direction: an owner reading a format the door
+ * refuses, or not reading one it takes. Only the GROUP LABELS are prose here,
+ * and each one names a class of arrival rather than restating its members.
+ *
+ * Extensions are de-duplicated by FORMAT-preserving order, not collapsed: `md`
+ * and `markdown` are both really accepted, and hiding the alias would tell an
+ * owner their file will be refused when it will not.
+ */
+export const INTAKE_FORMAT_GROUPS: readonly {
+  label: string;
+  extensions: readonly string[];
+}[] = [
+  { label: "Text", extensions: Object.keys(INTAKE_TEXT_EXTENSIONS) },
+  { label: "Documents", extensions: Object.keys(INTAKE_EXTRACT_EXTENSIONS) },
+  {
+    label: "Images",
+    extensions: Object.keys(INTAKE_MEDIA_EXTENSIONS).filter(
+      (ext) => INTAKE_MEDIA_EXTENSIONS[ext] === "image",
+    ),
+  },
+  {
+    label: "Audio and video",
+    extensions: Object.keys(INTAKE_MEDIA_EXTENSIONS).filter(
+      (ext) => INTAKE_MEDIA_EXTENSIONS[ext] !== "image",
+    ),
+  },
+];
+
+/**
+ * What `Content-Type` a media Source is served back with (Story 7.7).
+ *
+ * A SEPARATE table from {@link INTAKE_MIME_TYPES} and not derivable from it:
+ * that one maps a content type to the FORMAT class it names, and the mapping is
+ * many-to-one in exactly the direction that matters here — `jpg` and `jpeg`
+ * both mean `image`, but inverting `image` gives no way back to `image/jpeg`.
+ * Serving the class instead of the type would put `Content-Type: image` on the
+ * wire, which no browser renders.
+ *
+ * Membership is still checked against {@link INTAKE_MEDIA_EXTENSIONS} by the
+ * caller, so this table only ever answers for an extension that table admits.
+ * Anything unrecognised falls back to the octet-stream default rather than to a
+ * guess, so a wrong label is a download rather than a mis-decode.
+ */
+const MEDIA_CONTENT_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  avif: "image/avif",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  m4v: "video/mp4",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  flac: "audio/flac",
+};
+
+export function intakeMediaContentType(name: string): string {
+  const dot = name.lastIndexOf(".");
+  const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+  return MEDIA_CONTENT_TYPES[ext] ?? "application/octet-stream";
+}
+
+/** Is this arrival stored as a UTF-8 string rather than as bytes? */
+export function isIntakeTextFormat(
+  format: IntakeFormat,
+): format is IntakeTextFormat {
+  return format === "md" || format === "txt" || format === "html";
+}
+
+/** Must a sidecar extract job run before this arrival can be compiled? */
+export function intakeRequiresExtract(
+  format: IntakeFormat,
+): format is IntakeExtractFormat {
+  return Object.prototype.hasOwnProperty.call(
+    INTAKE_EXTRACT_FORMAT_SET,
+    format,
+  );
+}
+
+const INTAKE_EXTRACT_FORMAT_SET: Record<string, true> = Object.fromEntries(
+  Object.values(INTAKE_EXTRACT_EXTENSIONS).map((format) => [format, true]),
+);
+
+/** Stored for Preview only — no extract job, no compile. */
+export function isIntakeMediaFormat(
+  format: IntakeFormat,
+): format is IntakeMediaFormat {
+  return format === "image" || format === "video" || format === "audio";
+}
 
 /**
  * The `accept` attribute for the file input, DERIVED from the tables above.
@@ -144,10 +353,10 @@ export const INTAKE_IN_FLIGHT_COPY =
  * path is the picker, and both paths report through the batch sentence.
  */
 export const INTAKE_DROP_COPY =
-  "Drop Markdown, text, or HTML files or folders to store them.";
+  "Drop documents, media, or folders to store them.";
 
 /** Nothing was attached to the picker or the drop. */
-export const INTAKE_FILE_REQUIRED_COPY = "Attach a Markdown, text, or HTML file.";
+export const INTAKE_FILE_REQUIRED_COPY = "Attach a document or media file.";
 
 /**
  * A directory picker or folder drop expanded to no files.
@@ -155,8 +364,7 @@ export const INTAKE_FILE_REQUIRED_COPY = "Attach a Markdown, text, or HTML file.
  * Browsers omit empty directories, so this is the whole of what the Folder
  * action can say when nothing storable arrived — no Source is invented for it.
  */
-export const INTAKE_FOLDER_COPY =
-  "That folder has no Markdown, text, or HTML files.";
+export const INTAKE_FOLDER_COPY = "That folder has no storable files.";
 
 /**
  * A client-supplied relative path was absolute, traversed, empty, or otherwise
@@ -204,8 +412,33 @@ export const INTAKE_READ_ONLY_COPY =
  * whether to convert it or to pick a different file.
  */
 export function intakeUnsupportedCopy(label: string): string {
-  return `${label} is not a Markdown, text, or HTML source.`;
+  return `${label} is not a source this wiki can read.`;
 }
+
+/**
+ * What Activity says when a stored binary could not be extracted because
+ * nothing was listening on the sidecar's loopback port.
+ *
+ * CHARACTER-IDENTICAL to `EXTRACT_SIDECAR_DOWN_COPY` in `./extract-jobs`, which
+ * is what the kernel actually writes onto the job — but duplicated rather than
+ * imported, because that module reaches `./storage` and this one is in the
+ * browser bundle. Same boundary, and the same remedy, as
+ * {@link INTAKE_READ_ONLY_COPY}: the duplication is pinned by test, so
+ * rewording either half turns the next run red.
+ */
+export const INTAKE_EXTRACT_UNAVAILABLE_COPY =
+  "Extract is unavailable — the sidecar is down.";
+
+/**
+ * Beside a stored image, video or audio Source.
+ *
+ * A media arrival is NOT a failure and must not read as one: the bytes are in
+ * the vault and Preview will show or play them. What it is not is a compile,
+ * and saying so is what keeps "auto-queue on arrival" from looking broken when
+ * no Page appears.
+ */
+export const INTAKE_MEDIA_STORED_COPY =
+  "Stored for Preview. There is no text to compile.";
 
 /** Over the byte cap. `mb` is the cap in whole megabytes. */
 export function intakeTooLargeCopy(mb: number): string {
@@ -273,10 +506,11 @@ export function intakeTypeLabel(filename: string, contentType?: string): string 
  * `application/octet-stream` for a `.md` file often enough that trusting the
  * type alone would refuse the commonest arrival there is — and the converse is
  * worse: a content type is supplied by whoever built the multipart body, so a
- * `report.pdf` labelled `text/plain` would otherwise walk through the one door
- * that must never accept a PDF. An extension the tables do not name is refused
- * even when the type looks fine, which is the safe direction on a door whose
- * whole job is to fail visibly.
+ * `report.pdf` labelled `text/plain` would otherwise be stored as a UTF-8
+ * string and handed to Ingest as mojibake instead of being routed to the PDF
+ * extractor. An extension the tables do not name is refused even when the type
+ * looks fine, which is the safe direction on a door whose whole job is to fail
+ * visibly.
  *
  * The content type is consulted only for a name with NO extension at all —
  * a paste, a clipboard drop, a `Save as` with the suffix stripped — where it is
@@ -465,8 +699,14 @@ export function sanitizeIntakeRelativePath(value: string): IntakePathVerdict {
 
   const leaf = segments[segments.length - 1];
   const dirs = segments.slice(0, -1);
+  // TEXT ONLY, narrower than the file door above. The tree writer
+  // (`saveRawSourceTree`) takes a string and keys on the sanitized path; a
+  // binary has neither a string body nor a stable text identity, so a PDF
+  // inside a dropped folder is stored as a loose content-hashed Source
+  // instead. The route is what makes that fallback — this refuses the path,
+  // not the file.
   const ext = extension(leaf);
-  if (!ext || !ownLookup(INTAKE_EXTENSIONS, ext)) return refused;
+  if (!ext || !ownLookup(INTAKE_TEXT_EXTENSIONS, ext)) return refused;
 
   const slugDirs: string[] = [];
   for (const dir of dirs) {

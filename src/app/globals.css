@@ -2851,8 +2851,49 @@ body:has(.wb-shell) {
   min-height: 8rem;
   overflow: auto;
 }
+/* Markdown since Story 7.8, so NOT `white-space: pre-wrap` any more:
+   react-markdown puts literal newlines between the block elements it emits, and
+   under pre-wrap every one of them became a blank line — a table would have
+   floated a row apart from its own heading. Block spacing is stated here
+   instead, where it applies to the elements rather than to the source.
+
+   The FACE is deliberately unstated: `.wb-chat-body` inherits the shell's
+   system sans, which is the Chat half of the type lock (UX-DR2). Nothing in
+   this block or in `ChatBody.tsx` names a family. */
 .wb-chat-body {
-  white-space: pre-wrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.wb-chat-body > :first-child {
+  margin-top: 0;
+}
+.wb-chat-body > :last-child {
+  margin-bottom: 0;
+}
+.wb-chat-body :where(p, ul, ol, pre, blockquote) {
+  margin: var(--wb-space-2) 0;
+}
+.wb-chat-body :where(ul, ol) {
+  padding-left: var(--wb-space-4);
+}
+.wb-chat-body :where(pre) {
+  padding: var(--wb-space-2);
+  background: var(--wb-rail-hover);
+  overflow-x: auto;
+}
+/* A wide table scrolls inside its own box rather than widening the canvas —
+   the rule `.wb-preview-table` already keeps for the Preview column. */
+.wb-chat-table {
+  overflow-x: auto;
+  margin: var(--wb-space-2) 0;
+}
+.wb-chat-table table {
+  border-collapse: collapse;
+}
+.wb-chat-table :where(th, td) {
+  border: 1px solid var(--wb-border);
+  padding: var(--wb-space-1) var(--wb-space-2);
+  text-align: left;
 }
 .wb-chat-sources-banner,
 .wb-chat-vector,
@@ -2902,6 +2943,51 @@ body:has(.wb-shell) {
 .wb-search-hit-path,
 .wb-search-hit-snippet {
   color: var(--wb-muted);
+}
+/* The image section (Story 7.7). A grid rather than a row of list items,
+   because these hits are looked at rather than read — the title stays under
+   each thumbnail so a result is still identifiable when the picture is not. */
+.wb-search-images {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  min-width: 0;
+}
+.wb-search-images-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--wb-muted);
+}
+.wb-search-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--wb-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.wb-search-image {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  width: 100%;
+  padding: var(--wb-space-1);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.wb-search-image:hover {
+  background: var(--wb-rail-hover);
+}
+.wb-search-image img {
+  width: 100%;
+  height: 96px;
+  object-fit: cover;
 }
 .wb-todos {
   display: flex;
@@ -3774,6 +3860,13 @@ body:has(.wb-shell) {
   margin: var(--wb-space-1) 0 0;
   color: var(--wb-muted);
 }
+/* The bytes-survived line. Quieter than the error it sits under: it is
+   reassurance, and it must not compete with the reason. */
+.wb-activity-note {
+  margin: var(--wb-space-1) 0 0;
+  color: var(--wb-muted);
+  opacity: 0.8;
+}
 .wb-activity-list {
   list-style: none;
   margin: var(--wb-space-2) 0 0;
@@ -4034,6 +4127,83 @@ body:has(.wb-shell) {
   text-underline-offset: 2px;
 }
 .wb-preview-body :where(a):hover {
+  background: var(--wb-rail-hover);
+}
+
+/* ---- Media, the player and the lightbox (Story 7.7) -------------------- */
+/* An image inside a rendered body, and a media Source shown whole, are the same
+   picture in two places — so one rule, and the button that wraps either is
+   stripped back to nothing so the image is what the owner sees and clicks. */
+.wb-preview-media {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  min-width: 0;
+}
+.wb-preview-image-button {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+  max-width: 100%;
+}
+.wb-preview-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+/* The player fills the column and never widens it: the Preview is 360px at its
+   widest, and a 1080p video with intrinsic sizing would push the grid out. */
+.wb-preview-player {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+}
+/* The overlay itself. Fixed and full-viewport, above everything, with the dim
+   doing the dismissal — the same shape the Vault's figure lightbox uses, since
+   this is the behaviour the spec says to reuse. */
+.wb-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--wb-space-4);
+  background: rgb(0 0 0 / 0.72);
+}
+.wb-lightbox-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-3);
+  align-items: center;
+  max-width: min(96vw, 1200px);
+  max-height: 92vh;
+}
+.wb-lightbox-image {
+  /* `min-height: 0` is what lets the flex child actually shrink, so a tall
+     image is bounded by the panel instead of overflowing the viewport. */
+  min-height: 0;
+  max-width: 100%;
+  max-height: 78vh;
+  object-fit: contain;
+}
+.wb-lightbox-actions {
+  display: flex;
+  gap: var(--wb-space-2);
+}
+.wb-lightbox-action {
+  padding: var(--wb-space-1) var(--wb-space-3);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+  color: var(--wb-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+.wb-lightbox-action:hover {
   background: var(--wb-rail-hover);
 }
 
@@ -4499,6 +4669,38 @@ body:has(.wb-shell) {
 }
 .wb-set-action:hover {
   background: var(--wb-rail-hover);
+}
+
+/* ---- Intake: the accepted-format grid ----------------------------------- */
+/* A reference list, not a control. Columns rather than one long line so the
+   groups stay scannable — an owner arrives here asking "will it take my .xlsx",
+   which is a lookup, not a read. */
+.wb-set-formats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--wb-space-2) var(--wb-space-4);
+  margin: var(--wb-space-2) 0 var(--wb-space-3);
+}
+.wb-set-format-group dt {
+  color: var(--wb-foreground);
+  font-weight: 600;
+}
+.wb-set-format-group dd {
+  margin: 0;
+  color: var(--wb-muted);
+  /* Extensions wrap as a run of tokens; tabular-ish spacing keeps the run from
+     reading as prose. */
+  word-spacing: 0.25em;
+}
+
+/* ---- MinerU: the leave-the-machine warning ------------------------------ */
+/* ORANGE, and only ever on the sentence that says documents leave this machine.
+   It rides on top of `.wb-set-hint`, so it changes the colour of a hint that is
+   already wired as its control's own description — the warning is announced,
+   not merely coloured. `--wb-warn` falls back to a fixed amber so a theme that
+   has not defined the token still shows a warning rather than body text. */
+.wb-set-warn {
+  color: var(--wb-warn, #b45309);
 }
 
 /* ---- The sticky save bar ------------------------------------------------ */

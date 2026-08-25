@@ -584,14 +584,22 @@ describe("PreviewColumn is view-first over a rendered body", () => {
 });
 
 describe("PreviewBody", () => {
-  it("renders GFM and wikilinks, and nothing else", async () => {
+  it("renders GFM, wikilinks, math and diagrams — and still no article chrome", async () => {
     const source = await read("PreviewBody.tsx");
-    expect(source).toContain("remarkPlugins={[remarkGfm, remarkWikilinks]}");
-    // No html-stage plugins at all: that is where KaTeX and raw HTML would come
-    // in, and both are out of scope for this epic.
-    expect(source).not.toContain("rehypePlugins");
-    expect(source).not.toMatch(/rehype|remark-math|Mermaid|MarkdownRenderer/);
+    // Story 7.8 added the math pair and the diagram boundary. The wikilink pass
+    // runs LAST so it sees text `remarkMath` has already claimed for KaTeX.
+    expect(source).toContain(
+      "remarkPlugins={[remarkGfm, remarkMath, remarkWikilinks]}",
+    );
+    expect(source).toContain("rehypePlugins={[rehypeKatex]}");
+    // …by SHARING the mechanism, never the surface: importing the article
+    // renderer would drag its prose wrapper, its heading-id scheme and its
+    // `next/link` navigation into the Workbench chunk with it.
+    expect(source).not.toContain("MarkdownRenderer");
     expect(source).not.toMatch(/from "next\/link"/);
+    // One fence walk for every surface that renders a diagram (Story 7.8).
+    expect(source).toContain('from "@/lib/markdown-fence"');
+    expect(source).toContain('fencedCodeText(children, "mermaid")');
     // A wikilink re-points the selection; it never emits a page URL.
     expect(source).toContain('className="wb-wikilink"');
     expect(source).toContain("onOpenPage(slug)");
@@ -602,6 +610,17 @@ describe("PreviewBody", () => {
     expect(source).not.toContain("/u/");
     // Tables scroll inside their own box rather than widening the shell.
     expect(source).toContain('className="wb-preview-table"');
+  });
+
+  it("makes an image a keyboard-reachable control, and inert without one", async () => {
+    const source = await read("PreviewBody.tsx");
+    // A click handler on the `<img>` itself is not reachable by keyboard; only
+    // a real control is in the tab order and answers Enter and Space.
+    expect(source).toContain('className="wb-preview-image-button"');
+    expect(source).toContain("onOpenImage({ src, alt: label })");
+    // No opener, no control — an affordance that does nothing when pressed is
+    // worse than no affordance.
+    expect(source).toContain("if (!onOpenImage) return image;");
   });
 
   it("sources every sentence from the shared module", async () => {
@@ -807,6 +826,61 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
         },
       ]),
     ).toEqual({ completed: 0, total: 1, activeStep: "Analysis" });
+  });
+
+  it("reads Extract off the KIND, and leaves the stage `extracting` alone", () => {
+    // The durable `extracting` stage was already taken: `claimIngestJob` sets
+    // it on every text ingest the moment a worker picks the job up. Mapping
+    // that stage to `Extract` would label a pasted note's first second as a
+    // document parse — so the kind decides, and the stage does not.
+    expect(activityDisplayStatus("queued", "extracting", "extract")).toBe("Extract");
+    expect(activityDisplayStatus("processing", "extracting", "extract")).toBe("Extract");
+    // A text ingest at the same stage stays where it was.
+    expect(activityDisplayStatus("processing", "extracting")).toBe("Analysis");
+    expect(activityDisplayStatus("processing", "extracting", "ingest")).toBe("Analysis");
+    // Terminal states still win over the kind: a failed extract is `failed`,
+    // not a row that says it is still parsing.
+    expect(activityDisplayStatus("failed", "extracting", "extract")).toBe("failed");
+    expect(activityDisplayStatus("done", "extracting", "extract")).toBe("succeeded");
+  });
+
+  it("carries the bytes-survived line beside a failed extract, and nowhere else", async () => {
+    // A red row otherwise reads as "the upload was lost", and the usual
+    // response to that is to upload the same file again.
+    const activity = await readFile(
+      path.join(SRC, "app/api/workbench/activity/route.ts"),
+      "utf8",
+    );
+    expect(activity).toContain("ACTIVITY_EXTRACT_BYTES_KEPT_COPY");
+    expect(activity).toMatch(/displayStatus === "failed"[\s\S]*?kind === "extract"/);
+    // …and the dock renders it as its own line, never folded into the error:
+    // the error text is the extractor's own words, carried verbatim.
+    const dock = await read("ActivityDock.tsx");
+    expect(dock).toContain("row.note");
+    expect(dock).toContain("wb-activity-note");
+    expect(await globals()).toContain(".wb-activity-note");
+  });
+
+  it("sends a binary Retry back to the sidecar instead of decoding it as text", async () => {
+    // `readFile` DECODES UTF-8, so the generic retry path compiled a page of
+    // replacement characters from a failed PDF — a corrupted Page produced by
+    // a button labelled Retry, with nothing on screen saying so.
+    const activity = await readFile(
+      path.join(SRC, "app/api/workbench/activity/route.ts"),
+      "utf8",
+    );
+    expect(activity).toContain("retryExtract");
+    expect(activity).toMatch(/job\.kind === "extract" \|\| isBinarySource\(job\.sourceRel\)/);
+    // The extract branch returns before the `readFile` below it is reached.
+    // Comments stripped first: the paragraph explaining WHY this order matters
+    // names `readFile`, and would otherwise be read as the call it warns about.
+    const code = activity
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    const retryBlock = code.slice(code.indexOf('body.action === "retry"'));
+    expect(retryBlock.indexOf("retryExtract")).toBeLessThan(
+      retryBlock.indexOf("readFile"),
+    );
   });
 
   it("offers the same control in Wiki mode and on the Sources column", async () => {

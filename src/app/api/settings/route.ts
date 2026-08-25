@@ -11,6 +11,7 @@ import {
   type AppConfig,
 } from "@/lib/config";
 import { getEffectiveProvider } from "@/lib/config";
+import { loadEmailIngestConfig } from "@/lib/email-ingest";
 import {
   SETTINGS_INVALID_URL_COPY,
   embeddingProviderChanged,
@@ -111,8 +112,29 @@ export async function GET() {
   return Response.json({
     ...settings,
     version,
-    workbench: { ...getWorkbenchSettings(hasWorkersAiBinding), version },
+    workbench: {
+      ...getWorkbenchSettings(hasWorkersAiBinding, await inboundEmail()),
+      version,
+    },
   });
+}
+
+/**
+ * The inbound-email door's stored state, for the Intake pane (Story 7.5).
+ *
+ * READ, never written from here: the pane renders the address and offers a
+ * Copy button, and the door's own settings API stays the one writer. A failed
+ * read degrades to "no address configured" rather than taking the whole
+ * Settings response down — every other pane on the surface is unrelated to
+ * this one field.
+ */
+async function inboundEmail(): Promise<{ enabled: boolean; address: string }> {
+  try {
+    const config = await loadEmailIngestConfig();
+    return { enabled: config.enabled, address: config.inboundAddress };
+  } catch {
+    return { enabled: false, address: "" };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -567,7 +589,10 @@ export async function PUT(request: Request) {
       version,
       // The fresh stored values, so a landed save re-seeds the surface's draft
       // from what the kernel actually holds rather than from what was sent.
-      workbench: { ...getWorkbenchSettings(hasWorkersAiBinding), version },
+      workbench: {
+        ...getWorkbenchSettings(hasWorkersAiBinding, await inboundEmail()),
+        version,
+      },
     });
   } catch (err) {
     const message = getErrorMessage(err);

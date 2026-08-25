@@ -69,11 +69,11 @@ export interface FetchUrlOptions {
    *
    * Narrowing is a door policy, not a capability question. Workbench Intake
    * passes a list without `application/pdf` because that surface must FAIL a
-   * PDF visibly rather than extract it (Epic 2 runs no sidecar extract), while
-   * the vault's URL ingest keeps the full list. Expressed as an argument so the
-   * two doors share one fetch, one redirect chain, one SSRF guard and one
-   * Readability path — a second fetcher for the narrow door is how the SSRF
-   * guard eventually gets left out of one of them.
+   * PDF visibly rather than extract it, while generic URL ingest keeps the
+   * full list. The vault `{ pdfUrl }` door does not use this function at all
+   * — it calls {@link fetchPdfBytes} and enqueues extract. Expressed as an
+   * argument so the remaining text doors share one fetch, one redirect chain,
+   * one SSRF guard and one Readability path.
    */
   allowedContentTypes?: readonly string[];
   /**
@@ -160,26 +160,12 @@ async function extractPdfText(
   return { title: title || fallbackTitle, content };
 }
 
-/**
- * Fetch a URL and extract its text content and title.
- *
- * Uses @mozilla/readability + linkedom for robust HTML-to-text extraction.
- * Falls back to regex-based `stripHtml()` when Readability can't parse the page.
- * Applies a 15-second timeout and a 5 MB response size limit for safety.
- *
- * For `text/plain` and `text/markdown` responses the raw text is returned
- * directly (no HTML parsing).
- */
-export async function fetchUrlContent(
+async function fetchFollowingRedirects(
   url: string,
-  options?: FetchUrlOptions,
-): Promise<{ title: string; content: string }> {
-  const allowedContentTypes = options?.allowedContentTypes ?? ALLOWED_CONTENT_TYPES;
-
+): Promise<{ response: Response; finalUrl: string }> {
   // SSRF protection: reject private/reserved addresses before fetching
   validateUrlSafety(url);
 
-  // Maximum number of redirect hops to follow
   const MAX_REDIRECTS = 5;
   const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
@@ -197,7 +183,7 @@ export async function fetchUrlContent(
     });
 
     if (!REDIRECT_STATUSES.has(response.status)) {
-      break; // Not a redirect — proceed with this response
+      break;
     }
 
     const location = response.headers.get("location");
@@ -205,12 +191,8 @@ export async function fetchUrlContent(
       throw new Error(`Redirect (${response.status}) without Location header`);
     }
 
-    // Resolve relative redirects against the current URL
     const resolvedUrl = new URL(location, currentUrl).toString();
-
-    // SSRF: validate the redirect target before following it
     validateUrlSafety(resolvedUrl);
-
     currentUrl = resolvedUrl;
 
     if (hop === MAX_REDIRECTS) {
@@ -228,12 +210,82 @@ export async function fetchUrlContent(
     );
   }
 
+  return { response, finalUrl: currentUrl };
+}
+
+function responseMimeType(response: Response): string | null {
+  const raw = response.headers.get("content-type");
+  return raw ? raw.split(";")[0].trim().toLowerCase() : null;
+}
+
+async function readPdfBuffer(response: Response): Promise<ArrayBuffer> {
+  const declared = Number(response.headers.get("Content-Length") ?? 0);
+  if (declared > MAX_PDF_SIZE) {
+    throw new ClientInputError(
+      `PDF too large (${(declared / 1024 / 1024).toFixed(1)} MB). Maximum: ${MAX_PDF_SIZE / 1024 / 1024} MB.`,
+    );
+  }
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength > MAX_PDF_SIZE) {
+    throw new ClientInputError(
+      `PDF too large (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB). Maximum: ${MAX_PDF_SIZE / 1024 / 1024} MB.`,
+    );
+  }
+  return buffer;
+}
+
+function pdfNameFromUrl(url: string): { filename: string; title: string } {
+  const leaf = new URL(url).pathname.split("/").pop() || "document.pdf";
+  const filename = /\.pdf$/i.test(leaf) ? leaf : `${leaf || "document"}.pdf`;
+  const title = filename.replace(/\.pdf$/i, "") || "PDF Document";
+  return { filename, title };
+}
+
+/**
+ * Fetch a PDF as raw bytes. Does not parse.
+ *
+ * The vault `{ pdfUrl }` door and leftover `source:pdf` queue tasks need the
+ * bytes so they can store-then-extract. Worker `unpdf` is not this path.
+ */
+export async function fetchPdfBytes(
+  url: string,
+): Promise<{ bytes: ArrayBuffer; filename: string; title: string }> {
+  const { response, finalUrl } = await fetchFollowingRedirects(url);
+  const mimeType = responseMimeType(response);
+  const names = pdfNameFromUrl(finalUrl);
+  const looksPdf = /\.pdf$/i.test(names.filename);
+  if (
+    mimeType &&
+    mimeType !== "application/pdf" &&
+    !(mimeType === "application/octet-stream" && looksPdf)
+  ) {
+    throw new ClientInputError(
+      `Unsupported content type: ${mimeType}. Only PDF is accepted at this door.`,
+    );
+  }
+  return { bytes: await readPdfBuffer(response), ...names };
+}
+
+/**
+ * Fetch a URL and extract its text content and title.
+ *
+ * Uses @mozilla/readability + linkedom for robust HTML-to-text extraction.
+ * Falls back to regex-based `stripHtml()` when Readability can't parse the page.
+ * Applies a 15-second timeout and a 5 MB response size limit for safety.
+ *
+ * For `text/plain` and `text/markdown` responses the raw text is returned
+ * directly (no HTML parsing).
+ */
+export async function fetchUrlContent(
+  url: string,
+  options?: FetchUrlOptions,
+): Promise<{ title: string; content: string }> {
+  const allowedContentTypes = options?.allowedContentTypes ?? ALLOWED_CONTENT_TYPES;
+
+  const { response } = await fetchFollowingRedirects(url);
+
   // ---------- Content-Type validation ----------
-  const rawContentType = response.headers.get("content-type");
-  // Extract the MIME type (before any ";charset=..." parameters)
-  const mimeType = rawContentType
-    ? rawContentType.split(";")[0].trim().toLowerCase()
-    : null;
+  const mimeType = responseMimeType(response);
 
   if (mimeType && !allowedContentTypes.includes(mimeType)) {
     // A ClientInputError, not a bare Error: the response arrived and was
@@ -244,20 +296,10 @@ export async function fetchUrlContent(
     );
   }
 
-  // ---------- PDF: read as binary, extract text via unpdf ----------
+  // Generic URL ingest still parses PDF text here. The vault PDF door and
+  // `source:pdf` tasks use {@link fetchPdfBytes} instead and never reach unpdf.
   if (mimeType === "application/pdf") {
-    const declared = Number(response.headers.get("Content-Length") ?? 0);
-    if (declared > MAX_PDF_SIZE) {
-      throw new ClientInputError(
-        `PDF too large (${(declared / 1024 / 1024).toFixed(1)} MB). Maximum: ${MAX_PDF_SIZE / 1024 / 1024} MB.`,
-      );
-    }
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > MAX_PDF_SIZE) {
-      throw new ClientInputError(
-        `PDF too large (${(buffer.byteLength / 1024 / 1024).toFixed(1)} MB). Maximum: ${MAX_PDF_SIZE / 1024 / 1024} MB.`,
-      );
-    }
+    const buffer = await readPdfBuffer(response);
     return extractPdfText(
       buffer,
       new URL(url).pathname.split("/").pop()?.replace(/\.pdf$/i, "") ??

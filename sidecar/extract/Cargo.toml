@@ -1,0 +1,36 @@
+[package]
+name = "work-wiki-extract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Local document extractors for the work-wiki sidecar. Never imports src/lib."
+
+[[bin]]
+name = "work-wiki-extract"
+path = "src/main.rs"
+
+[lib]
+name = "work_wiki_extract"
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned by the spec. pdf-extract is the built-in PDF path that always runs
+# before MinerU is even consulted.
+pdf-extract = "0.12.0"
+docx-rs = "0.4.22"
+# `dates` is what turns a serial number back into a timestamp — without it a
+# date cell is indistinguishable from the float Excel stores it as.
+calamine = { version = "0.36.1", features = ["dates"] }
+# PPTX, the DOCX fallback and EPUB are all ZIP + XML in this same process.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
+serde_json = "1"
+sha2 = "0.10"
+# Not used directly. calamine's `dates` feature hands back a chrono
+# `NaiveDateTime` built without `alloc`, which has no `format` — so a date cell
+# could only be rendered as the serial number it is stored as. Naming chrono
+# here unifies the feature back on.
+chrono = { version = "0.4", default-features = false, features = ["std", "alloc"] }
+
+[profile.release]
+opt-level = 2

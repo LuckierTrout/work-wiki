@@ -26,7 +26,6 @@ import { NextResponse } from "next/server";
 
 import { ALLOWED_CONTENT_TYPES } from "../fetch";
 import { MAX_DOCUMENT_SIZE } from "../constants";
-import { DOCUMENT_FORMAT_LABELS } from "../document-formats";
 import { READ_ONLY_REFUSAL } from "../read-only";
 import {
   INTAKE_ACCEPT_ATTR,
@@ -44,6 +43,7 @@ import {
   INTAKE_TOO_DEEP_COPY,
   INTAKE_IN_FLIGHT_COPY,
   INTAKE_MIME_TYPES,
+  INTAKE_EXTRACT_UNAVAILABLE_COPY,
   INTAKE_READ_ONLY_COPY,
   INTAKE_URL_REQUIRED_COPY,
   classifyIntakeFile,
@@ -97,33 +97,53 @@ describe("the intake allowlist", () => {
     });
   });
 
-  it("refuses every office and ebook type, and NAMES what it refused", () => {
-    // The headline of the story: this door runs no extract, so a PDF or a DOCX
-    // must fail visibly. The label comes from the vault's format table, which
-    // is why the sentence says "PDF" rather than "that file" — naming the type
-    // is what tells the owner whether to convert it or pick something else.
-    for (const [name, label] of [
-      ["report.pdf", DOCUMENT_FORMAT_LABELS.pdf],
-      ["plan.docx", DOCUMENT_FORMAT_LABELS.docx],
-      ["deck.pptx", DOCUMENT_FORMAT_LABELS.pptx],
-      ["sheet.xlsx", DOCUMENT_FORMAT_LABELS.xlsx],
-      ["book.epub", DOCUMENT_FORMAT_LABELS.epub],
-      ["book.mobi", DOCUMENT_FORMAT_LABELS.mobi],
+  it("ACCEPTS every office and ebook type, as extract work (Epic 7)", () => {
+    // The Epic 2 pin this replaces asserted the opposite, and it was right for
+    // a door that could not extract: with no sidecar, a PDF could only be
+    // stored as bytes nobody could read, so refusing it visibly beat taking it
+    // silently. Epic 7 built the extract job, so the door's answer changes —
+    // and the FORMAT each name resolves to is what the enqueue keys off.
+    for (const [name, format] of [
+      ["report.pdf", "pdf"],
+      ["plan.docx", "docx"],
+      ["deck.pptx", "pptx"],
+      ["sheet.xlsx", "xlsx"],
+      ["sheet.xls", "xls"],
+      ["sheet.ods", "ods"],
+      ["book.epub", "epub"],
+      ["book.mobi", "mobi"],
     ] as const) {
-      const verdict = classifyIntakeFile(name);
-      expect(verdict.ok, name).toBe(false);
-      expect(verdict.ok ? "" : verdict.reason).toBe(intakeUnsupportedCopy(label));
+      expect(classifyIntakeFile(name), name).toEqual({ ok: true, format });
     }
   });
 
-  it("refuses a PDF even when the content type claims otherwise", () => {
-    // The content type is supplied by whoever built the multipart body, so a
-    // classifier that fell back to it on an unrecognised extension would let
-    // `report.pdf` through the one door that must never take a PDF. An
-    // extension the tables do not name is refused whatever the label says.
-    expect(classifyIntakeFile("report.pdf", "text/plain").ok).toBe(false);
-    expect(classifyIntakeFile("plan.docx", "text/markdown").ok).toBe(false);
+  it("accepts browser-renderable media, and still refuses an unknown binary", () => {
+    for (const [name, format] of [
+      ["shot.png", "image"],
+      ["photo.JPEG", "image"],
+      ["clip.mp4", "video"],
+      ["call.m4a", "audio"],
+    ] as const) {
+      expect(classifyIntakeFile(name), name).toEqual({ ok: true, format });
+    }
+    // Widening the door is not the same as opening it: an extension no table
+    // names is still refused, whatever content type the multipart body claims.
     expect(classifyIntakeFile("thing.bin", "text/html").ok).toBe(false);
+    expect(classifyIntakeFile("thing.xyz").ok).toBe(false);
+  });
+
+  it("still prefers the extension over a content type that disagrees", () => {
+    // The type is supplied by whoever built the multipart body, so the name
+    // wins wherever the two can conflict — that rule outlived the refusal it
+    // was originally written to protect.
+    expect(classifyIntakeFile("report.pdf", "text/plain")).toEqual({
+      ok: true,
+      format: "pdf",
+    });
+    expect(classifyIntakeFile("plan.docx", "text/markdown")).toEqual({
+      ok: true,
+      format: "docx",
+    });
   });
 
   it("refuses an unknown type by its own extension, and a nameless one plainly", () => {
@@ -153,9 +173,11 @@ describe("the intake allowlist", () => {
     for (const mime of Object.keys(INTAKE_MIME_TYPES)) {
       expect(INTAKE_ACCEPT_ATTR).toContain(mime);
     }
-    // …and offers nothing this door would refuse.
-    for (const banned of [".pdf", ".docx", "application/pdf"]) {
-      expect(INTAKE_ACCEPT_ATTR).not.toContain(banned);
+    // …and the formats Epic 7 widened it to are IN it, not merely absent from
+    // a ban list: an accepted extension the picker does not offer is greyed out
+    // by the operating system's dialog with no sentence anywhere saying why.
+    for (const offered of [".pdf", ".docx", ".png", ".mp4", "application/pdf"]) {
+      expect(INTAKE_ACCEPT_ATTR).toContain(offered);
     }
   });
 
@@ -318,6 +340,26 @@ describe("the copy", () => {
     expect(INTAKE_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.ingest);
   });
 
+  it("says the sidecar-down sentence identically in all three places", async () => {
+    // The spec character-locks this one sentence, and three modules hold it:
+    // the KERNEL writes it onto the failed job, the CLIENT door shows it on the
+    // drop that just failed closed, and ACTIVITY compares the row against it.
+    // The kernel constant cannot be imported by the other two — `extract-jobs`
+    // reaches `./storage`, which does not belong in the browser bundle — so the
+    // duplication is deliberate and this is the seam that stops it drifting.
+    // Imported dynamically so the storage-bound module stays out of this
+    // suite's module graph until the one assertion that needs it.
+    const { EXTRACT_SIDECAR_DOWN_COPY } = await import("../extract-jobs");
+    const { ACTIVITY_EXTRACT_UNAVAILABLE_COPY } = await import("../workbench-activity");
+    expect(INTAKE_EXTRACT_UNAVAILABLE_COPY).toBe(EXTRACT_SIDECAR_DOWN_COPY);
+    expect(ACTIVITY_EXTRACT_UNAVAILABLE_COPY).toBe(EXTRACT_SIDECAR_DOWN_COPY);
+    // It names the half of the system the owner has to go and fix. A reword
+    // that dropped "sidecar" would leave them with nothing to act on.
+    expect(EXTRACT_SIDECAR_DOWN_COPY).toBe(
+      "Extract is unavailable — the sidecar is down.",
+    );
+  });
+
   it("counts sources in English, singular and plural", () => {
     expect(intakeStoredCopy(1)).toBe("Stored 1 source. Ingest is queued.");
     expect(intakeStoredCopy(3)).toBe("Stored 3 sources. Ingest is queued.");
@@ -371,7 +413,21 @@ vi.mock("@/lib/raw", () => ({
     path: `raw/sources/${relativePath}`,
     created: true,
   })),
+  // Story 7.1's byte writer: a PDF and a PNG are stored through this one, not
+  // through the string writer above.
+  saveRawSourceBytes: vi.fn(async (slug: string, digest: string, ext: string) => ({
+    path: `raw/sources/${slug}/${digest}.${ext}`,
+    created: true,
+  })),
   readRawSourceTree: vi.fn(async () => null),
+}));
+vi.mock("@/lib/extract-dispatch", () => ({
+  enqueueExtract: vi.fn(async (input: { slug: string; bytesSha256: string; ext: string }) => ({
+    path: `raw/sources/${input.slug}/${input.bytesSha256}.${input.ext}`,
+    jobId: "extract-job",
+    error: null,
+  })),
+  rememberExtractMeeting: vi.fn(async () => undefined),
 }));
 vi.mock("@/lib/fetch", async (importOriginal) => ({
   // The real module for `ALLOWED_CONTENT_TYPES`, which the narrowing case above
@@ -394,6 +450,9 @@ vi.mock("@/lib/wiki", async (importOriginal) => ({
 }));
 vi.mock("@/lib/source-sha256", () => ({
   sourceSha256: vi.fn(async () => "ab".repeat(32)),
+  // The BYTE digest (Story 7.1): a binary arrival is keyed on the hash of its
+  // bytes, not of a string it was never safe to decode into.
+  bytesSha256: vi.fn(async () => "cd".repeat(32)),
 }));
 vi.mock("@/lib/ingest-staging", () => ({
   stageText: vi.fn(async () => "raw/uploads/job/source.md"),
@@ -416,7 +475,13 @@ import { createIngestJob } from "@/lib/ingest-jobs";
 import { stageText } from "@/lib/ingest-staging";
 import { ingest, recordSourceResee } from "@/lib/ingest";
 import { resolveContentSha256 } from "@/lib/source-index";
-import { readRawSourceTree, saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
+import { enqueueExtract, rememberExtractMeeting } from "@/lib/extract-dispatch";
+import {
+  readRawSourceTree,
+  saveRawSourceBytes,
+  saveRawSourceFor,
+  saveRawSourceTree,
+} from "@/lib/raw";
 import { POST } from "@/app/api/workbench/intake/route";
 import { setSourceMeeting } from "@/lib/source-meeting";
 
@@ -432,6 +497,8 @@ const mockedSha = vi.mocked(resolveContentSha256);
 const mockedJob = vi.mocked(createIngestJob);
 const mockedStage = vi.mocked(stageText);
 const mockedEnqueue = vi.mocked(enqueueOrInline);
+const mockedSaveBytes = vi.mocked(saveRawSourceBytes);
+const mockedExtract = vi.mocked(enqueueExtract);
 
 /** A multipart request carrying one file, as the picker and the drop both send. */
 function fileRequest(file?: File, relativePath?: string, origin?: "plaud"): Request {
@@ -462,12 +529,14 @@ async function post(request: Request): Promise<{ status: number; body: Record<st
   };
 }
 
-/** Nothing was committed: no Source, no job record, no queue item. */
+/** Nothing was committed: no Source, no job record, no queue item, no extract. */
 function expectNothingCommitted(): void {
   expect(mockedSave).not.toHaveBeenCalled();
   expect(mockedSaveTree).not.toHaveBeenCalled();
+  expect(mockedSaveBytes).not.toHaveBeenCalled();
   expect(mockedJob).not.toHaveBeenCalled();
   expect(mockedEnqueue).not.toHaveBeenCalled();
+  expect(mockedExtract).not.toHaveBeenCalled();
 }
 
 beforeEach(() => {
@@ -589,14 +658,82 @@ describe("POST /api/workbench/intake — files", () => {
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 
-  it("refuses an office or ebook file with no Source and no job", async () => {
-    for (const name of ["report.pdf", "plan.docx", "book.epub"]) {
+  it("hands an office or ebook file to the extract job, and parses nothing here", async () => {
+    // The Epic 2 pin this replaces asserted a 400. What has to hold NOW is
+    // that the bytes are handed on UNPARSED: the Worker cannot reach the
+    // sidecar at `127.0.0.1`, so any parse attempted on this side is the bug.
+    for (const [name, format] of [
+      ["report.pdf", "pdf"],
+      ["plan.docx", "docx"],
+      ["book.epub", "epub"],
+    ] as const) {
       vi.clearAllMocks();
+      mockedExtract.mockResolvedValue({
+        path: `raw/sources/x/abc.${format}`,
+        jobId: "extract-job",
+        error: null,
+      } as never);
       const { status, body } = await post(fileRequest(new File(["x"], name)));
-      expect(status, name).toBe(400);
-      expect(String(body.error)).toContain("not a Markdown, text, or HTML source");
-      expectNothingCommitted();
+      // 200, not the text path's 202: nothing is queued for COMPILE yet. The
+      // `extract: true` flag is what the client reports the arrival by.
+      expect(status, name).toBe(200);
+      expect(body.extract, name).toBe(true);
+      expect(mockedExtract, name).toHaveBeenCalledTimes(1);
+      expect(mockedExtract.mock.calls[0][0].format, name).toBe(format);
+      // The bytes travel as bytes. `file.text()` would replace every byte the
+      // UTF-8 decoder does not recognise, and the sidecar would be handed a
+      // document that no longer parses.
+      expect(mockedExtract.mock.calls[0][0].bytes, name).toBeInstanceOf(ArrayBuffer);
+      // NOT the text writer, and NOT an ingest queued ahead of the extract:
+      // Ingest runs only once extracted text is in the kernel.
+      expect(mockedSave, name).not.toHaveBeenCalled();
+      expect(mockedEnqueue, name).not.toHaveBeenCalled();
     }
+  });
+
+  it("keeps a Plaud-origin PDF meeting-eligible across the extract hop", async () => {
+    // Epic 4's rule is about the SOURCE, not the door it came through. A Plaud
+    // recording that arrives as a binary loses its Todo Candidates entirely if
+    // the flag is not set here — and this is the ONLY place that knows the
+    // arrival said `plaud`, because the completing door reads a record that
+    // does not carry it.
+    mockedExtract.mockResolvedValue({
+      path: "raw/sources/call/abc.pdf",
+      jobId: "extract-job",
+      extractId: "extract-1",
+      error: null,
+    } as never);
+    const { status } = await post(
+      fileRequest(new File(["x"], "call.pdf"), undefined, "plaud"),
+    );
+    expect(status).toBe(200);
+    expect(mockedExtract.mock.calls[0][0].origin).toBe("plaud");
+    expect(rememberExtractMeeting).toHaveBeenCalledWith(
+      "alice",
+      "raw/sources/call/abc.pdf",
+      "plaud",
+    );
+  });
+
+  it("does not mark a non-Plaud PDF as a meeting", async () => {
+    await post(fileRequest(new File(["x"], "report.pdf")));
+    expect(rememberExtractMeeting).toHaveBeenCalledWith(
+      "alice",
+      expect.any(String),
+      undefined,
+    );
+  });
+
+  it("stores media as bytes and queues no compile", async () => {
+    const { status, body } = await post(fileRequest(new File(["x"], "shot.png")));
+    expect(status).toBe(200);
+    expect(body.media).toBe(true);
+    expect(body.queued).toBe(false);
+    expect(mockedSaveBytes).toHaveBeenCalledTimes(1);
+    // An image is not extract work — no crate reads one — so nothing is
+    // enqueued for the sidecar, and nothing is parsed here either.
+    expect(mockedExtract).not.toHaveBeenCalled();
+    expect(mockedSave).not.toHaveBeenCalled();
   });
 
   it("refuses a missing or empty file", async () => {
@@ -1026,15 +1163,21 @@ describe("the client's per-item submit", () => {
     vi.unstubAllGlobals();
   });
 
-  it("refuses an office file WITHOUT uploading it", async () => {
-    // A drop of a 40MB DOCX should fail on the spot with the same sentence,
-    // not after a round trip that sends the bytes first. The route refuses
-    // independently — a client check is not a gate.
+  it("UPLOADS an office file now, and still refuses an unreadable one on the spot", async () => {
+    // The Epic 2 pin this replaces asserted the DOCX never left the browser.
+    // It does now: the bytes are what the sidecar's crate needs, and the door
+    // that takes them is the same one. What is still worth not spending is a
+    // round trip for a format nothing can read — `.bin` fails here, before the
+    // upload, with the sentence naming what it was.
     const spy = stubFetch(ok);
-    const outcome = await submitIntakeFile(new File(["x"], "plan.docx"));
-    expect(spy).not.toHaveBeenCalled();
-    expect(outcome.error).toBe(intakeUnsupportedCopy(DOCUMENT_FORMAT_LABELS.docx));
-    expect(outcome.unconfirmed).toBe(false);
+    const accepted = await submitIntakeFile(new File(["x"], "plan.docx"));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(accepted.error).toBe(null);
+
+    const refused = await submitIntakeFile(new File(["x"], "thing.bin"));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(refused.error).toBe(intakeUnsupportedCopy("BIN"));
+    expect(refused.unconfirmed).toBe(false);
     vi.unstubAllGlobals();
   });
 
@@ -1179,24 +1322,33 @@ describe("a folder drop stores each leaf and queues it", () => {
     vi.unstubAllGlobals();
   });
 
-  it("refuses an office file in the tree without uploading it, and still queues siblings", async () => {
+  it("uploads an office file in the tree as a LOOSE source, beside its siblings", async () => {
+    // The Epic 2 pin this replaces expected the PPTX to be refused. It is
+    // stored now — but WITHOUT a `relativePath`, and that is the point: a tree
+    // position is a claim about a text file's place in a folder of notes, and
+    // a binary that has to come back from the sidecar before it means anything
+    // is a loose Source until it does.
     const spy = stubFetch(ok);
     const outcomes = await submitIntakeFiles([
       fromFolder("note.md", "papers/energy/note.md"),
       fromFolder("deck.pptx", "papers/energy/deck.pptx"),
       fromFolder("log.txt", "papers/log.txt"),
     ]);
-    expect(spy).toHaveBeenCalledTimes(2);
-    const uploaded = (spy.mock.calls as Array<[string, RequestInit]>).map(([, init]) =>
-      ((init.body as FormData).get("file") as File).name,
-    );
-    expect(uploaded).toEqual(["note.md", "log.txt"]);
-    expect(outcomes.map((o) => o.error)).toEqual([
-      null,
-      intakeUnsupportedCopy(DOCUMENT_FORMAT_LABELS.pptx),
-      null,
+    expect(spy).toHaveBeenCalledTimes(3);
+    const bodies = (spy.mock.calls as Array<[string, RequestInit]>).map(([, init]) => {
+      const form = init.body as FormData;
+      return {
+        name: (form.get("file") as File).name,
+        relativePath: form.get("relativePath"),
+      };
+    });
+    expect(bodies).toEqual([
+      { name: "note.md", relativePath: "papers/energy/note.md" },
+      { name: "deck.pptx", relativePath: null },
+      { name: "log.txt", relativePath: "papers/log.txt" },
     ]);
-    expect(intakeStoredCount(outcomes)).toBe(2);
+    expect(outcomes.every((o) => o.error === null)).toBe(true);
+    expect(intakeStoredCount(outcomes)).toBe(3);
     vi.unstubAllGlobals();
   });
 

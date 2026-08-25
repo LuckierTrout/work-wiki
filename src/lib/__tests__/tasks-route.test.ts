@@ -55,6 +55,26 @@ vi.mock("@/lib/ingest-staging", () => ({
 vi.mock("@/lib/vault", () => ({
   addToVault: vi.fn(async () => {}),
 }));
+// Story 7.5: a staged PDF or office file reaching this consumer is a task an
+// OLDER build enqueued. The Worker no longer owns those parsers, so it hands
+// the bytes to the sidecar rather than calling them.
+vi.mock("@/lib/fetch", async (orig) => ({
+  ...(await orig<typeof import("@/lib/fetch")>()),
+  fetchPdfBytes: vi.fn(async () => ({
+    bytes: new Uint8Array([1, 2, 3]).buffer,
+    filename: "a.pdf",
+    title: "a",
+  })),
+}));
+vi.mock("@/lib/extract-dispatch", () => ({
+  enqueueExtract: vi.fn(async () => ({
+    path: "raw/sources/doc/abc.pdf",
+    jobId: "job",
+    extractId: "extract",
+    error: null,
+  })),
+}));
+vi.mock("@/lib/source-sha256", () => ({ bytesSha256: vi.fn(async () => "ab".repeat(32)) }));
 vi.mock("@/lib/document-sources", () => ({
   preserveDocumentSources: vi.fn(async () => []),
 }));
@@ -105,6 +125,8 @@ import { fixLintIssue } from "@/lib/lint-fix";
 import { getIngestJob, updateIngestJob } from "@/lib/ingest-jobs";
 import { readStagedBytes, readStagedText, deleteStaged } from "@/lib/ingest-staging";
 import { preserveDocumentSources } from "@/lib/document-sources";
+import { enqueueExtract } from "@/lib/extract-dispatch";
+import { fetchPdfBytes } from "@/lib/fetch";
 import { extractStructuredKnowledge } from "@/lib/structured-knowledge";
 import {
   completeGraphifyPage,
@@ -134,6 +156,8 @@ const mockedReadStagedBytes = vi.mocked(readStagedBytes);
 const mockedReadStagedText = vi.mocked(readStagedText);
 const mockedDeleteStaged = vi.mocked(deleteStaged);
 const mockedPreserveDocuments = vi.mocked(preserveDocumentSources);
+const mockedExtract = vi.mocked(enqueueExtract);
+const mockedFetchPdf = vi.mocked(fetchPdfBytes);
 const mockedExtractKnowledge = vi.mocked(extractStructuredKnowledge);
 const mockedCompleteGraphify = vi.mocked(completeGraphifyPage);
 const mockedFailGraphify = vi.mocked(failGraphifyPages);
@@ -404,9 +428,7 @@ describe("POST /api/tasks/run", () => {
     );
   });
 
-  it("routes a URL pdf task (source:pdf) to ingestPdf", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mockedIngestPdf.mockResolvedValue({ primarySlug: "pdf-page" } as any);
+  it("routes a leftover URL pdf task (source:pdf) to extract, not ingestPdf", async () => {
     const res = await run({
       kind: "ingest",
       url: "https://x/a.pdf",
@@ -414,10 +436,16 @@ describe("POST /api/tasks/run", () => {
       owner: "alice",
     });
     expect(res.status).toBe(200);
-    expect(mockedIngestPdf).toHaveBeenCalledWith(
-      { pdfUrl: "https://x/a.pdf" },
-      expect.objectContaining({ owner: "alice" }),
+    expect(await res.json()).toMatchObject({ ok: true, extract: true });
+    expect(mockedFetchPdf).toHaveBeenCalledWith("https://x/a.pdf");
+    expect(mockedExtract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "alice",
+        format: "pdf",
+        filename: "a.pdf",
+      }),
     );
+    expect(mockedIngestPdf).not.toHaveBeenCalled();
     expect(mockedIngestUrl).not.toHaveBeenCalled();
   });
 
@@ -437,34 +465,37 @@ describe("POST /api/tasks/run", () => {
     );
   });
 
-  it("reads a staged pdf from R2, ingests it, and deletes the blob", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mockedIngestPdf.mockResolvedValue({ primarySlug: "staged-pdf" } as any);
+  it("diverts a staged pdf left by an older build to the sidecar, and deletes the blob", async () => {
+    // Was: "reads a staged pdf from R2, ingests it". Story 7.5 took the PDF
+    // parser off the Worker, so the only remaining source of such a task is a
+    // queue written before the cutover. It is diverted, not parsed — that is
+    // what lets the cutover deploy without draining the queue first.
     const res = await run({
       kind: "ingest",
       owner: "alice",
       staged: { key: "raw/uploads/j/doc.pdf", kind: "pdf", filename: "doc.pdf" },
     });
     expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, extract: true });
     expect(mockedReadStagedBytes).toHaveBeenCalledWith("raw/uploads/j/doc.pdf");
-    expect(mockedIngestPdf).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: "doc.pdf" }),
-      expect.objectContaining({ owner: "alice" }),
-    );
-    // Best-effort cleanup runs after a successful ingest.
+    expect(mockedExtract).toHaveBeenCalledTimes(1);
+    expect(mockedExtract.mock.calls[0][0]).toMatchObject({
+      owner: "alice",
+      format: "pdf",
+      filename: "doc.pdf",
+    });
+    expect(mockedIngestPdf).not.toHaveBeenCalled();
+    // The staging blob still goes: the bytes now live under `raw/sources/`.
     expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/doc.pdf");
   });
 
-  it("forwards a user-supplied title to ingestPdf/ingestImage across the queue", async () => {
+  it("forwards a user-supplied title to extract/ingestImage across the queue", async () => {
     // Regression: title rode the task but was dropped from the consumer opts, so
     // a typed PDF/image title was ignored on the production (queued) path (and
     // for images the title also drives the slug).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mockedIngestPdf.mockResolvedValue({ primarySlug: "p" } as any);
     await run({ kind: "ingest", url: "https://x/a.pdf", source: "pdf", owner: "alice", title: "My Doc" });
-    expect(mockedIngestPdf).toHaveBeenLastCalledWith(
-      { pdfUrl: "https://x/a.pdf" },
-      expect.objectContaining({ title: "My Doc" }),
+    expect(mockedExtract).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "My Doc", format: "pdf" }),
     );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockedIngestImage.mockResolvedValue({ primarySlug: "i" } as any);
@@ -497,10 +528,12 @@ describe("POST /api/tasks/run", () => {
     expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/p.png");
   });
 
-  it("reads a staged Office/CSV document and dispatches document ingestion", async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mockedIngestDocument.mockResolvedValue({ primarySlug: "staged-doc" } as any);
-    const res = await run({
+  it("diverts a staged DOCX to the sidecar, but still ingests a CSV here", async () => {
+    // The divert is by FORMAT, not by staged kind: `document` covers both the
+    // office files the extract crate reads and the CSV/TSV it does not. Losing
+    // that split either strands a spreadsheet on a queue no crate drains, or
+    // keeps the Worker parser alive for DOCX.
+    const docx = await run({
       kind: "ingest",
       owner: "alice",
       staged: {
@@ -509,12 +542,61 @@ describe("POST /api/tasks/run", () => {
         filename: "plan.docx",
       },
     });
-    expect(res.status).toBe(200);
+    expect(docx.status).toBe(200);
+    expect(mockedExtract).toHaveBeenCalledTimes(1);
+    expect(mockedIngestDocument).not.toHaveBeenCalled();
+    expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/plan.docx");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngestDocument.mockResolvedValue({ primarySlug: "staged-doc" } as any);
+    const csv = await run({
+      kind: "ingest",
+      owner: "alice",
+      staged: {
+        key: "raw/uploads/j/rows.csv",
+        kind: "document",
+        filename: "rows.csv",
+        contentType: "text/csv",
+      },
+    });
+    expect(csv.status).toBe(200);
+    expect(mockedExtract).toHaveBeenCalledTimes(1); // still just the DOCX
     expect(mockedIngestDocument).toHaveBeenCalledWith(
-      expect.objectContaining({ filename: "plan.docx" }),
+      expect.objectContaining({ filename: "rows.csv" }),
       expect.objectContaining({ owner: "alice" }),
     );
-    expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/plan.docx");
+    expect(mockedDeleteStaged).toHaveBeenCalledWith("raw/uploads/j/rows.csv");
+  });
+
+  it("does not delete staging when enqueueExtract reports a failure without throwing", async () => {
+    // `enqueueExtract` returns `{ error }` for its one partial failure: bytes
+    // stored, job records not written. Read as a divert it deleted the staging
+    // blob and answered `{ ok: true, extract: true }` for a document with no
+    // record anywhere — the queue message acknowledged, the Worker parse
+    // skipped, and nothing left that could ever compile it.
+    mockedExtract.mockResolvedValueOnce({
+      path: "raw/sources/doc/abc.pdf",
+      jobId: "job",
+      extractId: "extract",
+      error: "the job store refused the write",
+    } as never);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedIngestPdf.mockResolvedValue({ primarySlug: "p" } as any);
+
+    const res = await run({
+      kind: "ingest",
+      owner: "alice",
+      staged: { key: "raw/uploads/j/doc.pdf", kind: "pdf", filename: "doc.pdf" },
+    });
+    // 5xx, which is what makes the consumer redeliver instead of acking.
+    expect(res.status).toBe(503);
+    expect(await res.json()).not.toMatchObject({ extract: true });
+    // Not quietly re-parsed on the Worker either — that path ends in the same
+    // `deleteStaged`, so "fall through" and "delete the only copy" are the
+    // same branch.
+    expect(mockedIngestPdf).not.toHaveBeenCalled();
+    // The staged bytes SURVIVE, so the task can be retried.
+    expect(mockedDeleteStaged).not.toHaveBeenCalledWith("raw/uploads/j/doc.pdf");
   });
 
   it("returns a completed tracked ingest on queue replay without rereading deleted staging", async () => {
@@ -603,12 +685,15 @@ describe("POST /api/tasks/run", () => {
   });
 
   it("keeps a staged blob when a transient ingest failure should be retried", async () => {
-    mockedIngestPdf.mockRejectedValueOnce(new Error("R2 read flaked"));
+    // The subject is the retry contract, not the format: staged PDFs now divert
+    // to the sidecar before any parser runs, so this uses a staged IMAGE — the
+    // remaining staged kind the Worker still ingests itself.
+    mockedIngestImage.mockRejectedValueOnce(new Error("R2 read flaked"));
     const res = await run({
       kind: "ingest",
       owner: "alice",
       jobId: "job-x",
-      staged: { key: "raw/uploads/j/doc.pdf", kind: "pdf" },
+      staged: { key: "raw/uploads/j/shot.png", kind: "image" },
     });
     expect(res.status).toBe(500); // transient → retry
     expect(mockedDeleteStaged).not.toHaveBeenCalled();

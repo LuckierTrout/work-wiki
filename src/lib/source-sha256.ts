@@ -7,8 +7,19 @@
  */
 
 export async function sourceSha256(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest("SHA-256", data);
+  return bytesSha256(new TextEncoder().encode(text));
+}
+
+/**
+ * The same digest over RAW BYTES (Story 7.1).
+ *
+ * A PDF has no text form to hash, and encoding one through `TextEncoder` would
+ * replace every byte that is not valid UTF-8 — two different PDFs could hash
+ * identically. This is the id a binary Source is stored under AND the key the
+ * sidecar's parse cache uses, so it has to be over the bytes themselves.
+ */
+export async function bytesSha256(bytes: BufferSource): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");

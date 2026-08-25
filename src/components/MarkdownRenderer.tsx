@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { slugify } from "@/lib/slugify";
+import { fencedCodeText } from "@/lib/markdown-fence";
 import { urlTransform } from "@/lib/markdown-url";
 import { resolveSlugPath, slugPath, type SlugTenantMap } from "@/lib/links";
 import { Mermaid } from "@/components/Mermaid";
@@ -14,19 +15,12 @@ import { Mermaid } from "@/components/Mermaid";
  * nested in a `<pre>`. Pull out its text when the language matches, so we can
  * render it specially (a Mermaid diagram, a yoyo illustration) instead of a
  * code block; return null otherwise.
+ *
+ * The walk itself moved to `@/lib/markdown-fence` when the Workbench Preview
+ * and Chat needed the same one (Story 7.8) — see that module for why three
+ * copies of it was the thing worth avoiding. Behaviour here is unchanged.
  */
-function fencedCode(children: ReactNode, lang: string): string | null {
-  const child = Array.isArray(children) ? children[0] : children;
-  if (child && typeof child === "object" && "props" in child) {
-    const props = (child as { props?: { className?: unknown; children?: unknown } })
-      .props;
-    const cls = typeof props?.className === "string" ? props.className : "";
-    if (new RegExp(`\\blanguage-${lang}\\b`).test(cls)) {
-      return String(props?.children ?? "").replace(/\n$/, "");
-    }
-  }
-  return null;
-}
+const fencedCode = fencedCodeText;
 
 interface MarkdownRendererProps {
   content: string;

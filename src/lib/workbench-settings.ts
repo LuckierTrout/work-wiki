@@ -76,16 +76,11 @@ export const SETTINGS_CATEGORIES: readonly SettingsCategory[] = [
   { id: "general", label: "General", pending: null },
   { id: "llm-models", label: "LLM Models", pending: null },
   { id: "embeddings", label: "Embeddings", pending: null },
-  {
-    id: "intake",
-    label: "Intake",
-    pending: "Intake settings arrive with Sources ingest.",
-  },
-  {
-    id: "mineru",
-    label: "MinerU PDF",
-    pending: "MinerU PDF extraction settings arrive with binary extract.",
-  },
+  // Built by Stories 7.5 and 7.2. `api-mcp` stays `pending` — that one is
+  // Epic 8's, and clearing it here would be a nav row promising a pane with no
+  // controls behind it.
+  { id: "intake", label: "Intake", pending: null },
+  { id: "mineru", label: "MinerU PDF", pending: null },
   { id: "external-sources", label: "External Sources", pending: null },
   {
     id: "api-mcp",
@@ -520,6 +515,184 @@ export function researchProviderUnconfiguredCopy(
   return `${researchProviderLabel(provider)} has no ${needed} yet, so Deep Research cannot start. Supply it below.`;
 }
 
+// ---------------------------------------------------------------------------
+// Intake and MinerU PDF (Stories 7.5 / 7.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * How PDFs the built-in extractor cannot read are handled.
+ *
+ * The vocabulary lives HERE, in the client-safe module, for the same reason
+ * {@link RESEARCH_PROVIDERS} does: `SettingsCanvas` renders the select in the
+ * browser, and `extract-settings.ts` — which reads the stored value through
+ * `loadConfig` and therefore cannot be imported by a browser bundle — imports
+ * the type and the list back from here. One list, not two.
+ *
+ * ORDERED PRIVATE-FIRST on purpose: `local` keeps documents on the machine,
+ * `cloud` does not.
+ */
+export type MinerUMode = "off" | "local" | "cloud" | "pipeline";
+
+export const MINERU_MODES: readonly MinerUMode[] = [
+  "off",
+  "local",
+  "cloud",
+  "pipeline",
+];
+
+export function isMinerUMode(value: unknown): value is MinerUMode {
+  return MINERU_MODES.includes(value as MinerUMode);
+}
+
+/**
+ * The mode a first enablement lands on.
+ *
+ * NOT `cloud`: the owner who has just ticked the box has not yet been asked
+ * whether their documents may leave the machine, so the answer cannot be
+ * "yes" by default.
+ */
+export const MINERU_FIRST_MODE: MinerUMode = "local";
+
+/** Where a local MinerU install listens when the owner has not said otherwise. */
+export const MINERU_DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:8000";
+
+/**
+ * The warning beside a Cloud (or Pipeline) selection, in orange, BEFORE Save
+ * applies it.
+ *
+ * One constant so the pane and the test read the same sentence: the point of
+ * the warning is that it is the same words every time the owner meets this
+ * choice.
+ */
+export const MINERU_CLOUD_WARNING_COPY =
+  "Cloud mode uploads documents to MinerU. They leave this machine.";
+
+/**
+ * Does this mode send documents off the machine?
+ *
+ * ONLY `cloud`. `pipeline` was treated as leaving too, on the assumption that a
+ * MinerU-hosted mode was hiding behind the name — but the implementation says
+ * otherwise: `sidecar/mineru.mjs` sends `local` and `pipeline` to the SAME
+ * `POST /file_parse` on the owner's own MinerU server, differing only in the
+ * `backend` form field. Warning about an upload that does not happen is not the
+ * safe direction it looks like: an owner who is shown the orange sentence for a
+ * loopback request learns that the sentence does not mean what it says, and
+ * then discounts it on the one mode where it is true.
+ */
+export function mineruLeavesMachine(mode: MinerUMode): boolean {
+  return mode === "cloud";
+}
+
+/**
+ * What the Intake pane says about the inbound address, in its two states.
+ *
+ * INBOUND-ADDRESS ONLY, and the copy says so. This door is a Cloudflare Email
+ * Routing Worker forwarding to `POST /api/email/ingest`; it is not a connected
+ * mailbox, and an owner who read "email" here and went looking for an IMAP
+ * login would be looking for something this build deliberately does not have.
+ */
+export const SETTINGS_INTAKE_EMAIL_COPY =
+  "Mail sent to this address becomes Sources. It is a forwarding address, not a connected mailbox — nothing is read from your inbox.";
+export const SETTINGS_INTAKE_EMAIL_UNSET_COPY =
+  "No inbound address is configured yet.";
+export const SETTINGS_INTAKE_EMAIL_DISABLED_COPY =
+  "Inbound email is switched off, so mail sent to this address is refused.";
+export const SETTINGS_INTAKE_EMAIL_LABEL = "Inbound address";
+export const SETTINGS_INTAKE_COPY_ADDRESS = "Copy";
+export const SETTINGS_INTAKE_COPIED_COPY = "Address copied.";
+
+/**
+ * The heading over the accepted-format grid, and the sentence under it.
+ *
+ * The grid itself is derived from {@link INTAKE_FORMAT_GROUPS} rather than
+ * typed here — a hand-written list of formats beside a programmatic door is
+ * exactly the prose/inventory drift `prose-inventory-parity.test.ts` exists to
+ * catch, and this pane is the most tempting place in the app to write one.
+ */
+export const SETTINGS_INTAKE_FORMATS_HEADING = "Accepted files";
+/**
+ * THE THREE DOORS DO NOT ACCEPT THE SAME THINGS, and the sentence has to say
+ * so. It used to read "dropped on the Workbench, mailed in, or posted to the
+ * API" over a grid that includes images, video and audio — none of which the
+ * other two doors take: both gate on `isSupportedDocument`, whose allowlist is
+ * `DOCUMENT_FORMATS`, and a mailed PNG is silently counted as a skipped
+ * attachment. An owner reading the old sentence would have concluded their
+ * mail was lost.
+ */
+export const SETTINGS_INTAKE_FORMATS_COPY =
+  "Anything on this list can be dropped on the Workbench. Email and the API take the document formats only — images, video and audio arrive by drop.";
+
+/**
+ * What Intake says about Plaud (Story 7.6).
+ *
+ * THE UPLOAD IS THE WHOLE DOOR in this build, and the sentence says so rather
+ * than leaving the absence to be discovered. Story 7.6 asked for a connected
+ * account that lists and pulls recordings; Plaud publishes no account-level
+ * API for that — their own help centre says there is no public API, and the
+ * documented OAuth on `docs.plaud.ai` belongs to Plaud Embedded, a partner
+ * device/transcription platform with no "list my recordings" or "get my
+ * transcript" endpoint. The endpoints the community MCP servers use are
+ * undocumented internal web-app routes.
+ *
+ * Naming that here is the honest half. The dishonest half would have been a
+ * Connect button wired to a guessed contract: it would ask an owner for real
+ * credentials, and it would break the first time an internal route moved.
+ */
+export const SETTINGS_INTAKE_PLAUD_COPY =
+  "Plaud recordings arrive by upload — pick them with the Plaud button beside Sources, and they stay meeting-eligible for Todo Candidates. Connecting a Plaud account to list and pull recordings is not available: Plaud publishes no account API for it.";
+
+/** The `raw/parsed/` checkbox from the Intake mock. */
+export const SETTINGS_INTAKE_KEEP_PARSED_LABEL = "Keep extracted Markdown";
+export const SETTINGS_INTAKE_KEEP_PARSED_COPY =
+  "Also writes each extractor’s Markdown under raw/parsed/. The Source itself is kept either way.";
+
+/** The MinerU pane's standing explanation, above the mode control. */
+export const SETTINGS_MINERU_COPY =
+  "The built-in PDF extractor always runs first. MinerU is an optional second pass for PDFs it cannot read — scanned pages, dense tables, complex layouts.";
+
+export const SETTINGS_INVALID_MINERU_MODE_COPY =
+  "Choose Off, Local API, Cloud, or Pipeline for MinerU.";
+
+export const SETTINGS_MINERU_ENABLE_LABEL = "Use MinerU for PDFs";
+export const SETTINGS_MINERU_MODE_LABEL = "Mode";
+export const SETTINGS_MINERU_BASE_URL_LABEL = "Local API base URL";
+export const SETTINGS_MINERU_KEY_LABEL = "MinerU API key";
+
+export const SETTINGS_MINERU_OFF_COPY =
+  "MinerU is off. A PDF the built-in extractor cannot read fails visibly and keeps its bytes.";
+/** Covers Pipeline too — both post to the same local MinerU server. */
+export const SETTINGS_MINERU_LOCAL_COPY =
+  "Local API and Pipeline both post to your own MinerU server. Documents stay on this machine.";
+export const SETTINGS_MINERU_KEY_COPY =
+  "Cloud authenticates with a MinerU token.";
+
+/** Human labels for the four modes, in select order. */
+export function mineruModeLabel(mode: MinerUMode): string {
+  switch (mode) {
+    case "off":
+      return "Off";
+    case "local":
+      return "Local API";
+    case "cloud":
+      return "Cloud";
+    case "pipeline":
+      return "Pipeline";
+  }
+}
+
+/**
+ * The modes the select offers once MinerU is enabled.
+ *
+ * `off` is NOT among them: the checkbox is what turns the feature off, and a
+ * select that also carried `Off` would give the pane two controls for one
+ * state that could disagree with each other on screen.
+ */
+export const MINERU_ENABLED_MODES: readonly MinerUMode[] = [
+  "local",
+  "cloud",
+  "pipeline",
+];
+
 /** Interface: English only, no picker (`epic-1-context.md:29`). */
 export const SETTINGS_LANGUAGE_LABEL = "Language";
 export const SETTINGS_LANGUAGE_VALUE = "English";
@@ -698,6 +871,29 @@ export interface WorkbenchSettingsPayload {
    * delete an environment variable.
    */
   envResearchProviders: ResearchProviderId[];
+  /**
+   * The inbound-email address Intake shows for copying, and whether the door is
+   * switched on (Story 7.5).
+   *
+   * SERVED, not stored here: the value lives in `email-ingest.ts`'s own index,
+   * which the inbound Worker's route and the legacy `/settings` page already
+   * read. Minting a second copy of it under `AppConfig` would be a second
+   * config store for one address — the exact fork `.yoyo/learnings.md` records
+   * — so the route loads it and passes it through, and this pane renders it
+   * read-only rather than editing it.
+   */
+  inboundEmailAddress: string | null;
+  inboundEmailEnabled: boolean;
+  /** Keep the extractor's Markdown under `raw/parsed/` beside the bytes. */
+  intakeKeepParsed: boolean;
+  /**
+   * The stored MinerU mode. `off` is both the default and what an unreadable
+   * stored value resolves to — see `extract-settings.ts`.
+   */
+  mineruMode: MinerUMode;
+  mineruLocalBaseUrl: string | null;
+  /** Whether a Cloud/Pipeline credential is stored. Never the key (AD-23). */
+  hasMinerUApiKey: boolean;
   /** Fixed. There is no locale picker anywhere in this surface. */
   language: typeof SETTINGS_LANGUAGE_VALUE;
   /** `YOPEDIA_READONLY=1`: the save bar refuses before the route has to. */
@@ -753,6 +949,11 @@ export interface WorkbenchSettingsPatch {
   serpApiEngine?: string | null;
   searxngBaseUrl?: string | null;
   searxngCategories?: string | null;
+  intakeKeepParsed?: boolean;
+  mineruMode?: string | null;
+  mineruLocalBaseUrl?: string | null;
+  /** Three-state exactly like the other secrets: absent keeps, `null` removes. */
+  mineruApiKey?: string | null;
 }
 
 /**
@@ -835,6 +1036,19 @@ export function isWorkbenchSettingsPayload(
     Array.isArray(payload.envResearchProviders) &&
     payload.envResearchProviders.every(isResearchProviderId) &&
     typeof payload.readOnly === "boolean" &&
+    // Epic 7's two panes. The mode is checked against the LIST on the same
+    // argument the provider names are: an unknown value would seed a select
+    // with no matching option, and the pane would then read as a MinerU mode
+    // this build cannot run. The three booleans are required for the reason
+    // `hasWorkersAiBinding` is — `intakeKeepParsed` and `inboundEmailEnabled`
+    // both have consequences in both directions, so neither absence has a safe
+    // default.
+    nullableString("inboundEmailAddress") &&
+    typeof payload.inboundEmailEnabled === "boolean" &&
+    typeof payload.intakeKeepParsed === "boolean" &&
+    isMinerUMode(payload.mineruMode) &&
+    nullableString("mineruLocalBaseUrl") &&
+    typeof payload.hasMinerUApiKey === "boolean" &&
     payload.language === SETTINGS_LANGUAGE_VALUE
   );
 }
@@ -1470,6 +1684,10 @@ export function validateWorkbenchSettingsPatch(
     // resolved against whatever host the deployment runs on, so a research run
     // would search the deployment instead of the web.
     "searxngBaseUrl",
+    // MinerU's Local API is reached by the SIDECAR, on the owner's machine —
+    // so a relative value would be resolved against nothing at all there. Same
+    // rule, same sentence.
+    "mineruLocalBaseUrl",
   ] as const) {
     const raw = patch[key];
     if (raw === undefined || raw === null || raw === "") continue;
@@ -1478,12 +1696,30 @@ export function validateWorkbenchSettingsPatch(
     }
   }
 
+  {
+    const raw = patch.mineruMode;
+    // `null` and `""` read as `off`, which is the fail-closed default. An
+    // unrecognised mode is REFUSED rather than coerced: coercion would let a
+    // typo silently switch a configured extractor off, and storing it would
+    // leave the select showing a mode with no option row.
+    if (!(raw === undefined || raw === null || raw === "")) {
+      if (!isMinerUMode(raw)) {
+        return { ok: false, error: SETTINGS_INVALID_MINERU_MODE_COPY };
+      }
+    }
+  }
+
+  if (patch.intakeKeepParsed !== undefined && typeof patch.intakeKeepParsed !== "boolean") {
+    return { ok: false, error: SETTINGS_INVALID_BODY_COPY };
+  }
+
   for (const key of [
     "customApiKey",
     "embeddingApiKey",
     "firecrawlApiKey",
     "tavilyApiKey",
     "serpApiKey",
+    "mineruApiKey",
   ] as const) {
     const raw = patch[key];
     if (raw === undefined || raw === null) continue;
@@ -1852,6 +2088,17 @@ export interface SettingsDraft {
   serpApiEngine: string;
   searxngBaseUrl: string;
   searxngCategories: string;
+  intakeKeepParsed: boolean;
+  /**
+   * The mode the pane is EDITING, `off` included.
+   *
+   * One field rather than a boolean plus a mode: the checkbox and the select
+   * are two controls over this single value, and storing them separately is
+   * how a surface ends up rendering "enabled" beside a mode of `off`.
+   */
+  mineruMode: MinerUMode;
+  mineruLocalBaseUrl: string;
+  mineruApiKey: string | null;
 }
 
 /** Untouched — see {@link SettingsDraft}. */
@@ -1882,7 +2129,55 @@ export function settingsDraftFromPayload(
     serpApiEngine: payload.serpApiEngine ?? "",
     searxngBaseUrl: payload.searxngBaseUrl ?? "",
     searxngCategories: payload.searxngCategories ?? "",
+    intakeKeepParsed: payload.intakeKeepParsed,
+    mineruMode: payload.mineruMode,
+    mineruLocalBaseUrl: payload.mineruLocalBaseUrl ?? "",
+    mineruApiKey: SECRET_UNTOUCHED,
   };
+}
+
+/**
+ * The draft after the owner ticks or unticks "Use MinerU for PDFs".
+ *
+ * A pure rule for the same reason {@link settingsDraftAfterEmbeddingProvider}
+ * is one: it is a decision, not a control. Ticking lands on
+ * {@link MINERU_FIRST_MODE} — Local API, the mode that keeps documents on the
+ * machine — rather than on whatever the select happens to show, because the
+ * owner has not been asked about Cloud yet. Unticking goes to `off` and leaves
+ * the base URL and the key ALONE: they are not the enable state, and dropping
+ * a stored token because the owner paused the feature would make re-enabling
+ * it a credential hunt.
+ *
+ * A tick when the draft is ALREADY on an enabled mode is a no-op, which matters
+ * only for a redundant tick (a click the browser fired twice, a controlled
+ * checkbox re-asserting itself): it must not move a chosen Cloud back to Local
+ * behind the owner.
+ *
+ * UNTICK-THEN-RE-TICK DOES land back on Local, and that is not a contradiction
+ * of the line above — the untick wrote `off` into the draft, so the re-tick is
+ * a first enablement and takes the first-enablement rule. Losing a Cloud
+ * selection that way is the safe direction to be wrong in, and the draft is not
+ * saved until the owner presses Save, so nothing has been applied either way.
+ */
+export function settingsDraftAfterMinerUEnabled(
+  draft: SettingsDraft,
+  enabled: boolean,
+): SettingsDraft {
+  if (!enabled) return { ...draft, mineruMode: "off" };
+  if (draft.mineruMode !== "off") return draft;
+  return { ...draft, mineruMode: MINERU_FIRST_MODE };
+}
+
+/**
+ * Does the DRAFT's MinerU selection send documents off the machine?
+ *
+ * Read off the draft, not the payload: the orange warning has to appear when
+ * the owner PICKS Cloud, before Save applies it — that is the whole acceptance
+ * criterion. A predicate over the stored value would show the warning only
+ * after the upload it is warning about was already possible.
+ */
+export function draftMinerULeavesMachine(draft: SettingsDraft): boolean {
+  return mineruLeavesMachine(draft.mineruMode);
 }
 
 /**
@@ -2014,6 +2309,13 @@ export function settingsSaveBody(draft: SettingsDraft): WorkbenchSettingsPatch {
     serpApiEngine: draftText(draft.serpApiEngine),
     searxngBaseUrl: draftText(draft.searxngBaseUrl),
     searxngCategories: draftText(draft.searxngCategories),
+    intakeKeepParsed: draft.intakeKeepParsed,
+    // `off` rides as the literal string, not as `null`. Clearing the key would
+    // read back as "never decided", and `getWorkbenchSettings` resolves an
+    // absent value to `off` anyway — but an owner who switched MinerU off
+    // should be recorded as having done it.
+    mineruMode: draft.mineruMode,
+    mineruLocalBaseUrl: draftText(draft.mineruLocalBaseUrl),
   };
   // Secrets ride only when the owner touched them — see `secretPatchValue`.
   const custom = secretPatchValue(draft.customApiKey);
@@ -2026,6 +2328,8 @@ export function settingsSaveBody(draft: SettingsDraft): WorkbenchSettingsPatch {
   if (tavily !== undefined) patch.tavilyApiKey = tavily;
   const serpapi = secretPatchValue(draft.serpApiKey);
   if (serpapi !== undefined) patch.serpApiKey = serpapi;
+  const mineru = secretPatchValue(draft.mineruApiKey);
+  if (mineru !== undefined) patch.mineruApiKey = mineru;
   return patch;
 }
 

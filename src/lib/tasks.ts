@@ -20,6 +20,49 @@ import type { EmailIngestMetadata } from "./email-ingest";
 import { workbenchSourcePath } from "./source-delete";
 
 /**
+ * The document formats the sidecar extracts, as provenance (Story 7.1).
+ *
+ * Spelled here rather than imported from `./workbench-intake` so the queue's
+ * wire vocabulary stays readable in one file, and checked against
+ * `IngestOptions["sourceType"]` by the compiler: every member below is also a
+ * member of that union, so a format added to one and not the other cannot ship.
+ */
+export type ExtractSourceType =
+  | "pdf"
+  | "docx"
+  | "pptx"
+  | "xlsx"
+  | "xls"
+  | "ods"
+  | "epub"
+  | "mobi";
+
+/**
+ * Every `sourceType` an enqueued ingest may carry, as a runtime set.
+ *
+ * `Record<…, true>` rather than an array: the compiler then refuses a member
+ * that is missing here but present in the union above, which is the drift this
+ * validator exists to prevent.
+ */
+const TASK_SOURCE_TYPES: Record<
+  NonNullable<Extract<Task, { kind: "ingest" }>["sourceType"]>,
+  true
+> = {
+  "x-mention": true,
+  url: true,
+  text: true,
+  email: true,
+  pdf: true,
+  docx: true,
+  pptx: true,
+  xlsx: true,
+  xls: true,
+  ods: true,
+  epub: true,
+  mobi: true,
+};
+
+/**
  * A unit of asynchronous agent work. Discriminated by `kind` so the executor
  * (`/api/tasks/run`) can dispatch. Keep payloads small (ids/slugs, not bodies) —
  * Cloudflare Queues caps a message at 128 KB.
@@ -74,10 +117,21 @@ export type Task =
       /** Provenance URL for a text ingest (the original source link). */
       sourceUrl?: string;
       /** Explicit source classification (e.g. agent `asOwner` ingests set
-       *  x-mention/url/text); when absent the pipeline derives it. Intentionally a
-       *  SUBSET of `IngestOptions["sourceType"]` — image/pdf/youtube are set
-       *  internally by the ingest functions, never carried over the queue. */
-      sourceType?: "x-mention" | "url" | "text" | "email";
+       *  x-mention/url/text); when absent the pipeline derives it. Still a
+       *  SUBSET of `IngestOptions["sourceType"]` — image and youtube are set
+       *  internally by the ingest functions and never travel over the queue.
+       *
+       *  THE EXTRACT FORMATS ARE HERE (Story 7.1) because the sidecar's
+       *  completion enqueues the compile as a queue task, and a document that
+       *  arrived as a PDF was landing in the ledger and in `sources[]` as
+       *  `text` — indistinguishable from a paste. The format is the one thing
+       *  about that arrival the completing door still knows. */
+      sourceType?:
+        | "x-mention"
+        | "url"
+        | "text"
+        | "email"
+        | ExtractSourceType;
       /**
        * Folder-import relative path for an inline text ingest (Story 2.2).
        * Staged uploads already carry this on `staged.relativePath`; a small
@@ -426,14 +480,20 @@ export function parseTask(body: unknown): Task | null {
           subject: e.subject,
           messageId: e.messageId,
           attachmentNames: e.attachmentNames as string[],
+          // Optional on the wire and optional here: a task enqueued by an older
+          // build carries no arrival time, and inventing one would date the
+          // message by whenever the queue got to it.
+          ...(typeof e.receivedAt === "string" && e.receivedAt.trim()
+            ? { receivedAt: e.receivedAt }
+            : {}),
         };
       }
       const sourceType =
-        t.sourceType === "x-mention" ||
-        t.sourceType === "url" ||
-        t.sourceType === "text" ||
-        t.sourceType === "email"
-          ? t.sourceType
+        typeof t.sourceType === "string" &&
+        Object.prototype.hasOwnProperty.call(TASK_SOURCE_TYPES, t.sourceType)
+          ? (t.sourceType as NonNullable<
+              Extract<Task, { kind: "ingest" }>["sourceType"]
+            >)
           : undefined;
       if (!rebuildEmbeddings) {
         if ((sourceType === "email") !== Boolean(email)) return null;

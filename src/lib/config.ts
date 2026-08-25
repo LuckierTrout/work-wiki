@@ -11,6 +11,7 @@ import {
   canEnableVectorSearch,
   embeddingProviderChanged,
   isAbsoluteHttpUrl,
+  isMinerUMode,
   isResearchProviderId,
   ollamaBaseUrlRefusedCopy,
   DEFAULT_SERPAPI_ENGINE,
@@ -105,6 +106,34 @@ export interface AppConfig {
   searxngBaseUrl?: string;
   /** Comma-separated SearXNG categories. Absent means the instance's default. */
   searxngCategories?: string;
+
+  // -------------------------------------------------------------------------
+  // Epic 7 — Intake and MinerU PDF (Stories 7.2 / 7.5).
+  //
+  // Read through `./extract-settings`, which is where the defaults and the
+  // fail-closed normalization live. Nothing else should read these keys
+  // directly: `mineruMode` in particular has a default (`off`) that matters,
+  // and a second reader that treated absent as "whatever was configured" is
+  // how an optional Cloud upload becomes an accidental one.
+  // -------------------------------------------------------------------------
+
+  /** Keep the sidecar's extracted Markdown under `raw/parsed/` too. */
+  intakeKeepParsed?: boolean;
+  /** `off` | `local` | `cloud` | `pipeline`. Absent (and invalid) means `off`. */
+  mineruMode?: string;
+  /** Base URL for MinerU's Local API. Absent means `http://127.0.0.1:8000`. */
+  mineruLocalBaseUrl?: string;
+  /** Credential for MinerU Cloud / Pipeline. Never leaves the server. */
+  mineruApiKey?: string;
+
+  // NO PLAUD OAUTH KEYS (Story 7.6 is blocked). Five of them were declared
+  // here — client id, client secret, access and refresh tokens, an expiry —
+  // for a connected-account flow that has no endpoint to connect to: Plaud
+  // publishes no account-level API, and the documented OAuth belongs to a
+  // partner platform with no "list my recordings". Declared-but-unwritten
+  // secret names are not free: they read as a feature that exists, and the
+  // first person to see them will wire something to them. Plaud recordings
+  // arrive by upload; see `SETTINGS_INTAKE_PLAUD_COPY`.
 }
 
 /** Describes where each setting was resolved from. */
@@ -1548,6 +1577,15 @@ function embeddingModelAnswer(cfg: AppConfig): {
  */
 export function getWorkbenchSettings(
   hasWorkersAiBinding: boolean,
+  /**
+   * The inbound-email door's own stored state (Story 7.5), passed in for the
+   * same reason `hasWorkersAiBinding` is: this function is SYNC and reads the
+   * config cache, and the address lives in `email-ingest.ts`'s index behind an
+   * async storage read. Absent — every caller but the settings route — the
+   * Intake pane renders its "no inbound address" sentence, which is the honest
+   * answer for a payload that was not told one.
+   */
+  inboundEmail?: { enabled: boolean; address: string },
 ): WorkbenchSettingsValues {
   const cfg = loadConfigSync();
   const firecrawl = getFirecrawlSettings();
@@ -1628,6 +1666,19 @@ export function getWorkbenchSettings(
     envSearxngBaseUrl: research.envSearxngBaseUrl,
     searxngCategories: nonEmpty(cfg.searxngCategories),
     envResearchProviders: envResearchProviders(),
+    // Intake and MinerU PDF (Stories 7.5 / 7.2). The email pair is SERVED from
+    // the door's own store rather than copied into `AppConfig`; everything
+    // below it is stored here, and the key is a boolean like every other
+    // credential on this surface (AD-23).
+    inboundEmailAddress: nonEmpty(inboundEmail?.address),
+    inboundEmailEnabled: inboundEmail?.enabled === true,
+    intakeKeepParsed: cfg.intakeKeepParsed === true,
+    // `off` for an absent OR unrecognised stored value — the fail-closed
+    // direction for a setting whose other modes can send documents to a third
+    // party. Same rule as `getMinerUSettings`, which is what the sidecar reads.
+    mineruMode: isMinerUMode(cfg.mineruMode) ? cfg.mineruMode : "off",
+    mineruLocalBaseUrl: nonEmpty(cfg.mineruLocalBaseUrl),
+    hasMinerUApiKey: nonEmpty(cfg.mineruApiKey) !== null,
     language: SETTINGS_LANGUAGE_VALUE,
     readOnly: isReadOnly(),
   };
@@ -1761,6 +1812,17 @@ export function applyWorkbenchSettings(
     }
     // A string never reaches here: `validateWorkbenchSettingsPatch` refuses one
     // with a sentence, which is why the patch type admits it at all.
+  }
+
+  setText("mineruMode", patch.mineruMode);
+  setText("mineruLocalBaseUrl", patch.mineruLocalBaseUrl);
+  setText("mineruApiKey", patch.mineruApiKey);
+
+  if (patch.intakeKeepParsed !== undefined) {
+    // Stored explicitly on both arms, like `vectorSearchEnabled` above and for
+    // the same reason: an owner who turned it OFF should read back as having
+    // decided rather than as never having been asked.
+    updated.intakeKeepParsed = patch.intakeKeepParsed;
   }
 
   if (patch.vectorSearchEnabled !== undefined) {

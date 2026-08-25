@@ -33,6 +33,7 @@ import {
   PREVIEW_HISTORY_REVERT_COPY,
   PREVIEW_HISTORY_VIEW_COPY,
   PREVIEW_LOADING_COPY,
+  PREVIEW_MEDIA_FAILED_COPY,
   PREVIEW_SAVE_COPY,
   PREVIEW_SAVING_COPY,
   PREVIEW_RETRY_COPY,
@@ -54,6 +55,8 @@ import {
   previewEditTarget,
   previewHistoryRevertConfirmBody,
   previewHistoryTarget,
+  previewLightboxJump,
+  previewMediaUrl,
   previewRefreshAnnouncement,
   previewRequestUrl,
   previewStaleNotice,
@@ -77,6 +80,7 @@ import {
 import { workbenchSourcePath } from "@/lib/source-delete";
 import { MarkMeetingControl } from "./MarkMeetingControl";
 import { PreviewBody } from "./PreviewBody";
+import { PreviewLightbox } from "./PreviewLightbox";
 
 /**
  * The docked Preview column: header, frontmatter strip, and the body.
@@ -114,6 +118,16 @@ export interface PreviewColumnProps {
    * Not navigation — see the module docblock on why this is a button.
    */
   onOpenPage: (slug: string) => void;
+  /**
+   * The FILE half of the same move (Story 7.7): dock the Preview at a Source by
+   * its display path, without toggling.
+   *
+   * Only the lightbox's jump-to-source uses it, and only when the image was
+   * rendered from a file selection. Optional so every existing mount of this
+   * column still compiles; a mount that omits it renders no jump control rather
+   * than one that does nothing.
+   */
+  onOpenFile?: (path: string) => void;
   /**
    * The refresh signal the shell's current server render was built from
    * (Story 1.7). The Preview's bytes come from a client read, not from that
@@ -203,6 +217,7 @@ export function PreviewColumn({
   knowledge,
   files,
   onOpenPage,
+  onOpenFile,
   dataVersion,
   onDirtyChange,
   readOnly = false,
@@ -227,6 +242,7 @@ export function PreviewColumn({
         knowledge={knowledge}
         files={files}
         onOpenPage={onOpenPage}
+        onOpenFile={onOpenFile}
         dataVersion={dataVersion}
         onDirtyChange={onDirtyChange}
         readOnly={readOnly}
@@ -243,6 +259,7 @@ function PreviewPane({
   knowledge,
   files,
   onOpenPage,
+  onOpenFile,
   dataVersion,
   onDirtyChange,
   readOnly = false,
@@ -306,6 +323,16 @@ function PreviewPane({
   const [saveError, setSaveError] = useState<string | null>(null);
   const editRef = useRef<HTMLButtonElement>(null);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  // The ONE image the lightbox is over, or `null` for no overlay (Story 7.7).
+  // The image itself rather than a boolean beside it, for the reason
+  // `pendingRevert` gives about the revert dialog: two values are how an
+  // overlay comes to be open over something other than what was clicked.
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(
+    null,
+  );
+  // A `<video>` / `<audio>` reported an error for the CURRENT row. Reset on
+  // every pick below, or a codec failure on one Source would caption the next.
+  const [mediaFailed, setMediaFailed] = useState(false);
   // The write target the open editor was SEEDED from — the URL Save posts to
   // AND the key that says which thing the draft came from. Captured when the
   // editor opens rather than derived from `payload` when Save is pressed,
@@ -467,6 +494,12 @@ function PreviewPane({
       setDraftSeed(null);
       setConfirmOpen(false);
       setSaveError(null);
+      // …and the overlay and the player state with it (Story 7.7). A lightbox
+      // left standing across a pick would be showing the PREVIOUS row's image
+      // over the new row's header, and its jump-to-source would dock the row
+      // the owner just left. A player error belongs to the file that raised it.
+      setLightbox(null);
+      setMediaFailed(false);
       // …and the History panel with it (DW-214). A revision list belongs to the
       // file it was fetched for: left standing across a pick it would offer to
       // revert the PREVIOUS row's Schema from under the new row's header, and
@@ -926,8 +959,10 @@ function PreviewPane({
     // the panel beside the control.
     if (readOnly || revertingTimestamp !== null) return;
     // One overlay level (UX-DR17), enforced at the opener rather than left to
-    // the fact that the other dialog traps focus.
+    // the fact that the other dialog traps focus. All THREE overlays, since
+    // Story 7.7: the lightbox is one of them.
     setConfirmOpen(false);
+    setLightbox(null);
     setPendingRevert(timestamp);
   }
 
@@ -1044,6 +1079,41 @@ function PreviewPane({
   // Schema is a wording bug no source scan can see.
   const editCopy = previewEditCopy(previewEditTarget({ gone, payload }));
 
+  /**
+   * Open the ONE overlay over an image (Story 7.7).
+   *
+   * Both confirms close first — the other half of the one-overlay-level rule
+   * (UX-DR17) the edit gate and the revert gate already keep between
+   * themselves. Stacking this over a destructive confirm would leave the
+   * owner's answer to a question they can no longer read.
+   */
+  function openLightbox(image: { src: string; alt: string }) {
+    setConfirmOpen(false);
+    setPendingRevert(null);
+    setLightbox(image);
+  }
+
+  /**
+   * The lightbox's jump-to-source: dock the containing Page or Source, close.
+   *
+   * WHICH row that is comes from `previewLightboxJump`, executed rather than
+   * derived here — see its docblock for why the identity is worth a function.
+   * The two openers are the shell's non-toggling ones, so a jump that lands on
+   * the row already showing keeps the column docked instead of closing it,
+   * which is the whole point of the control.
+   */
+  function jumpToSource() {
+    const target = previewLightboxJump(selection);
+    setLightbox(null);
+    if (target.kind === "page") onOpenPage(target.slug);
+    else onOpenFile?.(target.path);
+  }
+
+  // Is there anywhere for the jump to LAND? A file selection needs the shell's
+  // file opener, and a mount without it renders no control rather than a dead
+  // one — the same rule `PreviewBody` follows for `onOpenImage`.
+  const canJumpToSource = selection.kind === "page" || onOpenFile !== undefined;
+
   function body() {
     // WHICH state this is, decided by an executed function rather than by four
     // conditions spelled inline — see `previewBodyState`. Left here, inverting
@@ -1064,6 +1134,66 @@ function PreviewPane({
     if (state.kind === "unsupported") {
       return <p className="wb-preview-note">{PREVIEW_UNSUPPORTED_COPY}</p>;
     }
+    if (state.kind === "media") {
+      // The bytes are NOT in the payload — see `previewMediaUrl`. Each element
+      // fetches them itself, so a video streams through the browser's own range
+      // machinery instead of arriving as a string this column has to hold.
+      const src = previewMediaUrl(state.payload.path);
+      const alt = state.payload.name;
+      return (
+        <div className="wb-preview-media">
+          {state.payload.format === "image" ? (
+            <button
+              type="button"
+              className="wb-preview-image-button"
+              onClick={() => openLightbox({ src, alt })}
+            >
+              {/* Owner-gated bytes from our own door, so a plain <img>. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                className="wb-preview-image"
+                src={src}
+                alt={alt}
+                // The same caption the players get, for the same reason: a
+                // broken `<img>` renders as its alt text in a small box, which
+                // reads as an odd-looking picture rather than as a failure.
+                // Left off, an unreadable image was the one media kind that
+                // failed silently.
+                onError={() => setMediaFailed(true)}
+              />
+            </button>
+          ) : state.payload.format === "video" ? (
+            <video
+              className="wb-preview-player"
+              src={src}
+              controls
+              // `preload="metadata"` rather than `auto`: docking the column
+              // must not start pulling an 80 MB Source the owner only glanced
+              // at, but the duration and the scrub bar still need a header.
+              preload="metadata"
+              onError={() => setMediaFailed(true)}
+            />
+          ) : (
+            <audio
+              className="wb-preview-player"
+              src={src}
+              controls
+              preload="metadata"
+              onError={() => setMediaFailed(true)}
+            />
+          )}
+          {/* The player failed — a codec this browser will not decode, or a
+              read that did not land. It is a caption BESIDE the element, not a
+              replacement for it: the Source is still stored, and the sentence
+              says so. Nothing on this path deletes anything. */}
+          {mediaFailed && (
+            <p className="wb-preview-note" role="alert">
+              {PREVIEW_MEDIA_FAILED_COPY}
+            </p>
+          )}
+        </div>
+      );
+    }
     if (state.kind === "empty") {
       return <p className="wb-preview-note">{PREVIEW_EMPTY_COPY}</p>;
     }
@@ -1082,6 +1212,7 @@ function PreviewPane({
             content={state.payload.body}
             readableSlugs={readableSlugs}
             onOpenPage={onOpenPage}
+            onOpenImage={openLightbox}
           />
         </div>
       </>
@@ -1102,6 +1233,7 @@ function PreviewPane({
             // states: whichever gate is asked for last is the only one open.
             onClick={() => {
               setPendingRevert(null);
+              setLightbox(null);
               setConfirmOpen(true);
             }}
             // A revert is about to replace these bytes (DW-214), so the editor
@@ -1462,6 +1594,19 @@ function PreviewPane({
         onCancel={() => setPendingRevert(null)}
         fallbackFocusRef={historyToggleRef}
       />
+
+      {/* The image overlay (Story 7.7) — the third and last thing that can
+          occupy the one overlay level, and never at the same time as either
+          confirm: `openLightbox` closes both, and both openers above close
+          this. Esc and the dim are handled inside the component. */}
+      {lightbox && (
+        <PreviewLightbox
+          src={lightbox.src}
+          alt={lightbox.alt}
+          onClose={() => setLightbox(null)}
+          onJumpToSource={canJumpToSource ? jumpToSource : undefined}
+        />
+      )}
     </aside>
   );
 }

@@ -2112,6 +2112,21 @@ describe("fetchPreview", () => {
     });
   });
 
+  it("accepts the three media formats, which are payloads with no body", async () => {
+    // The shape guard was written with three formats in it and Story 7.7 added
+    // three more without widening it, so a 200 naming a `.png` failed the check
+    // and the column reported `unreachable` for a file it had just successfully
+    // fetched — a stored image that rendered as "could not be reached".
+    for (const format of ["image", "video", "audio"] as const) {
+      const { fetchImpl } = stubFetch(() =>
+        jsonResponse(200, { ...PAYLOAD, format, body: "" }),
+      );
+      await expect(
+        fetchPreview(PREVIEW_ROUTE, new AbortController().signal, fetchImpl),
+      ).resolves.toMatchObject({ status: "ok", payload: { format } });
+    }
+  });
+
   it("discards a response that arrives after the owner picked another row", async () => {
     // The I/O matrix's "selection changes mid-fetch": the second pick aborts the
     // first, and the first's answer must not reach state. `stale`, not `failed`

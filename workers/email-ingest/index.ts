@@ -118,6 +118,7 @@ export const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set([
   "docx",
   "pptx",
   "xlsx",
+  "xls",
   "csv",
   "zip",
   "odt",
@@ -132,6 +133,7 @@ export const SUPPORTED_MIME_TYPES: ReadonlySet<string> = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
   "text/csv",
   "application/csv",
   "text/markdown",
@@ -306,7 +308,7 @@ export default {
         message,
         subject,
         parsed.attachments.length
-          ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, and RTF."
+          ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX/XLS, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, and RTF."
           : "work-wiki found no email text to ingest.",
       );
       return;

@@ -77,6 +77,15 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     envSearxngBaseUrl: null,
     searxngCategories: null,
     envResearchProviders: [],
+    // Epic 7's panes are not what this file is about: the Intake door has no
+    // inbound address configured and MinerU is off, which is the fresh-
+    // deployment answer for both.
+    inboundEmailAddress: null,
+    inboundEmailEnabled: false,
+    intakeKeepParsed: false,
+    mineruMode: "off",
+    mineruLocalBaseUrl: null,
+    hasMinerUApiKey: false,
     language: "English",
     readOnly: true,
     ...overrides,

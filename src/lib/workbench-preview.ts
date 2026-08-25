@@ -9,6 +9,7 @@
  */
 
 import { isEditableArtifactFile, type EditableArtifactFile } from "./wiki-scenarios";
+import { INTAKE_MEDIA_EXTENSIONS } from "./workbench-intake";
 import type { TreeSelection } from "./workbench-tree";
 import {
   refusedWriteFailure,
@@ -23,10 +24,29 @@ import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
 
 /**
  * How the body should be rendered. `markdown` goes through GFM + wikilinks,
- * `text` renders verbatim in a `<pre>`, and `unsupported` renders a sentence
- * instead of bytes — the Preview is a reader, not a binary viewer.
+ * `text` renders verbatim in a `<pre>`, the three MEDIA formats render a
+ * player or an image against the media door, and `unsupported` renders a
+ * sentence instead of bytes.
+ *
+ * MEDIA IS NOT A BODY. Those three carry no `body`, no `version` and no
+ * editor: the payload names the file and the column fetches the bytes from
+ * `/api/workbench/media`, so an 80 MB video is never pulled through the Worker
+ * to be turned into a string nobody reads (Story 7.7).
  */
-export type PreviewFormat = "markdown" | "text" | "unsupported";
+export type PreviewFormat =
+  | "markdown"
+  | "text"
+  | "image"
+  | "video"
+  | "audio"
+  | "unsupported";
+
+/** The three formats the column renders as media rather than as text. */
+export function isPreviewMediaFormat(
+  format: PreviewFormat,
+): format is "image" | "video" | "audio" {
+  return format === "image" || format === "video" || format === "audio";
+}
 
 /**
  * Decide a display path's format from its extension alone.
@@ -34,6 +54,13 @@ export type PreviewFormat = "markdown" | "text" | "unsupported";
  * Extension, not sniffing: the walk that produced the path never `stat`s or
  * reads a file, and a reader that guesses from bytes would have to read a PDF
  * before it could refuse to show one.
+ *
+ * The MEDIA half defers to {@link INTAKE_MEDIA_EXTENSIONS} rather than listing
+ * extensions again. That table is what the Intake door accepts, so deriving
+ * from it is what keeps "the door took my .webp" and "the Preview shows my
+ * .webp" the same sentence — a second list here would drift the first time one
+ * of the two moved, and it would drift into a Source that was stored and can
+ * never be looked at.
  */
 export function previewFileKind(path: string): PreviewFormat {
   if (typeof path !== "string") return "unsupported";
@@ -41,6 +68,7 @@ export function previewFileKind(path: string): PreviewFormat {
   const dot = name.lastIndexOf(".");
   // A leading dot is a dotfile, not an extension — `.md` names no format.
   if (dot <= 0) return "unsupported";
+  const ext = name.slice(dot + 1);
   switch (name.slice(dot)) {
     case ".md":
     case ".markdown":
@@ -48,8 +76,25 @@ export function previewFileKind(path: string): PreviewFormat {
     case ".txt":
       return "text";
     default:
-      return "unsupported";
+      return Object.prototype.hasOwnProperty.call(INTAKE_MEDIA_EXTENSIONS, ext)
+        ? INTAKE_MEDIA_EXTENSIONS[ext]
+        : "unsupported";
   }
+}
+
+/**
+ * Where the column loads a media Source's bytes from.
+ *
+ * Its own door rather than `/api/assets/`: that route is keyed on
+ * `raw/assets/<slug>/<file>` and gates on the PAGE's visibility, while a media
+ * Source lives under `raw/sources/` and is gated by the Workbench file tree.
+ * Reusing it would have meant either widening an unauthenticated-by-default
+ * route to the whole raw silo, or teaching it a second gate.
+ */
+export const PREVIEW_MEDIA_ROUTE = "/api/workbench/media";
+
+export function previewMediaUrl(displayPath: string): string {
+  return `${PREVIEW_MEDIA_ROUTE}?${new URLSearchParams({ path: displayPath })}`;
 }
 
 /**
@@ -310,6 +355,7 @@ export type PreviewBodyState =
   | { kind: "loading" }
   | { kind: "failed" }
   | { kind: "unsupported" }
+  | { kind: "media"; payload: PreviewPayload }
   | { kind: "empty" }
   | { kind: "body"; payload: PreviewPayload };
 
@@ -331,6 +377,10 @@ export function previewBodyState(input: {
   if (input.gone || input.payload === null) return { kind: "failed" };
   const payload = input.payload;
   if (payload.format === "unsupported") return { kind: "unsupported" };
+  // BEFORE `empty`, for the same reason `unsupported` is: a media payload
+  // carries no body by design, so testing its (always blank) body first would
+  // answer `This file is empty.` for every image the owner selects.
+  if (isPreviewMediaFormat(payload.format)) return { kind: "media", payload };
   if (payload.body.trim().length === 0) return { kind: "empty" };
   return { kind: "body", payload };
 }
@@ -496,8 +546,59 @@ export const PREVIEW_EMPTY_COPY = "This file is empty.";
  */
 export const PREVIEW_UNSELECTED_COPY = "Select a file to preview.";
 
-/** A format this reader does not render — a PDF, an image, an extensionless blob. */
+/**
+ * A format this reader does not render — a PDF, an extensionless blob.
+ *
+ * No longer an image: Story 7.7 gave the three media classes their own state,
+ * so this sentence has stopped being the answer for a `.png`.
+ */
 export const PREVIEW_UNSUPPORTED_COPY = "This file can’t be previewed here.";
+
+// ---------------------------------------------------------------------------
+// Media, the lightbox, and the player (Story 7.7)
+// ---------------------------------------------------------------------------
+
+/** The lightbox's own dismissal, beside the Esc the overlay also listens for. */
+export const PREVIEW_LIGHTBOX_CLOSE_COPY = "Close image";
+
+/**
+ * The lightbox's second control: dock the Preview at the Page or Source that
+ * CONTAINS this image, and close.
+ *
+ * "Source" in the product's sense — the containing Page or stored Source — not
+ * the image's URL, which is why the label does not say "open original" the way
+ * the Vault's figure lightbox does. That one leaves the app; this one moves the
+ * dock, and the two must not read as the same promise.
+ */
+export const PREVIEW_LIGHTBOX_SOURCE_COPY = "Jump to source";
+
+/**
+ * A `<video>` / `<audio>` element reported an error.
+ *
+ * SAYS THE SOURCE SURVIVED, because the AC turns on exactly that: a codec this
+ * browser cannot decode must not read as a file that is no longer there. The
+ * bytes are untouched — nothing in the player path deletes anything.
+ */
+export const PREVIEW_MEDIA_FAILED_COPY =
+  "This file couldn’t be played here. The Source is still stored.";
+
+/**
+ * WHERE the lightbox's jump-to-source lands: the Page or Source the image was
+ * rendered inside.
+ *
+ * That is the CURRENT selection, and the identity is the point rather than a
+ * shortcut. An image reaches the lightbox one of two ways — as the whole of a
+ * media Source, or as an `![](…)` inside a Page's body — and in both the thing
+ * containing it is what the column is already showing. So this is a function
+ * with one line rather than an expression in the JSX: the AC names a behaviour,
+ * and a behaviour whose whole implementation is "the value you already have"
+ * still needs somewhere the node suite can assert it, or the next person to
+ * reach for `payload.path` will point the jump at the IMAGE and quietly turn a
+ * dock into a no-op on the media case.
+ */
+export function previewLightboxJump(selection: TreeSelection): TreeSelection {
+  return selection;
+}
 
 /**
  * The body was capped. The numeral is derived from {@link PREVIEW_MAX_CHARS}
@@ -1185,9 +1286,33 @@ function isPreviewPayload(value: unknown): value is PreviewPayload {
     (payload.version === undefined ||
       payload.version === null ||
       typeof payload.version === "string") &&
-    (payload.format === "markdown" ||
-      payload.format === "text" ||
-      payload.format === "unsupported")
+    isPreviewFormat(payload.format)
+  );
+}
+
+/**
+ * Every value {@link PreviewFormat} admits, as a runtime check.
+ *
+ * DERIVED FROM THE UNION rather than spelled again: this list started as three
+ * literals inline in {@link isPreviewPayload}, and when Story 7.7 added the
+ * three media formats the guard was not widened with it — so a 200 naming a
+ * `.png` failed the shape check and the column reported `unreachable` for a
+ * file it had just successfully fetched. The `satisfies` below makes the next
+ * addition a compile error instead of a silent one.
+ */
+const PREVIEW_FORMATS: Record<PreviewFormat, true> = {
+  markdown: true,
+  text: true,
+  unsupported: true,
+  image: true,
+  video: true,
+  audio: true,
+};
+
+function isPreviewFormat(value: unknown): value is PreviewFormat {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(PREVIEW_FORMATS, value)
   );
 }
 

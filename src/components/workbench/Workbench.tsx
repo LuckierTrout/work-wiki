@@ -910,6 +910,33 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   );
 
   /**
+   * The FILE twin of `openPage` (Story 7.7): dock a Source by display path.
+   *
+   * Non-toggling for the same reason `openPage` is — its one caller is the
+   * Preview lightbox's jump-to-source, and an image is most often reached from
+   * the very Source it belongs to, so a toggle would answer that control by
+   * UNDOCKING the column it was asked to dock.
+   *
+   * Not gated on the dirty check, and for the same reason `openPage` is not:
+   * the editor REPLACES the rendered body, so no image and no lightbox exists
+   * on screen while a draft does.
+   */
+  const openFile = useCallback(
+    (path: string) => {
+      const next: TreeSelection = { kind: "file", path };
+      ownerPickedRef.current = true;
+      if (!isSameSelection(liveRef.current.selection, next)) {
+        const { knowledge: groups, files: nodes } = latestRef.current;
+        announce(previewDockAnnouncement(selectionName(next, groups, nodes)));
+      }
+      // The identity bail-out `openPage` documents: a jump to the row already
+      // showing must not tear down the body it is already displaying.
+      setSelection((current) => (isSameSelection(current, next) ? current : next));
+    },
+    [announce],
+  );
+
+  /**
    * What the owner is told after a batch, and the tree refresh it earns.
    *
    * The sentence itself is `intakeReport`'s, in `workbench-intake-client.ts`,
@@ -1644,6 +1671,8 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
           knowledge={knowledge}
           files={files}
           onOpenPage={openPage}
+          // The lightbox's jump-to-source, for a media Source (Story 7.7).
+          onOpenFile={openFile}
           // The trees come from the server render, which the watcher re-runs;
           // the Preview's bytes come from a client read keyed on the
           // selection, so a refreshed page changes nothing about them. This is

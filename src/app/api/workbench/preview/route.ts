@@ -16,6 +16,7 @@ import { contentVersion, scopedContentVersion } from "@/lib/write-precondition";
 import { readWorkbenchFile, wikiLeafSlug, workbenchFileExists } from "@/lib/workbench-files";
 import {
   capPreviewBody,
+  isPreviewMediaFormat,
   previewFileKind,
   type PreviewFormat,
   type PreviewPayload,
@@ -85,7 +86,8 @@ function badRequest(message: string) {
  * for an artifact those bytes are all of them.
  */
 function bodyFor(format: PreviewFormat, content: string, whole = false): string {
-  if (format === "unsupported") return "";
+  // The two formats that never carry one: nothing was read for either.
+  if (format === "unsupported" || isPreviewMediaFormat(format)) return "";
   if (whole) return content;
   return format === "markdown" ? stripFrontmatterBlock(content) : content;
 }
@@ -192,7 +194,15 @@ async function handle(request: Request) {
   const format = previewFileKind(displayPath);
   const gate = { readableSlugs };
   let content = "";
-  if (format === "unsupported") {
+  // MEDIA joins `unsupported` on the existence-only branch (Story 7.7), for the
+  // same reason and one more. The same: its bytes are not a body, so reading
+  // them here to hand back a string would be work done to learn nothing. The
+  // extra: `readFile` DECODES UTF-8, so buffering a PNG would not merely waste
+  // the trip, it would corrupt the payload it produced. The column fetches the
+  // bytes from `/api/workbench/media`, which streams them undecoded — but the
+  // gate still runs here, so a media file outside the caller's reach is a 404
+  // in the Preview before the column ever asks for it.
+  if (format === "unsupported" || isPreviewMediaFormat(format)) {
     if (!(await workbenchFileExists(principal.handle, currentId, displayPath, gate))) {
       return notFound();
     }

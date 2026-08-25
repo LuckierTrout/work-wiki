@@ -2,17 +2,24 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
+import { extension } from "@/lib/document-formats";
 import { contentHash } from "@/lib/embeddings";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { enqueueExtract, rememberExtractMeeting } from "@/lib/extract-dispatch";
 import { fetchUrlContent } from "@/lib/fetch";
 import { ingest, recordSourceResee, sameHumanOwner, type IngestOptions } from "@/lib/ingest";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { createIngestJob } from "@/lib/ingest-jobs";
 import { resolveContentSha256, resolveStoredSourcePath } from "@/lib/source-index";
-import { sourceSha256 } from "@/lib/source-sha256";
+import { bytesSha256, sourceSha256 } from "@/lib/source-sha256";
 import { stageText } from "@/lib/ingest-staging";
 import { logger } from "@/lib/logger";
-import { readRawSourceTree, saveRawSourceFor, saveRawSourceTree } from "@/lib/raw";
+import {
+  readRawSourceTree,
+  saveRawSourceBytes,
+  saveRawSourceFor,
+  saveRawSourceTree,
+} from "@/lib/raw";
 import { workbenchSourcePath } from "@/lib/source-delete";
 import { setSourceMeeting } from "@/lib/source-meeting";
 import { readWikiPageWithFrontmatter } from "@/lib/wiki";
@@ -22,7 +29,9 @@ import {
   INTAKE_ALLOWED_CONTENT_TYPES,
   INTAKE_BAD_PATH_COPY,
   INTAKE_EMPTY_SOURCE_COPY,
+  INTAKE_EXTRACT_UNAVAILABLE_COPY,
   INTAKE_FILE_REQUIRED_COPY,
+  INTAKE_MEDIA_STORED_COPY,
   INTAKE_PATH_COLLISION_COPY,
   INTAKE_SIGN_IN_COPY,
   INTAKE_URL_REQUIRED_COPY,
@@ -31,6 +40,8 @@ import {
   intakeSourceSlug,
   intakeTooLargeCopy,
   intakeUrlSlug,
+  isIntakeMediaFormat,
+  isIntakeTextFormat,
   isIntakeUrl,
   sanitizeIntakeRelativePath,
 } from "@/lib/workbench-intake";
@@ -45,12 +56,19 @@ import {
  * what makes "successes still store and queue when one item fails" fall out of
  * the transport instead of a partial-batch response shape nobody else answers.
  *
- * A NARROWER DOOR than `/api/ingest/document`. That route accepts PDF, DOCX and
- * the rest because the kernel can extract them; here they must fail visibly
- * (`classifyIntakeFile`, and the narrowed content-type list handed to
- * `fetchUrlContent`) because this epic runs no sidecar extract. Widening this
- * handler to the vault's allowlist would quietly make the Workbench a document
- * extractor door.
+ * A DIFFERENT DOOR from `/api/ingest/document`, not a narrower one any more.
+ * Epic 7 widened it to every format the sidecar's extract crate can read, plus
+ * browser-renderable media — but a binary is stored and QUEUED here, never
+ * parsed here. The Worker cannot reach `127.0.0.1`, so the arrival ends with an
+ * extract record the sidecar claims (`enqueueExtract`), and Ingest starts only
+ * once the extracted text is in the kernel. `csv`, `zip`, `odt`, `odp`, `org`
+ * and `rtf` stay out: no crate reads them, and storing bytes nothing can
+ * compile is a slower version of losing them.
+ *
+ * The URL door keeps its narrowed content-type list. A `.pdf` LINK is still
+ * refused there — the extract path needs bytes on disk with an owner and a
+ * digest, which is what the file door produces and what a streamed fetch does
+ * not.
  *
  * WHAT IT DOES, in order: refuse (401 → 403 → shape → type), store the immutable
  * bytes under `raw/sources/` through `saveRawSourceFor` (loose files) or
@@ -103,7 +121,15 @@ export async function POST(request: NextRequest) {
   }
 }
 
-/** A picked or dropped file: `.md` / `.txt` / `.html` only. */
+/**
+ * A picked or dropped file.
+ *
+ * THREE ENDINGS, chosen by what the classifier called it (Story 7.1):
+ * text is stored and compiled here; an extract format is stored as bytes and
+ * handed to {@link enqueueExtract}; media is stored as bytes and compiles
+ * nothing. Only an unrecognised type is refused, and only that ending writes
+ * no Source at all.
+ */
 async function intakeFile(
   request: NextRequest,
   owner: string,
@@ -117,14 +143,78 @@ async function intakeFile(
   // only the extension, and `intakeSourceSlug` reduces it to one segment.
   const verdict = classifyIntakeFile(file.name, file.type);
   if (!verdict.ok) {
-    // No Source written, no job created, no extract attempted — the refusal is
-    // the whole of what this door does with an office or ebook file.
     return NextResponse.json({ error: verdict.reason }, { status: 400 });
   }
   if (file.size > MAX_DOCUMENT_SIZE) {
     return NextResponse.json(
       { error: intakeTooLargeCopy(MAX_DOCUMENT_SIZE / 1024 / 1024) },
       { status: 400 },
+    );
+  }
+
+  const originRaw = form.get("origin");
+  const origin = originRaw === "plaud" ? ("plaud" as const) : undefined;
+  const slug = intakeSourceSlug(file.name);
+  const title = intakeFileTitle(file.name);
+
+  if (!isIntakeTextFormat(verdict.format)) {
+    // BYTES, not `file.text()`. Decoding a PDF as UTF-8 would replace every
+    // byte the decoder does not recognise, and the sidecar would then be
+    // handed a document that no longer parses.
+    const bytes = await file.arrayBuffer();
+    const digest = await bytesSha256(bytes);
+    const ext = extension(file.name) || defaultExtensionFor(verdict.format);
+
+    if (isIntakeMediaFormat(verdict.format)) {
+      return await storeMedia({ owner, slug, title, ext, digest, bytes });
+    }
+
+    const queued = await enqueueExtract({
+      owner,
+      slug,
+      bytesSha256: digest,
+      ext,
+      format: verdict.format,
+      filename: file.name,
+      title,
+      bytes,
+      ...(origin ? { origin } : {}),
+    });
+    await rememberExtractMeeting(owner, queued.path, origin);
+    if (queued.error) {
+      // The bytes landed; only the two job records did not. Same 202 contract
+      // the text path uses for a queue that rejected after a successful store.
+      return NextResponse.json(
+        { queued: false, path: queued.path, jobId: queued.jobId, error: queued.error },
+        { status: 202 },
+      );
+    }
+    if (queued.sidecarDown) {
+      // The bytes are stored and the row carries the locked sentence, so this
+      // is NOT a refusal: 200 with `queued: false` keeps the client re-polling
+      // the trees for a Source that really did land.
+      return NextResponse.json(
+        {
+          queued: false,
+          extract: true,
+          sidecarDown: true,
+          path: queued.path,
+          jobId: queued.jobId,
+          extractId: queued.extractId,
+          note: INTAKE_EXTRACT_UNAVAILABLE_COPY,
+        },
+        { status: 200 },
+      );
+    }
+    return NextResponse.json(
+      {
+        queued: true,
+        extract: true,
+        path: queued.path,
+        jobId: queued.jobId,
+        extractId: queued.extractId,
+      },
+      { status: 200 },
     );
   }
 
@@ -148,18 +238,82 @@ async function intakeFile(
     relativePath = sanitized.path;
   }
 
-  const originRaw = form.get("origin");
-  const origin = originRaw === "plaud" ? "plaud" as const : undefined;
-
   return await storeAndQueue({
     owner,
-    slug: intakeSourceSlug(file.name),
+    slug,
     text,
-    title: intakeFileTitle(file.name),
+    title,
     sourceType: "text",
     ...(relativePath ? { relativePath } : {}),
     ...(origin ? { origin } : {}),
   });
+}
+
+/**
+ * The extension a format is stored under when the arrival had none.
+ *
+ * A drop can report `Screenshot` with the suffix stripped, and the stored key
+ * has to carry SOMETHING the Preview can dispatch a player or an `<img>` on.
+ */
+function defaultExtensionFor(format: string): string {
+  if (format === "image") return "png";
+  if (format === "video") return "mp4";
+  if (format === "audio") return "mp3";
+  return format;
+}
+
+/**
+ * Store an image, video or audio Source.
+ *
+ * NO EXTRACT JOB AND NO COMPILE: there is no crate that turns a JPEG into
+ * prose, and enqueueing an ingest for one would produce a Page built from
+ * nothing. The job record exists anyway, terminal and `skipped`, because the
+ * alternative is an arrival that leaves no trace in Activity — which is
+ * indistinguishable from the silent drop this epic forbids.
+ */
+async function storeMedia(input: {
+  owner: string;
+  slug: string;
+  title: string;
+  ext: string;
+  digest: string;
+  bytes: ArrayBuffer;
+}): Promise<NextResponse> {
+  const stored = await saveRawSourceBytes(
+    input.slug,
+    input.digest,
+    input.ext,
+    input.bytes,
+    // Mirrored into the owner's silo, which is where Files and the media door
+    // resolve `raw/` — a flat-only image is stored but unreachable.
+    { owner: input.owner },
+  );
+  const path = workbenchSourcePath(stored.path) ?? stored.path;
+  const jobId = crypto.randomUUID();
+  try {
+    await createIngestJob({
+      jobId,
+      owner: input.owner,
+      title: input.title,
+      status: "skipped",
+      sourceRel: path,
+      sourceType: "text",
+      contentSha256: input.digest,
+    });
+  } catch (error) {
+    logger.error("intake", `stored media "${path}" but could not record it`, error);
+  }
+  return NextResponse.json(
+    {
+      queued: false,
+      skipped: true,
+      media: true,
+      path,
+      jobId,
+      note: INTAKE_MEDIA_STORED_COPY,
+    },
+    { status: 200 },
+  );
 }
 
 /** The in-app URL field. HTML becomes clip Markdown; PDF and office fail. */

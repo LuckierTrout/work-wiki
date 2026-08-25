@@ -10,9 +10,36 @@ import {
 } from "react";
 import { APP_NAME, APP_TAGLINE } from "@/lib/brand";
 import { EMBEDDING_PROVIDERS, PROVIDER_INFO, embeddingProviderLabel } from "@/lib/providers";
+import { INTAKE_FORMAT_GROUPS } from "@/lib/workbench-intake";
 import {
   DEFAULT_SERPAPI_ENGINE,
+  MINERU_CLOUD_WARNING_COPY,
+  MINERU_DEFAULT_LOCAL_BASE_URL,
+  MINERU_ENABLED_MODES,
   RESEARCH_PROVIDERS,
+  SETTINGS_INTAKE_COPIED_COPY,
+  SETTINGS_INTAKE_COPY_ADDRESS,
+  SETTINGS_INTAKE_EMAIL_COPY,
+  SETTINGS_INTAKE_EMAIL_DISABLED_COPY,
+  SETTINGS_INTAKE_EMAIL_LABEL,
+  SETTINGS_INTAKE_EMAIL_UNSET_COPY,
+  SETTINGS_INTAKE_FORMATS_COPY,
+  SETTINGS_INTAKE_FORMATS_HEADING,
+  SETTINGS_INTAKE_KEEP_PARSED_COPY,
+  SETTINGS_INTAKE_KEEP_PARSED_LABEL,
+  SETTINGS_INTAKE_PLAUD_COPY,
+  SETTINGS_MINERU_BASE_URL_LABEL,
+  SETTINGS_MINERU_COPY,
+  SETTINGS_MINERU_ENABLE_LABEL,
+  SETTINGS_MINERU_KEY_COPY,
+  SETTINGS_MINERU_KEY_LABEL,
+  SETTINGS_MINERU_LOCAL_COPY,
+  SETTINGS_MINERU_MODE_LABEL,
+  SETTINGS_MINERU_OFF_COPY,
+  draftMinerULeavesMachine,
+  mineruModeLabel,
+  settingsDraftAfterMinerUEnabled,
+  type MinerUMode,
   SETTINGS_CUSTOM_ENDPOINT_COPY,
   SETTINGS_FIRECRAWL_COPY,
   SETTINGS_GENERAL_SCHEMA_COPY,
@@ -117,6 +144,16 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [status, setStatus] = useState("");
+  /**
+   * Whether the last click on Intake's Copy button put the address on the
+   * clipboard.
+   *
+   * NOT reset on a timer: the confirmation is the only feedback the clipboard
+   * gives, and a sentence that vanishes on its own is one an owner who looked
+   * away has no way to get back without clicking again. It is cleared when the
+   * canvas unmounts, which is when the surface is gone anyway.
+   */
+  const [copied, setCopied] = useState(false);
   // Read from the save callback without taking a dependency on it — the
   // `useDialogA11y` idiom the Preview column already follows. Synced in an
   // EFFECT, not during render: a render that React discards (StrictMode's
@@ -175,6 +212,25 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       clearTimeout(deadline);
       controller.abort();
     };
+  }, []);
+
+  /**
+   * Put the inbound address on the clipboard, and say whether that worked.
+   *
+   * `navigator.clipboard` is absent on an insecure origin and rejects when the
+   * permission is refused, and BOTH cases must leave the confirmation off: a
+   * pane that said "Address copied." over an empty clipboard would send the
+   * owner to paste nothing into their mail client. The address itself stays on
+   * screen either way, so the fallback is simply selecting it by hand.
+   */
+  const copyInboundAddress = useCallback(async (address: string) => {
+    if (!address) return;
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
   }, []);
 
   const save = useCallback(async () => {
@@ -387,6 +443,7 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       | "serpApiEngine"
       | "searxngBaseUrl"
       | "searxngCategories"
+      | "mineruLocalBaseUrl"
       | "llmTimeoutSeconds",
     label: string,
     hint?: string,
@@ -501,7 +558,8 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       | "embeddingApiKey"
       | "firecrawlApiKey"
       | "tavilyApiKey"
-      | "serpApiKey",
+      | "serpApiKey"
+      | "mineruApiKey",
     label: string,
     hasStoredKey: boolean,
     extraHint?: string,
@@ -837,6 +895,181 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                     : vectorBlocked}
               </span>
             </p>
+          </>
+        );
+      case "intake":
+        return (
+          <>
+            <h3 className="wb-set-heading">Inbound email</h3>
+            <p className="wb-set-note">{SETTINGS_INTAKE_EMAIL_COPY}</p>
+            <p className="wb-set-row">
+              <span className="wb-set-label" id={field("inboundEmail-label")}>
+                {SETTINGS_INTAKE_EMAIL_LABEL}
+              </span>
+              {/* STATIC, not an input. The address is owned by the door's own
+                  settings API and by the Cloudflare route in front of it; an
+                  editable box here would be a second writer for one value, and
+                  a save on this pane would silently disagree with the Worker
+                  that actually receives the mail. */}
+              <span className="wb-set-static">
+                {stored.inboundEmailAddress ?? SETTINGS_INTAKE_EMAIL_UNSET_COPY}
+              </span>
+              {stored.inboundEmailAddress && (
+                <button
+                  type="button"
+                  className="wb-set-action"
+                  aria-describedby={field("inboundEmail-label")}
+                  onClick={() => void copyInboundAddress(stored.inboundEmailAddress ?? "")}
+                >
+                  {SETTINGS_INTAKE_COPY_ADDRESS}
+                </button>
+              )}
+            </p>
+            {/* Polite and visible: the clipboard gives no feedback of its own,
+                and a Copy button that appears to do nothing is the same dead
+                end a silent save would be. */}
+            <p className="wb-set-note" aria-live="polite">
+              {copied
+                ? SETTINGS_INTAKE_COPIED_COPY
+                : stored.inboundEmailAddress && !stored.inboundEmailEnabled
+                  ? SETTINGS_INTAKE_EMAIL_DISABLED_COPY
+                  : ""}
+            </p>
+
+            <h3 className="wb-set-heading">Plaud</h3>
+            <p className="wb-set-note">{SETTINGS_INTAKE_PLAUD_COPY}</p>
+
+            <h3 className="wb-set-heading">{SETTINGS_INTAKE_FORMATS_HEADING}</h3>
+            <p className="wb-set-note">{SETTINGS_INTAKE_FORMATS_COPY}</p>
+            {/* DERIVED from the door's own vocabulary, never typed here. A
+                hand-written grid beside a programmatic accept list is the
+                prose/inventory drift the parity suite exists to catch, and it
+                would show an owner a format the door refuses. */}
+            <dl className="wb-set-formats">
+              {INTAKE_FORMAT_GROUPS.map((group) => (
+                <div key={group.label} className="wb-set-format-group">
+                  <dt>{group.label}</dt>
+                  <dd>{group.extensions.map((ext) => `.${ext}`).join(" ")}</dd>
+                </div>
+              ))}
+            </dl>
+
+            <h3 className="wb-set-heading">Extracted text</h3>
+            <p className="wb-set-row">
+              <label className="wb-set-check" htmlFor={field("intakeKeepParsed")}>
+                <input
+                  id={field("intakeKeepParsed")}
+                  type="checkbox"
+                  checked={values.intakeKeepParsed}
+                  aria-disabled={stored.readOnly || undefined}
+                  onChange={(event) => {
+                    if (stored.readOnly) return;
+                    set("intakeKeepParsed", event.target.checked);
+                  }}
+                  aria-describedby={describedBy(field("intakeKeepParsed-hint"))}
+                />
+                {SETTINGS_INTAKE_KEEP_PARSED_LABEL}
+              </label>
+              <span className="wb-set-hint" id={field("intakeKeepParsed-hint")}>
+                {SETTINGS_INTAKE_KEEP_PARSED_COPY}
+              </span>
+            </p>
+          </>
+        );
+      case "mineru":
+        return (
+          <>
+            <p className="wb-set-note">{SETTINGS_MINERU_COPY}</p>
+            <p className="wb-set-row">
+              <label className="wb-set-check" htmlFor={field("mineruEnabled")}>
+                <input
+                  id={field("mineruEnabled")}
+                  type="checkbox"
+                  checked={values.mineruMode !== "off"}
+                  aria-disabled={stored.readOnly || undefined}
+                  onChange={(event) => {
+                    if (stored.readOnly) return;
+                    // NOT a plain `set`. Which mode a first enablement lands on
+                    // is a decision — Local API, the mode that keeps documents
+                    // on this machine — and it is the pure rule the node suite
+                    // executes, not a branch typed into this JSX.
+                    apply((current) =>
+                      settingsDraftAfterMinerUEnabled(current, event.target.checked),
+                    );
+                  }}
+                  aria-describedby={describedBy(field("mineruEnabled-hint"))}
+                />
+                {SETTINGS_MINERU_ENABLE_LABEL}
+              </label>
+              <span className="wb-set-hint" id={field("mineruEnabled-hint")}>
+                {values.mineruMode === "off"
+                  ? SETTINGS_MINERU_OFF_COPY
+                  : SETTINGS_MINERU_LOCAL_COPY}
+              </span>
+            </p>
+            {values.mineruMode !== "off" && (
+              <>
+                <p className="wb-set-row">
+                  <label className="wb-set-label" htmlFor={field("mineruMode")}>
+                    {SETTINGS_MINERU_MODE_LABEL}
+                  </label>
+                  <select
+                    id={field("mineruMode")}
+                    className="wb-set-select"
+                    value={values.mineruMode}
+                    aria-disabled={stored.readOnly || undefined}
+                    onChange={(event) => {
+                      if (stored.readOnly) return;
+                      set("mineruMode", event.target.value as MinerUMode);
+                    }}
+                    aria-describedby={describedBy(field("mineruMode-hint"))}
+                  >
+                    {MINERU_ENABLED_MODES.map((mode) => (
+                      <option key={mode} value={mode}>
+                        {mineruModeLabel(mode)}
+                      </option>
+                    ))}
+                  </select>
+                  {/* The warning is this control's OWN description, and it is
+                      read off the DRAFT: it has to appear the moment Cloud is
+                      picked, BEFORE Save applies it. A note rendered beside the
+                      select would never be announced, and one derived from the
+                      stored mode would arrive after the upload it warns about
+                      was already possible. */}
+                  <span
+                    className={
+                      draftMinerULeavesMachine(values)
+                        ? "wb-set-hint wb-set-warn"
+                        : "wb-set-hint"
+                    }
+                    id={field("mineruMode-hint")}
+                  >
+                    {draftMinerULeavesMachine(values)
+                      ? MINERU_CLOUD_WARNING_COPY
+                      : SETTINGS_MINERU_LOCAL_COPY}
+                  </span>
+                </p>
+                {/* Pipeline needs this row as much as Local API does: both post
+                    to the SAME `/file_parse` on the owner's own server and
+                    differ only in the backend they ask it for. Shown for Local
+                    alone, an owner who picked Pipeline had no way to say where
+                    their server listens. */}
+                {(values.mineruMode === "local" ||
+                  values.mineruMode === "pipeline") &&
+                  textRow(
+                    "mineruLocalBaseUrl",
+                    SETTINGS_MINERU_BASE_URL_LABEL,
+                    `Leave blank for ${MINERU_DEFAULT_LOCAL_BASE_URL}.`,
+                  )}
+                {draftMinerULeavesMachine(values) &&
+                  secretRow(
+                    "mineruApiKey",
+                    SETTINGS_MINERU_KEY_LABEL,
+                    stored.hasMinerUApiKey,
+                    SETTINGS_MINERU_KEY_COPY,
+                  )}
+              </>
+            )}
           </>
         );
       case "external-sources":

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   isUrl,
   fetchUrlContent,
+  fetchPdfBytes,
 } from "../fetch";
 import { MAX_CONTENT_LENGTH, MAX_RESPONSE_SIZE, MAX_PDF_SIZE } from "../constants";
 import { INTAKE_ALLOWED_CONTENT_TYPES } from "../workbench-intake";
@@ -216,6 +217,26 @@ describe("fetchUrlContent", () => {
       /no extractable text layer/i,
     );
     expect(mockCleanup).toHaveBeenCalled();
+  });
+
+  it("fetchPdfBytes returns raw bytes and does not call unpdf", async () => {
+    const pdfBytes = new ArrayBuffer(100);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/pdf" }),
+        arrayBuffer: () => Promise.resolve(pdfBytes),
+      }),
+    );
+
+    const result = await fetchPdfBytes("https://example.com/brief.pdf");
+    expect(result.bytes).toBe(pdfBytes);
+    expect(result.filename).toBe("brief.pdf");
+    expect(result.title).toBe("brief");
+    expect(mockGetDocumentProxy).not.toHaveBeenCalled();
+    expect(mockExtractText).not.toHaveBeenCalled();
   });
 
   it("rejects PDF exceeding MAX_PDF_SIZE via Content-Length header", async () => {

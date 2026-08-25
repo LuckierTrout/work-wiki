@@ -25,6 +25,7 @@ import {
   intakeSkippedCopy,
   intakeStoredCopy,
   intakeStoredNotQueuedCopy,
+  isIntakeTextFormat,
   isIntakeUrl,
   sanitizeIntakeRelativePath,
 } from "./workbench-intake";
@@ -141,11 +142,17 @@ export function emptyFolderOutcome(): IntakeOutcome {
 /**
  * Store and queue one picked or dropped file.
  *
- * The type is classified HERE as well as in the route. Not belt-and-braces: an
- * office file dropped on the shell should fail on the spot with the same
- * sentence rather than after a round trip that uploads it first, and a drop can
- * carry a dozen files of which only some are text. The route refuses
+ * The type is classified HERE as well as in the route. Not belt-and-braces: a
+ * `.csv` dropped on the shell should fail on the spot with the same sentence
+ * rather than after a round trip that uploads it first, and a drop can carry a
+ * dozen files of which only some are readable. The route refuses
  * independently, because a client check is not a gate.
+ *
+ * A folder-expanded BINARY keeps its bytes and loses its path. The tree writer
+ * takes a string keyed on the sanitized path, so only a text leaf can hold a
+ * folder location; a PDF inside a dropped folder posts loose and lands as a
+ * content-hashed Source. Refusing it to preserve the tree shape would throw
+ * away the file to keep a breadcrumb.
  */
 export async function submitIntakeFile(
   file: File,
@@ -166,7 +173,7 @@ export async function submitIntakeFile(
     form.append("origin", "plaud");
   }
   const relative = intakeFileRelativePath(file);
-  if (relative) {
+  if (relative && isIntakeTextFormat(verdict.format)) {
     const path = sanitizeIntakeRelativePath(relative);
     if (!path.ok) {
       return {
@@ -274,11 +281,11 @@ export function intakeShouldRefresh(outcomes: readonly IntakeOutcome[]): boolean
 /**
  * The ONE sentence to put in front of the owner for a whole batch.
  *
- * A drop of five files where the DOCX among them was refused must say both
+ * A drop of five files where the CSV among them was refused must say both
  * halves: reporting only the four that landed hides a refusal, and reporting
  * only the refusal hides four Sources that are already compiling. So a mixed
- * batch reads "Stored 4 sources. Ingest is queued. plan.docx: DOCX is not a
- * Markdown, text, or HTML source."
+ * batch reads "Stored 4 sources. Ingest is queued. rows.csv: CSV is not a
+ * source this wiki can read."
  *
  * Failures are NAMED. With one item the name is redundant, but with several the
  * bare reason leaves the owner to guess which of the things they dropped it was

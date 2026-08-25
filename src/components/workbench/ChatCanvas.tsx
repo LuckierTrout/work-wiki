@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { sanitizeCitedAnswer } from "@/lib/chat-citations";
+import { ChatBody } from "./ChatBody";
 import {
   CHAT_HISTORY_DEPTH_DEFAULT,
   CHAT_TOKEN_BUDGET_DEFAULT,
@@ -67,25 +68,6 @@ interface AssembleResponse {
     configured: boolean;
     baseUrl?: string;
   };
-}
-
-function renderCited(content: string, onCite: (n: number) => void) {
-  const parts = content.split(/(\[[1-9]\d*\])/g);
-  return parts.map((part, index) => {
-    const match = /^\[([1-9]\d*)\]$/.exec(part);
-    if (!match) return <span key={index}>{part}</span>;
-    const n = Number(match[1]);
-    return (
-      <button
-        key={index}
-        type="button"
-        className="wb-chat-cite"
-        onClick={() => onCite(n)}
-      >
-        [{n}]
-      </button>
-    );
-  });
 }
 
 function thinkingLines(text: string): string[] {
@@ -733,7 +715,13 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
                 </details>
               ) : null}
               <div className="wb-chat-body">
-                {renderCited(message.content, (n) => citeNumber(n, message.citations))}
+                {/* Markdown since Story 7.8 — GFM, Mermaid and KaTeX — with
+                    `[n]` still a citation button. The face stays system sans:
+                    it comes from `.wb-chat-body`, and `ChatBody` names none. */}
+                <ChatBody
+                  content={message.content}
+                  onCite={(n) => citeNumber(n, message.citations)}
+                />
               </div>
             </article>
           ))}
@@ -752,7 +740,13 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
                   ))}
                 </div>
               ) : null}
-              <div className="wb-chat-body">{streamText}</div>
+              {/* The SAME renderer as a settled turn, so a diagram or a table
+                  does not appear only once the stream ends. No `onCite`: the
+                  citation list arrives with `done`, so a marker rendered now
+                  has nothing to dock and is text until it does. */}
+              <div className="wb-chat-body">
+                <ChatBody content={streamText} />
+              </div>
             </article>
           ) : null}
         </div>

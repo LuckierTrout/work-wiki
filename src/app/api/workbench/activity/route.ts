@@ -17,10 +17,18 @@ import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage } from "@/lib/errors";
 import { type Task } from "@/lib/tasks";
 import {
+  ACTIVITY_EXTRACT_BYTES_KEPT_COPY,
+  EXTRACT_RETRY_UNAVAILABLE_COPY,
   activityDisplayStatus,
   type ActivityRow,
 } from "@/lib/workbench-activity";
-import { INTAKE_SIGN_IN_COPY } from "@/lib/workbench-intake";
+import { retryExtract } from "@/lib/extract-dispatch";
+import {
+  INTAKE_EXTENSIONS,
+  INTAKE_SIGN_IN_COPY,
+  intakeRequiresExtract,
+  isIntakeMediaFormat,
+} from "@/lib/workbench-intake";
 import { sourceRestFromPath } from "@/lib/source-delete";
 
 /**
@@ -28,6 +36,16 @@ import { sourceRestFromPath } from "@/lib/source-delete";
  * POST { action: "cancel" | "retry", jobId } — cancel before Page writes, or
  * re-queue the same stored Source (no second store).
  */
+
+/** Does this stored Source hold bytes no UTF-8 read can turn back into text? */
+function isBinarySource(sourceRel: string | undefined): boolean {
+  if (!sourceRel) return false;
+  const name = sourceRel.slice(sourceRel.lastIndexOf("/") + 1).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  const format = INTAKE_EXTENSIONS[name.slice(dot + 1)];
+  return Boolean(format) && (intakeRequiresExtract(format) || isIntakeMediaFormat(format));
+}
 
 export async function GET(request: Request) {
   const principal = await getPrincipal();
@@ -48,12 +66,20 @@ export async function GET(request: Request) {
       job.kind,
       job.cancelled,
     );
+    // A failed extract still has its bytes: `enqueueExtract` stores them before
+    // it queues anything, and every failure path marks records rather than
+    // deleting files. Saying so on the row is what makes that guarantee visible
+    // at the moment the owner most needs it — a red row otherwise reads as
+    // "the upload was lost", and the usual response is to upload it again.
+    const bytesKept =
+      displayStatus === "failed" && job.kind === "extract" && Boolean(job.sourceRel);
     return {
       jobId: job.jobId,
       title: job.title?.trim() || job.url || "Ingest",
       displayStatus,
       ...(job.wikiId ? { wikiId: job.wikiId } : {}),
       ...(error || job.error ? { error: error || job.error } : {}),
+      ...(bytesKept ? { note: ACTIVITY_EXTRACT_BYTES_KEPT_COPY } : {}),
       ...(typeof job.progressDone === "number" ? { progressDone: job.progressDone } : {}),
       ...(typeof job.progressTotal === "number" ? { progressTotal: job.progressTotal } : {}),
       canCancel:
@@ -115,6 +141,22 @@ export async function POST(request: NextRequest) {
       if (!job.sourceRel) {
         return NextResponse.json({ error: "This job has no stored Source to retry." }, { status: 400 });
       }
+      // BINARIES GO BACK TO THE SIDECAR, never through the text path below
+      // (Story 7.1). `readFile` decodes UTF-8, so retrying a failed PDF this
+      // way compiled a page of replacement characters — a corrupted Page from
+      // a button labelled Retry, with nothing on screen saying so. Decided by
+      // the job's kind AND by what the stored Source actually is, because a
+      // record written before the `extract` kind existed still names a `.pdf`.
+      if (job.kind === "extract" || isBinarySource(job.sourceRel)) {
+        if (await retryExtract(principal.handle, job.jobId)) {
+          return NextResponse.json({ ok: true, retried: true, extract: true });
+        }
+        return NextResponse.json(
+          { error: EXTRACT_RETRY_UNAVAILABLE_COPY },
+          { status: 400 },
+        );
+      }
+
       const rest = sourceRestFromPath(job.sourceRel);
       if (!rest) {
         return NextResponse.json({ error: "This job has no stored Source to retry." }, { status: 400 });

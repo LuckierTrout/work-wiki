@@ -140,6 +140,7 @@ export function SrcChip({ type }: { type: SourceEntry["type"] }) {
     docx: "Word",
     pptx: "PowerPoint",
     xlsx: "Excel",
+    xls: "Excel",
     csv: "CSV",
     md: "MD",
     txt: "TXT",

@@ -1211,17 +1211,38 @@ describe("the bump lives at the exact write-owner tails", () => {
     // write. This pins WHERE the bump is, the way the `wikis.ts` test above
     // pins its four.
     //
-    // Three sites, each after a real byte change: a new store, a silo repair
-    // that made the Source visible, and a cascade delete. A re-arrival that
-    // changed nothing still returns before the write bump (FR-2).
+    // FIVE sites, each after a real byte change: a new text store, a cascade
+    // delete, and — mirrored across the two writers — one per store plus one
+    // per silo REPAIR. The repair bumps because the watcher is forward-only:
+    // bytes whose mirror failed on the first attempt and landed on the second
+    // are new to the Files tree even though the flat key did not move. A
+    // re-arrival that changed nothing still returns before the write bump
+    // (FR-2), which is what the placement assertions below pin for both.
     const stripComments = (text: string): string =>
       text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
     const source = stripComments(await readSource("lib/raw.ts"));
 
     // Both forms, for the reason the `wikis.ts` case gives: the identifier form
     // is what catches a bump fired unawaited, which the await form cannot see.
-    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(3);
-    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(3);
+    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(5);
+    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(5);
+
+    // The byte writer's own placement: a first-write-only door has to return
+    // BEFORE the bump on a re-arrival, or every duplicate drop wakes every
+    // watcher in the shell for bytes that did not change.
+    const bytesAt = source.indexOf("async function storeRawSourceBytes(");
+    expect(bytesAt).toBeGreaterThan(-1);
+    const bytesClose = source.indexOf("\n}\n", bytesAt);
+    const bytesBody = source.slice(bytesAt, bytesClose);
+    const bytesSkip = bytesBody.indexOf("return false;");
+    expect(bytesSkip).toBeGreaterThan(-1);
+    expect(bytesBody.lastIndexOf("await bumpDataVersion();")).toBeGreaterThan(
+      bytesBody.indexOf("writeAsset(rel, bytes)"),
+    );
+    // …and the repair bump is CONDITIONAL, so the common re-arrival — bytes
+    // present, mirror already there — still wakes nobody.
+    expect(bytesBody).toContain("if (repaired) await bumpDataVersion();");
+    expect(bytesBody.indexOf("if (repaired)")).toBeLessThan(bytesSkip);
 
     const at = source.indexOf("async function storeRawSource(");
     expect(at).toBeGreaterThan(-1);
