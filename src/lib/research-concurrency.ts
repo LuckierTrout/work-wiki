@@ -47,6 +47,8 @@ interface ResearchSlot {
    * same attempt, while a retry after reaping receives a new fence token.
    */
   attemptId?: string;
+  /** Attempt this slot atomically replaced; lets a crashed project row adopt it. */
+  previousAttemptId?: string;
   acquiredAt: number;
   expiresAt: number;
 }
@@ -78,6 +80,8 @@ function isSlot(value: unknown): value is ResearchSlot {
   return (
     typeof slot.projectId === "string" &&
     (slot.attemptId === undefined || (typeof slot.attemptId === "string" && slot.attemptId.length > 0)) &&
+    (slot.previousAttemptId === undefined
+      || (typeof slot.previousAttemptId === "string" && slot.previousAttemptId.length > 0)) &&
     typeof slot.acquiredAt === "number" &&
     typeof slot.expiresAt === "number"
   );
@@ -225,7 +229,22 @@ export async function rotateResearchSlot(
     const existingIndex = slots.findIndex((slot) => slot.projectId === projectId);
     if (existingIndex >= 0) {
       const existing = slots[existingIndex];
-      if (existing.attemptId !== expectedAttemptId || existing.expiresAt > now) {
+      if (existing.attemptId !== expectedAttemptId) {
+        if (existing.previousAttemptId === expectedAttemptId && existing.attemptId) {
+          return {
+            slots,
+            result: {
+              granted: true,
+              acquired: false,
+              active: slots.length,
+              limit: MAX_CONCURRENT_RESEARCH,
+              attemptId: existing.attemptId,
+            },
+          };
+        }
+        return { slots, result: null };
+      }
+      if (existing.expiresAt > now) {
         return { slots, result: null };
       }
     } else if (slots.length >= MAX_CONCURRENT_RESEARCH) {
@@ -236,6 +255,7 @@ export async function rotateResearchSlot(
     const replacement: ResearchSlot = {
       projectId,
       attemptId,
+      previousAttemptId: expectedAttemptId,
       acquiredAt: now,
       expiresAt: now + RESEARCH_SLOT_TTL_MS,
     };

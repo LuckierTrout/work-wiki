@@ -78,6 +78,7 @@ import {
   activeResearchCount,
   releaseResearchSlot,
   renewResearchSlot,
+  rotateResearchSlot,
   RESEARCH_SLOT_TTL_MS,
 } from "../research-concurrency";
 import {
@@ -1106,6 +1107,28 @@ describe("deep research — an interrupted run gets an answer", () => {
     vi.useRealTimers();
   });
 
+  it("adopts a rotated lease after crashing before the project token write", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await project();
+    await queueResearchProject("alice", created.id);
+    await drainResearchQueue("alice");
+    const reserved = await getResearchProject("alice", created.id);
+    const oldAttempt = reserved!.runAttemptId!;
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+    const rotated = await rotateResearchSlot("alice", created.id, oldAttempt);
+    expect(rotated?.attemptId).toBeTruthy();
+    mockedEnqueue.mockClear();
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect((await getResearchProject("alice", created.id))?.runAttemptId)
+      .toBe(rotated?.attemptId);
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "run-research", projectId: created.id }),
+    );
+    vi.useRealTimers();
+  });
+
   it("does not re-dispatch when the workspace is already at its ceiling", async () => {
     await acquireResearchSlot("alice", "other-1");
     await acquireResearchSlot("alice", "other-2");
@@ -1287,6 +1310,46 @@ describe("deep research — remediations", () => {
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
+  it("reaps a crashed DELETE tombstone after expiry and dispatches its successor", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const doomed = await project({ title: "Doomed" });
+    const grant = await acquireResearchSlot("alice", doomed.id);
+    await updateResearchProject("alice", doomed.id, {
+      status: "collecting",
+      runAttemptId: grant.attemptId,
+    });
+    const successor = await project({ title: "Successor" });
+    await queueResearchProject("alice", successor.id);
+    expect(await retireResearchProject("alice", doomed.id)).toBe(true);
+    mockedEnqueue.mockClear();
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    expect(await getResearchProject("alice", doomed.id)).toBeNull();
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "run-research", projectId: successor.id }),
+    );
+    vi.useRealTimers();
+  });
+
+  it("retains the DELETE tombstone when lease cleanup cannot be confirmed", async () => {
+    const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      runAttemptId: grant.attemptId,
+    });
+    await getStorage().writeFile("tenants/alice/research-leases.json", "{ malformed");
+
+    expect(await retireResearchProject("alice", created.id)).toBe(true);
+
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      deleteRequested: true,
+      runAttemptId: grant.attemptId,
+    });
+  });
+
   it("keeps the Page and reports pending Source promotion after a storage failure", async () => {
     mockedSaveRaw.mockRejectedValue(new Error("disk full"));
     const created = await project();
@@ -1335,6 +1398,66 @@ describe("deep research — remediations", () => {
     expect(retrying.deliveryBlocked).toBe(false);
     expect(retrying.deliveryAttemptId).toBeTruthy();
     expect(retrying.deliveryAttemptId).not.toBe(oldDeliveryAttempt);
+  });
+
+  it("does not let a stale queue delivery bypass an operator delivery block", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      deliveryBlocked: true,
+      deliveryAttemptId: "blocked-delivery",
+      completion: { phase: "page", pageSlug: "research-launch-evidence", sources: [] },
+    });
+    mockedWritePage.mockClear();
+
+    const returned = await runResearchProject("alice", created.id);
+
+    expect(returned.deliveryBlocked).toBe(true);
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  it("does not let an old delivery failure overwrite an explicit Retry generation", async () => {
+    const created = await project();
+    const source = {
+      url: "https://example.com/launch/brief",
+      title: "Launch brief",
+      slug: "research-source-launch-brief",
+      sha: "old-delivery-sha",
+    };
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [{ ...source, text: "body" }],
+      evidence: [{ url: source.url, title: source.title }],
+    });
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      deliveryBlocked: false,
+      deliveryAttemptId: "old-delivery",
+      completion: { phase: "sources", pageSlug: "research-launch-evidence", sources: [source] },
+    });
+    let saveStarted!: () => void;
+    let finishSave!: () => void;
+    const started = new Promise<void>((resolve) => { saveStarted = resolve; });
+    const finish = new Promise<void>((resolve) => { finishSave = resolve; });
+    mockedSaveRaw.mockImplementationOnce(async () => {
+      saveStarted();
+      await finish;
+      throw new Error("stale delivery failed");
+    });
+
+    const staleDrain = drainResearchOutbox("alice", created.id);
+    await started;
+    await updateResearchProject("alice", created.id, { deliveryBlocked: true });
+    const retrying = await queueResearchProject("alice", created.id);
+    finishSave();
+    await staleDrain;
+
+    const latest = await getResearchProject("alice", created.id);
+    expect(latest?.deliveryAttemptId).toBe(retrying.deliveryAttemptId);
+    expect(latest?.deliveryBlocked).toBe(false);
   });
 
   it("returns a fresh Retry generation instead of the stale panel snapshot", async () => {

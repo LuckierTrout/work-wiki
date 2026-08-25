@@ -247,7 +247,7 @@ async function storageFileExists(relPath: string): Promise<boolean> {
   }
 }
 
-async function withPageLifecycleLocks<T>(
+async function acquirePageLifecycleLocks<T>(
   slugs: string[],
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -266,17 +266,18 @@ const activePageLifecycleLockTokens = new WeakSet<object>();
 
 /** Proof passed only while one Page's lifecycle lock is held by a coordinator. */
 export interface PageLifecycleLockHeld {
-  readonly slug: string;
+  readonly slugs: readonly string[];
 }
 
-/** Coordinate a compound operation that must fence edits to one primary Page. */
-export async function withPageLifecycleLock<T>(
-  slug: string,
+/** Coordinate a compound operation while Page locks are held in lexical order. */
+export async function withPageLifecycleLocks<T>(
+  slugs: string[],
   fn: (held: PageLifecycleLockHeld) => Promise<T>,
 ): Promise<T> {
-  validateSlug(slug);
-  return withDurableLock(`page-lifecycle:${slug}`, async () => {
-    const token: PageLifecycleLockHeld = Object.freeze({ slug });
+  const normalized = [...new Set(slugs)].sort();
+  normalized.forEach(validateSlug);
+  return acquirePageLifecycleLocks(normalized, async () => {
+    const token: PageLifecycleLockHeld = Object.freeze({ slugs: Object.freeze(normalized) });
     activePageLifecycleLockTokens.add(token);
     try {
       return await fn(token);
@@ -294,7 +295,12 @@ async function runPageLifecycleOp(
     crossRefedSlugs: string[];
     strippedBacklinksFrom: string[];
   }) => string | undefined,
-  recovery?: { pageAlreadyWritten: boolean; previousContent?: string; logIdempotencyKey?: string },
+  recovery?: {
+    pageAlreadyWritten: boolean;
+    primaryDeleteAlreadyApplied?: boolean;
+    previousContent?: string;
+    logIdempotencyKey?: string;
+  },
   pageLockAlreadyHeld = false,
   skipDeleteBacklinks = false,
 ): Promise<LifecycleOpResult> {
@@ -513,7 +519,12 @@ async function runPageLifecycleOp(
     }
   } else {
     try {
-      const pre = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+      const pre = recovery?.primaryDeleteAlreadyApplied && op.expectedContent !== undefined
+        ? {
+            content: op.expectedContent,
+            frontmatter: parseFrontmatter(op.expectedContent).data,
+          }
+        : await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
       if (op.expectedContent !== undefined && pre?.content !== op.expectedContent) {
         throw new LifecyclePageConflictError(slug, "Page changed before delete");
       }
@@ -873,7 +884,7 @@ async function runPageLifecycleOp(
   if (pageLockAlreadyHeld) {
     await mutatePrimaryAndIndexes();
   } else if (op.kind === "write" && op.requiresExistingSlug) {
-    await withPageLifecycleLocks(
+    await acquirePageLifecycleLocks(
       [slug, op.requiresExistingSlug],
       mutatePrimaryAndIndexes,
     );
@@ -927,7 +938,7 @@ async function runPageLifecycleOp(
     );
     await mapWithConcurrency(linkers, LIFECYCLE_CONCURRENCY, async ({ entry }) => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        const changed = await withPageLifecycleLocks([slug, entry.slug], async () => {
+        const rewrite = async () => {
           // Holding both locks makes the target-absence decision and the linker
           // CAS one operation. Lexical acquisition order prevents two deletes
           // of mutually linked Pages from deadlocking.
@@ -954,7 +965,12 @@ async function runPageLifecycleOp(
             expectedContent: current.content,
           }, true);
           return true;
-        });
+        };
+        // A compound merge already holds the deleted slug. Re-entering that
+        // non-reentrant lock would deadlock; only the linker remains to fence.
+        const changed = pageLockAlreadyHeld
+          ? await withDurableLock(`page-lifecycle:${entry.slug}`, rewrite)
+          : await acquirePageLifecycleLocks([slug, entry.slug], rewrite);
         if (changed) {
           strippedBacklinksFrom.push(entry.slug);
           return;
@@ -1087,37 +1103,70 @@ export async function deleteWikiPage(
   };
 }
 
-/** Delete under a lock minted by {@link withPageLifecycleLock}. */
+/** Delete under a lock minted by {@link withPageLifecycleLocks}. */
 export async function deleteWikiPageWhileLocked(
   slug: string,
   held: PageLifecycleLockHeld,
   author?: string,
   expectedContent?: string,
+  idempotency?: { key: string; receiptPath: string },
 ): Promise<DeletePageResult> {
   assertWritable(READ_ONLY_REFUSAL.pageDelete);
   validateSlug(slug);
-  if (!activePageLifecycleLockTokens.has(held) || held.slug !== slug) {
+  if (!activePageLifecycleLockTokens.has(held) || !held.slugs.includes(slug)) {
     throw new Error(`page lifecycle lock for "${slug}" is not held`);
   }
+  if (idempotency) {
+    try {
+      const receipt = JSON.parse(await getStorage().readFile(idempotency.receiptPath)) as {
+        key?: unknown;
+        result?: DeletePageResult;
+      };
+      if (receipt.key === idempotency.key && receipt.result?.slug === slug) {
+        return receipt.result;
+      }
+    } catch (error) {
+      if (!isEnoent(error) && !(error instanceof SyntaxError)) throw error;
+    }
+  }
   const page = await readWikiPage(slug, { fresh: true, strict: true });
-  if (!page) throw new Error(`page not found: ${slug}`);
+  const primaryDeleteAlreadyApplied = !page;
+  if (!page && (!idempotency || expectedContent === undefined)) {
+    throw new Error(`page not found: ${slug}`);
+  }
+  const recoveredTitle = expectedContent
+    ? parseFrontmatter(expectedContent).body.match(/^#\s+(.+)$/m)?.[1]?.trim()
+    : undefined;
   const result = await runPageLifecycleOp(
     slug,
-    { kind: "delete", title: page.title ?? slug, author, expectedContent },
+    { kind: "delete", title: page?.title ?? recoveredTitle ?? slug, author, expectedContent },
     "delete",
     ({ strippedBacklinksFrom }) =>
       `deleted after merge · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
-    undefined,
+    idempotency
+      ? {
+          pageAlreadyWritten: false,
+          primaryDeleteAlreadyApplied,
+          previousContent: expectedContent,
+          logIdempotencyKey: idempotency.key,
+        }
+      : undefined,
     true,
-    // Merge has already repointed backlinks. Re-entering this slug's lock in
-    // the generic delete scanner would deadlock and is unnecessary.
-    true,
+    false,
   );
-  return {
+  const publicResult = {
     slug: result.slug,
     removedFromIndex: result.removedFromIndex,
     strippedBacklinksFrom: result.strippedBacklinksFrom,
   };
+  if (idempotency) {
+    await getStorage().writeFile(idempotency.receiptPath, JSON.stringify({
+      key: idempotency.key,
+      completedAt: new Date().toISOString(),
+      result: publicResult,
+    }));
+  }
+  return publicResult;
 }
 
 /**
@@ -1237,4 +1286,15 @@ export async function writeWikiPageWithSideEffects(
 ): Promise<WritePageResult> {
   assertWritable(READ_ONLY_REFUSAL.pageWrite);
   return writeWikiPageWithSideEffectsInternal(opts);
+}
+
+/** Write under a lock minted by {@link withPageLifecycleLocks}. */
+export async function writeWikiPageWithSideEffectsWhileLocked(
+  opts: WritePageOptions,
+  held: PageLifecycleLockHeld,
+): Promise<WritePageResult> {
+  if (!activePageLifecycleLockTokens.has(held) || !held.slugs.includes(opts.slug)) {
+    throw new Error(`page lifecycle lock for "${opts.slug}" is not held`);
+  }
+  return writeWikiPageWithSideEffectsInternal(opts, true);
 }

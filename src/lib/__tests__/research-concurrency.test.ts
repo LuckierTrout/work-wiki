@@ -159,13 +159,42 @@ describe("research concurrency lease", () => {
 
     vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1));
     const replacement = await rotateResearchSlot("alice", "p1", first.attemptId!);
+    const adoptedAfterProjectWriteCrash = await rotateResearchSlot(
+      "alice",
+      "p1",
+      first.attemptId!,
+    );
 
     expect(replacement?.attemptId).toBeTruthy();
+    expect(adoptedAfterProjectWriteCrash?.attemptId).toBe(replacement?.attemptId);
     expect(replacement?.attemptId).not.toBe(first.attemptId);
     await expect(renewResearchSlot("alice", "p1", first.attemptId!))
       .rejects.toThrow(/slot.*lost/i);
     await expect(renewResearchSlot("alice", "p1", replacement!.attemptId!))
       .resolves.toBeUndefined();
+  });
+
+  it("keeps one coherent slot when renewal races expiry rotation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
+    const first = await acquireResearchSlot("alice", "p1");
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1));
+
+    const [renewed, rotated] = await Promise.allSettled([
+      renewResearchSlot("alice", "p1", first.attemptId!),
+      rotateResearchSlot("alice", "p1", first.attemptId!),
+    ]);
+
+    expect(await activeResearchCount("alice")).toBe(1);
+    if (renewed.status === "fulfilled") {
+      expect(rotated).toMatchObject({ status: "fulfilled", value: null });
+      expect(await holdsResearchSlot("alice", "p1", first.attemptId)).toBe(true);
+    } else {
+      expect(rotated.status).toBe("fulfilled");
+      const replacement = rotated.status === "fulfilled" ? rotated.value : null;
+      expect(replacement?.attemptId).toBeTruthy();
+      expect(await holdsResearchSlot("alice", "p1", replacement?.attemptId)).toBe(true);
+    }
   });
 
   it("refuses rather than admits when the lease file is unreadable", async () => {

@@ -142,9 +142,6 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
   let totalBytes = 0;
   for (const entry of manifest.files) {
     if (!safeRelativePath(entry.path)) throw new Error(`Unsafe archive path: ${entry.path}`);
-    if (ARCHIVE_INFRASTRUCTURE_PATHS.has(entry.path)) {
-      throw new Error(`Archive may not contain wiki infrastructure: ${entry.path}`);
-    }
     const data = files[`files/${entry.path}`];
     if (!data || data.byteLength !== entry.size || await sha256(bytesBuffer(data)) !== entry.sha256) {
       throw new Error(`Archive checksum failed: ${entry.path}`);
@@ -203,6 +200,13 @@ export async function importPortableArchive(
   let imported = 0;
   let skipped = 0;
   for (const entry of inspection.manifest.files) {
+    // Version 1 exports historically included these files. Accept those
+    // backups for compatibility, but never restore global/rebuilt
+    // infrastructure from archive bytes.
+    if (ARCHIVE_INFRASTRUCTURE_PATHS.has(entry.path)) {
+      skipped += 1;
+      continue;
+    }
     if (collision === "skip" && collisionSet.has(entry.path)) {
       skipped += 1;
       continue;

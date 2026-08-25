@@ -14,6 +14,7 @@ import { aliasRedirectForMissing } from "../page-redirect";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import {
   ensureDirectories,
+  listWikiPages,
   readWikiPage,
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
@@ -324,6 +325,132 @@ describe("mergePages", () => {
     expect(survivor?.content).toContain("FIRST ABSORBED.");
     expect(survivor?.content).toContain("SECOND ABSORBED.");
     expect(await readWikiPage("harness-ai-agents")).toBeNull();
+  }, 15_000);
+
+  it("retires a completed marker that survived cleanup before same-pair reuse", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents)",
+      body: "# Harness (AI agents)\n\nFIRST GENERATION.",
+    });
+    const storage = getStorage();
+    const originalDelete = storage.deleteFile.bind(storage);
+    let failCompletedMarkerCleanup = true;
+    vi.spyOn(storage, "deleteFile").mockImplementation(async (target) => {
+      if (
+        failCompletedMarkerCleanup
+        && target.startsWith("derived-indexes/merge-operations/")
+        && target.endsWith(".json")
+      ) {
+        failCompletedMarkerCleanup = false;
+        throw new Error("completed marker cleanup unavailable");
+      }
+      return originalDelete(target);
+    });
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+    await seedPage("harness-ai-agents", {
+      title: "Harness again",
+      body: "# Harness again\n\nSECOND GENERATION.",
+    });
+
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+    expect((await readWikiPage("agent-harness"))?.content).toContain("SECOND GENERATION.");
+  }, 15_000);
+
+  it("serializes inverse merges without deadlocking", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("alpha", { title: "Alpha" });
+    await seedPage("beta", { title: "Beta" });
+
+    const settled = await Promise.allSettled([
+      mergePages({ from: "alpha", into: "beta", actor: "alice" }),
+      mergePages({ from: "beta", into: "alpha", actor: "alice" }),
+    ]);
+
+    expect(settled.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(settled.filter((result) => result.status === "rejected")).toHaveLength(1);
+  }, 15_000);
+
+  it("resumes delete lifecycle side effects when Page bytes were already removed", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    const storage = getStorage();
+    const originalWrite = storage.writeFile.bind(storage);
+    let failDeleteIndex = true;
+    vi.spyOn(storage, "writeFile").mockImplementation(async (target, content) => {
+      if (
+        failDeleteIndex
+        && target === "wiki/index.md"
+        && !await storage.fileExists("tenants/alice/wiki/harness-ai-agents.md")
+      ) {
+        failDeleteIndex = false;
+        throw new Error("index unavailable after Page delete");
+      }
+      return originalWrite(target, content);
+    });
+
+    await expect(mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    })).rejects.toThrow(/index unavailable/i);
+    expect(await readWikiPage("harness-ai-agents")).toBeNull();
+
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+    expect((await listWikiPages({ strict: true })).map((entry) => entry.slug))
+      .not.toContain("harness-ai-agents");
+  }, 15_000);
+
+  it("removes a backlink added after the merge repoint pass", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    await seedPage("late-linker", { title: "Late linker" });
+    const storage = getStorage();
+    const originalDelete = storage.deleteFile.bind(storage);
+    let deleting!: () => void;
+    let resumeDelete!: () => void;
+    const deleteStarted = new Promise<void>((resolve) => { deleting = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeDelete = resolve; });
+    let pauseOnce = true;
+    vi.spyOn(storage, "deleteFile").mockImplementation(async (target) => {
+      if (pauseOnce && target === "tenants/alice/wiki/harness-ai-agents.md") {
+        pauseOnce = false;
+        deleting();
+        await resume;
+      }
+      return originalDelete(target);
+    });
+
+    const merging = mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    });
+    await deleteStarted;
+    const linker = await readWikiPageWithFrontmatter("late-linker");
+    await writeWikiPageWithSideEffects({
+      slug: "late-linker",
+      title: "Late linker",
+      content: linker!.content.replace(
+        "Content about Late linker.",
+        "See [old Page](harness-ai-agents.md).",
+      ),
+      summary: "Late link",
+      logOp: "edit",
+      crossRefSource: null,
+      expectedContent: linker!.content,
+      author: "alice",
+    });
+    resumeDelete();
+    await merging;
+
+    expect((await readWikiPage("late-linker"))?.content)
+      .not.toContain("harness-ai-agents.md");
   }, 15_000);
 
   it("re-points via the precomputed backlink index when it's present (the production fast path)", async () => {

@@ -82,7 +82,7 @@ describe("portable owner archive", () => {
   });
 
   it.each(["wiki/index.md", "wiki/log.md"])(
-    "rejects imported infrastructure %s before storage mutation",
+    "accepts legacy v1 infrastructure %s but leaves it untouched",
     async (infrastructurePath) => {
       await getStorage().writeFile("tenants/alice/settings.json", "{}");
       const archive = await buildPortableArchive("alice");
@@ -96,12 +96,21 @@ describe("portable owner archive", () => {
       });
       files[`files/${infrastructurePath}`] = bytes;
       files["manifest.json"] = strToU8(JSON.stringify(manifest));
+      await getStorage().writeFile(`tenants/alice/${infrastructurePath}`, "tenant sentinel\n");
+      await getStorage().writeFile(infrastructurePath, "global sentinel\n");
 
-      await expect(importPortableArchive("alice", buffer(zipSync(files)), "overwrite"))
-        .rejects.toThrow(/wiki infrastructure/i);
-      await expect(getStorage().fileExists(`tenants/alice/${infrastructurePath}`))
-        .resolves.toBe(false);
-      await expect(getStorage().fileExists(infrastructurePath)).resolves.toBe(false);
+      const restored = await importPortableArchive("alice", buffer(zipSync(files)), "overwrite");
+
+      expect(restored.skipped).toBeGreaterThanOrEqual(1);
+      expect(await getStorage().readFile(`tenants/alice/${infrastructurePath}`))
+        .toBe("tenant sentinel\n");
+      const globalInfrastructure = await getStorage().readFile(infrastructurePath);
+      expect(globalInfrastructure).not.toBe("attacker-controlled infrastructure\n");
+      if (infrastructurePath === "wiki/log.md") {
+        expect(globalInfrastructure).toBe("global sentinel\n");
+      } else {
+        expect(globalInfrastructure).toContain("# Wiki Index");
+      }
     },
   );
 
