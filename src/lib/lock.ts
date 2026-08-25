@@ -127,9 +127,9 @@ function parseDurableLease(raw: string): ParsedDurableLease {
     if (typeof value.token === "string" && value.token.length > 0) {
       return { kind: "current", lease: { token: value.token, until: value.until! } };
     }
-    // Rolling-deploy compatibility with the original `{ until }` lease. An
-    // active old worker still owns this key even though it cannot present a
-    // token; after its deadline the CAS below may safely replace it.
+    // Rolling-deploy compatibility with the original `{ until }` lease. A
+    // tokenless old worker cannot prove release, so the migration bridge waits
+    // for deletion even after its advertised deadline.
     if (!("token" in value)) return { kind: "legacy", lease: { until: value.until! } };
     return { kind: "invalid" };
   } catch {
@@ -202,13 +202,15 @@ export async function withDurableLock<T>(
         const until = parsed?.kind === "current" || parsed?.kind === "legacy"
           ? parsed.lease.until
           : 0;
-        // A tokenless v1 holder releases with an unconditional delete. Never
-        // replace that file, even after its advertised deadline: a stalled old
-        // callback could later delete our bridge and let another v1 worker enter
-        // during the v2 callback. Wait for the old holder's finally block to
-        // remove it. If it crashed, fail closed after the normal wait ceiling;
-        // an operator can then remove the orphan deliberately.
-        const legacyHolderStillOwnsPath = parsed?.kind === "legacy" && acceptsTokenlessLegacy;
+        // The legacy namespace is the non-expiring migration/exclusivity
+        // bridge. Never take over a positive lease there merely because its
+        // heartbeat deadline passed: the callback may still be running after
+        // a provider renewal failure, and taking over would overlap arbitrary
+        // non-CAS index/log mutations. Normal release writes `until: 0`; a
+        // crashed holder therefore fails closed for operator recovery.
+        const legacyHolderStillOwnsPath = acceptsTokenlessLegacy
+          && parsed !== null
+          && parsed.lease.until !== 0;
         if (legacyHolderStillOwnsPath || until > now) {
           if (now - waitStartedAt >= DURABLE_LOCK_WAIT_MAX_MS) {
             throw new Error(`Durable lock ${key} did not become available`);

@@ -182,6 +182,13 @@ queue delivery running the previous build has drained, set
 the flag during the first rolling deployment: an old Worker that already read
 an absent lease can otherwise enter alongside a v2 holder.
 
+The legacy `locks/` object also remains the fail-closed exclusivity bridge if a
+heartbeat expires: another Worker will not take over a positive lease while
+the original callback may still be running. If a crashed Worker leaves one
+behind, first confirm that all requests and queue deliveries for that lock have
+stopped, then clear that one orphan deliberately before retrying the mutation.
+Do not clear an expired lease merely because its timestamp has passed.
+
 Structured Knowledge extraction can also use its own provider and model from
 **Settings → Knowledge extraction**. When no workload override is saved, it
 inherits the primary generation route. The selection is non-secret config; the

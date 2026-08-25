@@ -374,7 +374,7 @@ describe("ingest", () => {
     const release = new Promise<void>((resolve) => { releaseFirst = resolve; });
     let paused = false;
     const writeSpy = vi.spyOn(storage, "writeFile").mockImplementation(async (target, body) => {
-      if (target.startsWith("derived-indexes/pages-dirty/v2-") && body === "lease-loss" && !paused) {
+      if (target.startsWith("derived-indexes/pages-dirty/.v2-") && body === "lease-loss" && !paused) {
         paused = true;
         markFirstPaused();
         await release;
@@ -392,8 +392,8 @@ describe("ingest", () => {
     // in-process lock, must be the final mutation fence.
     _resetLocks();
     const second = await ingest("Lease Loss", "SECOND CREATOR BODY", {
-      owner: "alice",
-      author: "alice",
+      owner: "bob",
+      author: "bob",
     });
     releaseFirst();
     await expect(first).rejects.toThrow(/already exists/i);
@@ -403,10 +403,14 @@ describe("ingest", () => {
     const page = await readWikiPageWithFrontmatter("lease-loss", {
       fresh: true,
       strict: true,
-      owner: "alice",
+      owner: "bob",
     });
     expect(page!.content).toContain("SECOND CREATOR BODY");
     expect(page!.content).not.toContain("FIRST CREATOR BODY");
+    expect(page!.frontmatter.owner).toBe("bob");
+    await expect(
+      getStorage().fileExists("tenants/alice/wiki/lease-loss.md"),
+    ).resolves.toBe(false);
     _resetLocks();
   }, 15_000);
 
@@ -774,6 +778,9 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     await writeWikiPage(
       "phase1-nodup",
       `---\ncreated: 2024-06-01\nupdated: 2024-06-01\nsource_count: 1\ntags: []\nconfidence: 0.7\nexpiry: 2024-09-01\nauthors: [system]\ncontributors: [system, editor]\ndisputed: false\nsupersedes:\naliases: []\n---\n\n# Phase1 NoDup\n\nBody.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     await ingest("Phase1 NoDup", "Second content for dedup test. More text.");
@@ -793,6 +800,9 @@ describe("ingest — Phase 1 frontmatter fields", () => {
     await writeWikiPage(
       "phase1-lowconf",
       `---\ncreated: 2024-06-01\nupdated: 2024-06-01\nsource_count: 1\ntags: []\nconfidence: 0.5\nexpiry: 2024-09-01\nauthors: [system]\ncontributors: []\ndisputed: false\nsupersedes:\naliases: []\n---\n\n# Phase1 LowConf\n\nBody.\n`,
+      undefined,
+      undefined,
+      tenantForOwner("system"),
     );
 
     await ingest("Phase1 LowConf", "Second content. Updated details.");

@@ -326,6 +326,46 @@ describe("withDurableLock", () => {
     await expect(waiting).resolves.toBe("next");
   });
 
+  it("does not overlap callbacks when heartbeat renewal fails past the TTL", async () => {
+    const storage = getStorage();
+    const originalMatch = storage.writeFileIfMatch.bind(storage);
+    let blockRenewals = false;
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (target, content, etag) => {
+        const lease = JSON.parse(content) as { until?: number };
+        if (blockRenewals && target.startsWith("locks/") && (lease.until ?? 0) > 0) {
+          return false;
+        }
+        return originalMatch(target, content, etag);
+      },
+    );
+
+    let release!: () => void;
+    let firstEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { firstEntered = resolve; });
+    const held = withDurableLock("renewal-loss", async () => {
+      firstEntered();
+      await new Promise<void>((resolve) => { release = resolve; });
+    }, 60);
+    await entered;
+    blockRenewals = true;
+    await sleep(100);
+
+    _resetLocks();
+    let secondEntered = false;
+    const waiting = withDurableLock("renewal-loss", async () => {
+      secondEntered = true;
+    }, 60);
+    await sleep(80);
+    expect(secondEntered).toBe(false);
+
+    blockRenewals = false;
+    release();
+    await held;
+    await waiting;
+    expect(secondEntered).toBe(true);
+  });
+
   it("fails closed rather than overwriting a malformed lease", async () => {
     const lockPath = path.join(tempDir, "locks", "ingest-llm:alice.json");
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
@@ -370,35 +410,27 @@ describe("withDurableLock", () => {
     expect(JSON.parse(await fs.readFile(lockPath, "utf-8"))).toMatchObject({ until: expect.any(Number) });
   });
 
-  it("fences a stale v1 heartbeat before entering the v2 callback", async () => {
+  it("does not take over an expired token lease until its holder releases", async () => {
     const rel = "locks/ingest-llm:alice.json";
     const lockPath = path.join(tempDir, rel);
     await fs.mkdir(path.dirname(lockPath), { recursive: true });
     await fs.writeFile(lockPath, JSON.stringify({ token: "old-worker", until: Date.now() - 1 }), "utf-8");
 
     const storage = getStorage();
-    const stale = await storage.readFileWithEtag(rel);
-    const originalMatch = storage.writeFileIfMatch.bind(storage);
-    let oldHeartbeatRenewed: boolean | undefined;
-    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(async (target, content, etag) => {
-      const written = await originalMatch(target, content, etag);
-      const next = JSON.parse(content) as { token?: string };
-      if (target === rel && written && next.token !== "old-worker" && oldHeartbeatRenewed === undefined) {
-        oldHeartbeatRenewed = await originalMatch(
-          rel,
-          JSON.stringify({ token: "old-worker", until: Date.now() + 10_000 }),
-          stale.etag,
-        );
-      }
-      return written;
-    });
-
-    await expect(withDurableLock("ingest-llm:alice", async () => {
-      expect(oldHeartbeatRenewed).toBe(false);
-      expect(JSON.parse(await fs.readFile(lockPath, "utf-8"))).toMatchObject({
-        token: expect.not.stringMatching(/^old-worker$/),
-      });
+    let entered = false;
+    const waiting = withDurableLock("ingest-llm:alice", async () => {
+      entered = true;
       return "entered";
-    }, 500)).resolves.toBe("entered");
+    }, 100);
+    await sleep(25);
+    expect(entered).toBe(false);
+
+    const stale = await storage.readFileWithEtag(rel);
+    await expect(storage.writeFileIfMatch(
+      rel,
+      JSON.stringify({ token: "old-worker", until: 0 }),
+      stale.etag,
+    )).resolves.toBe(true);
+    await expect(waiting).resolves.toBe("entered");
   });
 });

@@ -143,9 +143,19 @@ export async function canReadSlug(
   principal: Reader,
 ): Promise<boolean> {
   const { readWikiPageWithFrontmatter } = await import("./wiki");
-  const page = await readWikiPageWithFrontmatter(slug);
-  if (!page) return true;
-  return canReadFrontmatter(page.frontmatter, principal);
+  try {
+    // Authorization must distinguish a genuinely absent Page from a storage
+    // or parsing failure. A cached/non-strict read collapses both to `null`,
+    // which would make the caller's not-found allowance disclose raw bytes.
+    const page = await readWikiPageWithFrontmatter(slug, {
+      fresh: true,
+      strict: true,
+    });
+    if (!page) return true;
+    return canReadFrontmatter(page.frontmatter, principal);
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

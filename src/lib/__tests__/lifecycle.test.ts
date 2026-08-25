@@ -26,6 +26,7 @@ import { getStorage, _resetStorage } from "../storage";
 import { registerAgent, getAgent } from "../agents";
 import { _resetLocks, _setDurableLocksForTests, withDurableLock } from "../lock";
 import { getPageIndexDirtySlugs, rebuildPageIndex } from "../page-index";
+import { canReadSlug } from "../authz";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors wiki.test.ts approach
@@ -473,6 +474,62 @@ describe("writeWikiPageWithSideEffects", () => {
     }))).rejects.toThrow(/changed/i);
     expect(await getStorage().readFile("tenants/alice/wiki/stale-flat.md"))
       .toBe(ownerEdit);
+  });
+
+  it("prefers the globally indexed owner over a caller's crash-recovery hint", async () => {
+    const bob = serializeFrontmatter(
+      { owner: "bob", visibility: "private" },
+      "# Shared slug\n\nBob committed this Page.\n",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "shared-owner",
+      title: "Shared slug",
+      content: bob,
+      crossRefSource: null,
+      createOnly: true,
+    }));
+    await rebuildPageIndex();
+
+    const aliceOrphan = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Shared slug\n\nAlice crash-left orphan.\n",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/shared-owner.md", aliceOrphan);
+
+    const page = await readWikiPageWithFrontmatter("shared-owner", {
+      fresh: true,
+      strict: true,
+      owner: "alice",
+    });
+    expect(page?.frontmatter.owner).toBe("bob");
+    expect(page?.body).toContain("Bob committed this Page");
+    expect(page?.body).not.toContain("Alice crash-left orphan");
+  });
+
+  it("fails a slug authorization check closed when its authoritative silo cannot be read", async () => {
+    const content = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Private\n\nSecret Page.\n",
+    );
+    await writeWikiPageWithSideEffects(makeOpts({
+      slug: "authz-read-failure",
+      title: "Private",
+      content,
+      crossRefSource: null,
+      createOnly: true,
+    }));
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (target) => {
+      if (target === "tenants/alice/wiki/authz-read-failure.md") {
+        throw new Error("injected authoritative read failure");
+      }
+      return originalRead(target);
+    });
+
+    await expect(canReadSlug("authz-read-failure", null)).resolves.toBe(false);
   });
 
   it("crossRefSource defaults to content when undefined", async () => {

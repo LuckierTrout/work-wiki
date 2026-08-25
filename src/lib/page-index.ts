@@ -26,11 +26,15 @@ const PAGE_INDEX_KEY = "pages";
 const PAGE_INDEX_LOCK = "page-index";
 const PAGE_INDEX_PATH = "derived-indexes/pages.json";
 const PAGE_INDEX_DIRTY_PATH = "derived-indexes/pages-dirty";
+const CURRENT_DIRTY_MARKER = /^\.v2-[0-9a-f]{64}$/;
 
 export type PageMetaIndex = Record<string, IndexEntry>;
 
 async function dirtyMarkerPath(slug: string): Promise<string> {
-  return `${PAGE_INDEX_DIRTY_PATH}/v2-${await sourceSha256(slug)}`;
+  // A leading dot is outside the valid Page-slug namespace, so a current
+  // marker can never collide with a legacy root marker whose filename was the
+  // raw slug.
+  return `${PAGE_INDEX_DIRTY_PATH}/.v2-${await sourceSha256(slug)}`;
 }
 
 export async function markPageIndexDirty(slug: string): Promise<void> {
@@ -47,10 +51,22 @@ export async function clearPageIndexDirty(slug: string): Promise<void> {
     if (!isEnoent(error)) throw error;
   }
   // Rolling compatibility for raw-slug markers written by the prior version.
-  try {
-    await getStorage().deleteFile(`${PAGE_INDEX_DIRTY_PATH}/${slug}`);
-  } catch (error) {
-    if (!isEnoent(error)) throw error;
+  // Inspect the parent first: `queries` can be both a valid Page slug and the
+  // directory holding a nested legacy marker, and unlinking that directory
+  // must not turn a successful Page write into EISDIR.
+  const slash = slug.lastIndexOf("/");
+  const legacyParent = slash < 0
+    ? PAGE_INDEX_DIRTY_PATH
+    : `${PAGE_INDEX_DIRTY_PATH}/${slug.slice(0, slash)}`;
+  const legacyLeaf = slash < 0 ? slug : slug.slice(slash + 1);
+  const legacyEntry = (await getStorage().listFiles(legacyParent))
+    .find((entry) => entry.name === legacyLeaf);
+  if (legacyEntry && !legacyEntry.isDirectory) {
+    try {
+      await getStorage().deleteFile(`${legacyParent}/${legacyLeaf}`);
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+    }
   }
 }
 
@@ -62,8 +78,17 @@ export async function getPageIndexDirtySlugs(): Promise<Set<string>> {
       for (const entry of await storage.listFiles(prefix)) {
         if (entry.isDirectory) {
           await collect(`${prefix}/${entry.name}`, `${legacyPrefix}${entry.name}/`);
-        } else if (entry.name.startsWith("v2-")) {
-          slugs.add(await storage.readFile(`${prefix}/${entry.name}`));
+        } else if (legacyPrefix === "" && CURRENT_DIRTY_MARKER.test(entry.name)) {
+          const markerPath = `${prefix}/${entry.name}`;
+          const slug = await storage.readFile(markerPath);
+          if (await dirtyMarkerPath(slug) !== markerPath) {
+            // This is either a corrupt current marker or a legacy root slug
+            // that happens to look exactly like a marker digest. We cannot
+            // distinguish those safely, so force callers onto the fail-closed
+            // scan rather than trusting stale visibility metadata.
+            throw new Error(`Invalid Page-index dirty marker: ${entry.name}`);
+          }
+          slugs.add(slug);
         } else {
           // Raw-slug markers from the prior version. Walking directories also
           // recovers the exact nested markers that version failed to surface.

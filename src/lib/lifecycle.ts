@@ -341,17 +341,18 @@ async function runPageLifecycleOp(
         if (!created) logger.warn("wiki", `flat compatibility copy appeared for "${slug}"`);
       }
     } else if (op.createOnly) {
-      // The tenant silo is authoritative. Its conditional write is the
-      // create-only boundary: Review must never overwrite an unrelated Page.
+      // The flat compatibility object is the global slug claim shared by all
+      // tenant silos. Claim it first so a lease-lost Alice create cannot
+      // succeed beside a completed Bob Page and then replace the one global
+      // Page-index entry. A false result is a global conflict, not a warning.
+      const flatCreated = await createWikiPage(slug, op.content);
+      if (!flatCreated) throw new LifecyclePageConflictError(slug, "already exists");
+
+      // The tenant silo remains the authoritative read target after the global
+      // claim. Under the durable per-slug lock this cannot race; a failure is
+      // surfaced rather than silently publishing a split identity.
       const created = await createWikiPage(slug, op.content, writeTenant);
       if (!created) throw new LifecyclePageConflictError(slug, "already exists");
-      // The flat file is transitional. Preserve an unexpected pre-existing
-      // flat Page rather than overwriting it; the page index will route reads
-      // to the newly-created authoritative silo copy.
-      const flatCreated = await createWikiPage(slug, op.content);
-      if (!flatCreated) {
-        logger.warn("wiki", `flat compatibility copy already exists for "${slug}"`);
-      }
     } else if (op.expectedContent !== undefined) {
       const tenant = writeTenant ?? tenantForOwner(undefined);
       const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);

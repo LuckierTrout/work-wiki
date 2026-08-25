@@ -2,8 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { sourceSha256 } from "../source-sha256";
 import {
   getPageIndex,
+  getPageIndexDirtySlugs,
+  markPageIndexDirty,
+  clearPageIndexDirty,
   syncPageIndexForPage,
   removePageIndexForSlug,
   rebuildPageIndex,
@@ -64,6 +68,41 @@ describe("page-index", () => {
   it("getPageIndex returns null when the key is absent (not seeded)", async () => {
     await createPage("a", "owner: alice\ntags: [x]");
     expect(await getPageIndex()).toBeNull();
+  });
+
+  it("recovers a nested legacy marker whose leaf starts with the current prefix", async () => {
+    await getStorage().writeFile(
+      "derived-indexes/pages-dirty/queries/v2-secret",
+      "1",
+    );
+    const dirty = await getPageIndexDirtySlugs();
+    expect(dirty).toContain("queries/v2-secret");
+    expect(dirty).not.toContain("1");
+  });
+
+  it("clears a root marker without unlinking the directory for nested legacy markers", async () => {
+    await getStorage().writeFile(
+      "derived-indexes/pages-dirty/queries/v2-secret",
+      "1",
+    );
+    await markPageIndexDirty("queries");
+    expect(await getPageIndexDirtySlugs()).toEqual(
+      new Set(["queries", "queries/v2-secret"]),
+    );
+
+    await expect(clearPageIndexDirty("queries")).resolves.toBeUndefined();
+    expect(await getPageIndexDirtySlugs()).toEqual(
+      new Set(["queries/v2-secret"]),
+    );
+  });
+
+  it("does not clear a current marker when an unrelated legacy-prefix slug completes", async () => {
+    const victim = "private-victim";
+    await markPageIndexDirty(victim);
+
+    await clearPageIndexDirty(`v2-${await sourceSha256(victim)}`);
+
+    expect(await getPageIndexDirtySlugs()).toEqual(new Set([victim]));
   });
 
   it("syncPageIndexForPage / remove NO-OP until the index is seeded", async () => {

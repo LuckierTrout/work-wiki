@@ -374,11 +374,10 @@ export interface ReadWikiPageOptions {
    */
   strict?: boolean;
   /**
-   * Owner whose tenant silo should be checked before compatibility/index
-   * routing. Ingest knows the resolved owner before its final mutation and
-   * uses this to seed a create/update precondition from the authoritative
-   * object even when the metadata index is unseeded and the flat copy is
-   * missing after an interrupted write.
+   * Owner whose tenant silo should be checked only after global Page identity
+   * (the Page index, then the flat compatibility copy) has found no Page.
+   * Ingest uses this to recover its own crash-left silo without allowing that
+   * hint to displace another owner's committed same-slug Page.
    */
   owner?: string;
 }
@@ -440,20 +439,14 @@ export async function readWikiPage(
     }
   };
 
-  if (options?.owner !== undefined) {
-    await readSilo(tenantForOwner(options.owner));
-    if (authoritativeReadFailed) return null;
-  }
-
-  // Silo-primary: try the indexed tenant path next. We use ONLY the O(1)
+  // Silo-primary: try the globally indexed tenant first. We use ONLY the O(1)
   // page-index lookup — NOT tenantForSlug() — because its slow path triggers
   // listWikiPages → scanWikiPagesUncached → readWikiPageWithFrontmatter →
   // readWikiPage → infinite recursion.
-  const pageIdx = content === null ? await getPageIndex({ strict }) : null;
-  if (content === null && pageIdx) {
-    const entry = pageIdx[slug];
-    const tenant = tenantForOwner(entry?.owner);
-    await readSilo(tenant);
+  const pageIdx = await getPageIndex({ strict });
+  const indexedEntry = pageIdx?.[slug];
+  if (indexedEntry) {
+    await readSilo(tenantForOwner(indexedEntry.owner));
     if (authoritativeReadFailed) return null;
   }
 
@@ -466,35 +459,48 @@ export async function readWikiPage(
       if (!isEnoent(err)) {
         if (strict) throw err;
         logger.warn("wiki", `readWikiPage failed for "${slug}":`, err);
+        return null;
       }
-      // A fresh read leaves the cache as it found it — see
-      // `ReadWikiPageOptions.fresh`. Poisoning a scan's open cache with a
-      // negative entry is exactly the staleness this option exists to avoid,
-      // pointed the other way.
-      if (!fresh && pageCache !== null) {
-        pageCache.set(slug, null);
+
+      // Only a true global miss may consult the caller's owner hint. This
+      // recovers a crash-left first write whose silo landed before its flat
+      // compatibility copy/index, while an indexed or flat Page always wins.
+      if (!indexedEntry && options?.owner !== undefined) {
+        await readSilo(tenantForOwner(options.owner));
+        if (authoritativeReadFailed) return null;
       }
-      return null;
+      if (content === null) {
+        // A fresh read leaves the cache as it found it — see
+        // `ReadWikiPageOptions.fresh`. Poisoning a scan's open cache with a
+        // negative entry is exactly the staleness this option exists to avoid,
+        // pointed the other way.
+        if (!fresh && pageCache !== null) {
+          pageCache.set(slug, null);
+        }
+        return null;
+      }
     }
 
-    // An unseeded metadata index cannot identify the silo up front. The flat
+    // An unseeded or incomplete metadata index cannot identify the silo up front. The flat
     // compatibility copy still carries the immutable owner, so use it only as
     // a routing hint and prefer the matching silo bytes when they exist. This
     // keeps a stale flat copy from restoring old public content after an index
     // outage while preserving the migration fallback for truly flat-only
     // Pages.
-    let inferredTenant: string | null = null;
-    try {
-      const { data } = parseFrontmatter(content);
-      const owner = typeof data.owner === "string" ? data.owner : undefined;
-      inferredTenant = tenantForOwner(owner);
-    } catch {
-      // Malformed frontmatter remains the responsibility of the extended read
-      // below; do not convert that established error into a missing Page here.
-    }
-    if (inferredTenant !== null) {
-      await readSilo(inferredTenant);
-      if (authoritativeReadFailed) return null;
+    if (actualPath === flatPath) {
+      let inferredTenant: string | null = null;
+      try {
+        const { data } = parseFrontmatter(content);
+        const owner = typeof data.owner === "string" ? data.owner : undefined;
+        inferredTenant = tenantForOwner(owner);
+      } catch {
+        // Malformed frontmatter remains the responsibility of the extended read
+        // below; do not convert that established error into a missing Page here.
+      }
+      if (inferredTenant !== null) {
+        await readSilo(inferredTenant);
+        if (authoritativeReadFailed) return null;
+      }
     }
   }
 
