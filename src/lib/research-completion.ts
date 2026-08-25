@@ -464,6 +464,7 @@ export async function commitResearchPage(
       return null;
     }
     if (researchWriteClaimIsFresh(project.completion?.writeClaimedAt)) return null;
+    if (!project.deliveryAttemptId) project.deliveryAttemptId = crypto.randomUUID();
     project.completion = {
       phase: "page",
       pageSlug: outbox.pageSlug,
@@ -785,7 +786,7 @@ export async function drainResearchOutbox(
   owner: string,
   id: string,
 ): Promise<ResearchProject | null> {
-  const project = await getResearchProject(owner, id);
+  let project = await getResearchProject(owner, id);
   const outbox = await loadResearchOutbox(owner, id);
   if (!project) {
     if (!outbox) return null;
@@ -808,6 +809,15 @@ export async function drainResearchOutbox(
     }
     return project;
   }
+
+  if (!project.deliveryAttemptId) {
+    project = await mutateResearchProject(owner, id, (current) => {
+      if (!current.deliveryAttemptId) current.deliveryAttemptId = crypto.randomUUID();
+      return current;
+    });
+    if (!project) return null;
+  }
+  const deliveryAttemptId = project.deliveryAttemptId;
 
   let current = project;
   if (!current.completion || current.completion.phase === "page") {
@@ -841,6 +851,7 @@ export async function drainResearchOutbox(
 
   const updated = await mutateResearchProject(owner, id, (project) => {
     if (!project.completion) return null;
+    if (project.deliveryAttemptId !== deliveryAttemptId) return null;
     const localByUrl = new Map(nextSources.map((source) => [source.url, source]));
     const sources = project.completion.sources.map((stored) => {
       const local = localByUrl.get(stored.url);
@@ -858,6 +869,7 @@ export async function drainResearchOutbox(
     };
     project.status = failed.length === 0 ? "complete" : "failed";
     project.deliveryBlocked = failed.length > 0;
+    if (failed.length === 0) delete project.deliveryAttemptId;
     delete project.proposalId;
     if (failed.length === 0) {
       delete project.error;

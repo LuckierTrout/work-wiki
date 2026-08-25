@@ -208,6 +208,53 @@ export async function acquireResearchSlot(
   });
 }
 
+/**
+ * Replace an abandoned attempt with a new fence in one lease-file CAS.
+ *
+ * The old attempt must either be absent or expired. A concurrent renewal keeps
+ * the old attempt live and makes this return null. Publishing the replacement
+ * token before changing the project row prevents a queued replacement from
+ * borrowing the stale token during a clear-then-release gap.
+ */
+export async function rotateResearchSlot(
+  owner: string,
+  projectId: string,
+  expectedAttemptId: string,
+): Promise<ResearchSlotGrant | null> {
+  return lockedMutation<ResearchSlotGrant | null>(owner, (slots, now) => {
+    const existingIndex = slots.findIndex((slot) => slot.projectId === projectId);
+    if (existingIndex >= 0) {
+      const existing = slots[existingIndex];
+      if (existing.attemptId !== expectedAttemptId || existing.expiresAt > now) {
+        return { slots, result: null };
+      }
+    } else if (slots.length >= MAX_CONCURRENT_RESEARCH) {
+      return { slots, result: null };
+    }
+
+    const attemptId = crypto.randomUUID();
+    const replacement: ResearchSlot = {
+      projectId,
+      attemptId,
+      acquiredAt: now,
+      expiresAt: now + RESEARCH_SLOT_TTL_MS,
+    };
+    const next = existingIndex >= 0
+      ? slots.map((slot, index) => index === existingIndex ? replacement : slot)
+      : [...slots, replacement];
+    return {
+      slots: next,
+      result: {
+        granted: true,
+        acquired: true,
+        active: next.length,
+        limit: MAX_CONCURRENT_RESEARCH,
+        attemptId,
+      },
+    };
+  });
+}
+
 /** Push this project's slot expiry out. Called as a run makes progress. */
 export async function renewResearchSlot(
   owner: string,

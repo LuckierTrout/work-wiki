@@ -1083,6 +1083,29 @@ describe("deep research — an interrupted run gets an answer", () => {
     expect((await getResearchProject("alice", created.id))?.runAttemptId).toBeTruthy();
   });
 
+  it("rotates and re-dispatches an expired queued reservation whose task was lost", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const created = await project();
+    await queueResearchProject("alice", created.id);
+    await drainResearchQueue("alice");
+    const reserved = await getResearchProject("alice", created.id);
+    expect(reserved?.status).toBe("queued");
+    expect(reserved?.runAttemptId).toBeTruthy();
+    const firstAttempt = reserved!.runAttemptId;
+    mockedEnqueue.mockClear();
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1_000));
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+
+    const recovered = await getResearchProject("alice", created.id);
+    expect(recovered?.runAttemptId).toBeTruthy();
+    expect(recovered?.runAttemptId).not.toBe(firstAttempt);
+    expect(mockedEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "run-research", projectId: created.id }),
+    );
+    vi.useRealTimers();
+  });
+
   it("does not re-dispatch when the workspace is already at its ceiling", async () => {
     await acquireResearchSlot("alice", "other-1");
     await acquireResearchSlot("alice", "other-2");
@@ -1253,9 +1276,14 @@ describe("deep research — remediations", () => {
     });
 
     expect(await retireResearchProject("alice", created.id)).toBe(true);
-    expect(await getResearchProject("alice", created.id)).toBeNull();
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      deleteRequested: true,
+      cancelRequested: true,
+    });
     expect(await activeResearchCount("alice")).toBe(1);
     await releaseResearchSlot("alice", created.id, grant.attemptId);
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    expect(await getResearchProject("alice", created.id)).toBeNull();
     expect(await activeResearchCount("alice")).toBe(0);
   });
 
@@ -1285,6 +1313,46 @@ describe("deep research — remediations", () => {
     expect(stored?.completion?.phase).toBe("page");
     expect(stored?.progress?.message).toMatch(/resume the write|Nothing was written|before the Page landed/);
     expect(stored?.progress?.message).not.toMatch(/The Page was written/);
+  });
+
+  it("blocks a persistent Page delivery failure until an explicit Retry", async () => {
+    mockedWritePage.mockRejectedValue(
+      new Error("Durable lock page-lifecycle:research-launch-evidence expired without release; operator recovery required"),
+    );
+    const created = await project();
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(/operator recovery/i);
+    const firstAttempts = mockedWritePage.mock.calls.length;
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    const blocked = await getResearchProject("alice", created.id);
+    expect(blocked).toMatchObject({ status: "failed", deliveryBlocked: true });
+    expect(mockedWritePage.mock.calls.length).toBe(firstAttempts + 1);
+
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    expect(mockedWritePage.mock.calls.length).toBe(firstAttempts + 1);
+    const oldDeliveryAttempt = blocked?.deliveryAttemptId;
+    const retrying = await queueResearchProject("alice", created.id);
+    expect(retrying.deliveryBlocked).toBe(false);
+    expect(retrying.deliveryAttemptId).toBeTruthy();
+    expect(retrying.deliveryAttemptId).not.toBe(oldDeliveryAttempt);
+  });
+
+  it("returns a fresh Retry generation instead of the stale panel snapshot", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      deliveryBlocked: true,
+      deliveryAttemptId: "failed-delivery",
+      completion: { phase: "page", pageSlug: "research-launch-evidence", sources: [] },
+    });
+    const stale = await listResearchProjects("alice");
+    const retrying = await queueResearchProject("alice", created.id);
+
+    const reconciled = await reconcileResearchProjects("alice", stale);
+
+    expect(reconciled.find((item) => item.id === created.id)?.deliveryAttemptId)
+      .toBe(retrying.deliveryAttemptId);
+    expect(reconciled.find((item) => item.id === created.id)?.deliveryBlocked).toBe(false);
   });
 
   it("resumes the Page write from a discoverable phase-page completion", async () => {

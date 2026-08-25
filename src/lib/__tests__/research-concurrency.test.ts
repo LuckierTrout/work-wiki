@@ -22,6 +22,7 @@ import {
   holdsResearchSlot,
   releaseResearchSlot,
   renewResearchSlot,
+  rotateResearchSlot,
 } from "../research-concurrency";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
@@ -147,6 +148,23 @@ describe("research concurrency lease", () => {
     expect(await releaseResearchSlot("alice", "p1", first.attemptId)).toBe(false);
     expect(await activeResearchCount("alice")).toBe(1);
     await expect(renewResearchSlot("alice", "p1", replacement.attemptId!))
+      .resolves.toBeUndefined();
+  });
+
+  it("rotates an expired attempt atomically and refuses to rotate a renewed one", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T12:00:00.000Z"));
+    const first = await acquireResearchSlot("alice", "p1");
+    expect(await rotateResearchSlot("alice", "p1", first.attemptId!)).toBeNull();
+
+    vi.setSystemTime(new Date(Date.now() + RESEARCH_SLOT_TTL_MS + 1));
+    const replacement = await rotateResearchSlot("alice", "p1", first.attemptId!);
+
+    expect(replacement?.attemptId).toBeTruthy();
+    expect(replacement?.attemptId).not.toBe(first.attemptId);
+    await expect(renewResearchSlot("alice", "p1", first.attemptId!))
+      .rejects.toThrow(/slot.*lost/i);
+    await expect(renewResearchSlot("alice", "p1", replacement!.attemptId!))
       .resolves.toBeUndefined();
   });
 

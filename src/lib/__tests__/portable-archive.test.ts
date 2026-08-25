@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { strToU8, unzipSync, zipSync } from "fflate";
 import { serializeFrontmatter } from "../frontmatter";
 import { buildPortableArchive, importPortableArchive, inspectPortableArchive } from "../portable-archive";
 import { _resetStorage, getStorage } from "../storage";
@@ -69,6 +70,41 @@ describe("portable owner archive", () => {
     expect(names.every((name) => !name.includes("todos.md"))).toBe(true);
   });
 
+  it("excludes rebuilt and append-only wiki infrastructure from exports", async () => {
+    await getStorage().writeFile("tenants/alice/wiki/index.md", "# Index\n");
+    await getStorage().writeFile("tenants/alice/wiki/log.md", "audit\n");
+
+    const archive = await buildPortableArchive("alice");
+    const names = archive.manifest.files.map((entry) => entry.path);
+
+    expect(names).not.toContain("wiki/index.md");
+    expect(names).not.toContain("wiki/log.md");
+  });
+
+  it.each(["wiki/index.md", "wiki/log.md"])(
+    "rejects imported infrastructure %s before storage mutation",
+    async (infrastructurePath) => {
+      await getStorage().writeFile("tenants/alice/settings.json", "{}");
+      const archive = await buildPortableArchive("alice");
+      const files = unzipSync(archive.bytes);
+      const bytes = strToU8("attacker-controlled infrastructure\n");
+      const manifest = JSON.parse(new TextDecoder().decode(files["manifest.json"]));
+      manifest.files.push({
+        path: infrastructurePath,
+        size: bytes.byteLength,
+        sha256: await digest(buffer(bytes)),
+      });
+      files[`files/${infrastructurePath}`] = bytes;
+      files["manifest.json"] = strToU8(JSON.stringify(manifest));
+
+      await expect(importPortableArchive("alice", buffer(zipSync(files)), "overwrite"))
+        .rejects.toThrow(/wiki infrastructure/i);
+      await expect(getStorage().fileExists(`tenants/alice/${infrastructurePath}`))
+        .resolves.toBe(false);
+      await expect(getStorage().fileExists(infrastructurePath)).resolves.toBe(false);
+    },
+  );
+
   it("refuses to restore an archive into another owner tenant", async () => {
     await getStorage().writeFile("tenants/alice/settings.json", "{}");
     const archive = await buildPortableArchive("alice");
@@ -132,4 +168,11 @@ describe("portable owner archive", () => {
 
 function buffer(value: Uint8Array): ArrayBuffer {
   return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
+}
+
+async function digest(value: ArrayBuffer): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", value);
+  return [...new Uint8Array(hash)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }

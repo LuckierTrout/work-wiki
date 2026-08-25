@@ -262,6 +262,30 @@ async function withPageLifecycleLocks<T>(
   return acquire(0);
 }
 
+const activePageLifecycleLockTokens = new WeakSet<object>();
+
+/** Proof passed only while one Page's lifecycle lock is held by a coordinator. */
+export interface PageLifecycleLockHeld {
+  readonly slug: string;
+}
+
+/** Coordinate a compound operation that must fence edits to one primary Page. */
+export async function withPageLifecycleLock<T>(
+  slug: string,
+  fn: (held: PageLifecycleLockHeld) => Promise<T>,
+): Promise<T> {
+  validateSlug(slug);
+  return withDurableLock(`page-lifecycle:${slug}`, async () => {
+    const token: PageLifecycleLockHeld = Object.freeze({ slug });
+    activePageLifecycleLockTokens.add(token);
+    try {
+      return await fn(token);
+    } finally {
+      activePageLifecycleLockTokens.delete(token);
+    }
+  });
+}
+
 async function runPageLifecycleOp(
   slug: string,
   op: PageLifecycleOp,
@@ -272,6 +296,7 @@ async function runPageLifecycleOp(
   }) => string | undefined,
   recovery?: { pageAlreadyWritten: boolean; previousContent?: string; logIdempotencyKey?: string },
   pageLockAlreadyHeld = false,
+  skipDeleteBacklinks = false,
 ): Promise<LifecycleOpResult> {
   // 1. Validate — the per-step helpers also validate, but we want to fail
   //    fast before any filesystem mutation happens.
@@ -888,7 +913,7 @@ async function runPageLifecycleOp(
         { requireSource: true, tenant: sourceTenant },
       );
     }
-  } else {
+  } else if (!skipDeleteBacklinks) {
     // Strip links to the deleted page from every other page. Read all pages
     // CONCURRENTLY (bounded) — this was the main sequential bottleneck and the
     // part that scaled badly with page count. Then rewrite only the linkers.
@@ -1055,6 +1080,39 @@ export async function deleteWikiPage(
       `deleted · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
   );
 
+  return {
+    slug: result.slug,
+    removedFromIndex: result.removedFromIndex,
+    strippedBacklinksFrom: result.strippedBacklinksFrom,
+  };
+}
+
+/** Delete under a lock minted by {@link withPageLifecycleLock}. */
+export async function deleteWikiPageWhileLocked(
+  slug: string,
+  held: PageLifecycleLockHeld,
+  author?: string,
+  expectedContent?: string,
+): Promise<DeletePageResult> {
+  assertWritable(READ_ONLY_REFUSAL.pageDelete);
+  validateSlug(slug);
+  if (!activePageLifecycleLockTokens.has(held) || held.slug !== slug) {
+    throw new Error(`page lifecycle lock for "${slug}" is not held`);
+  }
+  const page = await readWikiPage(slug, { fresh: true, strict: true });
+  if (!page) throw new Error(`page not found: ${slug}`);
+  const result = await runPageLifecycleOp(
+    slug,
+    { kind: "delete", title: page.title ?? slug, author, expectedContent },
+    "delete",
+    ({ strippedBacklinksFrom }) =>
+      `deleted after merge · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
+    undefined,
+    true,
+    // Merge has already repointed backlinks. Re-entering this slug's lock in
+    // the generic delete scanner would deadlock and is unnecessary.
+    true,
+  );
   return {
     slug: result.slug,
     removedFromIndex: result.removedFromIndex,

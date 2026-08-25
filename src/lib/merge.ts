@@ -33,7 +33,12 @@ import {
 } from "./ingest";
 import { parseSources, serializeSources } from "./sources";
 import { parseFrontmatter, serializeFrontmatter, type Frontmatter } from "./frontmatter";
-import { writeWikiPageWithSideEffects, deleteWikiPage } from "./lifecycle";
+import {
+  writeWikiPageWithSideEffects,
+  deleteWikiPageWhileLocked,
+  withPageLifecycleLock,
+  type PageLifecycleLockHeld,
+} from "./lifecycle";
 import { getBacklinkIndex } from "./backlink-index";
 import { escapeRegex } from "./links";
 import { getStorage } from "./storage";
@@ -152,6 +157,8 @@ async function repointBacklinks(
 
 interface MergeOperationReceipt {
   version: 1;
+  /** Unique generation for this exact lifecycle, retained across Retry only. */
+  generation: string;
   fromSlug: string;
   intoSlug: string;
   fromContent: string;
@@ -176,6 +183,7 @@ async function readMergeReceipt(path: string): Promise<MergeOperationReceipt | n
     const parsed = JSON.parse(await getStorage().readFile(path)) as MergeOperationReceipt;
     if (
       parsed.version !== 1
+      || typeof parsed.generation !== "string"
       || typeof parsed.fromSlug !== "string"
       || typeof parsed.intoSlug !== "string"
       || typeof parsed.fromContent !== "string"
@@ -209,6 +217,20 @@ export async function mergePages({
   if (fromSlug === intoSlug) {
     throw new Error("cannot merge a page into itself");
   }
+  return withPageLifecycleLock(fromSlug, (held) => mergePagesWhileSourceLocked({
+    from: fromSlug,
+    into: intoSlug,
+    actor,
+    bypassOwnerCheck,
+  }, held));
+}
+
+async function mergePagesWhileSourceLocked({
+  from: fromSlug,
+  into: intoSlug,
+  actor,
+  bypassOwnerCheck = false,
+}: MergePagesArgs, sourceLock: PageLifecycleLockHeld): Promise<MergePagesResult> {
 
   const operationId = await sourceSha256(`${fromSlug}\u0000${intoSlug}`);
   const operationPath = `derived-indexes/merge-operations/${operationId}.json`;
@@ -309,6 +331,7 @@ export async function mergePages({
     const summary = extractSummary(mergedBody.replace(/^#\s+.+$/m, "").trim());
     const candidate: MergeOperationReceipt = {
       version: 1,
+      generation: crypto.randomUUID(),
       fromSlug,
       intoSlug,
       fromContent: from.content,
@@ -349,6 +372,9 @@ export async function mergePages({
       throw new Error("merge survivor changed after the absorbed Page was deleted");
     }
     await getStorage().deleteFile(operationPath).catch(() => undefined);
+    await getStorage()
+      .deleteFile(`${operationPath}.${receipt.generation}.survivor`)
+      .catch(() => undefined);
     return { fromSlug, intoSlug, disputed: receipt.disputed, repointedBacklinksFrom: [] };
   }
   if (currentFrom.content !== receipt.fromContent) {
@@ -371,8 +397,8 @@ export async function mergePages({
     author: actor,
     expectedContent: receipt.intoContent,
     idempotency: {
-      key: `merge-survivor:${operationId}`,
-      receiptPath: `${operationPath}.survivor`,
+      key: `merge-survivor:${receipt.generation}`,
+      receiptPath: `${operationPath}.${receipt.generation}.survivor`,
     },
   });
 
@@ -397,8 +423,11 @@ export async function mergePages({
     "merge",
     `merged "${fromSlug}" into "${intoSlug}" — deleting "${fromSlug}" (its revisions + discussion threads are hard-deleted)`,
   );
-  await deleteWikiPage(fromSlug, actor, receipt.fromContent);
+  await deleteWikiPageWhileLocked(fromSlug, sourceLock, actor, receipt.fromContent);
   await getStorage().deleteFile(operationPath).catch(() => undefined);
+  await getStorage()
+    .deleteFile(`${operationPath}.${receipt.generation}.survivor`)
+    .catch(() => undefined);
 
   return { fromSlug, intoSlug, disputed: receipt.disputed, repointedBacklinksFrom };
 }

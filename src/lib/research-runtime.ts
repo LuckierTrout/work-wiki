@@ -5,6 +5,7 @@ import {
   holdsResearchSlot,
   releaseResearchSlot,
   releaseExpiredResearchSlot,
+  rotateResearchSlot,
   renewResearchSlot,
   MAX_CONCURRENT_RESEARCH,
   RESEARCH_SLOT_TTL_MS,
@@ -240,19 +241,20 @@ async function note(
 
 async function markResearchDeliveryBlocked(
   owner: string,
-  project: ResearchProject,
+  projectId: string,
+  deliveryAttemptId: string,
   error: unknown,
 ): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
-  const latest = await getResearchProject(owner, project.id);
+  const latest = await getResearchProject(owner, projectId);
   if (!latest) return;
   const hasPendingCompletion = latest.completion !== undefined
     && latest.completion.phase !== "done";
-  const hasOutbox = (await listResearchOutboxIds(owner)).includes(project.id);
+  const hasOutbox = (await listResearchOutboxIds(owner)).includes(projectId);
   if (!hasPendingCompletion && !hasOutbox) return;
-  await updateResearchProjectIf(owner, project.id, (current) => (
+  await updateResearchProjectIf(owner, projectId, (current) => (
     current.updatedAt === latest.updatedAt
-    && current.deliveryBlocked !== false
+    && current.deliveryAttemptId === deliveryAttemptId
     && (current.completion?.phase !== "done" || hasOutbox)
   ), {
     status: "failed",
@@ -263,6 +265,18 @@ async function markResearchDeliveryBlocked(
       totalQueries: latest.progress?.totalQueries ?? Math.max(1, latest.queries.length),
       message: "Research delivery is blocked. Repair the reported lock, then retry.",
     },
+  });
+}
+
+async function ensureResearchDeliveryAttempt(
+  owner: string,
+  id: string,
+): Promise<ResearchProject | null> {
+  const existing = await getResearchProject(owner, id);
+  if (!existing || existing.deliveryAttemptId) return existing;
+  return mutateResearchProject(owner, id, (project) => {
+    if (!project.deliveryAttemptId) project.deliveryAttemptId = crypto.randomUUID();
+    return project;
   });
 }
 
@@ -299,6 +313,7 @@ export async function queueResearchProject(
       {
         status: "complete",
         deliveryBlocked: false,
+        deliveryAttemptId: crypto.randomUUID(),
         error: null,
         progress: {
           completedQueries: project.progress?.completedQueries ?? 0,
@@ -360,6 +375,7 @@ export async function queueResearchProject(
     current.provider = provider;
     current.cancelRequested = false;
     current.deliveryBlocked = false;
+    delete current.deliveryAttemptId;
     delete current.runAttemptId;
     if (runPageBaseline) current.runPageBaseline = runPageBaseline;
     else delete current.runPageBaseline;
@@ -452,6 +468,10 @@ export async function retireResearchProject(owner: string, id: string): Promise<
   ) {
     return true;
   }
+  // Keep the tombstoned row while a worker may still own the lease. Its
+  // finally/reconciliation path needs the attempt token to release or reap the
+  // claim; deleting the row here would make a crashed worker's slot immortal.
+  if (workerStillRunning) return true;
   if (remaining.completion?.phase === "done" || !remaining.completion) {
     await deleteResearchOutbox(owner, id);
   }
@@ -541,10 +561,17 @@ export async function reconcileResearchProjects(
         continue;
       }
       if (project.completion || outboxIds.has(project.id)) {
+        const delivery = await ensureResearchDeliveryAttempt(owner, project.id);
+        if (!delivery?.deliveryAttemptId) continue;
         try {
           await drainResearchOutbox(owner, project.id);
         } catch (error) {
-          await markResearchDeliveryBlocked(owner, project, error);
+          await markResearchDeliveryBlocked(
+            owner,
+            project.id,
+            delivery.deliveryAttemptId,
+            error,
+          );
         }
         changed = true;
         outboxIds.delete(project.id);
@@ -552,7 +579,7 @@ export async function reconcileResearchProjects(
       }
       const needsLease = project.status === "queued"
         || RESEARCH_IN_FLIGHT_STATUSES.includes(project.status);
-      if (!needsLease) {
+      if (!needsLease && !project.deleteRequested) {
         await releaseResearchSlot(owner, project.id, project.runAttemptId);
         if (project.cancelRequested) await clearResearchStaging(owner, project.id);
         continue;
@@ -575,8 +602,29 @@ export async function reconcileResearchProjects(
         changed = true;
         continue;
       }
+      if (!needsLease) {
+        if (project.deleteRequested && held) {
+          // DELETE tombstones the row but a live worker owns the attempt until
+          // its finally path exits. Keeping both row and token prevents either
+          // unsafe revocation or an unreapable orphan if that worker crashes.
+          continue;
+        }
+        await releaseResearchSlot(owner, project.id, project.runAttemptId);
+        if (project.cancelRequested) await clearResearchStaging(owner, project.id);
+        if (project.deleteRequested && !project.completion) {
+          await deleteResearchProject(owner, project.id);
+          changed = true;
+        }
+        continue;
+      }
       if (project.cancelRequested && !held) {
         await clearResearchStaging(owner, project.id);
+        if (project.deleteRequested && !project.completion) {
+          await releaseResearchSlot(owner, project.id, project.runAttemptId);
+          await deleteResearchProject(owner, project.id);
+          changed = true;
+          continue;
+        }
         if (project.status !== "cancelled" && project.status !== "complete") {
           const cancelled = await updateResearchProjectIf(
             owner,
@@ -608,6 +656,49 @@ export async function reconcileResearchProjects(
           await releaseResearchSlot(owner, project.id);
           await releaseExpiredResearchSlot(owner, project.id);
           changed = true;
+        } else {
+          const replacement = await rotateResearchSlot(
+            owner,
+            project.id,
+            project.runAttemptId,
+          );
+          const replacementAttemptId = replacement?.attemptId;
+          if (!replacementAttemptId) continue;
+          const reserved = await updateResearchProjectIf(
+            owner,
+            project.id,
+            (current) => current.status === "queued"
+              && !current.cancelRequested
+              && current.runAttemptId === project.runAttemptId,
+            { runAttemptId: replacementAttemptId },
+          );
+          if (!reserved) {
+            await releaseResearchSlot(owner, project.id, replacementAttemptId);
+            continue;
+          }
+          try {
+            const enqueued = await enqueueTask({
+              kind: "run-research",
+              projectId: project.id,
+              owner,
+            });
+            if (!enqueued) {
+              void runResearchProject(owner, project.id).catch((error) => {
+                logger.warn("research", `inline recovery of ${project.id} failed`, error);
+              });
+            }
+          } catch (error) {
+            await updateResearchProjectIf(
+              owner,
+              project.id,
+              (current) => current.status === "queued"
+                && current.runAttemptId === replacementAttemptId,
+              { runAttemptId: null },
+            );
+            await releaseResearchSlot(owner, project.id, replacementAttemptId);
+            throw error;
+          }
+          changed = true;
         }
         continue;
       }
@@ -616,6 +707,10 @@ export async function reconcileResearchProjects(
       if (!Number.isFinite(touched)) continue;
       if (now - touched < RESEARCH_ABANDONED_AFTER_MS) continue;
       if (held) continue;
+      const replacement = project.runAttemptId
+        ? await rotateResearchSlot(owner, project.id, project.runAttemptId)
+        : null;
+      if (project.runAttemptId && !replacement?.attemptId) continue;
       await clearResearchStaging(owner, project.id);
       const interrupted = await updateResearchProjectIf(
         owner,
@@ -635,8 +730,12 @@ export async function reconcileResearchProjects(
         },
       );
       if (interrupted) {
-        await releaseResearchSlot(owner, project.id, project.runAttemptId);
+        if (replacement?.attemptId) {
+          await releaseResearchSlot(owner, project.id, replacement.attemptId);
+        }
         changed = true;
+      } else if (replacement?.attemptId) {
+        await releaseResearchSlot(owner, project.id, replacement.attemptId);
       }
       } catch (error) {
         logger.warn("research", `reconcile skipped damaged project ${snapshot.id}`, error);
@@ -650,16 +749,20 @@ export async function reconcileResearchProjects(
         logger.warn("research", `reconcile skipped damaged orphan outbox ${orphanId}`, error);
       }
     }
-    if (projects.some((project) => project.status === "queued" && !project.cancelRequested)) {
+    const currentProjects = await listResearchProjects(owner);
+    if (currentProjects.some((project) => project.status === "queued" && !project.cancelRequested)) {
       await drainResearchQueue(owner);
       changed = true;
     }
   } catch (error) {
     logger.warn("research", `reconcile failed for ${owner}`, error);
   }
+  void changed;
   // Re-read only when something moved, so the common poll — nothing queued,
   // nothing abandoned — costs one lease read and no extra list.
-  return changed ? await listResearchProjects(owner) : [...projects];
+  // Always return a fresh UI generation. The input is a panel snapshot and can
+  // race an explicit Retry even when this invocation itself made no mutation.
+  return await listResearchProjects(owner);
 }
 
 /**
@@ -1099,10 +1202,12 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
   if (!initial) throw new Error("Research project not found");
   if (initial.status === "cancelled" || initial.cancelRequested) return initial;
   if (initial.completion && initial.completion.phase !== "done") {
+    const delivery = await ensureResearchDeliveryAttempt(owner, id);
+    if (!delivery?.deliveryAttemptId) return initial;
     try {
       return (await drainResearchOutbox(owner, id)) ?? initial;
     } catch (error) {
-      await markResearchDeliveryBlocked(owner, initial, error);
+      await markResearchDeliveryBlocked(owner, id, delivery.deliveryAttemptId, error);
       throw error;
     }
   }
@@ -1113,6 +1218,12 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     const age = Date.now() - Date.parse(initial.updatedAt);
     if (!Number.isFinite(age) || age < RESEARCH_ABANDONED_AFTER_MS) return initial;
     const interruptedSnapshot = initial;
+    const replacement = interruptedSnapshot.runAttemptId
+      ? await rotateResearchSlot(owner, id, interruptedSnapshot.runAttemptId)
+      : null;
+    if (interruptedSnapshot.runAttemptId && !replacement?.attemptId) {
+      return (await getResearchProject(owner, id)) ?? initial;
+    }
     const recovered = await updateResearchProjectIf(
       owner,
       id,
@@ -1121,7 +1232,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
         && project.runAttemptId === interruptedSnapshot.runAttemptId,
       {
         status: "queued",
-        runAttemptId: null,
+        runAttemptId: replacement?.attemptId ?? null,
         error: null,
         progress: {
           completedQueries: initial.progress?.completedQueries ?? 0,
@@ -1130,8 +1241,10 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
         },
       },
     );
-    if (!recovered) return (await getResearchProject(owner, id)) ?? initial;
-    await releaseResearchSlot(owner, id, interruptedSnapshot.runAttemptId);
+    if (!recovered) {
+      if (replacement?.attemptId) await releaseResearchSlot(owner, id, replacement.attemptId);
+      return (await getResearchProject(owner, id)) ?? initial;
+    }
     initial = recovered;
   }
 

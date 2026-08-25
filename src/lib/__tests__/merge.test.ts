@@ -248,7 +248,8 @@ describe("mergePages", () => {
     matchSpy.mockRestore();
   }, 15_000);
 
-  it("does not delete an absorbed Page that changed after the merge plan", async () => {
+  it("serializes an absorbed-Page edit behind the complete merge lifecycle", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     await seedPage("other", {
@@ -282,7 +283,7 @@ describe("mergePages", () => {
       "Content about Harness (AI agents).",
       "OWNER EDIT MUST SURVIVE.",
     );
-    await writeWikiPageWithSideEffects({
+    const editing = writeWikiPageWithSideEffects({
       slug: "harness-ai-agents",
       title: "Harness (AI agents)",
       content: edited,
@@ -294,9 +295,35 @@ describe("mergePages", () => {
     });
     resumeLinker();
 
-    await expect(merging).rejects.toThrow(/changed before delete/i);
-    expect((await readWikiPage("harness-ai-agents"))?.content)
-      .toContain("OWNER EDIT MUST SURVIVE.");
+    await expect(merging).resolves.toMatchObject({ intoSlug: "agent-harness" });
+    await expect(editing).rejects.toThrow(/not found|changed/i);
+    expect(await readWikiPage("harness-ai-agents")).toBeNull();
+    expect((await readWikiPage("agent-harness"))?.content)
+      .toContain("Content about Harness (AI agents).");
+  }, 15_000);
+
+  it("does not reuse a completed survivor receipt for a later same-pair merge", async () => {
+    mockedHasLLMKey.mockReturnValue(false);
+    await seedPage("agent-harness", {
+      title: "Agent Harness",
+      body: "# Agent Harness\n\nSURVIVOR BASE.",
+    });
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents)",
+      body: "# Harness (AI agents)\n\nFIRST ABSORBED.",
+    });
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents) again",
+      body: "# Harness (AI agents) again\n\nSECOND ABSORBED.",
+    });
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+    const survivor = await readWikiPage("agent-harness");
+    expect(survivor?.content).toContain("FIRST ABSORBED.");
+    expect(survivor?.content).toContain("SECOND ABSORBED.");
+    expect(await readWikiPage("harness-ai-agents")).toBeNull();
   }, 15_000);
 
   it("re-points via the precomputed backlink index when it's present (the production fast path)", async () => {

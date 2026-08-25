@@ -30,6 +30,7 @@ export interface PortableArchiveInspection {
 
 const MAX_FILES = 10_000;
 const MAX_BYTES = 500 * 1024 * 1024;
+const ARCHIVE_INFRASTRUCTURE_PATHS = new Set(["wiki/index.md", "wiki/log.md"]);
 
 function tenant(owner: string): string {
   const value = tenantForOwner(owner);
@@ -71,7 +72,9 @@ export async function buildPortableArchive(owner: string): Promise<{
 }> {
   const ownerTenant = tenant(owner);
   const root = `tenants/${ownerTenant}`;
-  const paths = await walk(root);
+  // The index is rebuilt after import and the log is append-only global audit
+  // infrastructure. Neither is a portable Page payload.
+  const paths = (await walk(root)).filter((path) => !ARCHIVE_INFRASTRUCTURE_PATHS.has(path));
   const archiveFiles: Record<string, Uint8Array> = {};
   const manifest: PortableArchiveManifest = {
     format: "workwiki-portable-archive",
@@ -139,6 +142,9 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
   let totalBytes = 0;
   for (const entry of manifest.files) {
     if (!safeRelativePath(entry.path)) throw new Error(`Unsafe archive path: ${entry.path}`);
+    if (ARCHIVE_INFRASTRUCTURE_PATHS.has(entry.path)) {
+      throw new Error(`Archive may not contain wiki infrastructure: ${entry.path}`);
+    }
     const data = files[`files/${entry.path}`];
     if (!data || data.byteLength !== entry.size || await sha256(bytesBuffer(data)) !== entry.sha256) {
       throw new Error(`Archive checksum failed: ${entry.path}`);

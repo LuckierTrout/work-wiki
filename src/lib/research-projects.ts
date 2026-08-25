@@ -65,6 +65,8 @@ export interface ResearchProject {
   deleteRequested?: boolean;
   /** Automatic delivery reconciliation stopped on an operator-recovery fault. */
   deliveryBlocked?: boolean;
+  /** Fence token for one automatic or operator-triggered completion delivery. */
+  deliveryAttemptId?: string;
   /** Fence token shared with the Research lease for the current execution. */
   runAttemptId?: string;
   error?: string;
@@ -311,6 +313,7 @@ export async function updateResearchProject(
     proposalId?: string | null;
     cancelRequested?: boolean;
     deliveryBlocked?: boolean;
+    deliveryAttemptId?: string | null;
     runAttemptId?: string | null;
     error?: string | null;
     completion?: ResearchCompletion | null;
@@ -432,6 +435,10 @@ async function mutateProject(
     }
     if (patch.cancelRequested !== undefined) project.cancelRequested = patch.cancelRequested;
     if (patch.deliveryBlocked !== undefined) project.deliveryBlocked = patch.deliveryBlocked;
+    if (patch.deliveryAttemptId !== undefined) {
+      if (patch.deliveryAttemptId?.trim()) project.deliveryAttemptId = patch.deliveryAttemptId;
+      else delete project.deliveryAttemptId;
+    }
     if (patch.runAttemptId !== undefined) {
       if (patch.runAttemptId?.trim()) project.runAttemptId = patch.runAttemptId;
       else delete project.runAttemptId;
