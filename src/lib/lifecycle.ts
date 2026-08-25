@@ -335,13 +335,14 @@ async function runPageLifecycleOp(
   validateSlug(slug);
   const previousTargets = op.kind === "write"
       && op.validateNewLinkTargets
-      && op.expectedContent !== undefined
-    ? new Set(extractAllInternalTargets(op.expectedContent))
+    ? new Set(op.expectedContent === undefined
+        ? []
+        : extractAllInternalTargets(op.expectedContent))
     : new Set<string>();
   const requiredExistingSlugs = op.kind === "write"
     ? [...new Set([
         ...(op.requiresExistingSlug ? [op.requiresExistingSlug] : []),
-        ...(!op.validateNewLinkTargets || op.expectedContent === undefined
+        ...(!op.validateNewLinkTargets
           ? []
           : extractAllInternalTargets(op.content).filter(
               (target) => !previousTargets.has(target),

@@ -408,6 +408,7 @@ export async function runCreate(slug: string, title: string, tags?: string[]): P
     logOp: "ingest",
     crossRefSource: body.trim(),
     createOnly: true,
+    validateNewLinkTargets: true,
   });
 
   console.log(`Created: ${result.slug}`);

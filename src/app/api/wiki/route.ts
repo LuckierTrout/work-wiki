@@ -149,6 +149,7 @@ export async function POST(req: Request) {
       crossRefSource: content,
       author: authorStr,
       createOnly: true,
+      validateNewLinkTargets: true,
       logDetails: (ctx) =>
         `created · found ${ctx.updatedSlugs.length} cross-ref(s)`,
     });

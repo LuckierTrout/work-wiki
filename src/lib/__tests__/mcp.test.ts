@@ -464,6 +464,35 @@ describe("MCP write tools", () => {
       expect(fileContent).toContain("Body text here.");
     });
 
+    it("rejects a new page that links to a same-owner slug claimed as a merged alias", async () => {
+      const { writeWikiPageWithSideEffects } = await import("../lifecycle");
+      await writeWikiPageWithSideEffects({
+        slug: "create-survivor",
+        title: "Survivor",
+        content: "---\nowner: alice\naliases: [create-retired]\n---\n# Survivor\n\nCanonical Page.",
+        summary: "canonical",
+        logOp: "ingest",
+        crossRefSource: null,
+      });
+      await writeWikiPageWithSideEffects({
+        slug: "create-retired",
+        title: "Replacement",
+        content: "---\nowner: alice\n---\n# Replacement\n\nUnrelated replacement.",
+        summary: "replacement",
+        logOp: "ingest",
+        crossRefSource: null,
+      });
+
+      await expect(handleCreatePage({
+        slug: "mcp-create-linker",
+        content: "# Linker\n\nSee [the old Page](create-retired.md).",
+        author: "alice",
+        owner: "alice",
+      })).rejects.toThrow(/missing|replaced/i);
+      await expect(fs.stat(path.join(tmpDir, "wiki", "mcp-create-linker.md")))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    });
+
     it("includes all yopedia schema fields in frontmatter", async () => {
       await handleCreatePage({
         slug: "schema-check",
@@ -1499,13 +1528,13 @@ describe("delete_page", () => {
   it("strips backlinks from other pages when deleting", async () => {
     // Create two pages, one linking to the other
     await handleCreatePage({
+      slug: "target",
+      content: "# Target\n\nThis is the target page.",
+    });
+    await handleCreatePage({
       slug: "keeper",
       content:
         "# Keeper\n\nThis page links to [Target](target.md).\n\n**See also:** [Target](target.md)",
-    });
-    await handleCreatePage({
-      slug: "target",
-      content: "# Target\n\nThis is the target page.",
     });
 
     // Delete the target

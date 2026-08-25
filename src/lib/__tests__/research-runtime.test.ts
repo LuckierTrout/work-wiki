@@ -1278,6 +1278,88 @@ describe("deep research — remediations", () => {
     expect((await getResearchProject("alice", created.id))?.status).toBe("complete");
   });
 
+  it("does not let delete remove a row while direct admission publishes its first lease", async () => {
+    const created = await project();
+    const storage = getStorage();
+    const originalAbsent = storage.writeFileIfAbsent.bind(storage);
+    let leasePublished!: () => void;
+    let resumeAdmission!: () => void;
+    let searchStarted!: () => void;
+    let finishSearch!: (results: Awaited<ReturnType<typeof searchResearchProvider>>) => void;
+    const published = new Promise<void>((resolve) => { leasePublished = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeAdmission = resolve; });
+    const searching = new Promise<void>((resolve) => { searchStarted = resolve; });
+    const searchResult = new Promise<Awaited<ReturnType<typeof searchResearchProvider>>>(
+      (resolve) => { finishSearch = resolve; },
+    );
+    vi.spyOn(storage, "writeFileIfAbsent").mockImplementation(async (target, content) => {
+      const wrote = await originalAbsent(target, content);
+      if (wrote && target.endsWith("research-leases.json")) {
+        leasePublished();
+        await resume;
+      }
+      return wrote;
+    });
+    mockedSearch.mockImplementationOnce(async () => {
+      searchStarted();
+      return searchResult;
+    });
+
+    const running = runResearchProject("alice", created.id);
+    await published;
+    const deleting = deleteResearchProject("alice", created.id);
+    resumeAdmission();
+    await searching;
+
+    expect(await deleting).toBe(false);
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      status: "collecting",
+      runAttemptId: expect.any(String),
+    });
+    expect(await activeResearchCount("alice")).toBe(1);
+
+    finishSearch([{
+      title: "Launch brief",
+      url: "https://example.com/launch/brief",
+      snippet: "short excerpt",
+      content: "THE WHOLE PAGE BODY, well past any snippet cap.",
+    }]);
+    await expect(running).resolves.toMatchObject({ status: "complete" });
+    expect(await activeResearchCount("alice")).toBe(0);
+  });
+
+  it("does not let delete remove a row while queue drain reserves its first lease", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, { status: "queued" });
+    const storage = getStorage();
+    const originalAbsent = storage.writeFileIfAbsent.bind(storage);
+    let leasePublished!: () => void;
+    let resumeAdmission!: () => void;
+    const published = new Promise<void>((resolve) => { leasePublished = resolve; });
+    const resume = new Promise<void>((resolve) => { resumeAdmission = resolve; });
+    vi.spyOn(storage, "writeFileIfAbsent").mockImplementation(async (target, content) => {
+      const wrote = await originalAbsent(target, content);
+      if (wrote && target.endsWith("research-leases.json")) {
+        leasePublished();
+        await resume;
+      }
+      return wrote;
+    });
+
+    const draining = drainResearchQueue("alice");
+    await published;
+    const deleting = deleteResearchProject("alice", created.id);
+    resumeAdmission();
+
+    await draining;
+    expect(await deleting).toBe(false);
+    expect(await getResearchProject("alice", created.id)).toMatchObject({
+      status: "queued",
+      runAttemptId: expect.any(String),
+    });
+    expect(await activeResearchCount("alice")).toBe(1);
+  });
+
   it("does not release a ready run's slot when cancel lands during synthesis", async () => {
     const created = await project();
     mockedLLM.mockImplementation(async () => {

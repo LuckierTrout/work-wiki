@@ -265,6 +265,7 @@ export async function handleCreatePage(args: {
     author: args.author,
     crossRefSource: args.content,
     createOnly: true,
+    validateNewLinkTargets: true,
   });
 
   return { slug: args.slug, title, created: true };

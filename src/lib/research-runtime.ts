@@ -11,7 +11,6 @@ import {
   MAX_CONCURRENT_RESEARCH,
   RESEARCH_SLOT_TTL_MS,
   ResearchLeaseError,
-  type ResearchSlotGrant,
 } from "./research-concurrency";
 import {
   commitResearchPage,
@@ -900,25 +899,42 @@ export async function drainResearchQueue(owner: string): Promise<void> {
     }
     if (!next) return;
     const claimed = next;
-    const grant = await acquireResearchSlot(owner, claimed.id);
-    if (!grant.granted) return;
-    const attemptId = grant.attemptId;
-    if (!attemptId) {
-      await releaseResearchSlot(owner, claimed.id);
-      return;
-    }
-    const reserved = await updateResearchProjectIf(
-      owner,
-      claimed.id,
-      (project) => project.status === "queued"
-        && !project.cancelRequested
-        && !project.runAttemptId,
-      { runAttemptId: attemptId },
-    );
-    if (!reserved) {
-      if (grant.acquired) await releaseResearchSlot(owner, claimed.id, attemptId);
-      return;
-    }
+    const reservation = await withResearchProjectLifecycleFence(owner, claimed.id, async () => {
+      // Admission and deletion share this fence. Re-read the row before
+      // publishing a lease so delete cannot remove it between slot acquisition
+      // and the row CAS that makes the project own that lease.
+      const current = await getResearchProject(owner, claimed.id);
+      if (
+        !current
+        || current.status !== "queued"
+        || current.cancelRequested
+        || current.deleteRequested
+        || current.runAttemptId
+      ) return null;
+      const grant = await acquireResearchSlot(owner, claimed.id);
+      if (!grant.granted) return null;
+      const attemptId = grant.attemptId;
+      if (!attemptId) {
+        await releaseResearchSlot(owner, claimed.id);
+        return null;
+      }
+      const reserved = await updateResearchProjectIf(
+        owner,
+        claimed.id,
+        (project) => project.status === "queued"
+          && !project.cancelRequested
+          && !project.deleteRequested
+          && !project.runAttemptId,
+        { runAttemptId: attemptId },
+      );
+      if (!reserved) {
+        if (grant.acquired) await releaseResearchSlot(owner, claimed.id, attemptId);
+        return null;
+      }
+      return { attemptId };
+    });
+    if (!reservation) return;
+    const { attemptId } = reservation;
     let enqueued = false;
     try {
       enqueued = await enqueueTask({ kind: "run-research", projectId: claimed.id, owner });
@@ -1358,12 +1374,13 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     );
     if (failed) {
       let result = failed;
-      if (await releaseResearchSlotAndConfirmGone(owner, id, initial.runAttemptId)) {
+      const failedAttemptId = initial.runAttemptId;
+      if (await releaseResearchSlotAndConfirmGone(owner, id, failedAttemptId)) {
         result = (await updateResearchProjectIf(
           owner,
           id,
           (project) => project.status === "failed"
-            && project.runAttemptId === initial.runAttemptId,
+            && project.runAttemptId === failedAttemptId,
           { runAttemptId: null },
         )) ?? failed;
       }
@@ -1373,9 +1390,72 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     return (await getResearchProject(owner, id)) ?? initial;
   }
 
-  let grant: ResearchSlotGrant;
+  let admission:
+    | { kind: "claimed"; project: ResearchProject; attemptId: string }
+    | { kind: "waiting"; project: ResearchProject }
+    | { kind: "current"; project: ResearchProject | null };
   try {
-    grant = await acquireResearchSlot(owner, id);
+    admission = await withResearchProjectLifecycleFence(owner, id, async () => {
+      // A project row and its lease become visible atomically with respect to
+      // deletion. Without this fence, delete can observe no lease, remove the
+      // row, and leave the just-published lease orphaned until its TTL.
+      const current = await getResearchProject(owner, id);
+      if (
+        !current
+        || (current.status !== "queued" && current.status !== "draft")
+        || current.cancelRequested
+        || current.deleteRequested
+      ) return { kind: "current" as const, project: current };
+
+      const grant = await acquireResearchSlot(owner, id);
+      if (!grant.granted) {
+        const waiting = await updateResearchProjectIf(
+          owner,
+          id,
+          (project) =>
+            (project.status === "queued" || project.status === "draft")
+              && !project.cancelRequested
+              && !project.deleteRequested,
+          {
+            status: "queued",
+            provider,
+            progress: {
+              completedQueries: 0,
+              totalQueries: Math.max(1, current.queries.length || 1),
+              message: `Waiting for a free research slot (${grant.active} of ${MAX_CONCURRENT_RESEARCH} running).`,
+            },
+          },
+        );
+        return { kind: "waiting" as const, project: waiting ?? current };
+      }
+      const attemptId = grant.attemptId;
+      if (!attemptId) {
+        await releaseResearchSlot(owner, id);
+        throw new ResearchLeaseError("Research admission returned an unfenced slot.");
+      }
+
+      const claimed = await updateResearchProjectIf(
+        owner,
+        id,
+        (project) =>
+          (project.status === "queued" || project.status === "draft")
+            && !project.cancelRequested
+            && !project.deleteRequested
+            && (!project.runAttemptId || project.runAttemptId === attemptId),
+        { status: "collecting", runAttemptId: attemptId },
+      );
+      if (!claimed) {
+        // Every path that minted this invocation's lease must retire it before
+        // reporting a lost row/CAS. Existing project leases (`acquired:false`)
+        // still belong to their active worker and are never revoked here.
+        if (grant.acquired) await releaseResearchSlot(owner, id, attemptId);
+        return {
+          kind: "current" as const,
+          project: await getResearchProject(owner, id),
+        };
+      }
+      return { kind: "claimed" as const, project: claimed, attemptId };
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const failed = await updateResearchProjectIf(
@@ -1394,51 +1474,12 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
     );
     return failed ?? (await getResearchProject(owner, id)) ?? initial;
   }
-  if (!grant.granted) {
-    const waiting = await updateResearchProjectIf(
-      owner,
-      id,
-      (project) =>
-        (project.status === "queued" || project.status === "draft") && !project.cancelRequested,
-      {
-        status: "queued",
-        provider,
-        progress: {
-          completedQueries: 0,
-          totalQueries: Math.max(1, initial.queries.length || 1),
-          message: `Waiting for a free research slot (${grant.active} of ${MAX_CONCURRENT_RESEARCH} running).`,
-        },
-      },
-    );
-    return waiting ?? initial;
+  if (admission.kind !== "claimed") {
+    if (admission.project) return admission.project;
+    throw new Error("Research project not found");
   }
-  const attemptId = grant.attemptId;
-  if (!attemptId) {
-    await releaseResearchSlot(owner, id);
-    throw new ResearchLeaseError("Research admission returned an unfenced slot.");
-  }
-
-  const claimed = await updateResearchProjectIf(
-    owner,
-    id,
-    (project) =>
-      (project.status === "queued" || project.status === "draft")
-        && !project.cancelRequested
-        && (!project.runAttemptId || project.runAttemptId === attemptId),
-    { status: "collecting", runAttemptId: attemptId },
-  );
-  if (!claimed) {
-    const current = await getResearchProject(owner, id);
-    if (!current) throw new Error("Research project not found");
-    // A duplicate delivery may have reused our existing lease and won the
-    // collecting claim between admission and this CAS. The lease belongs to
-    // the project, not to this invocation: never release it from under an
-    // active sibling worker. Release only when no active state owns the slot.
-    if (grant.acquired && !RESEARCH_IN_FLIGHT_STATUSES.includes(current.status)) {
-      await releaseResearchSlot(owner, id, attemptId);
-    }
-    return current;
-  }
+  const { project: claimed, attemptId } = admission;
+  initial = claimed;
 
   const queries = initial.queries.length > 0 ? initial.queries : [initial.question];
   let committed = false;

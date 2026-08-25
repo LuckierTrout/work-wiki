@@ -150,6 +150,47 @@ describe("POST /api/wiki — yopedia metadata", () => {
     expect(new Date(expiryStr).getTime()).toBeGreaterThan(Date.now());
   });
 
+  it("refuses a create that links to a same-owner slug claimed as a merged alias", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const common = {
+      created: today,
+      owner: "test-user",
+      visibility: "private",
+      authors: ["test-user"],
+      contributors: ["test-user"],
+    };
+    await writeWikiPageWithSideEffects({
+      slug: "post-create-survivor",
+      title: "Survivor",
+      content: serializeFrontmatter(
+        { ...common, aliases: ["post-create-retired"] },
+        "# Survivor\n\nCanonical Page.",
+      ),
+      summary: "canonical",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await writeWikiPageWithSideEffects({
+      slug: "post-create-retired",
+      title: "Replacement",
+      content: serializeFrontmatter(common, "# Replacement\n\nUnrelated replacement."),
+      summary: "replacement",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    const response = await callPost({
+      slug: "post-create-linker",
+      content: "# Linker\n\nSee [the old Page](post-create-retired.md).",
+    });
+
+    expect(response.status).not.toBe(201);
+    expect((await response.json()) as { error: string }).toEqual({
+      error: expect.stringMatching(/missing|replaced/i),
+    });
+    expect(await readWikiPage("post-create-linker")).toBeNull();
+  });
+
   it("sets default expiry to ~90 days from creation date", async () => {
     const res = await callPost({
       slug: "expiry-check",
