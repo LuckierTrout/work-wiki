@@ -557,6 +557,9 @@ export function wikiRegistryRows(wikiRegistry) {
 
 /** Cap so one kernel response cannot make per-request path lookup linear-unbounded. */
 export const WIKI_REGISTRY_MAX_ROWS = 1_000;
+export const WIKI_REGISTRY_MAX_RESPONSE_BYTES = 1_048_576;
+export const WIKI_REGISTRY_MAX_TENANTS = 256;
+export const WIKI_REGISTRY_MAX_LOCAL_BYTES = 1_048_576;
 
 const WIKI_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -594,6 +597,16 @@ function canonicalPathInside(root, candidate) {
   return resolved === base || resolved.startsWith(`${base}${path.sep}`)
     ? resolved
     : null;
+}
+
+function canonicalExistingDirectory(candidate) {
+  const canonical = canonicalizePathSnapshot(candidate);
+  if (!canonical) return null;
+  try {
+    return fs.statSync(canonical).isDirectory() ? canonical : null;
+  } catch {
+    return null;
+  }
 }
 
 function pushRegistryRow(next, seen, row) {
@@ -636,24 +649,16 @@ function isCompleteLocalWikiRecord(row) {
  * A duplicated id pointing at two roots, or one root claimed by two ids, is
  * not a mapping the loopback door may choose between.
  */
-function remoteHostRows(projects, dataDir) {
-  const candidates = [];
+function unambiguousRegistryRows(candidates) {
   const pathsById = new Map();
   const idsByPath = new Map();
-  for (const project of projects) {
-    if (!project || typeof project.id !== "string") continue;
-    if (!WIKI_UUID_RE.test(project.id)) continue;
-    const host = typeof project.hostPath === "string" ? project.hostPath : "";
-    if (!host || host.split(/[\\/]/).includes("..")) continue;
-    const canonical = canonicalPathInside(dataDir, host);
-    if (!canonical) continue;
-    candidates.push({ id: project.id, path: canonical });
-    const idPaths = pathsById.get(project.id) ?? new Set();
-    idPaths.add(canonical);
-    pathsById.set(project.id, idPaths);
-    const pathIds = idsByPath.get(canonical) ?? new Set();
-    pathIds.add(project.id);
-    idsByPath.set(canonical, pathIds);
+  for (const candidate of candidates) {
+    const idPaths = pathsById.get(candidate.id) ?? new Set();
+    idPaths.add(candidate.path);
+    pathsById.set(candidate.id, idPaths);
+    const pathIds = idsByPath.get(candidate.path) ?? new Set();
+    pathIds.add(candidate.id);
+    idsByPath.set(candidate.path, pathIds);
   }
   const conflictIds = new Set();
   for (const [id, paths] of pathsById) {
@@ -673,6 +678,31 @@ function remoteHostRows(projects, dataDir) {
   return { rows, conflictIds };
 }
 
+function remoteHostCandidates(projects, dataDir) {
+  const candidates = [];
+  for (const project of projects) {
+    if (!project || typeof project.id !== "string") continue;
+    if (!WIKI_UUID_RE.test(project.id)) continue;
+    const host = typeof project.hostPath === "string" ? project.hostPath : "";
+    if (!host || host.split(/[\\/]/).includes("..")) continue;
+    if (!path.isAbsolute(host) && !/^[a-zA-Z]:[\\/]/.test(host)) continue;
+    const canonical = canonicalPathInside(dataDir, host);
+    if (!canonical || canonicalExistingDirectory(canonical) !== canonical) continue;
+    candidates.push({ id: project.id, path: canonical });
+  }
+  return candidates;
+}
+
+function explicitHostCandidates(value, known = null) {
+  const candidates = [];
+  for (const row of parseWikiRoots(value)) {
+    if (known && !known.has(row.id)) continue;
+    const canonical = canonicalExistingDirectory(row.path);
+    if (canonical) candidates.push({ id: row.id, path: canonical });
+  }
+  return candidates;
+}
+
 /**
  * Local-kernel fallback when there is no owner-automation token: the wiki
  * directories under DATA_DIR/tenants/<handle>/wikis/<uuid>. Same reason the
@@ -689,6 +719,7 @@ export function readWikiRegistryFromDisk(dataDir) {
   } catch {
     return rows;
   }
+  if (handles.length > WIKI_REGISTRY_MAX_TENANTS) return rows;
   for (const handle of handles) {
     if (!handle.isDirectory() || handle.name.startsWith(".")) continue;
     let wikis;
@@ -699,11 +730,16 @@ export function readWikiRegistryFromDisk(dataDir) {
     } catch {
       continue;
     }
+    if (wikis.length > WIKI_REGISTRY_MAX_ROWS) return [];
     for (const wiki of wikis) {
       if (!wiki.isDirectory() || !WIKI_UUID_RE.test(wiki.name)) continue;
+      const canonical = canonicalExistingDirectory(
+        path.resolve(tenantsDir, handle.name, "wikis", wiki.name),
+      );
+      if (!canonical) continue;
       rows.push({
         id: wiki.name,
-        path: path.resolve(tenantsDir, handle.name, "wikis", wiki.name),
+        path: canonical,
       });
       if (rows.length >= WIKI_REGISTRY_MAX_ROWS) return rows;
     }
@@ -732,15 +768,19 @@ function readCurrentWikiIdFromDisk(dataDir, diskRows) {
   } catch {
     return null;
   }
+  if (handles.length > WIKI_REGISTRY_MAX_TENANTS) return null;
   const candidates = [];
   let invalid = false;
   for (const handle of handles) {
     if (!handle.isDirectory() || handle.name.startsWith(".")) continue;
     let parsed;
     try {
-      parsed = JSON.parse(
-        fs.readFileSync(path.join(tenantsDir, handle.name, "wikis.json"), "utf8"),
-      );
+      const registryPath = path.join(tenantsDir, handle.name, "wikis.json");
+      if (fs.statSync(registryPath).size > WIKI_REGISTRY_MAX_LOCAL_BYTES) {
+        invalid = true;
+        continue;
+      }
+      parsed = JSON.parse(fs.readFileSync(registryPath, "utf8"));
     } catch (error) {
       if (error && error.code === "ENOENT") continue;
       invalid = true;
@@ -750,8 +790,12 @@ function readCurrentWikiIdFromDisk(dataDir, diskRows) {
       invalid = true;
       continue;
     }
+    if (parsed.version !== 1) {
+      invalid = true;
+      continue;
+    }
     const declared = Array.isArray(parsed.wikis) ? parsed.wikis : null;
-    if (!declared) {
+    if (!declared || declared.length > WIKI_REGISTRY_MAX_ROWS) {
       invalid = true;
       continue;
     }
@@ -777,6 +821,28 @@ function readCurrentWikiIdFromDisk(dataDir, diskRows) {
   return matches.length === 1 ? candidates[0] : null;
 }
 
+async function readRegistryJson(response) {
+  const reader = response.body?.getReader?.();
+  if (!reader) throw new Error("registry body unavailable");
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > WIKI_REGISTRY_MAX_RESPONSE_BYTES) {
+        throw new Error("registry body too large");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+  return JSON.parse(Buffer.concat(chunks, bytes).toString("utf8"));
+}
+
 /**
  * Poll `GET /api/v1/projects` for Wiki ids and optional `hostPath` roots.
  *
@@ -784,8 +850,8 @@ function readCurrentWikiIdFromDisk(dataDir, diskRows) {
  * that path is one of these roots: a kernel `hostPath` the kernel actually
  * registered (must sit under `DATA_DIR` — the kernel no longer mints one
  * from `project.path`), an owner `WORKWIKI_WIKI_ROOTS` entry whose id is in
- * the project list, the sidecar workspace (`current`), or — when there is
- * no kernel token — the on-disk tenants/<handle>/wikis/<uuid> tree.
+ * the project list, or — when there is no kernel token — the on-disk
+ * tenants/<handle>/wikis/<uuid> tree. Agent workspace is not a Wiki root.
  *
  * Kernel `project.path` is NOT a host root. Resolving it against `DATA_DIR`
  * invented `<cwd>/tenants/...` paths no owner would send.
@@ -798,7 +864,6 @@ function readCurrentWikiIdFromDisk(dataDir, diskRows) {
  *   token?: string,
  *   dataDir?: string,
  *   wikiRoots?: string,
- *   workspaceRoot?: string,
  *   fetchImpl?: typeof fetch,
  * }} [options]
  */
@@ -813,38 +878,23 @@ export function createWikiRegistrySource({
   ).trim(),
   dataDir = process.env.DATA_DIR || process.cwd(),
   wikiRoots = process.env.WORKWIKI_WIKI_ROOTS,
-  workspaceRoot = "",
   fetchImpl = fetch,
 } = {}) {
   let rows = [];
   let currentId = null;
   let refreshGeneration = 0;
 
-  const extras = () => {
-    const next = [];
-    const seen = new Set();
-    if (typeof workspaceRoot === "string" && workspaceRoot) {
-      pushRegistryRow(next, seen, {
-        id: "current",
-        path: path.resolve(workspaceRoot),
-      });
-    }
-    return { next, seen };
-  };
-
   const applyLocal = ({ authorizeCurrent = true } = {}) => {
-    const { next, seen } = extras();
     const diskRows = readWikiRegistryFromDisk(dataDir);
-    for (const row of diskRows) {
-      pushRegistryRow(next, seen, row);
-    }
-    for (const row of parseWikiRoots(wikiRoots)) {
-      pushRegistryRow(next, seen, row);
-    }
-    rows = next;
+    const published = unambiguousRegistryRows([
+      ...diskRows,
+      ...explicitHostCandidates(wikiRoots),
+    ]);
+    rows = published.rows;
     currentId = authorizeCurrent
       ? readCurrentWikiIdFromDisk(dataDir, diskRows)
       : null;
+    if (currentId && published.conflictIds.has(currentId)) currentId = null;
   };
 
   const refresh = async () => {
@@ -864,9 +914,14 @@ export function createWikiRegistrySource({
         if (rows.length === 0) applyLocal({ authorizeCurrent: false });
         return rows;
       }
-      const body = await response.json();
+      const body = await readRegistryJson(response);
       if (generation !== refreshGeneration) return rows;
-      if (!body || typeof body !== "object" || !Array.isArray(body.projects)) {
+      if (
+        !body ||
+        typeof body !== "object" ||
+        !Array.isArray(body.projects) ||
+        body.projects.length > WIKI_REGISTRY_MAX_ROWS
+      ) {
         currentId = null;
         if (rows.length === 0) applyLocal({ authorizeCurrent: false });
         return rows;
@@ -881,23 +936,19 @@ export function createWikiRegistrySource({
           )
           .map((project) => project.id),
       );
-      const remoteHosts = remoteHostRows(body.projects, dataDir);
+      const published = unambiguousRegistryRows([
+        ...remoteHostCandidates(body.projects, dataDir),
+        ...explicitHostCandidates(wikiRoots, known),
+      ]);
       const nextCurrentId =
         typeof body.currentId === "string" &&
         WIKI_UUID_RE.test(body.currentId) &&
         known.has(body.currentId) &&
-        !remoteHosts.conflictIds.has(body.currentId)
+        !published.conflictIds.has(body.currentId)
           ? body.currentId
           : null;
-      const { next, seen } = extras();
-      for (const row of remoteHosts.rows) {
-        pushRegistryRow(next, seen, row);
-      }
-      for (const row of parseWikiRoots(wikiRoots)) {
-        if (known.has(row.id)) pushRegistryRow(next, seen, row);
-      }
       if (generation !== refreshGeneration) return rows;
-      rows = next;
+      rows = published.rows;
       currentId = nextCurrentId;
     } catch {
       // Keep the last good list. A transient 500 must not empty the registry
@@ -933,7 +984,9 @@ export function resolveLoopbackWikiId(value, registry = []) {
   if (!resolved) return null;
   const hit = wikiRegistryRows(registry).find(
     (row) =>
-      row && canonicalizePathSnapshot(String(row.path ?? "")) === resolved,
+      row &&
+      typeof row.path === "string" &&
+      path.resolve(row.path) === resolved,
   );
   return hit?.id ?? null;
 }

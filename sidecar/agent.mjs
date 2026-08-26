@@ -28,8 +28,9 @@
 
 import { readSkill, scanSkills } from "./skills.mjs";
 import {
+  canPersistExecutableApproval,
   effectiveShellCwd,
-  executableKey,
+  executableSnapshot,
   runShellCommand,
   shellApprovalReason,
   shellExternalSetGrew,
@@ -123,6 +124,7 @@ function mergeTurnCitations(citations, result) {
  *   cwd?: string,
  *   externalCwd?: boolean,
  *   externalPaths?: string[],
+ *   executableKey?: string,
  * }} AgentPending
  * @typedef {{
  *   content: string,
@@ -525,9 +527,10 @@ export async function runTool(call, context) {
       const command = String(call.input.command ?? "");
       const args = Array.isArray(call.input.args) ? call.input.args.map(String) : [];
       const cwd = effectiveShellCwd(call.input.cwd, workspace);
+      const executable = executableSnapshot(command, { cwd, workspace });
       const reason = shellApprovalReason(
         { command, args, cwd },
-        { workspace, approvedExecutables },
+        { workspace, approvedExecutables, executable },
       );
       if (reason === "invalid") {
         return { detail: "invalid command", observation: "No command given." };
@@ -549,16 +552,24 @@ export async function runTool(call, context) {
             cwd,
             externalCwd: targets.externalCwd,
             externalPaths: targets.externalPaths,
+            executableKey: executable.key,
           },
           detail: "waiting for approval",
           observation: "",
         };
       }
-      const result = await runShellCommand({ command, args, cwd }, { workspace });
+      const result = await runShellCommand(
+        { command: executable.command, args, cwd },
+        { workspace },
+      );
+      const detail = result.started
+        ? `exit ${result.code}`
+        : `failed to start${result.stderr ? `: ${result.stderr}` : ""}`;
       return {
-        detail: `exit ${result.code}`,
+        state: result.started ? "done" : "error",
+        detail,
         observation:
-          `exit ${result.code}\n` +
+          `${detail}\n` +
           (result.stdout ? `stdout:\n${result.stdout}\n` : "") +
           (result.stderr ? `stderr:\n${result.stderr}` : ""),
       };
@@ -672,7 +683,9 @@ export async function runAgentTurn({
         citations,
       };
     }
-    emit("agent", { toolRow: toolRow(id, call.tool, "done", result.detail) });
+    emit("agent", {
+      toolRow: toolRow(id, call.tool, result.state ?? "done", result.detail),
+    });
     toolCalls.push({ id, tool: call.tool, detail: result.detail });
     if (result.output) outputs.push(result.output);
     if (Array.isArray(result.citations) && result.citations.length > 0) {
@@ -782,9 +795,17 @@ export async function resumeAgentTurn({
     };
   }
   const cwd = effectiveShellCwd(pending.cwd, context.workspace);
+  const liveExecutable = executableSnapshot(pending.command, {
+    cwd,
+    workspace: context.workspace,
+  });
   const reason = shellApprovalReason(
     { command: pending.command, args: pending.args ?? [], cwd },
-    { workspace: context.workspace, approvedExecutables: context.approvedExecutables },
+    {
+      workspace: context.workspace,
+      approvedExecutables: context.approvedExecutables,
+      executable: liveExecutable,
+    },
   );
   if (reason === "invalid") {
     return {
@@ -817,7 +838,10 @@ export async function resumeAgentTurn({
       )
     : (reason === "external_cwd" || reason === "external_path") &&
       pending.reason !== reason;
-  if (grew) {
+  const executableChanged =
+    typeof pending.executableKey === "string" &&
+    pending.executableKey !== liveExecutable.key;
+  if (grew || executableChanged) {
     emit("agent", {
       toolRow: toolRow(pending.rowId, "shell", "denied", SHELL_PATH_CHANGED_COPY),
     });
@@ -831,28 +855,36 @@ export async function resumeAgentTurn({
       citations: [],
     };
   }
-  const approvedExecutable = executableKey(pending.command, {
-    cwd,
-    workspace: context.workspace,
-  });
   const result = await runShellCommand(
-    { command: pending.command, args: pending.args, cwd },
+    { command: liveExecutable.command, args: pending.args, cwd },
     { workspace: context.workspace, spawnImpl: context.spawnImpl },
   );
   // Approval memory records a capability that actually started. ENOENT and a
   // synchronous spawn refusal did not exercise the executable, so the next
   // attempt must ask again rather than inheriting a permission that never ran.
-  if (result.started && approvedExecutable) {
-    context.approvedExecutables?.add(approvedExecutable);
+  if (
+    result.started &&
+    liveExecutable.key &&
+    canPersistExecutableApproval(pending.command, pending.args ?? [])
+  ) {
+    context.approvedExecutables?.add(liveExecutable.key);
   }
+  const resultDetail = result.started
+    ? `exit ${result.code}`
+    : `failed to start${result.stderr ? `: ${result.stderr}` : ""}`;
   emit("agent", {
-    toolRow: toolRow(pending.rowId, "shell", "done", `exit ${result.code}`),
+    toolRow: toolRow(
+      pending.rowId,
+      "shell",
+      result.started ? "done" : "error",
+      resultDetail,
+    ),
   });
   const transcript = [
     ...(pending.transcript ?? []),
     {
       role: "user",
-      content: `Tool shell result:\nexit ${result.code}\n${result.stdout}\n${result.stderr}`,
+      content: `Tool shell result:\n${resultDetail}\n${result.stdout}\n${result.stderr}`,
     },
   ];
   return runAgentTurn({
@@ -864,7 +896,7 @@ export async function resumeAgentTurn({
     tools,
     priorToolCalls: [
       ...(pending.toolCalls ?? []),
-      { id: pending.rowId, tool: "shell", detail: `exit ${result.code}` },
+      { id: pending.rowId, tool: "shell", detail: resultDetail },
     ],
     priorOutputs: pending.outputs ?? [],
     rowSeed: pending.rowSeed ?? 0,

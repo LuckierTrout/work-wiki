@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -74,6 +74,12 @@ beforeEach(async () => {
 afterEach(() => {
   dir = "";
 });
+
+function approved(command: string) {
+  return new Set<string>([
+    executableKey(command, { cwd: workspace.root, workspace }),
+  ]);
+}
 
 /** A `generate` that reads a script, one entry per model call. */
 function scripted(...replies: string[]) {
@@ -661,16 +667,18 @@ describe("workspace outputs", () => {
 
 describe("the shell asks before it leaves the workspace", () => {
   it("classifies a workspace command, an external cwd, and an external target", () => {
-    const approved = new Set(["name:node"]);
+    const approved = new Set([
+      executableKey("git", { cwd: workspace.root, workspace }),
+    ]);
     expect(
       shellApprovalReason(
-        { command: "node", args: ["build.mjs"], cwd: workspace.root },
+        { command: "git", args: ["status"], cwd: workspace.root },
         { workspace, approvedExecutables: approved },
       ),
     ).toBeNull();
     expect(
       shellApprovalReason(
-        { command: "node", args: [], cwd: "/etc" },
+        { command: "git", args: [], cwd: "/etc" },
         { workspace, approvedExecutables: approved },
       ),
     ).toBe("external_cwd");
@@ -679,7 +687,7 @@ describe("the shell asks before it leaves the workspace", () => {
     // an external command by any reading an owner would recognise.
     expect(
       shellApprovalReason(
-        { command: "node", args: ["--flag", "/etc/hosts"], cwd: workspace.root },
+        { command: "git", args: ["--flag", "/etc/hosts"], cwd: workspace.root },
         { workspace, approvedExecutables: approved },
       ),
     ).toBe("external_path");
@@ -687,7 +695,7 @@ describe("the shell asks before it leaves the workspace", () => {
     // failure mode that makes owners stop reading them.
     expect(
       shellApprovalReason(
-        { command: "node", args: ["--color=always"], cwd: workspace.root },
+        { command: "git", args: ["--color=always"], cwd: workspace.root },
         { workspace, approvedExecutables: approved },
       ),
     ).toBeNull();
@@ -716,7 +724,7 @@ describe("the shell asks before it leaves the workspace", () => {
           args: ["escape/not-created-yet.txt"],
           cwd: workspace.root,
         },
-        { workspace, approvedExecutables: new Set(["name:echo"]) },
+        { workspace, approvedExecutables: approved("echo") },
       ),
     ).toBe("external_path");
   });
@@ -737,7 +745,7 @@ describe("the shell asks before it leaves the workspace", () => {
           args: ["dangling/future.txt"],
           cwd: workspace.root,
         },
-        { workspace, approvedExecutables: new Set(["name:echo"]) },
+        { workspace, approvedExecutables: approved("echo") },
       ),
     ).toBe("external_path");
 
@@ -751,12 +759,24 @@ describe("the shell asks before it leaves the workspace", () => {
     ).toBeNull();
   });
 
+  it("uses the filesystem's canonical case for an existing path", async () => {
+    const actual = path.join(dir, "CaseSensitiveApprovalTarget");
+    const alias = path.join(dir, "casesensitiveapprovaltarget");
+    await writeFile(actual, "ok");
+    try {
+      await access(alias);
+    } catch {
+      return;
+    }
+    expect(canonicalizePathSnapshot(alias)).toBe(canonicalizePathSnapshot(actual));
+  });
+
   it("suspends for approval and runs nothing on Deny", async () => {
     const { generate } = scripted(
       '{"tool":"shell","input":{"command":"ls","args":["/etc"]}}',
       "unreachable",
     );
-    const approvedExecutables = new Set<string>(["name:ls"]);
+    const approvedExecutables = approved("ls");
     const paused = await runAgentTurn({
       generate,
       messages: [{ role: "user", content: "list /etc" }],
@@ -790,7 +810,11 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(denied.content).toBe(SHELL_DENIED_COPY);
     // NO ALLOW-ALL: a Deny does not teach the approval memory anything, so the
     // same command asks again next time.
-    expect(approvedExecutables.has("name:ls")).toBe(true);
+    expect(
+      approvedExecutables.has(
+        executableKey("ls", { cwd: workspace.root, workspace }),
+      ),
+    ).toBe(true);
     expect(denied.toolCalls).toEqual([
       { id: "t1", tool: "shell", detail: SHELL_DENIED_COPY },
     ]);
@@ -834,7 +858,11 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(ran.content).toBe("Done.");
     expect(ran.toolCalls).toEqual([{ id: "t1", tool: "shell", detail: "exit 0" }]);
     // The same program stops asking; a DIFFERENT program asks again.
-    expect(approvedExecutables.has("name:echo")).toBe(true);
+    expect(
+      approvedExecutables.has(
+        executableKey("echo", { cwd: workspace.root, workspace }),
+      ),
+    ).toBe(true);
     expect(
       shellApprovalReason(
         { command: "echo", args: [], cwd: workspace.root },
@@ -907,6 +935,157 @@ describe("the shell asks before it leaves the workspace", () => {
         { workspace, approvedExecutables },
       ),
     ).toBe("new_executable");
+  });
+
+  it("denies a relative path executable that is re-pointed while approval is pending", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const first = path.join(workspace.root, "tool-first");
+    const second = path.join(workspace.root, "tool-second");
+    const link = path.join(workspace.root, "tool");
+    await writeFile(first, "#!/bin/sh\necho first\n");
+    await writeFile(second, "#!/bin/sh\necho second\n");
+    await chmod(first, 0o755);
+    await chmod(second, 0o755);
+    await symlink(first, link);
+    const { generate } = scripted(
+      JSON.stringify({
+        tool: "shell",
+        input: { command: "./tool", args: [], cwd: workspace.root },
+      }),
+      "unreachable",
+    );
+    const paused = await runAgentTurn({
+      generate,
+      messages: [{ role: "user", content: "run it" }],
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables: new Set(),
+      },
+    });
+    expect(pauseOf(paused).executableKey).toBe(
+      executableKey("./tool", { cwd: workspace.root, workspace }),
+    );
+    await rm(link);
+    await symlink(second, link);
+    const spawnImpl = vi.fn(() => {
+      throw new Error("must not spawn");
+    });
+    const result = await resumeAgentTurn({
+      pending: pauseOf(paused),
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables: new Set(),
+        spawnImpl,
+      },
+    });
+    expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+    expect(spawnImpl).not.toHaveBeenCalled();
+  });
+
+  it("denies a bare executable when PATH points its name at a new binary", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const firstBin = path.join(dir, "bin-first");
+    const secondBin = path.join(dir, "bin-second");
+    await mkdir(firstBin);
+    await mkdir(secondBin);
+    for (const root of [firstBin, secondBin]) {
+      const executable = path.join(root, "epic8-runner");
+      await writeFile(executable, "#!/bin/sh\nexit 0\n");
+      await chmod(executable, 0o755);
+    }
+    const priorPath = process.env.PATH;
+    try {
+      process.env.PATH = firstBin;
+      const { generate } = scripted(
+        JSON.stringify({ tool: "shell", input: { command: "epic8-runner" } }),
+        "unreachable",
+      );
+      const paused = await runAgentTurn({
+        generate,
+        messages: [{ role: "user", content: "run it" }],
+        system: "s",
+        context: {
+          kernel: async () => null,
+          wikiId: "current",
+          workspace,
+          approvedExecutables: new Set(),
+        },
+      });
+      process.env.PATH = secondBin;
+      const spawnImpl = vi.fn(() => {
+        throw new Error("must not spawn");
+      });
+      const result = await resumeAgentTurn({
+        pending: pauseOf(paused),
+        approved: true,
+        generate,
+        system: "s",
+        context: {
+          kernel: async () => null,
+          wikiId: "current",
+          workspace,
+          approvedExecutables: new Set(),
+          spawnImpl,
+        },
+      });
+      expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+      expect(spawnImpl).not.toHaveBeenCalled();
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+    }
+  });
+
+  it("requires per-command approval for inline interpreter code", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const approvedExecutables = approved("sh");
+    expect(
+      shellApprovalReason(
+        { command: "sh", args: ["-c", "exit 0"], cwd: workspace.root },
+        { workspace, approvedExecutables },
+      ),
+    ).toBe("new_executable");
+    const { generate } = scripted(
+      JSON.stringify({
+        tool: "shell",
+        input: { command: "sh", args: ["-c", "exit 0"], cwd: workspace.root },
+      }),
+      "Done.",
+    );
+    const paused = await runAgentTurn({
+      generate,
+      messages: [{ role: "user", content: "run inline code" }],
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    approvedExecutables.clear();
+    const result = await resumeAgentTurn({
+      pending: pauseOf(paused),
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe("Done.");
+    expect(approvedExecutables.size).toBe(0);
   });
 
   it("does not run a new_executable resume after the path becomes external", async () => {
@@ -987,7 +1166,7 @@ describe("the shell asks before it leaves the workspace", () => {
 
   it("does not run an external_path resume after a second argument becomes external", async () => {
     await mkdir(workspace.root, { recursive: true });
-    const approvedExecutables = new Set<string>(["name:echo"]);
+    const approvedExecutables = approved("echo");
     const { generate } = scripted("unreachable");
     const escaped = {
       ...workspace,
@@ -1027,7 +1206,7 @@ describe("the shell asks before it leaves the workspace", () => {
 
   it("still runs an approved resume when the reason is still external_path", async () => {
     await mkdir(workspace.root, { recursive: true });
-    const approvedExecutables = new Set<string>(["name:echo"]);
+    const approvedExecutables = approved("echo");
     const { generate } = scripted("Done.");
     const ran = await resumeAgentTurn({
       pending: {
@@ -1058,7 +1237,7 @@ describe("the shell asks before it leaves the workspace", () => {
 
   it("does not run a captured new_executable resume after cwd becomes external", async () => {
     await mkdir(workspace.root, { recursive: true });
-    const approvedExecutables = new Set<string>(["name:echo"]);
+    const approvedExecutables = approved("echo");
     const { generate } = scripted("unreachable");
     const escaped = {
       ...workspace,
@@ -1099,7 +1278,7 @@ describe("the shell asks before it leaves the workspace", () => {
     const other = path.join(dir, "other");
     await mkdir(safe);
     await mkdir(other);
-    const approvedExecutables = new Set<string>(["name:echo"]);
+    const approvedExecutables = approved("echo");
     const { generate } = scripted("unreachable");
     await rm(safe, { recursive: true });
     await symlink(other, safe);
@@ -1232,7 +1411,11 @@ describe("the shell asks before it leaves the workspace", () => {
     });
     expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
     expect(spawnImpl).not.toHaveBeenCalled();
-    expect(approvedExecutables.has("name:echo")).toBe(false);
+    expect(
+      approvedExecutables.has(
+        executableKey("echo", { cwd: workspace.root, workspace }),
+      ),
+    ).toBe(false);
   });
 
   it("does not remember approval when the executable never starts", async () => {
@@ -1240,6 +1423,7 @@ describe("the shell asks before it leaves the workspace", () => {
     const approvedExecutables = new Set<string>();
     const command = "definitely-not-a-real-binary-xyz";
     const { generate } = scripted("Done.");
+    const emitted: unknown[] = [];
     const result = await resumeAgentTurn({
       pending: {
         kind: "shell_approval",
@@ -1257,6 +1441,7 @@ describe("the shell asks before it leaves the workspace", () => {
       },
       approved: true,
       generate,
+      emit: (_event, payload) => emitted.push(payload),
       system: "s",
       context: {
         kernel: async () => null,
@@ -1266,6 +1451,10 @@ describe("the shell asks before it leaves the workspace", () => {
       },
     });
     expect(result.content).toBe("Done.");
+    expect(emitted).toContainEqual({
+      toolRow: expect.objectContaining({ state: "error" }),
+    });
+    expect(result.toolCalls[0].detail).toMatch(/^failed to start/);
     expect(
       approvedExecutables.has(
         executableKey(command, { cwd: workspace.root, workspace }),
@@ -1277,6 +1466,32 @@ describe("the shell asks before it leaves the workspace", () => {
         { workspace, approvedExecutables },
       ),
     ).toBe("new_executable");
+  });
+
+  it("marks an already-approved command that cannot start as an error row", async () => {
+    const command = "definitely-not-a-real-approved-binary-xyz";
+    const emitted: unknown[] = [];
+    const { generate } = scripted(
+      JSON.stringify({ tool: "shell", input: { command, args: [] } }),
+      "Done.",
+    );
+    const result = await runAgentTurn({
+      generate,
+      emit: (_event, payload) => emitted.push(payload),
+      messages: [{ role: "user", content: "run it" }],
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables: new Set([`name:${command}`]),
+      },
+    });
+    expect(result.content).toBe("Done.");
+    expect(emitted).toContainEqual({
+      toolRow: expect.objectContaining({ state: "error" }),
+    });
+    expect(result.toolCalls[0].detail).toMatch(/^failed to start/);
   });
 
   it("keys the external set on realpath, including cwd and a path-shaped command", () => {

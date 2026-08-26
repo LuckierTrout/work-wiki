@@ -29,6 +29,7 @@
  */
 
 import { spawn } from "node:child_process";
+import fsSync from "node:fs";
 import path from "node:path";
 import { canonicalizePathSnapshot } from "./workspace.mjs";
 
@@ -36,6 +37,10 @@ import { canonicalizePathSnapshot } from "./workspace.mjs";
 export const SHELL_TIMEOUT_MS = 2 * 60 * 1000;
 /** Captured output above this is truncated — the tail is what a caller reads. */
 export const SHELL_MAX_OUTPUT_CHARS = 100_000;
+/** Bound synchronous classification and the argv handed to spawn. */
+export const SHELL_MAX_ARGS = 128;
+export const SHELL_MAX_ARG_CHARS = 32_768;
+export const SHELL_MAX_TOTAL_ARG_CHARS = 131_072;
 
 export const SHELL_DENIED_COPY = "Denied. The command did not run.";
 /** Resume was for a different reason; the command now leaves the workspace. */
@@ -67,16 +72,18 @@ export function effectiveShellCwd(cwd, workspace) {
  * @param {{
  *   workspace?: import("./workspace.mjs").AgentWorkspace,
  *   approvedExecutables?: Set<string>,
+ *   executable?: { key: string, command: string },
  * }} [options]
  * @returns {"invalid" | "external_cwd" | "external_path" | "new_executable" | null}
  */
 export function shellApprovalReason(
   { command, args = [], cwd = null },
-  { workspace, approvedExecutables = new Set() } = {},
+  { workspace, approvedExecutables = new Set(), executable = null } = {},
 ) {
   if (typeof command !== "string" || command.trim().length === 0) {
     return "invalid";
   }
+  if (!validShellArgv(command, args)) return "invalid";
   const effectiveCwd = effectiveShellCwd(cwd, workspace);
   if (workspace && !workspace.contains(effectiveCwd)) return "external_cwd";
   // Every argument that LOOKS like a path is checked, not just the first. A
@@ -89,8 +96,15 @@ export function shellApprovalReason(
     const resolved = path.resolve(effectiveCwd, pathish);
     if (workspace && !workspace.contains(resolved)) return "external_path";
   }
-  const key = executableKey(command, { cwd: effectiveCwd, workspace });
-  if (!key || !approvedExecutables.has(key)) return "new_executable";
+  const key =
+    executable?.key ?? executableKey(command, { cwd: effectiveCwd, workspace });
+  if (
+    !key ||
+    !approvedExecutables.has(key) ||
+    !canPersistExecutableApproval(command, args)
+  ) {
+    return "new_executable";
+  }
   return null;
 }
 
@@ -179,10 +193,118 @@ function pathFromArg(arg) {
   if (typeof arg !== "string" || arg.length === 0) return null;
   if (arg.startsWith("-")) {
     const eq = arg.indexOf("=");
-    if (eq <= 0) return null;
-    return pathFromArg(arg.slice(eq + 1));
+    if (eq > 0) return pathFromArg(arg.slice(eq + 1));
+    // Compact path options (`-C/tmp`, `-I/etc`) have no `=`. Conservatively
+    // treat a slash, backslash, home marker, or traversal suffix as the start
+    // of a path instead of letting an approved executable hide the target.
+    const starts = [arg.indexOf("/"), arg.indexOf("\\"), arg.indexOf("~"), arg.indexOf("..")]
+      .filter((index) => index > 0);
+    if (starts.length === 0) return null;
+    return pathFromArg(arg.slice(Math.min(...starts)));
   }
   return looksLikePath(arg) ? arg : null;
+}
+
+function validShellArgv(command, args) {
+  if (command.length > SHELL_MAX_ARG_CHARS || !Array.isArray(args)) return false;
+  if (args.length > SHELL_MAX_ARGS) return false;
+  let total = command.length;
+  for (const arg of args) {
+    if (typeof arg !== "string" || arg.length > SHELL_MAX_ARG_CHARS) return false;
+    total += arg.length;
+    if (total > SHELL_MAX_TOTAL_ARG_CHARS) return false;
+  }
+  return true;
+}
+
+const NON_PERSISTABLE_LAUNCHERS = new Set([
+  "sh",
+  "bash",
+  "dash",
+  "zsh",
+  "ksh",
+  "fish",
+  "node",
+  "ruby",
+  "perl",
+  "php",
+  "env",
+  "xargs",
+  "npm",
+  "npx",
+  "pnpm",
+  "yarn",
+  "bun",
+  "deno",
+]);
+
+/**
+ * Interpreter source and dynamic launchers are approved once per invocation,
+ * never remembered as a conversation-wide executable capability.
+ */
+export function canPersistExecutableApproval(command, _args = []) {
+  const name = path.basename(String(command).trim()).toLowerCase();
+  if (/^python(?:\d+(?:\.\d+)*)?$/.test(name)) return false;
+  return !NON_PERSISTABLE_LAUNCHERS.has(name);
+}
+
+function resolveBareExecutable(command, cwd) {
+  const pathValue = process.env.PATH ?? "";
+  const extensions = process.platform === "win32"
+    ? (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";")
+    : [""];
+  for (const entry of pathValue.split(path.delimiter)) {
+    const directory = entry
+      ? path.isAbsolute(entry)
+        ? path.resolve(entry)
+        : path.resolve(cwd, entry)
+      : path.resolve(cwd);
+    for (const extension of extensions) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      try {
+        const stat = fsSync.statSync(candidate);
+        if (!stat.isFile()) continue;
+        if (process.platform !== "win32") {
+          fsSync.accessSync(candidate, fsSync.constants.X_OK);
+        }
+        return candidate;
+      } catch {
+        // Try the next PATH entry.
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * One approval-time executable snapshot. The returned command is the exact
+ * canonical path spawn should receive, so PATH and symlink lookup are not done
+ * a second time after the owner approves it.
+ */
+export function executableSnapshot(command, { cwd = null, workspace } = {}) {
+  const trimmed = String(command ?? "").trim();
+  if (!trimmed) return { key: "", command: "" };
+  const effectiveCwd = effectiveShellCwd(cwd, workspace);
+  const pathShaped =
+    path.isAbsolute(trimmed) ||
+    trimmed.startsWith("~") ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\");
+  const expanded = pathShaped
+    ? trimmed.startsWith("~")
+      ? path.resolve(trimmed.replace(/^~(?=\/|$)/, process.env.HOME || ""))
+      : path.resolve(effectiveCwd, trimmed)
+    : resolveBareExecutable(trimmed, effectiveCwd);
+  if (!expanded) {
+    return { key: `name:${path.basename(trimmed).toLowerCase()}`, command: trimmed };
+  }
+  const canonical =
+    (typeof workspace?.canonicalize === "function"
+      ? workspace.canonicalize(expanded)
+      : canonicalizePathSnapshot(expanded));
+  return canonical
+    ? { key: `path:${canonical}`, command: canonical }
+    : { key: "", command: expanded };
 }
 
 /**
@@ -196,24 +318,7 @@ function pathFromArg(arg) {
  * }} [options]
  */
 export function executableKey(command, { cwd = null, workspace } = {}) {
-  const trimmed = command.trim();
-  if (!trimmed) return "";
-  if (
-    path.isAbsolute(trimmed) ||
-    trimmed.startsWith("~") ||
-    trimmed.includes("/") ||
-    trimmed.includes("\\")
-  ) {
-    const expanded = trimmed.startsWith("~")
-      ? path.resolve(trimmed.replace(/^~(?=\/|$)/, process.env.HOME || ""))
-      : path.resolve(effectiveShellCwd(cwd, workspace), trimmed);
-    const canonical =
-      (typeof workspace?.canonicalize === "function"
-        ? workspace.canonicalize(expanded)
-        : canonicalizePathSnapshot(expanded));
-    return canonical ? `path:${canonical}` : "";
-  }
-  return `name:${path.basename(trimmed).toLowerCase()}`;
+  return executableSnapshot(command, { cwd, workspace }).key;
 }
 
 /**
@@ -247,6 +352,10 @@ export function runShellCommand(
       settled = true;
       resolve({ ...result, started });
     };
+    if (!validShellArgv(command, args)) {
+      finish({ code: null, stdout: "", stderr: "invalid command arguments" });
+      return;
+    }
     try {
       child = spawnImpl(command, args, {
         cwd: effectiveShellCwd(cwd, workspace),

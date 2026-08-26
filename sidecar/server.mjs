@@ -313,10 +313,20 @@ function isPlainObject(value) {
 export function createChatTurnSession(req, res, stream) {
   const controller = new AbortController();
   let settled = false;
+  let closeListener = null;
+
+  const removeTurnListeners = () => {
+    if (typeof req.off === "function") req.off("aborted", emitCancelled);
+    if (closeListener && req.socket && typeof req.socket.off === "function") {
+      req.socket.off("close", closeListener);
+    }
+    closeListener = null;
+  };
 
   const emitCancelled = () => {
     if (settled) return;
     settled = true;
+    removeTurnListeners();
     controller.abort();
     if (!stream || res.writableEnded) return;
     if (!res.headersSent) {
@@ -335,7 +345,9 @@ export function createChatTurnSession(req, res, stream) {
   };
 
   const settle = () => {
+    if (settled) return;
     settled = true;
+    removeTurnListeners();
   };
 
   if (typeof req.on === "function") {
@@ -344,9 +356,10 @@ export function createChatTurnSession(req, res, stream) {
     req.on("aborted", emitCancelled);
   }
   if (req.socket && typeof req.socket.on === "function") {
-    req.socket.on("close", () => {
+    closeListener = () => {
       if (!settled) emitCancelled();
-    });
+    };
+    req.socket.on("close", closeListener);
   }
 
   return { signal: controller.signal, emitCancelled, settle };
@@ -846,9 +859,25 @@ async function handleChat(req, res, wikiId, options = {}) {
     rejectChat(res, 503, "current_wiki_unavailable");
     return;
   }
+  let resumePending = null;
+  if (isPlainObject(body.resume)) {
+    const capabilityId = resumeCapabilityId(body.resume);
+    const taken = options.capabilities?.take(capabilityId, {
+      conversationId: clientConversationId(body),
+      wikiId,
+    });
+    if (
+      !taken ||
+      (taken.kind !== "shell_approval" && taken.kind !== "skill_form")
+    ) {
+      rejectChat(res, 400, "invalid_resume");
+      return;
+    }
+    resumePending = taken.payload;
+  }
   // Attach abort/socket listeners only after every synchronous refusal. An
-  // unresolved mutable-current door never owns a turn and must not leave a
-  // close listener behind on a keep-alive socket.
+  // unresolved mutable-current door and an invalid resume never own a turn and
+  // must not leave a close listener behind on a keep-alive socket.
   const session = createChatTurnSession(req, res, stream);
   const citations = citationParsed.citations;
   const history = historyParsed.messages;
@@ -895,23 +924,6 @@ async function handleChat(req, res, wikiId, options = {}) {
    * inside that shape would spend the owner's budget re-finding what the
    * Workbench had already found and would break the `coverage: false` pin.
    */
-  let resumePending = null;
-  if (isPlainObject(body.resume)) {
-    const capabilityId = resumeCapabilityId(body.resume);
-    const taken = options.capabilities?.take(capabilityId, {
-      conversationId: clientConversationId(body),
-      wikiId,
-    });
-    if (
-      !taken ||
-      (taken.kind !== "shell_approval" && taken.kind !== "skill_form")
-    ) {
-      rejectChat(res, 400, "invalid_resume");
-      return;
-    }
-    resumePending = taken.payload;
-  }
-
   // NO CONTEXT AND NO TOOLS is honest coverage-missing: nothing was retrieved
   // and nothing may go looking, so there is no answer to give. With tools on,
   // an empty context is the NORMAL start of a turn — the Agent's first act is to
@@ -1128,7 +1140,6 @@ export function productionWikiRegistry({
       token: kernel.token,
       dataDir: env.DATA_DIR || process.cwd(),
       wikiRoots: env.WORKWIKI_WIKI_ROOTS,
-      workspaceRoot: path.join(process.cwd(), "agent-workspace"),
       fetchImpl,
     }),
   };

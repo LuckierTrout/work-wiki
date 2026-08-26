@@ -281,8 +281,16 @@ export function canonicalizePathSnapshot(target) {
       } catch (error) {
         if (error?.code !== "ENOENT") return null;
         // Once one component is absent, every later component is an immutable
-        // unresolved suffix. All existing parents have already been followed.
-        return path.resolve(current, ...components.slice(index));
+        // unresolved suffix. Ask the filesystem for the existing parent's one
+        // spelling before appending it: case-insensitive filesystems otherwise
+        // let `/Users/ME` and `/Users/me` become two approval identities.
+        let canonicalParent;
+        try {
+          canonicalParent = fsSync.realpathSync.native(current);
+        } catch {
+          return null;
+        }
+        return path.resolve(canonicalParent, ...components.slice(index));
       }
       if (stat.isSymbolicLink()) {
         hops += 1;
@@ -308,7 +316,13 @@ export function canonicalizePathSnapshot(target) {
       if (index < components.length - 1 && !stat.isDirectory()) return null;
       current = candidate;
     }
-    if (!restarted) return current;
+    if (!restarted) {
+      try {
+        return fsSync.realpathSync.native(current);
+      } catch {
+        return null;
+      }
+    }
   }
 }
 

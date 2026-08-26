@@ -119,6 +119,7 @@ export function publicPending(pending, capabilityId) {
     toolCalls: _toolCalls,
     outputs: _outputs,
     rowSeed: _rowSeed,
+    executableKey: _executableKey,
     ...visible
   } = pending;
   return { ...visible, capabilityId };
