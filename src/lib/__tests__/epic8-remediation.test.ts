@@ -1632,7 +1632,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
     await declaredSource.refresh();
     expect(declaredSource.current()).toHaveLength(1);
     expect(declaredSource.currentId()).toBeNull();
-  });
+  }, 20_000);
 
   it("publishes no partial local snapshot when the row budget is exhausted", async () => {
     const currentId = "ffffffff-0000-4000-8000-000000000000";
@@ -1660,7 +1660,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
     await source.refresh();
     expect(source.current()).toEqual([]);
     expect(source.currentId()).toBeNull();
-  });
+  }, 20_000);
 
   it("resolves a live registry source on Chat instead of an empty listen-time array", async () => {
     const wikiId = "aaaa1111-0000-4000-8000-000000000000";

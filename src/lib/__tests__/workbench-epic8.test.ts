@@ -14,7 +14,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Server } from "node:http";
 import http from "node:http";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -189,7 +189,9 @@ describe("the two copies of the contract cannot drift", () => {
     expect(exported.nodes.map((node) => node.linkCount)).toEqual([1, 1]);
   });
 
-  it("accepts a path as {id} on loopback only", () => {
+  it("accepts a path as {id} on loopback only", async () => {
+    const wikiPath = await mkdtemp(path.join(os.tmpdir(), "epic8-loopback-id-"));
+    const registeredPath = await realpath(wikiPath);
     for (const id of ["current", "8f4e2c1a-0000-4000-8000-000000000000"]) {
       expect(contract.isCloudWikiId(id)).toBe(true);
       expect(contract.isLoopbackWikiId(id)).toBe(true);
@@ -205,10 +207,10 @@ describe("the two copies of the contract cannot drift", () => {
     // …and a traversal segment means the caller is composing an address rather
     // than naming one.
     expect(contract.isLoopbackWikiId("/Users/me/../etc")).toBe(false);
-    expect(resolveLoopbackWikiId("/Users/me/wiki")).toBeNull();
+    expect(resolveLoopbackWikiId(wikiPath)).toBeNull();
     expect(
-      resolveLoopbackWikiId("/Users/me/wiki", [
-        { id: "8f4e2c1a-0000-4000-8000-000000000000", path: "/Users/me/wiki" },
+      resolveLoopbackWikiId(wikiPath, [
+        { id: "8f4e2c1a-0000-4000-8000-000000000000", path: registeredPath },
       ]),
     ).toBe("8f4e2c1a-0000-4000-8000-000000000000");
     expect(resolveLoopbackWikiId("Work Notes")).toBeNull();
