@@ -80,16 +80,21 @@ export function createCapabilityStore({
         return null;
       }
       const entry = items.get(capabilityId);
-      items.delete(capabilityId);
       if (!entry) return null;
-      if (entry.expiresAt <= now()) return null;
+      if (entry.expiresAt <= now()) {
+        items.delete(capabilityId);
+        return null;
+      }
       const conversationId =
         typeof scope.conversationId === "string" ? scope.conversationId : "";
       const wikiId = typeof scope.wikiId === "string" ? scope.wikiId : "";
+      // Scope mismatch must NOT burn the ticket: a resume posted to the
+      // wrong Wiki would otherwise destroy the owner's pending approval.
       if (entry.conversationId && entry.conversationId !== conversationId) {
         return null;
       }
       if (entry.wikiId && entry.wikiId !== wikiId) return null;
+      items.delete(capabilityId);
       return { kind: entry.kind, payload: entry.payload };
     },
   };

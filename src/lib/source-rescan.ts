@@ -88,8 +88,9 @@ export async function rescanSources(input: {
       allow: isV1TextPath,
     });
     batch = page.paths;
-    remaining = page.more ? 1 : 0;
-    nextCursor = page.more ? offset + page.paths.length : null;
+    remaining = page.remaining;
+    nextCursor =
+      page.more && page.paths.length > 0 ? offset + page.paths.length : null;
   }
   const results: SourceRescanOutcome[] = [];
 
@@ -157,14 +158,14 @@ export async function rescanSources(input: {
       const enqueued = await enqueueTask(task);
       if (!enqueued) {
         if (stagedKey) await deleteStaged(stagedKey).catch(() => {});
-        await abandonFreshIngestJob(jobId, input.owner);
+        await abandonFreshIngestJob(jobId, input.owner).catch(() => {});
         results.push({ path, queued: false, reason: "queue_unavailable" });
         continue;
       }
       results.push({ path, queued: true, jobId });
     } catch (error) {
       if (stagedKey) await deleteStaged(stagedKey).catch(() => {});
-      await abandonFreshIngestJob(jobId, input.owner);
+      await abandonFreshIngestJob(jobId, input.owner).catch(() => {});
       logger.error("rescan", `could not queue Ingest for "${path}"`, error);
       results.push({ path, queued: false, reason: getErrorMessage(error) });
     }

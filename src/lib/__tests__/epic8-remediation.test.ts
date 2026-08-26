@@ -130,22 +130,12 @@ describe("F8-01 server-owned shell capabilities", () => {
         wikiId: "wiki-a",
       }),
     ).toBeNull();
-    store.issue(
-      "shell_approval",
-      { command: "ls" },
-      { conversationId: "conv-a", wikiId: "wiki-a" },
-    );
     expect(
       store.consume("cap-scope", "shell_approval", {
         conversationId: "conv-a",
         wikiId: "wiki-b",
       }),
     ).toBeNull();
-    store.issue(
-      "shell_approval",
-      { command: "ls" },
-      { conversationId: "conv-a", wikiId: "wiki-a" },
-    );
     expect(
       store.consume("cap-scope", "shell_approval", {
         conversationId: "conv-a",
@@ -189,6 +179,12 @@ describe("F8-01 server-owned shell capabilities", () => {
     );
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: "invalid_resume" });
+    expect(
+      store.consume("cap-http", "shell_approval", {
+        conversationId: "conv-a",
+        wikiId: "aaaa1111-0000-4000-8000-000000000000",
+      }),
+    ).toMatchObject({ command: "true" });
   });
 
   it("strips transcript from the client-visible pending object", () => {
@@ -301,6 +297,15 @@ describe("F8-02 / F8-03 filesystem and shell containment", () => {
     const read = await workspace.read("notes.txt");
     expect(read.status).toBe(403);
     expect(JSON.stringify(read.body)).not.toContain("secret");
+  });
+
+  it("answers a status instead of throwing when the dest is a directory", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "epic8-ws-dir-"));
+    const workspace = createAgentWorkspace({ root: path.join(dir, "agent-workspace") });
+    await mkdir(path.join(workspace.root, "notes.md"), { recursive: true });
+    const read = await workspace.read("notes.md");
+    expect(read.status).toBeGreaterThanOrEqual(400);
+    expect(read.body).toEqual(expect.objectContaining({ error: expect.any(String) }));
   });
 
   it("refuses a later write after a parent is swapped for a symlink", async () => {
@@ -634,6 +639,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         readableSlugs: new Set(),
         limit: 2,
       });
+      expect(listed.remaining).toBe(1);
       expect(page.requested).toBe(2);
       expect(page.remaining).toBe(1);
       expect(page.nextCursor).toBe(2);

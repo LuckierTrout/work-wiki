@@ -189,13 +189,7 @@ export function createAgentWorkspace({
       try {
         handle = await fs.open(resolved, LEAF_READ_FLAGS);
       } catch (error) {
-        if (error && error.code === "ENOENT") {
-          return { status: 404, body: { error: WORKSPACE_NOT_FOUND_ERROR } };
-        }
-        if (error && (error.code === "ELOOP" || error.code === "EPERM")) {
-          return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
-        }
-        throw error;
+        return classifyWorkspaceReadError(error);
       }
       try {
         try {
@@ -215,6 +209,8 @@ export function createAgentWorkspace({
           status: 200,
           body: { path: relative, name: path.basename(relative), content },
         };
+      } catch (error) {
+        return classifyWorkspaceReadError(error);
       } finally {
         await handle.close().catch(() => {});
       }
@@ -244,6 +240,17 @@ function realpathSyncIfExists(target) {
   } catch {
     return path.resolve(target);
   }
+}
+
+function classifyWorkspaceReadError(error) {
+  const code = error && error.code;
+  if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") {
+    return { status: 404, body: { error: WORKSPACE_NOT_FOUND_ERROR } };
+  }
+  if (code === "ELOOP" || code === "EPERM" || code === "EMLINK") {
+    return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
+  }
+  return { status: 500, body: { error: "read_failed" } };
 }
 
 /** Unlink the tmp we created. Never the destination, never an outside victim. */

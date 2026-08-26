@@ -1062,13 +1062,27 @@ describe("listWorkbenchFilePaths", () => {
     expect(first.paths.every((p) => p.startsWith("raw/sources/"))).toBe(true);
     expect(first.paths).toHaveLength(2);
     expect(first.more).toBe(true);
+    expect(first.remaining).toBe(2);
     const second = await listRawSourceFilePaths(OWNER, {
       offset: 2,
       limit: 2,
     });
     expect(second.paths).toHaveLength(2);
     expect(second.more).toBe(false);
+    expect(second.remaining).toBe(0);
     expect(first.paths.some((p) => second.paths.includes(p))).toBe(false);
+  });
+
+  it("does not page when every leftover Source sits past the depth cap", async () => {
+    await writeSilo("raw", "sources/a/b/c/deep.txt");
+    const page = await listRawSourceFilePaths(OWNER, {
+      offset: 0,
+      limit: 10,
+      maxDepth: 2,
+    });
+    expect(page.paths).toEqual([]);
+    expect(page.more).toBe(false);
+    expect(page.remaining).toBe(0);
   });
 
   it("degrades one unreadable root to an empty branch, keeping the other", async () => {

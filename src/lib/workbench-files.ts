@@ -402,7 +402,7 @@ export async function listRawSourceFilePaths(
     maxDepth?: number;
     allow?: (displayPath: string) => boolean;
   },
-): Promise<{ paths: string[]; more: boolean }> {
+): Promise<{ paths: string[]; more: boolean; remaining: number }> {
   const skip = Math.max(0, Math.round(options.offset ?? 0));
   const take = Math.max(1, Math.round(options.limit));
   const maxDepth = options.maxDepth ?? WORKBENCH_FILE_MAX_DEPTH;
@@ -418,7 +418,7 @@ export async function listRawSourceFilePaths(
 
   const collected: string[] = [];
   let seen = 0;
-  let more = false;
+  let remaining = 0;
   const seeded = new Map<string, Listing[]>([[root.prefix, root.entries]]);
   const queue: QueueItem[] = [
     { storage: root.prefix, display: "raw", depth: 1 },
@@ -436,16 +436,8 @@ export async function listRawSourceFilePaths(
     const seed = seeded.get(node.storage);
     const entries = seed ?? visible((await listSafely(node.storage)).entries);
     if (node.depth >= maxDepth) {
-      if (
-        entries.some((entry) => {
-          const display = `${node.display}/${entry.name}`;
-          return entry.isDirectory
-            ? towardSources(display)
-            : underSources(node.display) && allow(display);
-        })
-      ) {
-        more = true;
-      }
+      // Files past the depth cap are not pageable. Counting them as `more`
+      // made nextCursor = offset when the page was empty, so a drain looped.
       continue;
     }
     for (const entry of entries) {
@@ -465,14 +457,15 @@ export async function listRawSourceFilePaths(
         seen += 1;
         continue;
       }
-      if (collected.length >= take) {
-        return { paths: collected, more: true };
+      if (collected.length < take) {
+        collected.push(display);
+      } else {
+        remaining += 1;
       }
-      collected.push(display);
       seen += 1;
     }
   }
-  return { paths: collected, more };
+  return { paths: collected, more: remaining > 0, remaining };
 }
 
 // ---------------------------------------------------------------------------
