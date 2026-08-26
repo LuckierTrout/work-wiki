@@ -32,6 +32,8 @@ import {
   executableKey,
   runShellCommand,
   shellApprovalReason,
+  shellExternalSetGrew,
+  shellExternalTargets,
   SHELL_DENIED_COPY,
   SHELL_PATH_CHANGED_COPY,
 } from "./shell.mjs";
@@ -119,6 +121,8 @@ function mergeTurnCitations(citations, result) {
  *   command?: string,
  *   args?: string[],
  *   cwd?: string,
+ *   externalCwd?: boolean,
+ *   externalPaths?: string[],
  * }} AgentPending
  * @typedef {{
  *   content: string,
@@ -532,6 +536,10 @@ export async function runTool(call, context) {
         // A QUESTION, not a refusal. The turn suspends here and the surface
         // draws Approve / Deny for THIS command — there is no allow-all, and
         // Deny/Esc means the command never ran at all.
+        const targets = shellExternalTargets(
+          { command, args, cwd },
+          { workspace },
+        );
         return {
           pending: {
             kind: "shell_approval",
@@ -539,6 +547,8 @@ export async function runTool(call, context) {
             command,
             args,
             cwd,
+            externalCwd: targets.externalCwd,
+            externalPaths: targets.externalPaths,
           },
           detail: "waiting for approval",
           observation: "",
@@ -784,15 +794,30 @@ export async function resumeAgentTurn({
       citations: [],
     };
   }
-  // A pause for `new_executable` is not a blank cheque: if a parent became a
-  // symlink (or cwd now sits outside) since the modal opened, the current
-  // reason is a NEW external condition and this resume must not spawn.
-  // Same-reason `external_path` / `external_cwd` still runs — that is what
-  // the owner approved.
-  if (
-    (reason === "external_cwd" || reason === "external_path") &&
-    pending.reason !== reason
-  ) {
+  // A pause is not a blank cheque for every external target. Compare the
+  // live set against what the modal showed. A new_executable resume whose
+  // parent raced to a symlink, or an external_path resume whose SECOND
+  // argument became external, must not spawn. Same stored set still runs.
+  const live = shellExternalTargets(
+    { command: pending.command, args: pending.args ?? [], cwd },
+    { workspace: context.workspace },
+  );
+  const captured =
+    Array.isArray(pending.externalPaths) ||
+    typeof pending.externalCwd === "boolean";
+  const grew = captured
+    ? shellExternalSetGrew(
+        {
+          externalCwd: pending.externalCwd === true,
+          externalPaths: Array.isArray(pending.externalPaths)
+            ? pending.externalPaths
+            : [],
+        },
+        live,
+      )
+    : (reason === "external_cwd" || reason === "external_path") &&
+      pending.reason !== reason;
+  if (grew) {
     emit("agent", {
       toolRow: toolRow(pending.rowId, "shell", "denied", SHELL_PATH_CHANGED_COPY),
     });

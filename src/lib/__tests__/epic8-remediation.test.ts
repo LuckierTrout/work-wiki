@@ -32,10 +32,12 @@ import {
 import {
   createLoopbackSettingsSource,
   createWikiRegistrySource,
+  parseWikiRoots,
   resolveLoopbackWikiId,
   rewriteProxiedWikiPath,
   V1_MAX_BODY_BYTES,
 } from "../../../sidecar/loopback.mjs";
+import { getStorage } from "../storage";
 import {
   clampTopK,
   isV1FileInScope,
@@ -120,6 +122,19 @@ describe("F8-01 server-owned shell capabilities", () => {
     expect(store.consume("cap-x", "shell_approval")).toBeNull();
   });
 
+  it("refuses a ticket issued with no conversationId when resumed under another", () => {
+    const store = createCapabilityStore({ id: () => "cap-empty" });
+    store.issue("shell_approval", { command: "ls" });
+    expect(
+      store.consume("cap-empty", "shell_approval", {
+        conversationId: "conv-other",
+      }),
+    ).toBeNull();
+    expect(store.consume("cap-empty", "shell_approval")).toEqual({
+      command: "ls",
+    });
+  });
+
   it("refuses a ticket issued for another conversation or Wiki", () => {
     const store = createCapabilityStore({ id: () => "cap-scope" });
     store.issue(
@@ -185,6 +200,44 @@ describe("F8-01 server-owned shell capabilities", () => {
     expect(
       store.consume("cap-http", "shell_approval", {
         conversationId: "conv-a",
+        wikiId: "aaaa1111-0000-4000-8000-000000000000",
+      }),
+    ).toMatchObject({ command: "true" });
+  });
+
+  it("does not resume an unbound ticket under a supplied conversationId", async () => {
+    const store = createCapabilityStore({ id: () => "cap-anon" });
+    store.issue(
+      "shell_approval",
+      {
+        kind: "shell_approval",
+        rowId: "s1",
+        command: "true",
+        args: [],
+        cwd: "/tmp",
+        reason: "new_executable",
+      },
+      { wikiId: "aaaa1111-0000-4000-8000-000000000000" },
+    );
+    const base = await listen({ capabilities: store });
+    const response = await fetch(
+      `${base}/api/v1/projects/aaaa1111-0000-4000-8000-000000000000/chat`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "run it",
+          tools: true,
+          stream: false,
+          coverage: false,
+          conversationId: "conv-other",
+          resume: { approved: true, capabilityId: "cap-anon" },
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(
+      store.consume("cap-anon", "shell_approval", {
         wikiId: "aaaa1111-0000-4000-8000-000000000000",
       }),
     ).toMatchObject({ command: "true" });
@@ -483,6 +536,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
 
   it("keeps the last good wiki registry when a later poll fails", async () => {
     const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const hostPath = `/data/tenants/alice/wikis/${wikiId}`;
     let calls = 0;
     const source = createWikiRegistrySource({
       base: "http://kernel.test",
@@ -493,7 +547,14 @@ describe("F8-05 / F8-06 v1 contract", () => {
         if (calls === 1) {
           return new Response(
             JSON.stringify({
-              projects: [{ id: wikiId, path: `tenants/alice/wikis/${wikiId}` }],
+              currentId: wikiId,
+              projects: [
+                {
+                  id: wikiId,
+                  path: `tenants/alice/wikis/${wikiId}`,
+                  hostPath,
+                },
+              ],
             }),
             { status: 200 },
           );
@@ -502,14 +563,95 @@ describe("F8-05 / F8-06 v1 contract", () => {
       },
     });
     await source.refresh();
-    expect(
-      resolveLoopbackWikiId(`/data/tenants/alice/wikis/${wikiId}`, source),
-    ).toBe(wikiId);
+    expect(resolveLoopbackWikiId(hostPath, source)).toBe(wikiId);
     await source.refresh();
     expect(source.current()).toHaveLength(1);
+    expect(resolveLoopbackWikiId(hostPath, source)).toBe(wikiId);
+  });
+
+  it("does not treat kernel-relative project.path as a host root", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: "/data",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            projects: [{ id: wikiId, path: `tenants/alice/wikis/${wikiId}` }],
+          }),
+          { status: 200 },
+        ),
+    });
+    await source.refresh();
     expect(
       resolveLoopbackWikiId(`/data/tenants/alice/wikis/${wikiId}`, source),
+    ).toBeNull();
+  });
+
+  it("maps owner WORKWIKI_WIKI_ROOTS after the id is in the project list", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    expect(parseWikiRoots(`${wikiId}=/Users/me/project`)).toEqual([
+      { id: wikiId, path: path.resolve("/Users/me/project") },
+    ]);
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: "/data",
+      wikiRoots: `${wikiId}=/Users/me/project`,
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            projects: [{ id: wikiId, path: `tenants/alice/wikis/${wikiId}` }],
+          }),
+          { status: 200 },
+        ),
+    });
+    await source.refresh();
+    expect(resolveLoopbackWikiId("/Users/me/project", source)).toBe(wikiId);
+  });
+
+  it("refuses a kernel hostPath that is not under DATA_DIR", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: "/data",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            projects: [{ id: wikiId, path: "tenants/alice/wikis/x", hostPath: "/" }],
+          }),
+          { status: 200 },
+        ),
+    });
+    await source.refresh();
+    expect(source.current()).toEqual([]);
+    expect(resolveLoopbackWikiId("/etc/passwd", source)).toBeNull();
+  });
+
+  it("loads local wiki dirs from disk when there is no kernel token", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-reg-"));
+    await mkdir(path.join(tmp, "tenants", "alice", "wikis", wikiId), {
+      recursive: true,
+    });
+    const source = createWikiRegistrySource({
+      base: "",
+      token: "",
+      dataDir: tmp,
+      workspaceRoot: path.join(tmp, "agent-workspace"),
+    });
+    await source.refresh();
+    expect(
+      resolveLoopbackWikiId(
+        path.join(tmp, "tenants", "alice", "wikis", wikiId),
+        source,
+      ),
     ).toBe(wikiId);
+    expect(
+      resolveLoopbackWikiId(path.join(tmp, "agent-workspace"), source),
+    ).toBe("current");
   });
 
   it("resolves a live registry source on Chat instead of an empty listen-time array", async () => {
@@ -550,7 +692,14 @@ describe("F8-05 / F8-06 v1 contract", () => {
       fetchImpl: async () =>
         new Response(
           JSON.stringify({
-            projects: [{ id: wikiId, path: `tenants/alice/wikis/${wikiId}` }],
+            currentId: wikiId,
+            projects: [
+              {
+                id: wikiId,
+                path: `tenants/alice/wikis/${wikiId}`,
+                hostPath: `/data/tenants/alice/wikis/${wikiId}`,
+              },
+            ],
           }),
           { status: 200 },
         ),
@@ -696,6 +845,32 @@ describe("F8-05 / F8-06 v1 contract", () => {
       expect(last.remaining).toBe(0);
       expect(last.nextCursor).toBeNull();
     } finally {
+      if (originalDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = originalDataDir;
+      _resetStorage();
+      _resetLocks();
+    }
+  });
+
+  it("does not treat a failed Source listing as an empty finished tree", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-list-"));
+    const originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmp;
+    _resetStorage();
+    _resetLocks();
+    try {
+      await saveRawSource("note", "body", { owner: "alice" });
+      vi.spyOn(getStorage(), "listFiles").mockRejectedValue(new Error("list exploded"));
+      const page = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+      });
+      expect(page.reason).toBe("listing_unavailable");
+      expect(page.requested).toBe(0);
+      expect(page.nextCursor).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
       if (originalDataDir === undefined) delete process.env.DATA_DIR;
       else process.env.DATA_DIR = originalDataDir;
       _resetStorage();

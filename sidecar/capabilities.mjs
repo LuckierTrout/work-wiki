@@ -88,12 +88,14 @@ export function createCapabilityStore({
       const conversationId =
         typeof scope.conversationId === "string" ? scope.conversationId : "";
       const wikiId = typeof scope.wikiId === "string" ? scope.wikiId : "";
-      // Scope mismatch must NOT burn the ticket: a resume posted to the
-      // wrong Wiki would otherwise destroy the owner's pending approval.
-      if (entry.conversationId && entry.conversationId !== conversationId) {
-        return null;
-      }
-      if (entry.wikiId && entry.wikiId !== wikiId) return null;
+      // Compare unconditionally. A falsy stored conversationId used to skip
+      // this check, so a ticket issued with no conversationId was resumable
+      // from any conversation. Empty matches empty (unit tests); HTTP mints
+      // a key when the body omits one. Scope mismatch must NOT burn the
+      // ticket: a resume posted to the wrong Wiki would otherwise destroy
+      // the owner's pending approval.
+      if (entry.conversationId !== conversationId) return null;
+      if (entry.wikiId !== wikiId) return null;
       items.delete(capabilityId);
       return { kind: entry.kind, payload: entry.payload };
     },

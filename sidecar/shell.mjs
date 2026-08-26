@@ -93,6 +93,54 @@ export function shellApprovalReason(
 }
 
 /**
+ * Every target the classifier currently treats as outside the workspace.
+ *
+ * The resume guard compares THIS SET, not the reason label. A pause approved
+ * for `/etc/hosts` must not spawn after a second argument's parent raced to a
+ * symlink — both would still be `external_path`.
+ *
+ * @param {{ command?: string, args?: string[], cwd?: string | null }} call
+ * @param {{ workspace?: import("./workspace.mjs").AgentWorkspace }} [options]
+ * @returns {{ externalCwd: boolean, externalPaths: string[] }}
+ */
+export function shellExternalTargets(
+  { args = [], cwd = null },
+  { workspace } = {},
+) {
+  const effectiveCwd = effectiveShellCwd(cwd, workspace);
+  const externalCwd = Boolean(workspace && !workspace.contains(effectiveCwd));
+  const externalPaths = [];
+  const seen = new Set();
+  for (const arg of args) {
+    if (typeof arg !== "string") continue;
+    const pathish = pathFromArg(arg);
+    if (!pathish) continue;
+    const resolved = path.resolve(effectiveCwd, pathish);
+    if (workspace && !workspace.contains(resolved) && !seen.has(resolved)) {
+      seen.add(resolved);
+      externalPaths.push(resolved);
+    }
+  }
+  return { externalCwd, externalPaths };
+}
+
+/**
+ * True when resume would reach a cwd or path the pause never showed.
+ *
+ * @param {{ externalCwd?: boolean, externalPaths?: string[] }} stored
+ * @param {{ externalCwd?: boolean, externalPaths?: string[] }} live
+ */
+export function shellExternalSetGrew(stored, live) {
+  if (live.externalCwd && !stored.externalCwd) return true;
+  const approved = new Set(
+    (stored.externalPaths ?? []).map((entry) => path.resolve(String(entry))),
+  );
+  return (live.externalPaths ?? []).some(
+    (entry) => !approved.has(path.resolve(String(entry))),
+  );
+}
+
+/**
  * Does this argument name a filesystem path?
  *
  * Absolute paths and anything with a separator. A bare word is NOT treated as a

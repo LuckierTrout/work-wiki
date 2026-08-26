@@ -172,11 +172,13 @@ async function resolveRoot(
   kind: "wiki" | "raw",
   siloPrefix: string | null,
   flatPrefix: string,
-): Promise<{ prefix: string; entries: Listing[] }> {
+): Promise<{ prefix: string; entries: Listing[]; failed?: boolean }> {
   if (kind === "raw") {
-    if (!siloPrefix) return { prefix: UNRESOLVED_RAW_PREFIX, entries: [] };
+    if (!siloPrefix) {
+      return { prefix: UNRESOLVED_RAW_PREFIX, entries: [], failed: true };
+    }
     const silo = await listSafely(siloPrefix);
-    if (silo.failed) return { prefix: siloPrefix, entries: [] };
+    if (silo.failed) return { prefix: siloPrefix, entries: [], failed: true };
     return { prefix: siloPrefix, entries: visible(silo.entries) };
   }
 
@@ -388,11 +390,13 @@ export async function listWorkbenchFilePaths(
  * Page `raw/sources/**` files only, with skip+take, without spending the walk
  * on `wiki/` or directory nodes.
  *
- * The Files tab listing is a mixed tree with a 5,000-node cap that also
- * counts `raw/`, `wiki/`, and every directory. An implicit rescan that sliced
- * that list silently stopped after the first page even when more Sources
- * existed. This walk is the rescan's own listing: files under `raw/sources/`
- * only, so `offset` is an offset into Sources, not into the tab.
+ * The Files tab listing is a mixed tree with a {@link WORKBENCH_FILE_LIMIT}
+ * node cap (2,000) that also counts `raw/`, `wiki/`, and every directory.
+ * `raw/` already has its own half-share, so `wiki/` cannot consume the
+ * Sources budget. An implicit rescan that sliced the tab list still stopped
+ * early because the tab's per-root budget and node-count paging are not a
+ * Sources offset. This walk is the rescan's own listing: files under
+ * `raw/sources/` only.
  */
 export async function listRawSourceFilePaths(
   owner: string,
@@ -402,19 +406,27 @@ export async function listRawSourceFilePaths(
     maxDepth?: number;
     allow?: (displayPath: string) => boolean;
   },
-): Promise<{ paths: string[]; more: boolean; remaining: number }> {
+): Promise<{
+  paths: string[];
+  more: boolean;
+  remaining: number;
+  failed: boolean;
+}> {
   const skip = Math.max(0, Math.round(options.offset ?? 0));
   const take = Math.max(1, Math.round(options.limit));
   const maxDepth = options.maxDepth ?? WORKBENCH_FILE_MAX_DEPTH;
   const allow = options.allow ?? (() => true);
 
   let siloRaw: string | null = null;
+  let failed = false;
   try {
     siloRaw = tenantRawRelPath(tenantForOwner(owner), "");
   } catch (error) {
+    failed = true;
     logger.error("workbench-files", "could not resolve the owner's silo", error);
   }
   const root = await resolveRoot("raw", siloRaw, rawRelPath(""));
+  if (root.failed) failed = true;
 
   const collected: string[] = [];
   let seen = 0;
@@ -434,7 +446,17 @@ export async function listRawSourceFilePaths(
   while (queue.length > 0) {
     const node = queue.shift()!;
     const seed = seeded.get(node.storage);
-    const entries = seed ?? visible((await listSafely(node.storage)).entries);
+    let entries: Listing[];
+    if (seed) {
+      entries = seed;
+    } else {
+      const listed = await listSafely(node.storage);
+      if (listed.failed) {
+        failed = true;
+        continue;
+      }
+      entries = visible(listed.entries);
+    }
     if (node.depth >= maxDepth) {
       // Files past the depth cap are not pageable. Counting them as `more`
       // made nextCursor = offset when the page was empty, so a drain looped.
@@ -465,7 +487,10 @@ export async function listRawSourceFilePaths(
       seen += 1;
     }
   }
-  return { paths: collected, more: remaining > 0, remaining };
+  if (failed) {
+    return { paths: [], more: false, remaining: 0, failed: true };
+  }
+  return { paths: collected, more: remaining > 0, remaining, failed: false };
 }
 
 // ---------------------------------------------------------------------------

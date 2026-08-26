@@ -1,6 +1,9 @@
+import path from "node:path";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
+import { getDataDir } from "@/lib/paths";
+import { isFilesystemStorage } from "@/lib/storage";
 import { wikiDirPath } from "@/lib/wiki-paths";
 import { getWikiRegistry } from "@/lib/wikis";
 
@@ -43,6 +46,17 @@ export async function GET(request: Request) {
         // here would advertise a partitioning that does not exist. A client that
         // wants bytes uses `files` and `files/content`, never this string.
         path: wikiDirPath(principal.handle, wiki.id),
+        // Present ONLY on a filesystem-backed kernel. The sidecar maps this
+        // absolute dir to the Wiki UUID; R2 omits it because there is no host
+        // path. Owner project folders still come from WORKWIKI_WIKI_ROOTS.
+        ...(isFilesystemStorage()
+          ? {
+              hostPath: path.resolve(
+                getDataDir(),
+                wikiDirPath(principal.handle, wiki.id),
+              ),
+            }
+          : {}),
         isCurrent: wiki.id === registry.currentId,
       })),
     });

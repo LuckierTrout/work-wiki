@@ -554,16 +554,115 @@ export function wikiRegistryRows(wikiRegistry) {
   return [];
 }
 
+/** Cap so one kernel response cannot make per-request path lookup linear-unbounded. */
+export const WIKI_REGISTRY_MAX_ROWS = 1_000;
+
+const WIKI_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
- * Poll `GET /api/v1/projects` and map each Wiki to a host filesystem root.
+ * Owner-supplied host roots: `uuid=/abs/path,uuid2=/other`.
  *
- * `{id}` on the loopback door may be a URL-encoded absolute path, but only
- * when that path is one of these roots. The kernel reports
- * `tenants/<t>/wikis/<uuid>` (kernel-relative); resolving it against `DATA_DIR`
- * is what makes a host path the owner already registered match the UUID.
+ * These are the project folders an agent actually sends as `{id}`. Kernel
+ * `project.path` is display-only (`tenants/<t>/wikis/<uuid>`) and is never
+ * resolved into a host root.
+ *
+ * @param {string | undefined} value
+ * @returns {WikiRegistryRow[]}
+ */
+export function parseWikiRoots(value) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  const rows = [];
+  for (const part of value.split(",")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const id = part.slice(0, eq).trim();
+    const raw = part.slice(eq + 1).trim();
+    if (!WIKI_UUID_RE.test(id)) continue;
+    if (!raw || raw.split(/[\\/]/).includes("..")) continue;
+    if (!path.isAbsolute(raw) && !/^[a-zA-Z]:[\\/]/.test(raw)) continue;
+    rows.push({ id, path: path.resolve(raw) });
+  }
+  return rows;
+}
+
+function pathIsInside(root, candidate) {
+  const base = path.resolve(root);
+  const resolved = path.resolve(candidate);
+  return resolved === base || resolved.startsWith(`${base}${path.sep}`);
+}
+
+function pushRegistryRow(next, seen, row) {
+  if (!row || typeof row.id !== "string" || !row.id) return;
+  if (typeof row.path !== "string" || !row.path) return;
+  if (row.path.split(/[\\/]/).includes("..")) return;
+  const absolute = path.resolve(row.path);
+  if (seen.has(absolute) || next.length >= WIKI_REGISTRY_MAX_ROWS) return;
+  seen.add(absolute);
+  next.push({ id: row.id, path: absolute });
+}
+
+/**
+ * Local-kernel fallback when there is no owner-automation token: the wiki
+ * directories under DATA_DIR/tenants/<handle>/wikis/<uuid>. Same reason the
+ * settings source reads `.llm-wiki-config.json` off disk.
+ *
+ * @param {string} dataDir
+ */
+export function readWikiRegistryFromDisk(dataDir) {
+  const rows = [];
+  const tenantsDir = path.join(dataDir, "tenants");
+  let handles;
+  try {
+    handles = fs.readdirSync(tenantsDir, { withFileTypes: true });
+  } catch {
+    return rows;
+  }
+  for (const handle of handles) {
+    if (!handle.isDirectory() || handle.name.startsWith(".")) continue;
+    let wikis;
+    try {
+      wikis = fs.readdirSync(path.join(tenantsDir, handle.name, "wikis"), {
+        withFileTypes: true,
+      });
+    } catch {
+      continue;
+    }
+    for (const wiki of wikis) {
+      if (!wiki.isDirectory() || !WIKI_UUID_RE.test(wiki.name)) continue;
+      rows.push({
+        id: wiki.name,
+        path: path.resolve(tenantsDir, handle.name, "wikis", wiki.name),
+      });
+      if (rows.length >= WIKI_REGISTRY_MAX_ROWS) return rows;
+    }
+  }
+  return rows;
+}
+
+/**
+ * Poll `GET /api/v1/projects` for Wiki ids and optional `hostPath` roots.
+ *
+ * `{id}` on the loopback door may be a URL-encoded absolute path only when
+ * that path is one of these roots: a kernel `hostPath` (filesystem-backed
+ * only, and it must sit under `DATA_DIR`), an owner `WORKWIKI_WIKI_ROOTS`
+ * entry whose id is in the project list, the sidecar workspace (`current`),
+ * or — when there is no kernel token — the on-disk tenants/<handle>/wikis/<uuid> tree.
+ *
+ * Kernel `project.path` is NOT a host root. Resolving it against `DATA_DIR`
+ * invented `<cwd>/tenants/...` paths no owner would send.
  *
  * A FAILED POLL KEEPS THE LAST GOOD ROWS. An empty successful list replaces
  * them — the owner deleted every Wiki — and is not treated as an error.
+ *
+ * @param {{
+ *   base?: string,
+ *   token?: string,
+ *   dataDir?: string,
+ *   wikiRoots?: string,
+ *   workspaceRoot?: string,
+ *   fetchImpl?: typeof fetch,
+ * }} [options]
  */
 export function createWikiRegistrySource({
   base = (process.env.WORKWIKI_URL || process.env.YOPEDIA_URL || "")
@@ -575,36 +674,81 @@ export function createWikiRegistrySource({
     ""
   ).trim(),
   dataDir = process.env.DATA_DIR || process.cwd(),
+  wikiRoots = process.env.WORKWIKI_WIKI_ROOTS,
+  workspaceRoot = "",
   fetchImpl = fetch,
 } = {}) {
   let rows = [];
+  let currentId = null;
+
+  const extras = () => {
+    const next = [];
+    const seen = new Set();
+    if (typeof workspaceRoot === "string" && workspaceRoot) {
+      pushRegistryRow(next, seen, {
+        id: "current",
+        path: path.resolve(workspaceRoot),
+      });
+    }
+    return { next, seen };
+  };
+
+  const applyLocal = () => {
+    const { next, seen } = extras();
+    for (const row of readWikiRegistryFromDisk(dataDir)) {
+      pushRegistryRow(next, seen, row);
+    }
+    for (const row of parseWikiRoots(wikiRoots)) {
+      pushRegistryRow(next, seen, row);
+    }
+    rows = next;
+  };
 
   const refresh = async () => {
-    if (!base || !token) return rows;
+    if (!base || !token) {
+      applyLocal();
+      return rows;
+    }
     try {
       const response = await fetchImpl(`${base}/api/v1/projects`, {
         headers: { authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(10_000),
       });
-      if (!response.ok) return rows;
-      const body = await response.json();
-      if (!body || typeof body !== "object" || !Array.isArray(body.projects)) {
+      if (!response.ok) {
+        if (rows.length === 0) applyLocal();
         return rows;
       }
-      const next = [];
+      const body = await response.json();
+      if (!body || typeof body !== "object" || !Array.isArray(body.projects)) {
+        if (rows.length === 0) applyLocal();
+        return rows;
+      }
+      if (typeof body.currentId === "string" && WIKI_UUID_RE.test(body.currentId)) {
+        currentId = body.currentId;
+      }
+      const known = new Set(
+        body.projects
+          .filter((project) => project && typeof project.id === "string")
+          .map((project) => project.id),
+      );
+      const { next, seen } = extras();
       for (const project of body.projects) {
         if (!project || typeof project.id !== "string" || !project.id) continue;
-        const raw = typeof project.path === "string" ? project.path : "";
-        if (!raw || raw.split(/[\\/]/).includes("..")) continue;
-        const absolute = path.isAbsolute(raw)
-          ? path.resolve(raw)
-          : path.resolve(dataDir, raw);
-        next.push({ id: project.id, path: absolute });
+        const host =
+          typeof project.hostPath === "string" ? project.hostPath : "";
+        if (!host || host.split(/[\\/]/).includes("..")) continue;
+        const absolute = path.resolve(host);
+        if (!pathIsInside(dataDir, absolute)) continue;
+        pushRegistryRow(next, seen, { id: project.id, path: absolute });
+      }
+      for (const row of parseWikiRoots(wikiRoots)) {
+        if (known.has(row.id)) pushRegistryRow(next, seen, row);
       }
       rows = next;
     } catch {
       // Keep the last good list. A transient 500 must not empty the registry
       // and start refusing paths the owner already registered.
+      if (rows.length === 0) applyLocal();
     }
     return rows;
   };
@@ -612,6 +756,7 @@ export function createWikiRegistrySource({
   return {
     refresh,
     current: () => rows,
+    currentId: () => currentId,
   };
 }
 
@@ -631,6 +776,24 @@ export function resolveLoopbackWikiId(value, registry = []) {
     (row) => row && path.resolve(String(row.path ?? "")) === resolved,
   );
   return hit?.id ?? null;
+}
+
+/**
+ * `current` is a door, not a Wiki. Capability scope uses the registry's
+ * `currentId` when the poller has one, so a pause on `/projects/current/chat`
+ * can be resumed on `/projects/<uuid>/chat`.
+ *
+ * @param {string | null} wikiId
+ * @param {WikiRegistryInput} [registry]
+ * @returns {string | null}
+ */
+export function canonicalLoopbackWikiId(wikiId, registry = []) {
+  if (wikiId !== "current") return wikiId;
+  if (registry && typeof registry.currentId === "function") {
+    const id = registry.currentId();
+    if (typeof id === "string" && WIKI_UUID_RE.test(id)) return id;
+  }
+  return wikiId;
 }
 
 /**

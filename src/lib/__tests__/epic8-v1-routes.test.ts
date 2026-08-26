@@ -250,7 +250,13 @@ describe("projects", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       currentId: string;
-      projects: { id: string; name: string; isCurrent: boolean; path: string }[];
+      projects: {
+        id: string;
+        name: string;
+        isCurrent: boolean;
+        path: string;
+        hostPath?: string;
+      }[];
     };
     // `currentId` AND a per-record flag, so a client rendering a checkmark does
     // not have to correlate two fields to do it.
@@ -260,6 +266,10 @@ describe("projects", () => {
     // project root — inventing one would be DW-17 partitioning by the back door.
     expect(body.projects[1].path).toBe(`tenants/alice/wikis/${beta}`);
     expect(body.projects[1].path).not.toMatch(/^\//);
+    // Local tests run on the filesystem provider, so hostPath is the absolute
+    // artifact dir the sidecar may register. R2 omits the field.
+    expect(body.projects[1].hostPath).toMatch(new RegExp(`${beta}$`));
+    expect(body.projects[1].hostPath?.startsWith("/")).toBe(true);
   });
 });
 

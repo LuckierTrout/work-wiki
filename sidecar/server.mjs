@@ -17,6 +17,7 @@
  * and may read `.llm-wiki-config.json` for Chat provider/model/custom key.
  * Request bodies must never carry `apiKey`.
  */
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -36,6 +37,7 @@ import {
   healthPayload as buildHealthPayload,
   kernelProxyPath,
   isSidecarOwnedPath,
+  canonicalLoopbackWikiId,
   resolveLoopbackWikiId,
   wikiRegistryRows,
 } from "./loopback.mjs";
@@ -73,6 +75,12 @@ const CITATION_MARKER_RE = /\[([1-9]\d*)\]/g;
 
 export const SIDECAR_VERSION =
   typeof pkg.version === "string" ? pkg.version : "0.1.0";
+
+function clientConversationId(body) {
+  return typeof body?.conversationId === "string" && body.conversationId.trim()
+    ? body.conversationId.trim()
+    : "";
+}
 
 /**
  * This process's honest health.
@@ -669,6 +677,11 @@ async function runToolTurn({
 
   const workspace = options.workspace ?? createAgentWorkspace();
   const enablement = options.settings?.skillEnablement ?? {};
+  // Mint when the body omits one so a ticket is never stored under "". Resume
+  // uses the client-supplied id only — a second omitted body gets a new mint
+  // and cannot take the first ticket.
+  const conversationId =
+    clientConversationId(body) || `anon:${randomBytes(16).toString("hex")}`;
   const context = {
     wikiId,
     workspace,
@@ -676,9 +689,7 @@ async function runToolTurn({
     // enablement map would let any local process re-enable a Skill the owner
     // switched off in Settings, which would make the switch decorative.
     enablement,
-    approvedExecutables: options.approvals.setFor(
-      typeof body.conversationId === "string" ? body.conversationId : "",
-    ),
+    approvedExecutables: options.approvals.setFor(conversationId),
     kernel: (pathname, init) => kernelFetch(options.kernel, pathname, init),
   };
   const tools = toolsForTurn(body.allowWrites !== false);
@@ -731,8 +742,7 @@ async function runToolTurn({
       result.pending.kind,
       result.pending,
       {
-        conversationId:
-          typeof body.conversationId === "string" ? body.conversationId : "",
+        conversationId,
         wikiId,
       },
     );
@@ -745,6 +755,7 @@ async function runToolTurn({
     coverage: sanitized.coverage,
     toolCalls: result.toolCalls,
     outputs: result.outputs,
+    conversationId,
     ...(pending ? { pending } : {}),
   };
   if (!stream) {
@@ -783,15 +794,12 @@ async function kernelFetch(kernel, pathname, init = {}) {
 }
 
 async function handleChat(req, res, wikiId, options = {}) {
-  const resolvedWikiId = resolveLoopbackWikiId(
-    wikiId,
-    wikiRegistryRows(options.wikiRegistry),
-  );
+  const resolvedWikiId = resolveLoopbackWikiId(wikiId, options.wikiRegistry);
   if (!resolvedWikiId) {
     rejectChat(res, 400, "invalid_wiki_id");
     return;
   }
-  wikiId = resolvedWikiId;
+  wikiId = canonicalLoopbackWikiId(resolvedWikiId, options.wikiRegistry);
   let body;
   try {
     body = await readBody(req);
@@ -874,8 +882,7 @@ async function handleChat(req, res, wikiId, options = {}) {
   if (isPlainObject(body.resume)) {
     const capabilityId = resumeCapabilityId(body.resume);
     const taken = options.capabilities?.take(capabilityId, {
-      conversationId:
-        typeof body.conversationId === "string" ? body.conversationId : "",
+      conversationId: clientConversationId(body),
       wikiId,
     });
     if (
@@ -1103,6 +1110,8 @@ export function productionWikiRegistry({
       base: kernel.base,
       token: kernel.token,
       dataDir: env.DATA_DIR || process.cwd(),
+      wikiRoots: env.WORKWIKI_WIKI_ROOTS,
+      workspaceRoot: path.join(process.cwd(), "agent-workspace"),
       fetchImpl,
     }),
   };

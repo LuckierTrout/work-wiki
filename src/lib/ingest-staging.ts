@@ -60,9 +60,15 @@ export async function stageBytes(
   return key;
 }
 
+/** Storage key `stageText` will write. Assign this before the write so a
+ * rejected `stageText` still has something for cleanup to delete. */
+export function stagedTextKey(jobId: string): string {
+  return stagedKey(jobId, "text.md");
+}
+
 /** Stage pasted text (oversized for an inline queue message); returns the key. */
 export async function stageText(jobId: string, text: string): Promise<string> {
-  const key = stagedKey(jobId, "text.md");
+  const key = stagedTextKey(jobId);
   await getStorage().writeAsset(key, new TextEncoder().encode(text).buffer as ArrayBuffer);
   return key;
 }

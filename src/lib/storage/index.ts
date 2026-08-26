@@ -111,6 +111,11 @@ export function initCloudflareStorage(env: CloudflareEnv): StorageProvider {
  *
  * @throws if Cloudflare R2 is detected but `initCloudflareStorage` hasn't been called
  */
+/** True when Pages and Sources live on this machine's disk, not R2. */
+export function isFilesystemStorage(): boolean {
+  return (_providerType ?? detectProvider()) === "fs";
+}
+
 export function getStorage(): StorageProvider {
   // If already initialized (e.g. via initCloudflareStorage), return it
   if (_instance) {

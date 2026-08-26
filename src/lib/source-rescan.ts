@@ -22,10 +22,10 @@ import { getErrorMessage } from "./errors";
 import { abandonFreshIngestJob, createIngestJob } from "./ingest-jobs";
 import { logger } from "./logger";
 import { sourceSha256 } from "./source-sha256";
-import { deleteStaged, stageText } from "./ingest-staging";
+import { deleteStaged, stagedTextKey, stageText } from "./ingest-staging";
 import { enqueueTask } from "./tasks";
 import type { Task } from "./tasks";
-import { isV1TextPath } from "./v1-contract";
+import { isV1FileInScope, isV1TextPath } from "./v1-contract";
 import { listRawSourceFilePaths, readWorkbenchFile } from "./workbench-files";
 
 /** One call's ceiling. A caller with more Sources calls again. */
@@ -53,6 +53,8 @@ export interface SourceRescanResult {
   remaining: number;
   /** Offset for the next call, or null when this page finished the tree. */
   nextCursor: number | null;
+  /** Present when the implicit listing could not be trusted. */
+  reason?: string;
 }
 
 export async function rescanSources(input: {
@@ -80,13 +82,23 @@ export async function rescanSources(input: {
     nextCursor = consumed < all.length ? consumed : null;
   } else {
     // Implicit rescan pages `raw/sources/**` itself. The Files tab listing
-    // spends its cap on `wiki/` and directory nodes and then reports no
-    // cursor, which orphaned every Source past the first 5,000 tree entries.
+    // is a mixed tree with a per-root budget — not a Sources offset — so
+    // slicing that list orphaned every Source past the first page.
     const page = await listRawSourceFilePaths(input.owner, {
       offset,
       limit: cap,
-      allow: isV1TextPath,
+      allow: (displayPath) =>
+        isV1FileInScope(displayPath) && isV1TextPath(displayPath),
     });
+    if (page.failed) {
+      return {
+        requested: 0,
+        results: [],
+        remaining: 0,
+        nextCursor: offset,
+        reason: "listing_unavailable",
+      };
+    }
     batch = page.paths;
     remaining = page.remaining;
     nextCursor =
@@ -146,11 +158,13 @@ export async function rescanSources(input: {
         sourcePath: path,
         jobId,
       };
-      const task: Task =
-        text.length <= MAX_INLINE_CONTENT_CHARS
-          ? { ...base, content: text }
-          : { ...base, staged: { key: await stageText(jobId, text), kind: "text" } };
-      if ("staged" in task && task.staged) stagedKey = task.staged.key;
+      let task: Task;
+      if (text.length <= MAX_INLINE_CONTENT_CHARS) {
+        task = { ...base, content: text };
+      } else {
+        stagedKey = stagedTextKey(jobId);
+        task = { ...base, staged: { key: await stageText(jobId, text), kind: "text" } };
+      }
       // ENQUEUE ONLY, never inline. A rescan of twenty-five Sources that ran the
       // compiles in-band would hold one HTTP request open across fifty LLM
       // calls; off-Workers, `enqueueTask` answers false and this reports
