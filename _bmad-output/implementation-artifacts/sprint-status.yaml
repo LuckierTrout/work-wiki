@@ -38,7 +38,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-26-2026 00:15
+last_updated: 08-26-2026 15:45
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -525,11 +525,11 @@ action_items:
   - id: "epic-8-retro-acceptance-gates"
     epic: 8
     action: "Accept Epic 8 only after a fresh review of an immutable post-fix SHA,
-      then on that same SHA: typecheck, lint, full Vitest, production build, the
-      exploit regressions (forged resume, symlink write, implicit cwd), a rendered
-      Settings/Chat walkthrough, and an MCP launch from a non-repository client cwd."
+      then on that same SHA: typecheck, lint, full Vitest, production build, the exploit
+      regressions (forged resume, symlink write, implicit cwd), a rendered Settings/Chat
+      walkthrough, and an MCP launch from a non-repository client cwd."
     owner: "QA / delivery"
-    status: open
+    status: done
     ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
   - id: "epic-8-retro-architecture-follow-on"
     epic: 8
