@@ -2,7 +2,7 @@
 title: 'Epic 8 exact-head review remediation'
 type: 'bugfix'
 created: '2026-08-26'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
 baseline_commit: 6b255de958984951773e7b946c7c57aa17733605
 context:
@@ -57,7 +57,7 @@ context:
 - [x] `src/lib/workbench-files.ts` -- make any incomplete implicit Source enumeration fail atomically.
 - [x] `sidecar/loopback.mjs`, `sidecar/server.mjs` -- make remote/local current identity lifecycle authoritative and block unresolved current-door pauses.
 - [x] Relevant test files -- cover missing leaves, symlink re-pointing, failed spawn, nested read failure with siblings and retry, remote empty/failure, local current rotation, and real server-issued current-to-UUID resume.
-- [ ] Commit the remediation, then run same-SHA typecheck, lint, full Vitest, focused exploit gates, and three independent review lenses.
+- [x] Commit the remediation, then run same-SHA typecheck, lint, full Vitest, focused exploit gates, and three independent review lenses.
 
 **Acceptance Criteria:**
 - Given each known-bad mutation from the `6b255de9` review, when it is restored independently, then at least one focused test fails.
@@ -76,3 +76,54 @@ The current numeric rescan cursor is an offset over a complete ordered set. A pa
 - `pnpm exec tsc --noEmit` -- expected: exit 0.
 - `pnpm lint` -- expected: exit 0.
 - `pnpm test` -- expected: complete full-suite exit 0 on the committed SHA.
+
+## Suggested Review Order
+
+**Canonical shell authority**
+
+- Start with missing-leaf canonicalization, the foundation for immutable approval snapshots.
+  [`workspace.mjs:250`](../../sidecar/workspace.mjs#L250)
+
+- Gate persistent approval on immutable, non-launcher, non-writable executable identities.
+  [`shell.mjs:290`](../../sidecar/shell.mjs#L290)
+
+- Resolve an exact executable snapshot before spawning, avoiding mutable PATH re-resolution.
+  [`shell.mjs:368`](../../sidecar/shell.mjs#L368)
+
+- Revalidate approval-time identity and persist only after the child actually starts.
+  [`agent.mjs:833`](../../sidecar/agent.mjs#L833)
+
+- Share signal and timeout presentation across direct and resumed shell execution.
+  [`agent.mjs:373`](../../sidecar/agent.mjs#L373)
+
+**Registry and current-Wiki authority**
+
+- Treat incomplete disk discovery as non-authoritative, including canonicalization failures.
+  [`loopback.mjs:713`](../../sidecar/loopback.mjs#L713)
+
+- Clear mutable current authority on failed, empty, ambiguous, or stale snapshots.
+  [`loopback.mjs:900`](../../sidecar/loopback.mjs#L900)
+
+- Refuse current-door tool turns until the poller resolves an authoritative UUID.
+  [`server.mjs:816`](../../sidecar/server.mjs#L816)
+
+**Atomic Source enumeration**
+
+- Fail the entire listing when any nested branch could hide Source files.
+  [`workbench-files.ts:422`](../../src/lib/workbench-files.ts#L422)
+
+**Browser-visible terminal failures**
+
+- Model shell failure as an explicit tool-row state shared with the UI.
+  [`chat-agent.ts:87`](../../src/lib/chat-agent.ts#L87)
+
+- Render failed shell rows distinctly instead of presenting success-like completion.
+  [`globals.css:2957`](../../src/app/globals.css#L2957)
+
+**Mutation-grade verification**
+
+- Exercise canonical identity, persistence, signal, timeout, and resume behavior with real children.
+  [`epic8-chat-agent.test.ts:1258`](../../src/lib/__tests__/epic8-chat-agent.test.ts#L1258)
+
+- Cover incomplete registry discovery, current lifecycle, and atomic listing failures.
+  [`epic8-remediation.test.ts:900`](../../src/lib/__tests__/epic8-remediation.test.ts#L900)
