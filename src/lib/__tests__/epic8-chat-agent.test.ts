@@ -657,7 +657,7 @@ describe("workspace outputs", () => {
 
 describe("the shell asks before it leaves the workspace", () => {
   it("classifies a workspace command, an external cwd, and an external target", () => {
-    const approved = new Set(["node"]);
+    const approved = new Set(["name:node"]);
     expect(
       shellApprovalReason(
         { command: "node", args: ["build.mjs"], cwd: workspace.root },
@@ -694,7 +694,9 @@ describe("the shell asks before it leaves the workspace", () => {
         { workspace, approvedExecutables: approved },
       ),
     ).toBe("new_executable");
-    expect(executableKey("/usr/bin/Python3")).toBe("python3");
+    expect(executableKey("/usr/bin/Python3")).toBe(
+      `path:${path.resolve("/usr/bin/Python3")}`,
+    );
     expect(shellApprovalReason({ command: "   " }, { workspace })).toBe("invalid");
   });
 
@@ -703,7 +705,7 @@ describe("the shell asks before it leaves the workspace", () => {
       '{"tool":"shell","input":{"command":"ls","args":["/etc"]}}',
       "unreachable",
     );
-    const approvedExecutables = new Set<string>(["ls"]);
+    const approvedExecutables = new Set<string>(["name:ls"]);
     const paused = await runAgentTurn({
       generate,
       messages: [{ role: "user", content: "list /etc" }],
@@ -737,7 +739,7 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(denied.content).toBe(SHELL_DENIED_COPY);
     // NO ALLOW-ALL: a Deny does not teach the approval memory anything, so the
     // same command asks again next time.
-    expect(approvedExecutables.has("ls")).toBe(true);
+    expect(approvedExecutables.has("name:ls")).toBe(true);
     expect(denied.toolCalls).toEqual([
       { id: "t1", tool: "shell", detail: SHELL_DENIED_COPY },
     ]);
@@ -781,7 +783,7 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(ran.content).toBe("Done.");
     expect(ran.toolCalls).toEqual([{ id: "t1", tool: "shell", detail: "exit 0" }]);
     // The same program stops asking; a DIFFERENT program asks again.
-    expect(approvedExecutables.has("echo")).toBe(true);
+    expect(approvedExecutables.has("name:echo")).toBe(true);
     expect(
       shellApprovalReason(
         { command: "echo", args: [], cwd: workspace.root },

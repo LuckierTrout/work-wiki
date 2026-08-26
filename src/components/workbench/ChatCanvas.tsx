@@ -19,6 +19,7 @@ import {
   type ChatExportMessage,
 } from "@/lib/chat-contract";
 import { SIDECAR_SSE_EVENTS, sidecarChatUrl } from "@/lib/sidecar";
+import { loopbackFetch } from "@/lib/loopback-client";
 import { send } from "@/lib/workbench-request";
 import {
   CHAT_COMPOSER_PLACEHOLDER,
@@ -177,25 +178,6 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   const loadSeq = useRef(0);
   const persistSeq = useRef(0);
   const patchChain = useRef(Promise.resolve());
-  /**
-   * The loopback token this browser presents to the sidecar.
-   *
-   * THE WORKBENCH IS A CLIENT OF ITS OWN DOOR. Chat runs on the sidecar, the
-   * sidecar is behind the API + MCP switch and its token, and the Workbench
-   * reaches it from the browser — so it has to send the token like anything else.
-   * It comes from `/api/v1/loopback-settings`, which is owner-gated and is the
-   * same read the Settings pane's Show / Copy controls use.
-   */
-  const doorToken = useRef<string | null>(null);
-  /**
-   * Executables the owner approved IN THIS CONVERSATION.
-   *
-   * Held here rather than on the sidecar because it is per conversation, and the
-   * sidecar is stateless between turns by design. Cleared on every switch — an
-   * approval carried into a different conversation would be an allow-all the
-   * owner never granted.
-   */
-  const approvedExecutables = useRef<string[]>([]);
   const turnRef = useRef<OpenTurn | null>(null);
   const attachRef = useRef<HTMLInputElement>(null);
 
@@ -289,7 +271,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   }, [pending, skillPicker, formValues]);
 
   /**
-   * The door's credential and the Skills on disk, both read once on mount.
+   * Skills on disk, read once on mount through the shared loopback client.
    *
    * SKILLS ARE SCANNED, NOT INSTALLED (Story 8.6): this asks the sidecar what is
    * on disk right now, so a `SKILL.md` the owner dropped in a minute ago appears
@@ -301,25 +283,9 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     const controller = new AbortController();
     void (async () => {
       try {
-        const settings = await send<{ token?: string | null }>(
-          "/api/v1/loopback-settings",
-          { method: "GET" },
-        );
-        doorToken.current =
-          typeof settings.token === "string" && settings.token ? settings.token : null;
-      } catch {
-        doorToken.current = null;
-      }
-      try {
-        // A RAW fetch, not `send`: the sidecar is another origin, and `send` is
-        // the kernel's parsed-body helper (it answers with the body, never a
-        // `Response`). Naming it `scan` keeps the two apart at a glance.
-        const scan = await fetch(SKILL_SCAN_URL, {
+        const scan = await loopbackFetch(SKILL_SCAN_URL, {
           cache: "no-store",
           signal: controller.signal,
-          headers: doorToken.current
-            ? { authorization: `Bearer ${doorToken.current}` }
-            : {},
         });
         if (!scan.ok) return;
         const body = (await scan.json()) as { skills?: SkillSummary[] };
@@ -350,7 +316,6 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     setPending(null);
     setSkillPicker(null);
     setSkillNote(null);
-    approvedExecutables.current = [];
     void loadConversation(id);
   }
 
@@ -550,7 +515,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         messages: assembled.historySlice,
         citations: assembled.citations,
         skill: selectedSkill ?? null,
-        approvedExecutables: approvedExecutables.current,
+        conversationId,
         model: { model: assembled.chatModel.model },
       };
       turnRef.current = {
@@ -602,17 +567,11 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     if (!turn) return false;
     const controller = new AbortController();
     abortRef.current = controller;
-    const sidecarRes = await fetch(sidecarChatUrl(wikiId), {
+    const sidecarRes = await loopbackFetch(sidecarChatUrl(wikiId), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Accept: "text/event-stream",
-        // The Workbench presents the loopback token like any other client — see
-        // `doorToken`. Absent is a legitimate state (unauthenticated access on,
-        // or no token generated), and the door decides.
-        ...(doorToken.current
-          ? { Authorization: `Bearer ${doorToken.current}` }
-          : {}),
       },
       signal: controller.signal,
       body: JSON.stringify(request),
@@ -739,14 +698,6 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     const current = pending;
     if (!turn || !current) return;
     setPending(null);
-    if (approved && current.kind === "shell_approval") {
-      // Remembered for THIS EXECUTABLE in THIS conversation. Not an allow-all:
-      // a different program asks again, and switching conversations forgets.
-      const key = current.command.split("/").pop()?.toLowerCase() ?? current.command;
-      if (!approvedExecutables.current.includes(key)) {
-        approvedExecutables.current = [...approvedExecutables.current, key];
-      }
-    }
     sendInFlight.current = true;
     setStreaming(true);
     setStreamText("");
@@ -754,9 +705,8 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     try {
       await runSidecarTurn({
         ...turn.request,
-        approvedExecutables: approvedExecutables.current,
         resume: {
-          pending: current,
+          capabilityId: current.capabilityId,
           approved,
           ...(current.kind === "skill_form" ? { answers: formValues } : {}),
         },

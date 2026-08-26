@@ -394,6 +394,7 @@ export function createLoopbackSettingsSource({
   fetchImpl = fetch,
 } = {}) {
   let last = null;
+  let lastFromRemote = false;
 
   const refresh = async () => {
     if (base && token) {
@@ -414,12 +415,17 @@ export function createLoopbackSettingsSource({
                   ? body.skillEnablement
                   : {},
             };
+            lastFromRemote = true;
             return resolveLoopbackSettings(last, env);
           }
         }
       } catch {
-        // Keep the last good answer. See the note above.
+        // Keep the last good REMOTE answer. A stale on-disk file must not
+        // replace a kernel result we already trusted.
       }
+    }
+    if (lastFromRemote && last) {
+      return resolveLoopbackSettings(last, env);
     }
     const onDisk = readLoopbackSettingsFromDisk(dataDir);
     if (onDisk) last = onDisk;
@@ -503,16 +509,17 @@ export function isKernelOnlyPath(pathname) {
  * loopback token as a kernel session, and those routes are owner-gated for
  * reasons this door does not reproduce.
  */
-export function kernelProxyPath(pathname) {
+export function kernelProxyPath(pathname, registry = []) {
   if (!pathname.startsWith("/api/v1/")) return null;
   if (isSidecarOwnedPath(pathname)) return null;
   if (isKernelOnlyPath(pathname)) return null;
-  return rewriteProxiedWikiPath(pathname);
+  return rewriteProxiedWikiPath(pathname, registry);
 }
 
 /**
- * A host filesystem path is a legal loopback `{id}` (Story 8.2). The kernel
- * never accepts one, so the door rewrites it to `current` before proxy or Chat.
+ * A host filesystem path is a legal loopback `{id}` (Story 8.2) only when the
+ * owner has registered that path. The kernel never accepts a raw path, so the
+ * door rewrites a registered one to its Wiki UUID before proxy or Chat.
  */
 export function isAbsolutePathWikiId(value) {
   if (typeof value !== "string" || value.length === 0) return false;
@@ -520,16 +527,20 @@ export function isAbsolutePathWikiId(value) {
   return !value.split(/[\\/]/).includes("..");
 }
 
-export function resolveLoopbackWikiId(value) {
+export function resolveLoopbackWikiId(value, registry = []) {
   if (typeof value !== "string") return null;
   if (value === "current" || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
     return value;
   }
-  if (isAbsolutePathWikiId(value)) return "current";
-  return null;
+  if (!isAbsolutePathWikiId(value)) return null;
+  const resolved = path.resolve(value);
+  const hit = registry.find(
+    (row) => row && path.resolve(String(row.path ?? "")) === resolved,
+  );
+  return hit?.id ?? null;
 }
 
-export function rewriteProxiedWikiPath(pathname) {
+export function rewriteProxiedWikiPath(pathname, registry = []) {
   const match = pathname.match(/^(\/api\/v1\/projects\/)([^/]+)(\/.*)?$/);
   if (!match) return pathname;
   let id = match[2];
@@ -538,6 +549,7 @@ export function rewriteProxiedWikiPath(pathname) {
   } catch {
     return pathname;
   }
-  if (!isAbsolutePathWikiId(id)) return pathname;
-  return `${match[1]}current${match[3] ?? ""}`;
+  const resolved = resolveLoopbackWikiId(id, registry);
+  if (!resolved) return isAbsolutePathWikiId(id) ? null : pathname;
+  return `${match[1]}${resolved}${match[3] ?? ""}`;
 }

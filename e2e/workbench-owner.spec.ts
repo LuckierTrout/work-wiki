@@ -2,6 +2,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { GRAPH_NARROW_COPY } from "../src/lib/workbench-modes";
+import {
+  SETTINGS_API_ENABLE_LABEL,
+  SETTINGS_API_MCP_COPY,
+  SETTINGS_API_MCP_HEADING,
+} from "../src/lib/workbench-settings";
+import {
+  SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
+  SETTINGS_API_HEALTH_RUNNING_COPY,
+  SETTINGS_API_HEALTH_UNREACHABLE_COPY,
+} from "../src/lib/workbench-loopback-health";
 import { E2E_OWNER_HANDLE } from "./env";
 import { expect, test, unsignedTest } from "./fixtures/owner";
 
@@ -141,6 +151,47 @@ test.describe("private Workbench owner journey", () => {
       ),
     ).toBeVisible();
     await expect(page.getByLabel("Firecrawl API key")).toBeVisible();
+  });
+
+  test("Settings API + MCP and Chat rails are reachable", async ({ page }) => {
+    await createOwnWiki(page, `E2E api mcp ${Date.now()}`);
+    await page.getByRole("button", { name: "Settings" }).click();
+    await expect(
+      page.getByRole("navigation", { name: "Settings categories" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "API + MCP" }).click();
+    await expect(page.getByLabel(SETTINGS_API_ENABLE_LABEL)).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: SETTINGS_API_MCP_HEADING, exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText(SETTINGS_API_MCP_COPY)).toBeVisible();
+    const health = page.getByRole("status").filter({
+      hasText:
+        /sidecar is (not running|running) on 127\.0\.0\.1:19828|Something else owns port 19828/,
+    });
+    await expect(health).toBeVisible();
+    await expect(health).toContainText(
+      new RegExp(
+        [
+          SETTINGS_API_HEALTH_UNREACHABLE_COPY,
+          SETTINGS_API_HEALTH_RUNNING_COPY,
+          SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
+        ]
+          .map((sentence) => sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+          .join("|"),
+      ),
+    );
+    const mcpConfig = page.locator("pre.wb-set-pre").first();
+    await expect(mcpConfig).toContainText('"command": "node"');
+    await expect(mcpConfig).toContainText(`${path.sep}sidecar${path.sep}mcp.mjs`);
+
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Chat", exact: true })).toBeVisible();
+    await expect(
+      page
+        .getByText("Start the local sidecar on 127.0.0.1:19828 to use Chat.")
+        .or(page.getByRole("button", { name: "New Chat" })),
+    ).toBeVisible();
   });
 
   test("Chat and Search rails expose their canvases", async ({ page }) => {

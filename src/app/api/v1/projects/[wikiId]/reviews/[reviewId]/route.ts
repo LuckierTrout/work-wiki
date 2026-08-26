@@ -14,7 +14,7 @@ import {
 } from "@/lib/review-queue";
 import { createResearchProject } from "@/lib/research-projects";
 import { V1_UNKNOWN_ACTION_ERROR, v1ReviewIntent } from "@/lib/v1-contract";
-import { resolveV1Caller } from "@/lib/v1-route";
+import { readV1JsonBody, resolveV1Caller } from "@/lib/v1-route";
 
 interface RouteContext {
   params: Promise<{ wikiId: string; reviewId: string }>;
@@ -71,7 +71,9 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   const owner = caller.principal.handle;
   const scope = caller.wikiId ?? undefined;
   try {
-    const body = (await request.json().catch(() => ({}))) as {
+    const parsed = await readV1JsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body as {
       resolved?: unknown;
       action?: unknown;
     };

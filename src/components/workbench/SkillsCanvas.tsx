@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { send } from "@/lib/workbench-request";
+import { useCallback, useEffect, useState } from "react";
+import { loopbackFetch } from "@/lib/loopback-client";
 import { workbenchMode } from "@/lib/workbench-modes";
 import {
   SKILLS_SCAN_FAILED_COPY,
@@ -48,34 +48,12 @@ export function SkillsCanvas({ active, readOnly = false }: SkillsCanvasProps) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  /**
-   * The loopback token, read the same way Chat reads it.
-   *
-   * The scan is a sidecar route behind the API switch, and this browser is a
-   * client of its own door — see `ChatCanvas`'s `doorToken`.
-   */
-  const doorToken = useRef<string | null>(null);
 
   const scan = useCallback(async (signal?: AbortSignal) => {
     try {
-      const settings = await send<{ token?: string | null }>(
-        "/api/v1/loopback-settings",
-        { method: "GET" },
-      );
-      doorToken.current =
-        typeof settings.token === "string" && settings.token ? settings.token : null;
-    } catch {
-      doorToken.current = null;
-    }
-    try {
-      // A raw fetch: the sidecar is another origin, and `send` is the kernel's
-      // parsed-body helper.
-      const read = await fetch(SKILL_SCAN_URL, {
+      const read = await loopbackFetch(SKILL_SCAN_URL, {
         cache: "no-store",
         ...(signal ? { signal } : {}),
-        headers: doorToken.current
-          ? { authorization: `Bearer ${doorToken.current}` }
-          : {},
       });
       if (!read.ok) {
         setError(SKILLS_SCAN_FAILED_COPY);

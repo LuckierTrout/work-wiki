@@ -422,8 +422,10 @@ describe("a save that settles too late speaks for nobody (DW-320)", () => {
 
     expect(purposeField().value).toBe("Second attempt.");
     expect(screen.getByText(/This purpose belongs to “Beta Lab”\./)).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain(
-      "Workspace Purpose saved for “Beta Lab”",
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "Workspace Purpose saved for “Beta Lab”",
+      ),
     );
     // The version is the half a rendered assertion cannot see, so it is read
     // off the NEXT save's precondition: the older answer's version must not be
@@ -1027,8 +1029,10 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     returnToTab();
 
     await waitFor(() => expect(badge()).toBe("no wiki"));
-    expect(screen.getByRole("status").textContent).toContain(
-      "The active wiki is gone, so there is nothing to edit here now.",
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "The active wiki is gone, so there is nothing to edit here now.",
+      ),
     );
     // Refused, but readable and reachable — the same contract as a mount that
     // answered no wiki.
@@ -1123,8 +1127,10 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     expect(purposeField().value).toBe("Saved by the owner.");
     expect(screen.getByText(/This purpose belongs to “Acme Ops”\./)).toBeTruthy();
     expect(screen.queryByText(/The active wiki changed/)).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain(
-      "Workspace Purpose saved",
+    await waitFor(() =>
+      expect(screen.getByRole("status").textContent).toContain(
+        "Workspace Purpose saved",
+      ),
     );
   });
 

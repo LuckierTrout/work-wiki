@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { ProviderInfo } from "./types";
 import { getEmbeddingModelName, hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
@@ -8,6 +9,7 @@ import { getDataDir } from "./paths";
 import { getStorage } from "./storage";
 import { LOOPBACK_TOKEN_ENV, type LoopbackTokenSource } from "./v1-contract";
 import {
+  LOOPBACK_MCP_ENTRY,
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
   embeddingProviderChanged,
@@ -1788,6 +1790,7 @@ export function getWorkbenchSettings(
     allowUnauthenticated: loopback.allowUnauthenticated,
     hasLoopbackApiToken: loopback.token !== null,
     loopbackTokenSource: loopback.tokenSource,
+    loopbackMcpEntry: path.resolve(process.cwd(), LOOPBACK_MCP_ENTRY),
     language: SETTINGS_LANGUAGE_VALUE,
     readOnly: isReadOnly(),
   };

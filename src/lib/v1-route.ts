@@ -15,8 +15,10 @@
  * enforced here for every route at once.
  */
 
+import { NextResponse } from "next/server";
 import type { Principal } from "./auth";
 import { requireOwnerOrServicePrincipal } from "./owner-route";
+import { V1_BODY_TOO_LARGE_ERROR, V1_MAX_BODY_BYTES } from "./v1-contract";
 import { listReadableWikiPages } from "./wiki";
 import {
   buildKnowledgeTree,
@@ -89,4 +91,31 @@ export async function v1ReadableSlugs(
 ): Promise<ReadonlySet<string>> {
   const entries = await listReadableWikiPages(principal);
   return readableSlugsFromKnowledge(buildKnowledgeTree(entries));
+}
+
+/**
+ * Shared 1 MiB body gate for cloud `/api/v1` POST/PATCH routes (AD-6).
+ * Refused, not truncated — a partial JSON parse would be a different request.
+ */
+export async function readV1JsonBody(
+  request: Request,
+): Promise<
+  { ok: true; body: unknown } | { ok: false; response: NextResponse }
+> {
+  const raw = await request.arrayBuffer();
+  if (raw.byteLength > V1_MAX_BODY_BYTES) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { error: V1_BODY_TOO_LARGE_ERROR },
+        { status: 400 },
+      ),
+    };
+  }
+  if (raw.byteLength === 0) return { ok: true, body: {} };
+  try {
+    return { ok: true, body: JSON.parse(new TextDecoder().decode(raw)) };
+  } catch {
+    return { ok: true, body: {} };
+  }
 }

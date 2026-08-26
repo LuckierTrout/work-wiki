@@ -205,11 +205,16 @@ describe("the two copies of the contract cannot drift", () => {
     // …and a traversal segment means the caller is composing an address rather
     // than naming one.
     expect(contract.isLoopbackWikiId("/Users/me/../etc")).toBe(false);
-    expect(resolveLoopbackWikiId("/Users/me/wiki")).toBe("current");
+    expect(resolveLoopbackWikiId("/Users/me/wiki")).toBeNull();
+    expect(
+      resolveLoopbackWikiId("/Users/me/wiki", [
+        { id: "8f4e2c1a-0000-4000-8000-000000000000", path: "/Users/me/wiki" },
+      ]),
+    ).toBe("8f4e2c1a-0000-4000-8000-000000000000");
     expect(resolveLoopbackWikiId("Work Notes")).toBeNull();
     expect(
       rewriteProxiedWikiPath("/api/v1/projects/%2FUsers%2Fme%2Fwiki/files"),
-    ).toBe("/api/v1/projects/current/files");
+    ).toBeNull();
   });
 });
 
@@ -634,7 +639,11 @@ describe("the copyable MCP config", () => {
     };
     const entry = parsed.mcpServers[MCP_SERVER_NAME];
     expect(entry.command).toBe("node");
-    expect(entry.args).toEqual(["sidecar/mcp.mjs"]);
+    expect(entry.args).toHaveLength(1);
+    expect(entry.args[0].endsWith(`${path.sep}sidecar${path.sep}mcp.mjs`)).toBe(
+      true,
+    );
+    expect(path.isAbsolute(entry.args[0])).toBe(true);
     // The token rides in `env`, never inlined into a URL: a URL is the thing an
     // owner screenshots and a proxy logs.
     expect(entry.env.LLM_WIKI_API_TOKEN).toBe("shown-token");

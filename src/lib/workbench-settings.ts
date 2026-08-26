@@ -816,14 +816,33 @@ export const WORK_WIKI_SKILL_DIR = "skills/work-wiki";
  * {@link SETTINGS_API_TOKEN_NEW_COPY}. The one moment it IS substituted is
  * right after Generate, which is exactly the moment the config is useful.
  */
-export function loopbackMcpConfig(token: string | null): string {
+export function resolveLoopbackMcpEntry(explicit?: string | null): string {
+  if (
+    typeof explicit === "string" &&
+    (explicit.startsWith("/") || /^[A-Za-z]:[\\/]/.test(explicit))
+  ) {
+    return explicit;
+  }
+  const cwd =
+    typeof process !== "undefined" && typeof process.cwd === "function"
+      ? process.cwd()
+      : "";
+  if (!cwd) return LOOPBACK_MCP_ENTRY;
+  const sep = cwd.includes("\\") ? "\\" : "/";
+  return `${cwd.replace(/[\\/]+$/, "")}${sep}${LOOPBACK_MCP_ENTRY.split("/").join(sep)}`;
+}
+
+export function loopbackMcpConfig(
+  token: string | null,
+  entry?: string | null,
+): string {
   const value = token !== null && token.length > 0 ? token : "PASTE_YOUR_TOKEN";
   return JSON.stringify(
     {
       mcpServers: {
         [LOOPBACK_MCP_SERVER_NAME]: {
           command: "node",
-          args: [LOOPBACK_MCP_ENTRY],
+          args: [resolveLoopbackMcpEntry(entry)],
           env: { [LOOPBACK_TOKEN_ENV]: value },
         },
       },
@@ -1063,6 +1082,8 @@ export interface WorkbenchSettingsPayload {
   allowUnauthenticated: boolean;
   hasLoopbackApiToken: boolean;
   loopbackTokenSource: LoopbackTokenSource;
+  /** Absolute `sidecar/mcp.mjs` for a client whose cwd is not the repo. */
+  loopbackMcpEntry?: string;
   /** Fixed. There is no locale picker anywhere in this surface. */
   language: typeof SETTINGS_LANGUAGE_VALUE;
   /** `YOPEDIA_READONLY=1`: the save bar refuses before the route has to. */

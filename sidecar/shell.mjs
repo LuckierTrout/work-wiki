@@ -39,6 +39,19 @@ export const SHELL_MAX_OUTPUT_CHARS = 100_000;
 export const SHELL_DENIED_COPY = "Denied. The command did not run.";
 
 /**
+ * The cwd a command actually runs in. Absent `cwd` is the workspace root,
+ * never `process.cwd()`.
+ *
+ * @param {string | null | undefined} cwd
+ * @param {{ root?: string } | undefined} workspace
+ * @returns {string}
+ */
+export function effectiveShellCwd(cwd, workspace) {
+  if (typeof cwd === "string" && cwd.trim().length > 0) return cwd;
+  return workspace?.root ?? process.cwd();
+}
+
+/**
  * Why a command needs approval, or `null` when it does not.
  *
  * A REASON rather than a boolean, because the modal has to say which of the two
@@ -60,14 +73,16 @@ export function shellApprovalReason(
   if (typeof command !== "string" || command.trim().length === 0) {
     return "invalid";
   }
-  if (cwd && workspace && !workspace.contains(cwd)) return "external_cwd";
+  const effectiveCwd = effectiveShellCwd(cwd, workspace);
+  if (workspace && !workspace.contains(effectiveCwd)) return "external_cwd";
   // Every argument that LOOKS like a path is checked, not just the first. A
   // command whose cwd is inside the workspace but whose target is `/etc/hosts`
   // is an external command by any reading an owner would recognise.
   for (const arg of args) {
     if (typeof arg !== "string") continue;
-    if (!looksLikePath(arg)) continue;
-    const resolved = path.resolve(cwd || (workspace?.root ?? process.cwd()), arg);
+    const pathish = pathFromArg(arg);
+    if (!pathish) continue;
+    const resolved = path.resolve(effectiveCwd, pathish);
     if (workspace && !workspace.contains(resolved)) return "external_path";
   }
   if (!approvedExecutables.has(executableKey(command))) return "new_executable";
@@ -85,12 +100,42 @@ export function shellApprovalReason(
  */
 function looksLikePath(arg) {
   if (arg.startsWith("-")) return false;
-  return arg.startsWith("/") || arg.startsWith("~") || arg.includes("/") || arg.includes("..");
+  return arg.startsWith("/") || arg.startsWith("~") || arg.includes("/") || arg.includes("\\") || arg.includes("..");
 }
 
-/** An executable's identity for the approval memory: its basename, normalised. */
+/**
+ * A path hidden in `--flag=/etc/passwd` is still a path. `--color=always` is
+ * not: `always` has no separator.
+ */
+function pathFromArg(arg) {
+  if (typeof arg !== "string" || arg.length === 0) return null;
+  if (arg.startsWith("-")) {
+    const eq = arg.indexOf("=");
+    if (eq <= 0) return null;
+    return pathFromArg(arg.slice(eq + 1));
+  }
+  return looksLikePath(arg) ? arg : null;
+}
+
+/**
+ * Canonical executable identity. A basename approval (`python3`) is not a
+ * path approval (`/tmp/evil/python3`).
+ */
 export function executableKey(command) {
-  return path.basename(command.trim()).toLowerCase();
+  const trimmed = command.trim();
+  if (!trimmed) return "";
+  if (
+    path.isAbsolute(trimmed) ||
+    trimmed.startsWith("~") ||
+    trimmed.includes("/") ||
+    trimmed.includes("\\")
+  ) {
+    const expanded = trimmed.startsWith("~")
+      ? path.resolve(trimmed.replace(/^~(?=\/|$)/, process.env.HOME || ""))
+      : path.resolve(trimmed);
+    return `path:${expanded}`;
+  }
+  return `name:${path.basename(trimmed).toLowerCase()}`;
 }
 
 /**
@@ -106,19 +151,22 @@ export function executableKey(command) {
  * being the lenient one.
  *
  * @param {{ command: string, args?: string[], cwd?: string }} call
- * @param {{ timeoutMs?: number, spawnImpl?: typeof spawn }} [options]
+ * @param {{ timeoutMs?: number, spawnImpl?: typeof spawn, workspace?: { root?: string } }} [options]
  * @returns {Promise<{ code: number | null, stdout: string, stderr: string }>}
  */
 export function runShellCommand(
   { command, args = [], cwd },
-  { timeoutMs = SHELL_TIMEOUT_MS, spawnImpl = spawn } = {},
+  { timeoutMs = SHELL_TIMEOUT_MS, spawnImpl = spawn, workspace } = {},
 ) {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let child;
     try {
-      child = spawnImpl(command, args, { cwd, shell: false });
+      child = spawnImpl(command, args, {
+        cwd: effectiveShellCwd(cwd, workspace),
+        shell: false,
+      });
     } catch (error) {
       resolve({ code: null, stdout: "", stderr: String(error?.message ?? error) });
       return;

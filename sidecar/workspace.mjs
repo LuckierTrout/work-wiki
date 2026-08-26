@@ -16,6 +16,8 @@
  * Imports nothing from `src/lib` (AD-6).
  */
 
+import { randomBytes } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -106,16 +108,22 @@ export function createAgentWorkspace({
     async write(relative, contents) {
       const resolved = resolveWorkspacePath(root, relative);
       if (!resolved) throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+      await assertNoSymlinkAlong(root, resolved);
       await fs.mkdir(path.dirname(resolved), { recursive: true });
+      await assertNoSymlinkAlong(root, resolved);
       const text = typeof contents === "string" ? contents : String(contents);
       const bytes = Buffer.byteLength(text, "utf8");
       if (bytes > WORKSPACE_MAX_FILE_BYTES) {
         throw new Error(WORKSPACE_TOO_LARGE_ERROR);
       }
-      await fs.writeFile(resolved, text, "utf8");
-      if (!(await isContainedRealPath(root, resolved))) {
-        await fs.unlink(resolved).catch(() => {});
-        throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+      const tmp = `${resolved}.${randomBytes(8).toString("hex")}.tmp`;
+      await fs.writeFile(tmp, text, "utf8");
+      try {
+        await assertNoSymlinkAlong(root, tmp);
+        await fs.rename(tmp, resolved);
+      } catch (error) {
+        await fs.unlink(tmp).catch(() => {});
+        throw error;
       }
       // `bytes` rides along so the chip can be labelled without a second stat,
       // and it is the BYTE length rather than the character count — a chip that
@@ -147,11 +155,16 @@ export function createAgentWorkspace({
       }
       let stat;
       try {
-        stat = await fs.stat(resolved);
+        stat = await fs.lstat(resolved);
       } catch {
         return { status: 404, body: { error: WORKSPACE_NOT_FOUND_ERROR } };
       }
-      if (!(await isContainedRealPath(root, resolved))) {
+      if (stat.isSymbolicLink()) {
+        return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
+      }
+      try {
+        await assertNoSymlinkAlong(root, resolved);
+      } catch {
         return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
       }
       if (!stat.isFile()) {
@@ -170,8 +183,8 @@ export function createAgentWorkspace({
     /** Is this absolute path inside the workspace? The shell classifier's half. */
     contains(candidate) {
       if (typeof candidate !== "string" || candidate.length === 0) return false;
-      const resolved = path.resolve(candidate);
-      const base = path.resolve(root);
+      const resolved = realpathSyncIfExists(candidate);
+      const base = realpathSyncIfExists(root);
       return resolved === base || resolved.startsWith(base + path.sep);
     },
   };
@@ -185,9 +198,45 @@ export function createAgentWorkspace({
  * inside the root. macOS also presents `/var` as a symlink to `/private/var`,
  * so comparing a realpath to a lexical root would refuse every honest write.
  */
-async function isContainedRealPath(root, resolved) {
-  const real = await fs.realpath(resolved).catch(() => null);
-  const realRoot = await fs.realpath(root).catch(() => path.resolve(root));
-  const prefix = realRoot + path.sep;
-  return Boolean(real && (real === realRoot || real.startsWith(prefix)));
+function realpathSyncIfExists(target) {
+  try {
+    return fsSync.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/**
+ * Walk every existing prefix with `lstat` and refuse the first symlink.
+ * Must run BEFORE mkdir/write so a parent `escape → /tmp/evil` never receives
+ * bytes, and so cleanup never unlinks the outside target.
+ */
+async function assertNoSymlinkAlong(root, target) {
+  const absRoot = path.resolve(root);
+  const absTarget = path.resolve(target);
+  const rel = path.relative(absRoot, absTarget);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+  }
+  try {
+    if ((await fs.lstat(absRoot)).isSymbolicLink()) {
+      throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === WORKSPACE_OUT_OF_SCOPE_ERROR) {
+      throw error;
+    }
+  }
+  let current = absRoot;
+  for (const part of rel.split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    let st;
+    try {
+      st = await fs.lstat(current);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return;
+      throw error;
+    }
+    if (st.isSymbolicLink()) throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+  }
 }

@@ -19,10 +19,10 @@
  */
 
 import { getErrorMessage } from "./errors";
-import { createIngestJob } from "./ingest-jobs";
+import { abandonFreshIngestJob, createIngestJob } from "./ingest-jobs";
 import { logger } from "./logger";
 import { sourceSha256 } from "./source-sha256";
-import { stageText } from "./ingest-staging";
+import { deleteStaged, stageText } from "./ingest-staging";
 import { enqueueTask } from "./tasks";
 import type { Task } from "./tasks";
 import { isV1TextPath } from "./v1-contract";
@@ -51,6 +51,8 @@ export interface SourceRescanResult {
   results: SourceRescanOutcome[];
   /** Candidates the cap left for the next call. */
   remaining: number;
+  /** Offset for the next call, or null when this page finished the tree. */
+  nextCursor: number | null;
 }
 
 /**
@@ -72,7 +74,9 @@ async function candidatePaths(
   });
   return listing.paths.filter(
     (path) =>
-      path.startsWith("raw/") && !path.endsWith("/") && isV1TextPath(path),
+      path.startsWith("raw/sources/") &&
+      !path.endsWith("/") &&
+      isV1TextPath(path),
   );
 }
 
@@ -83,15 +87,18 @@ export async function rescanSources(input: {
   /** Explicit display paths, or absent for "every Source in the tree". */
   paths?: readonly string[];
   limit?: number;
+  cursor?: number;
 }): Promise<SourceRescanResult> {
   const cap = Math.min(
     RESCAN_MAX_SOURCES,
     Math.max(1, Math.round(input.limit ?? RESCAN_MAX_SOURCES)),
   );
-  const all = input.paths?.length
-    ? [...input.paths]
-    : await candidatePaths(input.owner, input.wikiId, input.readableSlugs);
-  const batch = all.slice(0, cap);
+  const offset = Math.max(0, Math.round(input.cursor ?? 0));
+  const all =
+    input.paths !== undefined
+      ? [...input.paths]
+      : await candidatePaths(input.owner, input.wikiId, input.readableSlugs);
+  const batch = all.slice(offset, offset + cap);
   const results: SourceRescanOutcome[] = [];
 
   for (const path of batch) {
@@ -154,20 +161,26 @@ export async function rescanSources(input: {
       // calls; off-Workers, `enqueueTask` answers false and this reports
       // `queue_unavailable` rather than pretending the work is scheduled.
       const enqueued = await enqueueTask(task);
-      results.push(
-        enqueued
-          ? { path, queued: true, jobId }
-          : { path, queued: false, jobId, reason: "queue_unavailable" },
-      );
+      if (!enqueued) {
+        if ("staged" in task && task.staged) {
+          await deleteStaged(task.staged.key).catch(() => {});
+        }
+        await abandonFreshIngestJob(jobId, input.owner);
+        results.push({ path, queued: false, reason: "queue_unavailable" });
+        continue;
+      }
+      results.push({ path, queued: true, jobId });
     } catch (error) {
       logger.error("rescan", `could not queue Ingest for "${path}"`, error);
       results.push({ path, queued: false, reason: getErrorMessage(error) });
     }
   }
 
+  const consumed = offset + batch.length;
   return {
     requested: batch.length,
     results,
-    remaining: Math.max(0, all.length - batch.length),
+    remaining: Math.max(0, all.length - consumed),
+    nextCursor: consumed < all.length ? consumed : null,
   };
 }

@@ -144,6 +144,7 @@ export interface ChatPendingForm {
   title: string;
   fields: ChatFormField[];
   rowId: string;
+  capabilityId: string;
   [extra: string]: unknown;
 }
 
@@ -155,6 +156,7 @@ export interface ChatPendingShell {
   args: string[];
   cwd: string;
   rowId: string;
+  capabilityId: string;
   [extra: string]: unknown;
 }
 
@@ -171,6 +173,9 @@ export type ChatPending = ChatPendingForm | ChatPendingShell;
 export function isChatPending(value: unknown): value is ChatPending {
   if (!value || typeof value !== "object") return false;
   const pending = value as Record<string, unknown>;
+  if (typeof pending.capabilityId !== "string" || !pending.capabilityId) {
+    return false;
+  }
   if (typeof pending.rowId !== "string") return false;
   if (pending.kind === "skill_form") {
     return Array.isArray(pending.fields) && pending.fields.length > 0;

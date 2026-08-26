@@ -464,6 +464,43 @@ function assertCompleteTurn(frames: readonly PersistChatMessage[]): void {
   }
 }
 
+function sanitizePersistedAssistant(frame: PersistChatMessage): {
+  content: string;
+  citations: ChatCitation[];
+} {
+  const raw = (frame.citations ?? []).filter(
+    (row) =>
+      Number.isInteger(row.n) &&
+      row.n >= 1 &&
+      typeof row.path === "string" &&
+      row.path.trim().length > 0 &&
+      typeof row.title === "string" &&
+      typeof row.type === "string",
+  );
+  if (isCoverageSentence(frame.content)) {
+    return { content: frame.content.trim(), citations: [] };
+  }
+  const marked = sanitizeCitedAnswer(frame.content, raw);
+  if (marked.coverage) {
+    return { content: marked.content, citations: marked.citations };
+  }
+  const hasTyped = raw.some(
+    (row) =>
+      row.type === "source" ||
+      row.type === "web" ||
+      row.type === "graph" ||
+      row.type === "workspace",
+  );
+  if (
+    hasTyped ||
+    (frame.outputs && frame.outputs.length > 0) ||
+    (frame.toolCalls && frame.toolCalls.length > 0)
+  ) {
+    return { content: frame.content.trim(), citations: raw };
+  }
+  return { content: marked.content, citations: marked.citations };
+}
+
 /**
  * Persist a complete user+assistant turn after a sidecar `done`.
  * `replaceLastTurn` retracts the current pair in the same compare-and-swap.
@@ -477,12 +514,12 @@ export async function persistChatTurn(
   assertCompleteTurn(frames);
   const userFrame = frames[0];
   const assistantFrame = frames[1];
-  const sanitized = isCoverageSentence(assistantFrame.content)
-    ? { content: assistantFrame.content.trim(), citations: [] as ChatCitation[] }
-    : sanitizeCitedAnswer(assistantFrame.content, assistantFrame.citations);
+  const sanitized = sanitizePersistedAssistant(assistantFrame);
   if (
     !isCoverageSentence(sanitized.content) &&
-    sanitized.citations.length === 0
+    sanitized.citations.length === 0 &&
+    !(assistantFrame.outputs && assistantFrame.outputs.length > 0) &&
+    !(assistantFrame.toolCalls && assistantFrame.toolCalls.length > 0)
   ) {
     throw new ChatPersistError("Answer is missing a mapped [n] citation");
   }

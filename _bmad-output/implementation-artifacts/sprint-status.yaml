@@ -38,7 +38,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-25-2026 20:48
+last_updated: 08-26-2026 00:15
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -139,7 +139,7 @@ development_status:
   8-7-skill-forms: done
   8-8-agent-workspace-outputs: done
   8-9-safer-shell-approve-deny: done
-  epic-8-retrospective: optional
+  epic-8-retrospective: done
 action_items:
   - id: "epic-1-retro-data-version-contract"
     epic: 1
@@ -472,3 +472,70 @@ action_items:
     owner: "Delivery / architecture"
     status: done
     ref: "_bmad-output/implementation-artifacts/epic-6-retro-2026-08-24.md"
+  - id: "epic-8-retro-shell-capabilities"
+    epic: 8
+    action: "Make shell pending state and approvals server-owned with single-use capability
+      IDs; remove caller-supplied approved executables, revalidate before spawn, and
+      reject fabricated, replayed, expired, cross-turn, and disallowed-Origin requests."
+    owner: "Sidecar / security"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-filesystem-containment"
+    epic: 8
+    action: "Contain workspace and shell filesystem access before side effects with
+      no-follow descriptor checks, atomic publish, canonical cwd and executable paths,
+      option-path parsing, and agent-workspace as the implicit cwd."
+    owner: "Sidecar / security"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-tool-turn-persistence"
+    epic: 8
+    action: "Implement turn-wide typed citations for wiki, Source, graph, and web
+      evidence; permit legitimate workspace-only output provenance; and prove tool
+      rows and output chips survive a real conversation-store reload."
+    owner: "Chat / retrieval"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-v1-contract"
+    epic: 8
+    action: "Reconcile the declared v1 contract: portable MCP config, live Settings
+      health and Skill scans, deep-mode ruling, registered filesystem project IDs,
+      raw/sources scope, shared body limit, durable rescan batching, and last-good
+      settings recovery."
+    owner: "API / sidecar"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-boundary-gates"
+    epic: 8
+    action: "Add exact-head boundary gates for owner/service auth, Settings-to-sidecar
+      polling, tool-enabled HTTP Chat, server-issued resume, MCP callbacks, review
+      scoping, rescan durability, symlink attacks, non-repo-cwd MCP launch, and the
+      order-sensitive full-suite failure."
+    owner: "QA / platform"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-architecture-decomposition"
+    epic: 8
+    action: "Resolve Node ESM versus Rust sidecar architecture and decompose ChatCanvas,
+      sidecar server, and API/MCP Settings responsibilities while centralizing authenticated
+      loopback access."
+    owner: "Delivery / architecture"
+    status: done
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-acceptance-gates"
+    epic: 8
+    action: "Accept Epic 8 only after a fresh review of an immutable post-fix SHA,
+      then on that same SHA: typecheck, lint, full Vitest, production build, the
+      exploit regressions (forged resume, symlink write, implicit cwd), a rendered
+      Settings/Chat walkthrough, and an MCP launch from a non-repository client cwd."
+    owner: "QA / delivery"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-8-retro-2026-08-25.md"
+  - id: "epic-8-retro-architecture-follow-on"
+    epic: 8
+    action: "Follow-on, not an acceptance blocker: extract provider and Chat transport
+      from sidecar/server.mjs, pending-turn/session transport from ChatCanvas.tsx,
+      and the API/MCP category from the generic Settings pair."
+    owner: "Delivery / architecture"
+    status: open
+    ref: "_bmad-output/implementation-artifacts/epic-8-sidecar-runtime.md"

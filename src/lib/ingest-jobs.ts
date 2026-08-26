@@ -468,6 +468,24 @@ const JOBS_PREFIX = "ingest-jobs";
  * deliberately protected because deleting their status file would not cancel
  * the queue message that is still processing.
  */
+/**
+ * Drop a job that was created in this request and never enqueued.
+ * Not a cancel of in-flight work — the queue never saw this id.
+ */
+export async function abandonFreshIngestJob(
+  jobId: string,
+  owner: string,
+): Promise<void> {
+  const job = await getIngestJob(jobId);
+  if (!job || job.owner !== owner) return;
+  if (job.status !== "queued") return;
+  try {
+    await getStorage().deleteFile(relPathFor(jobId));
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+}
+
 export async function deleteIngestJob(
   jobId: string,
   owner: string,

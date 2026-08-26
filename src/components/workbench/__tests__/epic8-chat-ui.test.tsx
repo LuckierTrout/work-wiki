@@ -28,6 +28,7 @@ vi.mock("@/lib/workbench-request", () => ({ send }));
 import { ChatCanvas } from "@/components/workbench/ChatCanvas";
 import { WorkspacePreview } from "@/components/workbench/WorkspacePreview";
 import { workspaceFileUrl } from "@/lib/chat-agent";
+import { clearLoopbackDoorToken } from "@/lib/loopback-client";
 
 const SKILLS = [
   {
@@ -102,6 +103,7 @@ let sidecar: ReturnType<typeof vi.fn>;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  clearLoopbackDoorToken();
   send.mockImplementation(async (url: string) => {
     if (url === "/api/chat/conversations") return { conversations: [CONV] };
     if (url === "/api/v1/loopback-settings") return { token: "tok-door" };
@@ -164,6 +166,7 @@ describe("shell approval is per command", () => {
   const PENDING = {
     kind: "shell_approval" as const,
     rowId: "s1",
+    capabilityId: "cap-test",
     command: "rg",
     args: ["acme", "."],
     cwd: "/tmp/agent-workspace",
@@ -187,9 +190,11 @@ describe("shell approval is per command", () => {
     fireEvent.click(screen.getByRole("button", { name: SHELL_DENY_LABEL }));
     await waitFor(() => expect(sidecar).toHaveBeenCalledTimes(2));
     const resumed = JSON.parse(String(sidecar.mock.calls[1]?.[1]?.body));
-    expect(resumed.resume).toEqual({ pending: PENDING, approved: false });
-    // Denied, so the executable is NOT remembered for the next call.
-    expect(resumed.approvedExecutables).toEqual([]);
+    expect(resumed.resume).toEqual({
+      capabilityId: "cap-test",
+      approved: false,
+    });
+    expect(resumed.approvedExecutables).toBeUndefined();
     await waitFor(() =>
       expect(screen.queryByRole("alertdialog")).toBeNull(),
     );
@@ -207,8 +212,11 @@ describe("shell approval is per command", () => {
     fireEvent.click(screen.getByRole("button", { name: SHELL_APPROVE_LABEL }));
     await waitFor(() => expect(sidecar).toHaveBeenCalledTimes(2));
     const resumed = JSON.parse(String(sidecar.mock.calls[1]?.[1]?.body));
-    expect(resumed.resume.approved).toBe(true);
-    expect(resumed.approvedExecutables).toEqual(["rg"]);
+    expect(resumed.resume).toEqual({
+      capabilityId: "cap-test",
+      approved: true,
+    });
+    expect(resumed.approvedExecutables).toBeUndefined();
   });
 
   it("sends the door token like any other client", async () => {
@@ -227,20 +235,17 @@ describe("shell approval is per command", () => {
         selection={workspaceSelection("recaps/acme.md")}
       />,
     );
-    await waitFor(() =>
-      expect(
-        fetchMock.mock.calls.some(([url]) =>
-          String(url).includes("/api/v1/workspace/file"),
-        ),
-      ).toBe(true),
-    );
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) =>
+        String(url).includes("/api/v1/workspace/file"),
+      );
+      const headers = call?.[1]?.headers as Record<string, string> | undefined;
+      expect(headers?.Authorization ?? headers?.authorization).toBe("Bearer tok-door");
+    });
     const call = fetchMock.mock.calls.find(([url]) =>
       String(url).includes("/api/v1/workspace/file"),
     );
     expect(String(call?.[0])).toBe(workspaceFileUrl("recaps/acme.md"));
-    expect(
-      (call?.[1]?.headers as Record<string, string> | undefined)?.authorization,
-    ).toBe("Bearer tok-door");
   });
 });
 
@@ -248,6 +253,7 @@ describe("a Skill form pauses the turn", () => {
   const FORM = {
     kind: "skill_form" as const,
     rowId: "f1",
+    capabilityId: "cap-form",
     title: "Which meeting?",
     fields: [
       {
@@ -280,7 +286,7 @@ describe("a Skill form pauses the turn", () => {
     await waitFor(() => expect(sidecar).toHaveBeenCalledTimes(2));
     const resumed = JSON.parse(String(sidecar.mock.calls[1]?.[1]?.body));
     expect(resumed.resume).toEqual({
-      pending: FORM,
+      capabilityId: "cap-form",
       approved: true,
       answers: { meeting: "Acme" },
     });

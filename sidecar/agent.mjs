@@ -27,10 +27,58 @@
  */
 
 import { readSkill, scanSkills } from "./skills.mjs";
-import { runShellCommand, shellApprovalReason, SHELL_DENIED_COPY } from "./shell.mjs";
+import {
+  effectiveShellCwd,
+  executableKey,
+  runShellCommand,
+  shellApprovalReason,
+  SHELL_DENIED_COPY,
+} from "./shell.mjs";
 
 /** How many tool calls one turn may make before it must answer. */
 export const MAX_TOOL_CALLS_PER_TURN = 6;
+
+function focusGraph(body, focus) {
+  if (!body || typeof body !== "object") return body;
+  if (!focus) return body;
+  const nodes = Array.isArray(body.nodes) ? body.nodes : [];
+  const slug = focus.replace(/^wiki\//, "").replace(/\.md$/, "");
+  const around = nodes.filter((node) => {
+    const id = String(node.id ?? node.slug ?? "");
+    return id === focus || id === slug || `wiki/${id}.md` === focus;
+  });
+  if (around.length === 0) return { ...body, focus };
+  const ids = new Set(around.map((node) => node.id ?? node.slug));
+  const edges = (Array.isArray(body.edges) ? body.edges : []).filter(
+    (edge) =>
+      ids.has(edge.source) ||
+      ids.has(edge.target) ||
+      ids.has(edge.from) ||
+      ids.has(edge.to),
+  );
+  return { nodes: around, edges, focus };
+}
+
+function mergeTurnCitations(citations, result) {
+  const incoming = result.citations;
+  const start = citations.length === 0 ? 1 : Math.max(...citations.map((row) => row.n)) + 1;
+  const remapped = incoming.map((row, index) => ({
+    n: start + index,
+    path: String(row.path ?? "").trim(),
+    title: typeof row.title === "string" ? row.title : String(row.path ?? ""),
+    type: typeof row.type === "string" ? row.type : "page",
+  }));
+  if (typeof result.observation === "string") {
+    for (let index = incoming.length - 1; index >= 0; index -= 1) {
+      const from = Number.isInteger(incoming[index].n) ? incoming[index].n : index + 1;
+      const to = remapped[index].n;
+      if (from !== to) {
+        result.observation = result.observation.replaceAll(`[${from}]`, `[${to}]`);
+      }
+    }
+  }
+  citations.push(...remapped.filter((row) => row.path));
+}
 
 /**
  * The shapes crossing this module's edges, spelled out for the typed suites.
@@ -344,7 +392,11 @@ export async function runTool(call, context) {
       if (typeof body?.content !== "string") {
         return { detail: `could not read ${target}`, observation: `Could not read ${target}.` };
       }
-      return { detail: target, observation: body.content };
+      return {
+        detail: target,
+        observation: body.content,
+        citations: [{ n: 1, path: target, title: target, type: "page" }],
+      };
     }
     case "source_search": {
       // ANYTXT IS `/api/sources/search`, the same full-text pass over
@@ -364,10 +416,16 @@ export async function runTool(call, context) {
             ? "No source matches."
             : hits
                 .map(
-                  (hit) =>
-                    `${hit.citation ?? hit.pageSlug ?? hit.id} (lines ${hit.startLine}-${hit.endLine})\n${hit.excerpt ?? ""}`,
+                  (hit, index) =>
+                    `[${index + 1}] ${hit.citation ?? hit.pageSlug ?? hit.id} (lines ${hit.startLine}-${hit.endLine})\n${hit.excerpt ?? ""}`,
                 )
                 .join("\n\n"),
+        citations: hits.map((hit, index) => ({
+          n: index + 1,
+          path: String(hit.citation ?? hit.pageSlug ?? hit.id ?? "raw/sources"),
+          title: String(hit.citation ?? hit.pageSlug ?? hit.id ?? "Source"),
+          type: "source",
+        })),
       };
     }
     case "graph": {
@@ -376,12 +434,22 @@ export async function runTool(call, context) {
       // wikilink graph only, and conflating the two would either give an agent
       // on the outside signal data it cannot interpret or give the Agent here a
       // poorer graph than the Workbench already draws.
+      const focus = String(call.input.path ?? "").trim();
       const body = await kernel("/api/graph/workbench");
-      const nodes = Array.isArray(body?.nodes) ? body.nodes.length : 0;
-      const edges = Array.isArray(body?.edges) ? body.edges.length : 0;
+      const focused = focusGraph(body, focus);
+      const nodes = Array.isArray(focused?.nodes) ? focused.nodes.length : 0;
+      const edges = Array.isArray(focused?.edges) ? focused.edges.length : 0;
       return {
         detail: `${nodes} nodes, ${edges} edges`,
-        observation: JSON.stringify(body ?? {}).slice(0, 20_000),
+        observation: JSON.stringify(focused ?? {}).slice(0, 20_000),
+        citations: [
+          {
+            n: 1,
+            path: focus || "graph",
+            title: focus || "Wiki graph",
+            type: "graph",
+          },
+        ],
       };
     }
     case "web_search": {
@@ -410,9 +478,15 @@ export async function runTool(call, context) {
       return {
         detail: `${results.length} web result${results.length === 1 ? "" : "s"}`,
         observation: results
-          .map((row) => `${row.title}\n${row.url}\n${row.snippet ?? ""}`)
+          .map((row, index) => `[${index + 1}] ${row.title}\n${row.url}\n${row.snippet ?? ""}`)
           .join("\n\n")
           .slice(0, 20_000),
+        citations: results.map((row, index) => ({
+          n: index + 1,
+          path: String(row.url ?? ""),
+          title: String(row.title ?? row.url ?? "Web"),
+          type: "web",
+        })),
       };
     }
     case "skill_read": {
@@ -445,7 +519,7 @@ export async function runTool(call, context) {
     case "shell": {
       const command = String(call.input.command ?? "");
       const args = Array.isArray(call.input.args) ? call.input.args.map(String) : [];
-      const cwd = call.input.cwd ? String(call.input.cwd) : workspace.root;
+      const cwd = effectiveShellCwd(call.input.cwd, workspace);
       const reason = shellApprovalReason(
         { command, args, cwd },
         { workspace, approvedExecutables },
@@ -469,7 +543,7 @@ export async function runTool(call, context) {
           observation: "",
         };
       }
-      const result = await runShellCommand({ command, args, cwd });
+      const result = await runShellCommand({ command, args, cwd }, { workspace });
       return {
         detail: `exit ${result.code}`,
         observation:
@@ -591,8 +665,7 @@ export async function runAgentTurn({
     toolCalls.push({ id, tool: call.tool, detail: result.detail });
     if (result.output) outputs.push(result.output);
     if (Array.isArray(result.citations) && result.citations.length > 0) {
-      citations.length = 0;
-      citations.push(...result.citations);
+      mergeTurnCitations(citations, result);
     }
     transcript.push({ role: "assistant", content: JSON.stringify(call) });
     transcript.push({
@@ -697,17 +770,26 @@ export async function resumeAgentTurn({
       citations: [],
     };
   }
-  // Approval is REMEMBERED for the executable, not for "everything": the same
-  // program in the same conversation stops asking, and a different program asks
-  // again. There is no blanket allow.
-  context.approvedExecutables?.add(
-    pending.command.split("/").pop()?.toLowerCase() ?? pending.command,
+  const cwd = effectiveShellCwd(pending.cwd, context.workspace);
+  const reason = shellApprovalReason(
+    { command: pending.command, args: pending.args ?? [], cwd },
+    { workspace: context.workspace, approvedExecutables: context.approvedExecutables },
   );
-  const result = await runShellCommand({
-    command: pending.command,
-    args: pending.args,
-    cwd: pending.cwd,
-  });
+  if (reason === "invalid") {
+    return {
+      content: "No command given.",
+      toolCalls: pending.toolCalls ?? [],
+      outputs: pending.outputs ?? [],
+      citations: [],
+    };
+  }
+  // This resume IS the owner's approval of the stored command. Re-running the
+  // classifier records the executable so the next identical call is quiet.
+  context.approvedExecutables?.add(executableKey(pending.command));
+  const result = await runShellCommand(
+    { command: pending.command, args: pending.args, cwd },
+    { workspace: context.workspace, spawnImpl: context.spawnImpl },
+  );
   emit("agent", {
     toolRow: toolRow(pending.rowId, "shell", "done", `exit ${result.code}`),
   });

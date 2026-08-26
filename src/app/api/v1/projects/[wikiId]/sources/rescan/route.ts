@@ -4,7 +4,7 @@ import { getErrorMessage } from "@/lib/errors";
 import { isReadOnlyError, READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { RESCAN_MAX_SOURCES, rescanSources } from "@/lib/source-rescan";
 import { V1_FILE_OUT_OF_SCOPE_ERROR, isV1FileInScope } from "@/lib/v1-contract";
-import { resolveV1Caller, v1ReadableSlugs } from "@/lib/v1-route";
+import { readV1JsonBody, resolveV1Caller, v1ReadableSlugs } from "@/lib/v1-route";
 
 interface RouteContext {
   params: Promise<{ wikiId: string }>;
@@ -41,9 +41,12 @@ export async function POST(request: Request, { params }: RouteContext) {
     );
   }
   try {
-    const body = (await request.json().catch(() => ({}))) as {
+    const parsed = await readV1JsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body as {
       paths?: unknown;
       limit?: unknown;
+      cursor?: unknown;
     };
     let paths: string[] | undefined;
     if (body.paths !== undefined) {
@@ -58,7 +61,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       }
       paths = body.paths.map((path) => (path as string).trim());
       const bad = paths.find(
-        (path) => !isV1FileInScope(path) || !path.startsWith("raw/"),
+        (path) => !isV1FileInScope(path) || !path.startsWith("raw/sources/"),
       );
       if (bad !== undefined) {
         return NextResponse.json(
@@ -83,11 +86,17 @@ export async function POST(request: Request, { params }: RouteContext) {
       readableSlugs,
       ...(paths ? { paths } : {}),
       ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
+      ...(typeof body.cursor === "number" ? { cursor: body.cursor } : {}),
     });
+    const queued = result.results.filter((row) => row.queued).length;
     return NextResponse.json({
       wikiId: caller.requested,
       ...result,
-      queued: result.results.filter((row) => row.queued).length,
+      queued,
+      queue: queued,
+      changedTasks: result.results
+        .filter((row) => row.queued && row.jobId)
+        .map((row) => ({ path: row.path, jobId: row.jobId })),
     });
   } catch (error) {
     if (isReadOnlyError(error)) {

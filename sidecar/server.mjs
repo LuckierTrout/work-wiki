@@ -34,6 +34,7 @@ import {
   extractToken,
   healthPayload as buildHealthPayload,
   kernelProxyPath,
+  isSidecarOwnedPath,
   resolveLoopbackWikiId,
 } from "./loopback.mjs";
 import { createAgentWorkspace } from "./workspace.mjs";
@@ -44,6 +45,11 @@ import {
   toolsForTurn,
   withSelectedSkill,
 } from "./agent.mjs";
+import {
+  createCapabilityStore,
+  createConversationApprovals,
+  publicPending,
+} from "./capabilities.mjs";
 
 const require = createRequire(import.meta.url);
 const pkg = require("../package.json");
@@ -204,7 +210,12 @@ export function allowSidecarOrigin(origin) {
   return LOOPBACK_ORIGIN_RE.test(origin);
 }
 
-export function sanitizeCitedAnswer(content, citations, coverageCopy = COVERAGE_COPY) {
+export function sanitizeCitedAnswer(
+  content,
+  citations,
+  coverageCopy = COVERAGE_COPY,
+  extras = {},
+) {
   const byN = new Map();
   for (const row of Array.isArray(citations) ? citations : []) {
     if (
@@ -231,6 +242,17 @@ export function sanitizeCitedAnswer(content, citations, coverageCopy = COVERAGE_
   for (const n of invented) next = next.replaceAll(`[${n}]`, "");
   next = next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
   if (used.size === 0) {
+    const rows = [...byN.values()];
+    const typed = rows.some(
+      (row) =>
+        row.type === "source" ||
+        row.type === "web" ||
+        row.type === "graph" ||
+        row.type === "workspace",
+    );
+    if (extras.allowUncited === true || typed) {
+      return { content: next, citations: rows, coverage: rows.length > 0 };
+    }
     return { content: coverageCopy, citations: [], coverage: false };
   }
   return {
@@ -353,7 +375,7 @@ function readBody(req) {
     let size = 0;
     req.on("data", (chunk) => {
       size += chunk.length;
-      if (size > 1_000_000) {
+      if (size > V1_MAX_BODY_BYTES) {
         reject(new Error("body too large"));
         req.destroy();
         return;
@@ -543,6 +565,20 @@ function rejectChat(res, status, error) {
   res.end(JSON.stringify({ error }));
 }
 
+function resumeCapabilityId(resume) {
+  if (typeof resume?.capabilityId === "string" && resume.capabilityId) {
+    return resume.capabilityId;
+  }
+  if (
+    isPlainObject(resume?.pending) &&
+    typeof resume.pending.capabilityId === "string" &&
+    resume.pending.capabilityId
+  ) {
+    return resume.pending.capabilityId;
+  }
+  return null;
+}
+
 function parseHistory(value) {
   if (value === undefined) return { messages: [] };
   if (!Array.isArray(value)) return { error: "messages must be an array" };
@@ -638,8 +674,8 @@ async function runToolTurn({
     // enablement map would let any local process re-enable a Skill the owner
     // switched off in Settings, which would make the switch decorative.
     enablement,
-    approvedExecutables: new Set(
-      Array.isArray(body.approvedExecutables) ? body.approvedExecutables : [],
+    approvedExecutables: options.approvals.setFor(
+      typeof body.conversationId === "string" ? body.conversationId : "",
     ),
     kernel: (pathname, init) => kernelFetch(options.kernel, pathname, init),
   };
@@ -656,9 +692,9 @@ async function runToolTurn({
   // A RESUME rather than a fresh turn when the owner answered an approval. The
   // pending record carries the transcript, so nothing gathered before the
   // question is re-fetched.
-  const result = isPlainObject(body.resume)
+  const result = options.resumePending
     ? await resumeAgentTurn({
-        pending: body.resume.pending,
+        pending: options.resumePending,
         // EXPLICIT TRUE ONLY. A resume that arrived without the flag — a client
         // bug, a truncated body — must read as Deny/Cancel, because the failure
         // mode of the other default is running a command nobody approved.
@@ -682,7 +718,16 @@ async function runToolTurn({
   // assembled. The invented-marker strip is the same one the Epic 3 path uses:
   // the loop makes the model better informed, not more trustworthy about `[7]`.
   const evidence = result.citations.length > 0 ? result.citations : citations;
-  const sanitized = sanitizeCitedAnswer(split.content, evidence);
+  const sanitized = sanitizeCitedAnswer(split.content, evidence, COVERAGE_COPY, {
+    allowUncited:
+      result.outputs.length > 0 ||
+      result.toolCalls.length > 0,
+  });
+  let pending = null;
+  if (result.pending) {
+    const capabilityId = options.capabilities.issue(result.pending.kind, result.pending);
+    pending = publicPending(result.pending, capabilityId);
+  }
   const payload = {
     content: sanitized.content,
     thinking: split.thinking,
@@ -690,7 +735,7 @@ async function runToolTurn({
     coverage: sanitized.coverage,
     toolCalls: result.toolCalls,
     outputs: result.outputs,
-    ...(result.pending ? { pending: result.pending } : {}),
+    ...(pending ? { pending } : {}),
   };
   if (!stream) {
     res.writeHead(200, { "content-type": "application/json" });
@@ -728,7 +773,7 @@ async function kernelFetch(kernel, pathname, init = {}) {
 }
 
 async function handleChat(req, res, wikiId, options = {}) {
-  const resolvedWikiId = resolveLoopbackWikiId(wikiId);
+  const resolvedWikiId = resolveLoopbackWikiId(wikiId, options.wikiRegistry);
   if (!resolvedWikiId) {
     rejectChat(res, 400, "invalid_wiki_id");
     return;
@@ -812,9 +857,18 @@ async function handleChat(req, res, wikiId, options = {}) {
    * Workbench had already found and would break the `coverage: false` pin.
    */
   const toolsEnabled = body.tools === true || isPlainObject(body.resume);
-  if (isPlainObject(body.resume) && !isPlainObject(body.resume.pending)) {
-    rejectChat(res, 400, "invalid_resume");
-    return;
+  let resumePending = null;
+  if (isPlainObject(body.resume)) {
+    const capabilityId = resumeCapabilityId(body.resume);
+    const taken = options.capabilities?.take(capabilityId);
+    if (
+      !taken ||
+      (taken.kind !== "shell_approval" && taken.kind !== "skill_form")
+    ) {
+      rejectChat(res, 400, "invalid_resume");
+      return;
+    }
+    resumePending = taken.payload;
   }
 
   // NO CONTEXT AND NO TOOLS is honest coverage-missing: nothing was retrieved
@@ -858,6 +912,7 @@ async function handleChat(req, res, wikiId, options = {}) {
         messages,
         citations,
         options,
+        resumePending,
       });
       return;
     }
@@ -1021,8 +1076,16 @@ export function createSidecarServer({
     ).trim(),
   },
   workspace = createAgentWorkspace(),
+  capabilities = createCapabilityStore(),
+  approvals = createConversationApprovals(),
+  wikiRegistry = [],
 } = {}) {
   return http.createServer(async (req, res) => {
+    const origin = req.headers.origin;
+    if (origin && !allowSidecarOrigin(origin)) {
+      sendJson(res, 403, { error: "origin_not_allowed" });
+      return;
+    }
     cors(req, res);
     const url = new URL(req.url || "/", `http://${SIDECAR_HOST}:${SIDECAR_PORT}`);
     if (req.method === "OPTIONS") {
@@ -1074,11 +1137,37 @@ export function createSidecarServer({
 
       const wikiId = req.method === "POST" ? chatPath(url) : null;
       if (wikiId) {
-        await handleChat(req, res, wikiId, { workspace, kernel, settings });
+        await handleChat(req, res, wikiId, {
+          workspace,
+          kernel,
+          settings,
+          capabilities,
+          approvals,
+          wikiRegistry,
+        });
         return;
       }
 
-      const proxied = kernelProxyPath(url.pathname);
+      const proxied = kernelProxyPath(url.pathname, wikiRegistry);
+      if (
+        proxied === null &&
+        /^\/api\/v1\/projects\//.test(url.pathname) &&
+        !isSidecarOwnedPath(url.pathname)
+      ) {
+        let id = "";
+        const match = url.pathname.match(/^\/api\/v1\/projects\/([^/]+)/);
+        if (match) {
+          try {
+            id = decodeURIComponent(match[1]);
+          } catch {
+            id = "";
+          }
+        }
+        if (id && resolveLoopbackWikiId(id, wikiRegistry) === null) {
+          sendJson(res, 400, { error: "invalid_wiki_id" });
+          return;
+        }
+      }
       if (proxied) {
         await proxyToKernel(req, res, url, proxied, kernel);
         return;

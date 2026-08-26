@@ -8,6 +8,7 @@ import {
 } from "@/lib/v1-contract";
 import { requireAccessibleWikiId } from "@/lib/wiki-access";
 import { retrieveHits } from "@/lib/wiki-retrieve";
+import { readV1JsonBody } from "@/lib/v1-route";
 
 interface RouteContext {
   params: Promise<{ wikiId: string }>;
@@ -44,9 +45,12 @@ export async function POST(request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: access.error }, { status: access.status });
   }
   try {
-    const body = (await request.json().catch(() => ({}))) as {
+    const parsed = await readV1JsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body as {
       query?: unknown;
       topK?: unknown;
+      mode?: unknown;
       retrievalMode?: unknown;
       includeContent?: unknown;
       queryEmbedding?: unknown;
@@ -60,7 +64,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     // CLAMPED, not refused. `topK: 99` is a caller wanting plenty of hits, not a
     // malformed request — the cap exists to bound the work, so the honest answer
     // is fifty results rather than a 400 the caller cannot act on.
-    const topK = clampTopK(body.topK);
+    const topK = clampTopK(body.topK, body.mode);
     const retrievalMode = isChatRetrievalMode(body.retrievalMode)
       ? body.retrievalMode
       : "wiki";

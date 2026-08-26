@@ -6,6 +6,7 @@ import {
   selectResearchProvider,
 } from "@/lib/research-providers";
 import { V1_EMPTY_QUERY_ERROR } from "@/lib/v1-contract";
+import { readV1JsonBody } from "@/lib/v1-route";
 
 /** Ten is the providers' own ceiling; five is plenty for one Chat turn. */
 const MAX_RESULTS = 5;
@@ -37,7 +38,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
   try {
-    const body = (await request.json().catch(() => ({}))) as {
+    const parsed = await readV1JsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body as {
       query?: unknown;
       limit?: unknown;
     };

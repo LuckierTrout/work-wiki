@@ -207,11 +207,12 @@ export const V1_DEFAULT_GRAPH_LIMIT = 500;
 /** One text file the content route will buffer. Above it, 413. */
 export const V1_MAX_FILE_BYTES = 1_048_576;
 
-export function clampTopK(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return V1_DEFAULT_TOP_K;
+export function clampTopK(value: unknown, mode?: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.min(V1_MAX_TOP_K, Math.max(1, Math.round(value)));
   }
-  return Math.min(V1_MAX_TOP_K, Math.max(1, Math.round(value)));
+  // `mode: deep` is broader retrieval on THIS endpoint, not Deep Research.
+  return mode === "deep" ? V1_MAX_TOP_K : V1_DEFAULT_TOP_K;
 }
 
 export function clampGraphLimit(value: unknown): number {
@@ -324,10 +325,9 @@ export function isV1TextPath(displayPath: string): boolean {
 /**
  * Is this display path inside the readable window at all?
  *
- * `purpose.md`, `schema.md`, `wiki/**` and `raw/sources/**` — plus the rest of
- * `raw/`, which is where Sources physically live and which `listWorkbenchFilePaths`
- * already surfaces. Hidden files and symlink-looking segments are refused here
- * so the answer is a 403 rather than a storage error.
+ * `purpose.md`, `schema.md`, `wiki/**` and `raw/sources/**` only. The rest of
+ * `raw/` is not a Source the door will read. Hidden files and symlink-looking
+ * segments are refused here so the answer is a 403 rather than a storage error.
  *
  * This is the SCOPE question only. Whether the caller may read those particular
  * BYTES is `readWorkbenchFile`'s gate, and it is stricter.
@@ -343,7 +343,10 @@ export function isV1FileInScope(displayPath: string): boolean {
   if (segments.length === 1) {
     return segments[0] === "purpose.md" || segments[0] === "schema.md";
   }
-  return segments[0] === "wiki" || segments[0] === "raw";
+  return (
+    segments[0] === "wiki" ||
+    (segments[0] === "raw" && segments[1] === "sources")
+  );
 }
 
 // ---------------------------------------------------------------------------

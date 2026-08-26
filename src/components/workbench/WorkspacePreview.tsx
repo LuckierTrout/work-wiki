@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { send } from "@/lib/workbench-request";
+import { loopbackFetch } from "@/lib/loopback-client";
 import { workspaceFileUrl } from "@/lib/chat-agent";
 import { previewFileKind } from "@/lib/workbench-preview";
 import type { WorkspaceSelection } from "@/lib/workbench-tree";
@@ -51,20 +51,9 @@ export function WorkspacePreview({ id, selection, hidden }: WorkspacePreviewProp
     setContent(null);
     void (async () => {
       try {
-        let token: string | null = null;
-        try {
-          const settings = await send<{ token?: string | null }>(
-            "/api/v1/loopback-settings",
-            { method: "GET" },
-          );
-          token = typeof settings.token === "string" ? settings.token : null;
-        } catch {
-          token = null;
-        }
-        const read = await fetch(workspaceFileUrl(selection.path), {
+        const read = await loopbackFetch(workspaceFileUrl(selection.path), {
           cache: "no-store",
           signal: controller.signal,
-          headers: token ? { authorization: `Bearer ${token}` } : {},
         });
         if (!read.ok) throw new Error(String(read.status));
         const body = (await read.json()) as { content?: unknown };

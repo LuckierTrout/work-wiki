@@ -127,6 +127,14 @@ import {
   LOOPBACK_HEALTH_URL,
   newLoopbackApiToken,
 } from "@/lib/v1-contract";
+import {
+  probeLoopbackApiPane,
+  SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
+  SETTINGS_API_HEALTH_RUNNING_COPY,
+  SETTINGS_API_HEALTH_UNREACHABLE_COPY,
+  type ClassifiedLoopbackHealth,
+} from "@/lib/workbench-loopback-health";
+import type { SkillSummary } from "@/lib/chat-agent";
 import { CANVAS_ID } from "./ModeCanvas";
 
 /**
@@ -199,6 +207,10 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
    * discards both together.
    */
   const [revealToken, setRevealToken] = useState(false);
+  const [apiLive, setApiLive] = useState<{
+    health: ClassifiedLoopbackHealth;
+    skills: SkillSummary[];
+  } | null>(null);
   // Read from the save callback without taking a dependency on it — the
   // `useDialogA11y` idiom the Preview column already follows. Synced in an
   // EFFECT, not during render: a render that React discards (StrictMode's
@@ -223,6 +235,16 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
   useEffect(() => {
     payloadRef.current = payload;
   }, [payload]);
+  useEffect(() => {
+    if (category !== "api-mcp") return;
+    let cancelled = false;
+    void probeLoopbackApiPane().then((live) => {
+      if (!cancelled) setApiLive(live);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [category]);
   const fieldId = useId();
 
   // ONE read, on mount. The surface is not refetched on a category change: the
@@ -1188,6 +1210,18 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                 {SETTINGS_API_OPEN_HEALTH_COPY}
               </a>
             </p>
+            {apiLive ? (
+              <p className="wb-set-note" role="status">
+                {apiLive.health === "port_conflict"
+                  ? SETTINGS_API_HEALTH_PORT_CONFLICT_COPY
+                  : apiLive.health === "unreachable" || apiLive.health === "error"
+                    ? SETTINGS_API_HEALTH_UNREACHABLE_COPY
+                    : SETTINGS_API_HEALTH_RUNNING_COPY}{" "}
+                {apiLive.skills.length === 1
+                  ? "1 Skill on disk."
+                  : `${apiLive.skills.length} Skills on disk.`}
+              </p>
+            ) : null}
 
             <p className="wb-set-row">
               <label className="wb-set-check" htmlFor={field("apiEnabled")}>
@@ -1346,13 +1380,17 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             {/* The token is SUBSTITUTED only when the draft is holding a freshly
                 generated one; otherwise the config carries the placeholder,
                 because the server never serves the stored value back. */}
-            <pre className="wb-set-pre">{loopbackMcpConfig(values.loopbackApiToken)}</pre>
+            <pre className="wb-set-pre">
+              {loopbackMcpConfig(values.loopbackApiToken, stored.loopbackMcpEntry)}
+            </pre>
             <p className="wb-set-row">
               <button
                 type="button"
                 className="wb-set-action"
                 onClick={() =>
-                  void copyToClipboard(loopbackMcpConfig(values.loopbackApiToken))
+                  void copyToClipboard(
+                    loopbackMcpConfig(values.loopbackApiToken, stored.loopbackMcpEntry),
+                  )
                 }
               >
                 {SETTINGS_API_MCP_COPY_COPY}

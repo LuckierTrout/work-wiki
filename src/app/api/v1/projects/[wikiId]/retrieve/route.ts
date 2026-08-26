@@ -9,6 +9,7 @@ import { getErrorMessage } from "@/lib/errors";
 import { requireOwnerPrincipal } from "@/lib/owner-route";
 import { requireAccessibleWikiId } from "@/lib/wiki-access";
 import { assembleWikiContext } from "@/lib/wiki-retrieve";
+import { readV1JsonBody } from "@/lib/v1-route";
 
 interface RouteContext {
   params: Promise<{ wikiId: string }>;
@@ -25,7 +26,9 @@ export async function POST(request: Request, { params }: RouteContext) {
     return NextResponse.json({ error: access.error }, { status: access.status });
   }
   try {
-    const body = (await request.json().catch(() => ({}))) as {
+    const parsed = await readV1JsonBody(request);
+    if (!parsed.ok) return parsed.response;
+    const body = parsed.body as {
       query?: unknown;
       retrievalMode?: unknown;
       tokenBudget?: unknown;
