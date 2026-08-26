@@ -1200,7 +1200,10 @@ export function createSidecarServer({
           settings,
           capabilities,
           approvals,
-          wikiRegistry: registry,
+          // The poller, not a flattened snapshot. `canonicalLoopbackWikiId`
+          // needs `currentId()` so a pause on `/projects/current/chat` can
+          // be resumed on `/projects/<uuid>/chat`.
+          wikiRegistry,
         });
         return;
       }

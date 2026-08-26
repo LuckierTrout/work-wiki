@@ -29,6 +29,7 @@
  */
 
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 
 /** A command may not run longer than this without being killed. */
@@ -104,22 +105,30 @@ export function shellApprovalReason(
  * @returns {{ externalCwd: boolean, externalPaths: string[] }}
  */
 export function shellExternalTargets(
-  { args = [], cwd = null },
+  { command, args = [], cwd = null },
   { workspace } = {},
 ) {
   const effectiveCwd = effectiveShellCwd(cwd, workspace);
   const externalCwd = Boolean(workspace && !workspace.contains(effectiveCwd));
   const externalPaths = [];
   const seen = new Set();
+  const add = (candidate) => {
+    if (!workspace || workspace.contains(candidate)) return;
+    const key = realpathKey(candidate);
+    if (seen.has(key)) return;
+    seen.add(key);
+    externalPaths.push(key);
+  };
+  if (externalCwd) add(effectiveCwd);
+  if (typeof command === "string") {
+    const pathish = pathFromArg(command);
+    if (pathish) add(path.resolve(effectiveCwd, pathish));
+  }
   for (const arg of args) {
     if (typeof arg !== "string") continue;
     const pathish = pathFromArg(arg);
     if (!pathish) continue;
-    const resolved = path.resolve(effectiveCwd, pathish);
-    if (workspace && !workspace.contains(resolved) && !seen.has(resolved)) {
-      seen.add(resolved);
-      externalPaths.push(resolved);
-    }
+    add(path.resolve(effectiveCwd, pathish));
   }
   return { externalCwd, externalPaths };
 }
@@ -133,11 +142,20 @@ export function shellExternalTargets(
 export function shellExternalSetGrew(stored, live) {
   if (live.externalCwd && !stored.externalCwd) return true;
   const approved = new Set(
-    (stored.externalPaths ?? []).map((entry) => path.resolve(String(entry))),
+    (stored.externalPaths ?? []).map((entry) => realpathKey(String(entry))),
   );
   return (live.externalPaths ?? []).some(
-    (entry) => !approved.has(path.resolve(String(entry))),
+    (entry) => !approved.has(realpathKey(String(entry))),
   );
+}
+
+/** Follow the dest when it exists so a symlink re-point grows the set. */
+function realpathKey(target) {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
 }
 
 /**

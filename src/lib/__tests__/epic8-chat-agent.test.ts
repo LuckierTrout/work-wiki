@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -51,6 +51,8 @@ import {
   SHELL_DENIED_COPY,
   SHELL_PATH_CHANGED_COPY,
   shellApprovalReason,
+  shellExternalSetGrew,
+  shellExternalTargets,
 } from "../../../sidecar/shell.mjs";
 import {
   AGENT_TOOL_NAMES,
@@ -944,6 +946,152 @@ describe("the shell asks before it leaves the workspace", () => {
     });
     expect(ran.content).toBe("Done.");
     expect(ran.toolCalls).toEqual([{ id: "t1", tool: "shell", detail: "exit 0" }]);
+  });
+
+  it("does not run a captured new_executable resume after cwd becomes external", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const approvedExecutables = new Set<string>(["name:echo"]);
+    const { generate } = scripted("unreachable");
+    const escaped = {
+      ...workspace,
+      contains: () => false,
+    };
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command: "echo",
+        args: ["hello"],
+        cwd: workspace.root,
+        reason: "new_executable",
+        externalCwd: false,
+        externalPaths: [],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace: escaped,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+    expect(approvedExecutables.size).toBe(1);
+  });
+
+  it("does not run an external_cwd resume after the cwd realpath leaves the approved set", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const safe = path.join(dir, "safe");
+    const other = path.join(dir, "other");
+    await mkdir(safe);
+    await mkdir(other);
+    const approvedExecutables = new Set<string>(["name:echo"]);
+    const { generate } = scripted("unreachable");
+    await rm(safe, { recursive: true });
+    await symlink(other, safe);
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command: "echo",
+        args: ["hello"],
+        cwd: safe,
+        reason: "external_cwd",
+        externalCwd: true,
+        // Pause approved a different external cwd. The live cwd is `safe`,
+        // now a symlink to `other` — same reason label, different dest.
+        externalPaths: [path.join(dir, "safe-at-pause")],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+    expect(approvedExecutables.size).toBe(1);
+  });
+
+  it("does not run a new_executable resume after the command path is swapped outside", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const bin = path.join(workspace.root, "tool");
+    const outside = path.join(dir, "outside-tool");
+    await writeFile(bin, "#!/bin/sh\necho inside\n");
+    await writeFile(outside, "#!/bin/sh\necho outside\n");
+    await rm(bin);
+    await symlink(outside, bin);
+    const approvedExecutables = new Set<string>();
+    const { generate } = scripted("unreachable");
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command: bin,
+        args: [],
+        cwd: workspace.root,
+        reason: "new_executable",
+        externalCwd: false,
+        externalPaths: [],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+    expect(approvedExecutables.size).toBe(0);
+  });
+
+  it("keys the external set on realpath, including cwd and a path-shaped command", () => {
+    const stored = {
+      externalCwd: true,
+      externalPaths: [path.resolve("/tmp/safe")],
+    };
+    const liveCwd = shellExternalTargets(
+      { command: "echo", args: [], cwd: "/etc" },
+      { workspace },
+    );
+    expect(liveCwd.externalCwd).toBe(true);
+    expect(liveCwd.externalPaths.length).toBeGreaterThan(0);
+    expect(shellExternalSetGrew(stored, liveCwd)).toBe(true);
+
+    const insideCmd = shellExternalTargets(
+      { command: "echo", args: [], cwd: workspace.root },
+      { workspace },
+    );
+    const outsideCmd = shellExternalTargets(
+      { command: "/tmp/evil/bin", args: [], cwd: workspace.root },
+      { workspace },
+    );
+    expect(
+      shellExternalSetGrew(
+        { externalCwd: false, externalPaths: insideCmd.externalPaths },
+        outsideCmd,
+      ),
+    ).toBe(true);
   });
 
   it("runs a cleared command with no shell, and reports its exit", async () => {

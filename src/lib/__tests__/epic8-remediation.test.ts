@@ -30,6 +30,7 @@ import {
   shellApprovalReason,
 } from "../../../sidecar/shell.mjs";
 import {
+  canonicalLoopbackWikiId,
   createLoopbackSettingsSource,
   createWikiRegistrySource,
   parseWikiRoots,
@@ -37,6 +38,7 @@ import {
   rewriteProxiedWikiPath,
   V1_MAX_BODY_BYTES,
 } from "../../../sidecar/loopback.mjs";
+import fs from "node:fs/promises";
 import { getStorage } from "../storage";
 import {
   clampTopK,
@@ -205,6 +207,62 @@ describe("F8-01 server-owned shell capabilities", () => {
     ).toMatchObject({ command: "true" });
   });
 
+  it("canonicalizes current to the poller's currentId, not a flattened row list", () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    expect(
+      canonicalLoopbackWikiId("current", { currentId: () => wikiId }),
+    ).toBe(wikiId);
+    expect(
+      canonicalLoopbackWikiId("current", [{ id: wikiId, path: "/tmp/wiki" }]),
+    ).toBe("current");
+    expect(canonicalLoopbackWikiId(wikiId, { currentId: () => wikiId })).toBe(
+      wikiId,
+    );
+  });
+
+  it("resumes a current-door pause on the poller's UUID", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const store = createCapabilityStore({ id: () => "cap-current" });
+    store.issue(
+      "shell_approval",
+      {
+        kind: "shell_approval",
+        rowId: "s1",
+        command: "true",
+        args: [],
+        cwd: "/tmp",
+        reason: "new_executable",
+      },
+      { conversationId: "conv-a", wikiId },
+    );
+    const wikiRegistry = {
+      current: () => [{ id: wikiId, path: `/data/tenants/alice/wikis/${wikiId}` }],
+      currentId: () => wikiId,
+    };
+    const base = await listen({ capabilities: store, wikiRegistry });
+    const response = await fetch(`${base}/api/v1/projects/current/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "run it",
+        tools: true,
+        stream: false,
+        coverage: false,
+        conversationId: "conv-a",
+        resume: { approved: true, capabilityId: "cap-current" },
+      }),
+    });
+    expect(response.status).not.toBe(400);
+    const body = (await response.json()) as { error?: string };
+    expect(body.error).not.toBe("invalid_resume");
+    expect(
+      store.consume("cap-current", "shell_approval", {
+        conversationId: "conv-a",
+        wikiId,
+      }),
+    ).toBeNull();
+  });
+
   it("does not resume an unbound ticket under a supplied conversationId", async () => {
     const store = createCapabilityStore({ id: () => "cap-anon" });
     store.issue(
@@ -362,6 +420,32 @@ describe("F8-02 / F8-03 filesystem and shell containment", () => {
     const read = await workspace.read("notes.md");
     expect(read.status).toBeGreaterThanOrEqual(400);
     expect(read.body).toEqual(expect.objectContaining({ error: expect.any(String) }));
+  });
+
+  it("answers 500 read_failed when a dest read throws after open", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "epic8-ws-eio-"));
+    const workspace = createAgentWorkspace({ root: path.join(dir, "agent-workspace") });
+    await mkdir(workspace.root, { recursive: true });
+    await writeFile(path.join(workspace.root, "notes.md"), "hello");
+    const err = Object.assign(new Error("EIO"), { code: "EIO" });
+    const realOpen = fs.open.bind(fs);
+    const open = vi.spyOn(fs, "open").mockImplementation(async (target, flags) => {
+      const handle = await realOpen(target, flags);
+      return {
+        stat: async () => handle.stat(),
+        readFile: async () => {
+          throw err;
+        },
+        close: () => handle.close(),
+      } as unknown as Awaited<ReturnType<typeof fs.open>>;
+    });
+    try {
+      const read = await workspace.read("notes.md");
+      expect(read.status).toBe(500);
+      expect(read.body).toEqual({ error: "read_failed" });
+    } finally {
+      open.mockRestore();
+    }
   });
 
   it("refuses a later write after a parent is swapped for a symlink", async () => {
@@ -714,6 +798,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
     );
     expect(main).toContain("const { kernel, wikiRegistry } = productionWikiRegistry()");
     expect(main).toMatch(/createSidecarServer\(\{[\s\S]*wikiRegistry,/);
+    expect(main).not.toMatch(/handleChat\([\s\S]*wikiRegistry:\s*registry/);
   });
 
   it("keeps the last good remote settings when a later poll fails", async () => {
@@ -868,7 +953,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
       });
       expect(page.reason).toBe("listing_unavailable");
       expect(page.requested).toBe(0);
-      expect(page.nextCursor).toBe(0);
+      expect(page.nextCursor).toBeNull();
     } finally {
       vi.restoreAllMocks();
       if (originalDataDir === undefined) delete process.env.DATA_DIR;

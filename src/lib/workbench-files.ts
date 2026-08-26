@@ -419,6 +419,7 @@ export async function listRawSourceFilePaths(
 
   let siloRaw: string | null = null;
   let failed = false;
+  let nestedFailed = false;
   try {
     siloRaw = tenantRawRelPath(tenantForOwner(owner), "");
   } catch (error) {
@@ -452,7 +453,9 @@ export async function listRawSourceFilePaths(
     } else {
       const listed = await listSafely(node.storage);
       if (listed.failed) {
-        failed = true;
+        // Skip this subdirectory. Poisoning the whole page here discarded
+        // siblings and made an implicit rescan loop on the same offset.
+        nestedFailed = true;
         continue;
       }
       entries = visible(listed.entries);
@@ -487,7 +490,7 @@ export async function listRawSourceFilePaths(
       seen += 1;
     }
   }
-  if (failed) {
+  if (failed || (nestedFailed && collected.length === 0 && remaining === 0)) {
     return { paths: [], more: false, remaining: 0, failed: true };
   }
   return { paths: collected, more: remaining > 0, remaining, failed: false };

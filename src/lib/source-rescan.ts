@@ -95,7 +95,7 @@ export async function rescanSources(input: {
         requested: 0,
         results: [],
         remaining: 0,
-        nextCursor: offset,
+        nextCursor: null,
         reason: "listing_unavailable",
       };
     }

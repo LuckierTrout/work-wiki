@@ -1,9 +1,6 @@
-import path from "node:path";
 import { NextResponse } from "next/server";
 import { getErrorMessage } from "@/lib/errors";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
-import { getDataDir } from "@/lib/paths";
-import { isFilesystemStorage } from "@/lib/storage";
 import { wikiDirPath } from "@/lib/wiki-paths";
 import { getWikiRegistry } from "@/lib/wikis";
 
@@ -15,8 +12,8 @@ import { getWikiRegistry } from "@/lib/wikis";
  * this one a client's only options are to guess a UUID or hard-code `current` —
  * which is how an agent ends up writing into whichever Wiki happened to be
  * active. So `current` is reported as an explicit `currentId` field rather than
- * left implicit, and each record repeats `isCurrent`: a caller that lists
- * projects should not have to correlate two fields to render a checkmark.
+ * left implicit, and each record repeats `isCurrent`: a caller rendering a
+ * checkmark should not have to correlate two fields to do it.
  *
  * OWNER-SCOPED, from the registry, in one read. There is no cross-tenant listing
  * here even for an owner-automation token: the registry is per-handle, and this
@@ -45,18 +42,9 @@ export async function GET(request: Request) {
         // are still one flat tree per workspace (DW-17), and minting a host path
         // here would advertise a partitioning that does not exist. A client that
         // wants bytes uses `files` and `files/content`, never this string.
+        // Owner project folders come from WORKWIKI_WIKI_ROOTS on the sidecar,
+        // not from resolving this path against DATA_DIR.
         path: wikiDirPath(principal.handle, wiki.id),
-        // Present ONLY on a filesystem-backed kernel. The sidecar maps this
-        // absolute dir to the Wiki UUID; R2 omits it because there is no host
-        // path. Owner project folders still come from WORKWIKI_WIKI_ROOTS.
-        ...(isFilesystemStorage()
-          ? {
-              hostPath: path.resolve(
-                getDataDir(),
-                wikiDirPath(principal.handle, wiki.id),
-              ),
-            }
-          : {}),
         isCurrent: wiki.id === registry.currentId,
       })),
     });

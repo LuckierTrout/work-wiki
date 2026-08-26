@@ -266,10 +266,9 @@ describe("projects", () => {
     // project root — inventing one would be DW-17 partitioning by the back door.
     expect(body.projects[1].path).toBe(`tenants/alice/wikis/${beta}`);
     expect(body.projects[1].path).not.toMatch(/^\//);
-    // Local tests run on the filesystem provider, so hostPath is the absolute
-    // artifact dir the sidecar may register. R2 omits the field.
-    expect(body.projects[1].hostPath).toMatch(new RegExp(`${beta}$`));
-    expect(body.projects[1].hostPath?.startsWith("/")).toBe(true);
+    // The kernel does not mint a hostPath from DATA_DIR + path. Owner project
+    // folders come from WORKWIKI_WIKI_ROOTS, not this invented absolute.
+    expect(body.projects[1].hostPath).toBeUndefined();
   });
 });
 
@@ -772,5 +771,24 @@ describe("sources/rescan", () => {
     // filling a queue nothing will drain.
     expect(refused.status).toBe(403);
     expect(rescan).not.toHaveBeenCalled();
+  });
+
+  it("503s a failed listing so a drain cannot stick on nextCursor", async () => {
+    rescan.mockResolvedValue({
+      requested: 0,
+      results: [],
+      remaining: 0,
+      nextCursor: null,
+      reason: "listing_unavailable",
+    } as never);
+    const response = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {}),
+      params("current"),
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      reason: "listing_unavailable",
+      nextCursor: null,
+    });
   });
 });

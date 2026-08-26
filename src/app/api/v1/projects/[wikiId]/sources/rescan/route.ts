@@ -89,7 +89,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       ...(typeof body.cursor === "number" ? { cursor: body.cursor } : {}),
     });
     const queued = result.results.filter((row) => row.queued).length;
-    return NextResponse.json({
+    const payload = {
       wikiId: caller.requested,
       ...result,
       queued,
@@ -97,6 +97,11 @@ export async function POST(request: Request, { params }: RouteContext) {
       changedTasks: result.results
         .filter((row) => row.queued && row.jobId)
         .map((row) => ({ path: row.path, jobId: row.jobId })),
+    };
+    // A sticky 200 + nextCursor would let a drain loop the same offset
+    // forever. 503 + null cursor is terminal: try again later, do not page.
+    return NextResponse.json(payload, {
+      status: result.reason === "listing_unavailable" ? 503 : 200,
     });
   } catch (error) {
     if (isReadOnlyError(error)) {

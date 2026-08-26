@@ -532,7 +532,7 @@ export function isAbsolutePathWikiId(value) {
 
 /**
  * @typedef {{ id?: string, path?: string }} WikiRegistryRow
- * @typedef {WikiRegistryRow[] | { current?: () => unknown }} WikiRegistryInput
+ * @typedef {WikiRegistryRow[] | { current?: () => unknown, currentId?: () => unknown }} WikiRegistryInput
  */
 
 /**
@@ -644,10 +644,11 @@ export function readWikiRegistryFromDisk(dataDir) {
  * Poll `GET /api/v1/projects` for Wiki ids and optional `hostPath` roots.
  *
  * `{id}` on the loopback door may be a URL-encoded absolute path only when
- * that path is one of these roots: a kernel `hostPath` (filesystem-backed
- * only, and it must sit under `DATA_DIR`), an owner `WORKWIKI_WIKI_ROOTS`
- * entry whose id is in the project list, the sidecar workspace (`current`),
- * or — when there is no kernel token — the on-disk tenants/<handle>/wikis/<uuid> tree.
+ * that path is one of these roots: a kernel `hostPath` the kernel actually
+ * registered (must sit under `DATA_DIR` — the kernel no longer mints one
+ * from `project.path`), an owner `WORKWIKI_WIKI_ROOTS` entry whose id is in
+ * the project list, the sidecar workspace (`current`), or — when there is
+ * no kernel token — the on-disk tenants/<handle>/wikis/<uuid> tree.
  *
  * Kernel `project.path` is NOT a host root. Resolving it against `DATA_DIR`
  * invented `<cwd>/tenants/...` paths no owner would send.
