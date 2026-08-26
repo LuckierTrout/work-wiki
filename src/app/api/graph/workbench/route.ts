@@ -12,7 +12,7 @@ import {
   typeLegend,
 } from "@/lib/graph-surprise";
 import { buildWikiGraph } from "@/lib/graph-build";
-import { requireOwnerPrincipal } from "@/lib/owner-route";
+import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
 import {
   RESEARCH_PREFILL_LIMIT,
   allocateResearchPrefillSlugs,
@@ -21,8 +21,8 @@ import {
   loadResearchPrefillPages,
 } from "@/lib/research-prefill";
 
-export async function GET() {
-  const principal = await requireOwnerPrincipal();
+export async function GET(request: Request) {
+  const principal = await requireOwnerOrServicePrincipal(request);
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }

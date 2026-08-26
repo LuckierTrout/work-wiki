@@ -6,6 +6,7 @@ import type { EmbeddingProvider, ProviderValue } from "./providers";
 import { logger } from "./logger";
 import { getDataDir } from "./paths";
 import { getStorage } from "./storage";
+import { LOOPBACK_TOKEN_ENV, type LoopbackTokenSource } from "./v1-contract";
 import {
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
@@ -125,6 +126,42 @@ export interface AppConfig {
   mineruLocalBaseUrl?: string;
   /** Credential for MinerU Cloud / Pipeline. Never leaves the server. */
   mineruApiKey?: string;
+
+  // -------------------------------------------------------------------------
+  // Epic 8 — the loopback door and the Skills that ride through it
+  // (Stories 8.1 / 8.6).
+  //
+  // Read through `getLoopbackApiSettings` / `skillEnabled`, which is where the
+  // fail-closed defaults live. Nothing else should touch these keys directly:
+  // `apiEnabled` and `allowUnauthenticated` are both `false` when absent, and a
+  // second reader that treated absent as "whatever was configured" is how an
+  // opt-in local API becomes an open one.
+  // -------------------------------------------------------------------------
+
+  /** Is the loopback `/api/v1` data plane switched on? Absent means NO. */
+  apiEnabled?: boolean;
+  /**
+   * May a local caller skip the token? Absent means NO, and that is the whole
+   * point — unauthenticated access is never the default, it is a decision the
+   * owner makes on the API + MCP pane and sees an orange warning for.
+   */
+  allowUnauthenticated?: boolean;
+  /**
+   * The token Settings generated. Never served — the payload answers
+   * `hasLoopbackApiToken` and `loopbackTokenSource`, the same AD-23 rule the
+   * three provider credentials follow. `LLM_WIKI_API_TOKEN` wins over it.
+   */
+  loopbackApiToken?: string;
+  /**
+   * Filesystem Skill enablement: skill id → boolean (Story 8.6).
+   *
+   * ABSENT FROM THE MAP MEANS ENABLED. A newly scanned `SKILL.md` is usable
+   * without a visit to Settings — "scanned without reinstall" is the acceptance
+   * criterion — so the map records DECISIONS, not an inventory. An inventory
+   * would go stale the moment the owner added a folder, and every new Skill
+   * would silently arrive switched off.
+   */
+  skillEnablement?: Record<string, boolean>;
 
   // NO PLAUD OAUTH KEYS (Story 7.6 is blocked). Five of them were declared
   // here — client id, client secret, access and refresh tokens, an expiry —
@@ -1291,6 +1328,65 @@ export function getVectorSearchSettings(): VectorSearchSettings {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Epic 8 — the loopback door (Story 8.1)
+// ---------------------------------------------------------------------------
+
+export interface LoopbackApiSettings {
+  enabled: boolean;
+  allowUnauthenticated: boolean;
+  /**
+   * The token a caller must present, or `null` when none is configured.
+   *
+   * INTERNAL. It reaches exactly two places: the owner-automation
+   * `/api/v1/loopback-settings` route the sidecar polls, and the compare inside
+   * the sidecar. It is in no settings payload and no log line.
+   */
+  token: string | null;
+  tokenSource: LoopbackTokenSource;
+}
+
+/**
+ * The loopback door's four facts, resolved once.
+ *
+ * ENV WINS, and it wins over the STORE rather than beside it: `LLM_WIKI_API_TOKEN`
+ * is how a deployment supplies the credential without it ever entering the
+ * config JSON, so a store token standing behind it would be a second valid
+ * password for the same door — one the owner believes they rotated when they
+ * pressed Generate. `tokenSource: "env"` is what tells the surface to stop
+ * offering Generate as if it mattered.
+ *
+ * `authRequired` is DERIVED rather than stored: it is "the API is on and unauth
+ * is off", and storing it would let the two disagree.
+ */
+export function getLoopbackApiSettings(
+  cfg: AppConfig = loadConfigSync(),
+): LoopbackApiSettings {
+  const fromEnv = nonEmpty(process.env[LOOPBACK_TOKEN_ENV]);
+  const stored = nonEmpty(cfg.loopbackApiToken);
+  const token = fromEnv ?? stored;
+  return {
+    enabled: cfg.apiEnabled === true,
+    allowUnauthenticated: cfg.allowUnauthenticated === true,
+    token,
+    tokenSource: fromEnv !== null ? "env" : stored !== null ? "store" : "none",
+  };
+}
+
+/**
+ * Is this Skill enabled? (Story 8.6)
+ *
+ * ABSENT IS ENABLED — see {@link AppConfig.skillEnablement}. Only an explicit
+ * `false` hides a Skill from `/skill` completion, from injection and from the
+ * Agent's Skill file reads.
+ */
+export function skillEnabled(
+  id: string,
+  enablement: Record<string, boolean> | undefined,
+): boolean {
+  return enablement?.[id] !== false;
+}
+
 /** Trim-and-null: `""` and whitespace are "unset", not "set to nothing". */
 function nonEmpty(value: string | undefined | null): string | null {
   if (typeof value !== "string") return null;
@@ -1595,6 +1691,7 @@ export function getWorkbenchSettings(
   // `getEffectiveSettings` uses (DW-312/DW-313) — so the two Settings surfaces
   // cannot answer "is the model I set being substituted?" differently.
   const embedding = embeddingModelAnswer(cfg);
+  const loopback = getLoopbackApiSettings(cfg);
   return {
     chatProvider: cfg.chatProvider ?? null,
     chatModel: cfg.chatModel ?? null,
@@ -1679,6 +1776,18 @@ export function getWorkbenchSettings(
     mineruMode: isMinerUMode(cfg.mineruMode) ? cfg.mineruMode : "off",
     mineruLocalBaseUrl: nonEmpty(cfg.mineruLocalBaseUrl),
     hasMinerUApiKey: nonEmpty(cfg.mineruApiKey) !== null,
+    // The loopback door (Story 8.1), through the ONE resolver — so the pane, the
+    // owner-automation route the sidecar polls and the health body cannot
+    // disagree about whether the door is open. The TOKEN never crosses this
+    // boundary: `hasLoopbackApiToken` is a presence boolean like every other
+    // credential here (AD-23), and `loopbackTokenSource` is the one extra fact
+    // the pane cannot derive — `LLM_WIKI_API_TOKEN` wins over the store, and a
+    // surface that did not know would keep offering Generate as if pressing it
+    // changed what callers must send.
+    apiEnabled: loopback.enabled,
+    allowUnauthenticated: loopback.allowUnauthenticated,
+    hasLoopbackApiToken: loopback.token !== null,
+    loopbackTokenSource: loopback.tokenSource,
     language: SETTINGS_LANGUAGE_VALUE,
     readOnly: isReadOnly(),
   };
@@ -1830,6 +1939,34 @@ export function applyWorkbenchSettings(
     // false, but an owner who turned it OFF should read back as having done so
     // rather than as never having decided.
     updated.vectorSearchEnabled = patch.vectorSearchEnabled;
+  }
+
+  // The loopback door (Story 8.1). Both switches store `false` explicitly, on
+  // the argument above and harder: `getLoopbackApiSettings` reads absent as
+  // CLOSED, so deleting the key on `false` would work — but then "the owner shut
+  // the door" and "the owner has never seen this pane" would be the same stored
+  // state, and the first is a decision worth reading back.
+  if (patch.apiEnabled !== undefined) {
+    updated.apiEnabled = patch.apiEnabled;
+  }
+  if (patch.allowUnauthenticated !== undefined) {
+    updated.allowUnauthenticated = patch.allowUnauthenticated;
+  }
+  // A secret, so it rides the three-state `setText` path with the other keys:
+  // absent keeps, `null`/`""` deletes, a value replaces.
+  setText("loopbackApiToken", patch.loopbackApiToken);
+
+  if (patch.skillEnablement !== undefined) {
+    // MERGED key-by-key, not replaced (Story 8.6). The sidecar scans the
+    // filesystem and this map records only DECISIONS — see
+    // {@link AppConfig.skillEnablement} — so a patch built from a stale scan
+    // must not drop the owner's decision about a Skill it did not list. Absent
+    // from the map still means ENABLED, which is why nothing here has to
+    // materialise an inventory.
+    updated.skillEnablement = {
+      ...(existing.skillEnablement ?? {}),
+      ...patch.skillEnablement,
+    };
   }
 
   return updated;

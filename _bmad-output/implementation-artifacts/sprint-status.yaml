@@ -38,7 +38,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 # - Retrospective appends its action items to action_items; the status view surfaces open ones
 generated: 08-13-2026 14:53
-last_updated: 08-25-2026 18:37
+last_updated: 08-25-2026 20:48
 project: work-wiki
 project_key: NOKEY
 tracking_system: file-system
@@ -129,16 +129,16 @@ development_status:
   7-8-mermaid-and-katex-in-preview: done
   epic-7-retrospective: optional
 
-  epic-8: backlog
-  8-1-enable-loopback-api-and-token: backlog
-  8-2-full-api-v1-surface: backlog
-  8-3-mcp-and-copyable-config: backlog
-  8-4-work-wiki-agent-skill: backlog
-  8-5-tool-using-agent: backlog
-  8-6-skill-scan-enable-skill: backlog
-  8-7-skill-forms: backlog
-  8-8-agent-workspace-outputs: backlog
-  8-9-safer-shell-approve-deny: backlog
+  epic-8: done
+  8-1-enable-loopback-api-and-token: done
+  8-2-full-api-v1-surface: done
+  8-3-mcp-and-copyable-config: done
+  8-4-work-wiki-agent-skill: done
+  8-5-tool-using-agent: done
+  8-6-skill-scan-enable-skill: done
+  8-7-skill-forms: done
+  8-8-agent-workspace-outputs: done
+  8-9-safer-shell-approve-deny: done
   epic-8-retrospective: optional
 action_items:
   - id: "epic-1-retro-data-version-contract"

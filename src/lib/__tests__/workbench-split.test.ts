@@ -1346,7 +1346,16 @@ describe("the shell wires the split without spelling any of it", () => {
     // the direction that would break, and it stays unreachable.
     expect(source).toContain("id={PREVIEW_ID}");
     expect(source).toContain("const previewOpen = previewDocked && !settingsOpen;");
-    expect(source).toMatch(/\{previewDocked && \(\s*<PreviewColumn/);
+    // Epic 8 split the mount by selection kind — a kernel page or file into this
+    // column, an Agent output under `agent-workspace/` into `WorkspacePreview` —
+    // but both carry `id={PREVIEW_ID}` and both mount on `previewDocked`, so the
+    // separator's `aria-controls` still cannot outlive its target.
+    expect(source).toMatch(
+      /\{previewDocked && isKernelSelection\(selection\) && \(\s*<PreviewColumn/,
+    );
+    expect(source).toMatch(
+      /\{previewDocked && selection\?\.kind === "workspace" && \(\s*<WorkspacePreview/,
+    );
     const preview = await component("PreviewColumn.tsx");
     expect(preview).toContain('<aside id={id} className="wb-preview" hidden={hidden}');
   });

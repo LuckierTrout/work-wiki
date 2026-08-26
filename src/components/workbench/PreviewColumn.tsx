@@ -74,6 +74,7 @@ import {
   readableSlugsFromKnowledge,
   selectionName,
   type FileNode,
+  type KernelSelection,
   type KnowledgeGroup,
   type TreeSelection,
 } from "@/lib/workbench-tree";
@@ -110,7 +111,13 @@ import { PreviewLightbox } from "./PreviewLightbox";
  */
 
 export interface PreviewColumnProps {
-  selection: TreeSelection | null;
+  /**
+   * KERNEL picks only. An Agent output under `agent-workspace/` is a third
+   * selection kind with no version, no revisions and no write path — it gets
+   * `WorkspacePreview` instead, and typing this narrowly is what stops one
+   * arriving here to be fetched from a kernel route that has never seen it.
+   */
+  selection: KernelSelection | null;
   knowledge: readonly KnowledgeGroup[];
   files: readonly FileNode[];
   /**
@@ -266,7 +273,7 @@ function PreviewPane({
   id,
   hidden = false,
   ref,
-}: PreviewColumnProps & { selection: TreeSelection }) {
+}: PreviewColumnProps & { selection: KernelSelection }) {
   const [payload, setPayload] = useState<PreviewPayload | null>(null);
   // What is on screen RIGHT NOW, readable from an async callback that closed
   // over an older render. Assigned during render, the `useDialogA11y` idiom.

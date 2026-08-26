@@ -15,6 +15,7 @@ import { LintCanvas } from "./LintCanvas";
 import { ResearchCanvas } from "./ResearchCanvas";
 import { ReviewCanvas } from "./ReviewCanvas";
 import { SearchCanvas } from "./SearchCanvas";
+import { SkillsCanvas } from "./SkillsCanvas";
 import { TodosCanvas } from "./TodosCanvas";
 
 /**
@@ -254,6 +255,17 @@ export function ModeCanvas({
         />
       </div>
 
+      {/* The Skills rail lists what the sidecar scanned, and owns the switch
+          that hides a pack from `/skill` and from the Agent (Story 8.6). */}
+      <div className="wb-canvas-pad" hidden={mode !== "skills" || hidden}>
+        {mode === "skills" && !hidden ? (
+          <h2 id={headingId} className="wb-surface-title">
+            {workbenchMode("skills").label}
+          </h2>
+        ) : null}
+        <SkillsCanvas active={mode === "skills" && !hidden} readOnly={readOnly} />
+      </div>
+
       {!wikiActive &&
         !hidden &&
         mode !== "chat" &&
@@ -262,7 +274,8 @@ export function ModeCanvas({
         mode !== "graph" &&
         mode !== "lint" &&
         mode !== "review" &&
-        mode !== "research" && (
+        mode !== "research" &&
+        mode !== "skills" && (
         <div className="wb-canvas-pad">
           <h2 id={headingId} className="wb-surface-title">
             {surface.label}

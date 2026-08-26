@@ -91,6 +91,7 @@ import {
 import { requestDataVersionCheck } from "@/lib/workbench-data-version";
 import {
   DEFAULT_TREE_TAB,
+  isKernelSelection,
   isSameSelection,
   restorableSelection,
   selectionName,
@@ -120,6 +121,7 @@ import { SettingsNav } from "./SettingsNav";
 import { SplitHandle } from "./SplitHandle";
 import { TreePanel } from "./TreePanel";
 import { WikiSwitcher } from "./WikiSwitcher";
+import { WorkspacePreview } from "./WorkspacePreview";
 import { useWorkbenchData } from "./WorkbenchData";
 import { useReviewBadge } from "./useReviewBadge";
 
@@ -1663,7 +1665,19 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
           the gate that used to read `previewOpen` here destroyed it on the way
           into Settings. `previewOpen` still decides what is ON SCREEN, which is
           all the layout, the divider and `data-preview` ever meant by it. */}
-      {previewDocked && (
+      {/* An Agent output (Story 8.8) gets its own read-only column — see
+          `WorkspacePreview`. The pick is a THIRD selection kind because the bytes
+          are on the sidecar's disk rather than in the kernel, and the column
+          below would fetch it from `/api/workbench/preview` and 404. */}
+      {previewDocked && selection?.kind === "workspace" && (
+        <WorkspacePreview
+          id={PREVIEW_ID}
+          selection={selection}
+          hidden={!previewOpen}
+        />
+      )}
+
+      {previewDocked && isKernelSelection(selection) && (
         <PreviewColumn
           // The id the Preview separator's `aria-controls` names (DW-45).
           id={PREVIEW_ID}

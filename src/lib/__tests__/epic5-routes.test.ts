@@ -1,6 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/owner-route", () => ({ requireOwnerPrincipal: vi.fn() }));
+vi.mock("@/lib/owner-route", () => {
+  const requireOwnerPrincipal = vi.fn();
+  return {
+    requireOwnerPrincipal,
+    // `/api/graph/workbench` now also accepts the owner-automation token, because
+    // the Chat Agent's graph tool runs in the sidecar and has no session (Story
+    // 8.5). These tests pin the OWNER GATE, not which credential opened it, so
+    // the two resolve the same principal here.
+    requireOwnerOrServicePrincipal: vi.fn(() => requireOwnerPrincipal()),
+  };
+});
 vi.mock("@/lib/config", async (orig) => ({
   ...(await orig<typeof import("@/lib/config")>()),
   isReadOnly: vi.fn(() => false),
@@ -82,7 +92,7 @@ beforeEach(() => {
 describe("Epic 5 owner APIs require a signed-in owner", () => {
   it("returns 401 Sign in required. when signed out", async () => {
     const responses = await Promise.all([
-      getWorkbenchGraph(),
+      getWorkbenchGraph(request("http://localhost/api/graph/workbench")),
       getInsights(),
       postInsights(request("http://localhost/api/graph/insights", "POST", {
         id: "x",
@@ -135,7 +145,7 @@ describe("Epic 5 owner APIs require a signed-in owner", () => {
       ],
       edges: [],
     });
-    const response = await getWorkbenchGraph();
+    const response = await getWorkbenchGraph(request("http://localhost/api/graph/workbench"));
     expect(response.status).toBe(200);
     const body = (await response.json()) as { insights?: Array<{ kind: string; id: string }> };
     expect(body.insights?.some((insight) => insight.id === "isolated:alone")).toBe(true);
@@ -225,7 +235,7 @@ describe("Epic 5 owner APIs require a signed-in owner", () => {
       })),
       edges: [],
     });
-    const response = await getWorkbenchGraph();
+    const response = await getWorkbenchGraph(request("http://localhost/api/graph/workbench"));
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       prefill?: { limit: number; attempted: number; applied: number; failed: number; remaining: number };

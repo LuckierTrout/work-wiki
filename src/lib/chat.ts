@@ -62,6 +62,44 @@ const CHAT_CONTEXT_PAGE_LIMITS: Record<ChatContextBudget, number> = {
   expanded: 12,
 };
 
+/**
+ * One tool the Agent called, as the transcript records it (Story 8.5).
+ *
+ * PERSISTED WITH THE MESSAGE, because a turn's tool calls are part of what the
+ * answer IS: "searched the wiki, found four pages, read one" is the difference
+ * between an answer the owner can audit and a paragraph they have to trust. A
+ * row kept only in React state would vanish on the next reload, and the owner
+ * would be left with a claim and no trace of where it came from.
+ *
+ * `detail` is the owner's summary (`"4 hits"`), never the observation the model
+ * saw — the full text of four pages does not belong in a conversation record.
+ */
+export interface ChatToolCall {
+  id: string;
+  tool: string;
+  detail: string;
+}
+
+/**
+ * A file the Agent wrote under `agent-workspace/` (Story 8.8).
+ *
+ * A REFERENCE, not the bytes. The file is on disk and the Preview reads it by
+ * path when the owner clicks the chip; inlining contents here would put a
+ * megabyte of generated CSV into the conversation JSON and into every export.
+ */
+export interface ChatOutput {
+  /**
+   * Path RELATIVE TO the workspace root — `report.md`, not
+   * `agent-workspace/report.md`. That is the string
+   * `GET /api/v1/workspace/file?path=` takes, and storing the prefixed form
+   * would mean every chip click had to strip it back off.
+   */
+  path: string;
+  /** Basename, for the chip label. */
+  name: string;
+  bytes: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
@@ -71,6 +109,10 @@ export interface ChatMessage {
   backend?: ChatBackend;
   citations?: ChatCitation[];
   thinking?: string;
+  /** Absent on every pre-Epic-8 message, and on any turn that used no tools. */
+  toolCalls?: ChatToolCall[];
+  /** Absent unless the Agent wrote something under `agent-workspace/`. */
+  outputs?: ChatOutput[];
 }
 
 export interface ChatConversation {
@@ -85,12 +127,38 @@ export interface ChatConversation {
   tokenBudget?: number;
   /** History depth N; tighter of N vs the 20% history slot wins at assemble. */
   historyDepth?: number;
+  /**
+   * The Skill this conversation is running under, by id (Story 8.6).
+   *
+   * ON THE CONVERSATION rather than on each message, because picking a Skill with
+   * `/skill` sets the frame for what follows — the next five turns are all "as
+   * this Skill", and re-selecting it per message would be the owner repeating
+   * themselves. Absent means no Skill, which is the default and the pre-Epic-8
+   * shape.
+   *
+   * A STALE ID IS HARMLESS: the id refers to a directory that may have been
+   * deleted or disabled since, and `readSkill` answers `null` for both. The
+   * conversation keeps the id so the surface can say which Skill is no longer
+   * available instead of silently continuing without one.
+   */
+  selectedSkill?: string;
   messages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
 }
 
-function normalizeConversation(conversation: ChatConversation): ChatConversation {
+/**
+ * Fill in every field a stored conversation may predate, and drop the ones that
+ * are absent rather than storing them empty.
+ *
+ * EXPORTED for the suite: it is the seam where a conversation written before
+ * Epic 8 becomes one the Workbench can render, so "an old conversation still
+ * opens" and "a tool row survives a restart" are both questions about this
+ * function rather than about the route that calls it.
+ */
+export function normalizeConversation(
+  conversation: ChatConversation,
+): ChatConversation {
   return {
     ...conversation,
     retrievalMode: conversation.retrievalMode === "sources" ? "sources" : "wiki",
@@ -103,11 +171,24 @@ function normalizeConversation(conversation: ChatConversation): ChatConversation
     historyDepth: clampHistoryDepth(
       conversation.historyDepth ?? CHAT_HISTORY_DEPTH_DEFAULT,
     ),
+    // Kept only when it is a non-empty string, so a conversation that never
+    // picked a Skill does not carry `selectedSkill: undefined` into storage.
+    ...(typeof conversation.selectedSkill === "string" && conversation.selectedSkill
+      ? { selectedSkill: conversation.selectedSkill }
+      : {}),
     messages: conversation.messages.map((message) => ({
       ...message,
       citations: Array.isArray(message.citations) ? message.citations : [],
       ...(typeof message.thinking === "string" && message.thinking
         ? { thinking: message.thinking }
+        : {}),
+      // Tool rows and outputs are normalized the same way citations are: absent
+      // and empty are the same fact, and a pre-Epic-8 message has neither.
+      ...(Array.isArray(message.toolCalls) && message.toolCalls.length > 0
+        ? { toolCalls: message.toolCalls }
+        : {}),
+      ...(Array.isArray(message.outputs) && message.outputs.length > 0
+        ? { outputs: message.outputs }
         : {}),
     })),
   };
@@ -290,6 +371,8 @@ export async function updateChatConversation(
     contextBudget?: ChatContextBudget;
     tokenBudget?: number;
     historyDepth?: number;
+    /** `null` clears the selection — `/skill` with no argument. */
+    selectedSkill?: string | null;
   },
 ): Promise<ChatConversation | null> {
   return withConversationStore(owner, (conversations) => {
@@ -317,6 +400,15 @@ export async function updateChatConversation(
     if (patch.historyDepth !== undefined) {
       conversation.historyDepth = clampHistoryDepth(patch.historyDepth);
     }
+    if (patch.selectedSkill !== undefined) {
+      // DELETED rather than set to `""`, so "no Skill" has one representation.
+      // Two would mean every reader had to test both.
+      if (patch.selectedSkill?.trim()) {
+        conversation.selectedSkill = patch.selectedSkill.trim().slice(0, 200);
+      } else {
+        delete conversation.selectedSkill;
+      }
+    }
     conversation.updatedAt = new Date().toISOString();
     return conversation;
   });
@@ -339,6 +431,10 @@ export interface PersistChatMessage {
   content: string;
   citations?: ChatCitation[];
   thinking?: string;
+  /** Tool rows from a tool-using turn (Story 8.5). Assistant frames only. */
+  toolCalls?: ChatToolCall[];
+  /** Workspace files the turn wrote (Story 8.8). Assistant frames only. */
+  outputs?: ChatOutput[];
 }
 
 function lastTurnIsPair(messages: readonly ChatMessage[]): boolean {
@@ -421,6 +517,15 @@ export async function persistChatTurn(
         citations: sanitized.citations,
         ...(assistantFrame.thinking
           ? { thinking: assistantFrame.thinking }
+          : {}),
+        // The AUDIT TRAIL of the answer above, kept with it. Only non-empty
+        // arrays are stored, so a plain turn's record is byte-identical to what
+        // Epic 3 wrote.
+        ...(assistantFrame.toolCalls?.length
+          ? { toolCalls: assistantFrame.toolCalls }
+          : {}),
+        ...(assistantFrame.outputs?.length
+          ? { outputs: assistantFrame.outputs }
           : {}),
         createdAt: now,
       },

@@ -541,6 +541,68 @@ export async function skipReviewItem(
   });
 }
 
+/**
+ * The queue INCLUDING what has already been resolved (Story 8.2).
+ *
+ * `reviewSnapshot` answers the product's question — "what is still on the
+ * board" — and the Review canvas wants exactly that. The `/api/v1` reviews route
+ * additionally has to answer "what did I dismiss", because FR-76 lets a caller
+ * REOPEN by id and an agent that cannot list resolved items can only reopen
+ * something it happens to still remember.
+ *
+ * Same drain and same recovery as the active snapshot, so the two cannot
+ * disagree about an interrupted create. `pendingCount` still counts only the
+ * ACTIVE rows: it is the badge number, and a badge that counted dismissals
+ * would never reach zero.
+ */
+export async function reviewSnapshotIncludingResolved(
+  owner: string,
+  wikiId?: string,
+): Promise<{ items: ReviewItem[]; pendingCount: number }> {
+  const readOnly = isReadOnly();
+  if (!readOnly) {
+    await drainReviewOutbox(owner);
+    await recoverInterruptedCreates(owner);
+  }
+  const snapshot = await readStore(owner, { quarantineCorrupt: !readOnly });
+  const items = snapshot.items
+    .filter((item) => matchesWiki(item, wikiId))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return { items, pendingCount: items.filter(isActiveReview).length };
+}
+
+/**
+ * Undo a dismissal — `skipped` back to `pending` (Story 8.2).
+ *
+ * ONLY from `skipped`. A `created` item has a Page on disk and reopening it
+ * would invite a second create of the same page; a `creating` one is mid-flight
+ * and its own recovery path owns it. Both return `null` here rather than being
+ * coerced, so the route answers 404/409 instead of silently doing the wrong
+ * write.
+ *
+ * `sourcePath` is restored as `path` because that is what a pending card points
+ * at — the same restoration `recoverInterruptedCreates` performs when it hands a
+ * row back to pending.
+ */
+export async function reopenReviewItem(
+  owner: string,
+  id: string,
+  wikiId?: string,
+): Promise<ReviewItem | null> {
+  assertWritable(READ_ONLY_REFUSAL.reviewQueue);
+  const now = new Date().toISOString();
+  return withQueue(owner, (store) => {
+    const item = store.items.find((candidate) => candidate.id === id);
+    if (!item || item.status !== "skipped" || !matchesWiki(item, wikiId)) {
+      return null;
+    }
+    item.status = "pending";
+    if (item.sourcePath) item.path = item.sourcePath;
+    item.updatedAt = now;
+    return item;
+  });
+}
+
 export async function createPageFromReview(
   owner: string,
   id: string,

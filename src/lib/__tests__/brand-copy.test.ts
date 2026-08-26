@@ -207,6 +207,12 @@ const WORKWIKI_IDENTIFIER_ALLOWLIST = [
   /\.?workwiki-(?:source-sync|backups|portable-archive|archive|actions\.ics|[*.$0-9])/g,
   // The clipper's `chrome.storage.local` key — the ONE camelCase spelling in
   // the repo, so it is listed literally rather than as a camelCase shape.
+  // The user-scope Skill root the sidecar scans (Story 8.6). On-disk operator
+  // state, the same family as `.workwiki-source-sync.json`, and a directory an
+  // owner will have put `SKILL.md` packs into by hand — renaming it makes their
+  // Skills silently invisible. Anchored to `/skills` so display prose about "the
+  // workwiki folder" is still a slip.
+  /~?\/?\.workwiki\/skills/g,
   /\bworkwikiDefaultTags\b/g,
   /\bsave-to-workwiki\b/g, // the clipper's context-menu id, persisted per install
   /hooks\.example\.com\/workwiki/g, // the webhook placeholder rendered by IntegrationDesk

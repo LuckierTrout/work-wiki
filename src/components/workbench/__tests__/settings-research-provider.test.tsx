@@ -63,6 +63,12 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
     mineruMode: "off",
     mineruLocalBaseUrl: null,
     hasMinerUApiKey: false,
+    // The loopback door, shut — the fail-closed answer every one of these
+    // fixtures wants, since none of them is about Epic 8's pane.
+    apiEnabled: false,
+    allowUnauthenticated: false,
+    hasLoopbackApiToken: false,
+    loopbackTokenSource: "none",
     language: "English",
     readOnly: false,
     ...overrides,

@@ -1,0 +1,715 @@
+/**
+ * Epic 8, the cloud `/api/v1` façade: the FR-76 routes, their refusals, and the
+ * one asymmetry between the two hosts.
+ *
+ * MOCKED AT THE LIBRARY SEAM, like `epic5-routes.test.ts`, because what is under
+ * test is the FAÇADE — status codes, field names, clamps and gates — not storage.
+ * A suite that stood up real storage for these would be slow and would still not
+ * observe the thing that matters: that a route refuses before it reads.
+ */
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/owner-route", () => {
+  const requireOwnerOrServicePrincipal = vi.fn();
+  return {
+    requireOwnerPrincipal: vi.fn(() => requireOwnerOrServicePrincipal()),
+    requireOwnerOrServicePrincipal,
+  };
+});
+vi.mock("@/lib/config", async (orig) => ({
+  ...(await orig<typeof import("@/lib/config")>()),
+  isReadOnly: vi.fn(() => false),
+  getLoopbackApiSettings: vi.fn(() => ({
+    enabled: true,
+    allowUnauthenticated: false,
+    token: "stored-token",
+    tokenSource: "store" as const,
+  })),
+}));
+vi.mock("@/lib/wiki-access", () => ({
+  requireAccessibleWikiId: vi.fn(),
+}));
+vi.mock("@/lib/wikis", () => ({
+  getWikiRegistry: vi.fn(),
+}));
+vi.mock("@/lib/wiki", async (orig) => ({
+  // PARTIAL, because `wiki-paths.ts` reaches back into this module for
+  // `tenantForOwner` — the tenant key and the readable-page listing live in the
+  // same file. A total mock here would make every storage key in the façade
+  // undefined, and the route would 500 for a reason that has nothing to do with
+  // what the test is asking.
+  ...(await orig<typeof import("@/lib/wiki")>()),
+  listReadableWikiPages: vi.fn(async () => []),
+}));
+vi.mock("@/lib/workbench-files", () => ({
+  listWorkbenchFilePaths: vi.fn(async () => ({ paths: [], truncated: false })),
+  readWorkbenchFile: vi.fn(async () => null),
+}));
+vi.mock("@/lib/graph-build", () => ({
+  buildWikiGraph: vi.fn(async () => ({ nodes: [], edges: [] })),
+}));
+vi.mock("@/lib/source-rescan", async (orig) => ({
+  ...(await orig<typeof import("@/lib/source-rescan")>()),
+  rescanSources: vi.fn(async () => ({ requested: 0, results: [], remaining: 0 })),
+}));
+vi.mock("@/lib/wiki-retrieve", () => ({
+  retrieveHits: vi.fn(async () => ({
+    hits: [],
+    vectorPhase: { status: "off" },
+  })),
+}));
+vi.mock("@/lib/review-queue", () => ({
+  reviewSnapshot: vi.fn(async () => ({ items: [], pendingCount: 0 })),
+  reviewSnapshotIncludingResolved: vi.fn(async () => ({
+    items: [],
+    pendingCount: 0,
+  })),
+  isPendingReview: vi.fn(() => true),
+  pendingReviewCount: vi.fn(async () => 0),
+  skipReviewItem: vi.fn(async () => null),
+  reopenReviewItem: vi.fn(async () => null),
+}));
+
+import { GET as getHealth } from "@/app/api/v1/health/route";
+import { GET as getProjects } from "@/app/api/v1/projects/route";
+import { GET as getFiles } from "@/app/api/v1/projects/[wikiId]/files/route";
+import { GET as getContent } from "@/app/api/v1/projects/[wikiId]/files/content/route";
+import { GET as getGraph } from "@/app/api/v1/projects/[wikiId]/graph/route";
+import {
+  GET as getReviews,
+  PATCH as patchReviews,
+} from "@/app/api/v1/projects/[wikiId]/reviews/route";
+import { POST as postResolve } from "@/app/api/v1/projects/[wikiId]/reviews/resolve/route";
+import { POST as postRescan } from "@/app/api/v1/projects/[wikiId]/sources/rescan/route";
+import { POST as postSearch } from "@/app/api/v1/projects/[wikiId]/search/route";
+
+import { isReadOnly } from "@/lib/config";
+import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
+import { buildWikiGraph } from "@/lib/graph-build";
+import { rescanSources } from "@/lib/source-rescan";
+import { reopenReviewItem, skipReviewItem } from "@/lib/review-queue";
+import { retrieveHits } from "@/lib/wiki-retrieve";
+import { requireAccessibleWikiId } from "@/lib/wiki-access";
+import { getWikiRegistry } from "@/lib/wikis";
+import { listWorkbenchFilePaths, readWorkbenchFile } from "@/lib/workbench-files";
+import {
+  V1_APP_VERSION,
+  V1_FILE_BINARY_ERROR,
+  V1_FILE_OUT_OF_SCOPE_ERROR,
+  V1_FILE_TOO_LARGE_ERROR,
+  V1_MAX_FILE_BYTES,
+  V1_MAX_GRAPH_LIMIT,
+  V1_MAX_TREE_NODES,
+  V1_TREE_TOO_LARGE_ERROR,
+  V1_UNKNOWN_ACTION_ERROR,
+} from "@/lib/v1-contract";
+
+const owner = vi.mocked(requireOwnerOrServicePrincipal);
+const access = vi.mocked(requireAccessibleWikiId);
+const registry = vi.mocked(getWikiRegistry);
+const listPaths = vi.mocked(listWorkbenchFilePaths);
+const readFileMock = vi.mocked(readWorkbenchFile);
+const graph = vi.mocked(buildWikiGraph);
+const rescan = vi.mocked(rescanSources);
+const readOnly = vi.mocked(isReadOnly);
+const skip = vi.mocked(skipReviewItem);
+const reopen = vi.mocked(reopenReviewItem);
+const retrieve = vi.mocked(retrieveHits);
+
+const params = (wikiId: string) => ({ params: Promise.resolve({ wikiId }) });
+
+function get(url: string) {
+  return new Request(url);
+}
+
+function send(url: string, method: string, body?: unknown) {
+  return new Request(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  owner.mockResolvedValue({ id: "alice", handle: "alice" } as never);
+  access.mockResolvedValue({ ok: true } as never);
+  registry.mockResolvedValue({ currentId: "wiki-1", wikis: [] } as never);
+  listPaths.mockResolvedValue({ paths: [], truncated: false } as never);
+  readFileMock.mockResolvedValue(null as never);
+  graph.mockResolvedValue({ nodes: [], edges: [] } as never);
+  rescan.mockResolvedValue({ requested: 0, results: [], remaining: 0 } as never);
+  readOnly.mockReturnValue(false);
+  retrieve.mockResolvedValue({
+    hits: [],
+    vectorPhase: { status: "off" },
+  } as never);
+});
+
+describe("the façade needs a principal", () => {
+  it("401s every data route with neither a session nor a service token", async () => {
+    owner.mockResolvedValue(null as never);
+    const responses = await Promise.all([
+      getProjects(get("http://local/api/v1/projects")),
+      getFiles(get("http://local/api/v1/projects/current/files"), params("current")),
+      getContent(
+        get("http://local/api/v1/projects/current/files/content?path=wiki/a.md"),
+        params("current"),
+      ),
+      getReviews(get("http://local/api/v1/projects/current/reviews"), params("current")),
+      getGraph(get("http://local/api/v1/projects/current/graph"), params("current")),
+      postRescan(
+        send("http://local/api/v1/projects/current/sources/rescan", "POST", {}),
+        params("current"),
+      ),
+    ]);
+    for (const response of responses) expect(response.status).toBe(401);
+  });
+
+  it("answers health without one, because health is how you learn you need one", async () => {
+    owner.mockResolvedValue(null as never);
+    const response = await getHealth();
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Record<string, unknown>;
+    // The CLOUD façade cannot observe a loopback port conflict — it is a
+    // different machine — so it reports the Worker's own state and says `running`.
+    expect(body.status).toBe("running");
+    expect(body.version).toBe(V1_APP_VERSION);
+    expect(body.authConfigured).toBe(true);
+    expect(body.enabled).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("stored-token");
+  });
+});
+
+describe("{id} resolution", () => {
+  it("resolves current to the registry's current Wiki", async () => {
+    await getFiles(get("http://local/api/v1/projects/current/files"), params("current"));
+    expect(listPaths).toHaveBeenCalledWith("alice", "wiki-1", expect.anything());
+  });
+
+  it("passes a UUID straight through without consulting the registry", async () => {
+    const id = "8f4e2c1a-0000-4000-8000-000000000000";
+    await getFiles(get(`http://local/api/v1/projects/${id}/files`), params(id));
+    expect(registry).not.toHaveBeenCalled();
+    expect(listPaths).toHaveBeenCalledWith("alice", id, expect.anything());
+  });
+
+  it("refuses a filesystem path and a spoken name with the access helper's status", async () => {
+    // The refusal lives in `requireAccessibleWikiId` so all nine routes inherit
+    // it — this asserts the façade honours it rather than resolving anyway.
+    access.mockResolvedValue({
+      ok: false,
+      status: 400,
+      error: "invalid_wiki_id",
+    } as never);
+    const response = await getFiles(
+      get("http://local/api/v1/projects/%2FUsers%2Fme%2Fwiki/files"),
+      params("/Users/me/wiki"),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_wiki_id" });
+    expect(listPaths).not.toHaveBeenCalled();
+  });
+
+  it("treats a workspace with no Wiki as the unscoped tree, not an error", async () => {
+    registry.mockResolvedValue({ currentId: null, wikis: [] } as never);
+    const response = await getFiles(
+      get("http://local/api/v1/projects/current/files"),
+      params("current"),
+    );
+    expect(response.status).toBe(200);
+    expect(listPaths).toHaveBeenCalledWith("alice", null, expect.anything());
+  });
+});
+
+describe("projects", () => {
+  it("marks exactly one project current and echoes a display path", async () => {
+    // REAL UUIDs, because `wikiDirPath` validates the id before it composes a
+    // key — the registry only ever holds minted ones, and a mapper that accepted
+    // an arbitrary string would be composing storage keys out of user input.
+    const alpha = "11111111-0000-4000-8000-000000000000";
+    const beta = "22222222-0000-4000-8000-000000000000";
+    registry.mockResolvedValue({
+      currentId: beta,
+      wikis: [
+        { id: alpha, name: "Alpha", createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: beta, name: "Beta", createdAt: "2026-01-02T00:00:00.000Z" },
+      ],
+    } as never);
+    const response = await getProjects(get("http://local/api/v1/projects"));
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      currentId: string;
+      projects: { id: string; name: string; isCurrent: boolean; path: string }[];
+    };
+    // `currentId` AND a per-record flag, so a client rendering a checkmark does
+    // not have to correlate two fields to do it.
+    expect(body.currentId).toBe(beta);
+    expect(body.projects.map((row) => row.isCurrent)).toEqual([false, true]);
+    // The `path` is the kernel-relative artifact dir, NOT a host filesystem
+    // project root — inventing one would be DW-17 partitioning by the back door.
+    expect(body.projects[1].path).toBe(`tenants/alice/wikis/${beta}`);
+    expect(body.projects[1].path).not.toMatch(/^\//);
+  });
+});
+
+describe("files", () => {
+  it("filters by root and keeps the paths content takes back", async () => {
+    listPaths.mockResolvedValue({
+      paths: ["purpose.md", "wiki/alpha.md", "raw/sources/note.txt", "raw/"],
+      truncated: false,
+    } as never);
+    const wiki = await getFiles(
+      get("http://local/api/v1/projects/current/files?root=wiki"),
+      params("current"),
+    );
+    await expect(wiki.json()).resolves.toMatchObject({
+      root: "wiki",
+      files: ["wiki/alpha.md"],
+    });
+
+    // `sources` is the product's word for `raw/` and must not be a 400.
+    const sources = await getFiles(
+      get("http://local/api/v1/projects/current/files?root=sources"),
+      params("current"),
+    );
+    const body = (await sources.json()) as { root: string; files: string[] };
+    expect(body.root).toBe("raw");
+    // Directory markers are dropped: `files/content` cannot read one.
+    expect(body.files).toEqual(["raw/sources/note.txt"]);
+
+    const all = await getFiles(
+      get("http://local/api/v1/projects/current/files"),
+      params("current"),
+    );
+    await expect(all.json()).resolves.toMatchObject({ root: "all" });
+  });
+
+  it("413s a tree above the cap rather than answering a partial one", async () => {
+    listPaths.mockResolvedValue({ paths: ["wiki/a.md"], truncated: true } as never);
+    const response = await getFiles(
+      get("http://local/api/v1/projects/current/files"),
+      params("current"),
+    );
+    expect(response.status).toBe(413);
+    // An agent handed a silent partial tree concludes the missing pages do not
+    // exist, and then writes a duplicate.
+    await expect(response.json()).resolves.toEqual({
+      error: V1_TREE_TOO_LARGE_ERROR,
+      limit: V1_MAX_TREE_NODES,
+    });
+  });
+});
+
+describe("files/content refuses in order", () => {
+  it("403s an out-of-scope path before it reads anything", async () => {
+    for (const path of ["../etc/passwd", "/etc/passwd", ".git/config", "notes.md"]) {
+      const response = await getContent(
+        get(
+          `http://local/api/v1/projects/current/files/content?path=${encodeURIComponent(path)}`,
+        ),
+        params("current"),
+      );
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error: V1_FILE_OUT_OF_SCOPE_ERROR,
+      });
+    }
+    // The point of checking the string first: a traversal attempt never becomes
+    // a storage read.
+    expect(readFileMock).not.toHaveBeenCalled();
+  });
+
+  it("415s a binary path by extension, without buffering it", async () => {
+    const response = await getContent(
+      get(
+        "http://local/api/v1/projects/current/files/content?path=raw/sources/deck.pdf",
+      ),
+      params("current"),
+    );
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: V1_FILE_BINARY_ERROR });
+    expect(readFileMock).not.toHaveBeenCalled();
+  });
+
+  it("413s an oversize text file and reports the cap", async () => {
+    readFileMock.mockResolvedValue({
+      content: "x".repeat(V1_MAX_FILE_BYTES + 1),
+    } as never);
+    const response = await getContent(
+      get("http://local/api/v1/projects/current/files/content?path=wiki/big.md"),
+      params("current"),
+    );
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({
+      error: V1_FILE_TOO_LARGE_ERROR,
+      limit: V1_MAX_FILE_BYTES,
+    });
+  });
+
+  it("404s a path the gate allowed and storage does not have", async () => {
+    readFileMock.mockResolvedValue(null as never);
+    const response = await getContent(
+      get("http://local/api/v1/projects/current/files/content?path=wiki/gone.md"),
+      params("current"),
+    );
+    // "You may not read this" and "this does not exist" lead an agent to
+    // different next actions, so they are different statuses.
+    expect(response.status).toBe(404);
+  });
+
+  it("serves text with its byte count", async () => {
+    readFileMock.mockResolvedValue({ content: "# Alpha\n" } as never);
+    const response = await getContent(
+      get("http://local/api/v1/projects/current/files/content?path=wiki/alpha.md"),
+      params("current"),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      wikiId: "current",
+      path: "wiki/alpha.md",
+      content: "# Alpha\n",
+      bytes: 8,
+    });
+  });
+});
+
+describe("graph", () => {
+  it("is the owner's wikilink graph, clamped, with no dangling edges", async () => {
+    graph.mockResolvedValue({
+      nodes: [
+        { id: "a", label: "Alpha", type: "concept", linkCount: 5 },
+        { id: "b", label: "Beta", linkCount: 3 },
+        { id: "c", label: "Gamma", linkCount: 1 },
+      ],
+      edges: [
+        { source: "a", target: "b", signals: ["direct link"] },
+        { source: "a", target: "c", signals: ["direct link"] },
+        { source: "b", target: "c", signals: ["shared source"] },
+      ],
+    } as never);
+    const response = await getGraph(
+      get("http://local/api/v1/projects/current/graph?limit=2"),
+      params("current"),
+    );
+    const body = (await response.json()) as {
+      truncated: boolean;
+      nodeCount: number;
+      nodes: { id: string; path: string; nodeType: string | null }[];
+      edges: { source: string; target: string; weight: number }[];
+    };
+    expect(body.nodes.map((node) => node.id)).toEqual(["a", "b"]);
+    expect(body.nodes[0]).toMatchObject({
+      id: "a",
+      label: "Alpha",
+      nodeType: "concept",
+      path: "wiki/a.md",
+    });
+    expect(body.truncated).toBe(true);
+    expect(body.nodeCount).toBe(2);
+    expect(body.edges).toEqual([{ source: "a", target: "b", weight: 1 }]);
+    expect(graph).toHaveBeenCalledWith("mine", expect.objectContaining({ handle: "alice" }));
+  });
+
+  it("clamps an absurd limit instead of refusing it", async () => {
+    graph.mockResolvedValue({ nodes: [], edges: [] } as never);
+    const response = await getGraph(
+      get("http://local/api/v1/projects/current/graph?limit=99999"),
+      params("current"),
+    );
+    expect(response.status).toBe(200);
+    expect(V1_MAX_GRAPH_LIMIT).toBe(1_000);
+  });
+});
+
+describe("reviews", () => {
+  it("is open by default and can be asked for history", async () => {
+    const { reviewSnapshot, reviewSnapshotIncludingResolved } = await import(
+      "@/lib/review-queue"
+    );
+    await getReviews(
+      get("http://local/api/v1/projects/current/reviews"),
+      params("current"),
+    );
+    expect(reviewSnapshot).toHaveBeenCalled();
+    expect(reviewSnapshotIncludingResolved).not.toHaveBeenCalled();
+
+    await getReviews(
+      get("http://local/api/v1/projects/current/reviews?status=all"),
+      params("current"),
+    );
+    expect(reviewSnapshotIncludingResolved).toHaveBeenCalled();
+  });
+
+  it("bulk-skips and bulk-reopens by explicit id list", async () => {
+    skip.mockResolvedValue({ id: "r1", status: "skipped" } as never);
+    const skipped = await patchReviews(
+      send("http://local/api/v1/projects/current/reviews", "PATCH", {
+        ids: ["r1"],
+        resolved: true,
+      }),
+      params("current"),
+    );
+    expect(skipped.status).toBe(200);
+    await expect(skipped.json()).resolves.toMatchObject({
+      action: "skip",
+      requested: 1,
+      changed: 1,
+    });
+    expect(skip).toHaveBeenCalledWith("alice", "r1", "wiki-1");
+
+    reopen.mockResolvedValue({ id: "r1", status: "pending" } as never);
+    const reopened = await patchReviews(
+      send("http://local/api/v1/projects/current/reviews", "PATCH", {
+        ids: ["r1"],
+        resolved: false,
+      }),
+      params("current"),
+    );
+    await expect(reopened.json()).resolves.toMatchObject({ action: "reopen" });
+  });
+
+  it("400s an unknown verb, an empty list, and a per-review action", async () => {
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ ids: ["r1"], action: "delete_everything" }, /action must be skip/],
+      [{ ids: [] }, /ids is required/],
+      // `create_page` and `deep_research` are per review and NOT bulk: "I asked
+      // it to create a page and it dismissed the card" is the worst possible
+      // reading of a typo, so the route says where the verb lives instead.
+      [{ ids: ["r1"], action: "create_page" }, /per review/],
+      [{ ids: ["r1"], action: "deep_research" }, /per review/],
+    ];
+    for (const [body, reason] of cases) {
+      const response = await patchReviews(
+        send("http://local/api/v1/projects/current/reviews", "PATCH", body),
+        params("current"),
+      );
+      expect(response.status).toBe(400);
+      const json = (await response.json()) as { error: string; detail?: string };
+      expect(json.error).toBe(V1_UNKNOWN_ACTION_ERROR);
+      expect(json.detail).toMatch(reason);
+    }
+    expect(skip).not.toHaveBeenCalled();
+    expect(reopen).not.toHaveBeenCalled();
+  });
+
+  it("POST .../reviews/resolve skips by id and names the misses", async () => {
+    skip.mockImplementation(async (_owner: string, id: string) =>
+      id === "r1" ? ({ id, status: "skipped" } as never) : null,
+    );
+    const response = await postResolve(
+      send("http://local/api/v1/projects/current/reviews/resolve", "POST", {
+        ids: ["r1", "missing"],
+        action: "skip",
+      }),
+      params("current"),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      resolved: ["r1"],
+      notFound: ["missing"],
+      count: 1,
+    });
+    expect(skip).toHaveBeenCalledWith("alice", "r1", "wiki-1");
+    expect(skip).toHaveBeenCalledWith("alice", "missing", "wiki-1");
+  });
+
+  it("403s a bulk patch on a read-only deployment", async () => {
+    readOnly.mockReturnValue(true);
+    const response = await patchReviews(
+      send("http://local/api/v1/projects/current/reviews", "PATCH", {
+        ids: ["r1"],
+        resolved: true,
+      }),
+      params("current"),
+    );
+    expect(response.status).toBe(403);
+    expect(skip).not.toHaveBeenCalled();
+  });
+});
+
+describe("search answers FR-76 and Epic 3 from one retrieval", () => {
+  const rows = [
+    {
+      path: "wiki/alpha.md",
+      title: "Alpha",
+      snippet: "",
+      body: "Alpha is the first letter.",
+      score: 9,
+    },
+    {
+      path: "wiki/beta.md",
+      title: "Beta",
+      snippet: "beta snippet",
+      body: "Beta is the second.",
+      score: 4,
+    },
+  ];
+
+  it("emits hits and results side by side, with the same rows under both names", async () => {
+    retrieve.mockResolvedValue({
+      hits: rows,
+      vectorPhase: { status: "off" },
+    } as never);
+    const response = await postSearch(
+      send("http://local/api/v1/projects/current/search", "POST", {
+        query: "alpha",
+      }),
+      params("current"),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      query: string;
+      topK: number;
+      hits: { path: string; snippet: string }[];
+      vectorPhase: { status: string };
+      mode: string;
+      tokenHits: number;
+      vectorHits: number;
+      results: { path: string; titleMatch: boolean; content?: string }[];
+    };
+    // `SearchCanvas` has read these two since Epic 3 and must not regress…
+    expect(body.hits.map((hit) => hit.path)).toEqual(["wiki/alpha.md", "wiki/beta.md"]);
+    expect(body.vectorPhase).toEqual({ status: "off" });
+    // …and FR-76's vocabulary is the same rows under `results`.
+    expect(body.results.map((row) => row.path)).toEqual(body.hits.map((h) => h.path));
+    expect(body.mode).toBe("wiki");
+    // With vector search off — the default — every row is a token hit, and
+    // `vectorHits: 0` is the honest form of that rather than an omission.
+    expect(body.tokenHits).toBe(2);
+    expect(body.vectorHits).toBe(0);
+    // A title match is the one relevance signal a caller can reason about
+    // without the index.
+    expect(body.results[0].titleMatch).toBe(true);
+    expect(body.results[1].titleMatch).toBe(false);
+    // A row with no snippet falls back to the head of the body, exactly as
+    // `searchWiki` did, so the `hits` array is byte-identical to before.
+    expect(body.hits[0].snippet).toBe("Alpha is the first letter.");
+    // `includeContent` is opt-in: a fifty-hit search with page bodies attached
+    // is megabytes.
+    expect(body.results[0].content).toBeUndefined();
+  });
+
+  it("still reports hit counts when the vector leg ran", async () => {
+    retrieve.mockResolvedValue({
+      hits: rows,
+      vectorPhase: { status: "ok" },
+    } as never);
+    const response = await postSearch(
+      send("http://local/api/v1/projects/current/search", "POST", {
+        query: "alpha",
+        queryEmbedding: [0.1, 0.2],
+      }),
+      params("current"),
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      tokenHits: 2,
+      vectorHits: 2,
+    });
+  });
+
+  it("attaches page bodies only when asked", async () => {
+    retrieve.mockResolvedValue({
+      hits: rows,
+      vectorPhase: { status: "off" },
+    } as never);
+    const response = await postSearch(
+      send("http://local/api/v1/projects/current/search", "POST", {
+        query: "alpha",
+        includeContent: true,
+      }),
+      params("current"),
+    );
+    const body = (await response.json()) as { results: { content?: string }[] };
+    expect(body.results[0].content).toBe("Alpha is the first letter.");
+  });
+
+  it("400s an empty query and clamps topK to fifty", async () => {
+    const empty = await postSearch(
+      send("http://local/api/v1/projects/current/search", "POST", { query: "  " }),
+      params("current"),
+    );
+    // "No hits" is a fact about the wiki, and answering it for a request that
+    // asked nothing would let an agent conclude the wiki is empty.
+    expect(empty.status).toBe(400);
+
+    await postSearch(
+      send("http://local/api/v1/projects/current/search", "POST", {
+        query: "alpha",
+        topK: 99,
+      }),
+      params("current"),
+    );
+    expect(retrieve).toHaveBeenCalledWith(
+      "alpha",
+      expect.objectContaining({ topK: 50 }),
+    );
+  });
+});
+
+describe("sources/rescan", () => {
+  it("answers the queue outcome immediately and leaves ingest async", async () => {
+    rescan.mockResolvedValue({
+      requested: 2,
+      results: [
+        { path: "raw/sources/a.txt", queued: true, jobId: "job-1" },
+        { path: "raw/sources/b.txt", queued: false, reason: "empty" },
+      ],
+      remaining: 0,
+    } as never);
+    const response = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {}),
+      params("current"),
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      requested: number;
+      queued: number;
+      results: unknown[];
+    };
+    // The call returns as soon as the work is SCHEDULED. Waiting for two LLM
+    // calls per Source would time out on any real tree.
+    expect(body.requested).toBe(2);
+    expect(body.queued).toBe(1);
+    expect(body.results).toHaveLength(2);
+  });
+
+  it("403s a path outside raw/ and never enqueues the batch", async () => {
+    const response = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {
+        paths: ["raw/sources/a.txt", "wiki/alpha.md"],
+      }),
+      params("current"),
+    );
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: V1_FILE_OUT_OF_SCOPE_ERROR,
+      path: "wiki/alpha.md",
+    });
+    // ONE BAD ENTRY FAILS THE CALL. Dropping it would tell the caller its rescan
+    // succeeded for a Source that was never touched.
+    expect(rescan).not.toHaveBeenCalled();
+  });
+
+  it("400s a malformed paths value and 403s under read-only", async () => {
+    const malformed = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {
+        paths: "raw/sources/a.txt",
+      }),
+      params("current"),
+    );
+    expect(malformed.status).toBe(400);
+
+    readOnly.mockReturnValue(true);
+    const refused = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {}),
+      params("current"),
+    );
+    // A rescan's whole purpose is to cause writes downstream, so a deployment
+    // that refuses writes refuses the thing that schedules them rather than
+    // filling a queue nothing will drain.
+    expect(refused.status).toBe(403);
+    expect(rescan).not.toHaveBeenCalled();
+  });
+});

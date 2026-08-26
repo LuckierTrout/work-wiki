@@ -54,6 +54,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       contextBudget?: unknown;
       tokenBudget?: unknown;
       historyDepth?: unknown;
+      selectedSkill?: unknown;
     };
     try {
       body = (await request.json()) as typeof body;
@@ -97,6 +98,19 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     if (body.historyDepth !== undefined && typeof body.historyDepth !== "number") {
       return NextResponse.json({ error: "historyDepth must be a number" }, { status: 400 });
     }
+    // `null` is ACCEPTED, and it is the only way to clear a Skill: `/skill` with
+    // no argument means "stop running under one", and an omitted field cannot say
+    // that — it means "leave it alone".
+    if (
+      body.selectedSkill !== undefined &&
+      body.selectedSkill !== null &&
+      typeof body.selectedSkill !== "string"
+    ) {
+      return NextResponse.json(
+        { error: "selectedSkill must be a string or null" },
+        { status: 400 },
+      );
+    }
     const conversation = await updateChatConversation(principal.handle, id, {
       ...(typeof body.title === "string" ? { title: body.title } : {}),
       ...(typeof body.name === "string" ? { name: body.name } : {}),
@@ -114,6 +128,9 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         : {}),
       ...(typeof body.historyDepth === "number"
         ? { historyDepth: clampHistoryDepth(body.historyDepth) }
+        : {}),
+      ...(body.selectedSkill === null || typeof body.selectedSkill === "string"
+        ? { selectedSkill: body.selectedSkill }
         : {}),
     });
     if (!conversation) {

@@ -330,6 +330,13 @@ function emptyPayload(): WorkbenchSettingsPayload {
     mineruMode: "off",
     mineruLocalBaseUrl: null,
     hasMinerUApiKey: false,
+    // The loopback door on a fresh deployment: SHUT, unauthenticated access
+    // off, no token anywhere. All four are the fail-closed answers, and they are
+    // the defaults `getLoopbackApiSettings` resolves an absent config to.
+    apiEnabled: false,
+    allowUnauthenticated: false,
+    hasLoopbackApiToken: false,
+    loopbackTokenSource: "none",
     language: SETTINGS_LANGUAGE_VALUE,
     readOnly: false,
   };
@@ -370,14 +377,18 @@ describe("the settings nav vocabulary", () => {
     }
   });
 
-  it("marks exactly the one unbuilt category as pending, with one sentence", () => {
+  it("leaves NO category pending now that API + MCP has controls", () => {
     const pending = SETTINGS_CATEGORIES.filter((c) => c.pending !== null).map((c) => c.id);
-    // Listed, not required to function. A category that rendered nothing would
-    // be a dead nav row; one that rendered a stub would lie about what works.
-    //
-    // Epic 7 built Intake and MinerU PDF, so both left this list. `api-mcp` is
-    // Epic 8's and stays — clearing it would promise a pane with no controls.
-    expect(pending.sort()).toEqual(["api-mcp"]);
+    // Epic 7 built Intake and MinerU PDF; Story 8.1 built API + MCP, which was
+    // the last one. `api-mcp` kept its pending sentence for exactly as long as
+    // the pane had no enable switch, no token and no copyable MCP config — it
+    // has all three now, so the sentence would be the lie in the other
+    // direction.
+    expect(pending).toEqual([]);
+    // The MECHANISM survives the last pending category leaving. It is the rule
+    // for a listed-but-unbuilt category, and deleting it because nothing uses
+    // it today would mean the next such category either renders nothing (a dead
+    // nav row) or renders a stub (a lie about what works).
     for (const category of SETTINGS_CATEGORIES) {
       if (category.pending === null) continue;
       expect(category.pending.endsWith(".")).toBe(true);
@@ -4567,15 +4578,17 @@ describe("the Settings components stay inside the shell", () => {
     // Every control a read-only deployment refuses routes its description
     // through `describedBy`, which APPENDS the save bar's read-only sentence to
     // the control's own hint — `aria-describedby` takes a space-separated list,
-    // so the hint is kept rather than replaced. NINE call sites now: the two
+    // so the hint is kept rather than replaced. ELEVEN call sites now: the two
     // provider pickers, the vector switch, `textRow`, `secretRow` (DW-307),
     // the Deep Research provider picker — whose hint carries both the
-    // env-pinned note and the "this provider has no credential" refusal — and
+    // env-pinned note and the "this provider has no credential" refusal —
     // Epic 7's three: Intake's keep-parsed checkbox, MinerU's enable checkbox
     // and MinerU's mode select, whose description IS the orange
     // leave-the-machine warning and so must be announced rather than merely
-    // rendered beside the control.
-    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(9);
+    // rendered beside the control — and Epic 8's two on the API + MCP pane: the
+    // API switch, and the unauthenticated-access switch whose description is the
+    // orange "anything on this machine can read the wiki" warning.
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(11);
     expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
     expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
     // Each row builder wires its own hint; none of them renders a bare span.
@@ -4614,12 +4627,13 @@ describe("the Settings components stay inside the shell", () => {
     expect(canvas).toContain("disabled={saving || payload.readOnly || !dirty}");
 
     // Every control the read-only flag alone refuses carries the attribute:
-    // the two provider pickers, and Epic 7's Intake keep-parsed checkbox,
-    // MinerU enable checkbox and MinerU mode select. Counted rather than
-    // enumerated so a new refusable control cannot be added without this
-    // number moving — the vector switch has its own compound predicate below.
+    // the two provider pickers, Epic 7's Intake keep-parsed checkbox, MinerU
+    // enable checkbox and MinerU mode select, and Epic 8's API switch and
+    // unauthenticated-access switch. Counted rather than enumerated so a new
+    // refusable control cannot be added without this number moving — the vector
+    // switch has its own compound predicate below.
     expect(canvas.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
-      5,
+      7,
     );
     expect(canvas).toContain("aria-disabled={vectorRefused || undefined}");
     // …and each with a handler that COMMITS NOTHING when the control is
@@ -4867,7 +4881,19 @@ describe("the Settings components stay inside the shell", () => {
     expect(shell).toContain("const previewDocked = shouldDockPreview(mode, selection);");
     expect(shell).toContain("const previewOpen = previewDocked && !settingsOpen;");
     // …and the mount is gated on the first while the withdrawal is the second.
-    expect(shell).toMatch(/\{previewDocked && \(\s*<PreviewColumn/);
+    //
+    // The second term is Epic 8's third selection kind, not a second gate: an
+    // Agent output under `agent-workspace/` mounts `WorkspacePreview` instead,
+    // because those bytes are on the sidecar's disk and this column reads the
+    // kernel. Both branches are still `previewDocked && …`, and neither reads
+    // `previewOpen` — which is the property this pin exists for.
+    expect(shell).toMatch(
+      /\{previewDocked && isKernelSelection\(selection\) && \(\s*<PreviewColumn/,
+    );
+    expect(shell).toMatch(
+      /\{previewDocked && selection\?\.kind === "workspace" && \(\s*<WorkspacePreview/,
+    );
+    expect(shell).not.toMatch(/\{previewOpen && \(\s*<(?:Preview|Workspace)/);
     expect(shell).toContain("hidden={!previewOpen}");
     // Still `useState` on ONE shell, exactly as a mode switch is.
     expect(shell).not.toMatch(/\buseRouter\(/);

@@ -207,9 +207,36 @@ export const UNTYPED_GROUP_LABEL = "Pages";
  * confused for one another — Story 1.5 reads exactly this to decide what to
  * fetch into the Preview body.
  */
-export type TreeSelection =
+export type KernelSelection =
   | { kind: "page"; slug: string }
   | { kind: "file"; path: string };
+
+/**
+ * A file the Chat Agent wrote under the sidecar's `agent-workspace/`
+ * (Story 8.8).
+ *
+ * A THIRD KIND rather than a `file` pick with a prefix, because the two are read
+ * from different machines: a `file` pick is fetched from the kernel through
+ * `/api/workbench/preview`, and this one is on the owner's local disk behind the
+ * sidecar. A workspace path smuggled in as a `file` would 404 against the wiki
+ * tree, and the column that renders it must not offer Edit, History or Revert —
+ * none of which exist for a file the kernel has never seen.
+ */
+export type WorkspaceSelection = { kind: "workspace"; path: string };
+
+export type TreeSelection = KernelSelection | WorkspaceSelection;
+
+/** Narrow to the two picks the kernel-backed Preview column can render. */
+export function isKernelSelection(
+  selection: TreeSelection | null,
+): selection is KernelSelection {
+  return selection !== null && selection.kind !== "workspace";
+}
+
+/** The pick an output chip docks. */
+export function workspaceSelection(path: string): WorkspaceSelection {
+  return { kind: "workspace", path };
+}
 
 /**
  * Do two picks name the same row? The shell uses this to make a second click on
@@ -249,6 +276,11 @@ export function selectionExists(
   if (selection.kind === "page") {
     return findKnowledgePage(knowledge, selection.slug) !== null;
   }
+  // A WORKSPACE pick is never in these trees — the file is on the sidecar's disk,
+  // not in the wiki — so asking the wiki tree about it would drop every output
+  // chip the moment the shell re-validated a restored selection. Whether the file
+  // still exists is the sidecar's answer, and its column asks for it directly.
+  if (selection.kind === "workspace") return true;
   const node = findFileNode(files, selection.path);
   return node !== null && !node.isDirectory;
 }
@@ -277,6 +309,12 @@ export function selectionName(
 ): string {
   if (selection.kind === "page") {
     return findKnowledgePage(knowledge, selection.slug)?.title ?? selection.slug;
+  }
+  if (selection.kind === "workspace") {
+    // Its basename, and never a tree lookup: the wiki trees do not contain it,
+    // so `findFileNode` would answer `null` and the header would print the whole
+    // relative path where every other pick prints a name.
+    return selection.path.split("/").filter(Boolean).at(-1) || selection.path;
   }
   const node = findFileNode(files, selection.path);
   return node?.name || selection.path.split("/").filter(Boolean).at(-1) || selection.path;

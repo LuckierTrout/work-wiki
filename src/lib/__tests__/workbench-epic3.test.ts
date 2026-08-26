@@ -9,6 +9,11 @@ import { shouldDockPreview, selectionFromContentPath } from "../workbench-tree";
 
 vi.mock("@/lib/auth", () => ({
   getPrincipal: vi.fn(async () => null),
+  // Epic 8: the `/api/v1` façade accepts the owner-automation token as well as a
+  // session, because the sidecar reaches the kernel with exactly that and has no
+  // cookie jar. Both branches must answer "nobody" here — this test is about the
+  // 401, and a mock missing the second one would throw instead of refusing.
+  getServicePrincipal: vi.fn(() => null),
 }));
 
 import { POST as POST_CLOUD_CHAT } from "@/app/api/v1/projects/[wikiId]/chat/route";
@@ -32,6 +37,29 @@ import {
 } from "../../../sidecar/server.mjs";
 
 const ROOT = path.resolve(__dirname, "../../..");
+
+/**
+ * A sidecar whose door is OPEN, for the tests that are about Chat rather than
+ * about the door.
+ *
+ * Epic 8 made the loopback API opt-in and fail-closed: `createSidecarServer()`
+ * with no settings source answers 503 `disabled` on every data route, which is
+ * the behaviour the matrix asks for. These SSE-shape tests predate that switch,
+ * so they open the door explicitly rather than relying on a default — a default
+ * that admitted them would be an unauthenticated API.
+ */
+function openDoorServer() {
+  const settings = {
+    enabled: true,
+    allowUnauthenticated: true,
+    token: null,
+    tokenSource: "none" as const,
+    skillEnablement: {},
+  };
+  return createSidecarServer({
+    settingsSource: { current: () => settings, refresh: async () => settings },
+  });
+}
 
 async function readRel(rel: string): Promise<string> {
   return readFile(path.join(ROOT, rel), "utf8");
@@ -137,6 +165,10 @@ describe("sidecar contract", () => {
     ]) {
       expect(health).toHaveProperty(key);
     }
+    // The FIELD NAMES are Epic 3's and stay. The `status` VALUE is not: Epic 8
+    // replaced the flat `"ok"` with a listener state, because `"ok"` said
+    // nothing about whether the process answering on 19828 was this one.
+    expect(health.status).toBe("running");
     expect(SIDECAR_HEALTH_URL).toBe("http://127.0.0.1:19828/api/v1/health");
     expect([...SSE_EVENTS]).toEqual([...SIDECAR_SSE_EVENTS]);
     expect(isSidecarWikiId("current")).toBe(true);
@@ -145,7 +177,7 @@ describe("sidecar contract", () => {
   });
 
   it("JSON is the default and SSE uses only the locked events", async () => {
-    const server = createSidecarServer();
+    const server = openDoorServer();
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", resolve);
     });
@@ -427,7 +459,7 @@ describe("successful sidecar provider SSE", () => {
         customBaseUrl: `http://127.0.0.1:${providerPort}/v1`,
       }),
     );
-    const sidecar = createSidecarServer();
+    const sidecar = openDoorServer();
     await new Promise<void>((resolve) => sidecar.listen(0, "127.0.0.1", resolve));
     const sidecarPort = (sidecar.address() as { port: number }).port;
     try {

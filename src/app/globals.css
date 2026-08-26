@@ -2920,6 +2920,251 @@ body:has(.wb-shell) {
   min-width: 160px;
   resize: vertical;
 }
+
+/* ---- Epic 8: what the Agent did, and what it is waiting for -------------- */
+/* Tool rows sit ABOVE the answer and read as a log, not as content: muted,
+   mono for the detail, one line each. The row is the audit trail for the
+   paragraph below it, so it must not compete with it for attention. */
+.wb-chat-tools {
+  list-style: none;
+  margin: 0 0 var(--wb-space-2);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wb-chat-tool {
+  display: flex;
+  gap: var(--wb-space-2);
+  align-items: baseline;
+  color: var(--wb-muted);
+  font-size: 11px;
+}
+.wb-chat-tool-name {
+  font-weight: var(--wb-weight-strong);
+}
+.wb-chat-tool-detail {
+  font-family: var(--wb-font-mono);
+  overflow-wrap: anywhere;
+}
+/* A running row is the one that answers "is this hung?", so it is the only
+   state that takes the foreground colour. */
+.wb-chat-tool--running .wb-chat-tool-name,
+.wb-chat-tool--pending .wb-chat-tool-name {
+  color: var(--wb-foreground);
+}
+
+/* Composer tools: five small buttons on one line, above the textarea. */
+.wb-chat-tools-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-1);
+}
+.wb-chat-tool-btn,
+.wb-chat-output,
+.wb-skill-toggle {
+  font: inherit;
+  font-size: 11px;
+  color: var(--wb-foreground);
+  background: transparent;
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  padding: 2px var(--wb-space-2);
+}
+.wb-chat-tool-btn:disabled,
+.wb-skill-toggle:disabled {
+  color: var(--wb-muted);
+}
+
+/* Output chips: one per file the Agent wrote. A chip docks the Preview, so it
+   is a control and carries the mono face of the path it names. */
+.wb-chat-outputs {
+  list-style: none;
+  margin: var(--wb-space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-1);
+}
+.wb-chat-output {
+  font-family: var(--wb-font-mono);
+}
+
+/* The active Skill, stated once above the log. Stale — disabled or deleted
+   since — takes the foreground colour, because it changes what the next turn
+   will do. */
+.wb-chat-skill,
+.wb-chat-skill-note {
+  margin: 0;
+  color: var(--wb-muted);
+  font-size: 11px;
+}
+.wb-chat-skill--stale {
+  color: var(--wb-foreground);
+}
+
+/* The three overlays — Skill picker, Skill form, shell approval — share one
+   look: a bordered card on the surface colour, sitting between the log and the
+   composer rather than floating over the whole shell. Chat is WAITING here, and
+   a modal that hid the transcript would hide the very context the owner needs
+   to answer. */
+.wb-chat-skill-picker,
+.wb-chat-form,
+.wb-chat-approval {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-foreground);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-surface);
+}
+.wb-chat-skill-picker h3,
+.wb-chat-form h3,
+.wb-chat-approval h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.wb-chat-skill-picker ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  max-height: 40vh;
+  overflow: auto;
+}
+.wb-chat-skill-picker li button {
+  font: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  color: var(--wb-foreground);
+  background: transparent;
+  border: 1px solid var(--wb-border);
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+.wb-chat-skill-picker li span {
+  color: var(--wb-muted);
+  font-size: 11px;
+}
+.wb-chat-skill-picker-actions,
+.wb-chat-form-actions,
+.wb-chat-approval-actions {
+  display: flex;
+  gap: var(--wb-space-2);
+}
+.wb-chat-skill-picker-actions button,
+.wb-chat-form-actions button,
+.wb-chat-approval-actions button {
+  font: inherit;
+  color: var(--wb-foreground);
+  background: transparent;
+  border: 1px solid var(--wb-border);
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+/* One renderer for single, multiple and free text, so one field style. */
+.wb-chat-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.wb-chat-form-field legend {
+  padding: 0;
+  color: var(--wb-muted);
+  font-size: 11px;
+}
+.wb-chat-form-field input[type="text"] {
+  font: inherit;
+  color: var(--wb-foreground);
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-border);
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+.wb-chat-form-field label {
+  display: flex;
+  gap: var(--wb-space-1);
+  align-items: baseline;
+}
+/* The command is shown VERBATIM and wrapping: the owner is approving what they
+   read, and a horizontally scrolled command hides its own tail. */
+.wb-chat-approval-command {
+  margin: 0;
+  padding: var(--wb-space-2);
+  background: var(--wb-rail-hover);
+  font-family: var(--wb-font-mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wb-chat-approval p,
+.wb-chat-approval-cwd {
+  margin: 0;
+}
+.wb-chat-approval-cwd {
+  color: var(--wb-muted);
+  font-family: var(--wb-font-mono);
+  font-size: 11px;
+}
+
+/* ---- Epic 8: the Skills rail -------------------------------------------- */
+/* A scan, so the hint naming the two roots is permanent rather than an empty
+   state: it is the only instruction there is — there is no install step. */
+.wb-skills {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  min-width: 320px;
+}
+.wb-skills-hint,
+.wb-skills-error,
+.wb-skill-desc,
+.wb-skill-note {
+  margin: 0;
+  color: var(--wb-muted);
+  font-size: 11px;
+}
+.wb-skills-error {
+  color: var(--wb-foreground);
+}
+.wb-skills-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+.wb-skill {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  align-items: flex-start;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+}
+/* Disabled is stated in words on the row (`SKILL_DISABLED_NOTE_COPY`); the
+   muted name is the second signal, never the only one. */
+.wb-skill--off .wb-skill-name {
+  color: var(--wb-muted);
+}
+.wb-skill-head {
+  display: flex;
+  gap: var(--wb-space-2);
+  align-items: baseline;
+}
+.wb-skill-scope {
+  color: var(--wb-muted);
+  font-size: 11px;
+}
+
 .wb-search {
   flex-direction: column;
 }
@@ -4669,6 +4914,26 @@ body:has(.wb-shell) {
 }
 .wb-set-action:hover {
   background: var(--wb-rail-hover);
+}
+
+/* ---- API + MCP: the blocks an owner copies out --------------------------- */
+/* The MCP client config and the Skill install command. Both exist to be
+   selected and pasted into another program, so they are shown VERBATIM: mono,
+   wrapping rather than scrolling (a horizontal scroller hides the end of a
+   command an owner is about to run), and `pre-wrap` so the JSON keeps its
+   indentation. Read-only content, not a control — no border-as-affordance. */
+.wb-set-pre {
+  margin: var(--wb-space-2) 0;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-border);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-rail-hover);
+  color: var(--wb-foreground);
+  font-family: var(--wb-font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* ---- Intake: the accepted-format grid ----------------------------------- */
