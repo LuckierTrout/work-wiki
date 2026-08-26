@@ -841,6 +841,14 @@ async function handleChat(req, res, wikiId, options = {}) {
   const stream =
     body.stream === true ||
     String(req.headers.accept || "").includes("text/event-stream");
+  const toolsEnabled = body.tools === true || isPlainObject(body.resume);
+  if (toolsEnabled && currentIdentityUnavailable) {
+    rejectChat(res, 503, "current_wiki_unavailable");
+    return;
+  }
+  // Attach abort/socket listeners only after every synchronous refusal. An
+  // unresolved mutable-current door never owns a turn and must not leave a
+  // close listener behind on a keep-alive socket.
   const session = createChatTurnSession(req, res, stream);
   const citations = citationParsed.citations;
   const history = historyParsed.messages;
@@ -887,11 +895,6 @@ async function handleChat(req, res, wikiId, options = {}) {
    * inside that shape would spend the owner's budget re-finding what the
    * Workbench had already found and would break the `coverage: false` pin.
    */
-  const toolsEnabled = body.tools === true || isPlainObject(body.resume);
-  if (toolsEnabled && currentIdentityUnavailable) {
-    rejectChat(res, 503, "current_wiki_unavailable");
-    return;
-  }
   let resumePending = null;
   if (isPlainObject(body.resume)) {
     const capabilityId = resumeCapabilityId(body.resume);

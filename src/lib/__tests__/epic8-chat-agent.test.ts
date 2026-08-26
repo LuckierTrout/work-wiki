@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -699,7 +699,7 @@ describe("the shell asks before it leaves the workspace", () => {
       ),
     ).toBe("new_executable");
     expect(executableKey("/usr/bin/Python3")).toBe(
-      `path:${path.resolve("/usr/bin/Python3")}`,
+      `path:${canonicalizePathSnapshot("/usr/bin/Python3")}`,
     );
     expect(shellApprovalReason({ command: "   " }, { workspace })).toBe("invalid");
   });
@@ -719,6 +719,36 @@ describe("the shell asks before it leaves the workspace", () => {
         { workspace, approvedExecutables: new Set(["name:echo"]) },
       ),
     ).toBe("external_path");
+  });
+
+  it("follows a dangling symlink target for a missing leaf and fails closed on cycles", async () => {
+    const danglingTarget = path.join(dir, "outside-not-created", "nested");
+    await mkdir(workspace.root, { recursive: true });
+    await symlink(danglingTarget, path.join(workspace.root, "dangling"));
+    const leaf = path.join(workspace.root, "dangling", "future.txt");
+    expect(canonicalizePathSnapshot(leaf)).toBe(
+      canonicalizePathSnapshot(path.join(danglingTarget, "future.txt")),
+    );
+    expect(workspace.contains(leaf)).toBe(false);
+    expect(
+      shellApprovalReason(
+        {
+          command: "echo",
+          args: ["dangling/future.txt"],
+          cwd: workspace.root,
+        },
+        { workspace, approvedExecutables: new Set(["name:echo"]) },
+      ),
+    ).toBe("external_path");
+
+    await symlink("cycle-b", path.join(workspace.root, "cycle-a"));
+    await symlink("cycle-a", path.join(workspace.root, "cycle-b"));
+    expect(
+      canonicalizePathSnapshot(path.join(workspace.root, "cycle-a", "x")),
+    ).toBeNull();
+    expect(
+      canonicalizePathSnapshot(`/${"component/".repeat(1_025)}leaf`),
+    ).toBeNull();
   });
 
   it("suspends for approval and runs nothing on Deny", async () => {
@@ -814,6 +844,66 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(
       shellApprovalReason(
         { command: "curl", args: [], cwd: workspace.root },
+        { workspace, approvedExecutables },
+      ),
+    ).toBe("new_executable");
+  });
+
+  it("remembers a canonical path executable and asks again after it is re-pointed", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const first = path.join(workspace.root, "tool-first");
+    const second = path.join(workspace.root, "tool-second");
+    const command = path.join(workspace.root, "tool");
+    await writeFile(first, "#!/bin/sh\necho first\n");
+    await writeFile(second, "#!/bin/sh\necho second\n");
+    await chmod(first, 0o755);
+    await chmod(second, 0o755);
+    await symlink(first, command);
+    const approvedExecutables = new Set<string>();
+    const { generate } = scripted("Done.");
+    const ran = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command,
+        args: [],
+        cwd: workspace.root,
+        reason: "new_executable",
+        externalCwd: false,
+        externalPaths: [],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(ran.content).toBe("Done.");
+    const firstKey = executableKey(command, { cwd: workspace.root, workspace });
+    expect(approvedExecutables).toEqual(new Set([firstKey]));
+    expect(
+      shellApprovalReason(
+        { command, args: [], cwd: workspace.root },
+        { workspace, approvedExecutables },
+      ),
+    ).toBeNull();
+
+    await rm(command);
+    await symlink(second, command);
+    expect(executableKey(command, { cwd: workspace.root, workspace })).not.toBe(
+      firstKey,
+    );
+    expect(
+      shellApprovalReason(
+        { command, args: [], cwd: workspace.root },
         { workspace, approvedExecutables },
       ),
     ).toBe("new_executable");
@@ -1176,7 +1266,11 @@ describe("the shell asks before it leaves the workspace", () => {
       },
     });
     expect(result.content).toBe("Done.");
-    expect(approvedExecutables.has(executableKey(command))).toBe(false);
+    expect(
+      approvedExecutables.has(
+        executableKey(command, { cwd: workspace.root, workspace }),
+      ),
+    ).toBe(false);
     expect(
       shellApprovalReason(
         { command, args: [], cwd: workspace.root },

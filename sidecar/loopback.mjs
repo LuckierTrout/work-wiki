@@ -18,6 +18,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalizePathSnapshot } from "./workspace.mjs";
 
 // ---------------------------------------------------------------------------
 // The door. These six must equal `src/lib/v1-contract.ts`.
@@ -586,10 +587,13 @@ export function parseWikiRoots(value) {
   return rows;
 }
 
-function pathIsInside(root, candidate) {
-  const base = path.resolve(root);
-  const resolved = path.resolve(candidate);
-  return resolved === base || resolved.startsWith(`${base}${path.sep}`);
+function canonicalPathInside(root, candidate) {
+  const base = canonicalizePathSnapshot(root);
+  const resolved = canonicalizePathSnapshot(candidate);
+  if (!base || !resolved) return null;
+  return resolved === base || resolved.startsWith(`${base}${path.sep}`)
+    ? resolved
+    : null;
 }
 
 function pushRegistryRow(next, seen, row) {
@@ -600,6 +604,73 @@ function pushRegistryRow(next, seen, row) {
   if (seen.has(absolute) || next.length >= WIKI_REGISTRY_MAX_ROWS) return;
   seen.add(absolute);
   next.push({ id: row.id, path: absolute });
+}
+
+const LOCAL_WIKI_SCENARIOS = new Set([
+  "research",
+  "reading",
+  "personal-growth",
+  "business",
+  "general",
+]);
+
+function isCompleteLocalWikiRecord(row) {
+  return (
+    row &&
+    typeof row === "object" &&
+    !Array.isArray(row) &&
+    typeof row.id === "string" &&
+    WIKI_UUID_RE.test(row.id) &&
+    typeof row.name === "string" &&
+    row.name.trim().length > 0 &&
+    LOCAL_WIKI_SCENARIOS.has(row.scenario) &&
+    typeof row.createdAt === "string" &&
+    row.createdAt.length > 0 &&
+    typeof row.updatedAt === "string" &&
+    row.updatedAt.length > 0
+  );
+}
+
+/**
+ * Canonical, unambiguous host mappings from one remote registry snapshot.
+ * A duplicated id pointing at two roots, or one root claimed by two ids, is
+ * not a mapping the loopback door may choose between.
+ */
+function remoteHostRows(projects, dataDir) {
+  const candidates = [];
+  const pathsById = new Map();
+  const idsByPath = new Map();
+  for (const project of projects) {
+    if (!project || typeof project.id !== "string") continue;
+    if (!WIKI_UUID_RE.test(project.id)) continue;
+    const host = typeof project.hostPath === "string" ? project.hostPath : "";
+    if (!host || host.split(/[\\/]/).includes("..")) continue;
+    const canonical = canonicalPathInside(dataDir, host);
+    if (!canonical) continue;
+    candidates.push({ id: project.id, path: canonical });
+    const idPaths = pathsById.get(project.id) ?? new Set();
+    idPaths.add(canonical);
+    pathsById.set(project.id, idPaths);
+    const pathIds = idsByPath.get(canonical) ?? new Set();
+    pathIds.add(project.id);
+    idsByPath.set(canonical, pathIds);
+  }
+  const conflictIds = new Set();
+  for (const [id, paths] of pathsById) {
+    if (paths.size > 1) conflictIds.add(id);
+  }
+  for (const ids of idsByPath.values()) {
+    if (ids.size > 1) {
+      for (const id of ids) conflictIds.add(id);
+    }
+  }
+  const rows = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (conflictIds.has(candidate.id)) continue;
+    pushRegistryRow(rows, seen, candidate);
+  }
+  return { rows, conflictIds };
 }
 
 /**
@@ -684,11 +755,8 @@ function readCurrentWikiIdFromDisk(dataDir, diskRows) {
       invalid = true;
       continue;
     }
-    const ids = new Set(
-      declared
-        .filter((row) => row && typeof row.id === "string" && WIKI_UUID_RE.test(row.id))
-        .map((row) => row.id),
-    );
+    const valid = declared.filter(isCompleteLocalWikiRecord);
+    const ids = new Set(valid.map((row) => row.id));
     if (ids.size !== declared.length) {
       invalid = true;
       continue;
@@ -750,6 +818,7 @@ export function createWikiRegistrySource({
 } = {}) {
   let rows = [];
   let currentId = null;
+  let refreshGeneration = 0;
 
   const extras = () => {
     const next = [];
@@ -779,6 +848,7 @@ export function createWikiRegistrySource({
   };
 
   const refresh = async () => {
+    const generation = ++refreshGeneration;
     if (!base || !token) {
       applyLocal();
       return rows;
@@ -788,12 +858,14 @@ export function createWikiRegistrySource({
         headers: { authorization: `Bearer ${token}` },
         signal: AbortSignal.timeout(10_000),
       });
+      if (generation !== refreshGeneration) return rows;
       if (!response.ok) {
         currentId = null;
         if (rows.length === 0) applyLocal({ authorizeCurrent: false });
         return rows;
       }
       const body = await response.json();
+      if (generation !== refreshGeneration) return rows;
       if (!body || typeof body !== "object" || !Array.isArray(body.projects)) {
         currentId = null;
         if (rows.length === 0) applyLocal({ authorizeCurrent: false });
@@ -809,31 +881,30 @@ export function createWikiRegistrySource({
           )
           .map((project) => project.id),
       );
-      currentId =
+      const remoteHosts = remoteHostRows(body.projects, dataDir);
+      const nextCurrentId =
         typeof body.currentId === "string" &&
         WIKI_UUID_RE.test(body.currentId) &&
-        known.has(body.currentId)
+        known.has(body.currentId) &&
+        !remoteHosts.conflictIds.has(body.currentId)
           ? body.currentId
           : null;
       const { next, seen } = extras();
-      for (const project of body.projects) {
-        if (!project || typeof project.id !== "string" || !project.id) continue;
-        const host =
-          typeof project.hostPath === "string" ? project.hostPath : "";
-        if (!host || host.split(/[\\/]/).includes("..")) continue;
-        const absolute = path.resolve(host);
-        if (!pathIsInside(dataDir, absolute)) continue;
-        pushRegistryRow(next, seen, { id: project.id, path: absolute });
+      for (const row of remoteHosts.rows) {
+        pushRegistryRow(next, seen, row);
       }
       for (const row of parseWikiRoots(wikiRoots)) {
         if (known.has(row.id)) pushRegistryRow(next, seen, row);
       }
+      if (generation !== refreshGeneration) return rows;
       rows = next;
+      currentId = nextCurrentId;
     } catch {
       // Keep the last good list. A transient 500 must not empty the registry
       // and start refusing paths the owner already registered. The mutable
       // `current` alias is different: after a failed poll its identity is not
       // authoritative, so tool turns refuse it until a later good snapshot.
+      if (generation !== refreshGeneration) return rows;
       currentId = null;
       if (rows.length === 0) applyLocal({ authorizeCurrent: false });
     }
@@ -858,9 +929,11 @@ export function resolveLoopbackWikiId(value, registry = []) {
     return value;
   }
   if (!isAbsolutePathWikiId(value)) return null;
-  const resolved = path.resolve(value);
+  const resolved = canonicalizePathSnapshot(value);
+  if (!resolved) return null;
   const hit = wikiRegistryRows(registry).find(
-    (row) => row && path.resolve(String(row.path ?? "")) === resolved,
+    (row) =>
+      row && canonicalizePathSnapshot(String(row.path ?? "")) === resolved,
   );
   return hit?.id ?? null;
 }
@@ -881,7 +954,7 @@ export function canonicalLoopbackWikiId(wikiId, registry = []) {
     if (typeof id === "string" && WIKI_UUID_RE.test(id)) return id;
     return null;
   }
-  return wikiId;
+  return null;
 }
 
 /**

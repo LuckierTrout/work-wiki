@@ -89,7 +89,8 @@ export function shellApprovalReason(
     const resolved = path.resolve(effectiveCwd, pathish);
     if (workspace && !workspace.contains(resolved)) return "external_path";
   }
-  if (!approvedExecutables.has(executableKey(command))) return "new_executable";
+  const key = executableKey(command, { cwd: effectiveCwd, workspace });
+  if (!key || !approvedExecutables.has(key)) return "new_executable";
   return null;
 }
 
@@ -187,8 +188,14 @@ function pathFromArg(arg) {
 /**
  * Canonical executable identity. A basename approval (`python3`) is not a
  * path approval (`/tmp/evil/python3`).
+ *
+ * @param {string} command
+ * @param {{
+ *   cwd?: string | null,
+ *   workspace?: import("./workspace.mjs").AgentWorkspace,
+ * }} [options]
  */
-export function executableKey(command) {
+export function executableKey(command, { cwd = null, workspace } = {}) {
   const trimmed = command.trim();
   if (!trimmed) return "";
   if (
@@ -199,8 +206,12 @@ export function executableKey(command) {
   ) {
     const expanded = trimmed.startsWith("~")
       ? path.resolve(trimmed.replace(/^~(?=\/|$)/, process.env.HOME || ""))
-      : path.resolve(trimmed);
-    return `path:${expanded}`;
+      : path.resolve(effectiveShellCwd(cwd, workspace), trimmed);
+    const canonical =
+      (typeof workspace?.canonicalize === "function"
+        ? workspace.canonicalize(expanded)
+        : canonicalizePathSnapshot(expanded));
+    return canonical ? `path:${canonical}` : "";
   }
   return `name:${path.basename(trimmed).toLowerCase()}`;
 }

@@ -24,7 +24,11 @@ import {
   createCapabilityStore,
   publicPending,
 } from "../../../sidecar/capabilities.mjs";
-import { createAgentWorkspace, WORKSPACE_OUT_OF_SCOPE_ERROR } from "../../../sidecar/workspace.mjs";
+import {
+  canonicalizePathSnapshot,
+  createAgentWorkspace,
+  WORKSPACE_OUT_OF_SCOPE_ERROR,
+} from "../../../sidecar/workspace.mjs";
 import {
   executableKey,
   shellApprovalReason,
@@ -60,6 +64,17 @@ import { listRawSourceFilePaths } from "../workbench-files";
 import * as tasks from "../tasks";
 
 const open: Server[] = [];
+const TEST_CURRENT_WIKI_ID = "aaaa1111-0000-4000-8000-000000000000";
+
+function completeDiskWiki(id: string, name = "Test Wiki") {
+  return {
+    id,
+    name,
+    scenario: "general",
+    createdAt: "2026-08-26T00:00:00.000Z",
+    updatedAt: "2026-08-26T00:00:00.000Z",
+  };
+}
 
 async function listen(extra: Record<string, unknown> = {}): Promise<string> {
   const source = {
@@ -75,6 +90,10 @@ async function listen(extra: Record<string, unknown> = {}): Promise<string> {
   const server = createSidecarServer({
     settingsSource: source,
     kernel: { base: "", token: "" },
+    wikiRegistry: {
+      current: () => [],
+      currentId: () => TEST_CURRENT_WIKI_ID,
+    } as never,
     ...extra,
   }) as Server;
   open.push(server);
@@ -214,7 +233,7 @@ describe("F8-01 server-owned shell capabilities", () => {
     ).toBe(wikiId);
     expect(
       canonicalLoopbackWikiId("current", [{ id: wikiId, path: "/tmp/wiki" }]),
-    ).toBe("current");
+    ).toBeNull();
     expect(canonicalLoopbackWikiId(wikiId, { currentId: () => wikiId })).toBe(
       wikiId,
     );
@@ -625,7 +644,9 @@ describe("F8-02 / F8-03 filesystem and shell containment", () => {
 
   it("does not treat a basename approval as a path approval", () => {
     expect(executableKey("python3")).toBe("name:python3");
-    expect(executableKey("/tmp/evil/python3")).toBe("path:/tmp/evil/python3");
+    expect(executableKey("/tmp/evil/python3")).toBe(
+      `path:${canonicalizePathSnapshot("/tmp/evil/python3")}`,
+    );
     expect(executableKey("python3")).not.toBe(executableKey("/tmp/evil/python3"));
   });
 });
@@ -819,6 +840,52 @@ describe("F8-05 / F8-06 v1 contract", () => {
     expect(source.currentId()).toBeNull();
   });
 
+  it("does not let an older concurrent registry refresh overwrite a newer snapshot", async () => {
+    const olderId = "aaaa1111-0000-4000-8000-000000000000";
+    const newerId = "bbbb2222-0000-4000-8000-000000000000";
+    let releaseOlder: ((response: Response) => void) | undefined;
+    let calls = 0;
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: "/data",
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise<Response>((resolve) => {
+            releaseOlder = resolve;
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            currentId: newerId,
+            projects: [
+              { id: newerId, hostPath: `/data/wikis/${newerId}` },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    });
+    const older = source.refresh();
+    const newer = source.refresh();
+    await newer;
+    releaseOlder?.(
+      new Response(
+        JSON.stringify({
+          currentId: olderId,
+          projects: [{ id: olderId, hostPath: `/data/wikis/${olderId}` }],
+        }),
+        { status: 200 },
+      ),
+    );
+    await older;
+    expect(source.currentId()).toBe(newerId);
+    expect(source.current()).toEqual([
+      { id: newerId, path: `/data/wikis/${newerId}` },
+    ]);
+  });
+
   it("does not treat kernel-relative project.path as a host root", async () => {
     const wikiId = "aaaa1111-0000-4000-8000-000000000000";
     const source = createWikiRegistrySource({
@@ -880,6 +947,37 @@ describe("F8-05 / F8-06 v1 contract", () => {
     expect(resolveLoopbackWikiId("/etc/passwd", source)).toBeNull();
   });
 
+  it("refuses invalid, symlink-escaped, and conflicting remote host mappings", async () => {
+    const first = "aaaa1111-0000-4000-8000-000000000000";
+    const second = "bbbb2222-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-reg-hosts-"));
+    const outside = await mkdtemp(path.join(os.tmpdir(), "epic8-reg-outside-"));
+    await symlink(outside, path.join(tmp, "escape"));
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: tmp,
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            currentId: first,
+            projects: [
+              { id: "not-a-uuid", hostPath: path.join(tmp, "invalid") },
+              { id: first, hostPath: path.join(tmp, "escape", "wiki") },
+              { id: first, hostPath: path.join(tmp, "one") },
+              { id: first, hostPath: path.join(tmp, "two") },
+              { id: second, hostPath: path.join(tmp, "one") },
+            ],
+          }),
+          { status: 200 },
+        ),
+    });
+    await source.refresh();
+    expect(source.current()).toEqual([]);
+    expect(source.currentId()).toBeNull();
+    expect(resolveLoopbackWikiId(path.join(outside, "wiki"), source)).toBeNull();
+  });
+
   it("loads local wiki dirs from disk when there is no kernel token", async () => {
     const wikiId = "aaaa1111-0000-4000-8000-000000000000";
     const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-reg-"));
@@ -913,7 +1011,11 @@ describe("F8-05 / F8-06 v1 contract", () => {
     await mkdir(path.join(alice, "wikis", first), { recursive: true });
     await writeFile(
       path.join(alice, "wikis.json"),
-      JSON.stringify({ version: 1, wikis: [{ id: first }], currentId: first }),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(first, "First")],
+        currentId: first,
+      }),
       "utf8",
     );
     const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
@@ -924,7 +1026,11 @@ describe("F8-05 / F8-06 v1 contract", () => {
     await mkdir(path.join(alice, "wikis", second), { recursive: true });
     await writeFile(
       path.join(alice, "wikis.json"),
-      JSON.stringify({ version: 1, wikis: [{ id: second }], currentId: second }),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(second, "Second")],
+        currentId: second,
+      }),
       "utf8",
     );
     await source.refresh();
@@ -934,10 +1040,32 @@ describe("F8-05 / F8-06 v1 contract", () => {
     await mkdir(path.join(bob, "wikis", third), { recursive: true });
     await writeFile(
       path.join(bob, "wikis.json"),
-      JSON.stringify({ version: 1, wikis: [{ id: third }], currentId: third }),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(third, "Third")],
+        currentId: third,
+      }),
       "utf8",
     );
     await source.refresh();
+    expect(source.currentId()).toBeNull();
+  });
+
+  it("does not authorize an incomplete local registry record as current", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-local-incomplete-"));
+    const alice = path.join(tmp, "tenants", "alice");
+    await mkdir(path.join(alice, "wikis", wikiId), { recursive: true });
+    await writeFile(
+      path.join(alice, "wikis.json"),
+      JSON.stringify({ version: 1, wikis: [{ id: wikiId }], currentId: wikiId }),
+      "utf8",
+    );
+    const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
+    await source.refresh();
+    expect(source.current()).toEqual([
+      { id: wikiId, path: path.join(alice, "wikis", wikiId) },
+    ]);
     expect(source.currentId()).toBeNull();
   });
 
@@ -1094,7 +1222,6 @@ describe("F8-05 / F8-06 v1 contract", () => {
       for (let i = 0; i < 5; i += 1) {
         await saveRawSource(`note-${i}`, `body ${i}`, { owner: "alice" });
       }
-      await saveRawSourceTree("a/b/c/deep.md", "too deep", { owner: "alice" });
       const listed = await listRawSourceFilePaths("alice", {
         offset: 0,
         limit: 2,
@@ -1220,6 +1347,40 @@ describe("F8-05 / F8-06 v1 contract", () => {
       expect(enqueue).toHaveBeenCalledTimes(2);
       list.mockRestore();
       enqueue.mockRestore();
+    } finally {
+      vi.restoreAllMocks();
+      if (originalDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = originalDataDir;
+      _resetStorage();
+      _resetLocks();
+    }
+  });
+
+  it("fails atomically when the depth cap hides a raw/sources subtree", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-list-depth-"));
+    const originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmp;
+    _resetStorage();
+    _resetLocks();
+    try {
+      await saveRawSource("visible", "visible", { owner: "alice" });
+      const deep = `${Array.from({ length: 20 }, (_, i) => `d${i}`).join("/")}/hidden.md`;
+      await saveRawSourceTree(deep, "hidden", { owner: "alice" });
+      const enqueue = vi.spyOn(tasks, "enqueueTask").mockResolvedValue(true);
+      const failed = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+      });
+      expect(failed).toMatchObject({
+        requested: 0,
+        results: [],
+        remaining: 0,
+        nextCursor: null,
+        reason: "listing_unavailable",
+      });
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(await listIngestJobs({ owner: "alice" })).toEqual([]);
     } finally {
       vi.restoreAllMocks();
       if (originalDataDir === undefined) delete process.env.DATA_DIR;

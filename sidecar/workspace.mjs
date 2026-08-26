@@ -249,20 +249,66 @@ export function createAgentWorkspace({
  */
 export function canonicalizePathSnapshot(target) {
   if (typeof target !== "string" || target.length === 0) return null;
-  let cursor = path.resolve(target);
-  const suffix = [];
+  if (target.includes("\0") || target.length > 32_768) return null;
+
+  // `realpath` cannot resolve a dangling symlink, but treating its spelling as
+  // an ordinary missing component is unsafe: `workspace/link/new.txt`, where
+  // `link -> /outside/not-created`, belongs to the OUTSIDE target even though
+  // neither the target directory nor the leaf exists. Walk components with
+  // `lstat` so the link itself remains observable, then restart at its target.
+  let unresolved = path.resolve(target);
+  let hops = 0;
+  let componentsVisited = 0;
+  const seen = new Set();
   while (true) {
-    try {
-      return path.resolve(fsSync.realpathSync(cursor), ...suffix);
-    } catch (error) {
-      if (!error || (error.code !== "ENOENT" && error.code !== "ENOTDIR")) {
-        return null;
+    if (unresolved.length > 32_768) return null;
+    const parsed = path.parse(unresolved);
+    const components = unresolved
+      .slice(parsed.root.length)
+      .split(path.sep)
+      .filter(Boolean);
+    if (components.length > 1_024) return null;
+
+    let current = parsed.root;
+    let restarted = false;
+    for (let index = 0; index < components.length; index += 1) {
+      componentsVisited += 1;
+      if (componentsVisited > 4_096) return null;
+      const candidate = path.join(current, components[index]);
+      let stat;
+      try {
+        stat = fsSync.lstatSync(candidate);
+      } catch (error) {
+        if (error?.code !== "ENOENT") return null;
+        // Once one component is absent, every later component is an immutable
+        // unresolved suffix. All existing parents have already been followed.
+        return path.resolve(current, ...components.slice(index));
       }
-      const parent = path.dirname(cursor);
-      if (parent === cursor) return null;
-      suffix.unshift(path.basename(cursor));
-      cursor = parent;
+      if (stat.isSymbolicLink()) {
+        hops += 1;
+        if (hops > 40) return null;
+        let link;
+        try {
+          link = fsSync.readlinkSync(candidate);
+        } catch {
+          return null;
+        }
+        const rest = components.slice(index + 1);
+        const linkTarget = path.isAbsolute(link)
+          ? path.resolve(link)
+          : path.resolve(current, link);
+        const next = path.resolve(linkTarget, ...rest);
+        const state = `${candidate}\0${next}`;
+        if (seen.has(state)) return null;
+        seen.add(state);
+        unresolved = next;
+        restarted = true;
+        break;
+      }
+      if (index < components.length - 1 && !stat.isDirectory()) return null;
+      current = candidate;
     }
+    if (!restarted) return current;
   }
 }
 

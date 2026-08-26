@@ -461,8 +461,16 @@ export async function listRawSourceFilePaths(
       entries = visible(listed.entries);
     }
     if (node.depth >= maxDepth) {
-      // Files past the depth cap are not pageable. Counting them as `more`
-      // made nextCursor = offset when the page was empty, so a drain looped.
+      // Files past the depth cap are not pageable. If the cap hides the
+      // `raw/sources` branch (or anything already below it), the enumeration is
+      // incomplete rather than empty: advancing an offset over an unseen
+      // subtree would silently lose Sources.
+      const hidesSource = entries.some((entry) => {
+        const display = `${node.display}/${entry.name}`;
+        if (entry.isDirectory) return towardSources(display);
+        return display.startsWith("raw/sources/") && allow(display);
+      });
+      if (hidesSource) nestedFailed = true;
       continue;
     }
     for (const entry of entries) {

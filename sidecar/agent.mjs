@@ -831,6 +831,10 @@ export async function resumeAgentTurn({
       citations: [],
     };
   }
+  const approvedExecutable = executableKey(pending.command, {
+    cwd,
+    workspace: context.workspace,
+  });
   const result = await runShellCommand(
     { command: pending.command, args: pending.args, cwd },
     { workspace: context.workspace, spawnImpl: context.spawnImpl },
@@ -838,8 +842,8 @@ export async function resumeAgentTurn({
   // Approval memory records a capability that actually started. ENOENT and a
   // synchronous spawn refusal did not exercise the executable, so the next
   // attempt must ask again rather than inheriting a permission that never ran.
-  if (result.started) {
-    context.approvedExecutables?.add(executableKey(pending.command));
+  if (result.started && approvedExecutable) {
+    context.approvedExecutables?.add(approvedExecutable);
   }
   emit("agent", {
     toolRow: toolRow(pending.rowId, "shell", "done", `exit ${result.code}`),
