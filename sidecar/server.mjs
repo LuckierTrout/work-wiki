@@ -1078,6 +1078,36 @@ function readRawBody(req) {
  *   4. The TOKEN GATE, on every data route.
  *   5. Sidecar-owned routes, then the kernel proxy.
  */
+/**
+ * What `pnpm sidecar` / `node sidecar/server.mjs` actually binds: kernel
+ * credentials from the process env, and a Wiki registry that polls
+ * `GET /api/v1/projects`. Tests that only call `createSidecarServer()` never
+ * execute this, which is how production once started with an empty registry.
+ *
+ * @param {{
+ *   env?: Record<string, string | undefined>,
+ *   fetchImpl?: typeof fetch,
+ * }} [options]
+ */
+export function productionWikiRegistry({
+  env = process.env,
+  fetchImpl = fetch,
+} = {}) {
+  const kernel = {
+    base: (env.WORKWIKI_URL || env.YOPEDIA_URL || "").trim().replace(/\/+$/, ""),
+    token: (env.WORKWIKI_API_TOKEN || env.YOPEDIA_SERVICE_TOKEN || "").trim(),
+  };
+  return {
+    kernel,
+    wikiRegistry: createWikiRegistrySource({
+      base: kernel.base,
+      token: kernel.token,
+      dataDir: env.DATA_DIR || process.cwd(),
+      fetchImpl,
+    }),
+  };
+}
+
 export function createSidecarServer({
   settingsSource = createLoopbackSettingsSource(),
   gate = createLoadGate(),
@@ -1210,22 +1240,9 @@ if (isMain) {
   // reads an absent answer as SHUT — so the sidecar still starts and still
   // answers `/health`, which is where the owner sees `enabled: false`.
   await settingsSource.refresh().catch(() => {});
-  const kernel = {
-    base: (process.env.WORKWIKI_URL || process.env.YOPEDIA_URL || "")
-      .trim()
-      .replace(/\/+$/, ""),
-    token: (
-      process.env.WORKWIKI_API_TOKEN ||
-      process.env.YOPEDIA_SERVICE_TOKEN ||
-      ""
-    ).trim(),
-  };
+  const { kernel, wikiRegistry } = productionWikiRegistry();
   // FIRST poll before listen, same as settings: a registered host-path `{id}`
   // must resolve on the first request, not fifteen seconds later.
-  const wikiRegistry = createWikiRegistrySource({
-    base: kernel.base,
-    token: kernel.token,
-  });
   await wikiRegistry.refresh();
   // `starting` until the bind resolves. It is a real state, not a formality: a
   // client that probed during startup used to be told `"ok"`.

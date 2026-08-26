@@ -16,7 +16,10 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-import { createSidecarServer } from "../../../sidecar/server.mjs";
+import {
+  createSidecarServer,
+  productionWikiRegistry,
+} from "../../../sidecar/server.mjs";
 import {
   createCapabilityStore,
   publicPending,
@@ -48,7 +51,7 @@ import { rescanSources } from "../source-rescan";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
 import { listIngestJobs } from "../ingest-jobs";
-import { saveRawSource } from "../raw";
+import { saveRawSource, saveRawSourceTree } from "../raw";
 import { listRawSourceFilePaths } from "../workbench-files";
 import * as tasks from "../tasks";
 
@@ -536,6 +539,34 @@ describe("F8-05 / F8-06 v1 contract", () => {
     expect(accepted.status).not.toBe(400);
   });
 
+  it("wires the production registry poller into createSidecarServer", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const { kernel, wikiRegistry } = productionWikiRegistry({
+      env: {
+        WORKWIKI_URL: "http://kernel.test",
+        WORKWIKI_API_TOKEN: "automation",
+        DATA_DIR: "/data",
+      },
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            projects: [{ id: wikiId, path: `tenants/alice/wikis/${wikiId}` }],
+          }),
+          { status: 200 },
+        ),
+    });
+    expect(kernel.base).toBe("http://kernel.test");
+    await wikiRegistry.refresh();
+    const hostPath = `/data/tenants/alice/wikis/${wikiId}`;
+    expect(resolveLoopbackWikiId(hostPath, wikiRegistry)).toBe(wikiId);
+    const main = await readFile(
+      path.join(process.cwd(), "sidecar/server.mjs"),
+      "utf8",
+    );
+    expect(main).toContain("const { kernel, wikiRegistry } = productionWikiRegistry()");
+    expect(main).toMatch(/createSidecarServer\(\{[\s\S]*wikiRegistry,/);
+  });
+
   it("keeps the last good remote settings when a later poll fails", async () => {
     let calls = 0;
     const source = createLoopbackSettingsSource({
@@ -623,9 +654,10 @@ describe("F8-05 / F8-06 v1 contract", () => {
     _resetLocks();
     _resetStorage();
     try {
-      for (let i = 0; i < 3; i += 1) {
+      for (let i = 0; i < 5; i += 1) {
         await saveRawSource(`note-${i}`, `body ${i}`, { owner: "alice" });
       }
+      await saveRawSourceTree("a/b/c/deep.md", "too deep", { owner: "alice" });
       const listed = await listRawSourceFilePaths("alice", {
         offset: 0,
         limit: 2,
@@ -633,15 +665,15 @@ describe("F8-05 / F8-06 v1 contract", () => {
       });
       expect(listed.paths).toHaveLength(2);
       expect(listed.more).toBe(true);
+      expect(listed.remaining).toBe(3);
       const page = await rescanSources({
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
         limit: 2,
       });
-      expect(listed.remaining).toBe(1);
       expect(page.requested).toBe(2);
-      expect(page.remaining).toBe(1);
+      expect(page.remaining).toBe(3);
       expect(page.nextCursor).toBe(2);
       const next = await rescanSources({
         owner: "alice",
@@ -650,8 +682,19 @@ describe("F8-05 / F8-06 v1 contract", () => {
         limit: 2,
         cursor: page.nextCursor ?? 0,
       });
-      expect(next.requested).toBe(1);
-      expect(next.nextCursor).toBeNull();
+      expect(next.requested).toBe(2);
+      expect(next.remaining).toBe(1);
+      expect(next.nextCursor).toBe(4);
+      const last = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        limit: 2,
+        cursor: next.nextCursor ?? 0,
+      });
+      expect(last.requested).toBe(1);
+      expect(last.remaining).toBe(0);
+      expect(last.nextCursor).toBeNull();
     } finally {
       if (originalDataDir === undefined) delete process.env.DATA_DIR;
       else process.env.DATA_DIR = originalDataDir;

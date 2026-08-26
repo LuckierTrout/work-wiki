@@ -836,6 +836,45 @@ describe("the shell asks before it leaves the workspace", () => {
     ]);
   });
 
+  it("does not run a new_executable resume after an argument path becomes external", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const approvedExecutables = new Set<string>();
+    const { generate } = scripted("unreachable");
+    const escaped = {
+      ...workspace,
+      contains: (candidate: string) =>
+        path.resolve(candidate) === path.resolve(workspace.root),
+    };
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command: "echo",
+        args: ["notes/x.txt"],
+        cwd: workspace.root,
+        reason: "new_executable",
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace: escaped,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+    expect(approvedExecutables.size).toBe(0);
+    expect(result.toolCalls).toEqual([
+      { id: "t1", tool: "shell", detail: SHELL_PATH_CHANGED_COPY },
+    ]);
+  });
+
   it("still runs an approved resume when the reason is still external_path", async () => {
     await mkdir(workspace.root, { recursive: true });
     const approvedExecutables = new Set<string>(["name:echo"]);
