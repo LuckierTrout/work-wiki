@@ -16,6 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { access, chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -1254,6 +1255,71 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(approvedExecutables).toEqual(new Set());
   });
 
+  it("does not remember a directly writable executable under non-writable parents", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const command = path.join(dir, "directly-writable-runner");
+    await writeFile(command, "#!/bin/sh\nexit 0\n");
+    await chmod(command, 0o755);
+    const executable = executableSnapshot(command, {
+      cwd: workspace.root,
+      workspace,
+    });
+    const spellings = new Set([
+      path.resolve(command),
+      path.resolve(executable.command),
+    ]);
+    const originalAccess = fsSync.accessSync.bind(fsSync);
+    const accessProbe = vi.spyOn(fsSync, "accessSync").mockImplementation(
+      (target, mode) => {
+        if (mode === fsSync.constants.W_OK) {
+          if (spellings.has(path.resolve(String(target)))) return;
+          throw Object.assign(new Error("not writable"), { code: "EACCES" });
+        }
+        return originalAccess(target, mode);
+      },
+    );
+    try {
+      expect(
+        canPersistExecutableApproval(executable.command, [], {
+          workspace,
+          cwd: workspace.root,
+        }),
+      ).toBe(false);
+      const approvedExecutables = new Set<string>();
+      const { generate } = scripted("Done.");
+      const result = await resumeAgentTurn({
+        pending: {
+          kind: "shell_approval",
+          rowId: "t-direct-write",
+          command,
+          args: [],
+          cwd: workspace.root,
+          reason: "new_executable",
+          executableKey: executable.key,
+          externalCwd: false,
+          externalPaths: [executable.command],
+          transcript: [],
+          toolCalls: [],
+          outputs: [],
+          rowSeed: 0,
+        },
+        approved: true,
+        generate,
+        system: "s",
+        context: {
+          kernel: async () => null,
+          wikiId: "current",
+          workspace,
+          approvedExecutables,
+        },
+      });
+      expect(result.content).toBe("Done.");
+      expect(approvedExecutables).toEqual(new Set());
+    } finally {
+      accessProbe.mockRestore();
+    }
+  });
+
   it("denies a path that appears or becomes executable after its modal", async () => {
     await mkdir(workspace.root, { recursive: true });
     for (const variant of ["missing", "non-executable"] as const) {
@@ -1723,6 +1789,32 @@ describe("the shell asks before it leaves the workspace", () => {
         state: "error",
         detail: expect.stringContaining("SIGTERM"),
       }),
+    });
+  });
+
+  it("renders a direct approved timeout as an error with timeout detail", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const command = "/bin/sleep";
+    const executable = executableSnapshot(command, {
+      cwd: workspace.root,
+      workspace,
+    });
+    const result = await runTool(
+      {
+        tool: "shell",
+        input: { command, args: ["1"], cwd: workspace.root },
+      },
+      {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables: new Set([executable.key]),
+        shellTimeoutMs: 20,
+      },
+    );
+    expect(result).toMatchObject({
+      state: "error",
+      detail: expect.stringMatching(/^timed out.*SIGKILL/),
     });
   });
 

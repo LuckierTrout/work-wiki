@@ -1615,6 +1615,43 @@ describe("F8-05 / F8-06 v1 contract", () => {
     }
   });
 
+  it("publishes no local authority when a listed UUID cannot be canonicalized", async () => {
+    const currentId = "ecececec-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-local-canonical-failure-"));
+    const aliceWiki = path.join(tmp, "tenants", "alice", "wikis", currentId);
+    const bobWiki = path.join(tmp, "tenants", "bob", "wikis", currentId);
+    await mkdir(aliceWiki, { recursive: true });
+    await mkdir(bobWiki, { recursive: true });
+    await writeFile(
+      path.join(tmp, "tenants", "alice", "wikis.json"),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(currentId)],
+        currentId,
+      }),
+      "utf8",
+    );
+    const original = fsSync.lstatSync.bind(fsSync);
+    const canonicalProbe = vi.spyOn(fsSync, "lstatSync").mockImplementation(
+      ((target, options) => {
+        if (path.resolve(String(target)) === path.resolve(bobWiki)) {
+          throw Object.assign(new Error("canonicalization denied"), {
+            code: "EACCES",
+          });
+        }
+        return original(target, options as { throwIfNoEntry?: true });
+      }) as typeof fsSync.lstatSync,
+    );
+    try {
+      const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
+      await source.refresh();
+      expect(source.current()).toEqual([]);
+      expect(source.currentId()).toBeNull();
+    } finally {
+      canonicalProbe.mockRestore();
+    }
+  });
+
   it("fails closed at every local discovery and declared-record bound", async () => {
     const currentId = "ffffffff-0000-4000-8000-000000000000";
 

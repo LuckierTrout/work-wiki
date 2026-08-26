@@ -116,6 +116,7 @@ function mergeTurnCitations(citations, result) {
  *   approvedExecutables?: Set<string>,
  *   skillEnablement?: Record<string, boolean>,
  *   spawnImpl?: unknown,
+ *   shellTimeoutMs?: number,
  * }} AgentContext
  * @typedef {{
  *   kind: string,
@@ -358,6 +359,30 @@ export function toolRow(id, tool, state, detail = "") {
 }
 
 /**
+ * One process result mapped identically for direct and resumed shell calls.
+ * A signal close has `code: null`; it is never a successful `exit null`.
+ *
+ * @param {{
+ *   code: number | null,
+ *   signal?: string | null,
+ *   timedOut?: boolean,
+ *   stderr?: string,
+ *   started: boolean,
+ * }} result
+ */
+export function shellResultPresentation(result) {
+  const completed = result.started && result.code !== null;
+  const detail = !result.started
+    ? `failed to start${result.stderr ? `: ${result.stderr}` : ""}`
+    : result.code === null
+      ? result.timedOut
+        ? `timed out${result.signal ? ` (${result.signal})` : ""}`
+        : `terminated${result.signal ? ` by ${result.signal}` : ""}`
+      : `exit ${result.code}`;
+  return { state: completed ? "done" : "error", detail };
+}
+
+/**
  * Run one tool and describe the result for the model and for the row.
  *
  * `observation` is what goes back to the MODEL; `detail` is what the owner reads
@@ -568,21 +593,18 @@ export async function runTool(call, context) {
       }
       const result = await runShellCommand(
         { command: executable.command, args, cwd },
-        { workspace },
+        {
+          workspace,
+          spawnImpl: context.spawnImpl,
+          timeoutMs: context.shellTimeoutMs,
+        },
       );
-      const completed = result.started && result.code !== null;
-      const detail = !result.started
-        ? `failed to start${result.stderr ? `: ${result.stderr}` : ""}`
-        : result.code === null
-          ? result.timedOut
-            ? `timed out${result.signal ? ` (${result.signal})` : ""}`
-            : `terminated${result.signal ? ` by ${result.signal}` : ""}`
-          : `exit ${result.code}`;
+      const presentation = shellResultPresentation(result);
       return {
-        state: completed ? "done" : "error",
-        detail,
+        state: presentation.state,
+        detail: presentation.detail,
         observation:
-          `${detail}\n` +
+          `${presentation.detail}\n` +
           (result.stdout ? `stdout:\n${result.stdout}\n` : "") +
           (result.stderr ? `stderr:\n${result.stderr}` : ""),
       };
@@ -889,19 +911,13 @@ export async function resumeAgentTurn({
   ) {
     context.approvedExecutables?.add(liveExecutable.key);
   }
-  const completed = result.started && result.code !== null;
-  const resultDetail = !result.started
-    ? `failed to start${result.stderr ? `: ${result.stderr}` : ""}`
-    : result.code === null
-      ? result.timedOut
-        ? `timed out${result.signal ? ` (${result.signal})` : ""}`
-        : `terminated${result.signal ? ` by ${result.signal}` : ""}`
-      : `exit ${result.code}`;
+  const presentation = shellResultPresentation(result);
+  const resultDetail = presentation.detail;
   emit("agent", {
     toolRow: toolRow(
       pending.rowId,
       "shell",
-      completed ? "done" : "error",
+      presentation.state,
       resultDetail,
     ),
   });

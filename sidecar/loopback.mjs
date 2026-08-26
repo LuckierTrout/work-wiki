@@ -743,7 +743,7 @@ function discoverWikiRegistryFromDisk(dataDir) {
       const canonical = canonicalExistingDirectory(
         path.resolve(tenantsDir, handle.name, "wikis", wiki.name),
       );
-      if (!canonical) continue;
+      if (!canonical) return { rows: [], complete: false };
       if (rows.length >= WIKI_REGISTRY_MAX_ROWS) {
         return { rows: [], complete: false };
       }
