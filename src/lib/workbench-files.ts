@@ -490,7 +490,10 @@ export async function listRawSourceFilePaths(
       seen += 1;
     }
   }
-  if (failed || (nestedFailed && collected.length === 0 && remaining === 0)) {
+  // An offset is meaningful only over a complete ordered set. Returning the
+  // readable siblings from a partial tree would both lose the unreadable
+  // branch and advance the caller past an ordering we never observed.
+  if (failed || nestedFailed) {
     return { paths: [], more: false, remaining: 0, failed: true };
   }
   return { paths: collected, more: remaining > 0, remaining, failed: false };

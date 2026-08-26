@@ -218,6 +218,32 @@ describe("F8-01 server-owned shell capabilities", () => {
     expect(canonicalLoopbackWikiId(wikiId, { currentId: () => wikiId })).toBe(
       wikiId,
     );
+    expect(
+      canonicalLoopbackWikiId("current", { currentId: () => null }),
+    ).toBeNull();
+  });
+
+  it("503s a current-door tool turn while registry identity is unresolved", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const wikiRegistry = {
+      current: () => [{ id: wikiId, path: `/data/wikis/${wikiId}` }],
+      currentId: () => null,
+    };
+    const base = await listen({ wikiRegistry });
+    const response = await fetch(`${base}/api/v1/projects/current/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "search",
+        tools: true,
+        stream: false,
+        coverage: false,
+      }),
+    });
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
+      error: "current_wiki_unavailable",
+    });
   });
 
   it("resumes a current-door pause on the poller's UUID", async () => {
@@ -261,6 +287,110 @@ describe("F8-01 server-owned shell capabilities", () => {
         wikiId,
       }),
     ).toBeNull();
+  });
+
+  it("resumes a real server-issued current-door pause on its UUID", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-current-http-"));
+    const workspace = createAgentWorkspace({ root: path.join(tmp, "workspace") });
+    const wikiRegistry = {
+      current: () => [{ id: wikiId, path: path.join(tmp, "wiki") }],
+      currentId: () => wikiId,
+    };
+    const originalDataDir = process.env.DATA_DIR;
+    const originalOpenAi = process.env.OPENAI_API_KEY;
+    const originalAnthropic = process.env.ANTHROPIC_API_KEY;
+    const originalGoogle = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    const originalDeepseek = process.env.DEEPSEEK_API_KEY;
+    const originalOllama = process.env.OLLAMA_API_KEY;
+    const nativeFetch = globalThis.fetch.bind(globalThis);
+    process.env.DATA_DIR = tmp;
+    process.env.OPENAI_API_KEY = "test-key";
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    delete process.env.OLLAMA_API_KEY;
+    await writeFile(
+      path.join(tmp, ".llm-wiki-config.json"),
+      JSON.stringify({ chatProvider: "openai", chatModel: "test-model" }),
+      "utf8",
+    );
+    let providerCalls = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).startsWith("https://api.openai.com/")) {
+          providerCalls += 1;
+          const content =
+            providerCalls === 1
+              ? JSON.stringify({ tool: "shell", input: { command: "true", args: [] } })
+              : "Done.";
+          return new Response(
+            JSON.stringify({ choices: [{ message: { content } }] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return nativeFetch(input, init);
+      },
+    );
+    try {
+      const base = await listen({ wikiRegistry, workspace });
+      const paused = await fetch(`${base}/api/v1/projects/current/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "run true",
+          tools: true,
+          stream: false,
+          coverage: false,
+          conversationId: "conv-live",
+        }),
+      });
+      expect(paused.status).toBe(200);
+      const first = (await paused.json()) as {
+        pending?: { capabilityId?: string };
+      };
+      expect(first.pending?.capabilityId).toEqual(expect.any(String));
+
+      const resumed = await fetch(`${base}/api/v1/projects/${wikiId}/chat`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "run true",
+          tools: true,
+          stream: false,
+          coverage: false,
+          conversationId: "conv-live",
+          resume: {
+            approved: true,
+            capabilityId: first.pending?.capabilityId,
+          },
+        }),
+      });
+      expect(resumed.status).toBe(200);
+      const second = (await resumed.json()) as {
+        error?: string;
+        toolCalls?: Array<{ tool?: string }>;
+      };
+      expect(second.error).toBeUndefined();
+      expect(second.toolCalls).toEqual(
+        expect.arrayContaining([expect.objectContaining({ tool: "shell" })]),
+      );
+      expect(providerCalls).toBe(2);
+    } finally {
+      fetchSpy.mockRestore();
+      if (originalDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = originalDataDir;
+      if (originalOpenAi === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAi;
+      if (originalAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = originalAnthropic;
+      if (originalGoogle === undefined) delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+      else process.env.GOOGLE_GENERATIVE_AI_API_KEY = originalGoogle;
+      if (originalDeepseek === undefined) delete process.env.DEEPSEEK_API_KEY;
+      else process.env.DEEPSEEK_API_KEY = originalDeepseek;
+      if (originalOllama === undefined) delete process.env.OLLAMA_API_KEY;
+      else process.env.OLLAMA_API_KEY = originalOllama;
+    }
   });
 
   it("does not resume an unbound ticket under a supplied conversationId", async () => {
@@ -647,10 +777,46 @@ describe("F8-05 / F8-06 v1 contract", () => {
       },
     });
     await source.refresh();
+    expect(source.currentId()).toBe(wikiId);
     expect(resolveLoopbackWikiId(hostPath, source)).toBe(wikiId);
     await source.refresh();
     expect(source.current()).toHaveLength(1);
     expect(resolveLoopbackWikiId(hostPath, source)).toBe(wikiId);
+    expect(source.currentId()).toBeNull();
+  });
+
+  it("clears remote current identity and rows after a successful empty poll", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    let calls = 0;
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: "/data",
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify(
+            calls === 1
+              ? {
+                  currentId: wikiId,
+                  projects: [
+                    {
+                      id: wikiId,
+                      hostPath: `/data/tenants/alice/wikis/${wikiId}`,
+                    },
+                  ],
+                }
+              : { currentId: null, projects: [] },
+          ),
+          { status: 200 },
+        );
+      },
+    });
+    await source.refresh();
+    expect(source.currentId()).toBe(wikiId);
+    await source.refresh();
+    expect(source.current()).toEqual([]);
+    expect(source.currentId()).toBeNull();
   });
 
   it("does not treat kernel-relative project.path as a host root", async () => {
@@ -736,6 +902,43 @@ describe("F8-05 / F8-06 v1 contract", () => {
     expect(
       resolveLoopbackWikiId(path.join(tmp, "agent-workspace"), source),
     ).toBe("current");
+  });
+
+  it("rotates local current identity from the disk registry and fails closed on ambiguity", async () => {
+    const first = "aaaa1111-0000-4000-8000-000000000000";
+    const second = "bbbb2222-0000-4000-8000-000000000000";
+    const third = "cccc3333-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-local-current-"));
+    const alice = path.join(tmp, "tenants", "alice");
+    await mkdir(path.join(alice, "wikis", first), { recursive: true });
+    await writeFile(
+      path.join(alice, "wikis.json"),
+      JSON.stringify({ version: 1, wikis: [{ id: first }], currentId: first }),
+      "utf8",
+    );
+    const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
+    await source.refresh();
+    expect(source.currentId()).toBe(first);
+
+    await rm(path.join(alice, "wikis", first), { recursive: true });
+    await mkdir(path.join(alice, "wikis", second), { recursive: true });
+    await writeFile(
+      path.join(alice, "wikis.json"),
+      JSON.stringify({ version: 1, wikis: [{ id: second }], currentId: second }),
+      "utf8",
+    );
+    await source.refresh();
+    expect(source.currentId()).toBe(second);
+
+    const bob = path.join(tmp, "tenants", "bob");
+    await mkdir(path.join(bob, "wikis", third), { recursive: true });
+    await writeFile(
+      path.join(bob, "wikis.json"),
+      JSON.stringify({ version: 1, wikis: [{ id: third }], currentId: third }),
+      "utf8",
+    );
+    await source.refresh();
+    expect(source.currentId()).toBeNull();
   });
 
   it("resolves a live registry source on Chat instead of an empty listen-time array", async () => {
@@ -954,6 +1157,69 @@ describe("F8-05 / F8-06 v1 contract", () => {
       expect(page.reason).toBe("listing_unavailable");
       expect(page.requested).toBe(0);
       expect(page.nextCursor).toBeNull();
+    } finally {
+      vi.restoreAllMocks();
+      if (originalDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = originalDataDir;
+      _resetStorage();
+      _resetLocks();
+    }
+  });
+
+  it("fails a partial nested listing atomically and retries from the original cursor", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-list-nested-"));
+    const originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmp;
+    _resetStorage();
+    _resetLocks();
+    try {
+      await saveRawSourceTree("good/readable.md", "readable", { owner: "alice" });
+      await saveRawSourceTree("bad/unreadable.md", "unreadable", { owner: "alice" });
+      const storage = getStorage();
+      const realList = storage.listFiles.bind(storage);
+      let failBadBranch = true;
+      const list = vi.spyOn(storage, "listFiles").mockImplementation(async (prefix) => {
+        if (failBadBranch && String(prefix).endsWith("/bad")) {
+          throw new Error("nested list exploded");
+        }
+        return realList(prefix);
+      });
+      const enqueue = vi.spyOn(tasks, "enqueueTask").mockResolvedValue(true);
+
+      const failed = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        limit: 10,
+        cursor: 0,
+      });
+      expect(failed).toMatchObject({
+        requested: 0,
+        results: [],
+        remaining: 0,
+        nextCursor: null,
+        reason: "listing_unavailable",
+      });
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(await listIngestJobs({ owner: "alice" })).toEqual([]);
+
+      failBadBranch = false;
+      const retried = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        limit: 10,
+        cursor: 0,
+      });
+      expect(retried.requested).toBe(2);
+      expect(retried.results.map((row) => row.path).sort()).toEqual([
+        "raw/sources/bad/unreadable.md",
+        "raw/sources/good/readable.md",
+      ]);
+      expect(retried.nextCursor).toBeNull();
+      expect(enqueue).toHaveBeenCalledTimes(2);
+      list.mockRestore();
+      enqueue.mockRestore();
     } finally {
       vi.restoreAllMocks();
       if (originalDataDir === undefined) delete process.env.DATA_DIR;

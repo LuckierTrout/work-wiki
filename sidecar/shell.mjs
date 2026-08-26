@@ -29,8 +29,8 @@
  */
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
+import { canonicalizePathSnapshot } from "./workspace.mjs";
 
 /** A command may not run longer than this without being killed. */
 export const SHELL_TIMEOUT_MS = 2 * 60 * 1000;
@@ -114,7 +114,11 @@ export function shellExternalTargets(
   const seen = new Set();
   const add = (candidate) => {
     if (!workspace || workspace.contains(candidate)) return;
-    const key = realpathKey(candidate);
+    const key =
+      (typeof workspace.canonicalize === "function"
+        ? workspace.canonicalize(candidate)
+        : canonicalizePathSnapshot(candidate)) ??
+      `unresolved:${path.resolve(candidate)}`;
     if (seen.has(key)) return;
     seen.add(key);
     externalPaths.push(key);
@@ -141,21 +145,15 @@ export function shellExternalTargets(
  */
 export function shellExternalSetGrew(stored, live) {
   if (live.externalCwd && !stored.externalCwd) return true;
+  // Stored entries are approval-time canonical snapshots. Re-following one
+  // here would let an approved missing leaf inherit a parent that was re-pointed
+  // after the modal and make the old and new destinations appear identical.
   const approved = new Set(
-    (stored.externalPaths ?? []).map((entry) => realpathKey(String(entry))),
+    (stored.externalPaths ?? []).map((entry) => String(entry)),
   );
   return (live.externalPaths ?? []).some(
-    (entry) => !approved.has(realpathKey(String(entry))),
+    (entry) => !approved.has(String(entry)),
   );
-}
-
-/** Follow the dest when it exists so a symlink re-point grows the set. */
-function realpathKey(target) {
-  try {
-    return fs.realpathSync(target);
-  } catch {
-    return path.resolve(target);
-  }
 }
 
 /**
@@ -221,7 +219,7 @@ export function executableKey(command) {
  *
  * @param {{ command: string, args?: string[], cwd?: string }} call
  * @param {{ timeoutMs?: number, spawnImpl?: typeof spawn, workspace?: { root?: string } }} [options]
- * @returns {Promise<{ code: number | null, stdout: string, stderr: string }>}
+ * @returns {Promise<{ code: number | null, stdout: string, stderr: string, started: boolean }>}
  */
 export function runShellCommand(
   { command, args = [], cwd },
@@ -231,15 +229,25 @@ export function runShellCommand(
     let stdout = "";
     let stderr = "";
     let child;
+    let started = false;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve({ ...result, started });
+    };
     try {
       child = spawnImpl(command, args, {
         cwd: effectiveShellCwd(cwd, workspace),
         shell: false,
       });
     } catch (error) {
-      resolve({ code: null, stdout: "", stderr: String(error?.message ?? error) });
+      finish({ code: null, stdout: "", stderr: String(error?.message ?? error) });
       return;
     }
+    child.once("spawn", () => {
+      started = true;
+    });
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
     }, timeoutMs);
@@ -251,11 +259,11 @@ export function runShellCommand(
     });
     child.on("error", (error) => {
       clearTimeout(timer);
-      resolve({ code: null, stdout, stderr: String(error?.message ?? error) });
+      finish({ code: null, stdout, stderr: String(error?.message ?? error) });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      finish({ code, stdout, stderr });
     });
   });
 }

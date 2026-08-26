@@ -14,7 +14,7 @@
  * caught the traversal cases.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -38,6 +38,7 @@ import {
 import { parseSkillFrontmatter, readSkill, scanSkills, skillId, skillRoots } from "../../../sidecar/skills.mjs";
 import {
   createAgentWorkspace,
+  canonicalizePathSnapshot,
   isWorkspaceTextPath,
   resolveWorkspacePath,
   WORKSPACE_BINARY_ERROR,
@@ -703,6 +704,23 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(shellApprovalReason({ command: "   " }, { workspace })).toBe("invalid");
   });
 
+  it("treats a missing leaf below an outside symlink as external", async () => {
+    const outside = path.join(dir, "outside");
+    await mkdir(outside);
+    await mkdir(workspace.root, { recursive: true });
+    await symlink(outside, path.join(workspace.root, "escape"));
+    expect(
+      shellApprovalReason(
+        {
+          command: "echo",
+          args: ["escape/not-created-yet.txt"],
+          cwd: workspace.root,
+        },
+        { workspace, approvedExecutables: new Set(["name:echo"]) },
+      ),
+    ).toBe("external_path");
+  });
+
   it("suspends for approval and runs nothing on Deny", async () => {
     const { generate } = scripted(
       '{"tool":"shell","input":{"command":"ls","args":["/etc"]}}',
@@ -1065,6 +1083,108 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(approvedExecutables.size).toBe(0);
   });
 
+  it("denies a missing-leaf target whose canonical parent changes after the modal", async () => {
+    const outsideA = path.join(dir, "outside-a");
+    const outsideB = path.join(dir, "outside-b");
+    await mkdir(outsideA);
+    await mkdir(outsideB);
+    await mkdir(workspace.root, { recursive: true });
+    await symlink(outsideA, path.join(workspace.root, "escape"));
+    const approvedExecutables = new Set<string>();
+    const { generate } = scripted(
+      JSON.stringify({
+        tool: "shell",
+        input: {
+          command: "echo",
+          args: ["escape/not-created-yet.txt"],
+          cwd: workspace.root,
+        },
+      }),
+      "unreachable",
+    );
+    const paused = await runAgentTurn({
+      generate,
+      messages: [{ role: "user", content: "name the future file" }],
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(pauseOf(paused)).toMatchObject({
+      reason: "external_path",
+      externalPaths: [
+        canonicalizePathSnapshot(path.join(outsideA, "not-created-yet.txt")),
+      ],
+    });
+
+    // The approval-time canonical snapshot names outside-a. Replacing that
+    // ancestor with a symlink must not make the stored snapshot follow it.
+    await rm(outsideA, { recursive: true });
+    await symlink(outsideB, outsideA);
+    const spawnImpl = vi.fn(() => {
+      throw new Error("must not spawn");
+    });
+    const result = await resumeAgentTurn({
+      pending: pauseOf(paused),
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+        spawnImpl,
+      },
+    });
+    expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(approvedExecutables.has("name:echo")).toBe(false);
+  });
+
+  it("does not remember approval when the executable never starts", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const approvedExecutables = new Set<string>();
+    const command = "definitely-not-a-real-binary-xyz";
+    const { generate } = scripted("Done.");
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command,
+        args: [],
+        cwd: workspace.root,
+        reason: "new_executable",
+        externalCwd: false,
+        externalPaths: [],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe("Done.");
+    expect(approvedExecutables.has(executableKey(command))).toBe(false);
+    expect(
+      shellApprovalReason(
+        { command, args: [], cwd: workspace.root },
+        { workspace, approvedExecutables },
+      ),
+    ).toBe("new_executable");
+  });
+
   it("keys the external set on realpath, including cwd and a path-shaped command", () => {
     const stored = {
       externalCwd: true,
@@ -1102,6 +1222,7 @@ describe("the shell asks before it leaves the workspace", () => {
       cwd: workspace.root,
     });
     expect(result.code).toBe(0);
+    expect(result.started).toBe(true);
     // `shell: false` — so a semicolon the model composed is an ARGUMENT, not a
     // second command.
     expect(result.stdout).toBe("a;b");
@@ -1112,6 +1233,7 @@ describe("the shell asks before it leaves the workspace", () => {
       cwd: workspace.root,
     });
     expect(missing.code).not.toBe(0);
+    expect(missing.started).toBe(false);
   });
 
   it("labels a row for every state the surface draws", () => {

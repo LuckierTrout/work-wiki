@@ -91,6 +91,7 @@ export function isWorkspaceTextPath(relative) {
  *   write: (relative: string, contents: unknown) => Promise<{ path: string, name: string, bytes: number }>,
  *   read: (relative: string) => Promise<{ status: number, body: Record<string, unknown> }>,
  *   contains: (candidate: string) => boolean,
+ *   canonicalize: (candidate: string) => string | null,
  * }} AgentWorkspace
  *
  * @param {{ root?: string }} [options]
@@ -219,26 +220,49 @@ export function createAgentWorkspace({
     /** Is this absolute path inside the workspace? The shell classifier's half. */
     contains(candidate) {
       if (typeof candidate !== "string" || candidate.length === 0) return false;
-      const resolved = realpathSyncIfExists(candidate);
-      const base = realpathSyncIfExists(root);
+      const resolved = canonicalizePathSnapshot(candidate);
+      const base = canonicalizePathSnapshot(root);
+      if (!resolved || !base) return false;
       return resolved === base || resolved.startsWith(base + path.sep);
+    },
+
+    /** Immutable canonical spelling used by the shell approval snapshot. */
+    canonicalize(candidate) {
+      return canonicalizePathSnapshot(candidate);
     },
   };
 }
 
 /**
- * Follow every symlink on both sides before asking "is this still under root?".
+ * Canonicalize a path even when its leaf does not exist yet.
  *
- * `path.resolve` is the lexical half and is not enough: a file written through
- * `agent-workspace/escape → /tmp/evil` still has a resolved path that *looks*
- * inside the root. macOS also presents `/var` as a symlink to `/private/var`,
- * so comparing a realpath to a lexical root would refuse every honest write.
+ * `realpathSync(target)` alone is unsafe for shell classification: ENOENT used
+ * to fall back to the lexical target, so `agent-workspace/escape/missing.txt`
+ * looked contained when `escape` was a symlink to an outside directory. Walk
+ * upward to the nearest existing ancestor, canonicalize that ancestor, then
+ * append the unresolved suffix without following it. The returned string is a
+ * point-in-time snapshot; callers must store and compare it literally rather
+ * than realpathing it again after an approval modal.
+ *
+ * @param {string} target
+ * @returns {string | null}
  */
-function realpathSyncIfExists(target) {
-  try {
-    return fsSync.realpathSync(target);
-  } catch {
-    return path.resolve(target);
+export function canonicalizePathSnapshot(target) {
+  if (typeof target !== "string" || target.length === 0) return null;
+  let cursor = path.resolve(target);
+  const suffix = [];
+  while (true) {
+    try {
+      return path.resolve(fsSync.realpathSync(cursor), ...suffix);
+    } catch (error) {
+      if (!error || (error.code !== "ENOENT" && error.code !== "ENOTDIR")) {
+        return null;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) return null;
+      suffix.unshift(path.basename(cursor));
+      cursor = parent;
+    }
   }
 }
 

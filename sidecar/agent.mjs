@@ -831,13 +831,16 @@ export async function resumeAgentTurn({
       citations: [],
     };
   }
-  // This resume IS the owner's approval of the stored command. Re-running the
-  // classifier records the executable so the next identical call is quiet.
-  context.approvedExecutables?.add(executableKey(pending.command));
   const result = await runShellCommand(
     { command: pending.command, args: pending.args, cwd },
     { workspace: context.workspace, spawnImpl: context.spawnImpl },
   );
+  // Approval memory records a capability that actually started. ENOENT and a
+  // synchronous spawn refusal did not exercise the executable, so the next
+  // attempt must ask again rather than inheriting a permission that never ran.
+  if (result.started) {
+    context.approvedExecutables?.add(executableKey(pending.command));
+  }
   emit("agent", {
     toolRow: toolRow(pending.rowId, "shell", "done", `exit ${result.code}`),
   });

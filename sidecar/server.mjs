@@ -657,6 +657,7 @@ async function runToolTurn({
   messages,
   citations,
   options,
+  resumePending,
 }) {
   let opened = false;
   const open = () => {
@@ -705,9 +706,9 @@ async function runToolTurn({
   // A RESUME rather than a fresh turn when the owner answered an approval. The
   // pending record carries the transcript, so nothing gathered before the
   // question is re-fetched.
-  const result = options.resumePending
+  const result = resumePending
     ? await resumeAgentTurn({
-        pending: options.resumePending,
+        pending: resumePending,
         // EXPLICIT TRUE ONLY. A resume that arrived without the flag — a client
         // bug, a truncated body — must read as Deny/Cancel, because the failure
         // mode of the other default is running a command nobody approved.
@@ -799,7 +800,16 @@ async function handleChat(req, res, wikiId, options = {}) {
     rejectChat(res, 400, "invalid_wiki_id");
     return;
   }
-  wikiId = canonicalLoopbackWikiId(resolvedWikiId, options.wikiRegistry);
+  const canonicalWikiId = canonicalLoopbackWikiId(
+    resolvedWikiId,
+    options.wikiRegistry,
+  );
+  const currentIdentityUnavailable =
+    resolvedWikiId === "current" && canonicalWikiId === null;
+  // Non-tool Chat retains the kernel's existing `/current` behavior. A tool
+  // turn can mint a resumable capability, so it must bind to an immutable UUID
+  // and is refused below when the registry poller cannot supply one.
+  wikiId = canonicalWikiId ?? resolvedWikiId;
   let body;
   try {
     body = await readBody(req);
@@ -878,6 +888,10 @@ async function handleChat(req, res, wikiId, options = {}) {
    * Workbench had already found and would break the `coverage: false` pin.
    */
   const toolsEnabled = body.tools === true || isPlainObject(body.resume);
+  if (toolsEnabled && currentIdentityUnavailable) {
+    rejectChat(res, 503, "current_wiki_unavailable");
+    return;
+  }
   let resumePending = null;
   if (isPlainObject(body.resume)) {
     const capabilityId = resumeCapabilityId(body.resume);

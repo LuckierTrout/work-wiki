@@ -641,6 +641,75 @@ export function readWikiRegistryFromDisk(dataDir) {
 }
 
 /**
+ * Read the explicit `currentId` from local `tenants/<handle>/wikis.json`.
+ *
+ * Directory discovery is enough to retain explicit path rows, but it cannot
+ * choose what the mutable `current` door means. Exactly one valid disk
+ * registry must name an id that has exactly one discovered Wiki directory.
+ * Multiple tenant currents, a damaged registry, or a pointer to a missing
+ * directory leaves current authority unresolved.
+ *
+ * @param {string} dataDir
+ * @param {WikiRegistryRow[]} diskRows
+ * @returns {string | null}
+ */
+function readCurrentWikiIdFromDisk(dataDir, diskRows) {
+  const tenantsDir = path.join(dataDir, "tenants");
+  let handles;
+  try {
+    handles = fs.readdirSync(tenantsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  let invalid = false;
+  for (const handle of handles) {
+    if (!handle.isDirectory() || handle.name.startsWith(".")) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(
+        fs.readFileSync(path.join(tenantsDir, handle.name, "wikis.json"), "utf8"),
+      );
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      invalid = true;
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      invalid = true;
+      continue;
+    }
+    const declared = Array.isArray(parsed.wikis) ? parsed.wikis : null;
+    if (!declared) {
+      invalid = true;
+      continue;
+    }
+    const ids = new Set(
+      declared
+        .filter((row) => row && typeof row.id === "string" && WIKI_UUID_RE.test(row.id))
+        .map((row) => row.id),
+    );
+    if (ids.size !== declared.length) {
+      invalid = true;
+      continue;
+    }
+    if (parsed.currentId === null && ids.size === 0) continue;
+    if (
+      typeof parsed.currentId !== "string" ||
+      !WIKI_UUID_RE.test(parsed.currentId) ||
+      !ids.has(parsed.currentId)
+    ) {
+      invalid = true;
+      continue;
+    }
+    candidates.push(parsed.currentId);
+  }
+  if (invalid || candidates.length !== 1) return null;
+  const matches = diskRows.filter((row) => row.id === candidates[0]);
+  return matches.length === 1 ? candidates[0] : null;
+}
+
+/**
  * Poll `GET /api/v1/projects` for Wiki ids and optional `hostPath` roots.
  *
  * `{id}` on the loopback door may be a URL-encoded absolute path only when
@@ -694,15 +763,19 @@ export function createWikiRegistrySource({
     return { next, seen };
   };
 
-  const applyLocal = () => {
+  const applyLocal = ({ authorizeCurrent = true } = {}) => {
     const { next, seen } = extras();
-    for (const row of readWikiRegistryFromDisk(dataDir)) {
+    const diskRows = readWikiRegistryFromDisk(dataDir);
+    for (const row of diskRows) {
       pushRegistryRow(next, seen, row);
     }
     for (const row of parseWikiRoots(wikiRoots)) {
       pushRegistryRow(next, seen, row);
     }
     rows = next;
+    currentId = authorizeCurrent
+      ? readCurrentWikiIdFromDisk(dataDir, diskRows)
+      : null;
   };
 
   const refresh = async () => {
@@ -716,22 +789,32 @@ export function createWikiRegistrySource({
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) {
-        if (rows.length === 0) applyLocal();
+        currentId = null;
+        if (rows.length === 0) applyLocal({ authorizeCurrent: false });
         return rows;
       }
       const body = await response.json();
       if (!body || typeof body !== "object" || !Array.isArray(body.projects)) {
-        if (rows.length === 0) applyLocal();
+        currentId = null;
+        if (rows.length === 0) applyLocal({ authorizeCurrent: false });
         return rows;
-      }
-      if (typeof body.currentId === "string" && WIKI_UUID_RE.test(body.currentId)) {
-        currentId = body.currentId;
       }
       const known = new Set(
         body.projects
-          .filter((project) => project && typeof project.id === "string")
+          .filter(
+            (project) =>
+              project &&
+              typeof project.id === "string" &&
+              WIKI_UUID_RE.test(project.id),
+          )
           .map((project) => project.id),
       );
+      currentId =
+        typeof body.currentId === "string" &&
+        WIKI_UUID_RE.test(body.currentId) &&
+        known.has(body.currentId)
+          ? body.currentId
+          : null;
       const { next, seen } = extras();
       for (const project of body.projects) {
         if (!project || typeof project.id !== "string" || !project.id) continue;
@@ -748,8 +831,11 @@ export function createWikiRegistrySource({
       rows = next;
     } catch {
       // Keep the last good list. A transient 500 must not empty the registry
-      // and start refusing paths the owner already registered.
-      if (rows.length === 0) applyLocal();
+      // and start refusing paths the owner already registered. The mutable
+      // `current` alias is different: after a failed poll its identity is not
+      // authoritative, so tool turns refuse it until a later good snapshot.
+      currentId = null;
+      if (rows.length === 0) applyLocal({ authorizeCurrent: false });
     }
     return rows;
   };
@@ -793,6 +879,7 @@ export function canonicalLoopbackWikiId(wikiId, registry = []) {
   if (registry && typeof registry.currentId === "function") {
     const id = registry.currentId();
     if (typeof id === "string" && WIKI_UUID_RE.test(id)) return id;
+    return null;
   }
   return wikiId;
 }
