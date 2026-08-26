@@ -730,8 +730,9 @@ function discoverWikiRegistryFromDisk(dataDir) {
       wikis = fs.readdirSync(path.join(tenantsDir, handle.name, "wikis"), {
         withFileTypes: true,
       });
-    } catch {
-      continue;
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      return { rows: [], complete: false };
     }
     entriesVisited += wikis.length;
     if (entriesVisited > WIKI_REGISTRY_MAX_ROWS) {

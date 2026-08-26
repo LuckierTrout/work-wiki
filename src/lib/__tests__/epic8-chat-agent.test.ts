@@ -889,16 +889,12 @@ describe("the shell asks before it leaves the workspace", () => {
     ).toBe("new_executable");
   });
 
-  it("remembers a canonical path executable and asks again after it is re-pointed", async () => {
+  it("remembers a canonical system executable and asks again after its alias is re-pointed", async () => {
     await mkdir(workspace.root, { recursive: true });
-    const first = path.join(workspace.root, "tool-first");
-    const second = path.join(workspace.root, "tool-second");
-    const command = path.join(workspace.root, "tool");
-    await writeFile(first, "#!/bin/sh\necho first\n");
-    await writeFile(second, "#!/bin/sh\necho second\n");
-    await chmod(first, 0o755);
-    await chmod(second, 0o755);
-    await symlink(first, command);
+    const command = path.join(dir, "tool");
+    await symlink("/bin/echo", command);
+    const firstPath = canonicalizePathSnapshot(command);
+    expect(firstPath).not.toBeNull();
     const approvedExecutables = new Set<string>();
     const { generate } = scripted("Done.");
     const ran = await resumeAgentTurn({
@@ -910,7 +906,7 @@ describe("the shell asks before it leaves the workspace", () => {
         cwd: workspace.root,
         reason: "new_executable",
         externalCwd: false,
-        externalPaths: [],
+        externalPaths: [firstPath!],
         transcript: [],
         toolCalls: [],
         outputs: [],
@@ -937,7 +933,7 @@ describe("the shell asks before it leaves the workspace", () => {
     ).toBeNull();
 
     await rm(command);
-    await symlink(second, command);
+    await symlink("/bin/ls", command);
     expect(executableKey(command, { cwd: workspace.root, workspace })).not.toBe(
       firstKey,
     );
@@ -1100,28 +1096,38 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(approvedExecutables.size).toBe(0);
   });
 
-  it("keeps representative interpreters and dynamic launchers per-command", () => {
-    for (const command of ["node", "python3", "env", "xargs", "pnpm"]) {
-      const executable = executableSnapshot(command, {
-        cwd: workspace.root,
-        workspace,
-      });
-      expect(
-        canPersistExecutableApproval(command) &&
-          canPersistExecutableApproval(executable.command),
+  it("keeps every interpreter and dynamic launcher per-command", () => {
+    const launchers = [
+      "sh", "bash", "dash", "zsh", "ksh", "fish", "csh", "tcsh",
+      "pwsh", "powershell", "cmd", "node", "ruby", "perl", "php",
+      "lua", "luajit", "osascript", "java", "dotnet", "mono", "env",
+      "xargs", "npm", "npx", "pnpm", "yarn", "bun", "deno", "corepack",
+    ];
+    for (const command of launchers) {
+      for (const spelling of [
         command,
-      ).toBe(false);
+        `${command}.EXE`,
+        `${command}.cmd`,
+        `${command}.BAT`,
+        `${command}.com`,
+      ]) {
+        expect(canPersistExecutableApproval(spelling), spelling).toBe(false);
+      }
       expect(
         shellApprovalReason(
           { command, args: ["--version"], cwd: workspace.root },
           {
             workspace,
-            executable,
-            approvedExecutables: new Set([executable.key]),
+            executable: { key: `name:${command}`, command },
+            approvedExecutables: new Set([`name:${command}`]),
           },
         ),
         command,
       ).toBe("new_executable");
+    }
+    for (const command of ["python", "python2", "python3", "python3.12"]) {
+      expect(canPersistExecutableApproval(command), command).toBe(false);
+      expect(canPersistExecutableApproval(`${command}.EXE`), `${command}.EXE`).toBe(false);
     }
   });
 
@@ -1145,6 +1151,107 @@ describe("the shell asks before it leaves the workspace", () => {
         },
       ),
     ).toBe("new_executable");
+  });
+
+  it("does not remember an approved canonical launcher alias", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const alias = path.join(dir, "outside-safe-runner");
+    await symlink("/bin/sh", alias);
+    const executable = executableSnapshot(alias, {
+      cwd: workspace.root,
+      workspace,
+    });
+    const aliasPath = canonicalizePathSnapshot(alias);
+    expect(aliasPath).not.toBeNull();
+    expect(canPersistExecutableApproval(alias, [], { workspace, cwd: workspace.root })).toBe(true);
+    expect(canPersistExecutableApproval(executable.command)).toBe(false);
+    const approvedExecutables = new Set<string>();
+    const { generate } = scripted("Done.");
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t-alias",
+        command: alias,
+        args: ["-c", "exit 0"],
+        cwd: workspace.root,
+        reason: "new_executable",
+        executableKey: executable.key,
+        externalCwd: false,
+        externalPaths: [aliasPath!],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe("Done.");
+    expect(approvedExecutables).toEqual(new Set());
+    expect(
+      shellApprovalReason(
+        { command: alias, args: ["-c", "exit 0"], cwd: workspace.root },
+        { workspace, executable, approvedExecutables },
+      ),
+    ).toBe("new_executable");
+  });
+
+  it("does not remember a copied interpreter under a safe-looking name", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const command = path.join(dir, "copied-safe-runner");
+    await writeFile(command, await readFile("/bin/sh"));
+    // The file itself is read-only, but its owner-writable parent can replace
+    // it at the same path. That path must still never become a capability.
+    await chmod(command, 0o555);
+    const executable = executableSnapshot(command, {
+      cwd: workspace.root,
+      workspace,
+    });
+    const commandPath = canonicalizePathSnapshot(command);
+    expect(commandPath).not.toBeNull();
+    expect(
+      canPersistExecutableApproval(executable.command, [], {
+        workspace,
+        cwd: workspace.root,
+      }),
+    ).toBe(false);
+    const approvedExecutables = new Set<string>();
+    const { generate } = scripted("Done.");
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t-copy",
+        command,
+        args: ["-c", "exit 0"],
+        cwd: workspace.root,
+        reason: "new_executable",
+        executableKey: executable.key,
+        externalCwd: false,
+        externalPaths: [commandPath!],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe("Done.");
+    expect(approvedExecutables).toEqual(new Set());
   });
 
   it("denies a path that appears or becomes executable after its modal", async () => {
@@ -1575,6 +1682,50 @@ describe("the shell asks before it leaves the workspace", () => {
     ).toBe("new_executable");
   });
 
+  it("renders a signal-terminated resumed command as an error", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const executable = executableSnapshot("sh", {
+      cwd: workspace.root,
+      workspace,
+    });
+    const emitted: unknown[] = [];
+    const { generate } = scripted("Done.");
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t-signal",
+        command: "sh",
+        args: ["-c", "kill -TERM $$"],
+        cwd: workspace.root,
+        reason: "new_executable",
+        executableKey: executable.key,
+        externalCwd: false,
+        externalPaths: [],
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      emit: (_event, payload) => emitted.push(payload),
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables: new Set(),
+      },
+    });
+    expect(result.content).toBe("Done.");
+    expect(emitted).toContainEqual({
+      toolRow: expect.objectContaining({
+        state: "error",
+        detail: expect.stringContaining("SIGTERM"),
+      }),
+    });
+  });
+
   it("marks an already-approved command that cannot start as an error row", async () => {
     const command = "definitely-not-a-real-approved-binary-xyz";
     const emitted: unknown[] = [];
@@ -1650,6 +1801,24 @@ describe("the shell asks before it leaves the workspace", () => {
     });
     expect(missing.code).not.toBe(0);
     expect(missing.started).toBe(false);
+  });
+
+  it("retains the timeout signal instead of reporting exit null", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const result = await runShellCommand(
+      {
+        command: process.execPath,
+        args: ["-e", "setInterval(() => {}, 1000)"],
+        cwd: workspace.root,
+      },
+      { timeoutMs: 20, workspace },
+    );
+    expect(result).toMatchObject({
+      code: null,
+      signal: "SIGKILL",
+      timedOut: true,
+      started: true,
+    });
   });
 
   it("labels a row for every state the surface draws", () => {

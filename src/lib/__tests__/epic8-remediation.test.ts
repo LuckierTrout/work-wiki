@@ -11,6 +11,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Server } from "node:http";
 import { EventEmitter } from "node:events";
+import fsSync from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1543,6 +1544,74 @@ describe("F8-05 / F8-06 v1 contract", () => {
       const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
       await source.refresh();
       expect(source.currentId(), variant).toBeNull();
+    }
+  });
+
+  it("bounds the aggregate bytes across individually valid local registries", async () => {
+    const currentId = "eeeeeeee-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-local-aggregate-bytes-"));
+    const alice = path.join(tmp, "tenants", "alice");
+    const bob = path.join(tmp, "tenants", "bob");
+    await mkdir(path.join(alice, "wikis", currentId), { recursive: true });
+    await mkdir(path.join(bob, "wikis"), { recursive: true });
+    const padding = "x".repeat(Math.floor(WIKI_REGISTRY_MAX_LOCAL_BYTES * 0.55));
+    const aliceBody = JSON.stringify({
+      version: 1,
+      wikis: [completeDiskWiki(currentId)],
+      currentId,
+      padding,
+    });
+    const bobBody = JSON.stringify({
+      version: 1,
+      wikis: [],
+      currentId: null,
+      padding,
+    });
+    expect(Buffer.byteLength(aliceBody)).toBeLessThan(WIKI_REGISTRY_MAX_LOCAL_BYTES);
+    expect(Buffer.byteLength(bobBody)).toBeLessThan(WIKI_REGISTRY_MAX_LOCAL_BYTES);
+    expect(Buffer.byteLength(aliceBody) + Buffer.byteLength(bobBody)).toBeGreaterThan(
+      WIKI_REGISTRY_MAX_LOCAL_BYTES,
+    );
+    await writeFile(path.join(alice, "wikis.json"), aliceBody, "utf8");
+    await writeFile(path.join(bob, "wikis.json"), bobBody, "utf8");
+    const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
+    await source.refresh();
+    expect(source.current()).toHaveLength(1);
+    expect(source.currentId()).toBeNull();
+  });
+
+  it("publishes no local authority after a tenant Wiki listing fails", async () => {
+    const currentId = "edededed-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-local-read-failure-"));
+    const aliceWikis = path.join(tmp, "tenants", "alice", "wikis");
+    const bobWikis = path.join(tmp, "tenants", "bob", "wikis");
+    await mkdir(path.join(aliceWikis, currentId), { recursive: true });
+    await mkdir(path.join(bobWikis, currentId), { recursive: true });
+    await writeFile(
+      path.join(tmp, "tenants", "alice", "wikis.json"),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(currentId)],
+        currentId,
+      }),
+      "utf8",
+    );
+    const original = fsSync.readdirSync.bind(fsSync);
+    const listing = vi.spyOn(fsSync, "readdirSync").mockImplementation(
+      ((target, options) => {
+        if (path.resolve(String(target)) === path.resolve(bobWikis)) {
+          throw Object.assign(new Error("listing denied"), { code: "EACCES" });
+        }
+        return original(target, options as { withFileTypes: true });
+      }) as typeof fsSync.readdirSync,
+    );
+    try {
+      const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
+      await source.refresh();
+      expect(source.current()).toEqual([]);
+      expect(source.currentId()).toBeNull();
+    } finally {
+      listing.mockRestore();
     }
   });
 

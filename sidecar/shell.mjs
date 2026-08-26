@@ -101,8 +101,11 @@ export function shellApprovalReason(
   if (
     !key ||
     !approvedExecutables.has(key) ||
-    !canPersistExecutableApproval(command, args) ||
-    !canPersistExecutableApproval(executable?.command ?? command, args)
+    !canPersistExecutableApproval(command, args, { workspace, cwd: effectiveCwd }) ||
+    !canPersistExecutableApproval(executable?.command ?? command, args, {
+      workspace,
+      cwd: effectiveCwd,
+    })
   ) {
     return "new_executable";
   }
@@ -258,14 +261,66 @@ function normalizeLauncherName(command) {
     .replace(/\.(?:exe|cmd|bat|com)$/i, "");
 }
 
+function pathIsMutableByThisProcess(candidate) {
+  let current = candidate;
+  while (true) {
+    try {
+      fsSync.accessSync(current, fsSync.constants.W_OK);
+      return true;
+    } catch {
+      // Keep walking: replacing a read-only file only needs a writable parent.
+    }
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
+}
+
 /**
  * Interpreter source and dynamic launchers are approved once per invocation,
  * never remembered as a conversation-wide executable capability.
+ *
+ * @param {string} command
+ * @param {string[]} [_args]
+ * @param {{
+ *   workspace?: import("./workspace.mjs").AgentWorkspace | null,
+ *   cwd?: string | null,
+ * }} [options]
  */
-export function canPersistExecutableApproval(command, _args = []) {
-  const name = normalizeLauncherName(command);
+export function canPersistExecutableApproval(
+  command,
+  _args = [],
+  { workspace = null, cwd = null } = {},
+) {
+  const value = String(command).trim();
+  const name = normalizeLauncherName(value);
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(name)) return false;
-  return !NON_PERSISTABLE_LAUNCHERS.has(name);
+  if (NON_PERSISTABLE_LAUNCHERS.has(name)) return false;
+
+  // A renamed interpreter is still an interpreter. There is no dependable
+  // cross-platform way to infer that from an arbitrary binary's new basename,
+  // so mutable path executables never become conversation-wide capabilities.
+  // System-owned binaries whose file and parent chain are non-writable may be
+  // remembered; workspace, temp, Homebrew and other owner-writable tools ask
+  // on every invocation. A symlink alias is keyed by its canonical target, so
+  // its writable link parent is safe to ignore: re-pointing changes the key.
+  if (looksLikePath(value)) {
+    const resolved = path.isAbsolute(value)
+      ? path.resolve(value)
+      : path.resolve(effectiveShellCwd(cwd, workspace), value);
+    if (workspace?.contains(resolved)) return false;
+    const canonical = canonicalizePathSnapshot(resolved);
+    if (!canonical) return false;
+    try {
+      const trustPath = fsSync.lstatSync(resolved).isSymbolicLink()
+        ? canonical
+        : resolved;
+      if (pathIsMutableByThisProcess(trustPath)) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 function resolveBareExecutable(command, cwd) {
@@ -376,7 +431,14 @@ export function executableKey(command, { cwd = null, workspace } = {}) {
  *
  * @param {{ command: string, args?: string[], cwd?: string }} call
  * @param {{ timeoutMs?: number, spawnImpl?: typeof spawn, workspace?: { root?: string } }} [options]
- * @returns {Promise<{ code: number | null, stdout: string, stderr: string, started: boolean }>}
+ * @returns {Promise<{
+ *   code: number | null,
+ *   signal: string | null,
+ *   timedOut: boolean,
+ *   stdout: string,
+ *   stderr: string,
+ *   started: boolean,
+ * }>}
  */
 export function runShellCommand(
   { command, args = [], cwd },
@@ -388,10 +450,11 @@ export function runShellCommand(
     let child;
     let started = false;
     let settled = false;
+    let timedOut = false;
     const finish = (result) => {
       if (settled) return;
       settled = true;
-      resolve({ ...result, started });
+      resolve({ signal: null, timedOut, ...result, started });
     };
     if (!validShellArgv(command, args)) {
       finish({ code: null, stdout: "", stderr: "invalid command arguments" });
@@ -410,6 +473,7 @@ export function runShellCommand(
       started = true;
     });
     const timer = setTimeout(() => {
+      timedOut = true;
       child.kill("SIGKILL");
     }, timeoutMs);
     child.stdout?.on("data", (chunk) => {
@@ -422,9 +486,9 @@ export function runShellCommand(
       clearTimeout(timer);
       finish({ code: null, stdout, stderr: String(error?.message ?? error) });
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
-      finish({ code, stdout, stderr });
+      finish({ code, signal: signal ?? null, stdout, stderr });
     });
   });
 }

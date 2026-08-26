@@ -570,11 +570,16 @@ export async function runTool(call, context) {
         { command: executable.command, args, cwd },
         { workspace },
       );
-      const detail = result.started
-        ? `exit ${result.code}`
-        : `failed to start${result.stderr ? `: ${result.stderr}` : ""}`;
+      const completed = result.started && result.code !== null;
+      const detail = !result.started
+        ? `failed to start${result.stderr ? `: ${result.stderr}` : ""}`
+        : result.code === null
+          ? result.timedOut
+            ? `timed out${result.signal ? ` (${result.signal})` : ""}`
+            : `terminated${result.signal ? ` by ${result.signal}` : ""}`
+          : `exit ${result.code}`;
       return {
-        state: result.started ? "done" : "error",
+        state: completed ? "done" : "error",
         detail,
         observation:
           `${detail}\n` +
@@ -873,19 +878,30 @@ export async function resumeAgentTurn({
   if (
     result.started &&
     liveExecutable.key &&
-    canPersistExecutableApproval(pending.command, pending.args ?? []) &&
-    canPersistExecutableApproval(liveExecutable.command, pending.args ?? [])
+    canPersistExecutableApproval(pending.command, pending.args ?? [], {
+      workspace: context.workspace,
+      cwd,
+    }) &&
+    canPersistExecutableApproval(liveExecutable.command, pending.args ?? [], {
+      workspace: context.workspace,
+      cwd,
+    })
   ) {
     context.approvedExecutables?.add(liveExecutable.key);
   }
-  const resultDetail = result.started
-    ? `exit ${result.code}`
-    : `failed to start${result.stderr ? `: ${result.stderr}` : ""}`;
+  const completed = result.started && result.code !== null;
+  const resultDetail = !result.started
+    ? `failed to start${result.stderr ? `: ${result.stderr}` : ""}`
+    : result.code === null
+      ? result.timedOut
+        ? `timed out${result.signal ? ` (${result.signal})` : ""}`
+        : `terminated${result.signal ? ` by ${result.signal}` : ""}`
+      : `exit ${result.code}`;
   emit("agent", {
     toolRow: toolRow(
       pending.rowId,
       "shell",
-      result.started ? "done" : "error",
+      completed ? "done" : "error",
       resultDetail,
     ),
   });
