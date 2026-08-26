@@ -11,6 +11,7 @@ import {
   createPageFromReview,
   enqueueReviewAfterIngest,
   enqueueReviewFromAnalysis,
+  getReviewItem,
   listReviewItems,
   mapModelAction,
   pendingReviewCount,
@@ -204,6 +205,18 @@ describe("review queue persistence", () => {
     const b = await listReviewItems("alice", "wiki-b");
     expect(a.map((item) => item.title)).toEqual(["A card."]);
     expect(b.map((item) => item.title)).toEqual(["B card."]);
+  });
+
+  it("does not return another Wiki's review by id", async () => {
+    await enqueueReviewFromAnalysis("alice", {
+      wikiId: "wiki-b",
+      pageSlug: "other",
+      analysis: { ...emptyIngestAnalysis(), tensions: ["B card."] },
+    });
+    const [item] = await listReviewItems("alice", "wiki-b");
+    expect(item).toBeTruthy();
+    expect(await getReviewItem("alice", item!.id, "wiki-a")).toBeNull();
+    expect((await getReviewItem("alice", item!.id, "wiki-b"))?.title).toBe("B card.");
   });
 
   it("does not claim a new item was created when the pending cap is full", async () => {

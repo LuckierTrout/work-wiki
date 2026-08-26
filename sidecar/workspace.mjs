@@ -49,6 +49,12 @@ export const WORKSPACE_NOT_FOUND_ERROR = "not_found";
 export const WORKSPACE_TOO_LARGE_ERROR = "too_large";
 export const WORKSPACE_BINARY_ERROR = "unsupported_media_type";
 
+const OPEN = fsSync.constants;
+const NOFOLLOW = OPEN.O_NOFOLLOW ?? 0;
+const LEAF_WRITE_FLAGS =
+  OPEN.O_CREAT | OPEN.O_EXCL | OPEN.O_WRONLY | NOFOLLOW;
+const LEAF_READ_FLAGS = OPEN.O_RDONLY | NOFOLLOW;
+
 /**
  * Resolve one relative path inside the workspace, or `null` to refuse.
  *
@@ -108,21 +114,42 @@ export function createAgentWorkspace({
     async write(relative, contents) {
       const resolved = resolveWorkspacePath(root, relative);
       if (!resolved) throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
-      await assertNoSymlinkAlong(root, resolved);
-      await fs.mkdir(path.dirname(resolved), { recursive: true });
-      await assertNoSymlinkAlong(root, resolved);
+      await mkdirContained(root, path.dirname(resolved));
       const text = typeof contents === "string" ? contents : String(contents);
       const bytes = Buffer.byteLength(text, "utf8");
       if (bytes > WORKSPACE_MAX_FILE_BYTES) {
         throw new Error(WORKSPACE_TOO_LARGE_ERROR);
       }
       const tmp = `${resolved}.${randomBytes(8).toString("hex")}.tmp`;
-      await fs.writeFile(tmp, text, "utf8");
+      let handle;
       try {
-        await assertNoSymlinkAlong(root, tmp);
+        handle = await fs.open(tmp, LEAF_WRITE_FLAGS);
+        await handle.writeFile(text, "utf8");
+      } catch (error) {
+        await handle?.close().catch(() => {});
+        await unlinkTmpOnly(tmp);
+        throw error;
+      }
+      await handle.close().catch(() => {});
+      try {
+        await assertRealpathInside(root, tmp);
+        try {
+          const destStat = await fs.lstat(resolved);
+          if (destStat.isSymbolicLink()) {
+            throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+          }
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === WORKSPACE_OUT_OF_SCOPE_ERROR
+          ) {
+            throw error;
+          }
+          if (!error || error.code !== "ENOENT") throw error;
+        }
         await fs.rename(tmp, resolved);
       } catch (error) {
-        await fs.unlink(tmp).catch(() => {});
+        await unlinkTmpOnly(tmp);
         throw error;
       }
       // `bytes` rides along so the chip can be labelled without a second stat,
@@ -153,31 +180,44 @@ export function createAgentWorkspace({
       if (!isWorkspaceTextPath(relative)) {
         return { status: 415, body: { error: WORKSPACE_BINARY_ERROR } };
       }
-      let stat;
-      try {
-        stat = await fs.lstat(resolved);
-      } catch {
-        return { status: 404, body: { error: WORKSPACE_NOT_FOUND_ERROR } };
-      }
-      if (stat.isSymbolicLink()) {
-        return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
-      }
       try {
         await assertNoSymlinkAlong(root, resolved);
       } catch {
         return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
       }
-      if (!stat.isFile()) {
-        return { status: 404, body: { error: WORKSPACE_NOT_FOUND_ERROR } };
+      let handle;
+      try {
+        handle = await fs.open(resolved, LEAF_READ_FLAGS);
+      } catch (error) {
+        if (error && error.code === "ENOENT") {
+          return { status: 404, body: { error: WORKSPACE_NOT_FOUND_ERROR } };
+        }
+        if (error && (error.code === "ELOOP" || error.code === "EPERM")) {
+          return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
+        }
+        throw error;
       }
-      if (stat.size > WORKSPACE_MAX_FILE_BYTES) {
-        return { status: 413, body: { error: WORKSPACE_TOO_LARGE_ERROR } };
+      try {
+        try {
+          await assertRealpathInside(root, resolved);
+        } catch {
+          return { status: 403, body: { error: WORKSPACE_OUT_OF_SCOPE_ERROR } };
+        }
+        const stat = await handle.stat();
+        if (!stat.isFile()) {
+          return { status: 404, body: { error: WORKSPACE_NOT_FOUND_ERROR } };
+        }
+        if (stat.size > WORKSPACE_MAX_FILE_BYTES) {
+          return { status: 413, body: { error: WORKSPACE_TOO_LARGE_ERROR } };
+        }
+        const content = await handle.readFile("utf8");
+        return {
+          status: 200,
+          body: { path: relative, name: path.basename(relative), content },
+        };
+      } finally {
+        await handle.close().catch(() => {});
       }
-      const content = await fs.readFile(resolved, "utf8");
-      return {
-        status: 200,
-        body: { path: relative, name: path.basename(relative), content },
-      };
     },
 
     /** Is this absolute path inside the workspace? The shell classifier's half. */
@@ -203,6 +243,58 @@ function realpathSyncIfExists(target) {
     return fsSync.realpathSync(target);
   } catch {
     return path.resolve(target);
+  }
+}
+
+/** Unlink the tmp we created. Never the destination, never an outside victim. */
+async function unlinkTmpOnly(tmp) {
+  await fs.unlink(tmp).catch(() => {});
+}
+
+/**
+ * Create each parent as a real directory and refuse the first symlink.
+ * `mkdir(..., { recursive: true })` would follow a parent that raced to a
+ * symlink between the walk and the write.
+ */
+async function mkdirContained(root, dir) {
+  const absRoot = path.resolve(root);
+  const absDir = path.resolve(dir);
+  await fs.mkdir(absRoot, { recursive: true });
+  const rootStat = await fs.lstat(absRoot);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+  }
+  const rel = path.relative(absRoot, absDir);
+  if (rel === "") return;
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+  }
+  let current = absRoot;
+  for (const part of rel.split(path.sep).filter(Boolean)) {
+    current = path.join(current, part);
+    try {
+      await fs.mkdir(current);
+    } catch (error) {
+      if (!error || error.code !== "EEXIST") throw error;
+    }
+    const st = await fs.lstat(current);
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+    }
+  }
+}
+
+async function assertRealpathInside(root, target) {
+  let realRoot;
+  let realTarget;
+  try {
+    realRoot = await fs.realpath(root);
+    realTarget = await fs.realpath(target);
+  } catch {
+    throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
+  }
+  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
+    throw new Error(WORKSPACE_OUT_OF_SCOPE_ERROR);
   }
 }
 

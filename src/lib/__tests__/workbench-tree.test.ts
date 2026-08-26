@@ -36,6 +36,7 @@ import {
   WORKBENCH_FILE_LIMIT,
   WORKBENCH_FILE_MAX_DEPTH,
   listWorkbenchFilePaths,
+  listRawSourceFilePaths,
   readWorkbenchFile,
   workbenchFileExists,
 } from "../workbench-files";
@@ -1050,6 +1051,24 @@ describe("listWorkbenchFilePaths", () => {
     expect(truncated).toBe(true);
     expect(paths).toContain("wiki/");
     expect(paths).toContain("wiki/kept.md");
+  });
+
+  it("pages raw/sources files without spending the walk on wiki/ nodes", async () => {
+    await writeSilo("wiki", "page.md");
+    for (let i = 0; i < 4; i += 1) {
+      await writeSilo("raw", `sources/n${i}.txt`);
+    }
+    const first = await listRawSourceFilePaths(OWNER, { offset: 0, limit: 2 });
+    expect(first.paths.every((p) => p.startsWith("raw/sources/"))).toBe(true);
+    expect(first.paths).toHaveLength(2);
+    expect(first.more).toBe(true);
+    const second = await listRawSourceFilePaths(OWNER, {
+      offset: 2,
+      limit: 2,
+    });
+    expect(second.paths).toHaveLength(2);
+    expect(second.more).toBe(false);
+    expect(first.paths.some((p) => second.paths.includes(p))).toBe(false);
   });
 
   it("degrades one unreadable root to an empty branch, keeping the other", async () => {

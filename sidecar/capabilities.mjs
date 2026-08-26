@@ -26,7 +26,13 @@ export function createCapabilityStore({
   now = Date.now,
   id = () => randomBytes(32).toString("hex"),
 } = {}) {
-  /** @type {Map<string, { kind: string, payload: unknown, expiresAt: number }>} */
+  /** @type {Map<string, {
+   *   kind: string,
+   *   payload: unknown,
+   *   expiresAt: number,
+   *   conversationId: string,
+   *   wikiId: string,
+   * }>} */
   const items = new Map();
 
   return {
@@ -34,35 +40,42 @@ export function createCapabilityStore({
      * Store one pause and return the id the client may hold.
      * @param {string} kind
      * @param {unknown} payload
+     * @param {{ conversationId?: string, wikiId?: string }} [scope]
      */
-    issue(kind, payload) {
+    issue(kind, payload, scope = {}) {
       const capabilityId = id();
       items.set(capabilityId, {
         kind,
         payload,
         expiresAt: now() + ttlMs,
+        conversationId:
+          typeof scope.conversationId === "string" ? scope.conversationId : "",
+        wikiId: typeof scope.wikiId === "string" ? scope.wikiId : "",
       });
       return capabilityId;
     },
 
     /**
-     * Take the payload exactly once. Fabricated, replayed, expired, or
-     * cross-kind ids return `null`.
+     * Take the payload exactly once. Fabricated, replayed, expired,
+     * cross-kind, or cross-scope ids return `null`.
      * @param {unknown} capabilityId
      * @param {string} kind
+     * @param {{ conversationId?: string, wikiId?: string }} [scope]
      */
-    consume(capabilityId, kind) {
-      const taken = this.take(capabilityId);
+    consume(capabilityId, kind, scope = {}) {
+      const taken = this.take(capabilityId, scope);
       if (!taken || taken.kind !== kind) return null;
       return taken.payload;
     },
 
     /**
      * Take any live ticket. Kind is checked by the caller so a resume
-     * cannot invent `shell_approval` for a form pause.
+     * cannot invent `shell_approval` for a form pause. A ticket that
+     * stored a conversation or Wiki only matches that same pair.
      * @param {unknown} capabilityId
+     * @param {{ conversationId?: string, wikiId?: string }} [scope]
      */
-    take(capabilityId) {
+    take(capabilityId, scope = {}) {
       if (typeof capabilityId !== "string" || capabilityId.length === 0) {
         return null;
       }
@@ -70,6 +83,13 @@ export function createCapabilityStore({
       items.delete(capabilityId);
       if (!entry) return null;
       if (entry.expiresAt <= now()) return null;
+      const conversationId =
+        typeof scope.conversationId === "string" ? scope.conversationId : "";
+      const wikiId = typeof scope.wikiId === "string" ? scope.wikiId : "";
+      if (entry.conversationId && entry.conversationId !== conversationId) {
+        return null;
+      }
+      if (entry.wikiId && entry.wikiId !== wikiId) return null;
       return { kind: entry.kind, payload: entry.payload };
     },
   };

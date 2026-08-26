@@ -520,8 +520,14 @@ export async function pendingReviewCount(owner: string, wikiId?: string): Promis
   return (await reviewSnapshot(owner, wikiId)).pendingCount;
 }
 
-export async function getReviewItem(owner: string, id: string): Promise<ReviewItem | null> {
-  return (await readStore(owner)).items.find((item) => item.id === id) ?? null;
+export async function getReviewItem(
+  owner: string,
+  id: string,
+  wikiId?: string,
+): Promise<ReviewItem | null> {
+  const item = (await readStore(owner)).items.find((row) => row.id === id) ?? null;
+  if (!item || !matchesWiki(item, wikiId)) return null;
+  return item;
 }
 
 export async function skipReviewItem(
@@ -611,7 +617,7 @@ export async function createPageFromReview(
 ): Promise<{ item: ReviewItem; slug: string } | null> {
   assertWritable(READ_ONLY_REFUSAL.reviewQueue);
   await recoverInterruptedCreates(owner);
-  const item = await getReviewItem(owner, id);
+  const item = await getReviewItem(owner, id, wikiId);
   if (item?.status === "created" && item.pageSlug) {
     return matchesWiki(item, wikiId) && (await claimPageMatches(owner, item))
       ? { item, slug: item.pageSlug }

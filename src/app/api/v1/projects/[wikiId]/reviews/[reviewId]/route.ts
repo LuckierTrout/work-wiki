@@ -109,7 +109,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         // 409, not 404, when the row exists but is not reopenable: "already
         // created" is a different problem from "no such review", and only one of
         // them is worth retrying.
-        const existing = await getReviewItem(owner, reviewId);
+        const existing = await getReviewItem(owner, reviewId, scope);
         return existing
           ? NextResponse.json(
               { error: "not_reopenable", status: existing.status },
@@ -134,7 +134,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       return answer(created.item, { slug: created.slug });
     }
 
-    const item = await getReviewItem(owner, reviewId);
+    const item = await getReviewItem(owner, reviewId, scope);
     if (!item || !isPendingReview(item)) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }

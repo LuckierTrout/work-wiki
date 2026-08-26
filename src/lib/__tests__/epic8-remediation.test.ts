@@ -8,9 +8,9 @@
  * from the repository cwd.
  */
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Server } from "node:http";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -28,6 +28,7 @@ import {
 } from "../../../sidecar/shell.mjs";
 import {
   createLoopbackSettingsSource,
+  createWikiRegistrySource,
   resolveLoopbackWikiId,
   rewriteProxiedWikiPath,
   V1_MAX_BODY_BYTES,
@@ -46,6 +47,10 @@ import { classifyLoopbackHealth } from "../workbench-loopback-health";
 import { rescanSources } from "../source-rescan";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
+import { listIngestJobs } from "../ingest-jobs";
+import { saveRawSource } from "../raw";
+import { listRawSourceFilePaths } from "../workbench-files";
+import * as tasks from "../tasks";
 
 const open: Server[] = [];
 
@@ -110,6 +115,80 @@ describe("F8-01 server-owned shell capabilities", () => {
     store.issue("shell_approval", { command: "ls" });
     clock = 2_000;
     expect(store.consume("cap-x", "shell_approval")).toBeNull();
+  });
+
+  it("refuses a ticket issued for another conversation or Wiki", () => {
+    const store = createCapabilityStore({ id: () => "cap-scope" });
+    store.issue(
+      "shell_approval",
+      { command: "ls" },
+      { conversationId: "conv-a", wikiId: "wiki-a" },
+    );
+    expect(
+      store.consume("cap-scope", "shell_approval", {
+        conversationId: "conv-b",
+        wikiId: "wiki-a",
+      }),
+    ).toBeNull();
+    store.issue(
+      "shell_approval",
+      { command: "ls" },
+      { conversationId: "conv-a", wikiId: "wiki-a" },
+    );
+    expect(
+      store.consume("cap-scope", "shell_approval", {
+        conversationId: "conv-a",
+        wikiId: "wiki-b",
+      }),
+    ).toBeNull();
+    store.issue(
+      "shell_approval",
+      { command: "ls" },
+      { conversationId: "conv-a", wikiId: "wiki-a" },
+    );
+    expect(
+      store.consume("cap-scope", "shell_approval", {
+        conversationId: "conv-a",
+        wikiId: "wiki-a",
+      }),
+    ).toEqual({ command: "ls" });
+  });
+
+  it("does not resume a capability on a different Wiki over HTTP", async () => {
+    const store = createCapabilityStore({ id: () => "cap-http" });
+    store.issue(
+      "shell_approval",
+      {
+        kind: "shell_approval",
+        rowId: "s1",
+        command: "true",
+        args: [],
+        cwd: "/tmp",
+        reason: "new_executable",
+      },
+      {
+        conversationId: "conv-a",
+        wikiId: "aaaa1111-0000-4000-8000-000000000000",
+      },
+    );
+    const base = await listen({ capabilities: store });
+    const response = await fetch(
+      `${base}/api/v1/projects/bbbb2222-0000-4000-8000-000000000000/chat`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: "run it",
+          tools: true,
+          stream: false,
+          coverage: false,
+          conversationId: "conv-a",
+          resume: { approved: true, capabilityId: "cap-http" },
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "invalid_resume" });
   });
 
   it("strips transcript from the client-visible pending object", () => {
@@ -190,6 +269,54 @@ describe("F8-02 / F8-03 filesystem and shell containment", () => {
     await mkdir(workspace.root, { recursive: true });
     await symlink(outside, path.join(workspace.root, "escape"));
     await expect(workspace.write("escape/victim.txt", "overwrite")).rejects.toThrow(
+      WORKSPACE_OUT_OF_SCOPE_ERROR,
+    );
+    expect(await readFile(victim, "utf8")).toBe("keep me");
+  });
+
+  it("refuses a write whose destination is already a symlink", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "epic8-ws-dest-"));
+    const outside = path.join(dir, "outside");
+    const victim = path.join(outside, "victim.txt");
+    await mkdir(outside);
+    await writeFile(victim, "keep me");
+    const workspace = createAgentWorkspace({ root: path.join(dir, "agent-workspace") });
+    await mkdir(workspace.root, { recursive: true });
+    await symlink(victim, path.join(workspace.root, "notes.txt"));
+    await expect(workspace.write("notes.txt", "overwrite")).rejects.toThrow(
+      WORKSPACE_OUT_OF_SCOPE_ERROR,
+    );
+    expect(await readFile(victim, "utf8")).toBe("keep me");
+  });
+
+  it("does not return bytes through a dest symlink", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "epic8-ws-read-"));
+    const outside = path.join(dir, "outside");
+    const victim = path.join(outside, "secret.txt");
+    await mkdir(outside);
+    await writeFile(victim, "secret");
+    const workspace = createAgentWorkspace({ root: path.join(dir, "agent-workspace") });
+    await mkdir(workspace.root, { recursive: true });
+    await symlink(victim, path.join(workspace.root, "notes.txt"));
+    const read = await workspace.read("notes.txt");
+    expect(read.status).toBe(403);
+    expect(JSON.stringify(read.body)).not.toContain("secret");
+  });
+
+  it("refuses a later write after a parent is swapped for a symlink", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "epic8-ws-race-"));
+    const outside = path.join(dir, "outside");
+    const victim = path.join(outside, "later.txt");
+    await mkdir(outside);
+    await writeFile(victim, "keep me");
+    const workspace = createAgentWorkspace({ root: path.join(dir, "agent-workspace") });
+    await mkdir(path.join(workspace.root, "notes"), { recursive: true });
+    await workspace.write("notes/first.md", "ok");
+    await symlink(outside, path.join(workspace.root, "notes-link"));
+    // Replace the real parent with a symlink after the first honest write.
+    await rm(path.join(workspace.root, "notes"), { recursive: true });
+    await symlink(outside, path.join(workspace.root, "notes"));
+    await expect(workspace.write("notes/later.txt", "overwrite")).rejects.toThrow(
       WORKSPACE_OUT_OF_SCOPE_ERROR,
     );
     expect(await readFile(victim, "utf8")).toBe("keep me");
@@ -346,6 +473,64 @@ describe("F8-05 / F8-06 v1 contract", () => {
     ).toBeNull();
   });
 
+  it("keeps the last good wiki registry when a later poll fails", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    let calls = 0;
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: "/data",
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Response(
+            JSON.stringify({
+              projects: [{ id: wikiId, path: `tenants/alice/wikis/${wikiId}` }],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response("nope", { status: 500 });
+      },
+    });
+    await source.refresh();
+    expect(
+      resolveLoopbackWikiId(`/data/tenants/alice/wikis/${wikiId}`, source),
+    ).toBe(wikiId);
+    await source.refresh();
+    expect(source.current()).toHaveLength(1);
+    expect(
+      resolveLoopbackWikiId(`/data/tenants/alice/wikis/${wikiId}`, source),
+    ).toBe(wikiId);
+  });
+
+  it("resolves a live registry source on Chat instead of an empty listen-time array", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const hostPath = `/Users/me/data/tenants/alice/wikis/${wikiId}`;
+    const source = {
+      current: () => [{ id: wikiId, path: hostPath }],
+    };
+    const base = await listen({ wikiRegistry: source });
+    const rejected = await fetch(
+      `${base}/api/v1/projects/${encodeURIComponent("/Users/me/other")}/chat`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "x", tools: true, stream: false, coverage: false }),
+      },
+    );
+    expect(rejected.status).toBe(400);
+    const accepted = await fetch(
+      `${base}/api/v1/projects/${encodeURIComponent(hostPath)}/chat`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: "x", stream: false, coverage: false }),
+      },
+    );
+    expect(accepted.status).not.toBe(400);
+  });
+
   it("keeps the last good remote settings when a later poll fails", async () => {
     let calls = 0;
     const source = createLoopbackSettingsSource({
@@ -398,6 +583,75 @@ describe("F8-05 / F8-06 v1 contract", () => {
     expect(page.requested).toBe(25);
     expect(page.remaining).toBe(5);
     expect(page.nextCursor).toBe(25);
+  });
+
+  it("abandons a job when enqueue throws after create", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-rescan-"));
+    const originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmp;
+    _resetLocks();
+    _resetStorage();
+    const enqueue = vi.spyOn(tasks, "enqueueTask").mockRejectedValue(new Error("queue exploded"));
+    try {
+      await saveRawSource("note", "compile me again", { owner: "alice" });
+      const result = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        paths: ["raw/sources/note.md"],
+      });
+      expect(result.results[0]?.queued).toBe(false);
+      expect(await listIngestJobs({ owner: "alice" })).toEqual([]);
+    } finally {
+      enqueue.mockRestore();
+      if (originalDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = originalDataDir;
+      _resetStorage();
+      _resetLocks();
+    }
+  });
+
+  it("pages an implicit rescan past the Files-tab node cap", async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-rescan-page-"));
+    const originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmp;
+    _resetLocks();
+    _resetStorage();
+    try {
+      for (let i = 0; i < 3; i += 1) {
+        await saveRawSource(`note-${i}`, `body ${i}`, { owner: "alice" });
+      }
+      const listed = await listRawSourceFilePaths("alice", {
+        offset: 0,
+        limit: 2,
+        allow: (p) => p.endsWith(".md"),
+      });
+      expect(listed.paths).toHaveLength(2);
+      expect(listed.more).toBe(true);
+      const page = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        limit: 2,
+      });
+      expect(page.requested).toBe(2);
+      expect(page.remaining).toBe(1);
+      expect(page.nextCursor).toBe(2);
+      const next = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        limit: 2,
+        cursor: page.nextCursor ?? 0,
+      });
+      expect(next.requested).toBe(1);
+      expect(next.nextCursor).toBeNull();
+    } finally {
+      if (originalDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = originalDataDir;
+      _resetStorage();
+      _resetLocks();
+    }
   });
 
   it("treats mode: deep as a broader topK default, not Deep Research", () => {

@@ -37,6 +37,9 @@ export const SHELL_TIMEOUT_MS = 2 * 60 * 1000;
 export const SHELL_MAX_OUTPUT_CHARS = 100_000;
 
 export const SHELL_DENIED_COPY = "Denied. The command did not run.";
+/** Resume was for a different reason; the command now leaves the workspace. */
+export const SHELL_PATH_CHANGED_COPY =
+  "Denied. The command now leaves the workspace.";
 
 /**
  * The cwd a command actually runs in. Absent `cwd` is the workspace root,

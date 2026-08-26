@@ -69,6 +69,11 @@ vi.mock("@/lib/review-queue", () => ({
   pendingReviewCount: vi.fn(async () => 0),
   skipReviewItem: vi.fn(async () => null),
   reopenReviewItem: vi.fn(async () => null),
+  getReviewItem: vi.fn(async () => null),
+  createPageFromReview: vi.fn(async () => null),
+}));
+vi.mock("@/lib/research-projects", () => ({
+  createResearchProject: vi.fn(),
 }));
 
 import { GET as getHealth } from "@/app/api/v1/health/route";
@@ -80,6 +85,7 @@ import {
   GET as getReviews,
   PATCH as patchReviews,
 } from "@/app/api/v1/projects/[wikiId]/reviews/route";
+import { PATCH as patchReview } from "@/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route";
 import { POST as postResolve } from "@/app/api/v1/projects/[wikiId]/reviews/resolve/route";
 import { POST as postRescan } from "@/app/api/v1/projects/[wikiId]/sources/rescan/route";
 import { POST as postSearch } from "@/app/api/v1/projects/[wikiId]/search/route";
@@ -88,7 +94,8 @@ import { isReadOnly } from "@/lib/config";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
 import { buildWikiGraph } from "@/lib/graph-build";
 import { rescanSources } from "@/lib/source-rescan";
-import { reopenReviewItem, skipReviewItem } from "@/lib/review-queue";
+import { getReviewItem, reopenReviewItem, skipReviewItem } from "@/lib/review-queue";
+import { createResearchProject } from "@/lib/research-projects";
 import { retrieveHits } from "@/lib/wiki-retrieve";
 import { requireAccessibleWikiId } from "@/lib/wiki-access";
 import { getWikiRegistry } from "@/lib/wikis";
@@ -115,6 +122,8 @@ const rescan = vi.mocked(rescanSources);
 const readOnly = vi.mocked(isReadOnly);
 const skip = vi.mocked(skipReviewItem);
 const reopen = vi.mocked(reopenReviewItem);
+const getItem = vi.mocked(getReviewItem);
+const research = vi.mocked(createResearchProject);
 const retrieve = vi.mocked(retrieveHits);
 
 const params = (wikiId: string) => ({ params: Promise.resolve({ wikiId }) });
@@ -492,6 +501,48 @@ describe("reviews", () => {
     }
     expect(skip).not.toHaveBeenCalled();
     expect(reopen).not.toHaveBeenCalled();
+  });
+
+  it("404s deep_research for a review that belongs to another Wiki", async () => {
+    const other = {
+      id: "r-other",
+      kind: "gap",
+      title: "Other wiki",
+      summary: "Need a page",
+      path: "wiki/x.md",
+      queries: ["q"],
+      status: "pending",
+      updatedAt: "2026-08-26T00:00:00.000Z",
+      wikiId: "wiki-b",
+    };
+    getItem.mockImplementation(async (_owner: string, id: string, wikiId?: string) => {
+      if (id !== other.id) return null;
+      if (wikiId && other.wikiId !== wikiId) return null;
+      return other as never;
+    });
+    research.mockResolvedValue({
+      id: "proj-1",
+      status: "draft",
+      title: "Other wiki",
+    } as never);
+
+    const cross = await patchReview(
+      send("http://local/api/v1/projects/wiki-a/reviews/r-other", "PATCH", {
+        action: "deep_research",
+      }),
+      { params: Promise.resolve({ wikiId: "wiki-a", reviewId: "r-other" }) },
+    );
+    expect(cross.status).toBe(404);
+    expect(research).not.toHaveBeenCalled();
+
+    const own = await patchReview(
+      send("http://local/api/v1/projects/wiki-b/reviews/r-other", "PATCH", {
+        action: "deep_research",
+      }),
+      { params: Promise.resolve({ wikiId: "wiki-b", reviewId: "r-other" }) },
+    );
+    expect(own.status).toBe(200);
+    expect(research).toHaveBeenCalled();
   });
 
   it("POST .../reviews/resolve skips by id and names the misses", async () => {

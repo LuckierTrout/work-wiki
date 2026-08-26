@@ -508,6 +508,9 @@ export function isKernelOnlyPath(pathname) {
  * that could reach `/api/settings` or `/api/wiki` through it would be using the
  * loopback token as a kernel session, and those routes are owner-gated for
  * reasons this door does not reproduce.
+ *
+ * @param {string} pathname
+ * @param {WikiRegistryInput} [registry]
  */
 export function kernelProxyPath(pathname, registry = []) {
   if (!pathname.startsWith("/api/v1/")) return null;
@@ -527,6 +530,96 @@ export function isAbsolutePathWikiId(value) {
   return !value.split(/[\\/]/).includes("..");
 }
 
+/**
+ * @typedef {{ id?: string, path?: string }} WikiRegistryRow
+ * @typedef {WikiRegistryRow[] | { current?: () => unknown }} WikiRegistryInput
+ */
+
+/**
+ * Rows the door may treat as registered Wiki roots.
+ *
+ * Production passes a poller (`{ current }`); tests pass a plain array. Either
+ * shape is legal — the HTTP shell must not snapshot the array at listen time,
+ * or a later poll would never be seen.
+ *
+ * @param {WikiRegistryInput} [wikiRegistry]
+ * @returns {WikiRegistryRow[]}
+ */
+export function wikiRegistryRows(wikiRegistry) {
+  if (Array.isArray(wikiRegistry)) return wikiRegistry;
+  if (wikiRegistry && typeof wikiRegistry.current === "function") {
+    const rows = wikiRegistry.current();
+    return Array.isArray(rows) ? rows : [];
+  }
+  return [];
+}
+
+/**
+ * Poll `GET /api/v1/projects` and map each Wiki to a host filesystem root.
+ *
+ * `{id}` on the loopback door may be a URL-encoded absolute path, but only
+ * when that path is one of these roots. The kernel reports
+ * `tenants/<t>/wikis/<uuid>` (kernel-relative); resolving it against `DATA_DIR`
+ * is what makes a host path the owner already registered match the UUID.
+ *
+ * A FAILED POLL KEEPS THE LAST GOOD ROWS. An empty successful list replaces
+ * them — the owner deleted every Wiki — and is not treated as an error.
+ */
+export function createWikiRegistrySource({
+  base = (process.env.WORKWIKI_URL || process.env.YOPEDIA_URL || "")
+    .trim()
+    .replace(/\/+$/, ""),
+  token = (
+    process.env.WORKWIKI_API_TOKEN ||
+    process.env.YOPEDIA_SERVICE_TOKEN ||
+    ""
+  ).trim(),
+  dataDir = process.env.DATA_DIR || process.cwd(),
+  fetchImpl = fetch,
+} = {}) {
+  let rows = [];
+
+  const refresh = async () => {
+    if (!base || !token) return rows;
+    try {
+      const response = await fetchImpl(`${base}/api/v1/projects`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) return rows;
+      const body = await response.json();
+      if (!body || typeof body !== "object" || !Array.isArray(body.projects)) {
+        return rows;
+      }
+      const next = [];
+      for (const project of body.projects) {
+        if (!project || typeof project.id !== "string" || !project.id) continue;
+        const raw = typeof project.path === "string" ? project.path : "";
+        if (!raw || raw.split(/[\\/]/).includes("..")) continue;
+        const absolute = path.isAbsolute(raw)
+          ? path.resolve(raw)
+          : path.resolve(dataDir, raw);
+        next.push({ id: project.id, path: absolute });
+      }
+      rows = next;
+    } catch {
+      // Keep the last good list. A transient 500 must not empty the registry
+      // and start refusing paths the owner already registered.
+    }
+    return rows;
+  };
+
+  return {
+    refresh,
+    current: () => rows,
+  };
+}
+
+/**
+ * @param {string} value
+ * @param {WikiRegistryInput} [registry]
+ * @returns {string | null}
+ */
 export function resolveLoopbackWikiId(value, registry = []) {
   if (typeof value !== "string") return null;
   if (value === "current" || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
@@ -534,12 +627,17 @@ export function resolveLoopbackWikiId(value, registry = []) {
   }
   if (!isAbsolutePathWikiId(value)) return null;
   const resolved = path.resolve(value);
-  const hit = registry.find(
+  const hit = wikiRegistryRows(registry).find(
     (row) => row && path.resolve(String(row.path ?? "")) === resolved,
   );
   return hit?.id ?? null;
 }
 
+/**
+ * @param {string} pathname
+ * @param {WikiRegistryInput} [registry]
+ * @returns {string | null}
+ */
 export function rewriteProxiedWikiPath(pathname, registry = []) {
   const match = pathname.match(/^(\/api\/v1\/projects\/)([^/]+)(\/.*)?$/);
   if (!match) return pathname;

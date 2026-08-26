@@ -49,6 +49,7 @@ import {
   executableKey,
   runShellCommand,
   SHELL_DENIED_COPY,
+  SHELL_PATH_CHANGED_COPY,
   shellApprovalReason,
 } from "../../../sidecar/shell.mjs";
 import {
@@ -796,6 +797,74 @@ describe("the shell asks before it leaves the workspace", () => {
         { workspace, approvedExecutables },
       ),
     ).toBe("new_executable");
+  });
+
+  it("does not run a new_executable resume after the path becomes external", async () => {
+    const approvedExecutables = new Set<string>();
+    const { generate } = scripted("unreachable");
+    const escaped = {
+      ...workspace,
+      contains: () => false,
+    };
+    const result = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command: "echo",
+        args: ["hello"],
+        cwd: workspace.root,
+        reason: "new_executable",
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace: escaped,
+        approvedExecutables,
+      },
+    });
+    expect(result.content).toBe(SHELL_PATH_CHANGED_COPY);
+    expect(approvedExecutables.size).toBe(0);
+    expect(result.toolCalls).toEqual([
+      { id: "t1", tool: "shell", detail: SHELL_PATH_CHANGED_COPY },
+    ]);
+  });
+
+  it("still runs an approved resume when the reason is still external_path", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const approvedExecutables = new Set<string>(["name:echo"]);
+    const { generate } = scripted("Done.");
+    const ran = await resumeAgentTurn({
+      pending: {
+        kind: "shell_approval",
+        rowId: "t1",
+        command: "echo",
+        args: ["/etc"],
+        cwd: workspace.root,
+        reason: "external_path",
+        transcript: [],
+        toolCalls: [],
+        outputs: [],
+        rowSeed: 0,
+      },
+      approved: true,
+      generate,
+      system: "s",
+      context: {
+        kernel: async () => null,
+        wikiId: "current",
+        workspace,
+        approvedExecutables,
+      },
+    });
+    expect(ran.content).toBe("Done.");
+    expect(ran.toolCalls).toEqual([{ id: "t1", tool: "shell", detail: "exit 0" }]);
   });
 
   it("runs a cleared command with no shell, and reports its exit", async () => {

@@ -384,6 +384,97 @@ export async function listWorkbenchFilePaths(
   return { paths, truncated: budget.truncated };
 }
 
+/**
+ * Page `raw/sources/**` files only, with skip+take, without spending the walk
+ * on `wiki/` or directory nodes.
+ *
+ * The Files tab listing is a mixed tree with a 5,000-node cap that also
+ * counts `raw/`, `wiki/`, and every directory. An implicit rescan that sliced
+ * that list silently stopped after the first page even when more Sources
+ * existed. This walk is the rescan's own listing: files under `raw/sources/`
+ * only, so `offset` is an offset into Sources, not into the tab.
+ */
+export async function listRawSourceFilePaths(
+  owner: string,
+  options: {
+    offset?: number;
+    limit: number;
+    maxDepth?: number;
+    allow?: (displayPath: string) => boolean;
+  },
+): Promise<{ paths: string[]; more: boolean }> {
+  const skip = Math.max(0, Math.round(options.offset ?? 0));
+  const take = Math.max(1, Math.round(options.limit));
+  const maxDepth = options.maxDepth ?? WORKBENCH_FILE_MAX_DEPTH;
+  const allow = options.allow ?? (() => true);
+
+  let siloRaw: string | null = null;
+  try {
+    siloRaw = tenantRawRelPath(tenantForOwner(owner), "");
+  } catch (error) {
+    logger.error("workbench-files", "could not resolve the owner's silo", error);
+  }
+  const root = await resolveRoot("raw", siloRaw, rawRelPath(""));
+
+  const collected: string[] = [];
+  let seen = 0;
+  let more = false;
+  const seeded = new Map<string, Listing[]>([[root.prefix, root.entries]]);
+  const queue: QueueItem[] = [
+    { storage: root.prefix, display: "raw", depth: 1 },
+  ];
+
+  const underSources = (display: string) =>
+    display === "raw/sources" || display.startsWith("raw/sources/");
+  const towardSources = (display: string) =>
+    display === "raw" ||
+    underSources(display) ||
+    "raw/sources".startsWith(`${display}/`);
+
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    const seed = seeded.get(node.storage);
+    const entries = seed ?? visible((await listSafely(node.storage)).entries);
+    if (node.depth >= maxDepth) {
+      if (
+        entries.some((entry) => {
+          const display = `${node.display}/${entry.name}`;
+          return entry.isDirectory
+            ? towardSources(display)
+            : underSources(node.display) && allow(display);
+        })
+      ) {
+        more = true;
+      }
+      continue;
+    }
+    for (const entry of entries) {
+      const display = `${node.display}/${entry.name}`;
+      if (entry.isDirectory) {
+        if (towardSources(display)) {
+          queue.push({
+            storage: `${node.storage}/${entry.name}`,
+            display,
+            depth: node.depth + 1,
+          });
+        }
+        continue;
+      }
+      if (!display.startsWith("raw/sources/") || !allow(display)) continue;
+      if (seen < skip) {
+        seen += 1;
+        continue;
+      }
+      if (collected.length >= take) {
+        return { paths: collected, more: true };
+      }
+      collected.push(display);
+      seen += 1;
+    }
+  }
+  return { paths: collected, more };
+}
+
 // ---------------------------------------------------------------------------
 // Reading one file back (Story 1.5)
 // ---------------------------------------------------------------------------

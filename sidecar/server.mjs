@@ -31,11 +31,13 @@ import {
   authorizeLoopback,
   createLoadGate,
   createLoopbackSettingsSource,
+  createWikiRegistrySource,
   extractToken,
   healthPayload as buildHealthPayload,
   kernelProxyPath,
   isSidecarOwnedPath,
   resolveLoopbackWikiId,
+  wikiRegistryRows,
 } from "./loopback.mjs";
 import { createAgentWorkspace } from "./workspace.mjs";
 import { scanSkills } from "./skills.mjs";
@@ -725,7 +727,15 @@ async function runToolTurn({
   });
   let pending = null;
   if (result.pending) {
-    const capabilityId = options.capabilities.issue(result.pending.kind, result.pending);
+    const capabilityId = options.capabilities.issue(
+      result.pending.kind,
+      result.pending,
+      {
+        conversationId:
+          typeof body.conversationId === "string" ? body.conversationId : "",
+        wikiId,
+      },
+    );
     pending = publicPending(result.pending, capabilityId);
   }
   const payload = {
@@ -773,7 +783,10 @@ async function kernelFetch(kernel, pathname, init = {}) {
 }
 
 async function handleChat(req, res, wikiId, options = {}) {
-  const resolvedWikiId = resolveLoopbackWikiId(wikiId, options.wikiRegistry);
+  const resolvedWikiId = resolveLoopbackWikiId(
+    wikiId,
+    wikiRegistryRows(options.wikiRegistry),
+  );
   if (!resolvedWikiId) {
     rejectChat(res, 400, "invalid_wiki_id");
     return;
@@ -860,7 +873,11 @@ async function handleChat(req, res, wikiId, options = {}) {
   let resumePending = null;
   if (isPlainObject(body.resume)) {
     const capabilityId = resumeCapabilityId(body.resume);
-    const taken = options.capabilities?.take(capabilityId);
+    const taken = options.capabilities?.take(capabilityId, {
+      conversationId:
+        typeof body.conversationId === "string" ? body.conversationId : "",
+      wikiId,
+    });
     if (
       !taken ||
       (taken.kind !== "shell_approval" && taken.kind !== "skill_form")
@@ -1095,6 +1112,7 @@ export function createSidecarServer({
     }
 
     const settings = settingsSource.current();
+    const registry = wikiRegistryRows(wikiRegistry);
 
     if (req.method === "GET" && url.pathname === "/api/v1/health") {
       sendJson(res, 200, healthPayload({ status: status(), settings }));
@@ -1143,12 +1161,12 @@ export function createSidecarServer({
           settings,
           capabilities,
           approvals,
-          wikiRegistry,
+          wikiRegistry: registry,
         });
         return;
       }
 
-      const proxied = kernelProxyPath(url.pathname, wikiRegistry);
+      const proxied = kernelProxyPath(url.pathname, registry);
       if (
         proxied === null &&
         /^\/api\/v1\/projects\//.test(url.pathname) &&
@@ -1163,7 +1181,7 @@ export function createSidecarServer({
             id = "";
           }
         }
-        if (id && resolveLoopbackWikiId(id, wikiRegistry) === null) {
+        if (id && resolveLoopbackWikiId(id, registry) === null) {
           sendJson(res, 400, { error: "invalid_wiki_id" });
           return;
         }
@@ -1192,12 +1210,31 @@ if (isMain) {
   // reads an absent answer as SHUT — so the sidecar still starts and still
   // answers `/health`, which is where the owner sees `enabled: false`.
   await settingsSource.refresh().catch(() => {});
+  const kernel = {
+    base: (process.env.WORKWIKI_URL || process.env.YOPEDIA_URL || "")
+      .trim()
+      .replace(/\/+$/, ""),
+    token: (
+      process.env.WORKWIKI_API_TOKEN ||
+      process.env.YOPEDIA_SERVICE_TOKEN ||
+      ""
+    ).trim(),
+  };
+  // FIRST poll before listen, same as settings: a registered host-path `{id}`
+  // must resolve on the first request, not fifteen seconds later.
+  const wikiRegistry = createWikiRegistrySource({
+    base: kernel.base,
+    token: kernel.token,
+  });
+  await wikiRegistry.refresh();
   // `starting` until the bind resolves. It is a real state, not a formality: a
   // client that probed during startup used to be told `"ok"`.
   let listenerStatus = "starting";
   const server = createSidecarServer({
     settingsSource,
     status: () => listenerStatus,
+    kernel,
+    wikiRegistry,
   });
   server.on("error", (error) => {
     if (error && error.code === "EADDRINUSE") {
@@ -1227,6 +1264,7 @@ if (isMain) {
   // the process alive.
   setInterval(() => {
     void settingsSource.refresh().catch(() => {});
+    void wikiRegistry.refresh();
   }, SETTINGS_POLL_INTERVAL_MS).unref();
   // Extract is a second capability of the SAME process, started after the
   // listener so a Chat health probe never waits on a document parse. It is a

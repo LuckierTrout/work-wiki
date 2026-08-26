@@ -33,6 +33,7 @@ import {
   runShellCommand,
   shellApprovalReason,
   SHELL_DENIED_COPY,
+  SHELL_PATH_CHANGED_COPY,
 } from "./shell.mjs";
 
 /** How many tool calls one turn may make before it must answer. */
@@ -779,6 +780,28 @@ export async function resumeAgentTurn({
     return {
       content: "No command given.",
       toolCalls: pending.toolCalls ?? [],
+      outputs: pending.outputs ?? [],
+      citations: [],
+    };
+  }
+  // A pause for `new_executable` is not a blank cheque: if a parent became a
+  // symlink (or cwd now sits outside) since the modal opened, the current
+  // reason is a NEW external condition and this resume must not spawn.
+  // Same-reason `external_path` / `external_cwd` still runs — that is what
+  // the owner approved.
+  if (
+    (reason === "external_cwd" || reason === "external_path") &&
+    pending.reason !== reason
+  ) {
+    emit("agent", {
+      toolRow: toolRow(pending.rowId, "shell", "denied", SHELL_PATH_CHANGED_COPY),
+    });
+    return {
+      content: SHELL_PATH_CHANGED_COPY,
+      toolCalls: [
+        ...(pending.toolCalls ?? []),
+        { id: pending.rowId, tool: "shell", detail: SHELL_PATH_CHANGED_COPY },
+      ],
       outputs: pending.outputs ?? [],
       citations: [],
     };

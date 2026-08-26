@@ -26,7 +26,7 @@ import { deleteStaged, stageText } from "./ingest-staging";
 import { enqueueTask } from "./tasks";
 import type { Task } from "./tasks";
 import { isV1TextPath } from "./v1-contract";
-import { listWorkbenchFilePaths, readWorkbenchFile } from "./workbench-files";
+import { listRawSourceFilePaths, readWorkbenchFile } from "./workbench-files";
 
 /** One call's ceiling. A caller with more Sources calls again. */
 export const RESCAN_MAX_SOURCES = 25;
@@ -55,31 +55,6 @@ export interface SourceRescanResult {
   nextCursor: number | null;
 }
 
-/**
- * Which display paths are Sources this caller may re-drive?
- *
- * Derived from the SAME listing the Files route serves, so a path that cannot be
- * listed cannot be rescanned either. Non-text paths are dropped rather than
- * refused: a folder import legitimately contains PDFs, and the extract loop —
- * not this route — is what turns those into text.
- */
-async function candidatePaths(
-  owner: string,
-  wikiId: string | null,
-  readableSlugs: ReadonlySet<string>,
-): Promise<string[]> {
-  const listing = await listWorkbenchFilePaths(owner, wikiId, {
-    readableSlugs,
-    limit: 5_000,
-  });
-  return listing.paths.filter(
-    (path) =>
-      path.startsWith("raw/sources/") &&
-      !path.endsWith("/") &&
-      isV1TextPath(path),
-  );
-}
-
 export async function rescanSources(input: {
   owner: string;
   wikiId: string | null;
@@ -94,11 +69,28 @@ export async function rescanSources(input: {
     Math.max(1, Math.round(input.limit ?? RESCAN_MAX_SOURCES)),
   );
   const offset = Math.max(0, Math.round(input.cursor ?? 0));
-  const all =
-    input.paths !== undefined
-      ? [...input.paths]
-      : await candidatePaths(input.owner, input.wikiId, input.readableSlugs);
-  const batch = all.slice(offset, offset + cap);
+  let batch: string[];
+  let remaining: number;
+  let nextCursor: number | null;
+  if (input.paths !== undefined) {
+    const all = [...input.paths];
+    batch = all.slice(offset, offset + cap);
+    const consumed = offset + batch.length;
+    remaining = Math.max(0, all.length - consumed);
+    nextCursor = consumed < all.length ? consumed : null;
+  } else {
+    // Implicit rescan pages `raw/sources/**` itself. The Files tab listing
+    // spends its cap on `wiki/` and directory nodes and then reports no
+    // cursor, which orphaned every Source past the first 5,000 tree entries.
+    const page = await listRawSourceFilePaths(input.owner, {
+      offset,
+      limit: cap,
+      allow: isV1TextPath,
+    });
+    batch = page.paths;
+    remaining = page.more ? 1 : 0;
+    nextCursor = page.more ? offset + page.paths.length : null;
+  }
   const results: SourceRescanOutcome[] = [];
 
   for (const path of batch) {
@@ -127,6 +119,7 @@ export async function rescanSources(input: {
 
     const jobId = crypto.randomUUID();
     const title = path.split("/").pop() ?? path;
+    let stagedKey: string | undefined;
     try {
       const digest = await sourceSha256(text);
       await createIngestJob({
@@ -156,31 +149,31 @@ export async function rescanSources(input: {
         text.length <= MAX_INLINE_CONTENT_CHARS
           ? { ...base, content: text }
           : { ...base, staged: { key: await stageText(jobId, text), kind: "text" } };
+      if ("staged" in task && task.staged) stagedKey = task.staged.key;
       // ENQUEUE ONLY, never inline. A rescan of twenty-five Sources that ran the
       // compiles in-band would hold one HTTP request open across fifty LLM
       // calls; off-Workers, `enqueueTask` answers false and this reports
       // `queue_unavailable` rather than pretending the work is scheduled.
       const enqueued = await enqueueTask(task);
       if (!enqueued) {
-        if ("staged" in task && task.staged) {
-          await deleteStaged(task.staged.key).catch(() => {});
-        }
+        if (stagedKey) await deleteStaged(stagedKey).catch(() => {});
         await abandonFreshIngestJob(jobId, input.owner);
         results.push({ path, queued: false, reason: "queue_unavailable" });
         continue;
       }
       results.push({ path, queued: true, jobId });
     } catch (error) {
+      if (stagedKey) await deleteStaged(stagedKey).catch(() => {});
+      await abandonFreshIngestJob(jobId, input.owner);
       logger.error("rescan", `could not queue Ingest for "${path}"`, error);
       results.push({ path, queued: false, reason: getErrorMessage(error) });
     }
   }
 
-  const consumed = offset + batch.length;
   return {
     requested: batch.length,
     results,
-    remaining: Math.max(0, all.length - consumed),
-    nextCursor: consumed < all.length ? consumed : null,
+    remaining,
+    nextCursor,
   };
 }
