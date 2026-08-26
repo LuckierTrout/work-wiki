@@ -77,13 +77,14 @@ export function toolRowLabel(tool: string): string {
   return isAgentToolName(tool) ? TOOL_LABELS[tool] : tool;
 }
 
-/** The four states a row can be in. `pending` is waiting on the owner. */
+/** The states a row can be in. `pending` is waiting on the owner. */
 export const TOOL_ROW_STATES = [
   "running",
   "done",
   "pending",
   "denied",
   "cancelled",
+  "error",
 ] as const;
 
 export type ToolRowState = (typeof TOOL_ROW_STATES)[number];

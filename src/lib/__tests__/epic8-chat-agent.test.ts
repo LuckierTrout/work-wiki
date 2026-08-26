@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  AGENT_TOOL_ROW_STATES,
   AGENT_TOOLS,
   FORM_CANCELLED_COPY,
   MAX_TOOL_CALLS_PER_TURN,
@@ -47,7 +48,9 @@ import {
   WORKSPACE_OUT_OF_SCOPE_ERROR,
 } from "../../../sidecar/workspace.mjs";
 import {
+  canPersistExecutableApproval,
   executableKey,
+  executableSnapshot,
   runShellCommand,
   SHELL_DENIED_COPY,
   SHELL_PATH_CHANGED_COPY,
@@ -57,7 +60,9 @@ import {
 } from "../../../sidecar/shell.mjs";
 import {
   AGENT_TOOL_NAMES,
+  isChatToolRow,
   outputChipLabel,
+  TOOL_ROW_STATES,
   toolRowLabel,
   workspaceFileUrl,
 } from "../chat-agent";
@@ -133,6 +138,13 @@ describe("the tool vocabulary is one list", () => {
       expect(toolRowLabel(name)).not.toBe("");
       expect(toolRowLabel(name)).not.toContain("_");
     }
+  });
+
+  it("pins every sidecar tool-row state to a browser-readable state", () => {
+    expect(TOOL_ROW_STATES).toEqual(AGENT_TOOL_ROW_STATES);
+    expect(
+      isChatToolRow({ id: "t1", tool: "shell", state: "error", detail: "failed" }),
+    ).toBe(true);
   });
 
   it("describes every tool in the prompt the model is given", () => {
@@ -1086,6 +1098,101 @@ describe("the shell asks before it leaves the workspace", () => {
     });
     expect(result.content).toBe("Done.");
     expect(approvedExecutables.size).toBe(0);
+  });
+
+  it("keeps representative interpreters and dynamic launchers per-command", () => {
+    for (const command of ["node", "python3", "env", "xargs", "pnpm"]) {
+      const executable = executableSnapshot(command, {
+        cwd: workspace.root,
+        workspace,
+      });
+      expect(
+        canPersistExecutableApproval(command) &&
+          canPersistExecutableApproval(executable.command),
+        command,
+      ).toBe(false);
+      expect(
+        shellApprovalReason(
+          { command, args: ["--version"], cwd: workspace.root },
+          {
+            workspace,
+            executable,
+            approvedExecutables: new Set([executable.key]),
+          },
+        ),
+        command,
+      ).toBe("new_executable");
+    }
+  });
+
+  it("classifies a launcher alias by its canonical executable target", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    const alias = path.join(workspace.root, "safe-runner");
+    await symlink("/bin/sh", alias);
+    const executable = executableSnapshot(alias, {
+      cwd: workspace.root,
+      workspace,
+    });
+    expect(executable.command).toBe(canonicalizePathSnapshot("/bin/sh"));
+    expect(canPersistExecutableApproval(executable.command)).toBe(false);
+    expect(
+      shellApprovalReason(
+        { command: alias, args: ["-c", "exit 0"], cwd: workspace.root },
+        {
+          workspace,
+          executable,
+          approvedExecutables: new Set([executable.key]),
+        },
+      ),
+    ).toBe("new_executable");
+  });
+
+  it("denies a path that appears or becomes executable after its modal", async () => {
+    await mkdir(workspace.root, { recursive: true });
+    for (const variant of ["missing", "non-executable"] as const) {
+      const command = path.join(workspace.root, `future-${variant}`);
+      if (variant === "non-executable") {
+        await writeFile(command, "#!/bin/sh\nexit 0\n");
+      }
+      const { generate } = scripted(
+        JSON.stringify({ tool: "shell", input: { command, args: [] } }),
+        "unreachable",
+      );
+      const paused = await runAgentTurn({
+        generate,
+        messages: [{ role: "user", content: "run it" }],
+        system: "s",
+        context: {
+          kernel: async () => null,
+          wikiId: "current",
+          workspace,
+          approvedExecutables: new Set(),
+        },
+      });
+      expect(pauseOf(paused).executableKey, variant).toBe("");
+      if (variant === "missing") {
+        await writeFile(command, "#!/bin/sh\nexit 0\n");
+      }
+      await chmod(command, 0o755);
+      const spawnImpl = vi.fn(() => {
+        throw new Error("must not spawn");
+      });
+      const result = await resumeAgentTurn({
+        pending: pauseOf(paused),
+        approved: true,
+        generate,
+        system: "s",
+        context: {
+          kernel: async () => null,
+          wikiId: "current",
+          workspace,
+          approvedExecutables: new Set(),
+          spawnImpl,
+        },
+      });
+      expect(result.content, variant).toBe(SHELL_PATH_CHANGED_COPY);
+      expect(spawnImpl, variant).not.toHaveBeenCalled();
+    }
   });
 
   it("does not run a new_executable resume after the path becomes external", async () => {

@@ -101,7 +101,8 @@ export function shellApprovalReason(
   if (
     !key ||
     !approvedExecutables.has(key) ||
-    !canPersistExecutableApproval(command, args)
+    !canPersistExecutableApproval(command, args) ||
+    !canPersistExecutableApproval(executable?.command ?? command, args)
   ) {
     return "new_executable";
   }
@@ -224,10 +225,21 @@ const NON_PERSISTABLE_LAUNCHERS = new Set([
   "zsh",
   "ksh",
   "fish",
+  "csh",
+  "tcsh",
+  "pwsh",
+  "powershell",
+  "cmd",
   "node",
   "ruby",
   "perl",
   "php",
+  "lua",
+  "luajit",
+  "osascript",
+  "java",
+  "dotnet",
+  "mono",
   "env",
   "xargs",
   "npm",
@@ -236,14 +248,22 @@ const NON_PERSISTABLE_LAUNCHERS = new Set([
   "yarn",
   "bun",
   "deno",
+  "corepack",
 ]);
+
+function normalizeLauncherName(command) {
+  return path
+    .basename(String(command).trim())
+    .toLowerCase()
+    .replace(/\.(?:exe|cmd|bat|com)$/i, "");
+}
 
 /**
  * Interpreter source and dynamic launchers are approved once per invocation,
  * never remembered as a conversation-wide executable capability.
  */
 export function canPersistExecutableApproval(command, _args = []) {
-  const name = path.basename(String(command).trim()).toLowerCase();
+  const name = normalizeLauncherName(command);
   if (/^python(?:\d+(?:\.\d+)*)?$/.test(name)) return false;
   return !NON_PERSISTABLE_LAUNCHERS.has(name);
 }
@@ -251,7 +271,7 @@ export function canPersistExecutableApproval(command, _args = []) {
 function resolveBareExecutable(command, cwd) {
   const pathValue = process.env.PATH ?? "";
   const extensions = process.platform === "win32"
-    ? (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";")
+    ? ["", ...(process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";")]
     : [""];
   for (const entry of pathValue.split(path.delimiter)) {
     const directory = entry
@@ -276,10 +296,28 @@ function resolveBareExecutable(command, cwd) {
   return null;
 }
 
+function isExecutableFile(candidate) {
+  try {
+    if (!fsSync.statSync(candidate).isFile()) return false;
+    if (process.platform !== "win32") {
+      fsSync.accessSync(candidate, fsSync.constants.X_OK);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * One approval-time executable snapshot. The returned command is the exact
  * canonical path spawn should receive, so PATH and symlink lookup are not done
  * a second time after the owner approves it.
+ *
+ * @param {string} command
+ * @param {{
+ *   cwd?: string | null,
+ *   workspace?: import("./workspace.mjs").AgentWorkspace,
+ * }} [options]
  */
 export function executableSnapshot(command, { cwd = null, workspace } = {}) {
   const trimmed = String(command ?? "").trim();
@@ -302,6 +340,9 @@ export function executableSnapshot(command, { cwd = null, workspace } = {}) {
     (typeof workspace?.canonicalize === "function"
       ? workspace.canonicalize(expanded)
       : canonicalizePathSnapshot(expanded));
+  if (!canonical || !isExecutableFile(canonical)) {
+    return { key: "", command: expanded };
+  }
   return canonical
     ? { key: `path:${canonical}`, command: canonical }
     : { key: "", command: expanded };

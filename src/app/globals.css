@@ -2346,6 +2346,7 @@ textarea.studio-input { resize: vertical; }
   --wb-primary: #171717;
   --wb-primary-foreground: #ffffff;
   --wb-live: #16a34a;
+  --wb-error: #b91c1c;
   --wb-badge: #171717;
   --wb-badge-foreground: #ffffff;
   --wb-overlay: #17171766;
@@ -2952,6 +2953,9 @@ body:has(.wb-shell) {
 .wb-chat-tool--running .wb-chat-tool-name,
 .wb-chat-tool--pending .wb-chat-tool-name {
   color: var(--wb-foreground);
+}
+.wb-chat-tool--error .wb-chat-tool-name {
+  color: var(--wb-error);
 }
 
 /* Composer tools: five small buttons on one line, above the textarea. */

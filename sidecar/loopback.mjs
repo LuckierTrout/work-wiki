@@ -710,16 +710,19 @@ function explicitHostCandidates(value, known = null) {
  *
  * @param {string} dataDir
  */
-export function readWikiRegistryFromDisk(dataDir) {
+function discoverWikiRegistryFromDisk(dataDir) {
   const rows = [];
+  let entriesVisited = 0;
   const tenantsDir = path.join(dataDir, "tenants");
   let handles;
   try {
     handles = fs.readdirSync(tenantsDir, { withFileTypes: true });
   } catch {
-    return rows;
+    return { rows, complete: true };
   }
-  if (handles.length > WIKI_REGISTRY_MAX_TENANTS) return rows;
+  if (handles.length > WIKI_REGISTRY_MAX_TENANTS) {
+    return { rows: [], complete: false };
+  }
   for (const handle of handles) {
     if (!handle.isDirectory() || handle.name.startsWith(".")) continue;
     let wikis;
@@ -730,21 +733,31 @@ export function readWikiRegistryFromDisk(dataDir) {
     } catch {
       continue;
     }
-    if (wikis.length > WIKI_REGISTRY_MAX_ROWS) return [];
+    entriesVisited += wikis.length;
+    if (entriesVisited > WIKI_REGISTRY_MAX_ROWS) {
+      return { rows: [], complete: false };
+    }
     for (const wiki of wikis) {
       if (!wiki.isDirectory() || !WIKI_UUID_RE.test(wiki.name)) continue;
       const canonical = canonicalExistingDirectory(
         path.resolve(tenantsDir, handle.name, "wikis", wiki.name),
       );
       if (!canonical) continue;
+      if (rows.length >= WIKI_REGISTRY_MAX_ROWS) {
+        return { rows: [], complete: false };
+      }
       rows.push({
         id: wiki.name,
         path: canonical,
       });
-      if (rows.length >= WIKI_REGISTRY_MAX_ROWS) return rows;
     }
   }
-  return rows;
+  return { rows, complete: true };
+}
+
+export function readWikiRegistryFromDisk(dataDir) {
+  const snapshot = discoverWikiRegistryFromDisk(dataDir);
+  return snapshot.complete ? snapshot.rows : [];
 }
 
 /**
@@ -771,12 +784,14 @@ function readCurrentWikiIdFromDisk(dataDir, diskRows) {
   if (handles.length > WIKI_REGISTRY_MAX_TENANTS) return null;
   const candidates = [];
   let invalid = false;
+  let bytesRead = 0;
   for (const handle of handles) {
     if (!handle.isDirectory() || handle.name.startsWith(".")) continue;
     let parsed;
     try {
       const registryPath = path.join(tenantsDir, handle.name, "wikis.json");
-      if (fs.statSync(registryPath).size > WIKI_REGISTRY_MAX_LOCAL_BYTES) {
+      bytesRead += fs.statSync(registryPath).size;
+      if (bytesRead > WIKI_REGISTRY_MAX_LOCAL_BYTES) {
         invalid = true;
         continue;
       }
@@ -885,13 +900,14 @@ export function createWikiRegistrySource({
   let refreshGeneration = 0;
 
   const applyLocal = ({ authorizeCurrent = true } = {}) => {
-    const diskRows = readWikiRegistryFromDisk(dataDir);
+    const diskSnapshot = discoverWikiRegistryFromDisk(dataDir);
+    const diskRows = diskSnapshot.complete ? diskSnapshot.rows : [];
     const published = unambiguousRegistryRows([
       ...diskRows,
       ...explicitHostCandidates(wikiRoots),
     ]);
     rows = published.rows;
-    currentId = authorizeCurrent
+    currentId = authorizeCurrent && diskSnapshot.complete
       ? readCurrentWikiIdFromDisk(dataDir, diskRows)
       : null;
     if (currentId && published.conflictIds.has(currentId)) currentId = null;
@@ -980,7 +996,7 @@ export function resolveLoopbackWikiId(value, registry = []) {
     return value;
   }
   if (!isAbsolutePathWikiId(value)) return null;
-  const resolved = canonicalizePathSnapshot(value);
+  const resolved = canonicalExistingDirectory(value);
   if (!resolved) return null;
   const hit = wikiRegistryRows(registry).find(
     (row) =>

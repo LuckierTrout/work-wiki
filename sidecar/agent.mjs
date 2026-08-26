@@ -41,6 +41,14 @@ import {
 
 /** How many tool calls one turn may make before it must answer. */
 export const MAX_TOOL_CALLS_PER_TURN = 6;
+export const AGENT_TOOL_ROW_STATES = [
+  "running",
+  "done",
+  "pending",
+  "denied",
+  "cancelled",
+  "error",
+];
 
 function focusGraph(body, focus) {
   if (!body || typeof body !== "object") return body;
@@ -865,7 +873,8 @@ export async function resumeAgentTurn({
   if (
     result.started &&
     liveExecutable.key &&
-    canPersistExecutableApproval(pending.command, pending.args ?? [])
+    canPersistExecutableApproval(pending.command, pending.args ?? []) &&
+    canPersistExecutableApproval(liveExecutable.command, pending.args ?? [])
   ) {
     context.approvedExecutables?.add(liveExecutable.key);
   }

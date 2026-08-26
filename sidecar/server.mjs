@@ -878,7 +878,11 @@ async function handleChat(req, res, wikiId, options = {}) {
   // Attach abort/socket listeners only after every synchronous refusal. An
   // unresolved mutable-current door and an invalid resume never own a turn and
   // must not leave a close listener behind on a keep-alive socket.
-  const session = createChatTurnSession(req, res, stream);
+  const session = (options.sessionFactory ?? createChatTurnSession)(
+    req,
+    res,
+    stream,
+  );
   const citations = citationParsed.citations;
   const history = historyParsed.messages;
   const system = [
@@ -1163,6 +1167,7 @@ export function createSidecarServer({
   capabilities = createCapabilityStore(),
   approvals = createConversationApprovals(),
   wikiRegistry = [],
+  chatSessionFactory = createChatTurnSession,
 } = {}) {
   return http.createServer(async (req, res) => {
     const origin = req.headers.origin;
@@ -1228,6 +1233,7 @@ export function createSidecarServer({
           settings,
           capabilities,
           approvals,
+          sessionFactory: chatSessionFactory,
           // The poller, not a flattened snapshot. `canonicalLoopbackWikiId`
           // needs `currentId()` so a pause on `/projects/current/chat` can
           // be resumed on `/projects/<uuid>/chat`.

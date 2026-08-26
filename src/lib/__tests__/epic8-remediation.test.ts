@@ -33,6 +33,8 @@ import {
 } from "../../../sidecar/workspace.mjs";
 import {
   executableKey,
+  SHELL_MAX_ARG_CHARS,
+  SHELL_MAX_TOTAL_ARG_CHARS,
   shellApprovalReason,
 } from "../../../sidecar/shell.mjs";
 import {
@@ -46,6 +48,7 @@ import {
   WIKI_REGISTRY_MAX_RESPONSE_BYTES,
   WIKI_REGISTRY_MAX_LOCAL_BYTES,
   WIKI_REGISTRY_MAX_ROWS,
+  WIKI_REGISTRY_MAX_TENANTS,
 } from "../../../sidecar/loopback.mjs";
 import fs from "node:fs/promises";
 import { getStorage } from "../storage";
@@ -79,6 +82,12 @@ function completeDiskWiki(id: string, name = "Test Wiki") {
     createdAt: "2026-08-26T00:00:00.000Z",
     updatedAt: "2026-08-26T00:00:00.000Z",
   };
+}
+
+async function mkdirMany(paths: string[]) {
+  for (let index = 0; index < paths.length; index += 100) {
+    await Promise.all(paths.slice(index, index + 100).map((entry) => mkdir(entry, { recursive: true })));
+  }
 }
 
 async function listen(extra: Record<string, unknown> = {}): Promise<string> {
@@ -271,12 +280,34 @@ describe("F8-01 server-owned shell capabilities", () => {
   });
 
   it("creates no Chat session before unresolved-current and invalid-resume refusals", async () => {
-    const source = await readFile(path.join(process.cwd(), "sidecar/server.mjs"), "utf8");
-    const session = source.indexOf("const session = createChatTurnSession(req, res, stream)");
-    expect(source.indexOf('rejectChat(res, 503, "current_wiki_unavailable")')).toBeLessThan(
-      session,
-    );
-    expect(source.indexOf('rejectChat(res, 400, "invalid_resume")')).toBeLessThan(session);
+    const sessionFactory = vi.fn();
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const base = await listen({
+      chatSessionFactory: sessionFactory,
+      wikiRegistry: {
+        current: () => [{ id: wikiId, path: "/data/wiki" }],
+        currentId: () => null,
+      },
+    });
+    const unresolved = await fetch(`${base}/api/v1/projects/current/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "search", tools: true, coverage: false }),
+    });
+    expect(unresolved.status).toBe(503);
+    const invalidResume = await fetch(`${base}/api/v1/projects/${wikiId}/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "resume",
+        tools: true,
+        coverage: false,
+        conversationId: "conv-refusal",
+        resume: { capabilityId: "not-issued", approved: true },
+      }),
+    });
+    expect(invalidResume.status).toBe(400);
+    expect(sessionFactory).not.toHaveBeenCalled();
   });
 
   it("removes Chat abort and socket listeners when a turn settles", () => {
@@ -295,6 +326,13 @@ describe("F8-01 server-owned shell capabilities", () => {
     session.settle();
     expect(req.listenerCount("aborted")).toBe(0);
     expect(req.socket.listenerCount("close")).toBe(0);
+
+    const cancelledReq = new EventEmitter() as EventEmitter & { socket: EventEmitter };
+    cancelledReq.socket = new EventEmitter();
+    const cancelled = createChatTurnSession(cancelledReq, res, false);
+    cancelled.emitCancelled();
+    expect(cancelledReq.listenerCount("aborted")).toBe(0);
+    expect(cancelledReq.socket.listenerCount("close")).toBe(0);
   });
 
   it("resumes a current-door pause on the poller's UUID", async () => {
@@ -710,14 +748,36 @@ describe("F8-02 / F8-03 filesystem and shell containment", () => {
         { workspace },
       ),
     ).toBe("invalid");
+    expect(
+      shellApprovalReason(
+        { command: "x".repeat(SHELL_MAX_ARG_CHARS + 1), args: [] },
+        { workspace },
+      ),
+    ).toBe("invalid");
+    expect(
+      shellApprovalReason(
+        { command: "echo", args: ["x".repeat(SHELL_MAX_ARG_CHARS + 1)] },
+        { workspace },
+      ),
+    ).toBe("invalid");
+    const aggregate = Array.from({ length: 5 }, () =>
+      "x".repeat(Math.floor(SHELL_MAX_TOTAL_ARG_CHARS / 5) + 1),
+    );
+    expect(
+      shellApprovalReason({ command: "echo", args: aggregate }, { workspace }),
+    ).toBe("invalid");
   });
 
-  it("resolves a basename approval to the PATH binary, not any same-named path", () => {
+  it("resolves a basename approval to the PATH binary, not any same-named path", async () => {
+    const fakeDir = await mkdtemp(path.join(os.tmpdir(), "epic8-fake-node-"));
+    const fakeNode = path.join(fakeDir, "node");
+    await writeFile(fakeNode, "#!/bin/sh\nexit 0\n");
+    await fs.chmod(fakeNode, 0o755);
     expect(executableKey("node")).toMatch(/^path:/);
-    expect(executableKey("/tmp/evil/node")).toBe(
-      `path:${canonicalizePathSnapshot("/tmp/evil/node")}`,
+    expect(executableKey(fakeNode)).toBe(
+      `path:${canonicalizePathSnapshot(fakeNode)}`,
     );
-    expect(executableKey("node")).not.toBe(executableKey("/tmp/evil/node"));
+    expect(executableKey("node")).not.toBe(executableKey(fakeNode));
   });
 });
 
@@ -827,11 +887,17 @@ describe("F8-05 / F8-06 v1 contract", () => {
     expect(isV1FileInScope("wiki/alpha.md")).toBe(true);
   });
 
-  it("refuses an unregistered filesystem {id} instead of silently mapping to current", () => {
-    expect(resolveLoopbackWikiId("/Users/me/wiki")).toBeNull();
+  it("refuses an unregistered filesystem {id} instead of silently mapping to current", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "epic8-registered-id-"));
+    const registered = path.join(root, "wiki");
+    await mkdir(registered);
+    expect(resolveLoopbackWikiId(registered)).toBeNull();
     expect(
-      resolveLoopbackWikiId("/Users/me/wiki", [
-        { id: "aaaa1111-0000-4000-8000-000000000000", path: "/Users/me/wiki" },
+      resolveLoopbackWikiId(registered, [
+        {
+          id: "aaaa1111-0000-4000-8000-000000000000",
+          path: canonicalizePathSnapshot(registered) as string,
+        },
       ]),
     ).toBe("aaaa1111-0000-4000-8000-000000000000");
     expect(
@@ -1194,6 +1260,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
     await source.refresh();
     expect(resolveLoopbackWikiId(hostPath, source)).toBe(wikiId);
     await rm(hostPath, { recursive: true });
+    expect(resolveLoopbackWikiId(hostPath, source)).toBeNull();
     await symlink(outside, hostPath);
     expect(resolveLoopbackWikiId(hostPath, source)).toBeNull();
     expect(resolveLoopbackWikiId(outside, source)).toBeNull();
@@ -1227,32 +1294,120 @@ describe("F8-05 / F8-06 v1 contract", () => {
     expect(source.currentId()).toBeNull();
   });
 
+  it("rejects one otherwise-valid relative hostPath in isolation", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir: process.cwd(),
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            currentId: wikiId,
+            projects: [{ id: wikiId, hostPath: "." }],
+          }),
+          { status: 200 },
+        ),
+    });
+    await source.refresh();
+    expect(source.current()).toEqual([]);
+  });
+
+  it("does not pre-authorize missing, file, or future host roots", async () => {
+    const remoteId = "aaaa1111-0000-4000-8000-000000000000";
+    const ownerId = "bbbb2222-0000-4000-8000-000000000000";
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "epic8-reg-future-root-"));
+    const remoteRoot = path.join(dataDir, "remote-future");
+    const ownerRoot = path.join(dataDir, "owner-future");
+    const fileRoot = path.join(dataDir, "not-a-directory");
+    await writeFile(fileRoot, "not a wiki root");
+    const source = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir,
+      wikiRoots: `${ownerId}=${ownerRoot}`,
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            projects: [
+              { id: remoteId, hostPath: remoteRoot },
+              { id: ownerId, hostPath: fileRoot },
+            ],
+          }),
+          { status: 200 },
+        ),
+    });
+    await source.refresh();
+    expect(source.current()).toEqual([]);
+    await mkdir(remoteRoot);
+    await mkdir(ownerRoot);
+    expect(resolveLoopbackWikiId(remoteRoot, source)).toBeNull();
+    expect(resolveLoopbackWikiId(ownerRoot, source)).toBeNull();
+    await source.refresh();
+    expect(resolveLoopbackWikiId(remoteRoot, source)).toBe(remoteId);
+    expect(resolveLoopbackWikiId(ownerRoot, source)).toBe(ownerId);
+  });
+
   it("rejects oversized registry bodies and project lists before publishing", async () => {
+    const wikiId = "aaaa1111-0000-4000-8000-000000000000";
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "epic8-reg-bounds-"));
+    const hostPath = path.join(dataDir, "wiki");
+    await mkdir(hostPath);
     const oversized = createWikiRegistrySource({
       base: "http://kernel.test",
       token: "automation",
+      dataDir,
       fetchImpl: async () =>
-        new Response("x".repeat(WIKI_REGISTRY_MAX_RESPONSE_BYTES + 1), { status: 200 }),
+        new Response(
+          JSON.stringify({
+            currentId: wikiId,
+            projects: [{ id: wikiId, hostPath }],
+            padding: "x".repeat(WIKI_REGISTRY_MAX_RESPONSE_BYTES),
+          }),
+          { status: 200 },
+        ),
     });
     await oversized.refresh();
     expect(oversized.current()).toEqual([]);
     expect(oversized.currentId()).toBeNull();
 
-    const tooMany = createWikiRegistrySource({
+    const belowLimit = createWikiRegistrySource({
       base: "http://kernel.test",
       token: "automation",
+      dataDir,
       fetchImpl: async () =>
         new Response(
           JSON.stringify({
-            projects: Array.from({ length: WIKI_REGISTRY_MAX_ROWS + 1 }, () => ({
-              id: "aaaa1111-0000-4000-8000-000000000000",
-            })),
+            currentId: wikiId,
+            projects: [{ id: wikiId, hostPath }],
+          }),
+          { status: 200 },
+        ),
+    });
+    await belowLimit.refresh();
+    expect(resolveLoopbackWikiId(hostPath, belowLimit)).toBe(wikiId);
+
+    const tooMany = createWikiRegistrySource({
+      base: "http://kernel.test",
+      token: "automation",
+      dataDir,
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            currentId: wikiId,
+            projects: [
+              { id: wikiId, hostPath },
+              ...Array.from({ length: WIKI_REGISTRY_MAX_ROWS }, () => ({
+                id: "bbbb2222-0000-4000-8000-000000000000",
+              })),
+            ],
           }),
           { status: 200 },
         ),
     });
     await tooMany.refresh();
     expect(tooMany.current()).toEqual([]);
+    expect(tooMany.currentId()).toBeNull();
   });
 
   it("loads local wiki dirs from disk when there is no kernel token", async () => {
@@ -1378,7 +1533,12 @@ describe("F8-05 / F8-06 v1 contract", () => {
               wikis: [completeDiskWiki(wikiId)],
               currentId: wikiId,
             })
-          : " ".repeat(WIKI_REGISTRY_MAX_LOCAL_BYTES + 1);
+          : JSON.stringify({
+              version: 1,
+              wikis: [completeDiskWiki(wikiId)],
+              currentId: wikiId,
+              padding: "x".repeat(WIKI_REGISTRY_MAX_LOCAL_BYTES),
+            });
       await writeFile(path.join(alice, "wikis.json"), body, "utf8");
       const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
       await source.refresh();
@@ -1386,11 +1546,131 @@ describe("F8-05 / F8-06 v1 contract", () => {
     }
   });
 
+  it("fails closed at every local discovery and declared-record bound", async () => {
+    const currentId = "ffffffff-0000-4000-8000-000000000000";
+
+    const tooManyTenants = await mkdtemp(
+      path.join(os.tmpdir(), "epic8-local-tenant-bound-"),
+    );
+    const tenantRoot = path.join(tooManyTenants, "tenants");
+    const alice = path.join(tenantRoot, "alice");
+    await mkdir(path.join(alice, "wikis", currentId), { recursive: true });
+    await writeFile(
+      path.join(alice, "wikis.json"),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(currentId)],
+        currentId,
+      }),
+      "utf8",
+    );
+    await mkdirMany(
+      Array.from({ length: WIKI_REGISTRY_MAX_TENANTS }, (_, index) =>
+        path.join(tenantRoot, `extra-${String(index).padStart(3, "0")}`),
+      ),
+    );
+    const tenantSource = createWikiRegistrySource({
+      base: "",
+      token: "",
+      dataDir: tooManyTenants,
+    });
+    await tenantSource.refresh();
+    expect(tenantSource.current()).toEqual([]);
+    expect(tenantSource.currentId()).toBeNull();
+
+    const tooManyEntries = await mkdtemp(
+      path.join(os.tmpdir(), "epic8-local-entry-bound-"),
+    );
+    const entryAlice = path.join(tooManyEntries, "tenants", "alice");
+    const entryWikis = path.join(entryAlice, "wikis");
+    await mkdirMany([
+      path.join(entryWikis, currentId),
+      ...Array.from({ length: WIKI_REGISTRY_MAX_ROWS }, (_, index) =>
+        path.join(entryWikis, `not-a-wiki-${String(index).padStart(4, "0")}`),
+      ),
+    ]);
+    await writeFile(
+      path.join(entryAlice, "wikis.json"),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(currentId)],
+        currentId,
+      }),
+      "utf8",
+    );
+    const entrySource = createWikiRegistrySource({
+      base: "",
+      token: "",
+      dataDir: tooManyEntries,
+    });
+    await entrySource.refresh();
+    expect(entrySource.current()).toEqual([]);
+    expect(entrySource.currentId()).toBeNull();
+
+    const tooManyDeclared = await mkdtemp(
+      path.join(os.tmpdir(), "epic8-local-declared-bound-"),
+    );
+    const declaredAlice = path.join(tooManyDeclared, "tenants", "alice");
+    await mkdir(path.join(declaredAlice, "wikis", currentId), { recursive: true });
+    const declared = Array.from({ length: WIKI_REGISTRY_MAX_ROWS + 1 }, (_, index) =>
+      completeDiskWiki(
+        `${index.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`,
+        `Wiki ${index}`,
+      ),
+    );
+    declared[0] = completeDiskWiki(currentId);
+    await writeFile(
+      path.join(declaredAlice, "wikis.json"),
+      JSON.stringify({ version: 1, wikis: declared, currentId }),
+      "utf8",
+    );
+    const declaredSource = createWikiRegistrySource({
+      base: "",
+      token: "",
+      dataDir: tooManyDeclared,
+    });
+    await declaredSource.refresh();
+    expect(declaredSource.current()).toHaveLength(1);
+    expect(declaredSource.currentId()).toBeNull();
+  });
+
+  it("publishes no partial local snapshot when the row budget is exhausted", async () => {
+    const currentId = "ffffffff-0000-4000-8000-000000000000";
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-local-row-bound-"));
+    const first = path.join(tmp, "tenants", "a", "wikis");
+    const second = path.join(tmp, "tenants", "b", "wikis");
+    const uuid = (index: number) =>
+      `${index.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`;
+    await mkdirMany([
+      path.join(first, currentId),
+      ...Array.from({ length: 500 }, (_, index) => path.join(first, uuid(index))),
+      ...Array.from({ length: 499 }, (_, index) => path.join(second, uuid(index + 500))),
+      path.join(second, currentId),
+    ]);
+    await writeFile(
+      path.join(tmp, "tenants", "a", "wikis.json"),
+      JSON.stringify({
+        version: 1,
+        wikis: [completeDiskWiki(currentId)],
+        currentId,
+      }),
+      "utf8",
+    );
+    const source = createWikiRegistrySource({ base: "", token: "", dataDir: tmp });
+    await source.refresh();
+    expect(source.current()).toEqual([]);
+    expect(source.currentId()).toBeNull();
+  });
+
   it("resolves a live registry source on Chat instead of an empty listen-time array", async () => {
     const wikiId = "aaaa1111-0000-4000-8000-000000000000";
-    const hostPath = `/Users/me/data/tenants/alice/wikis/${wikiId}`;
+    const root = await mkdtemp(path.join(os.tmpdir(), "epic8-live-registry-"));
+    const hostPath = path.join(root, wikiId);
+    await mkdir(hostPath);
     const source = {
-      current: () => [{ id: wikiId, path: hostPath }],
+      current: () => [
+        { id: wikiId, path: canonicalizePathSnapshot(hostPath) as string },
+      ],
     };
     const base = await listen({ wikiRegistry: source });
     const rejected = await fetch(
