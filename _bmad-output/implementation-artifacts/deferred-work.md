@@ -3547,7 +3547,8 @@ source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
 location: src/lib/names-terms.ts:214
 severity: low
 reason: `dictionaryPath` (src/lib/names-terms.ts:88) and `getCurrentWiki` both route the owner through `tenantForOwner` -> `ownerToTenant`, which lowercases and collapses punctuation. `"Alice"` and `"alice"` therefore occupy two `Map` slots pointing at one file: two reads instead of one, and two snapshots that can diverge under a single handle. Latent today — `owner` is one fixed string inside an `ingest()` and inside a batch request (`principal.handle`) — and inherited from DW-141, which set the owner-keying precedent. Keying on `tenantForOwner(owner)` would collapse both.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-names-terms-memo-hardening
 
 ### DW-395: `src/mcp.ts`'s batch ingest tool loops `ingestUrl` over up to MAX_BATCH_URLS URLs with no handle — the same one-action-N-documents shape DW-324 just closed for the HTTP batch route.
 origin: spec-deferred a07d00ea301f
@@ -3572,7 +3573,8 @@ source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
 location: src/lib/names-terms.ts:236
 severity: low
 reason: `listNamesTerms` returns `[...(await memo)]`, so a caller that sorts or splices its result cannot corrupt the next one (pinned by a test). The entries inside are the same objects, where before the memo each read produced fresh objects from `JSON.parse`. No caller in the repo mutates an entry (`canonicalizeNamesTerm`, `renderNamesTermsGuidance` and `applyNamesTermsToGeneratedText` all read), and the docblock says so, but nothing enforces it — one future `entry.aliases.push(...)` would leak into every later caller of that request. `Object.freeze` on resolve, or a test pinning the object-level invariant, would close it.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-names-terms-memo-hardening
 
 ### DW-398: The EFFECTIVE embedding vendor can move without the stored `embeddingProvider` moving, so the clear never fires and a stored key or endpoint can still reach a vendor it was not entered for.
 origin: spec-deferred e1c07dfbeb93
@@ -4379,4 +4381,20 @@ source_spec: `spec-dw-378-379-merge-base-freshness.md`
 location: src/app/api/wiki/[slug]/revisions/route.ts:29
 severity: low
 reason: src/app/api/wiki/[slug]/revisions/route.ts:29 reads without strict and turns the resulting null into a 404. DW-378's location field names only src/lib/wiki.ts:409 and the page write, and the read serves a response body rather than backing a write, so it is out of this bundle's scope -- but the harm DW-378 describes (an answer that makes a human stop retrying and start recovering) applies to a reader at least as much as a writer.
+status: open
+
+### DW-498: `listNamesTerms` returns entries that are frozen at runtime while the exported `NamesTermEntry` type and the `Promise<NamesTermEntry[]>` return type still advertise them as mutable, so a would-be muta
+origin: spec-deferred fe0bcfad64a2
+source_spec: `spec-dw-394-397-names-terms-memo-hardening.md`
+location: src/lib/names-terms.ts:16
+severity: low
+reason: DW-397 was closed with `Object.freeze` plus tests, and the spec put `readonly` types explicitly out of scope as a ripple beyond the fix. The residual asymmetry is real: `createNamesTerm` / `updateNamesTerm` return UNFROZEN entries of the same declared type, and both shapes reach `src/app/api/names-terms/route.ts` as `NamesTermEntry`, so a consumer reasoning from the type is right only half the time. A readonly return type (e.g. `Readonly<Omit<NamesTermEntry, "aliases">> & { readonly aliases: readonly string[] }`) would move the failure to compile time.
+status: open
+
+### DW-499: A corrupt `names-terms.json` holding a non-object element alongside real entries still throws out of the sort comparator in `resolveSortedEntries`, so the read fails rather than degrading.
+origin: spec-deferred 3df66eaf3804
+source_spec: `spec-dw-394-397-names-terms-memo-hardening.md`
+location: src/lib/names-terms.ts:169
+severity: low
+reason: `readEntries` validates only `Array.isArray(parsed)`. The freeze loop added by this story now skips non-object elements, but the `.sort()` that runs BEFORE it dereferences `a.kind` / `a.canonical`, so `[null, entry]` throws `TypeError: Cannot read properties of null (reading 'kind')`. Confirmed empirically during this story: `[null]` alone resolves (the comparator is never called for a single element), two-or-more does not. Pre-existing — the throw predates this change and is unrelated to DW-394/DW-397 — but nothing validates entry shape at the read boundary.
 status: open

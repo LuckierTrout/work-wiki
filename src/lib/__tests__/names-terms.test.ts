@@ -126,7 +126,7 @@ describe("owner names and terms dictionary", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The dictionary read is memoized per owner by a caller-owned handle (DW-322)
+// The dictionary read is memoized per tenant by a caller-owned handle (DW-322)
 // ---------------------------------------------------------------------------
 
 /**
@@ -184,7 +184,7 @@ describe("names and terms dictionary caching", () => {
     vi.restoreAllMocks();
   });
 
-  it("reads the dictionary once per owner when a handle is passed", async () => {
+  it("reads the dictionary once per tenant when a handle is passed", async () => {
     await writeDictionaryBytes("alice", [entry("Project Lighthouse")]);
 
     const reads = countReads();
@@ -272,6 +272,104 @@ describe("names and terms dictionary caching", () => {
     expect(second.map((e) => e.canonical)).toEqual(["Alpha Project", "Beta Project"]);
   });
 
+  it("freezes each entry and its aliases, so one caller cannot edit another's", async () => {
+    // The fresh top-level array protects the ORDER; it does not protect the
+    // entry OBJECTS, which every caller under the handle shares. An unfrozen
+    // `entry.aliases.push(...)` would leak into every later caller (DW-397);
+    // frozen makes it an immediate TypeError at the mutating line.
+    await writeDictionaryBytes("alice", [
+      { ...entry("Alpha Project"), aliases: ["Alpha"] },
+      entry("Beta Project"),
+    ]);
+
+    const cache = createNamesTermsCache();
+    const first = await listNamesTerms("alice", cache);
+
+    expect(Object.isFrozen(first[0])).toBe(true);
+    expect(Object.isFrozen(first[0].aliases)).toBe(true);
+    expect(() => first[0].aliases.push("Alfa")).toThrow(TypeError);
+    expect(() => {
+      first[0].canonical = "Hijacked";
+    }).toThrow(TypeError);
+
+    // The ARRAY stays mutable — callers legitimately sort and splice their own.
+    expect(Object.isFrozen(first)).toBe(false);
+    first.sort((a, b) => b.canonical.localeCompare(a.canonical));
+    first.splice(0, 1);
+
+    const second = await listNamesTerms("alice", cache);
+    expect(second.map((e) => e.canonical)).toEqual([
+      "Alpha Project",
+      "Beta Project",
+    ]);
+    expect(second[0].aliases).toEqual(["Alpha"]);
+  });
+
+  it("freezes entries on the uncached path too, so the paths cannot drift", async () => {
+    await writeDictionaryBytes("alice", [
+      { ...entry("Alpha Project"), aliases: ["Alpha"] },
+    ]);
+
+    const entries = await listNamesTerms("alice");
+
+    expect(Object.isFrozen(entries[0])).toBe(true);
+    expect(Object.isFrozen(entries[0].aliases)).toBe(true);
+    expect(() => entries[0].aliases.push("Alfa")).toThrow(TypeError);
+    expect(() => {
+      entries[0].canonical = "Hijacked";
+    }).toThrow(TypeError);
+  });
+
+  it("does not throw on a non-object element in a corrupt dictionary file", async () => {
+    // `readEntries` only checks `Array.isArray`, so a hand-edited or truncated
+    // file can hold a `null`. Before the freeze loop guarded for it, this read
+    // threw `TypeError: Cannot read properties of null (reading 'aliases')`
+    // where the value used to pass straight through — a failure mode the freeze
+    // introduced. Pinned so the guard cannot be refactored away silently.
+    //
+    // Deliberately a ONE-element file: `resolveSortedEntries` sorts BEFORE it
+    // freezes, and the comparator dereferences `a.kind`, so any array of two or
+    // more containing a `null` already throws out of the sort. That is
+    // pre-existing behaviour this fix neither caused nor claims to repair, so
+    // there is no "surviving entry" to pair with a `null` here — the freeze of
+    // valid entries is pinned by the two tests above.
+    await writeDictionaryBytes(
+      "alice",
+      [null] as unknown as readonly NamesTermEntry[],
+    );
+
+    await expect(listNamesTerms("alice")).resolves.toHaveLength(1);
+
+    // And the cached path lands on the same guarded resolve.
+    const cache = createNamesTermsCache();
+    await expect(listNamesTerms("alice", cache)).resolves.toHaveLength(1);
+  });
+
+  it("collapses two owner casings of one tenant onto a single read", async () => {
+    // The memo is keyed by what ADDRESSES the file: "Alice" and "alice" are one
+    // dictionary at `tenants/alice/names-terms.json`, so one handle must not
+    // hold two slots — two reads and two snapshots that can diverge (DW-394).
+    await writeDictionaryBytes("alice", [entry("Project Lighthouse")]);
+
+    const reads = countReads();
+    const cache = createNamesTermsCache();
+
+    const first = await listNamesTerms("Alice", cache);
+    expect(first.map((e) => e.canonical)).toEqual(["Project Lighthouse"]);
+
+    // The bytes change under the memo: a second key would read them.
+    await writeDictionaryBytes("alice", [entry("Phoenix Reading Shelf")]);
+
+    const second = await listNamesTerms("alice", cache);
+    expect(second.map((e) => e.canonical)).toEqual(["Project Lighthouse"]);
+    expect(await buildNamesTermsGuidance("ALICE", cache)).toContain(
+      "Project Lighthouse",
+    );
+
+    expect(cache.size).toBe(1);
+    expect(reads(dictionaryFile("alice"))).toBe(1);
+  });
+
   it("degrades an absent dictionary to [] once, without throwing", async () => {
     const reads = countReads();
     const cache = createNamesTermsCache();
@@ -319,6 +417,46 @@ describe("names and terms dictionary caching", () => {
 
     // And the successful read IS memoized — a third call adds no read.
     await listNamesTerms("alice", cache);
+    expect(seen.filter((path) => path === dictionaryFile("alice"))).toHaveLength(2);
+  });
+
+  it("evicts a FAILED read under the TENANT key, not the raw handle", async () => {
+    // The eviction must look the promise up under the SAME key it was stored
+    // under. The test above cannot prove that: it uses "alice", where the raw
+    // handle already equals its tenant, so an eviction keyed on `owner` passes
+    // it unchanged. Here the handle differs from its tenant, so storing under
+    // `tenant(owner)` while evicting under `owner` finds nothing to delete and
+    // PINS the rejection — the second call would re-throw the transient error
+    // without ever reading again.
+    await writeDictionaryBytes("alice", [entry("Project Lighthouse")]);
+
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    const seen: string[] = [];
+    let failNext = true;
+    vi.spyOn(storage, "readFile").mockImplementation(async (target: string) => {
+      seen.push(target);
+      if (failNext && target === dictionaryFile("alice")) {
+        failNext = false;
+        throw Object.assign(new Error("EIO: transient storage failure"), {
+          code: "EIO",
+        });
+      }
+      return readFile(target);
+    });
+
+    const cache = createNamesTermsCache();
+
+    await expect(listNamesTerms("Alice", cache)).rejects.toThrow(
+      "transient storage failure",
+    );
+    // The rejected promise left no slot behind to inherit.
+    expect(cache.size).toBe(0);
+
+    const recovered = await listNamesTerms("Alice", cache);
+    expect(recovered.map((e) => e.canonical)).toEqual(["Project Lighthouse"]);
+    // Two reads: the one that failed and the retry. A rejection pinned under a
+    // key the eviction never looked at would have re-thrown without reading.
     expect(seen.filter((path) => path === dictionaryFile("alice"))).toHaveLength(2);
   });
 

@@ -1,5 +1,5 @@
 /**
- * One request-scoped handle for the two owner-keyed guidance memos (DW-322 /
+ * One request-scoped handle for the two tenant-keyed guidance memos (DW-322 /
  * DW-324).
  *
  * Every prompt that carries workspace guidance carries BOTH halves — the active
@@ -9,7 +9,8 @@
  * thread instead of two parallel ones at every site.
  *
  * It is a COMPOSITE of two independently-owned memos rather than a single map
- * because both are keyed by `owner` but hold different values — one map would
+ * because both are keyed by the owner's TENANT (each derived by its own leaf,
+ * matching the paths that leaf reads) but hold different values — one map would
  * collide on the key. Each leaf module owns the shape of its own memo; this
  * module only bundles them. It lives in its own file so neither leaf module has
  * to import the other (which would close an import cycle) and so a route can
@@ -39,11 +40,11 @@ import {
   type WorkspaceGuidanceCache,
 } from "./workspace-guidance";
 
-/** The two owner-keyed guidance memos that travel together. */
+/** The two tenant-keyed guidance memos that travel together. */
 export interface GuidanceCache {
-  /** Memoizes the active Wiki's rendered Workspace Purpose per owner. */
+  /** Memoizes the active Wiki's rendered Workspace Purpose per tenant. */
   workspace: WorkspaceGuidanceCache;
-  /** Memoizes the owner's sorted Names & Terms ENTRIES (not the rendered block). */
+  /** Memoizes the tenant's sorted Names & Terms ENTRIES (not the rendered block). */
   namesTerms: NamesTermsCache;
 }
 

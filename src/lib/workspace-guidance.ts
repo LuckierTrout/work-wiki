@@ -19,6 +19,7 @@
  * per operation and passes nothing.
  */
 
+import { ownerToTenant } from "./links";
 import { logger } from "./logger";
 import { getCurrentWiki } from "./wikis";
 import {
@@ -27,7 +28,7 @@ import {
 } from "./workspace-profile";
 
 /**
- * A caller-owned memo of resolved guidance, keyed by `owner`.
+ * A caller-owned memo of resolved guidance, keyed by TENANT.
  *
  * Deliberately a plain `Map` the CALLER creates: the handle's lifetime is
  * exactly the lifetime of the variable holding it, so a request that makes one
@@ -37,8 +38,21 @@ import {
  * for free but hide the lifetime from the call site, and would silently span a
  * long bulk run where a Purpose saved mid-run should still be picked up.
  *
- * Keyed by `owner` so one handle shared by two owners never crosses their
- * guidance. Holds the PROMISE rather than the string so the `Promise.all` pairs
+ * Keyed by the TENANT the underlying files are addressed by, so one handle
+ * shared by two owners never crosses their guidance, and two spellings of ONE
+ * handle (`"Alice"` / `"alice"`, which collapse to one tenant) share the single
+ * slot over those files instead of resolving twice into snapshots that can
+ * diverge (DW-394).
+ *
+ * The key comes from `ownerToTenant` while the registry and profile paths go
+ * through `wikis.ts` / `wiki-paths.ts`'s `tenantFor` — a DIFFERENT symbol that
+ * yields the same string BY DELEGATION, since its `tenantForOwner` is a
+ * one-line pass-through to `ownerToTenant` and its `validateTenant` only
+ * rejects, never rewrites. The total variant is used here on purpose: it always
+ * returns a non-empty tenant (`DEFAULT_TENANT` on fallback) and cannot throw,
+ * so the key derivation below — which sits OUTSIDE
+ * `resolveWorkspaceGuidance`'s catch — cannot break the never-rejects
+ * contract. Holds the PROMISE rather than the string so the `Promise.all` pairs
  * in `ingest.ts` share one in-flight resolution instead of racing two.
  */
 export type WorkspaceGuidanceCache = Map<string, Promise<string>>;
@@ -84,10 +98,12 @@ async function resolveWorkspaceGuidance(owner: string): Promise<string> {
  *
  * With no `cache`, this is exactly the call it has always been: a registry read
  * plus a profile read, every time. Pass a handle from
- * {@link createWorkspaceGuidanceCache} to resolve at most once per owner for the
- * life of that handle — an `ingest()` of one document calls this up to three
+ * {@link createWorkspaceGuidanceCache} to resolve at most once per TENANT for
+ * the life of that handle — an `ingest()` of one document calls this up to three
  * times (system prompt, map/reduce REDUCE, reconcile) for a value that cannot
- * change mid-document.
+ * change mid-document. The memo is keyed by `ownerToTenant(owner)`, which
+ * yields the same tenant the files it reads are addressed by, so two casings of
+ * one handle share one resolution (DW-394).
  *
  * The memo is stored BEFORE the resolution settles, so concurrent callers join
  * the same in-flight promise rather than starting a second read.
@@ -113,9 +129,14 @@ export async function buildWorkspaceGuidance(
   cache?: WorkspaceGuidanceCache,
 ): Promise<string> {
   if (!cache) return resolveWorkspaceGuidance(owner);
-  const memo = cache.get(owner);
+  // Keyed by what ADDRESSES the files, not by the raw handle: the registry and
+  // profile both live under `tenants/<tenant>/`, so `"Alice"` and `"alice"` are
+  // one silo and must be one memo slot (DW-394). `ownerToTenant` is total, so
+  // this cannot throw outside the fail-soft resolution below.
+  const key = ownerToTenant(owner);
+  const memo = cache.get(key);
   if (memo) return memo;
   const pending = resolveWorkspaceGuidance(owner);
-  cache.set(owner, pending);
+  cache.set(key, pending);
   return pending;
 }

@@ -184,7 +184,7 @@ async function writeEntries(owner: string, entries: readonly NamesTermEntry[]): 
 }
 
 /**
- * A caller-owned memo of the sorted dictionary, keyed by `owner` (DW-322).
+ * A caller-owned memo of the sorted dictionary, keyed by TENANT (DW-322).
  *
  * The sibling of {@link import("./workspace-guidance").WorkspaceGuidanceCache},
  * for the same reason: `ingest()` of ONE document reads `names-terms.json` up to
@@ -216,9 +216,14 @@ async function writeEntries(owner: string, entries: readonly NamesTermEntry[]): 
  * handle is served the pre-write dictionary. Hold a handle only across reads
  * that are meant to see one fixed snapshot.
  *
- * Keyed by `owner` so one handle shared by two owners never crosses their
- * dictionaries. Holds the PROMISE rather than the array so the `Promise.all`
- * pairs in `ingest.ts` share one in-flight read instead of racing two.
+ * Keyed by the TENANT the dictionary is addressed by — `tenant(owner)`, the
+ * same derivation {@link dictionaryPath} uses — so one handle shared by two
+ * owners never crosses their dictionaries, and two spellings of ONE handle
+ * (`"Alice"` / `"alice"`, which `ownerToTenant` collapses to one path) share
+ * the single slot over that one file instead of taking two reads and two
+ * snapshots that can diverge (DW-394). Holds the PROMISE rather than the array
+ * so the `Promise.all` pairs in `ingest.ts` share one in-flight read instead of
+ * racing two.
  */
 export type NamesTermsCache = Map<string, Promise<NamesTermEntry[]>>;
 
@@ -228,13 +233,38 @@ export function createNamesTermsCache(): NamesTermsCache {
 }
 
 /**
- * The uncached read — today's `listNamesTerms` body verbatim, moved here so the
- * cached and uncached paths cannot drift.
+ * The uncached read, and the SINGLE place a read snapshot is produced — cached
+ * and uncached callers both land here, so the two paths cannot drift.
+ *
+ * Each entry (and its `aliases`, the only nested mutable field on
+ * {@link NamesTermEntry}) is frozen before it leaves: under a handle every
+ * caller of the operation is handed the SAME entry objects, so an
+ * `entry.aliases.push(...)` in one consumer would otherwise leak into every
+ * later caller (DW-397). Freezing turns that into an immediate `TypeError` at
+ * the mutating line instead of a silent cross-caller edit. Only the entries are
+ * frozen — {@link listNamesTerms} still hands out a fresh top-level ARRAY that
+ * callers may sort or splice.
+ *
+ * {@link readEntries} deliberately stays unfrozen: `createNamesTerm` pushes onto
+ * the array it reads, `updateNamesTerm` index-assigns a spread-built
+ * replacement into it, and `deleteNamesTerm` filters it into a new one — all
+ * ARRAY-level writes over entries they never mutate in place, which is exactly
+ * why the freeze belongs here and not there.
  */
 async function resolveSortedEntries(owner: string): Promise<NamesTermEntry[]> {
-  return (await readEntries(owner)).sort(
+  const entries = (await readEntries(owner)).sort(
     (a, b) => a.kind.localeCompare(b.kind) || a.canonical.localeCompare(b.canonical),
   );
+  for (const entry of entries) {
+    // `readEntries` only checks `Array.isArray`, so a corrupt or hand-edited
+    // file can hold a `null`/non-object element. Skip it: dereferencing
+    // `.aliases` would make the freeze throw where the value used to pass
+    // straight through, and freezing must add no new failure mode.
+    if (!entry || typeof entry !== "object") continue;
+    Object.freeze(entry.aliases);
+    Object.freeze(entry);
+  }
+  return entries;
 }
 
 /**
@@ -242,14 +272,17 @@ async function resolveSortedEntries(owner: string): Promise<NamesTermEntry[]> {
  *
  * With no `cache`, this is exactly the call it has always been: one storage read
  * every time, ENOENT degrading to `[]`. Pass a handle from
- * {@link createNamesTermsCache} to read at most once per owner for the life of
- * that handle.
+ * {@link createNamesTermsCache} to read at most once per TENANT for the life of
+ * that handle — the memo is keyed by the same `tenant(owner)` that addresses the
+ * file, so two casings of one handle share one read (DW-394).
  *
  * The cached path returns a FRESH top-level array on every call, so a caller
  * that sorts or splices its result (several do) can never corrupt what the next
- * caller sees. The entry objects themselves are shared — as they already are
- * between the two arrays a single uncached read produces — and no caller mutates
- * them.
+ * caller sees. The entry OBJECTS are shared between those arrays, so
+ * {@link resolveSortedEntries} freezes each one and its `aliases`: mutating a
+ * returned entry throws a `TypeError` rather than silently rewriting what every
+ * later caller under the handle sees (DW-397). The exported types stay mutable,
+ * so the failure is at runtime, at the mutating line.
  *
  * Only a SUCCESSFUL read is memoized; a failure is evicted and the next call
  * re-reads.
@@ -259,13 +292,17 @@ export async function listNamesTerms(
   cache?: NamesTermsCache,
 ): Promise<NamesTermEntry[]> {
   if (!cache) return resolveSortedEntries(owner);
-  let memo = cache.get(owner);
+  // Keyed by what ADDRESSES the file, not by the raw handle: `dictionaryPath`
+  // routes through the same `tenant()`, so `"Alice"` and `"alice"` are one file
+  // and must be one memo slot (DW-394).
+  const key = tenant(owner);
+  let memo = cache.get(key);
   if (!memo) {
     // Stored BEFORE the read settles, so concurrent callers join the same
     // in-flight read rather than starting a second one.
     const pending = resolveSortedEntries(owner);
     memo = pending;
-    cache.set(owner, pending);
+    cache.set(key, pending);
     // A REJECTION is not memoized. A handle can span a whole request (the batch
     // route's inline fallback), so pinning one transient non-ENOENT storage
     // error would fail every remaining document of that request even though
@@ -275,7 +312,7 @@ export async function listNamesTerms(
     // on this derived promise (no unhandled rejection) and rethrows nothing;
     // the awaiting caller below still receives the original error.
     pending.catch(() => {
-      if (cache.get(owner) === pending) cache.delete(owner);
+      if (cache.get(key) === pending) cache.delete(key);
     });
   }
   return [...(await memo)];

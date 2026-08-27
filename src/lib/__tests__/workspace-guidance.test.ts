@@ -90,7 +90,7 @@ function countReads(): (relativePath: string) => number {
 }
 
 describe("buildWorkspaceGuidance caching", () => {
-  it("resolves once per owner when a cache handle is passed", async () => {
+  it("resolves once per tenant when a cache handle is passed", async () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     await saveWorkspaceProfile(OWNER, wiki.id, {
       scenario: "custom",
@@ -258,6 +258,40 @@ describe("buildWorkspaceGuidance caching", () => {
     expect(reads(wikiProfilePath(OWNER, aliceWiki.id))).toBe(1);
     expect(reads(wikiRegistryPath(OTHER_OWNER))).toBe(1);
     expect(reads(wikiProfilePath(OTHER_OWNER, bobWiki.id))).toBe(1);
+  });
+
+  it("collapses two owner casings of one tenant onto a single resolution", async () => {
+    // Both files this resolves live under `tenants/alice/`, so "Alice" and
+    // "alice" address ONE registry and ONE profile. Keying the memo on the raw
+    // handle would take two slots over them — two resolutions, two snapshots
+    // that can diverge under a single handle (DW-394).
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await saveWorkspaceProfile(OWNER, wiki.id, {
+      scenario: "custom",
+      purpose: "Track Project Lighthouse decisions.",
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+
+    const reads = countReads();
+    const cache = createWorkspaceGuidanceCache();
+
+    const first = await buildWorkspaceGuidance("Alice", cache);
+    expect(first).toContain("Project Lighthouse");
+
+    // The bytes change under the memo: a second key would read them.
+    await writeProfileBytes(OWNER, wiki.id, "Track the Phoenix reading shelf.");
+
+    const second = await buildWorkspaceGuidance("alice", cache);
+    expect(second).toBe(first);
+    expect(second).not.toContain("Phoenix reading shelf");
+
+    expect(cache.size).toBe(1);
+    expect(reads(wikiRegistryPath(OWNER))).toBe(1);
+    expect(reads(wikiProfilePath(OWNER, wiki.id))).toBe(1);
   });
 
   it("hands out a FRESH handle each time, so a new one re-reads", async () => {
