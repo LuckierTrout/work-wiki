@@ -32,7 +32,7 @@ vi.mock("postal-mime", () => ({
   default: { parse: (...args: unknown[]) => parseMock(...args) },
 }));
 
-import worker from "../../../workers/email-ingest/index";
+import worker, { decodedByteLength } from "../../../workers/email-ingest/index";
 
 function parsedEmail(attachments: FakeAttachment[]) {
   return {
@@ -259,5 +259,66 @@ describe("email-ingest attachment content normalization", () => {
       },
     ]);
     expect(parts.map((part) => part.name)).toEqual(["c.data"]);
+  });
+});
+
+/**
+ * `decodedByteLength`'s string branch (DW-360). The aggregate budget has to
+ * measure a part WITHOUT allocating it — encoding it to read the result's length
+ * would materialise the very bytes the budget exists to bound — so the helper
+ * hand-computes UTF-8 widths from code units: 1, 2 or 3 bytes by range, 4 for a
+ * surrogate PAIR, and 3 for a LONE surrogate, which is the width of the U+FFFD
+ * `TextEncoder` substitutes.
+ *
+ * That is ~20 lines of arithmetic with four ways to be wrong and no behavioural
+ * coverage anywhere: every fixture in the sibling suite goes through real
+ * PostalMime, whose default `attachmentEncoding` is `arraybuffer`, so the string
+ * branch is dead against all of them. An under-count would let an over-budget
+ * selection through the bound silently.
+ *
+ * Pinned against `TextEncoder` rather than against hand-typed byte counts: the
+ * encoder is the authority on what these strings really occupy, and restating
+ * its answers as literals would agree with the helper only by coincidence.
+ */
+describe("email-ingest decoded byte length", () => {
+  const CASES: readonly (readonly [string, string])[] = [
+    ["ASCII", "id,total\nalpha,10\n"],
+    // 2-byte range: Latin-1 supplement and Greek, U+0080-U+07FF.
+    ["two-byte", "bêta café naïve — ΑΒΓΔ"],
+    // 3-byte range: CJK and the replacement char itself, U+0800-U+FFFF.
+    ["three-byte", "四半期報告書 �"],
+    // 4-byte: astral plane, which arrives as a surrogate PAIR of code units.
+    // The pair must cost 4 bytes total, not 4 each -- the off-by-one that
+    // double-counts the trailing unit shows up only here.
+    ["astral (surrogate pair)", "quarterly 📊📈 report 𝕏"],
+    // A LONE high surrogate: unpaired, so `TextEncoder` substitutes U+FFFD at 3
+    // bytes. Reachable from real mail, because a client that truncates a UTF-16
+    // string mid-pair emits exactly this.
+    ["lone high surrogate", "truncated \ud83d"],
+    // A lone LOW surrogate, and one followed by an ordinary character, so the
+    // "is the next unit a low surrogate?" lookahead is exercised in both
+    // directions rather than only at end-of-string.
+    ["lone low surrogate", "\udc00 stray \ud83dx tail"],
+    // Mixed, plus the empty string: the loop must terminate at zero length
+    // without charging for a phantom unit.
+    ["mixed", "aé中😀\ud83d"],
+    ["empty", ""],
+  ];
+
+  for (const [label, content] of CASES) {
+    it(`counts ${label} content exactly as TextEncoder does`, () => {
+      expect(decodedByteLength(content)).toBe(new TextEncoder().encode(content).byteLength);
+    });
+  }
+
+  it("reads byteLength off the buffer shapes without touching the string path", () => {
+    // The two branches the real parser actually produces. An `ArrayBuffer` and a
+    // view over a NON-ZERO offset must report their own lengths -- a view whose
+    // length was read from the underlying buffer would over-count the budget and
+    // drop parts that fit.
+    const source = bytes(9, 64);
+    expect(decodedByteLength(source.slice().buffer)).toBe(64);
+    const view = new Uint8Array(source.slice().buffer, 16, 32);
+    expect(decodedByteLength(view)).toBe(32);
   });
 });

@@ -3190,7 +3190,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts
 severity: medium
 reason: Many clients send text/* attachments and non-ASCII bodies as quoted-printable, which expands up to roughly 3x for byte-dense content — far beyond base64's 4/3. A large .csv or .txt attachment can therefore still be refused below the advertised per-document ceiling, for the same reason DW-104 described for base64.
-status: open
+status: done 2026-08-26
+resolution: resolved by sweep bundle dw-email-ingest-worker-caps
 decision: 2026-08-21 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 decision: 2026-08-20 Widen for worst-case encoding — Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.
 
@@ -3200,7 +3201,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts
 severity: low
 reason: `parsed.attachments` from postal-mime includes parts with `disposition: "inline"` and a `contentId`. Every ordinary email with a branded signature therefore produces an "N unsupported attachments were recorded but skipped" line. Pre-existing — the old subtraction counted them too — so this is not a regression, but the corrected accounting makes the noise more visible.
-status: open
+status: done 2026-08-26
+resolution: resolved by sweep bundle dw-email-ingest-worker-caps
 
 ### DW-360: Nothing bounds the aggregate size of the attachments the Worker copies into the forwarded FormData, and raising the raw cap raises that peak.
 origin: spec-deferred 9ad9274b13e0
@@ -3208,7 +3210,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts
 severity: low
 reason: The forwarding loop copies each attachment twice (source view, then a fresh Uint8Array) on top of the parsed MIME tree, inside a Cloudflare Worker's memory budget. The cap governs one raw message, not the sum of decoded attachment bytes plus copies. No test or guard covers the aggregate.
-status: open
+status: done 2026-08-26
+resolution: resolved by sweep bundle dw-email-ingest-worker-caps
 
 ### DW-361: A full-size document and a maximal email body cannot both fit under the derived raw cap, because the 64 KiB envelope allowance is far smaller than MAX_EMAIL_CONTENT_CHARS.
 origin: spec-deferred 29968aee1ee7
@@ -3216,7 +3219,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_RAW_EMAIL_BYTES` leaves 65,533 bytes of slack above the 14,348,938-byte wire size of a base64-encoded `MAX_DOCUMENT_SIZE` document, while the Worker's own `MAX_EMAIL_CONTENT_CHARS` is 100,000 and the body is truncated only *after* the `rawSize` gate. An email carrying a 10 MB attachment plus a body anywhere near the accepted length is refused with a size bounce although every individual limit is respected. Not a regression -- the old 10 MB cap refused that message too -- and the constant's comment now says so, but no test covers the interaction of the two caps.
-status: open
+status: done 2026-08-26
+resolution: resolved by sweep bundle dw-email-ingest-worker-caps
 
 ### DW-362: The raw cap bounds one full-size document, so several mid-size supported documents are refused wholesale even though every per-document and per-count limit is respected.
 origin: spec-deferred 95bfc309fad5
@@ -3224,7 +3228,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: workers/email-ingest/index.ts:59
 severity: medium
 reason: `MAX_EMAIL_ATTACHMENTS` is 10 and `MAX_DOCUMENT_SIZE` is 10 MB, so the advertised envelope is up to ten documents; ten 2 MB documents encode to roughly 27 MB and are bounced by `MAX_RAW_EMAIL_BYTES` (14.4 MB) with "larger than 13.7 MB". The per-message cap and the per-email attachment cap describe incompatible envelopes, which also makes the new over-cap acknowledgement line unreachable for anything but small files. Pre-existing and worse before this change (the cap was 10 MB); distinct from the aggregate-memory item above, which is about the forwarding copies rather than the gate.
-status: open
+status: done 2026-08-26
+resolution: resolved by sweep bundle dw-email-ingest-worker-caps
 decision: 2026-08-21 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 decision: 2026-08-20 Derive an aggregate budget — Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.
 
@@ -3914,4 +3919,44 @@ status: open
 origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
 location: src/components/workbench/SettingsCanvas.tsx, src/lib/workbench-settings.ts
 reason: Split out of epic-8-retro-architecture-follow-on so that run could cover only the `sidecar/server.mjs` provider and the Chat transport. Pulling the API/MCP category out of the generic SettingsCanvas / workbench-settings pair is an independent Settings extract and can land and merge without the sidecar change.
+status: open
+
+### DW-446: Inline parts still consume attachment-count slots and aggregate-budget bytes while being excluded from every countable loss, so the over-cap sentence can quote a limit the sender never reached and an
+origin: spec-deferred de0d1c34e95a
+source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
+location: workers/email-ingest/index.ts (selection loop and loss counts)
+severity: medium
+reason: DW-359 moved inline parts out of `unsupportedCount`, `overCapCount` and `overBudgetCount` but deliberately left eligibility alone, so the selection loop in `workers/email-ingest/index.ts` still spends `MAX_EMAIL_ATTACHMENTS` slots and `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` on them. A message with three inline logos and nine real PDFs can therefore be told "2 supported attachments were not queued because this email exceeds the 10-attachment limit" while the sender attached nine files. The converse is pinned by "reports over-budget, over-cap and unsupported losses in one scrubbed acknowledgement": an eligible inline `.md` past the cap is reported nowhere. Fixing it means deciding whether inline parts should be forwarded at all, which DW-359 explicitly did not ask for.
+status: open
+
+### DW-447: Raising the raw cap widens the band in which the Worker forwards a single attachment above the route's per-document ceiling, and the route answers that with a 400 that loses the body and every sibling
+origin: spec-deferred 3496e6f2df4d
+source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
+location: workers/email-ingest/index.ts (forwarding selection)
+severity: medium
+reason: The Worker enforces no per-document limit of its own — `MAX_EMAIL_DOCUMENT_BYTES` appears only in comments and in the `Math.max` floor — so anything from 10 MiB up to the 20 MiB aggregate budget now reaches `src/app/api/email/ingest/route.ts:221-225`, which rejects the WHOLE message with "<name> is larger than 10 MB". That band was roughly 10-10.5 MiB before this change. The Worker-side per-attachment size pre-filter that would drop the oversized part instead is DW-253's subject, still open and out of this bundle's scope.
+status: open
+
+### DW-448: Nothing bounds the parse-time buffered peak, which this change roughly doubled by raising the raw cap.
+origin: spec-deferred 32f52b5643ef
+source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
+location: workers/email-ingest/index.ts (PostalMime.parse, ahead of the selection loop)
+severity: medium
+reason: `PostalMime.parse(message.raw)` decodes the entire MIME tree before the selection loop runs, so the DW-360 budget governs only the `FormData` copies of SELECTED parts. The peak the ledger entry's `reason` also names — "the parsed MIME tree" — is bounded solely by `MAX_RAW_EMAIL_BYTES`, which this change took from 32,781,108 to 65,496,679 bytes. The source comments now state this plainly rather than implying the budget bounds the whole payload, but nothing enforces it and no test observes a buffered peak.
+status: open
+
+### DW-449: The 62.4 MB now quoted to senders may exceed Cloudflare Email Routing's own inbound message ceiling, making the widening unreachable in production.
+origin: spec-deferred a47c1f40039c
+source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
+location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
+severity: low
+reason: Email Routing is reported to enforce an inbound per-message limit of roughly 25 MiB. Nothing in `wrangler.jsonc`, `workers/email-ingest/README.md` or this repo records that figure, and it could not be verified offline, so nothing was clamped. If the premise holds, the shapes this derivation was widened to admit — ten byte-dense quoted-printable parts at 65,431,170 bytes — never reach the Worker at all, and the refusal copy invites a resend under a ceiling the transport rejects first.
+status: open
+
+### DW-450: `inlineAttachment` reads only `disposition`, so a signature logo sent with a Content-ID but no Content-Disposition header still produces the phantom skipped- attachment line DW-359 exists to remove.
+origin: spec-deferred 1e0945b2e0c0
+source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
+location: workers/email-ingest/index.ts (inlineAttachment)
+severity: low
+reason: The predicate is `attachment.disposition === "inline"`, and its comment records the deliberate choice to treat a `null` disposition as a real attachment rather than risk dropping a file the sender really sent. postal-mime also exposes `contentId` and a `related` flag, and DW-359's own text describes the noisy parts as having `disposition: "inline"` AND a `contentId`. A client that emits `Content-ID` without a disposition header therefore keeps the behaviour the entry was filed against. Widening the predicate is a separate decision about which signal to trust.
 status: open
