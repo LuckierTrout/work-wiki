@@ -109,9 +109,9 @@ export const SUPPORTED_DOCUMENT_MIME_TYPES: readonly string[] =
  * Worker string and the README cannot import from `src/lib` under any
  * arrangement, so generating at only those two would leave the other two
  * unpinned and split one convention into two. `prose-inventory-parity.test.ts`
- * therefore reads all six of the repo's prose inventories back out of their
- * files and compares their tokens to a derived set — this map being the derived
- * set for the four hand-written format sentences.
+ * therefore reads all nine of the repo's prose inventories, spread across eight
+ * files, back out of those files and compares their tokens to a derived set —
+ * this map being the derived set for the four hand-written format sentences.
  *
  * It lives here, next to `DOCUMENT_FORMATS`, because `Record<DocumentFormat, …>`
  * is exhaustive at compile time: a format added above cannot land without a

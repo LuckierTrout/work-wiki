@@ -17,6 +17,7 @@ import {
   checkUncitedClaims,
   checkSupersededDangling,
   checkDisputedPages,
+  checkDuplicateEntities,
   LOW_CONFIDENCE_THRESHOLD,
   STALE_VERIFICATION_DAYS,
   buildSummary,
@@ -1006,14 +1007,54 @@ describe("checkDisputedPages", () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkDuplicateEntities
+// ---------------------------------------------------------------------------
+
+describe("checkDuplicateEntities", () => {
+  it("names the merge action and aliases[] in the suggestion", async () => {
+    // Two pages for one entity: the second carries the first's title as an
+    // alias, which is the overlap `findDuplicateEntities` pairs on.
+    await createPageWithIndex("acme-corp", "Acme Corp", {
+      created: "2025-01-01",
+    });
+    await createPageWithIndex("acme-corporation", "Acme Corporation", {
+      aliases: ["Acme Corp"],
+      created: "2025-01-01",
+    });
+
+    const issues = await checkDuplicateEntities();
+    expect(issues).toHaveLength(1);
+    const [issue] = issues;
+    expect(issue.type).toBe("duplicate-entity");
+    expect(issue.severity).toBe("warning");
+    expect(new Set([issue.slug, issue.target])).toEqual(
+      new Set(["acme-corp", "acme-corporation"]),
+    );
+
+    // `duplicate-entity` is NOT in `AUTO_FIXABLE_CHECK_TYPES`, so the stdio MCP
+    // server's `z.enum` refuses it at the transport and the agent never reaches
+    // `NOT_AUTO_FIXABLE`'s explanation. On that door this `suggestion` is the
+    // ONLY carrier of the action to take — it is what `fix_lint_issue`'s tool
+    // description points the agent at — so pin both halves of it: the merge
+    // itself, and where the absorbed name has to survive so its URL still
+    // resolves. Losing either would leave the type unfixable AND unexplained.
+    expect(issue.suggestion).toBeDefined();
+    expect(issue.suggestion?.toLowerCase()).toContain("merge");
+    expect(issue.suggestion).toContain("aliases[]");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Retired discussion checks
 // ---------------------------------------------------------------------------
 
 describe("retired discussion checks", () => {
   it("ALL_CHECK_TYPES no longer offers the talk-surface check", () => {
-    // The talk surface is retired. This type drove the lint_wiki /
-    // fix_lint_issue MCP schemas and the API's check-type validation via this
-    // const, so its absence here is what keeps it out of all three.
+    // The talk surface is retired. This type drove `lint_wiki`'s MCP schemas
+    // and the API's check-type validation via this const, so its absence here
+    // is what keeps it out of both. (`fix_lint_issue` and `POST /api/lint/fix`
+    // read the narrower `AUTO_FIXABLE_CHECK_TYPES` since DW-348, so they never
+    // admitted it either way.)
     //
     // Only the talk-shaped check is asserted here. `disputed-page` is NOT part
     // of this retirement — the `disputed` frontmatter flag outlived talk — and
@@ -1042,7 +1083,11 @@ describe("ALL_CHECK_TYPES roster", () => {
     // DW-76: ingest still sets the `disputed` frontmatter flag and ArticleView
     // still renders its banner, so the flag needs a surface that lists the
     // flagged pages for an owner. That surface is this check, and it only
-    // reaches the UI toggles and the MCP enum by being in this list.
+    // reaches the UI toggles and `lint_wiki`'s check enum by being in this
+    // list. NOT `fix_lint_issue`'s enum — that one is
+    // `AUTO_FIXABLE_CHECK_TYPES`, which deliberately excludes this type
+    // (DW-348); the human action reaches the caller through the issue's own
+    // `suggestion` instead.
     expect(ALL_CHECK_TYPES).toContain("disputed-page");
   });
 

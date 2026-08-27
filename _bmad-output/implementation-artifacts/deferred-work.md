@@ -3050,7 +3050,8 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: src/lib/maintenance.ts:11
 severity: medium
 reason: src/lib/maintenance.ts's module header and workers/task-consumer/README.md:47-49 both re-list the union by hand. `MaintainFixType` (src/lib/tasks.ts:164-172) appears in no test, so adding a ninth member re-stales both silently -- exactly the mechanism DW-127 reported. DW-130 got a pin in this pass (mcp-annotations.test.ts); this list did not, because the intent did not ask for one.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-advertised-input-and-fix-type-parity
 
 ### DW-342: A fifth supported-format sentence lives in the bulk importer and is already stale, and the private allowlist behind it is narrower than the app's.
 origin: spec-deferred fe13901b98f1
@@ -3067,7 +3068,8 @@ source_spec: `spec-dw-132-249-prose-inventory-parity.md`
 location: src/lib/tasks.ts:213
 severity: medium
 reason: `src/lib/tasks.ts:213` builds `new Set<MaintainFixType>([...])`, which rejects extra members but not omitted ones — the exact half `AssertNever` was added to cover for `TASK_KINDS` one screen above. A ninth fix type wired into `src/lib/maintenance.ts` but forgotten here makes `parseTask` return null at :440, so the enqueued task is treated as poison and goes to the DLQ, with `tsc` silent. `workers/task-consumer/README.md:48-50` restates the eight fix types in prose and nothing reads it — a seventh inventory of the same shape as the six this pass pinned.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-advertised-input-and-fix-type-parity
 
 ### DW-344: The bulk-import file picker advertises formats the very next step refuses.
 origin: spec-deferred ec1d252f2b80
@@ -3093,7 +3095,8 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/app/api/lint/fix/route.ts:17
 severity: medium
 reason: `src/app/api/lint/fix/route.ts:17-30` lists `missing-crossref`, `orphan-page`, `stale-index`, `empty-page` and `contradiction` under "Supported issue types", omitting `broken-link`, `missing-concept-page`, `stale-page`, `unmigrated-page` and `supersedes-dangling` — the very type DW-229 was about. This story derived every executable copy of the list and left the one an integrator reads. It is a doc comment, so nothing observes it; the repo's own convention for pinning a prose inventory it cannot generate is `prose-inventory-parity.test.ts`.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-advertised-input-and-fix-type-parity
 
 ### DW-347: Bulk import's `accept` advertises 21 MIME types its validator never consults, so a file the picker admits by content type alone is still refused client-side.
 origin: spec-deferred 4e813d060c28
@@ -3101,7 +3104,8 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/lib/bulk-document-import.ts:80
 severity: medium
 reason: `validationError` (`src/lib/bulk-document-import.ts`) branches only on `documentExtension(file.name)` and ignores `file.type` entirely, while `ACCEPTED_DOCUMENT_ATTRIBUTE` now derives from extensions AND `SUPPORTED_DOCUMENT_MIME_TYPES`. An extension-less file carrying `application/pdf` therefore passes the picker and is rejected by the manifest, though `detectDocumentFormat` at `/api/ingest/document` accepts it on the MIME arm. This is the residual half of DW-246's class (client narrower than server); the intent named the list, not the MIME arm, so it is out of this story's scope.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-advertised-input-and-fix-type-parity
 
 ### DW-348: The two untrusted lint-fix doors accept an unvalidated `type` even though `AUTO_FIXABLE_CHECK_TYPES` now exists as a tuple to validate against.
 origin: spec-deferred ac2df2d3e945
@@ -3109,7 +3113,8 @@ source_spec: `spec-dw-229-246-hand-copied-list-parity.md`
 location: src/app/api/lint/fix/route.ts:54
 severity: medium
 reason: `src/app/api/lint/fix/route.ts:54-56` destructures `type` off a raw `await req.json()` with no schema at all, and `src/lib/mcp-http.ts:490` declares it as free-form `str(...)`. `src/mcp.ts:2465` does validate, but against `z.enum(ALL_CHECK_TYPES)` rather than the fixable subset. The `ownEntry` guard added by this story is currently the only defense; `z.enum(AUTO_FIXABLE_CHECK_TYPES)` at the door would make it a second line rather than the sole one.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-advertised-input-and-fix-type-parity
 
 ### DW-349: workers/email-ingest/README.md:20 documents a live app menu path with the retired brand ("the address entered under Yopedia **Settings -> Email ingestion**"), so the exemption freezes wrong operator d
 origin: spec-deferred 8edfd4178f50
@@ -3997,4 +4002,44 @@ source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-test
 location: workers/email-ingest/index.ts:747
 severity: low
 reason: workers/email-ingest/index.ts:747 builds the recorded names with `attachment.filename || "unnamed attachment"`, while `replyAttachmentName` (:429) scrubs and trims before falling back. `sanitizeAttachmentNames` in src/lib/email-ingest.ts then drops the whitespace name, so the recorded list and the sender's reply disagree about the same part. Pre-existing; routing that build through `replyAttachmentName` would settle it.
+status: open
+
+### DW-455: `fix_lint_issue` on the HTTP MCP transport gates `type` but still forwards `slug`, `target` and `message` to the handler with no check, so the two lint-fix doors now enforce different contracts for th
+origin: spec-deferred e087978212e5
+source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.md`
+location: src/lib/mcp-http.ts:525
+severity: medium
+reason: `src/lib/mcp-http.ts`'s `run` calls `autoFixRefusal` on `type`, then does `...(a as { type: string; slug: string; target?: string; message?: string })`. `dispatchMcp` does not validate `tools/call` arguments, so a non-string `slug` reaches `handleFixLintIssue` and surfaces as a 404 naming `[object Object]`. The REST door type-checks all four fields via `LINT_FIX_REQUEST`. Pre-existing (the cast predates this change) and outside DW-348, whose title scopes the defect to `type`.
+status: open
+
+### DW-456: `POST /api/lint/fix` never passes the owner's handle as `author`, so every REST lint fix is attributed to the default `"lint-fix"` while both MCP doors pass the real principal.
+origin: spec-deferred 679ba44876d9
+source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.md`
+location: src/app/api/lint/fix/route.ts:156
+severity: medium
+reason: The route resolves `principal` for its owner gate, then calls `fixLintIssue(type, slug ?? "", targetSlug, message)` with no fifth argument; `fixLintIssue`'s `author` parameter defaults to `"lint-fix"`. `src/lib/mcp-http.ts` and `src/mcp.ts` both pass `p!.handle`. Pre-existing — the pre-change line omitted it too — but the line was rewritten by this change and the principal is in scope three statements above.
+status: open
+
+### DW-457: `missing-concept-page` is effectively unreachable over both MCP transports: `slug` is required in both schemas though the type reads `message` alone.
+origin: spec-deferred fa89864ceffa
+source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.md`
+location: src/mcp.ts:2501
+severity: medium
+reason: The route JSDoc this change wrote states the type "Reads `message` ALONE — no `slug`, no `targetSlug`", and `LINT_FIX_REQUEST` makes `slug` optional for exactly that reason. But `src/mcp.ts` declares `slug: z.string()` (required) and `src/lib/mcp-http.ts` lists `["type", "slug"]` as required, so an agent must invent a dummy slug. No test on either transport exercises this type. Pre-existing; surfaced by the JSDoc making the asymmetry explicit.
+status: open
+
+### DW-458: `autoFixRefusal(type, "")` renders `PATCH /api/wiki/` with an empty slug segment, contradicting the copy-pasteability rationale the change states for gating at the doors.
+origin: spec-deferred 48ad75afbe4a
+source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.md`
+location: src/lib/lint-fix.ts:830
+severity: low
+reason: Both doors deliberately pass `""` when no usable slug arrived. For `disputed-page` the `NOT_AUTO_FIXABLE` sentence then reads `Reconcile the conflicting claims in "", then clear the Disputed toggle in the page editor (PATCH /api/wiki/ with metadata { disputed: false })` — a path that 404s if pasted. `src/mcp.ts`'s own comment argues the sentence must name the sibling slug to be worth keeping. No test sends a slug-less non-fixable type to either door.
+status: open
+
+### DW-459: `MaintainFixType` has no compile-time constraint to `AutoFixableCheckType`, so it remains an un-derived restatement of a subset of the fixable list.
+origin: spec-deferred e7aae2c2adb1
+source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.md`
+location: src/lib/tasks.ts:285
+severity: low
+reason: This change pins `MAINTAIN_FIX_TYPES` to `MaintainFixType` in both directions, but the union itself (`src/lib/tasks.ts:285-292`) is a bare literal union with no reference to `AutoFixableCheckType`. A member dropped from `AUTO_FIXABLE_CHECK_TYPES` would still compile here and surface only as a runtime `FixValidationError` on the maintenance path (`src/app/api/tasks/run/route.ts:255`). The bundle intent named the restatements of the fixable list, not the subset relation between the two lists.
 status: open
