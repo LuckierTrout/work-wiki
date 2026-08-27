@@ -567,6 +567,28 @@ export async function runStatus(): Promise<void> {
   console.log(`Wiki pages:\t${pages.length}`);
   console.log(`Raw sources:\t${sources.length}`);
   console.log(`LLM provider:\t${settings.provider ?? "not configured"}`);
+  // WHY the endpoint was thrown away (DW-402, DW-418).
+  //
+  // "not configured" above is the same word for "nothing was ever set" and for
+  // "what you set was refused", and only the second has an action attached. The
+  // resolver already knows which and carries the sentence on
+  // `EffectiveSettings`; the headless operator is the reader least able to go
+  // look, since there is no Settings screen on this side of the product.
+  //
+  // LABELLED FOR ITS OWN SUBJECT, not as a note on the row above. The refusal is
+  // about `OLLAMA_BASE_URL` and is reported whether or not a provider resolved —
+  // a deployment running `anthropic` can still have a typo'd Ollama endpoint,
+  // and suppressing the sentence there would hide it from the only reader who
+  // cannot go and look. A row called "Provider note" printed under a successful
+  // `LLM provider:` line would read as qualifying a verdict that succeeded;
+  // "Ollama endpoint" names what it is actually about.
+  //
+  // CONDITIONAL, so a clean config prints exactly the four lines it always has —
+  // `Label:\tvalue` is a parsed shape, and an empty fifth row would be a new
+  // field for every reader of this output.
+  if (settings.ollamaBaseUrlIssue) {
+    console.log(`Ollama endpoint:\t${settings.ollamaBaseUrlIssue}`);
+  }
   console.log(`Embeddings:\t${settings.embeddingSupport ? "available" : "not available"}`);
 }
 

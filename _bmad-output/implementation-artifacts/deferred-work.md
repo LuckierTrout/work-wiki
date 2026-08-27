@@ -3333,7 +3333,8 @@ source_spec: `spec-dw-61-327-329-legacy-settings-surface-parity.md`
 location: src/lib/llm.ts:287
 severity: low
 reason: src/lib/llm.ts:287, :292, :301, :402, :407 spell the destination as string literals. workbench-settings.ts now derives its own pointers from SETTINGS_CATEGORIES precisely to prevent that drift, and documents why llm.ts deliberately keeps the shorter form - but nothing enforces the category half of either string. Pre-existing; surfaced by the new settingsPointer helper rather than caused by it.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-provider-verdict-surfaces
 
 ### DW-370: `detectEnvProvider()` and the embedding provider detection still select `ollama` from the mere presence of `OLLAMA_BASE_URL`, including a value `getOllamaBaseUrl` now refuses.
 origin: spec-deferred 9a66b32844ef
@@ -3756,7 +3757,8 @@ source_spec: `spec-dw-402-403-endpoint-refusal-and-readiness.md`
 location: src/app/settings/page.tsx:117-135 and src/components/StatusBadge.tsx
 severity: medium
 reason: `StatusBadge` — the component the ledger names, and the one this change taught to render the sentence — is imported by nothing in `src/` except its own new test (verified repo-wide). Its reachable twin is the status block at `src/app/settings/page.tsx:117-135`, which renders `status?.configured ? "Connected: …" : "No LLM provider configured"` from the same `/api/status` body and was left unchanged; `useSettings` now carries `status.ollamaBaseUrlIssue` and nothing reads it. The other render site, `ProviderForm`'s endpoint block, is gated on `effectiveProvider === "ollama"` (`src/components/ProviderForm.tsx:96-97`) — and in the described state (`OLLAMA_BASE_URL=localhost:11434`, nothing else set) `detectEnvProvider` deliberately selects no provider, so the block never renders and the owner must guess "pick Ollama" to be told why Ollama was not picked. Pre-existing (the badge has never been mounted) and outside this bundle's named render sites, but it is what stands between the served fie
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-provider-verdict-surfaces
 
 ### DW-418: `yopedia status` prints the provider verdict with no reason, so the CLI — the surface a headless operator actually reaches — still reports "not configured" for a variable the deployment saw and refuse
 origin: spec-deferred 6fcc711d76d0
@@ -3764,7 +3766,8 @@ source_spec: `spec-dw-402-403-endpoint-refusal-and-readiness.md`
 location: src/cli.ts:554-567
 severity: medium
 reason: `runStatus` (`src/cli.ts:554-567`) reads `getEffectiveSettings()` and prints `LLM provider` and `Embeddings` only. The payload now carries `ollamaBaseUrlIssue` beside those fields, so the sentence is one line away, but nothing prints it. This change touched `src/lib/__tests__/cli.test.ts` only to keep a whole-object fixture compiling. Same harm class as DW-402 on a third surface the bundle's intent did not name.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-provider-verdict-surfaces
 
 ### DW-419: The Ollama Cloud note is the same shape of picker-conditional pointer as the custom-endpoint note and is still unassociated with the provider picker.
 origin: spec-deferred bfa78eb632ac
@@ -4417,4 +4420,28 @@ source_spec: `spec-dw-155-156-157-158-owner-and-schema-resolution-pins.md`
 location: src/lib/__tests__/lint.test.ts:670
 severity: low
 reason: The `includes SCHEMA.md conventions in contradiction detection prompt` test changes the process working directory and restores it in a `finally`. Vitest runs a file's tests in one worker process, so a restore that is skipped leaves every later test in that worker with a cwd it did not set, and `rootSchemaPath()` is `${process.cwd()}/SCHEMA.md`. The new DW-158 block deliberately avoids `chdir` for exactly this reason; making the older test use the explicit `schemaPath` override instead would remove the hazard. Pre-existing.
+status: open
+
+### DW-502: `runStatus()` never awaits `loadConfig()`, so `yopedia status` reports env-only settings and is blind to anything the owner stored.
+origin: spec-deferred de4446ecbf37
+source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
+location: src/cli.ts:558-571
+severity: medium
+reason: `src/cli.ts:558-571` calls `getEffectiveSettings()` without a preceding `loadConfig()`. `loadConfigSync()` returns `{}` on a cold cache (`src/lib/config.ts:937-946`), so on a fresh CLI process the store leg of every ladder is empty. This predates and outlives this change: the `LLM provider:` verdict itself, not only the new endpoint line, cannot see a stored provider or a stored refused base URL.
+status: open
+
+### DW-503: `getConfiguredModel`'s pre-switch guard refuses a keyless Custom provider with no Settings destination, unlike its five sibling refusals.
+origin: spec-deferred 13c8781cd594
+source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
+location: src/lib/llm.ts:404
+severity: low
+reason: `src/lib/llm.ts:404` throws "The custom provider is not configured on this server." - lowercase provider id, no remedy - where the five sites DW-369 covers now all end in the derived "Set it in Settings -> <category>." That guard is reached before the `custom` case, so some keyless calls get the un-pointed sentence. Pre-existing; outside the five literals the intent named.
+status: open
+
+### DW-504: Three constants in `chat-agent.ts` hand-type "Settings -> API + MCP", the same drift class DW-369 removed from `llm.ts`.
+origin: spec-deferred c0bc147e9aef
+source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
+location: src/lib/chat-agent.ts:376, :490, :494
+severity: low
+reason: `SKILLS_SCAN_FAILED_COPY` (`src/lib/chat-agent.ts:376`), `CHAT_API_DISABLED_COPY` (`:490`) and `CHAT_API_UNAUTHORIZED_COPY` (`:494`) spell the `api-mcp` category label, whose owner is `src/lib/workbench-settings.ts:97`. They render through `SkillsCanvas` and `ChatCanvas`, and no test derives them, so renaming that category leaves three user-facing sentences naming a nav row the surface no longer shows. Pre-existing and outside this bundle's named sites; `settingsPointer` is now exported, so the fix is the same one-line derivation.
 status: open

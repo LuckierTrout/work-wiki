@@ -61,6 +61,33 @@ export default function SettingsPage() {
   const describedBy = readOnly ? readOnlyNoteId : undefined;
 
   /**
+   * WHY the endpoint was thrown away — from whichever door answered (DW-402,
+   * DW-417).
+   *
+   * TWO LEGS, TWO DOORS, ONE SENTENCE. The refusal is minted once, by
+   * `ollamaBaseUrlRefusedCopy`, and then reported on two different objects that
+   * answer two different questions:
+   *
+   *   - `status.ollamaBaseUrlIssue` is the ENV LEG ONLY (`src/lib/types.ts` says
+   *     so): `ProviderInfo` reports what the ENVIRONMENT selects, and
+   *     `detectEnvProvider` does not consult the store by DW-370's design.
+   *   - `settings.ollamaBaseUrlIssue` is the FULL env→store ladder's answer, as
+   *     `GET /api/settings` serves it.
+   *
+   * Reading only the first left two real deployments still staring at the bare
+   * verdict: a refused endpoint that came from the STORED config
+   * (`resolveOllamaBaseUrl`'s config branch) is never on `/api/status` at all,
+   * and a `/api/status` that fails leaves `status` null while `settings` loaded
+   * fine and carries the sentence — the route's own catch branch hardcodes
+   * `ollamaBaseUrlIssue: null`.
+   *
+   * FIRST NON-NULL, and one node. When both are set they are the same sentence
+   * about the same variable, so rendering each would say it twice.
+   */
+  const providerIssue =
+    status?.ollamaBaseUrlIssue ?? settings?.ollamaBaseUrlIssue ?? null;
+
+  /**
    * The submit, refused BEFORE `handleSave` runs.
    *
    * Here rather than inside `useSettings`, because the hook is shared and its
@@ -129,10 +156,40 @@ export default function SettingsPage() {
             )}
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
-            <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500" />
-            No LLM provider configured
-          </div>
+          <>
+            <div className="flex items-center gap-2 text-sm text-amber-600 dark:text-amber-400">
+              <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500" />
+              No LLM provider configured
+            </div>
+            {/*
+              WHY there is no provider, when the resolver knows (DW-402, DW-417).
+
+              "No LLM provider configured" is the same sentence for "nothing was
+              ever set" and for "what you set was thrown away", and only the
+              second one has an action attached. Both doors have carried the
+              reason since DW-402 — see {@link providerIssue} for which leg each
+              one answers — and the only component that rendered it
+              (`StatusBadge`) is mounted nowhere, so on the page the owner
+              actually opens the verdict arrived bare.
+
+              BENEATH the verdict row, which is `StatusBadge`'s placement and for
+              its reason: it reads as a correction to the row above it rather
+              than as a second, competing complaint.
+
+              DESCRIBING COPY ONLY. Not `role="alert"` — nothing just failed;
+              this is the deployment's standing state, the same convention the
+              read-only banner below follows. Nothing is gated on it and no
+              control writes it back.
+            */}
+            {providerIssue && (
+              // `pl-[18px]` = the 10px status dot + the row's 8px `gap-2`, so
+              // the sentence hangs under the verdict TEXT rather than under the
+              // dot.
+              <p className="mt-2 pl-[18px] text-sm text-amber-600 dark:text-amber-400">
+                {providerIssue}
+              </p>
+            )}
+          </>
         )}
       </div>
 

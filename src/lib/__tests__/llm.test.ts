@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   hasLLMKey,
   callLLM,
   callLLMStream,
+  getConfiguredModel,
   retryWithBackoff,
   isRetryableError,
 } from "../llm";
 import { _resetConfigCache } from "../config";
+import { _resetStorage } from "../storage";
+import { settingsCategory } from "../workbench-settings";
 import { logger } from "../logger";
 
 // Save and restore env vars around each test so we don't leak state.
@@ -434,5 +440,135 @@ describe("retryWithBackoff", () => {
     expect(fn).toHaveBeenCalledTimes(3);
 
     warnSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Custom provider's runtime refusals name a nav row that exists (DW-369)
+// ---------------------------------------------------------------------------
+
+describe("Custom provider refusals point at the LLM Models category", () => {
+  let dataDir: string;
+  let savedCustomBaseUrl: string | undefined;
+  let savedCustomApiKey: string | undefined;
+
+  /** What the nav row is called RIGHT NOW — derived, never spelled here. */
+  const category = settingsCategory("llm-models").label;
+
+  /** `custom` is selectable only from the store, so the store is what we seed. */
+  function selectCustom() {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-custom-pointer-"));
+    fs.writeFileSync(
+      path.join(dataDir, ".llm-wiki-config.json"),
+      JSON.stringify({ provider: "custom" }),
+    );
+    process.env.DATA_DIR = dataDir;
+    // The filesystem provider memoises `getDataDir()` at construction, so a
+    // config read earlier in this file has already pinned the storage instance
+    // to the outer `beforeEach`'s throwaway directory.
+    _resetStorage();
+    _resetConfigCache();
+  }
+
+  beforeEach(() => {
+    savedCustomBaseUrl = process.env.LLM_CUSTOM_BASE_URL;
+    savedCustomApiKey = process.env.LLM_CUSTOM_API_KEY;
+    delete process.env.LLM_CUSTOM_BASE_URL;
+    delete process.env.LLM_CUSTOM_API_KEY;
+    selectCustom();
+  });
+
+  afterEach(() => {
+    if (savedCustomBaseUrl === undefined) delete process.env.LLM_CUSTOM_BASE_URL;
+    else process.env.LLM_CUSTOM_BASE_URL = savedCustomBaseUrl;
+    if (savedCustomApiKey === undefined) delete process.env.LLM_CUSTOM_API_KEY;
+    else process.env.LLM_CUSTOM_API_KEY = savedCustomApiKey;
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    _resetStorage();
+    _resetConfigCache();
+  });
+
+  /** The message `callLLM` refuses with, for the currently seeded environment. */
+  async function refusal(): Promise<string> {
+    try {
+      await callLLM("system", "hello");
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected the Custom provider to be refused");
+  }
+
+  it("names the base URL gap with the DERIVED category label and no 'Workbench' prefix", async () => {
+    const message = await refusal();
+    // Derived, so a rename of the category renames this message too — which is
+    // the whole of DW-369. Asserting the literal here would freeze the label and
+    // let the derivation be reverted with the suite still green.
+    expect(message).toBe(
+      `The Custom provider needs a base URL. Set it in Settings → ${category}.`,
+    );
+    // SHORT form, deliberately. `settingsPointer`'s default would say "Workbench
+    // Settings → …", which disambiguates two Settings SURFACES for a sentence
+    // rendered on one of them. This is a runtime error raised from the LLM call;
+    // it is on neither surface, so the extra word would only be noise.
+    expect(message).not.toContain("Workbench");
+  });
+
+  it("names the API key gap the same way", async () => {
+    process.env.LLM_CUSTOM_BASE_URL = "https://example.invalid/v1";
+    _resetConfigCache();
+    const message = await refusal();
+    expect(message).toBe(
+      `The Custom provider needs an API key. Set it in Settings → ${category}.`,
+    );
+    expect(message).not.toContain("Workbench");
+  });
+
+  it("names the model gap the same way", async () => {
+    // `DEFAULT_MODELS.custom` is deliberately absent, so both halves supplied
+    // still leaves the model unnamed — the third of the three throw sites in
+    // `getModel()`.
+    process.env.LLM_CUSTOM_BASE_URL = "https://example.invalid/v1";
+    process.env.LLM_CUSTOM_API_KEY = "sk-custom-test";
+    _resetConfigCache();
+    const message = await refusal();
+    expect(message).toBe(
+      `The Custom provider needs a model name. Set it in Settings → ${category}.`,
+    );
+    expect(message).not.toContain("Workbench");
+  });
+
+  it("says the same thing on the getConfiguredModel path", async () => {
+    // The OTHER two throw sites. They are a separate resolution ladder, which is
+    // exactly how five copies of one destination came to exist — so both ladders
+    // are asserted against the same derived label.
+    process.env.LLM_CUSTOM_API_KEY = "sk-custom-test";
+    _resetConfigCache();
+    await expect(getConfiguredModel({ provider: "custom" })).rejects.toThrow(
+      `The Custom provider needs a base URL. Set it in Settings → ${category}.`,
+    );
+
+    process.env.LLM_CUSTOM_BASE_URL = "https://example.invalid/v1";
+    _resetConfigCache();
+    await expect(getConfiguredModel({ provider: "custom" })).rejects.toThrow(
+      `The Custom provider needs a model name. Set it in Settings → ${category}.`,
+    );
+  });
+
+  it("spells the destination nowhere in llm.ts itself", async () => {
+    // The mutation this catches: re-typing the literal at one throw site while
+    // the constant stays in place elsewhere. Read as bytes, because that drift
+    // is invisible to any assertion on a single message.
+    const source = await fs.promises.readFile(
+      path.resolve(__dirname, "../llm.ts"),
+      "utf8",
+    );
+    const throwSites = source
+      .split("\n")
+      .filter((line) => line.includes("The Custom provider needs"));
+    expect(throwSites).toHaveLength(5);
+    for (const line of throwSites) {
+      expect(line).toContain("${LLM_MODELS_POINTER}");
+      expect(line).not.toContain(`Settings → ${category}`);
+    }
   });
 });

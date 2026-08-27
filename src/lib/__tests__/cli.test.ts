@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from "vitest";
 import { parseArgs } from "../../cli";
+import { ollamaBaseUrlRefusedCopy } from "../workbench-settings";
+import type { EffectiveSettings } from "../config";
 
 describe("CLI argument parsing", () => {
   describe("ingest command", () => {
@@ -364,6 +366,48 @@ vi.mock("../frontmatter", () => ({
   serializeFrontmatter: vi.fn(),
 }));
 
+/**
+ * A whole `EffectiveSettings`, configured and clean, for `runStatus()` to read.
+ *
+ * The resolver returns one object with every field populated, so the fixture is
+ * one object too: a partial would let a `runStatus` that reads a NEW field pass
+ * against `undefined` rather than against the value the resolver would have
+ * supplied.
+ */
+function effectiveSettings(
+  overrides: Partial<EffectiveSettings> = {},
+): EffectiveSettings {
+  // `satisfies` on the SOURCE LITERAL, the convention `src/app/api/status/route.ts`
+  // already uses and explains. A type ASSERTION would permit a missing required
+  // property just as silently as a partial does, which would make this block's
+  // own claim untrue; `satisfies` makes the next field added to
+  // `EffectiveSettings` a compile error right here.
+  const base = {
+    provider: "anthropic",
+    providerSource: "env",
+    model: "claude-sonnet-4-20250514",
+    modelSource: "default",
+    configured: true,
+    embeddingSupport: true,
+    embeddingModel: null,
+    embeddingModelSource: "default",
+    embeddingModelInEffect: "text-embedding-3-small",
+    embeddingModelOverridden: false,
+    hasApiKey: true,
+    apiKeySource: "env",
+    ollamaBaseUrl: null,
+    ollamaBaseUrlSource: "default",
+    ollamaBaseUrlIssue: null,
+    structuredKnowledgeProvider: "anthropic",
+    structuredKnowledgeProviderSource: "default",
+    structuredKnowledgeModel: "claude-sonnet-4-20250514",
+    structuredKnowledgeModelSource: "default",
+    structuredKnowledgeConfigured: true,
+    readOnly: false,
+  } satisfies EffectiveSettings;
+  return { ...base, ...overrides };
+}
+
 describe("CLI command execution", () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
@@ -464,6 +508,107 @@ describe("CLI command execution", () => {
     expect(output).toContain("Raw sources:\t1");
     expect(output).toContain("LLM provider:\tanthropic");
     expect(output).toContain("Embeddings:\tavailable");
+  });
+
+  it("runStatus() prints NO extra line when the resolver refused nothing", async () => {
+    // The other half of the case above, said out loud. `Label:\tvalue` is a
+    // parsed shape, so a clean config has to print exactly the four rows it
+    // always has — an unconditional fifth row carrying `null` would be a new
+    // field for every reader of this output.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(logSpy.mock.calls).toHaveLength(4);
+    expect(logSpy.mock.calls.map((c) => c[0]).join("\n")).not.toContain(
+      "Ollama endpoint:",
+    );
+  });
+
+  it("runStatus() prints the refusal beside the provider verdict (DW-418)", async () => {
+    // THE POINT. "not configured" is the same word for "nothing was ever set"
+    // and for "what you set was thrown away", and only the second one has an
+    // action attached. The resolver already knows which and carries the
+    // sentence; the headless operator is the reader least able to go look,
+    // since there is no Settings screen on this side of the product.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    const issue = ollamaBaseUrlRefusedCopy("env", "localhost:11434");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(
+      effectiveSettings({
+        provider: null,
+        providerSource: "none",
+        model: null,
+        modelSource: "none",
+        configured: false,
+        embeddingSupport: false,
+        hasApiKey: false,
+        apiKeySource: "none",
+        ollamaBaseUrlSource: "none",
+        ollamaBaseUrlIssue: issue,
+      }),
+    );
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const lines = logSpy.mock.calls.map((c) => c[0] as string);
+    expect(lines).toContain("LLM provider:\tnot configured");
+    expect(lines).toContain(`Ollama endpoint:\t${issue}`);
+    // BESIDE the verdict, not somewhere further down the output.
+    expect(lines.indexOf(`Ollama endpoint:\t${issue}`)).toBe(
+      lines.indexOf("LLM provider:\tnot configured") + 1,
+    );
+    // The row names its OWN subject. "Provider note" under a `LLM provider:`
+    // line reads as a qualification of that line, which is wrong even here and
+    // actively misleading on the configured case below.
+    expect(lines.join("\n")).not.toContain("Provider note:");
+    // The sentence is the resolver's, unchanged — not a second wording composed
+    // for the CLI, which would be free to drift from the one the web surface and
+    // the warn line already share.
+    expect(lines.join("\n")).toContain("OLLAMA_BASE_URL is not an absolute http(s) URL");
+  });
+
+  it("runStatus() still prints the endpoint refusal when a provider IS configured", async () => {
+    // A deployment running `anthropic` can still carry a typo'd
+    // `OLLAMA_BASE_URL`, and the resolver still refuses it. Suppressing the
+    // sentence whenever a provider resolved would hide it from the one reader
+    // with no Settings screen to go and look at — so the row is gated on the
+    // ISSUE, never on the verdict, and its label is what keeps it from reading
+    // as a note on a line that succeeded.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    const issue = ollamaBaseUrlRefusedCopy("env", "localhost:11434");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(
+      effectiveSettings({ ollamaBaseUrlIssue: issue }),
+    );
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const lines = logSpy.mock.calls.map((c) => c[0] as string);
+    expect(lines).toContain("LLM provider:\tanthropic");
+    expect(lines).toContain(`Ollama endpoint:\t${issue}`);
+    // NOT a note on the verdict above it: the label says what it is about, so
+    // the successful `anthropic` line is not read as being qualified.
+    expect(lines.join("\n")).not.toContain("Provider note:");
   });
 
   it("runQuery() prints answer to stdout and sources to stderr", async () => {

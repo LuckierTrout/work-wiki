@@ -159,13 +159,28 @@ export type SettingsSurface = "workbench" | "flat";
  * pointer at that category remain the same one string and renaming a category
  * cannot leave a sentence naming something the nav no longer shows.
  *
- * `src/lib/llm.ts:287-301` keeps its shorter "Settings → LLM Models": those are
- * RUNTIME errors, raised from the LLM call rather than rendered on a Settings
- * page, so the ambiguity this pointer resolves does not arise there. The two
- * are deliberately not the same string.
+ * `src/lib/llm.ts` keeps its shorter "Settings → LLM Models" and now composes it
+ * HERE (DW-369), by passing {@link SETTINGS_LABEL} as `surfaceLabel`. The
+ * SURFACE half still differs on purpose — those are RUNTIME errors, raised from
+ * the LLM call rather than rendered on a Settings page, so the ambiguity the
+ * full name resolves does not arise there and the two are deliberately not the
+ * same string. The CATEGORY half is no longer hand-typed anywhere: llm.ts used
+ * to spell "LLM Models" in five throw sites, so renaming the category left five
+ * runtime messages naming a nav row that no longer exists. A label parameter
+ * rather than a second exported function, because the two forms differ in
+ * exactly one leading word and splitting them would reintroduce the drift this
+ * helper exists to prevent.
+ *
+ * `surfaceLabel` defaults to {@link WORKBENCH_SETTINGS_LABEL}, which is declared
+ * BELOW this function: a default parameter is evaluated at call time, and the
+ * only module-level call (`SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY`) runs after that
+ * declaration.
  */
-function settingsPointer(id: SettingsCategoryId): string {
-  return `${WORKBENCH_SETTINGS_LABEL} → ${settingsCategory(id).label}`;
+export function settingsPointer(
+  id: SettingsCategoryId,
+  surfaceLabel: string = WORKBENCH_SETTINGS_LABEL,
+): string {
+  return `${surfaceLabel} → ${settingsCategory(id).label}`;
 }
 
 /**

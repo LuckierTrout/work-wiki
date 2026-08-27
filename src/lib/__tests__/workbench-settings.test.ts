@@ -98,6 +98,7 @@ import {
   SETTINGS_INVALID_PROVIDER_COPY,
   SETTINGS_INVALID_TIMEOUT_COPY,
   SETTINGS_INVALID_URL_COPY,
+  SETTINGS_LABEL,
   SETTINGS_LANGUAGE_VALUE,
   SETTINGS_LOAD_FAILED_COPY,
   SETTINGS_ROUTE,
@@ -126,6 +127,7 @@ import {
   settingsDraftFromPayload,
   settingsEnvOverrideCopy,
   settingsCategory,
+  settingsPointer,
   settingsSaveBody,
   storedVectorInputs,
   validateWorkbenchSettingsPatch,
@@ -1148,6 +1150,50 @@ describe("storedVectorInputs — the flat page's view of the vector rule", () =>
     };
     expect(vectorSearchInactiveCopy(storedVectorInputs(payload), "flat")).toBe(
       "Vector search is switched on, but it needs an endpoint and an API key before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings.",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The pointer itself — one derivation, two surface labels (DW-369)
+// ---------------------------------------------------------------------------
+
+describe("settingsPointer", () => {
+  it("derives the category half from SETTINGS_CATEGORIES rather than spelling it", () => {
+    // THE POINT of exporting this. `src/lib/llm.ts` used to hand-type "LLM
+    // Models" at five throw sites, so renaming the category left five runtime
+    // messages naming a nav row the Settings surface no longer shows. Asserted
+    // against the nav entry, not against a literal, so this stays true through a
+    // rename instead of having to be edited by one.
+    for (const category of SETTINGS_CATEGORIES) {
+      expect(settingsPointer(category.id)).toBe(
+        `Workbench Settings → ${category.label}`,
+      );
+      expect(settingsPointer(category.id, SETTINGS_LABEL)).toBe(
+        `Settings → ${category.label}`,
+      );
+    }
+  });
+
+  it("defaults to the OTHER surface named in full, so the two existing call sites are unchanged", () => {
+    // The default parameter is `WORKBENCH_SETTINGS_LABEL`, which is declared
+    // BELOW the function — safe because a default is evaluated at call time, and
+    // the only module-level call runs after that declaration. Byte-for-byte:
+    // both existing call sites render on `/settings`, whose own nav row and
+    // <h1> read "Settings", so a bare pointer would name the page the owner is
+    // already standing on.
+    expect(settingsPointer("llm-models")).toBe("Workbench Settings → LLM Models");
+    expect(settingsPointer("embeddings")).toBe("Workbench Settings → Embeddings");
+    expect(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY).toContain(
+      settingsPointer("llm-models"),
+    );
+  });
+
+  it("composes the surface word from SETTINGS_LABEL, so the two surfaces cannot drift", () => {
+    // "Workbench Settings" is `Workbench ${SETTINGS_LABEL}` — not a second
+    // spelling of the word this module already owns.
+    expect(settingsPointer("general")).toBe(
+      `Workbench ${settingsPointer("general", SETTINGS_LABEL)}`,
     );
   });
 });

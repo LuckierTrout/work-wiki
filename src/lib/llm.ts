@@ -19,6 +19,7 @@ import {
   DEFAULT_MODELS,
 } from "./config";
 import type { ProviderValue } from "./config";
+import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
 import { getErrorMessage } from "./errors";
 import { logger } from "./logger";
 import {
@@ -31,6 +32,27 @@ import type { ProviderInfo } from "./types";
 
 // Re-export ProviderInfo from types for backward compatibility
 export type { ProviderInfo } from "./types";
+
+/**
+ * Where the `custom` provider's runtime refusals send the owner: the Settings
+ * surface, arrow, the `llm-models` category's own nav label (DW-369).
+ *
+ * ONE value, DERIVED. Five throw sites below used to spell that destination out
+ * as a literal, so renaming the category would have left five runtime messages
+ * naming a nav row the Settings surface no longer shows — and the literal is
+ * deliberately absent from this file now, including from this comment, so a
+ * search for it turns up only the one place that owns it. The category half
+ * comes from `SETTINGS_CATEGORIES`, through the same {@link settingsPointer} the
+ * rendered Settings copy uses.
+ *
+ * The SHORT surface label is deliberate and is why the label is passed rather
+ * than defaulted: `settingsPointer`'s default produces "Workbench Settings → …",
+ * which disambiguates two Settings surfaces for a sentence RENDERED ON one of
+ * them. These are runtime errors raised from the LLM call — they are not on
+ * either surface, so that ambiguity does not arise and the extra word would only
+ * be noise. See the doc block on `settingsPointer` in `./workbench-settings`.
+ */
+const LLM_MODELS_POINTER = settingsPointer("llm-models", SETTINGS_LABEL);
 
 // ---------------------------------------------------------------------------
 // Retry helpers
@@ -292,12 +314,12 @@ function getModel() {
       // CONSTRUCT would be a silently inert save, so both halves are required.
       if (!creds.customBaseUrl) {
         throw new Error(
-          "The Custom provider needs a base URL. Set it in Settings → LLM Models.",
+          `The Custom provider needs a base URL. Set it in ${LLM_MODELS_POINTER}.`,
         );
       }
       if (!creds.apiKey) {
         throw new Error(
-          "The Custom provider needs an API key. Set it in Settings → LLM Models.",
+          `The Custom provider needs an API key. Set it in ${LLM_MODELS_POINTER}.`,
         );
       }
       // `DEFAULT_MODELS.custom` is deliberately absent, so there is no name to
@@ -306,7 +328,7 @@ function getModel() {
       // the owner can act on instead of a request for a model called "custom".
       if (!model) {
         throw new Error(
-          "The Custom provider needs a model name. Set it in Settings → LLM Models.",
+          `The Custom provider needs a model name. Set it in ${LLM_MODELS_POINTER}.`,
         );
       }
       const custom = createOpenAI({
@@ -407,12 +429,12 @@ export async function getConfiguredModel(options?: {
         const baseURL = getCustomBaseUrl();
         if (!baseURL) {
           throw new Error(
-            "The Custom provider needs a base URL. Set it in Settings → LLM Models.",
+            `The Custom provider needs a base URL. Set it in ${LLM_MODELS_POINTER}.`,
           );
         }
         if (!resolvedModel) {
           throw new Error(
-            "The Custom provider needs a model name. Set it in Settings → LLM Models.",
+            `The Custom provider needs a model name. Set it in ${LLM_MODELS_POINTER}.`,
           );
         }
         return createOpenAI({ apiKey: apiKey!, baseURL }).chat(resolvedModel);
