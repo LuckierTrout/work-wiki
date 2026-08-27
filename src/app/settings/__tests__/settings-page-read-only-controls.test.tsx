@@ -264,17 +264,42 @@ describe("/settings is unchanged on a writable deployment — the control case",
     );
 
     expect(document.body.textContent).not.toContain("Read-only mode");
-    for (const control of [
+    const controls = [
       field("provider"),
       field("model"),
       field("structuredKnowledgeProvider"),
       field("embeddingModel"),
       screen.getByRole("button", { name: "Save Settings" }),
       screen.getByRole("button", { name: "Rebuild Vector Index" }),
-    ]) {
-      expect(control.hasAttribute("aria-disabled")).toBe(false);
-      expect(control.getAttribute("aria-describedby")).toBeNull();
+    ];
+    const label = (c: HTMLElement) => c.id || c.textContent || "";
+    for (const control of controls) {
+      expect(control.hasAttribute("aria-disabled"), label(control)).toBe(false);
     }
+
+    // Nothing REFUSES, so nothing describes a refusal. The provider picker is
+    // split out below rather than dropped: it now legitimately describes its
+    // credential state (DW-420), which is not a refusal and must not be
+    // mistaken for one by a suite that pins refusal.
+    for (const control of controls.filter((c) => c.id !== "provider")) {
+      expect(control.getAttribute("aria-describedby"), label(control)).toBeNull();
+    }
+
+    // The picker names EXACTLY its credential line — not the read-only
+    // sentence, which this deployment does not render at all.
+    const describedIds = (field("provider").getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter(Boolean);
+    expect(describedIds).toEqual(["providerCredentialStatus"]);
+    const credentialNode = document.getElementById("providerCredentialStatus");
+    expect(credentialNode).not.toBeNull();
+    // What the owner actually HEARS, read off the fixture: the payload stores
+    // `ollama` with a key, and the form has not been touched yet, so the line
+    // is the confirming one. This is the only suite where the real served
+    // payload reaches the sentence, so it is the only place the wiring from
+    // `hasApiKey` through to the announced words can be pinned.
+    expect(credentialNode!.textContent).toBe("✓ API key configured on server");
+    expect(credentialNode!.textContent).not.toContain("Read-only mode");
 
     // The select still moves, and the save still goes out — without this every
     // assertion in the suite above would also pass against a page that had

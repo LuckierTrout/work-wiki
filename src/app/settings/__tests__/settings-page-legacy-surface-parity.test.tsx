@@ -159,6 +159,31 @@ function vectorNotice(): HTMLElement | null {
   return document.getElementById("embeddingVectorNotice");
 }
 
+/**
+ * The page-level invariant: EVERY id any control announces is in the document.
+ *
+ * A dangling `aria-describedby` token announces nothing at all, and no single
+ * component can pin this — each one only sees the ids it minted itself, while
+ * the read-only sentence is minted by the page's `useId()` and handed down.
+ * This walks the composed page instead, so a control that starts naming an id
+ * whose node did not render fails wherever it happens.
+ */
+function expectEveryDescribedIdResolves(): void {
+  const described = Array.from(document.querySelectorAll("[aria-describedby]"));
+  for (const control of described) {
+    const ids = (control.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter(Boolean);
+    // A control carrying the attribute must name at least one id — `""` is an
+    // attribute pointing at nothing, which is worse than no attribute.
+    expect(ids.length, control.id || control.tagName).toBeGreaterThan(0);
+    for (const id of ids) {
+      expect(document.getElementById(id), `${control.id || control.tagName} -> ${id}`)
+        .not.toBeNull();
+    }
+  }
+}
+
 afterEach(() => {
   // FIRST, for the reason `useSettings.test.tsx` documents: vitest runs
   // afterEach hooks in reverse registration order, so the setup file's
@@ -290,7 +315,19 @@ describe("/settings surfaces the STORED vector state (DW-327)", () => {
     await waitFor(() => expect(screen.getByLabelText(/Embedding Model/)).toBeTruthy());
     expect(vectorNotice()).toBeNull();
     expect(document.body.textContent).not.toContain("Vector search");
-    expect(document.querySelector("[aria-describedby]")).toBeNull();
+    // No DANGLING pointer at the notice that did not render. Scoped to the
+    // embedding box and to that id: the provider picker legitimately describes
+    // its own credential state (DW-420), so a page-wide
+    // `querySelector("[aria-describedby]")` would be a claim about other
+    // controls' descriptions, which is not what this case is about.
+    const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
+    expect(input.getAttribute("aria-describedby")).toBeNull();
+    expect(
+      document.querySelector('[aria-describedby~="embeddingVectorNotice"]'),
+    ).toBeNull();
+    // …and the invariant the page-wide net used to cover, kept as its own
+    // claim rather than as a side effect of nothing describing anything.
+    expectEveryDescribedIdResolves();
   });
 
   it("renders NOTHING when the switch is off, whatever its legs look like", async () => {
@@ -475,8 +512,11 @@ describe("/settings associates each Custom note with its own picker (DW-400)", (
     await waitFor(() => expect(primaryPicker()).not.toBeNull());
     await waitFor(() => expect(extractionPicker()).not.toBeNull());
 
+    // The primary picker also names its credential line (DW-420) — a node the
+    // extraction panel does not have — so the claim here is that each picker's
+    // OWN note is the last id it announces, and that the two differ.
     expect(primaryPicker().getAttribute("aria-describedby")).toBe(
-      "providerCustomEndpoint",
+      "providerCredentialStatus providerCustomEndpoint",
     );
     expect(extractionPicker().getAttribute("aria-describedby")).toBe(
       "structuredKnowledgeCustomEndpoint",
@@ -495,6 +535,7 @@ describe("/settings associates each Custom note with its own picker (DW-400)", (
     expect(primaryNote).not.toBe(extractionNote);
     expect(primaryNote!.textContent).toContain(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY);
     expect(extractionNote!.textContent).toContain(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY);
+    expectEveryDescribedIdResolves();
     // The page really is showing two copies of it — the premise of resolving
     // by id above, and the shape a one-note page would fail.
     expect(screen.getAllByText(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY)).toHaveLength(2);
@@ -515,10 +556,13 @@ describe("/settings associates each Custom note with its own picker (DW-400)", (
       .getAttribute("aria-describedby")!
       .split(" ");
 
-    // COMPOSED, not chosen: two ids each, so neither sentence displaced the
-    // other.
-    expect(primaryIds).toHaveLength(2);
+    // COMPOSED, not chosen: no sentence displaced another. The primary picker
+    // carries one more than the extraction picker because only IT renders a
+    // credential-status line (DW-420).
+    expect(primaryIds).toHaveLength(3);
     expect(extractionIds).toHaveLength(2);
+    // Every id on the page resolves to a node actually in the document.
+    expectEveryDescribedIdResolves();
 
     // The shared refusal, FIRST on both. Read off the DOM rather than
     // hardcoded — the page mints it with `useId()`, so its value is React's to
@@ -528,8 +572,38 @@ describe("/settings associates each Custom note with its own picker (DW-400)", (
     expect(readOnlyNote).not.toBeNull();
     expect(readOnlyNote!.textContent).toContain("Read-only mode");
 
-    // …and each picker's own note SECOND, still its own.
-    expect(primaryIds[1]).toBe("providerCustomEndpoint");
+    // …and each picker's own note LAST, still its own — with the primary's
+    // credential line between, in the order the nodes appear on screen.
+    expect(primaryIds[1]).toBe("providerCredentialStatus");
+    expect(primaryIds[2]).toBe("providerCustomEndpoint");
     expect(extractionIds[1]).toBe("structuredKnowledgeCustomEndpoint");
+  });
+
+  it("points the primary picker at the Ollama Cloud note, on the real page (DW-419)", async () => {
+    // The note the extraction panel has no equivalent of, and which no page
+    // case rendered at all before this one — so "the picker names it" was only
+    // ever pinned against a synthetic mount. `ollama-cloud` is a stored
+    // provider like any other, so the credential line renders too and the note
+    // follows it, in the order the two appear on screen.
+    stubFetch(body({ provider: "ollama-cloud", providerSource: "config" }));
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(primaryPicker()).not.toBeNull());
+    await waitFor(() =>
+      expect(document.getElementById("providerOllamaCloud")).not.toBeNull(),
+    );
+
+    expect(primaryPicker().getAttribute("aria-describedby")).toBe(
+      "providerCredentialStatus providerOllamaCloud",
+    );
+    expectEveryDescribedIdResolves();
+    // The note the owner actually hears: where the API key lives, which is not
+    // this page and not any field on it.
+    expect(document.getElementById("providerOllamaCloud")!.textContent).toContain(
+      "never returned to this page",
+    );
+    // The extraction picker has neither node, so it stays undescribed — the
+    // ids are per-panel, not per-page.
+    expect(extractionPicker().hasAttribute("aria-describedby")).toBe(false);
   });
 });

@@ -3775,7 +3775,8 @@ source_spec: `spec-dw-400-provider-endpoint-note-a11y.md`
 location: src/components/ProviderForm.tsx:312
 severity: medium
 reason: `ProviderForm.tsx:312-321` renders the `showOllamaCloud` note in the same wrapper as the `showCustom` note four lines above it, saying where the rest of the provider's configuration lives ("The API key stays encrypted as a Cloudflare Worker secret and is never returned to this page"). It carries no `id` and `providerDescribedBy` contributes none for it, so selecting `ollama-cloud` still announces only the option name. Pre-existing: DW-400's intent names only the custom-endpoint pointer, so this was out of scope. No test anywhere renders that note.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-provider-form-a11y-associations
 
 ### DW-420: The primary picker's credential-status line sits beside the control with nothing associating it.
 origin: spec-deferred 35a109f64410
@@ -3783,7 +3784,8 @@ source_spec: `spec-dw-400-provider-endpoint-note-a11y.md`
 location: src/components/ProviderForm.tsx:197
 severity: medium
 reason: `ProviderForm.tsx:197-205` renders "✓ API key configured on server", "⚠ No API key — set via server environment variables", or "Save this selection to check its server credential" directly under `#provider`. It has no `id` and the picker does not reference it, so the credential state of the selected provider is invisible to a screen reader — the same harm class DW-400 fixed for the custom-endpoint pointer. Pre-existing and outside DW-400's stated scope.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-provider-form-a11y-associations
 
 ### DW-421: `useDialogA11y`'s new `withdrawn()` guard knows only the `hidden` attribute, so an opener hidden by CSS alone still takes a focus() that a browser silently drops.
 origin: spec-deferred 515a14088b1b
@@ -4444,4 +4446,20 @@ source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
 location: src/lib/chat-agent.ts:376, :490, :494
 severity: low
 reason: `SKILLS_SCAN_FAILED_COPY` (`src/lib/chat-agent.ts:376`), `CHAT_API_DISABLED_COPY` (`:490`) and `CHAT_API_UNAUTHORIZED_COPY` (`:494`) spell the `api-mcp` category label, whose owner is `src/lib/workbench-settings.ts:97`. They render through `SkillsCanvas` and `ChatCanvas`, and no test derives them, so renaming that category leaves three user-facing sentences naming a nav row the surface no longer shows. Pre-existing and outside this bundle's named sites; `settingsPointer` is now exported, so the fix is the same one-line derivation.
+status: open
+
+### DW-505: Selecting the blank "— Select provider —" option leaves the picker announcing the STORED provider's credential state.
+origin: spec-deferred 72044b520973
+source_spec: `spec-dw-419-420-provider-picker-a11y-associations.md`
+location: src/components/ProviderForm.tsx:96
+severity: medium
+reason: `ProviderForm.tsx:96` derives `effectiveProvider = provider || settings?.provider || null`, so clearing the select to `""` falls back to the stored provider. The credential line — and now, through `aria-describedby`, the picker itself — keeps reporting that provider's key state while the control visibly shows no selection. Pre-existing: the fallback and the line's copy both predate this change, which only made the sentence audible. Deliberate for the notes (the file's :110-113 comment argues a deployment already STORING `custom` needs the pointer on first paint), but never reasoned about for the credential line, and no test covers the blank-option state.
+status: open
+
+### DW-506: The model input's "Leave empty to use the default model" hint is the same unassociated-sibling shape, four lines from the two this story fixed.
+origin: spec-deferred cef642ce43c1
+source_spec: `spec-dw-419-420-provider-picker-a11y-associations.md`
+location: src/components/ProviderForm.tsx:288
+severity: medium
+reason: `ProviderForm.tsx:288-290` renders that sentence directly under `#model` with no `id`, and the input's `aria-describedby` is still `readOnly ? describedBy : undefined` — it never composes. It is the same harm class as DW-400/DW-419/DW-420: a hint beside a control is invisible to a screen reader, which is the convention `SettingsCanvas.tsx:346-362` states. `EmbeddingSettings.tsx:213` has the identical shape. Out of scope here on the intent's own authority — the bundle names only the two picker-adjacent nodes — and the spec's Never clause repeats that.
 status: open

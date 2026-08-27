@@ -213,19 +213,26 @@ describe("ProviderForm says why the Ollama endpoint box is empty", () => {
   });
 });
 
-describe("ProviderForm points the picker at the custom-endpoint note", () => {
+describe("ProviderForm points the picker at the notes beside it", () => {
   /**
-   * The note is a POINTER, not a warning (DW-400).
+   * The notes are POINTERS, not warnings (DW-400, DW-419, DW-420).
    *
-   * It says where the base URL and the API key are actually configured, and it
-   * used to sit beside the picker with nothing associating the two — so an
-   * owner who selected `custom` heard the option name and never the sentence
-   * saying the configuration is only half done. Whether the select POINTS at
-   * the note is not something a source scan can check, so these cases are made
-   * against the rendered DOM.
+   * The custom-endpoint note says where the base URL and the API key are
+   * actually configured (DW-400); the credential-status line says whether the
+   * SELECTED provider has a key on the server (DW-420); the Ollama Cloud note
+   * says the key is a Worker secret never returned to the page (DW-419). All
+   * three used to sit beside the picker with nothing associating them — so an owner who moved to the select
+   * heard the option name and none of them. Whether the select POINTS at each
+   * node is not something a source scan can check, so these cases are made
+   * against the rendered DOM, and every emitted id is resolved.
    */
   function picker(): HTMLElement {
     return document.getElementById("provider")!;
+  }
+
+  /** The ids the picker actually announces, in the order it announces them. */
+  function describedIds(): string[] {
+    return (picker().getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
   }
 
   it("describes the picker with the note when `custom` is picked on a writable deployment", () => {
@@ -238,19 +245,26 @@ describe("ProviderForm points the picker at the custom-endpoint note", () => {
       />,
     );
 
-    expect(picker().getAttribute("aria-describedby")).toBe("providerCustomEndpoint");
-    // The id resolves to a node, and that node carries the SHARED sentence —
+    // DOM reading order: the credential line sits under the select (DW-420),
+    // the note below both.
+    expect(picker().getAttribute("aria-describedby")).toBe(
+      "providerCredentialStatus providerCustomEndpoint",
+    );
+    // Each id resolves to a node, and the note carries the SHARED sentence —
     // an attribute pointing at nothing announces nothing.
+    for (const id of describedIds()) expect(document.getElementById(id)).not.toBeNull();
     expect(
       document.getElementById("providerCustomEndpoint")!.textContent,
     ).toContain(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY);
   });
 
-  it("COMPOSES the note with the read-only sentence rather than replacing it", () => {
-    // A read-only deployment already storing `custom`: both apply, and each
-    // answers a different question — why the picker refuses, and what is still
-    // unconfigured. The read-only sentence stays FIRST, matching the Ollama
-    // input's order so one page does not announce it in two positions.
+  it("COMPOSES all three notes rather than letting one replace another", () => {
+    // A read-only deployment already storing `custom`: all three apply, and
+    // each answers a different question — why the picker refuses, whether the
+    // provider has a key, and what is still unconfigured. The read-only
+    // sentence stays FIRST, matching the Ollama input's order so one page does
+    // not announce it in two positions; the rest follow in DOM reading order,
+    // so the announced description matches the visual one.
     render(
       <ProviderForm
         {...props({
@@ -263,13 +277,19 @@ describe("ProviderForm points the picker at the custom-endpoint note", () => {
     );
 
     expect(picker().getAttribute("aria-describedby")).toBe(
-      "readOnlyNote providerCustomEndpoint",
+      "readOnlyNote providerCredentialStatus providerCustomEndpoint",
     );
+    // Both ids this component owns resolve. `readOnlyNote` is the PAGE's node
+    // and is not rendered here, which is why it is not walked.
+    expect(document.getElementById("providerCredentialStatus")).not.toBeNull();
+    expect(document.getElementById("providerCustomEndpoint")).not.toBeNull();
   });
 
-  it("keeps the read-only sentence alone when the note is not showing", () => {
-    // The note id is contributed only while the note renders; appending it
-    // unconditionally would point the picker at an absent element.
+  it("drops the conditional notes' ids while their nodes are not showing", () => {
+    // A note's id is contributed only while the note renders; appending either
+    // unconditionally would point the picker at an absent element. The
+    // credential line has no such gate on a loaded page — it renders whenever
+    // `settings` does (DW-420), so its id is here.
     render(
       <ProviderForm
         {...props({
@@ -281,14 +301,142 @@ describe("ProviderForm points the picker at the custom-endpoint note", () => {
       />,
     );
 
-    expect(picker().getAttribute("aria-describedby")).toBe("readOnlyNote");
+    expect(picker().getAttribute("aria-describedby")).toBe(
+      "readOnlyNote providerCredentialStatus",
+    );
     expect(document.getElementById("providerCustomEndpoint")).toBeNull();
+    expect(document.getElementById("providerOllamaCloud")).toBeNull();
   });
 
-  it("emits no attribute at all when neither applies", () => {
+  it("names the credential line alone on a writable, plain-provider deployment", () => {
+    // The commonest shape of all: nothing refuses and no picker-conditional
+    // note is showing, but the selected provider's credential state still
+    // belongs WITH the control rather than left to be found by browsing.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "openai",
+          settings: settings({ provider: "openai", hasApiKey: true }),
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe("providerCredentialStatus");
+    // The id resolves, and to the node carrying the EXACT served sentence —
+    // "the picker points at the sentence" is the whole claim.
+    expect(document.getElementById("providerCredentialStatus")!.textContent).toBe(
+      "✓ API key configured on server",
+    );
+  });
+
+  it("names the same line when the server has NO key for the stored provider", () => {
+    // The one branch that reports a problem rather than a state (DW-420). It is
+    // still a description, not a validation error: the picker is not marked
+    // invalid and the save is not blocked, so an owner who cannot reach the
+    // server environment can still see and store the selection.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "openai",
+          settings: settings({ provider: "openai", hasApiKey: false }),
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe("providerCredentialStatus");
+    expect(document.getElementById("providerCredentialStatus")!.textContent).toBe(
+      "⚠ No API key — set via server environment variables",
+    );
+    expect(picker().getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("names the same line when the credential is not yet knowable", () => {
+    // A selection the server has not stored yet: the line says so, and the
+    // picker points at the same node — the id is gated on `settings`, which is
+    // the line's OWN gate, not on which provider is picked.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "openai",
+          settings: settings({ provider: "anthropic", hasApiKey: true }),
+        })}
+      />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe("providerCredentialStatus");
+    expect(document.getElementById("providerCredentialStatus")!.textContent).toBe(
+      "Save this selection to check its server credential",
+    );
+  });
+
+  it("adds the Ollama Cloud note AFTER the credential line, both resolving", () => {
+    // DW-419: the same shape of picker-conditional pointer `custom` already
+    // had. Two ids, in the order the two nodes appear on screen.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "ollama-cloud",
+          settings: settings({ provider: "ollama-cloud", hasApiKey: true }),
+        })}
+      />,
+    );
+
+    expect(describedIds()).toEqual([
+      "providerCredentialStatus",
+      "providerOllamaCloud",
+    ]);
+    for (const id of describedIds()) expect(document.getElementById(id)).not.toBeNull();
+    expect(document.getElementById("providerOllamaCloud")!.textContent).toContain(
+      "never returned to this page",
+    );
+  });
+
+  it("puts the Ollama Cloud note LAST behind the read-only sentence and the credential line", () => {
+    // `ollamaCloudId` is the final slot in the composition array, and its
+    // position relative to the other two is only observable here — the
+    // `custom` rows exercise the slot before it.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "ollama-cloud",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+          settings: settings({ provider: "ollama-cloud", hasApiKey: true }),
+        })}
+      />,
+    );
+
+    expect(describedIds()).toEqual([
+      "readOnlyNote",
+      "providerCredentialStatus",
+      "providerOllamaCloud",
+    ]);
+    // Both ids this component owns resolve; `readOnlyNote` is the PAGE's node.
+    expect(document.getElementById("providerCredentialStatus")).not.toBeNull();
+    expect(document.getElementById("providerOllamaCloud")).not.toBeNull();
+  });
+
+  it("names the Ollama Cloud note ALONE before settings have loaded", () => {
+    // First paint, no `settings` yet: no credential line rendered, so no
+    // credential id — the attribute never names an absent element.
+    render(
+      <ProviderForm {...props({ provider: "ollama-cloud", settings: null })} />,
+    );
+
+    expect(picker().getAttribute("aria-describedby")).toBe("providerOllamaCloud");
+    expect(document.getElementById("providerOllamaCloud")).not.toBeNull();
+    expect(document.getElementById("providerCredentialStatus")).toBeNull();
+  });
+
+  it("emits no attribute at all when nothing applies", () => {
     // `undefined`, never `""`: an empty `aria-describedby` is an attribute
-    // referencing no element, which is worse than the absent attribute.
-    render(<ProviderForm {...props({ provider: "anthropic" })} />);
+    // referencing no element, which is worse than the absent attribute. A
+    // settings-less writable paint of a plain provider is the only state with
+    // genuinely nothing to say — once `settings` loads, the credential line
+    // renders and is named.
+    render(
+      <ProviderForm {...props({ provider: "anthropic", settings: null })} />,
+    );
 
     expect(picker().hasAttribute("aria-describedby")).toBe(false);
   });

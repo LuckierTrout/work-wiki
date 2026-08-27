@@ -114,6 +114,17 @@ export function ProviderForm({
   const showCustom = effectiveProvider === "custom";
   const selectedProviderHasKey =
     settings?.provider === effectiveProvider && settings.hasApiKey;
+  /**
+   * ONE condition, read by both the credential-status line and the
+   * `aria-describedby` that points at it (DW-420).
+   *
+   * `EmbeddingSettings.tsx:112` states the rule in as many words: two
+   * expressions would be two rules that agree today, and the way they would
+   * disagree is a description pointing at an element that is not in the
+   * document. So this const serves both roles, exactly as `showCustom` and
+   * `showOllamaCloud` already do for their notes.
+   */
+  const showCredentialStatus = settings !== null;
 
   /**
    * The endpoint input's descriptions, COMPOSED rather than chosen (DW-402).
@@ -154,10 +165,41 @@ export function ProviderForm({
    * The id is contributed only while the note is actually rendered, so the
    * attribute never points at an absent element; `undefined` when neither
    * applies, never `""`.
+   *
+   * TWO MORE NODES JOIN THE LIST. The credential-status line below the select
+   * is the selected provider's credential state (DW-420); the Ollama Cloud
+   * note is the same shape of picker-conditional pointer the `showCustom` note
+   * is (DW-419). Both sat beside this control with nothing tying them to it,
+   * so the owner heard the option name and neither.
+   *
+   * ORDERED BY DOM READING ORDER, which is the whole ordering rule: a screen
+   * reader reads the ids in the order they are listed, so listing them in the
+   * order the nodes appear on screen makes the announced description match the
+   * visual one. That is also why `describedBy` stays FIRST — the read-only
+   * sentence renders above the form.
+   *
+   * `credentialStatusId` is derived from `showCredentialStatus` — the `<p>`'s
+   * OWN gate, the one condition both read — and NOT from the provider.
+   * Deriving it from anything else, the provider or `selectedProviderHasKey`,
+   * would let the two drift and leave the attribute pointing at an element
+   * that is not in the document. `customEndpointId` and `ollamaCloudId` are
+   * mutually exclusive by construction (`effectiveProvider` cannot be both
+   * `custom` and `ollama-cloud`), so their relative order is never observed;
+   * it is written in DOM order anyway so the rule reads as one rule, and at
+   * most three ids are ever emitted.
    */
+  const credentialStatusId = showCredentialStatus
+    ? "providerCredentialStatus"
+    : undefined;
   const customEndpointId = showCustom ? "providerCustomEndpoint" : undefined;
+  const ollamaCloudId = showOllamaCloud ? "providerOllamaCloud" : undefined;
   const providerDescribedBy =
-    [readOnly ? describedBy : undefined, customEndpointId]
+    [
+      readOnly ? describedBy : undefined,
+      credentialStatusId,
+      customEndpointId,
+      ollamaCloudId,
+    ]
       .filter((id): id is string => Boolean(id))
       .join(" ") || undefined;
 
@@ -195,8 +237,14 @@ export function ProviderForm({
             </option>
           ))}
         </select>
-        {settings && (
-          <p className="mt-2 text-xs text-foreground/40">
+        {/*
+          The id lives in the const above and the JSX merely reads it, matching
+          the `showCustom` note below: one literal, so the emitted
+          `aria-describedby` and the rendered node can never name different
+          strings.
+        */}
+        {showCredentialStatus && (
+          <p id={credentialStatusId} className="mt-2 text-xs text-foreground/40">
             {selectedProviderHasKey
               ? "✓ API key configured on server"
               : settings.provider === effectiveProvider
@@ -310,7 +358,10 @@ export function ProviderForm({
       )}
 
       {showOllamaCloud && (
-        <div className="rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60">
+        <div
+          id={ollamaCloudId}
+          className="rounded-md border border-foreground/10 bg-foreground/[0.03] px-3 py-3 text-sm text-foreground/60"
+        >
           <p className="font-medium text-foreground/80">Ollama Cloud</p>
           <p className="mt-1">
             Models run at <span className="font-mono">ollama.com</span>. The
