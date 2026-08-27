@@ -8,6 +8,7 @@ import {
   createResearchProject,
   deleteResearchProject,
   filterResearchProjects,
+  getResearchProject,
   listResearchProjects,
   updateResearchProject,
   updateResearchProjectIf,
@@ -20,6 +21,14 @@ import { tenantForOwner } from "../wiki";
 /** Absolute path of a tenant's stored registry — the bytes the rows below pin. */
 function registryPath(owner: string): string {
   return path.join(tmpDir, "tenants", tenantForOwner(owner), "research-projects.json");
+}
+
+/** Seed raw registry bytes — the one writer, so a corrupt-file row can store a
+ * non-list shape and {@link seedProjects} can store a well-formed one. */
+async function seedRawRegistry(owner: string, raw: string): Promise<void> {
+  const target = registryPath(owner);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, raw, "utf-8");
 }
 
 /** Seed `count` stored projects directly, so a cap row does not need 100 creates. */
@@ -35,9 +44,7 @@ async function seedProjects(owner: string, count: number): Promise<void> {
     createdAt: `2020-01-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`,
     updatedAt: `2020-01-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`,
   }));
-  const target = registryPath(owner);
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, JSON.stringify(projects, null, 2), "utf-8");
+  await seedRawRegistry(owner, JSON.stringify(projects, null, 2));
 }
 
 let tmpDir: string;
@@ -94,9 +101,11 @@ describe("research projects", () => {
     expect(await listResearchProjects("alice")).toEqual([]);
   });
   /**
-   * DW-164. `writeProjects` persists only the last `MAX_PROJECTS` entries, so a
-   * create that pushed past the cap used to report success while silently
-   * evicting the tenant's OLDEST project. These two rows pin the create's whole
+   * DW-164. The registry write USED TO persist only the last `MAX_PROJECTS`
+   * entries, so a create that pushed past the cap reported success while
+   * silently evicting the tenant's OLDEST project. It no longer truncates at
+   * all — `serializeProjects` writes the array verbatim, and this create guard
+   * is the only place the cap is enforced. These rows pin the create's whole
    * obligation to state that was already on disk: it either appends, or it
    * changes nothing at all.
    */
@@ -105,9 +114,9 @@ describe("research projects", () => {
       await seedProjects("alice", MAX_PROJECTS);
       const before = await fs.readFile(registryPath("alice"), "utf-8");
       // Byte equality alone would NOT prove the refusal wrote nothing:
-      // `seedProjects` writes the exact format and key order `writeProjects`
-      // produces, so a read-reserialize-rewrite would land identical bytes and
-      // pass. The spy is what pins "before any write".
+      // `seedProjects` writes the exact format and key order
+      // `serializeProjects` produces, so a read-reserialize-rewrite would land
+      // identical bytes and pass. The spy is what pins "before any write".
       const storage = getStorage();
       const spy = vi.spyOn(storage, "writeFile");
 
@@ -172,6 +181,138 @@ describe("research projects", () => {
         "seed-0",
       ]);
     });
+  });
+
+  /**
+   * DW-297. A registry that parsed to something other than a list used to read
+   * as "no projects" at BOTH read sites, so a corrupt file cleared the cap
+   * guard and the very next create overwrote it. Refusing is the only honest
+   * answer: the tenant's projects are not gone, they are unreadable.
+   */
+  describe("a registry that is not a list", () => {
+    it.each([
+      ["a JSON object", '{"projects":[]}'],
+      ["a JSON string", '"nope"'],
+      ["a JSON number", "12"],
+    ])("rejects reads when the stored registry is %s", async (_label, raw) => {
+      await seedRawRegistry("alice", raw);
+
+      // A plain Error, NOT a ClientInputError: a wrong-shaped stored file is a
+      // server fault (500), not something the caller sent.
+      await expect(listResearchProjects("alice")).rejects.toThrow(
+        "Research projects file is not a list.",
+      );
+      await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(ClientInputError);
+      await expect(getResearchProject("alice", "seed-0")).rejects.toThrow(
+        "Research projects file is not a list.",
+      );
+    });
+
+    it("rejects a create and leaves the stored bytes byte-identical", async () => {
+      const raw = '{"projects":[{"id":"seed-0"}]}';
+      await seedRawRegistry("alice", raw);
+      const storage = getStorage();
+      const spies = [
+        vi.spyOn(storage, "writeFile"),
+        vi.spyOn(storage, "writeFileIfMatch"),
+        vi.spyOn(storage, "writeFileIfAbsent"),
+      ];
+
+      try {
+        // The CAS read refuses too, so the create never sees `[]`, never
+        // clears the cap guard and never replaces the file.
+        await expect(
+          createResearchProject("alice", { title: "Overwrite", question: "Lands?" }),
+        ).rejects.toThrow("Research projects file is not a list.");
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
+    });
+
+    it.each([
+      [
+        "an update",
+        async () => {
+          // Would resolve `null` for an unknown id against a healthy registry,
+          // so a REJECTION can only have come from the registry parse.
+          await updateResearchProject("alice", "seed-0", { status: "complete" });
+        },
+      ],
+      [
+        "a delete",
+        async () => {
+          // `deleteResearchProject` clears `withResearchProjectLifecycleFence`
+          // and `hasResearchSlot` first, and both of those early-out by
+          // RESOLVING `false` — never by throwing. A rejection here therefore
+          // reaches past them to the CAS read.
+          await deleteResearchProject("alice", "seed-0");
+        },
+      ],
+    ])("rejects %s and leaves the stored bytes byte-identical", async (_label, run) => {
+      const raw = '{"projects":[{"id":"seed-0"}]}';
+      await seedRawRegistry("alice", raw);
+
+      await expect(run()).rejects.toThrow("Research projects file is not a list.");
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
+    });
+
+    it("still treats a missing registry as an empty one", async () => {
+      expect(await listResearchProjects("alice")).toEqual([]);
+      const project = await createResearchProject("alice", { title: "First", question: "New?" });
+      expect((await listResearchProjects("alice")).map((p) => p.id)).toEqual([project.id]);
+    });
+  });
+
+  /**
+   * DW-298. The registry write used to `slice(-MAX_PROJECTS)`, so an update or
+   * a delete against legacy over-cap data shed the OLDEST-inserted rows as a
+   * side effect of saving something else. A write now evicts nothing; the
+   * create guard is the only cap.
+   */
+  describe("legacy over-cap registry", () => {
+    it("loses no entry when one project is deleted", async () => {
+      await seedProjects("alice", MAX_PROJECTS + 2);
+
+      expect(await deleteResearchProject("alice", "seed-50")).toBe(true);
+
+      const after = await listResearchProjects("alice");
+      expect(after).toHaveLength(MAX_PROJECTS + 1);
+      const ids = after.map((p) => p.id);
+      expect(ids).toContain("seed-0");
+      expect(ids).not.toContain("seed-50");
+    });
+
+    it("loses no entry when one project is updated", async () => {
+      await seedProjects("alice", MAX_PROJECTS + 2);
+
+      await updateResearchProject("alice", `seed-${MAX_PROJECTS + 1}`, { status: "complete" });
+
+      const after = await listResearchProjects("alice");
+      expect(after).toHaveLength(MAX_PROJECTS + 2);
+      expect(after.map((p) => p.id)).toContain("seed-0");
+    });
+
+    it("still refuses a create while the registry is at or above the cap", async () => {
+      await seedProjects("alice", MAX_PROJECTS + 2);
+
+      await expect(
+        createResearchProject("alice", { title: "One too many", question: "Fits?" }),
+      ).rejects.toBeInstanceOf(ClientInputError);
+      expect(await listResearchProjects("alice")).toHaveLength(MAX_PROJECTS + 2);
+    });
+  });
+
+  it.each([
+    ["a blank title", { title: "   ", question: "What changed?" }],
+    ["a blank question", { title: "Topic", question: "   " }],
+  ])("rejects %s as caller input, not a server fault", async (_label, input) => {
+    // DW-296. Typed so `POST /api/research` can classify it 400 without
+    // string-matching the message.
+    await expect(createResearchProject("alice", input)).rejects.toBeInstanceOf(ClientInputError);
   });
 
   it("filters the list to one Workbench Wiki and leaves unscoped lists intact", async () => {

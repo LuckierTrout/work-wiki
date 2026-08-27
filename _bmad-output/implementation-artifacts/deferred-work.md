@@ -2671,7 +2671,8 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/app/api/research/route.ts:50
 severity: low
 reason: The regex matches `EINVAL: invalid argument, ...` and any storage or library error mentioning "invalid", so a 5xx can be reported as a 400 the client will retry forever. The clean fix is small and was deliberately not taken here: `cleanInput`'s two plain `Error` throws could become `ClientInputError`, after which the regex can be deleted entirely.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-research-store-hardening
 
 ### DW-297: `readProjects` degrades a non-array registry JSON to an empty list, so a corrupt registry passes the new cap check and is then overwritten.
 origin: spec-deferred 92cc58b8d547
@@ -2679,7 +2680,8 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/lib/research-projects.ts:110
 severity: low
 reason: `Array.isArray(parsed) ? parsed : []` treats a registry that parsed as an object, string or number as "no projects". The create then sees 0, clears the `MAX_PROJECTS` guard, and `writeProjects` replaces the file — the same shape as the `normalizeRegistry` degradation DW-161 was raised about, one module over. Pre-existing and untouched by this change.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-research-store-hardening
 
 ### DW-298: `writeProjects`' `slice(-MAX_PROJECTS)` can still silently evict for a legacy over-cap registry reached through update or delete.
 origin: spec-deferred c398ace2e4f5
@@ -2687,7 +2689,8 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/lib/research-projects.ts:117
 severity: low
 reason: The create guard added here makes the slice unreachable on the create path, but `updateResearchProject`/`deleteResearchProject` still route through it, so a registry that is already over cap (only reachable if `MAX_PROJECTS` is ever lowered) loses its oldest entries with no error and no log. Left deliberately: removing the backstop changes behaviour no ledger entry asks about.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-research-store-hardening
 
 ### DW-299: `/settings` still refuses read-only by disabling its whole form fieldset — the identical DW-191 defect, one section above the form this change fixed.
 origin: spec-deferred 32fcc7e0ed24
@@ -4187,4 +4190,60 @@ source_spec: `spec-dw-351-356-brand-copy-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts (YOPEDIA_HYPHEN_BOUNDS)
 severity: low
 reason: YOPEDIA_HYPHEN_BOUNDS blocks [A-Za-z0-9_-] on both sides. A trailing dot is deliberately allowed and documented (live workers.dev hostname, /tmp/*.log basenames); a LEADING dot is allowed only as a side effect. A leading slash must stay allowed for /tmp/yopedia-r2.log, so this is a narrowing of the lookbehind, not a removal.
+status: open
+
+### DW-476: `parseRegistry` refuses a non-array registry but validates no element, so an array of non-project entries still crashes later with an opaque TypeError.
+origin: spec-deferred 0cd43f136117
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+location: src/lib/research-projects.ts:184
+severity: medium
+reason: `[1,2,3]` or `[{}]` passes `Array.isArray`, is cast to `ResearchProject[]`, and dies in `listResearchProjects`' sort at `b.updatedAt.localeCompare(a.updatedAt)`. The sibling `parseSlots` in `research-concurrency.ts` validates every element with `isSlot`; this helper does not. Pre-existing shape, unchanged by DW-297.
+status: open
+
+### DW-477: A non-list registry now wedges a tenant with no in-product repair path.
+origin: spec-deferred a0633dfd255b
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+location: src/lib/research-projects.ts:184
+severity: medium
+reason: Every research operation for that owner refuses, including the deletes that could shrink the file, and the 500 body carries no remediation. The lease equivalent tells the operator what to do (`research-runtime.ts:886`: "Repair the lease state, then retry."). Refusing is the intended DW-297 behaviour; the missing half is a recovery route.
+status: open
+
+### DW-478: `PATCH`/`DELETE /api/research/[id]` and the v1 `deep_research` action still map `ClientInputError` to 500, the same misclassification DW-296 fixed one door over.
+origin: spec-deferred 189d32bd8390
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:157
+severity: medium
+reason: `src/app/api/research/[id]/route.ts:77` and `:96` catch-all at 500 with no `ClientInputError` branch, and `src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:157-161` maps every non-read-only error to 500 while passing `item.title` straight into `createResearchProject`. So the MAX_PROJECTS refusal and `cleanInput`'s newly-typed blank-title refusal both surface there as server faults.
+status: open
+
+### DW-479: `retireResearchProject`'s soft delete counts against the create cap while the panel hides those rows.
+origin: spec-deferred d96380ea82bf
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+location: src/lib/research-runtime.ts:453
+severity: medium
+reason: `retireResearchProject` sets `deleteRequested` when a worker is live; `createResearchProject` counts `projects.length` including those rows, while `filterResearchProjects` (research-projects.ts:250) hides them. A tenant with stuck `deleteRequested` rows is refused at the cap while the UI shows fewer than MAX_PROJECTS. Pre-existing, surfaced by the cap work.
+status: open
+
+### DW-480: `POST /api/research/[id]/run` still classifies failures by message regex.
+origin: spec-deferred 1caab8b40809
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+location: src/app/api/research/[id]/run/route.ts:93
+severity: low
+reason: `/not found/i` -> 404 and `/already running/i` -> 409 at `src/app/api/research/[id]/run/route.ts:93-99` — the exact idiom DW-296 retired on the create route, in the same feature.
+status: open
+
+### DW-481: Sibling `/required|invalid/i` status regexes remain on three other routes.
+origin: spec-deferred 5dbcff19cdef
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+location: src/app/api/monitors/route.ts:53
+severity: low
+reason: `src/app/api/monitors/route.ts:53`, `src/app/api/system/evaluations/route.ts:58` and `src/app/api/review/proposals/route.ts:78` each 400 any message matching `/required|invalid|.../i`, so a storage `EINVAL` is reported as the caller's fault there for the same reason DW-296 named.
+status: open
+
+### DW-482: A corrupt registry now makes a `run-research` task retry to the DLQ instead of poisoning on first delivery, and the task classifier has no row for a store fault.
+origin: spec-deferred c27d0a0a7d14
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+location: src/app/api/tasks/run/route.ts:932
+severity: low
+reason: Before DW-297 a non-list registry made `getResearchProject` return null, so `runResearchProject` threw "Research project not found", which `src/app/api/tasks/run/route.ts:918` poisons at 422. The new throw matches neither `/not found/i` nor `ClientInputError`, so it falls to the 500 at `:932` and the queue re-delivers up to `max_retries: 3` before the DLQ. Bounded and arguably the correct classification for a repairable server fault, but it is an unpinned behaviour change with no test at the task surface.
 status: open

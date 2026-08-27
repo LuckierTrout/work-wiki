@@ -4,8 +4,9 @@
  * DW-164 gave `createResearchProject` a `MAX_PROJECTS` refusal, which is the
  * caller's state and not a server fault. The handler is imported directly and
  * its store is mocked (the `wikis-routes.test.ts` recipe), so what is pinned
- * here is the mapping alone: a `ClientInputError` is a 400 by TYPE, anything
- * else stays a 500, and the message regex that predates the class still stands.
+ * here is the mapping alone: a `ClientInputError` is a 400 by TYPE and
+ * anything else stays a 500. There is no message matching left — the retired
+ * /required|invalid/i regex is pinned OUT by the storage-fault row below.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -140,10 +141,31 @@ describe("POST /api/research failure classification", () => {
     expect((await POST(request(BODY))).status).toBe(500);
   });
 
-  it("keeps 400ing the validation throws that predate ClientInputError", async () => {
-    mockedCreate.mockRejectedValue(new Error("Research title is required"));
+  it("400s a store-side ClientInputError such as a blank title", async () => {
+    // `cleanInput` now throws this typed, so the route needs no message regex
+    // to tell a blank title from a server fault.
+    mockedCreate.mockRejectedValue(new ClientInputError("Research title is required"));
 
-    expect((await POST(request(BODY))).status).toBe(400);
+    const response = await POST(request(BODY));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Research title is required" });
+  });
+
+  it("500s a server fault whose message merely says \"invalid\"", async () => {
+    // DW-296. The retired /required|invalid/i regex called this a 400, so the
+    // client retried a storage fault forever. The message passes through
+    // unchanged; only the status changes.
+    mockedCreate.mockRejectedValue(
+      new Error("EINVAL: invalid argument, open '/data/research-projects.json'"),
+    );
+
+    const response = await POST(request(BODY));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "EINVAL: invalid argument, open '/data/research-projects.json'",
+    });
   });
 
   it("201s a create that lands", async () => {

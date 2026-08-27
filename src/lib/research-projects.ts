@@ -153,8 +153,10 @@ function cleanUrls(values: readonly string[] | undefined): string[] {
 function cleanInput(input: ResearchProjectInput) {
   const title = input.title.trim().replace(/\s+/g, " ").slice(0, 160);
   const question = input.question.trim().slice(0, 4_000);
-  if (!title) throw new Error("Research title is required");
-  if (!question) throw new Error("Research question is required");
+  // Caller-supplied input, so the fault is typed rather than left for a route
+  // to string-match: `POST /api/research` classifies by type alone.
+  if (!title) throw new ClientInputError("Research title is required");
+  if (!question) throw new ClientInputError("Research question is required");
   return {
     title,
     question,
@@ -165,10 +167,31 @@ function cleanInput(input: ResearchProjectInput) {
   };
 }
 
+/**
+ * Parse stored registry bytes, refusing anything that is not a list.
+ *
+ * A registry that parses to an object/string/number used to read as "no
+ * projects", which cleared the `MAX_PROJECTS` guard and let the very next
+ * create OVERWRITE the corrupt file — losing whatever it held. Both read sites
+ * go through this one helper so they refuse together: refusing only in
+ * {@link readProjects} would still let the CAS read in
+ * {@link applyResearchProjectMutation} see `[]` and write over the file.
+ *
+ * The throw is a plain `Error` on purpose — a wrong-shaped stored file is a
+ * server fault (500), never a `ClientInputError`. Matches `parseSlots` in
+ * `research-concurrency.ts`, which refuses a non-array lease file the same way.
+ */
+function parseRegistry(raw: string): ResearchProject[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Research projects file is not a list.");
+  }
+  return parsed as ResearchProject[];
+}
+
 async function readProjects(owner: string): Promise<ResearchProject[]> {
   try {
-    const parsed = JSON.parse(await getStorage().readFile(projectPath(owner)));
-    return Array.isArray(parsed) ? parsed as ResearchProject[] : [];
+    return parseRegistry(await getStorage().readFile(projectPath(owner)));
   } catch (error) {
     if (isEnoent(error)) return [];
     throw error;
@@ -176,22 +199,21 @@ async function readProjects(owner: string): Promise<ResearchProject[]> {
 }
 
 /**
- * Persist the registry, keeping at most `MAX_PROJECTS` entries.
+ * Persist the registry verbatim — a write NEVER evicts a stored project.
  *
- * Precisely: it keeps the LAST `MAX_PROJECTS` entries in array order, which is
- * insertion order — NOT the most recently updated ones. Those are different
- * sets as soon as anything is updated, because `listResearchProjects` orders by
- * `updatedAt` while this array never reorders: touching the oldest-inserted
- * project makes it the newest by `updatedAt` and leaves it first in line to be
- * sliced off. Do not read this as an LRU.
+ * This used to `slice(-MAX_PROJECTS)`, which was silent data loss on any path
+ * that reached it holding legacy over-cap data: an update or a delete against a
+ * registry above the cap dropped its oldest-inserted rows as a side effect of
+ * saving something else, and the caller was told it succeeded. Dropping the
+ * slice is what lets a delete bring such a registry back DOWN to the cap
+ * instead of shedding unrelated rows on the way.
  *
- * The `slice` is a backstop for legacy over-cap data reaching
- * `updateResearchProject`/`deleteResearchProject`, not a create policy — the
- * create path refuses at the cap before it gets here, so the create can no
- * longer reach a state where this silently evicts a stored project.
+ * The cap is enforced in exactly one place: `createResearchProject` refuses
+ * when `projects.length >= MAX_PROJECTS` before anything is pushed, so no
+ * create can grow the registry past it.
  */
 function serializeProjects(projects: ResearchProject[]): string {
-  return JSON.stringify(projects.slice(-MAX_PROJECTS), null, 2);
+  return JSON.stringify(projects, null, 2);
 }
 
 /**
@@ -216,8 +238,7 @@ export async function applyResearchProjectMutation<T>(
     try {
       const read = await storage.readFileWithEtag(path);
       etag = read.etag;
-      const parsed = JSON.parse(read.content) as unknown;
-      projects = Array.isArray(parsed) ? parsed as ResearchProject[] : [];
+      projects = parseRegistry(read.content);
     } catch (error) {
       if (!isEnoent(error)) throw error;
     }
@@ -263,19 +284,21 @@ export async function getResearchProject(
 /**
  * Create a research project for `owner`.
  *
- * WHY THE CAP IS CHECKED FIRST. `writeProjects` persists only the last
- * `MAX_PROJECTS` entries, so a create that pushed past the cap did not fail —
- * it silently dropped the tenant's OLDEST project on the floor and reported
- * success. That is a create destroying pre-existing state, and no compensation
- * can undo it after the fact. Refusing before anything is mutated or written is
- * the fix, and it is the same discipline `createWiki` applies at `MAX_WIKIS`.
+ * WHY THE CAP IS CHECKED FIRST. This guard is the ONLY place the cap is
+ * enforced — {@link serializeProjects} writes the array verbatim and evicts
+ * nothing. Historically the write truncated instead, so a create that pushed
+ * past the cap did not fail: it silently dropped the tenant's OLDEST project on
+ * the floor and reported success. Refusing before anything is mutated or
+ * written is the fix, and it is the same discipline `createWiki` applies at
+ * `MAX_WIKIS`.
  *
  * WHY THERE IS NO POST-WRITE UNDO. `createWiki` needs one because it seeds
  * three files into a directory before its registry write, so a fault strands
  * them. This create writes exactly ONE file and seeds no sibling artifacts, and
- * the pushed array is function-local — so a rejected `writeProjects` leaves the
- * stored registry byte-identical (`StorageProvider.writeFile` is atomic from
- * the caller's view) and there is nothing behind to clean up.
+ * the pushed array is function-local — so a rejected registry write in
+ * {@link applyResearchProjectMutation} leaves the stored registry
+ * byte-identical (`StorageProvider.writeFileIfAbsent`/`writeFileIfMatch` are
+ * atomic from the caller's view) and there is nothing behind to clean up.
  */
 export async function createResearchProject(
   owner: string,
@@ -390,7 +413,7 @@ async function mutateProject(
       }
     }
     if (patch.status !== undefined) {
-      if (!STATUSES.has(patch.status)) throw new Error("Invalid research status");
+      if (!STATUSES.has(patch.status)) throw new ClientInputError("Invalid research status");
       project.status = patch.status;
     }
     if (patch.synthesis !== undefined) {

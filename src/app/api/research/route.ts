@@ -121,15 +121,15 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
+    // Classification is by TYPE alone — the `src/app/api/wikis/route.ts` idiom.
     // A `ClientInputError` is the caller's fault by construction (the
-    // MAX_PROJECTS refusal), so it is a 400 by TYPE rather than by matching its
-    // message — the `src/app/api/wikis/route.ts` idiom. The message regex stays
-    // for the validation throws in `cleanInput` that predate that class.
+    // MAX_PROJECTS refusal, and `cleanInput`'s blank title/question checks);
+    // everything else is a server fault. This used to also 400 any message
+    // matching /required|invalid/i, which mislabelled storage faults like
+    // "EINVAL: invalid argument, open …" as the caller's bad input — inviting a
+    // client to fix and resubmit a body that was never the problem.
     const message = getErrorMessage(error);
-    const status =
-      error instanceof ClientInputError || /required|invalid/i.test(message)
-        ? 400
-        : 500;
+    const status = error instanceof ClientInputError ? 400 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }
