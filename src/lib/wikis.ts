@@ -2087,16 +2087,29 @@ export async function readWikiArtifact(
  * single-owner deployment (see `src/lib/owner.ts`): the site owner's Schema is
  * the site's Schema, so every caller gets it regardless of who they are.
  *
- * MIGRATION (a second tenant): note that more than one owner can hold Wikis
- * ALREADY — `POST /api/wikis` gates on `getPrincipal()`, not `isOwnerHandle`,
- * so any signed-in non-owner can create one. What does not exist yet is
- * multi-tenant SERVING: such a Wiki is inert, because this function never
- * resolves it and `src/app/api/workbench/artifact/route.ts` 403s its Schema
- * edits. So the trigger is not "a second owner appears" — it is "a non-owner's
- * Wiki must actually serve that non-owner". At that moment this must stop
- * reading `getOwnerHandle()` and instead take a tenant argument, threaded
- * through `loadPageConventions()` in `schema.ts` and supplied at every one of
- * its no-argument call sites. Those sites are not equally ready for it:
+ * MIGRATION (a second tenant): opening a NEW non-owner tenant is refused, but
+ * by a stack of doors, not by one — state the guarantee at the surface it
+ * actually holds at. The OUTER gate is `handlePrivateRequest` in
+ * `src/middleware.ts`: it runs on every request and 403s any `/api/*` call
+ * whose Clerk `userId` is not `YOPEDIA_OWNER_USER_ID` (404 for non-API
+ * navigation), and `/api/wikis` is neither in `IN_ROUTE_AUTH_PATHS` nor matched
+ * by `authenticatesInRoute`, so a non-owner never reaches the route at all on a
+ * configured deployment. The SECOND door is the route's own `isOwnerHandle`
+ * check (DW-159) — defense-in-depth behind the middleware, and the same gate
+ * `src/app/api/workbench/artifact/route.ts` puts on Schema edits. The KERNEL,
+ * {@link createWiki} below, is deliberately NOT owner-asserted: it still takes
+ * any `owner` string, exactly as it keeps `assertWritable` as an explicit
+ * backstop for a direct library caller. What holds today is that the route is
+ * its only caller — a CLI command or a future MCP tool reaching the kernel
+ * directly would open a tenant with nothing to stop it, so that is the line to
+ * re-check before adding one. The only non-owner tenants reachable now are ones
+ * created before that gate landed; they are inert, because this function never
+ * resolves them and the artifact route 403s their Schema edits. What does not
+ * exist is multi-tenant SERVING. So the trigger is not "a second owner
+ * appears" — it is "a non-owner's Wiki must actually serve that non-owner". At
+ * that moment this must stop reading `getOwnerHandle()` and instead take a
+ * tenant argument, threaded through `loadPageConventions()` in `schema.ts` and
+ * supplied at every one of its no-argument call sites. Those sites are not equally ready for it:
  *   - `query.ts` (`buildQuerySystemPrompt`) and `ingest.ts`
  *     (`buildIngestSystemPrompt`) already have a per-caller `owner` in scope —
  *     but note it is a PRINCIPAL, not necessarily a tenant (it can be

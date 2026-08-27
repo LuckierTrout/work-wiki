@@ -1455,7 +1455,8 @@ source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: src/app/api/wikis/route.ts:37
 severity: low
 reason: `src/app/api/wikis/route.ts` checks `getPrincipal()` and `isReadOnly()`, then calls `createWiki(principal.handle, …)` — no `isOwnerHandle` gate. The resulting Wiki's Schema is never resolved (`readActiveWikiSchema()` reads `NEXT_PUBLIC_OWNER_HANDLE`) and its Schema edits are 403'd at `src/app/api/workbench/artifact/route.ts:82`, whose own comment reasons about exactly this inertness for the save path. So the "second tenant" state DW-19 treats as hypothetical is reachable in production today; the creation path is the one door left open. Pre-existing, and a product decision (gate creation, or accept inert non-owner Wikis) rather than a defect of this change.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-wiki-ownership-gate-and-sweep-scope
 decision: 2026-08-19 Gate creation on ownership — Add an `isOwnerHandle(principal.handle)` gate to `POST /api/wikis` so a non-owner cannot create a Wiki no surface will honour, answering the same 403 shape the artifact route already uses, and pin it with a route test alongside the existing sign-in and read-only cases.
 
 ### DW-160: Follow-up review still recommended for dw-single-owner-resolution-invariant after the damping cap was spent
@@ -2604,7 +2605,8 @@ source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
 location: src/lib/maintenance.ts (sweepOrphanWikiDirs)
 severity: low
 reason: `sweepOrphanWikiDirs` resolves one handle via `getOwnerHandle()` (`NEXT_PUBLIC_OWNER_HANDLE`), but `POST /api/wikis` calls `createWiki(principal.handle, ...)`, so any signed-in principal gets its own tenant and its own registry. For those tenants `deleteWiki` remains the only trigger. This matches the neighbouring backup block in the same route (also owner-only) and `src/lib/owner.ts`'s "single-owner deployment" stance, so it is a deliberate scope, not a bug — but the repo has an owner-enumeration precedent (`listSourceMonitorOwners`) and no equivalent index for Wikis.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-wiki-ownership-gate-and-sweep-scope
 
 ### DW-289: The sweep has no per-pass cap, so one cron request can walk, stat and delete an unbounded number of candidates while holding the tenant lock.
 origin: spec-deferred a53600c92e2a
@@ -4275,4 +4277,28 @@ source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
 location: src/lib/__tests__/wikis.test.ts (the orphan-directory sweep, DW-289 cap rows)
 severity: low
 reason: Those rows plant `cap + OVERFLOW` orphans against the real system clock, so WHICH window a pass takes now varies with the date the suite runs. They pass on any date today because every assertion is a count or spans all planted directories, but any future row in that `describe` that names a specific directory would be flaky by calendar. Pinning the clock for the whole `describe` is its own piece of work -- the block has ~20 rows that depend on real time for `ageDirectory` and the file lock's waits.
+status: open
+
+### DW-486: The middleware admits the owner by stable Clerk id while every `isOwnerHandle` route gate refuses by handle, so the two owner identities can disagree and lock the real owner out.
+origin: spec-deferred da7ec1fb2ee0
+source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
+location: src/app/api/wikis/route.ts:65
+severity: medium
+reason: `handlePrivateRequest` (src/middleware.ts:248-259) admits on `YOPEDIA_OWNER_USER_ID`; `isOwnerHandle` (src/lib/owner.ts:22-25) compares against `NEXT_PUBLIC_OWNER_HANDLE`. `getPrincipal` falls back to the raw Clerk id as the handle when a user has no username and no linked X account (src/lib/auth.ts:135-147, a case it logs), and `NEXT_PUBLIC_*` is inlined at build time so a username change needs a redeploy. In both cases the owner passes the middleware and is then 403'd by the handle gate with a message saying they are not the owner, with no in-app recovery. Pre-existing at `PUT /api/workbench/artifact`; DW-159 widens it to Wiki creation.
+status: open
+
+### DW-487: `requireOwnerPrincipal` is fail-OPEN when no owner handle is configured while the direct `isOwnerHandle` gates are fail-CLOSED, and nothing records the divergence.
+origin: spec-deferred 4a169ed4676e
+source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
+location: src/lib/owner-route.ts:8
+severity: low
+reason: `src/lib/owner-route.ts:8-14` reads "when no owner handle is configured (tests), any signed-in principal passes" and only refuses when `getOwnerHandle()` is truthy. The artifact route and now `POST /api/wikis` call `isOwnerHandle` directly, which answers false for everyone when the var is unset. A future Wiki route written through the helper would silently reopen creation on an unconfigured deployment. Pre-existing; surfaced by review of DW-159.
+status: open
+
+### DW-488: Stale discard tombstones on pre-gate non-owner tenants are cleared by nothing, which is a second residual beyond the orphan directories the DW-288 scope note records.
+origin: spec-deferred 1ea21f891a70
+source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
+location: src/lib/maintenance.ts (sweepOrphanWikiDirs)
+severity: low
+reason: `clearStaleDiscardTombstones` (DW-291) runs only on the scheduled path, and the schedule resolves a single owner via `getOwnerHandle()`. `deleteWiki`'s inline sweep runs with `scheduled` unset, so for a tenant created before the DW-159 gate landed the tombstones have no clearer at all — unlike the orphan directories, which `deleteWiki` at least reclaims inline. The new SCOPE note in `maintenance.ts` accounts only for the directories.
 status: open

@@ -314,6 +314,30 @@ export async function purgeStaleJobs(): Promise<number> {
  * `await import("./wikis")` keeps the module graph loose, matching
  * {@link rebuildDerivedIndexes}: `wikis.ts` pulls in the whole scenario-template
  * and workspace-profile subtree, and nothing else in this module needs it.
+ *
+ * SCOPE (DW-288, settled): sweeping only the configured owner's tenant is not a
+ * leak, because no NEW non-owner tenant can be opened for this sweep to miss —
+ * but the guarantee belongs to a stack of doors, not to any one of them.
+ * `handlePrivateRequest` in `src/middleware.ts` is the OUTER gate: it 403s any
+ * `/api/*` request whose Clerk `userId` is not `YOPEDIA_OWNER_USER_ID`, and
+ * `/api/wikis` is neither in `IN_ROUTE_AUTH_PATHS` nor matched by
+ * `authenticatesInRoute`, so a non-owner is turned away before the route runs.
+ * The route's own `isOwnerHandle` check (DW-159) is the SECOND door behind it,
+ * defense-in-depth. `createWiki` itself is deliberately un-asserted — it takes
+ * any `owner` string, and what makes that safe is that the route is its only
+ * caller today; a direct kernel caller (a CLI command, a future MCP tool) would
+ * open a tenant this sweep never sees, so adding one means revisiting this
+ * scope. The one honest residual today is tenants created BEFORE that gate
+ * landed: their orphan directories are reclaimed only when `deleteWiki` sweeps
+ * them inline — which a non-owner can still reach, since the Wiki routes other
+ * than creation are ungated — never on this schedule. That residual is recorded
+ * rather than swept deliberately — reaching those tenants would need a
+ * Wiki-tenant enumeration index the repo does not have
+ * (`listSourceMonitorOwners` is that index for source monitors, not for Wikis),
+ * and building one to walk a set the creation gate now keeps from growing is
+ * work with no live input. Widen this only if a second tenant
+ * is ever legitimately served — see the MIGRATION note on
+ * `readActiveWikiSchema` in `wikis.ts`, which is the same trigger.
  */
 export async function sweepOrphanWikiDirs(): Promise<number> {
   try {

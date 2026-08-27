@@ -11,6 +11,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/config", () => ({ isReadOnly: vi.fn() }));
+// `@/lib/owner` MUST be mocked here: the real `isOwnerHandle` reads
+// `NEXT_PUBLIC_OWNER_HANDLE`, which is unset under vitest, so it would answer
+// false for `alice` and 403 every POST case below. `beforeEach` defaults it to
+// true so each existing status keeps meaning what it meant. The whole module is
+// replaced rather than spread because `wikis.ts` — loaded for real here — only
+// calls `getOwnerHandle()` from `readActiveWikiSchema`, which no route under
+// test reaches.
+vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
 vi.mock("@/lib/wikis", async (original) => ({
   ...(await original<typeof import("@/lib/wikis")>()),
   getWikiRegistry: vi.fn(),
@@ -28,6 +36,7 @@ import { DELETE as DELETE_WIKI, PATCH as RENAME_WIKI } from "@/app/api/wikis/[id
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError } from "@/lib/errors";
+import { isOwnerHandle } from "@/lib/owner";
 import {
   applyScenarioTemplate,
   createWiki,
@@ -48,6 +57,7 @@ const WIKI: WikiRecord = {
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedReadOnly = vi.mocked(isReadOnly);
+const mockedIsOwner = vi.mocked(isOwnerHandle);
 const mockedRegistry = vi.mocked(getWikiRegistry);
 const mockedCreate = vi.mocked(createWiki);
 const mockedApply = vi.mocked(applyScenarioTemplate);
@@ -84,6 +94,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
   mockedReadOnly.mockReturnValue(false);
+  mockedIsOwner.mockReturnValue(true);
   mockedRegistry.mockResolvedValue({ version: 1, wikis: [WIKI], currentId: WIKI.id });
   mockedCreate.mockResolvedValue(WIKI);
   mockedApply.mockResolvedValue({ ...WIKI, scenario: "reading" });
@@ -112,6 +123,10 @@ describe("wiki API auth", () => {
     expect(mockedApply).not.toHaveBeenCalled();
     expect(mockedRename).not.toHaveBeenCalled();
     expect(mockedDelete).not.toHaveBeenCalled();
+    // 401 PRECEDES the owner check on POST. `beforeEach` defaults the owner
+    // mock to true, so a reordering that consulted the owner first would still
+    // answer 401 here and go unnoticed without this.
+    expect(mockedIsOwner).not.toHaveBeenCalled();
   });
 
   it("refuses writes on a read-only deployment", async () => {
@@ -131,6 +146,65 @@ describe("wiki API auth", () => {
     expect(mockedApply).not.toHaveBeenCalled();
     expect(mockedRename).not.toHaveBeenCalled();
     expect(mockedDelete).not.toHaveBeenCalled();
+  });
+
+  it("refuses Wiki CREATION by a non-owner and writes nothing", async () => {
+    // DW-159: the creation door is the one `/api/wikis` route gated on being
+    // the OWNER, not merely signed in — a non-owner's Wiki is inert, so the
+    // answer is a refusal. Every OTHER route here addresses the caller's OWN
+    // already-existing registry and stays ungated, so all five are asserted
+    // below, not a sample: gating any one of them is a silent regression the
+    // POST 403 cannot catch. DELETE matters most — `deleteWiki`'s inline
+    // orphan sweep is a pre-gate non-owner tenant's ONLY reclamation path, and
+    // the `sweepOrphanWikiDirs` scope note in `maintenance.ts` rests on it.
+    mockedIsOwner.mockReturnValue(false);
+    const response = await POST(createRequest({ name: "x", scenario: "business" }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toMatch(/owner/i);
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedIsOwner).toHaveBeenCalledWith("alice");
+    expect((await GET()).status).toBe(200);
+    expect((await PUT(currentRequest({ id: WIKI.id }))).status).toBe(200);
+    expect(
+      (await APPLY_TEMPLATE(templateRequest({ scenario: "reading" }), templateContext()))
+        .status,
+    ).toBe(200);
+    expect(
+      (await RENAME_WIKI(renameRequest({ name: "Q4 plan" }), idContext())).status,
+    ).toBe(200);
+    expect((await DELETE_WIKI(deleteRequest(), idContext())).status).toBe(200);
+    expect(mockedDelete).toHaveBeenCalledWith("alice", WIKI.id);
+  });
+
+  it("answers the OWNER refusal first — before read-only and before the body", async () => {
+    // Ordering is 401 → owner → read-only → parse, mirroring the artifact
+    // route, so a non-owner meets ONE answer from both write doors whatever
+    // else is wrong with the request. Asserted on the copy, not just the 403,
+    // because read-only refuses with the same status.
+    mockedIsOwner.mockReturnValue(false);
+    mockedReadOnly.mockReturnValue(true);
+    const readOnly = await POST(createRequest({ name: "x", scenario: "business" }));
+    expect(readOnly.status).toBe(403);
+    expect((await readOnly.json()).error).toMatch(/owner/i);
+
+    const unparseable = await POST(
+      new Request("http://localhost/api/wikis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{",
+      }),
+    );
+    expect(unparseable.status).toBe(403);
+    expect((await unparseable.json()).error).toMatch(/owner/i);
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the read-only refusal for the owner", async () => {
+    mockedReadOnly.mockReturnValue(true);
+    const response = await POST(createRequest({ name: "x", scenario: "business" }));
+    expect(response.status).toBe(403);
+    expect((await response.json()).error).toMatch(/read-only/i);
+    expect(mockedCreate).not.toHaveBeenCalled();
   });
 });
 
