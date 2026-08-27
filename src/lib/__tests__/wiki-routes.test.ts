@@ -1818,6 +1818,145 @@ describe("PUT /api/wiki/[slug] — the write precondition", () => {
   });
 
   // -------------------------------------------------------------------------
+  // An UNREADABLE page is not an ABSENT one (DW-378)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The merge-base read answered `null` for a storage failure as well as for a
+   * missing file, and the `!existing` branch below it turns `null` into
+   * `page not found: <slug>`. So a transient provider blip told the caller
+   * their page had been deleted — the one answer that makes a human stop
+   * retrying and start recovering. `strict: true` rethrows instead, and the
+   * route's existing catch classifies it as a 500.
+   */
+  it("answers 5xx — NOT `page not found` — when the merge-base read blips", async () => {
+    await seed("pc-blip");
+    const before = await storedBody("pc-blip");
+    const ifMatch = formatIfMatch(
+      contentVersion((await readWikiPageWithFrontmatter("pc-blip"))!.content),
+    );
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        // A non-ENOENT failure: the file is there, the provider is not.
+        if (filePath.endsWith("pc-blip.md")) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    try {
+      const response = await put("pc-blip", ifMatch);
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      // The whole point: the caller is told the store failed, not that their
+      // page is gone.
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // And nothing was written.
+    expect(await storedBody("pc-blip")).toBe(before);
+  });
+
+  it("still answers 404 for a slug that genuinely has no stored file", async () => {
+    // The companion row. `strict` must not turn a real absence into a 500 —
+    // ENOENT stays `null`, so the 404 below now means only what it claims.
+    const response = await put("pc-never-existed", null);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: pc-never-existed",
+    });
+  });
+
+  /**
+   * `strict` reaches FURTHER than the Page file. `readWikiPage` forwards it to
+   * `getPageIndex({ strict })`, which rethrows where the default logs
+   * "read failed; falling back to scan" and returns `null`. So the main save
+   * door now fails closed when only `derived-indexes/pages.json` is unreadable
+   * and the Page file itself is perfectly fine — a real widening, and the
+   * intended one: the index is what resolves a Page to its silo, so a silent
+   * fallback there can hand back a DIFFERENT Page's bytes as the merge base.
+   * Failing the save is the only safe answer; a 404 would be the wrong one.
+   *
+   * NOTE the deliberate asymmetry with `lifecycle.test.ts`, which pins that a
+   * NON-strict `{ fresh: true }` read still succeeds through an index outage.
+   * Both are correct: a plain read may fall back to the scan, a read that is
+   * about to authorize a write may not. Neither test may be "fixed" to match
+   * the other.
+   */
+  const INDEX_PATH = "derived-indexes/pages.json";
+
+  it("fails closed when only the PAGE INDEX read blips, not the page file", async () => {
+    await seed("pc-index-blip");
+    const before = await storedBody("pc-index-blip");
+    const ifMatch = formatIfMatch(
+      contentVersion((await readWikiPageWithFrontmatter("pc-index-blip"))!.content),
+    );
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        // ONLY the index fails. The page file reads fine throughout, which is
+        // what separates this row from the `pc-blip` one above.
+        if (filePath === INDEX_PATH) throw new Error("page index unavailable");
+        return originalRead(filePath);
+      });
+
+    try {
+      const response = await put("pc-index-blip", ifMatch);
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // Not a silent success either: the stored bytes are untouched.
+    expect(await storedBody("pc-index-blip")).toBe(before);
+  });
+
+  it("fails closed when the PAGE INDEX is present but malformed JSON", async () => {
+    // The other half of `getPageIndex`'s strict branch: the read SUCCEEDS and
+    // `JSON.parse` is what throws. Not ENOENT, so it is rethrown rather than
+    // treated as an unseeded index.
+    await seed("pc-index-garbage");
+    const before = await storedBody("pc-index-garbage");
+    const ifMatch = formatIfMatch(
+      contentVersion(
+        (await readWikiPageWithFrontmatter("pc-index-garbage"))!.content,
+      ),
+    );
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath === INDEX_PATH) return "{ this is not json";
+        return originalRead(filePath);
+      });
+
+    try {
+      const response = await put("pc-index-garbage", ifMatch);
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(await storedBody("pc-index-garbage")).toBe(before);
+  });
+
+  // -------------------------------------------------------------------------
   // The service token is not exempt (DW-194)
   // -------------------------------------------------------------------------
 

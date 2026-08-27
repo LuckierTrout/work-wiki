@@ -71,6 +71,7 @@ import {
   fixStalePage,
   fixUnmigratedPage,
   fixBrokenLink,
+  fixSupersededDangling,
   fixLintIssue,
   FixValidationError,
   FixNotFoundError,
@@ -1063,6 +1064,161 @@ describe("fixLintIssue", () => {
     expect(result.slug).toBe("old-page");
     expect(result.message).toContain("work-wiki defaults");
     expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Every read that feeds a write is FRESH + STRICT (DW-379)
+// ---------------------------------------------------------------------------
+
+/**
+ * `pageCache` is module-global and ref-counted around bulk scans, so a scan can
+ * hold a superseded entry open while a fix runs. A cached read there makes the
+ * merge base a file that is no longer stored and the write lands it back;
+ * `strict` additionally stops a transient provider error from reading back as
+ * `null` and being mistaken for "absent" — which, in `fixSupersededDangling`,
+ * would authorize a destructive clear.
+ *
+ * These assertions pin the option literal at each converted call site. They are
+ * deliberately per-fix: dropping the literal from ONE site leaves `tsc` clean
+ * and every behavioural test above still green.
+ */
+describe("fresh + strict merge-base reads", () => {
+  const FRESH_STRICT = { fresh: true, strict: true };
+
+  function page(slug: string, content: string) {
+    return { slug, title: slug, content, path: `/wiki/${slug}.md` };
+  }
+
+  it("fixMissingCrossRef reads source, source frontmatter, and target fresh+strict", async () => {
+    // Two distinct reads of the same slug, kept as two calls: only the first is
+    // the merge base, the second exists solely for the HTML-artifact guard.
+    mockedReadWikiPage
+      .mockResolvedValueOnce(page("src", "# Src\n\nBody."))
+      .mockResolvedValueOnce(page("tgt", "# Tgt\n\nBody."));
+    mockedReadWikiPageWithFrontmatter.mockResolvedValue({
+      slug: "src",
+      title: "Src",
+      content: "# Src\n\nBody.",
+      path: "/wiki/src.md",
+      frontmatter: { type: "note" },
+      body: "# Src\n\nBody.",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await fixMissingCrossRef("src", "tgt");
+
+    expect(mockedReadWikiPage).toHaveBeenNthCalledWith(1, "src", FRESH_STRICT);
+    expect(mockedReadWikiPageWithFrontmatter).toHaveBeenCalledWith("src", FRESH_STRICT);
+    expect(mockedReadWikiPage).toHaveBeenNthCalledWith(2, "tgt", FRESH_STRICT);
+  });
+
+  it("fixContradiction reads both pages fresh+strict", async () => {
+    mockedHasLLMKey.mockReturnValue(true);
+    mockedReadWikiPage
+      .mockResolvedValueOnce(page("alpha", "# Alpha\n\nA."))
+      .mockResolvedValueOnce(page("beta", "# Beta\n\nB."));
+
+    await fixContradiction("alpha", "beta", "they disagree");
+
+    expect(mockedReadWikiPage).toHaveBeenNthCalledWith(1, "alpha", FRESH_STRICT);
+    expect(mockedReadWikiPage).toHaveBeenNthCalledWith(2, "beta", FRESH_STRICT);
+  });
+
+  it("fixMissingConceptPage checks existence fresh+strict before creating", async () => {
+    mockedReadWikiPage.mockResolvedValue(null);
+
+    await fixMissingConceptPage(
+      'Concept "Widgets" is mentioned in a, b but has no dedicated page. Reason.',
+    );
+
+    expect(mockedReadWikiPage).toHaveBeenCalledWith("widgets", FRESH_STRICT);
+  });
+
+  it("fixStalePage reads its merge base fresh+strict", async () => {
+    mockedReadWikiPageWithFrontmatter.mockResolvedValue({
+      slug: "stale",
+      title: "Stale",
+      content: "# Stale\n\nBody.",
+      path: "/wiki/stale.md",
+      frontmatter: { expires: "2020-01-01" },
+      body: "# Stale\n\nBody.",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await fixStalePage("stale");
+
+    expect(mockedReadWikiPageWithFrontmatter).toHaveBeenCalledWith("stale", FRESH_STRICT);
+    expect(mockedWriteWikiPageWithSideEffects.mock.calls[0][0].expectedContent).toBe(
+      "# Stale\n\nBody.",
+    );
+  });
+
+  it("fixUnmigratedPage reads its merge base fresh+strict", async () => {
+    mockedReadWikiPageWithFrontmatter.mockResolvedValue({
+      slug: "bare",
+      title: "Bare",
+      content: "# Bare\n\nBody.",
+      path: "/wiki/bare.md",
+      frontmatter: {},
+      body: "# Bare\n\nBody.",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    await fixUnmigratedPage("bare");
+
+    expect(mockedReadWikiPageWithFrontmatter).toHaveBeenCalledWith("bare", FRESH_STRICT);
+    expect(mockedWriteWikiPageWithSideEffects.mock.calls[0][0].expectedContent).toBe(
+      "# Bare\n\nBody.",
+    );
+  });
+
+  it("fixSupersededDangling reads the page AND re-verifies the target fresh+strict", async () => {
+    mockedReadWikiPageWithFrontmatter.mockImplementation(async (slug: string) =>
+      slug === "some-slug"
+        ? ({
+            slug,
+            title: "Some",
+            content: "# Some\n\nBody.",
+            path: "/wiki/some-slug.md",
+            body: "# Some\n\nBody.",
+            frontmatter: { supersedes: "ghost" },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any)
+        : null,
+    );
+
+    const result = await fixSupersededDangling("some-slug");
+
+    expect(result.success).toBe(true);
+    expect(mockedReadWikiPageWithFrontmatter).toHaveBeenCalledWith("some-slug", FRESH_STRICT);
+    expect(mockedReadWikiPageWithFrontmatter).toHaveBeenCalledWith("ghost", FRESH_STRICT);
+  });
+
+  it("fixSupersededDangling fails closed when the re-verification read blips", async () => {
+    // THE ROW THIS FILE EXISTS FOR: without `strict` the rejected read is a
+    // swallowed `null`, read as "the target is still gone", and the transient
+    // failure authorizes the destructive clear.
+    mockedReadWikiPageWithFrontmatter.mockImplementation(async (slug: string) => {
+      if (slug === "some-slug") {
+        return {
+          slug,
+          title: "Some",
+          content: "# Some\n\nBody.",
+          path: "/wiki/some-slug.md",
+          body: "# Some\n\nBody.",
+          frontmatter: { supersedes: "ghost" },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any;
+      }
+      throw new Error("target read unavailable");
+    });
+
+    await expect(fixSupersededDangling("some-slug")).rejects.toThrow(
+      "target read unavailable",
+    );
+    // `supersedes` survives: nothing was written at all.
+    expect(mockedWriteWikiPageWithSideEffects).not.toHaveBeenCalled();
   });
 });
 

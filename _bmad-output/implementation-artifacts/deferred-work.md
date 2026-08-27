@@ -3408,7 +3408,8 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/wiki.ts:409, src/app/api/wiki/[slug]/route.ts:161
 severity: medium
 reason: `src/lib/wiki.ts:409-419` warns and returns `null` for every non-ENOENT read failure, and `PUT /api/wiki/[slug]` turns that `null` into `page not found: <slug>` before the precondition is ever consulted. This bundle made exactly the opposite call one layer over: when `writeWikiArtifact` is given an `expectedVersion`, a failed pre-write read rethrows rather than being read as "absent", because "absent" is answered as a conflict and a blip is not one. The page path keeps the older behaviour, so the same transient failure is a 404 on one surface and a 500 on the other. Pre-existing — the swallow predates the precondition and this change only added the `fresh` option beside it — and closing it means changing `readWikiPage`'s null contract, which ~40 callers depend on.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-merge-base-freshness
 
 ### DW-379: The other read-modify-write merge bases still read through `pageCache`, so the staleness DW-195 closed for the precondition-bearing reads is open on every path that merges into cached bytes and writes
 origin: spec-deferred 620dd58d504a
@@ -3416,7 +3417,8 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/patch-metadata.ts, src/lib/merge.ts, src/lib/lint-fix.ts
 severity: medium
 reason: `src/lib/patch-metadata.ts` (the `PATCH` frontmatter merge), the page revert in `src/app/api/wiki/[slug]/revisions/route.ts`, `src/lib/merge.ts` and several sites in `src/lib/lint-fix.ts` all call `readWikiPage` / `readWikiPageWithFrontmatter` without `{ fresh: true }` and then write the merged result. A bulk scan (`lint.ts`, `search.ts`, `query.ts`, `dataview.ts`) holding a superseded entry open across one of those requests makes the merge base a file that is no longer stored, and the write lands it back. Pre-existing and unrelated to the precondition — none of these routes is gated, and the spec's Never clause forbids gating them — but "do not gate it" is a different decision from "let it merge into cached bytes". Closing it is a sweep over those call sites, not a change to this guard.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-merge-base-freshness
 
 ### DW-380: A fresh read still falls back from a FAILED silo read to the flat copy, so a version can describe bytes at a path the write will not target.
 origin: spec-deferred 60eded0bf0fa
@@ -4353,4 +4355,28 @@ origin: spec-deferred 52b740415ffc
 source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
 location: n/a
 reason: `readWikiPageWithFrontmatter` (src/lib/wiki.ts:534-546) calls `parseFrontmatter` with no catch, so an unclosed `
+status: open
+
+### DW-495: Merge-base reads outside the three files this bundle named still read through pageCache without strict, including the MCP edit door that documents itself as mirroring the PUT route this change fixed.
+origin: spec-deferred 98230f132919
+source_spec: `spec-dw-378-379-merge-base-freshness.md`
+location: src/mcp.ts:282
+severity: medium
+reason: Each site reads a page and hands those bytes back as `expectedContent`: src/mcp.ts:282 -> :349 (handleUpdatePage, whose comment at :286 says it "mirrors the REST surface at PUT /api/wiki/[slug]"), src/mcp.ts:1371 -> :1408, src/cli.ts:431 -> :468, src/lib/query.ts:507 -> :521, src/lib/ingest.ts:1432 -> :1484, src/lib/document-sources.ts:93 -> :126, src/lib/source-cascade.ts:229 -> :263, src/lib/agents.ts:792 -> :832 and :934 -> :977, src/lib/ingest-bookkeeping.ts:53 -> :76 and :186 -> :207. DW-379's location field named only patch-metadata.ts, merge.ts and lint-fix.ts, so these are out of this bundle's scope on the intent's own authority -- but they are the same hazard, and handleUpdatePage still answers "Page not found" (src/mcp.ts:284) for an unreadable page, which is DW-378 on the surface that claims parity with the fixed route.
+status: open
+
+### DW-496: Write-authorizing reads that are not merge bases -- the DELETE route's ACL read and the two create-conflict guards -- still swallow a storage blip as "absent" and read through pageCache.
+origin: spec-deferred e8080be9a31e
+source_spec: `spec-dw-378-379-merge-base-freshness.md`
+location: src/app/api/wiki/[slug]/route.ts:50
+severity: medium
+reason: src/app/api/wiki/[slug]/route.ts:50 sits inside DELETE (handlers at 26 / 146 / 356), not a GET: its frontmatter feeds canWriteFrontmatter at :60, and a non-ENOENT failure answers `page not found: <slug>` at :51-56, the exact DW-378 symptom on the delete door. src/app/api/wiki/route.ts:104 and src/mcp.ts:222 are the mirror case: `const existing = await readWikiPage(slug)` refusing with 409 / "Page already exists" when truthy, so a blip reads as "absent" and lets a create proceed against a page that exists. Structurally identical to lint-fix.ts:351, which this bundle did convert. Not named by DW-378 or DW-379, so out of scope here. NOTE: this spec's Never clause misdescribes route.ts:50 as a GET read serving a response; the exclusion is right by the intent's enumeration, the stated reason is not.
+status: open
+
+### DW-497: The revision-list GET still reports a storage blip as `page not found`, so DW-378's misreport survives on the read surface a human actually hits.
+origin: spec-deferred 4f2ccecea4f4
+source_spec: `spec-dw-378-379-merge-base-freshness.md`
+location: src/app/api/wiki/[slug]/revisions/route.ts:29
+severity: low
+reason: src/app/api/wiki/[slug]/revisions/route.ts:29 reads without strict and turns the resulting null into a 404. DW-378's location field names only src/lib/wiki.ts:409 and the page write, and the read serves a response body rather than backing a write, so it is out of this bundle's scope -- but the harm DW-378 describes (an answer that makes a human stop retrying and start recovering) applies to a reader at least as much as a writer.
 status: open

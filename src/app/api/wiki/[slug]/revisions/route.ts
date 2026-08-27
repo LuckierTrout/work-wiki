@@ -131,8 +131,14 @@ export async function POST(req: Request, { params }: RouteParams) {
       );
     }
 
-    // Ensure the page exists.
-    const existing = await readWikiPageWithFrontmatter(slug);
+    // Ensure the page exists. FRESH+STRICT (DW-379): `existing.content` is the
+    // revert's merge base below, so it must be the stored file — not a
+    // superseded `pageCache` entry an open bulk scan is holding — and a storage
+    // failure must reach the catch as a 500 rather than pose as a 404.
+    const existing = await readWikiPageWithFrontmatter(slug, {
+      fresh: true,
+      strict: true,
+    });
     if (!existing) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },

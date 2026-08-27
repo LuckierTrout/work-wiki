@@ -194,7 +194,16 @@ export async function PUT(
     // `If-Match` against that entry would refuse a save that matches the stored
     // file, or accept one against bytes that are already gone. A fresh read
     // neither consults nor mutates the cache.
-    const existing = await readWikiPageWithFrontmatter(slug, { fresh: true });
+    //
+    // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+    // `null`, indistinguishable from an absent page, and the 404 below tells
+    // the caller their page is gone when it is only unreadable. Strict rethrows
+    // that failure to the catch at the bottom, which answers 500, so the 404
+    // below now means only what it always claimed: nothing is stored here.
+    const existing = await readWikiPageWithFrontmatter(slug, {
+      fresh: true,
+      strict: true,
+    });
     if (!existing) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },

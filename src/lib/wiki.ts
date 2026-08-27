@@ -371,6 +371,22 @@ export interface ReadWikiPageOptions {
    * Surface non-ENOENT storage failures instead of converting them to a
    * missing Page. Mechanical write preconditions use this so a transient
    * provider error can never authorize a destructive fix.
+   *
+   * TWO THINGS THIS OPTION IS EASY TO GET WRONG:
+   *
+   * 1. Its reach is wider than the Page file. It forwards into
+   *    `getPageIndex({ strict })`, which rethrows a non-ENOENT failure — and a
+   *    `JSON.parse` failure — on `derived-indexes/pages.json` where the default
+   *    logs "read failed; falling back to scan" and returns `null`. So a strict
+   *    read fails closed when only the INDEX is unreadable, even though the
+   *    Page file itself is fine. That is deliberate for a write path: a silent
+   *    fallback there can resolve the wrong silo and make the merge base a
+   *    different Page. Non-strict callers keep the scan fallback
+   *    (`lifecycle.test.ts` pins that contract).
+   *
+   * 2. It does NOT cover slug validation. An invalid slug still returns `null`
+   *    from the early return at the top of {@link readWikiPage}, strict or not,
+   *    because that is the caller's bad input rather than a storage failure.
    */
   strict?: boolean;
   /**
@@ -388,6 +404,14 @@ export interface ReadWikiPageOptions {
  *
  * Pass `{ fresh: true }` when the bytes (or their version) are about to back a
  * write precondition — see {@link ReadWikiPageOptions.fresh}.
+ *
+ * CAN THROW, but only for a caller that asks it to. Add `{ strict: true }` and
+ * a non-ENOENT storage failure — on the Page file, on the silo read, or on the
+ * Page index — is rethrown instead of being flattened into `null`. Write paths
+ * want that: `null` is indistinguishable from "no such Page", so without it a
+ * transient blip is reported as a deletion (a 404 on the save door) and can
+ * authorize a destructive fix. An absent Page and an invalid slug still answer
+ * `null` under strict — see {@link ReadWikiPageOptions.strict}.
  */
 export async function readWikiPage(
   slug: string,

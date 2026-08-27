@@ -158,14 +158,14 @@ export async function fixMissingCrossRef(
   }
 
   // Read the source page
-  const sourcePage = await readWikiPage(slug);
+  const sourcePage = await readWikiPage(slug, { fresh: true, strict: true });
   if (!sourcePage) {
     throw new FixNotFoundError(`Source page not found: ${slug}`);
   }
 
   // Never append a markdown "## Related" section to an HTML artifact — its body
   // is a self-contained document and the markdown would render as literal text.
-  const sourceFm = await readWikiPageWithFrontmatter(slug);
+  const sourceFm = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
   if (
     sourceFm &&
     isArtifactType(
@@ -182,7 +182,7 @@ export async function fixMissingCrossRef(
   }
 
   // Read the target page to get its title
-  const targetPage = await readWikiPage(targetSlug);
+  const targetPage = await readWikiPage(targetSlug, { fresh: true, strict: true });
   if (!targetPage) {
     throw new FixNotFoundError(`Target page not found: ${targetSlug}`);
   }
@@ -275,12 +275,12 @@ export async function fixContradiction(
     );
   }
 
-  const sourcePage = await readWikiPage(slug);
+  const sourcePage = await readWikiPage(slug, { fresh: true, strict: true });
   if (!sourcePage) {
     throw new FixNotFoundError(`Source page not found: ${slug}`);
   }
 
-  const otherPage = await readWikiPage(targetSlug);
+  const otherPage = await readWikiPage(targetSlug, { fresh: true, strict: true });
   if (!otherPage) {
     throw new FixNotFoundError(`Target page not found: ${targetSlug}`);
   }
@@ -348,7 +348,7 @@ export async function fixMissingConceptPage(
   }
 
   // Guard: if the page already exists, there's nothing to do
-  const existing = await readWikiPage(slug);
+  const existing = await readWikiPage(slug, { fresh: true, strict: true });
   if (existing) {
     return {
       success: true,
@@ -578,7 +578,7 @@ export async function fixStalePage(slug: string, author = "lint-fix"): Promise<F
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPageWithFrontmatter(slug);
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -637,7 +637,7 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
     throw new FixValidationError("Missing required field: slug");
   }
 
-  const page = await readWikiPageWithFrontmatter(slug);
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -723,7 +723,7 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
-  const page = await readWikiPageWithFrontmatter(slug);
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
   if (!page) {
     throw new FixNotFoundError(`Page not found: ${slug}`);
   }
@@ -733,7 +733,7 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
     return { success: false, slug, message: `No supersedes field to fix on "${slug}"` };
   }
   // Don't clear a reference that has since become valid.
-  if (await readWikiPageWithFrontmatter(supersedes)) {
+  if (await readWikiPageWithFrontmatter(supersedes, { fresh: true, strict: true })) {
     return {
       success: false,
       slug,

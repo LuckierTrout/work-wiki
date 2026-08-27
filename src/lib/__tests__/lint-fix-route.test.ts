@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
@@ -20,6 +23,10 @@ vi.mock("@/lib/lint-fix", async (importOriginal) => {
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerHandle } from "@/lib/owner";
 import { fixLintIssue } from "@/lib/lint-fix";
+import { ensureDirectories, writeWikiPage } from "@/lib/wiki";
+import { _resetStorage, getStorage } from "@/lib/storage";
+import { _resetLocks } from "@/lib/lock";
+import { serializeFrontmatter } from "@/lib/frontmatter";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedIsOwner = vi.mocked(isOwnerHandle);
@@ -327,5 +334,97 @@ describe("POST /api/lint/fix — read-only deployment", () => {
     expect(((await res.json()) as { error?: string }).error).toContain(
       "cannot be auto-fixed",
     );
+  });
+});
+
+/**
+ * A fix-path storage blip answers 5xx, NOT 404 (DW-378).
+ *
+ * Only this file can make that claim on the wire. `src/app/api/lint/fix/route.ts`
+ * maps `FixNotFoundError` to 404 and everything else to 500, and which of those
+ * a transient provider failure lands on is the entire point: before `strict`,
+ * `readWikiPage` flattened the failure to `null`, the fix handler raised
+ * `FixNotFoundError`, and the owner was told the page did not exist. The unit
+ * suite sees the throw; it cannot see which status the door picks.
+ *
+ * Real storage, real dispatcher — `fixLintIssue` is spied over the genuine
+ * implementation by the factory at the top of this file, so the whole path runs.
+ */
+describe("POST /api/lint/fix — a storage blip is not a missing page", () => {
+  let tmpDir: string;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lint-fix-route-test-"));
+    for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) saved[k] = process.env[k];
+    process.env.WIKI_DIR = path.join(tmpDir, "wiki");
+    process.env.RAW_DIR = path.join(tmpDir, "raw");
+    process.env.DATA_DIR = tmpDir;
+    _resetLocks();
+    _resetStorage();
+    await ensureDirectories();
+  });
+
+  afterEach(async () => {
+    for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    _resetStorage();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function seed(slug: string) {
+    await writeWikiPage(
+      slug,
+      serializeFrontmatter(
+        {
+          title: slug,
+          created: "2025-01-01",
+          updated: "2025-01-01",
+          owner: "LuckierTrout",
+          visibility: "private",
+        },
+        `# ${slug}\n\nSome body text.\n`,
+      ),
+    );
+  }
+
+  it("answers 5xx, and does not say the page was not found", async () => {
+    await seed("blip-page");
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        // Matched by suffix so the spy follows the Page if it is ever
+        // silo-primary rather than flat.
+        if (filePath.endsWith("blip-page.md")) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    try {
+      const res = await postFix({ type: "orphan-page", slug: "blip-page" });
+
+      expect(res.status).toBeGreaterThanOrEqual(500);
+      const body = (await res.json()) as { error?: string };
+      // The 404 branch is `FixNotFoundError`; a blip must not reach it.
+      expect(body.error).not.toContain("not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it("still answers 404 when the page is genuinely absent — the control", async () => {
+    // Same door, same type, nothing seeded: ENOENT stays `null`, the handler
+    // raises `FixNotFoundError`, and 404 is the right answer.
+    const res = await postFix({ type: "orphan-page", slug: "no-such-page" });
+
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error?: string }).error).toContain("not found");
   });
 });

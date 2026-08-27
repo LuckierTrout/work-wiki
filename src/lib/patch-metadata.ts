@@ -89,8 +89,13 @@ export async function patchMetadata(
     }
   }
 
-  // Read the existing page.
-  const existing = await readWikiPageWithFrontmatter(slug);
+  // Read the existing page. FRESH+STRICT (DW-379): these bytes are the merge
+  // base at `expectedContent` below, so the patch must merge into the stored
+  // file, never a superseded `pageCache` entry a concurrent bulk scan holds.
+  const existing = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!existing) {
     const err = new Error(`page not found: ${slug}`);
     (err as NodeJS.ErrnoException).code = "NOT_FOUND";

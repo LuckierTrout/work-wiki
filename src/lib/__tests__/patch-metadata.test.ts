@@ -5,7 +5,9 @@ import path from "path";
 import { patchMetadata, PATCHABLE_KEYS } from "../patch-metadata";
 import type { Principal } from "../auth";
 import {
+  beginPageCache,
   ensureDirectories,
+  readWikiPage,
   readWikiPageWithFrontmatter,
   writeWikiPage,
   wikiRelPath,
@@ -396,6 +398,136 @@ describe("patchMetadata — disputed transition", () => {
     });
 
     expect(await listThreads("already-disputed")).toEqual([]);
+  });
+});
+
+
+// ===========================================================================
+// The merge base is the STORED file, read strictly (DW-379)
+// ===========================================================================
+
+/**
+ * `patchMetadata` rebuilds the page from the bytes it read and passes them as
+ * `expectedContent`, so that read is the merge base. `pageCache` is
+ * module-global and ref-counted around bulk scans: a scan can be holding a
+ * superseded entry open when a PATCH arrives, and a cached read would merge the
+ * new frontmatter into a body that is no longer stored. `strict` is the other
+ * half — without it a non-ENOENT storage failure reads back as `null` and the
+ * `NOT_FOUND` throw below tells the caller their page is gone (a 404) when it
+ * is only unreadable, and a retry against the same blip would keep saying so.
+ */
+describe("patchMetadata — fresh + strict merge base", () => {
+  it("merges into the STORED body while a stale page cache is open", async () => {
+    const slug = "patch-cached";
+    // The `html` type is NOT about the HTML-artifact guards — this row never
+    // reaches one. It is the same fixture convention the visibility-guard block
+    // above documents: `belongsInCommons` excludes artifacts, so the realm gate
+    // (DW-121) stays out of the way and the MERGE BASE is the live term. Seeded
+    // as a plain public knowledge page, the ACL refuses the patch outright and
+    // this row would never exercise the read it exists to pin.
+    await seedPage(slug, "alice", "html");
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage(slug))!;
+
+      // The file moves underneath it. Written DIRECTLY through storage, so
+      // nothing invalidates — a stale entry is exactly what this row is about.
+      const stored = cached.content.replace(
+        "Some content.",
+        "Owner's newer body.",
+      );
+      expect(stored).not.toBe(cached.content);
+      // `wikiRelPath` (not a suffix match) is deliberate HERE: this write CREATES
+      // the condition and must land on the exact path the seeded flat Page
+      // occupies. The read spies below match by suffix instead, because they
+      // must follow the Page wherever it resolves.
+      await getStorage().writeFile(wikiRelPath(`${slug}.md`), stored);
+      // The cache is genuinely stale: a cached read still serves the old bytes.
+      expect((await readWikiPage(slug))!.content).toBe(cached.content);
+
+      await patchMetadata({
+        slug,
+        metadata: { confidence: 0.9 },
+        principal: { id: "u_alice", handle: "alice" },
+      });
+
+      // THE ASSERTION: without the fresh read the merge base is the cached
+      // copy, and the patch writes back a body that had already been replaced.
+      const after = (await readWikiPageWithFrontmatter(slug, {
+        fresh: true,
+        strict: true,
+      }))!;
+      expect(after.body).toContain("Owner's newer body.");
+      expect(after.body).not.toContain("Some content.");
+      expect(after.frontmatter.confidence).toBe(0.9);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("throws the storage failure instead of writing, and does not call it NOT_FOUND", async () => {
+    const slug = "patch-blip";
+    // Same artifact fixture as the row above, for the same realm-gate reason —
+    // kept identical so the two rows differ only in the failure they inject.
+    await seedPage(slug, "alice", "html");
+    const storedPath = wikiRelPath(`${slug}.md`);
+    const before = await getStorage().readFile(storedPath);
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath) => {
+        // Matched by SUFFIX, not by `wikiRelPath` (the flat compatibility
+        // path): a Page that is silo-primary lives at a different prefix, and
+        // an equality check would quietly stop intercepting the read under test
+        // — leaving this row green for the wrong reason.
+        if (filePath.endsWith(`${slug}.md`)) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    try {
+      const err = await patchMetadata({
+        slug,
+        metadata: { confidence: 0.9 },
+        principal: { id: "u_alice", handle: "alice" },
+      }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain("storage unavailable");
+      // NOT the absent-page throw: `NOT_FOUND` is what the PATCH route's status
+      // ladder turns into a 404. A blip has to fall through to its 500.
+      expect((err as NodeJS.ErrnoException).code).not.toBe("NOT_FOUND");
+      expect((err as Error).message).not.toContain("page not found");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // Nothing was written.
+    expect(await getStorage().readFile(storedPath)).toBe(before);
+  });
+
+  it("still throws NOT_FOUND for a slug that genuinely has no stored file", async () => {
+    // The companion the PUT and revert suites both carry. `strict` must not
+    // convert a real absence into a storage error: `NOT_FOUND` is the code the
+    // PATCH route's status ladder maps to 404, and only ENOENT may reach it.
+    const err = await patchMetadata({
+      slug: "patch-never-existed",
+      metadata: { confidence: 0.9 },
+      principal: { id: "u_alice", handle: "alice" },
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect((err as NodeJS.ErrnoException).code).toBe("NOT_FOUND");
+    expect((err as Error).message).toBe("page not found: patch-never-existed");
   });
 });
 
