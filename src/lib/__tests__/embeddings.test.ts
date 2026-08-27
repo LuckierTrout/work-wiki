@@ -71,7 +71,7 @@ import {
 } from "../providers";
 import { logger } from "../logger";
 import { getStorage, _resetStorage } from "../storage";
-import { loadConfigSync } from "../config";
+import { loadConfigSync, _resetConfigWarnings } from "../config";
 import { listWikiPages, readWikiPage } from "../wiki";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
@@ -130,6 +130,12 @@ beforeEach(() => {
   // the module outlives each test — forget them so every test that asserts a
   // warning still hears it.
   _resetEmbeddingWarnings();
+  // `../config` is mocked with `importActual`, so `config.ts`'s OWN warn-once
+  // registry is live in this suite too — the Ollama endpoint refusals
+  // (`ollama-endpoint:env:…`, `ollama-endpoint:config:…`) are recorded there,
+  // not here. Reset beside its sibling so a count asserted in one case cannot
+  // be decided by which case ran first, across either registry.
+  _resetConfigWarnings();
 });
 
 afterEach(() => {
@@ -2005,6 +2011,11 @@ describe("misconfiguration warnings are said once", () => {
     // openai" is a different fact from "@cf/baai/bge-m3 under ollama".
     process.env.OPENAI_API_KEY = "sk-openai";
     process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
+    // A USABLE endpoint, so the `ollama` leg below does not also emit DW-401's
+    // "no endpoint resolved" line. This count is about MODEL/PROVIDER keying;
+    // an unrelated second identity standing at the same time would make it pass
+    // or fail for the wrong reason.
+    process.env.OLLAMA_BASE_URL = "http://ollama.test:11434/api";
 
     const { warnings } = await withWarnSpy(() => {
       process.env.EMBEDDING_PROVIDER = "openai";
@@ -2233,6 +2244,254 @@ describe("misconfiguration warnings are said once", () => {
       text: ["hi"],
       pooling: "cls",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider resolution: blank is UNSET, and an endpointless ollama is AUDIBLE
+// (DW-333 / DW-401)
+// ---------------------------------------------------------------------------
+
+describe("embedding provider override reads blanks as unset (DW-333)", () => {
+  it("lets a STORED provider win over a whitespace-only EMBEDDING_PROVIDER", async () => {
+    // `" "` used to be truthy here, so it shadowed the owner's saved choice and
+    // was then refused in a sentence quoting the blank. The ordering
+    // `getVectorSearchSettings` applies — `nonEmpty(env) ?? nonEmpty(config)` —
+    // says the store wins.
+    process.env.EMBEDDING_PROVIDER = " ";
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "openai" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    expect(warnings).toEqual([]);
+  });
+
+  it("falls through to auto-detect on a blank env var exactly as an UNSET one does", async () => {
+    // The second half of the same claim: with nothing stored, blank must not
+    // become its own rung. Both readings are taken in one process so the answer
+    // is compared, not merely asserted.
+    process.env.OPENAI_API_KEY = "sk-openai";
+
+    process.env.EMBEDDING_PROVIDER = "   ";
+    const blank = await withWarnSpy(() => getEmbeddingModelName());
+    delete process.env.EMBEDDING_PROVIDER;
+    const unset = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(blank.result).toBe(unset.result);
+    expect(blank.result).toBe("text-embedding-3-small");
+    expect(blank.warnings).toEqual([]);
+    expect(unset.warnings).toEqual([]);
+  });
+
+  it("honours a PADDED env value — the same reading the vector gate applies", async () => {
+    process.env.EMBEDDING_PROVIDER = " openai ";
+    process.env.OPENAI_API_KEY = "sk-openai";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    // Trimmed, so it is a supported provider — nothing was dropped and nothing
+    // is refused.
+    expect(warnings).toEqual([]);
+  });
+
+  it("honours a PADDED STORED value too — the parity claim covers BOTH legs", async () => {
+    // `getVectorSearchSettings` reads `nonEmpty(cfg.embeddingProvider)`, so a
+    // config JSON hand-edited (or restored) with a stray space satisfied the
+    // gate while this resolver refused the raw string as unsupported. One trim
+    // rule on both legs, or the two go on disagreeing.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: " openai " });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("text-embedding-3-small");
+    expect(warnings).toEqual([]);
+  });
+
+  it("never refuses a BLANK stored provider, or quotes one back at the owner", async () => {
+    // The store's leg of the same bug: `"  "` reached `isEmbeddingProvider`,
+    // failed, and produced "the embedding provider saved in Settings, "  ", is
+    // not embedding-capable" — an instruction about a value nothing displays.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "  " });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    // Auto-detect, exactly as with no stored provider at all.
+    expect(result).toBe("text-embedding-3-small");
+    expect(warnings).toEqual([]);
+    expect(warnings.some((w) => w.includes("not embedding-capable"))).toBe(false);
+  });
+
+  it("keeps a REAL env override winning over the store", async () => {
+    // The guard on the fix: only blank stopped shadowing. A genuinely set
+    // variable still beats a different stored selection.
+    process.env.EMBEDDING_PROVIDER = "google";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-key";
+    process.env.OPENAI_API_KEY = "sk-openai";
+    mockLoadConfigSync.mockReturnValue({ embeddingProvider: "openai" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("gemini-embedding-001");
+    expect(warnings).toEqual([]);
+  });
+
+  it("still refuses an unsupported env value, in the unchanged sentence", async () => {
+    // `nonEmpty` trims; it does not forgive. A junk override is still refused
+    // outright, with the env remedy DW-311 gave it.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    process.env.EMBEDDING_PROVIDER = " deepseek ";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBeNull();
+    expect(warnings).toHaveLength(1);
+    // Quoted TRIMMED — the value the check actually read.
+    expect(warnings[0]).toContain('EMBEDDING_PROVIDER="deepseek"');
+    expect(warnings[0]).toContain("unset it to auto-detect");
+  });
+});
+
+describe("an ollama selection with no endpoint is AUDIBLE (DW-401)", () => {
+  const SDK_DEFAULT = "http://127.0.0.1:11434/api";
+
+  it("still resolves ollama, and names the endpoint actually in effect", async () => {
+    // DW-370 stopped a REFUSED `OLLAMA_BASE_URL` from selecting ollama on the
+    // auto-detect rung. An EXPLICIT selection never consulted the endpoint at
+    // all, so this deployment embedded its corpus against the SDK's own
+    // localhost default without a word.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    // LOG-ONLY: the selection is exactly what it was.
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+    expect(warnings[0]).toContain("OLLAMA_BASE_URL");
+  });
+
+  it("stays SILENT when the endpoint resolves", async () => {
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    process.env.OLLAMA_BASE_URL = "http://host.test:11434/api";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toEqual([]);
+  });
+
+  it("says it ONCE across every embed door", async () => {
+    // Each door re-enters the resolver, so an unguarded line would repeat per
+    // page of a rebuild — the very noise DW-273 removed from its siblings.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    mockEmbed.mockResolvedValue({ embedding: [0.1, 0.2] });
+    mockEmbedMany.mockResolvedValue({ embeddings: [[0.1], [0.2]] });
+
+    const { warnings } = await withWarnSpy(async () => {
+      getEmbeddingModelName();
+      getEmbeddingModel();
+      await embedText("hi");
+      await embedTexts(["a", "b"]);
+      hasEmbeddingSupport();
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+  });
+
+  it("reaches the same key from the STORED generation provider rung", async () => {
+    // `cfg.provider === "ollama"` is a third door into the same substitution,
+    // and it is one fact however many rungs find it — so the explicit override
+    // having already spoken silences this one.
+    mockLoadConfigSync.mockReturnValue({ provider: "ollama" });
+
+    const first = await withWarnSpy(() => getEmbeddingModelName());
+    expect(first.result).toBe("nomic-embed-text");
+    expect(first.warnings).toHaveLength(1);
+    expect(first.warnings[0]).toContain(SDK_DEFAULT);
+
+    // Same process, a different rung, the same missing endpoint: silent.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    const second = await withWarnSpy(() => getEmbeddingModelName());
+    expect(second.result).toBe("nomic-embed-text");
+    expect(second.warnings).toEqual([]);
+  });
+
+  it("reaches it from the CREDENTIAL tail too, on OLLAMA_MODEL alone", async () => {
+    // `OLLAMA_MODEL` is an independent, usable signal (DW-370), so auto-detect
+    // can select ollama with no endpoint anywhere — which is why the check
+    // lives in one helper rather than on the two explicit rungs.
+    process.env.OLLAMA_MODEL = "nomic-embed-text";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+  });
+
+  it("goes quiet on a save that fixes the endpoint, and speaks again if it breaks", async () => {
+    // The store leg of the ladder is fixable IN-process, which is why this key
+    // re-arms where the env/binding identities do not (DW-332's reasoning, with
+    // the evidence read from the ladder itself).
+    process.env.EMBEDDING_PROVIDER = "ollama";
+
+    const broken = await withWarnSpy(() => getEmbeddingModelName());
+    expect(broken.warnings).toHaveLength(1);
+
+    // A save lands a usable endpoint: silent, and the key is re-armed.
+    mockLoadConfigSync.mockReturnValue({ ollamaBaseUrl: "http://saved.test:11434" });
+    const fixed = await withWarnSpy(() => [
+      getEmbeddingModelName(),
+      getEmbeddingModelName(),
+    ]);
+    expect(fixed.warnings).toEqual([]);
+    expect(fixed.result).toEqual(["nomic-embed-text", "nomic-embed-text"]);
+
+    // …and a later save that clears it is news again.
+    mockLoadConfigSync.mockReturnValue({});
+    const again = await withWarnSpy(() => getEmbeddingModelName());
+    expect(again.warnings).toHaveLength(1);
+    expect(again.warnings[0]).toContain(SDK_DEFAULT);
+  });
+
+  it("is a LOG, not a behaviour change — a model is still built", async () => {
+    // What this case can see: the warning did not stop the resolution, so the
+    // AI-SDK leg still hands back a model. It does NOT check what
+    // `createOllama` was called with — `ollama-ai-provider-v2` is real here.
+    // The argument itself is pinned in `settings-runtime-wiring.test.ts`, which
+    // mocks the SDK: see "gives the EMBEDDING leg no endpoint either when none
+    // resolves (DW-401)" and the refusal case beside it for the claim that the
+    // sentence's endpoint never becomes the value passed.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+
+    const { result } = await withWarnSpy(() => getEmbeddingModel());
+
+    expect(result).not.toBeNull();
+  });
+
+  it("still names the SDK default when the endpoint was REFUSED, not merely absent", async () => {
+    // The "or were refused" half of the sentence. `localhost:11434` has no
+    // scheme, so the ladder throws it away (DW-370/DW-402) and the call falls to
+    // the SDK default just as it does with nothing set at all — which is exactly
+    // the case an owner is most likely to misread, having typed an endpoint and
+    // seen no complaint from the embedding side.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    // Asserted by PRESENCE, not by a total: `config.ts` warns about the refused
+    // value under its own registry and its own `logger` tag, and a bare count
+    // here would be a claim about how those two are filtered rather than about
+    // this sentence.
+    expect(warnings.filter((w) => w.includes(SDK_DEFAULT))).toHaveLength(1);
   });
 });
 

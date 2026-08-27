@@ -3011,7 +3011,8 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 location: src/lib/embeddings.ts:resolveEmbeddingProvider
 severity: low
 reason: `resolveEmbeddingProvider` reads `process.env.EMBEDDING_PROVIDER ?? cfg.embeddingProvider` with no `nonEmpty`, so `EMBEDDING_PROVIDER=" "` is truthy, wins over the store, fails `isEmbeddingProvider`, and warns `EMBEDDING_PROVIDER=" " is not embedding-capable`. Pre-existing and untouched here — this story's Boundaries forbade changing which value wins — but DW-311 made the sentence attribute it, so the blank now reads as a deliberate env choice. Every sibling reader of the model key (`resolveEmbeddingModelName`, `getVectorSearchSettings`, `embeddingModelAnswer`) goes through `nonEmpty`; this leg does not, and fixing it moves a resolution boundary.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-embeddings-provider-resolution
 
 ### DW-334: `getEffectiveSettings` still re-enters the 5 s config cache on its non-embedding legs, so only the embedding half of its answer is snapshot-consistent.
 origin: spec-deferred fbbe5abd3cc7
@@ -3587,7 +3588,8 @@ source_spec: `spec-dw-69-72-embedding-provider-secret-isolation.md`
 location: src/lib/embeddings.ts:170 (resolveEmbeddingProvider); src/components/workbench/SettingsCanvas.tsx (embedding provider select)
 severity: medium
 reason: `resolveEmbeddingProvider` takes `process.env.EMBEDDING_PROVIDER` ahead of the stored field and falls back to the detected generation provider (`cfg.provider`) when nothing is stored. No save moves either, so `embeddingProviderChanged` never sees a switch: with `EMBEDDING_PROVIDER=google` and a stored OpenAI key, `embeddingApiKeyFor("google", cfg)` still returns it and `_createEmbeddingModel` still passes the stored `embeddingBaseUrl`. Pre-existing, and out of scope for the recorded decisions, whose trigger is literally "whenever `embeddingProvider` changes" — closing it means deciding what a chat-provider change may do to an embedding credential. This pass also makes one NEW consequence reachable on an env-pinned deployment: the stored provider select stays editable there, and moving it now clears the credential the env-selected vendor is using. The surface stays honest (the key hint flips to "No key is stored." and the row's env sentence already says the variable owns the selection),
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-embeddings-provider-resolution
 decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
 decision: 2026-08-22 Disable the select under an env pin — Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.
 
@@ -3614,7 +3616,8 @@ source_spec: `spec-dw-368-370-provider-selection-truthfulness.md`
 location: src/lib/embeddings.ts:203-215
 severity: medium
 reason: `resolveEmbeddingProvider` returns the override at `src/lib/embeddings.ts:203` and the saved provider at `:211-215` without consulting `getOllamaBaseUrl`, and `getEmbeddingModel` constructs `createOllama()` with no baseURL when none resolves. So a corpus can still be embedded against the SDK's localhost default while the owner believes it is going to the endpoint they typed. This bundle's intent scopes the fix to auto-DETECTION, so the explicit rungs were deliberately untouched and are neither closed nor documented as exceptions.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-embeddings-provider-resolution
 decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 decision: 2026-08-22 Warn once, keep selecting — Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.
 
@@ -4462,4 +4465,36 @@ source_spec: `spec-dw-419-420-provider-picker-a11y-associations.md`
 location: src/components/ProviderForm.tsx:288
 severity: medium
 reason: `ProviderForm.tsx:288-290` renders that sentence directly under `#model` with no `id`, and the input's `aria-describedby` is still `readOnly ? describedBy : undefined` — it never composes. It is the same harm class as DW-400/DW-419/DW-420: a hint beside a control is invisible to a screen reader, which is the convention `SettingsCanvas.tsx:346-362` states. `EmbeddingSettings.tsx:213` has the identical shape. Out of scope here on the intent's own authority — the bundle names only the two picker-adjacent nodes — and the spec's Never clause repeats that.
+status: open
+
+### DW-507: Under an EMBEDDING_PROVIDER pin the provider row's hint still ends "What you save here applies only once that variable is unset", which promises a save the pin now refuses.
+origin: spec-deferred 9522d426da47
+source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
+location: src/lib/workbench-settings.ts:373 (settingsEnvOverrideCopy)
+severity: medium
+reason: `settingsEnvOverrideCopy` is one sentence for three env-owned fields, and the two others (`model`, `customBaseUrl`) stay editable, so the sentence is true for them. `researchProviderRow` solves this with a dedicated pinned sentence ("RESEARCH_PROVIDER is set to X and wins over this box."). The recorded DW-398 decision names "the existing env-override hint copy", so a pinned variant is a new copy decision rather than something this pass could take.
+status: open
+
+### DW-508: An unsupported EMBEDDING_PROVIDER has no owner-visible signal on the embeddings surface at all — no pin, no invalid-value sentence, only the standing hint.
+origin: spec-deferred 187f1b705e53
+source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
+location: src/components/workbench/SettingsCanvas.tsx:830 (embedding provider row)
+severity: medium
+reason: `researchProviderRow` reads `stored.envResearchProviderInvalid` and says "RESEARCH_PROVIDER is set to unsupported value X. No Deep Research run will start until the environment is corrected." There is no `envEmbeddingProviderInvalid` counterpart: `envEmbeddingProvider()` filters junk to `null`, so with `EMBEDDING_PROVIDER=deepseek` the select shows the stored value, is editable, and the hint is the generic SETTINGS_VECTOR_PROVIDER_COPY, while the resolver refuses the value and embeds nothing. Adding the signal needs a new payload field threaded through GET/PUT — this spec's Block If.
+status: open
+
+### DW-509: The runtime resolver and the vector gate disagree about a junk EMBEDDING_PROVIDER — the resolver refuses outright, the gate falls back to the stored provider.
+origin: spec-deferred 920819acd68d
+source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
+location: src/lib/config.ts:1289 (getVectorSearchSettings)
+severity: medium
+reason: `resolveEmbeddingProvider` returns null for an unsupported override, while `getVectorSearchSettings` (src/lib/config.ts:1289-1290) reads through `envEmbeddingProvider()`, gets null, and falls back to `nonEmpty(cfg.embeddingProvider)`. So the gate can report the switch satisfied on the stored provider while nothing embeds. Pre-existing and untouched here — DW-333 aligned the two on BLANK, not on junk, and aligning them on junk moves which value the gate reports.
+status: open
+
+### DW-510: DW-398's pin is browser-side only — PUT /api/settings still accepts an embeddingProvider patch under an env pin and still deletes the stored key and endpoint.
+origin: spec-deferred c65a495caed9
+source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
+location: src/app/api/settings/route.ts (embeddingProvider patch branch)
+severity: medium
+reason: `applyWorkbenchSettings` clears `embeddingApiKey`/`embeddingBaseUrl` through `embeddingProviderChanged` regardless of `EMBEDDING_PROVIDER`, so a direct PUT, a stale tab, or a CLI reaches the destruction the select now refuses. This matches the repo's existing convention — the `researchProvider` pin is UI-only too — and the recorded decision names the select specifically, so a route-level refusal is a separate decision.
 status: open

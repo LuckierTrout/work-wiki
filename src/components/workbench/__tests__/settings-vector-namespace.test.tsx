@@ -6,6 +6,8 @@ import {
   embeddingProviderLabel,
 } from "@/lib/providers";
 import {
+  SETTINGS_KEY_ABSENT_COPY,
+  SETTINGS_KEY_STORED_COPY,
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_VECTOR_BINDING_ENV_NOTE,
   SETTINGS_VECTOR_BINDING_NOTE,
@@ -659,6 +661,87 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
       expect(providerSelect().getAttribute("aria-invalid")).toBe("true"),
     );
     expect(announcedFor(providerSelect())).toContain(SETTINGS_VECTOR_BINDING_NOTE);
+  });
+
+  it("PINS the select under a valid env override, without disabling it (DW-398)", async () => {
+    // `EMBEDDING_PROVIDER` wins in every feeder, so moving this box cannot
+    // change which vendor embeds — but the move is NOT inert:
+    // `settingsDraftAfterEmbeddingProvider` blanks the stored endpoint and key,
+    // and the save deletes both. Under a pin that is a destructive edit with no
+    // upside, so the row takes the same `aria-disabled` treatment
+    // `researchProviderRow` applies.
+    //
+    // The env provider here is `google` rather than a keyless one on purpose:
+    // it is a vendor that would ACTUALLY read the stored credential through
+    // `embeddingApiKeyFor`, so the pair below is exactly what an unpinned move
+    // would destroy — which is the hazard the pin exists for.
+    await mount(
+      payload({
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "https://embed.example",
+        hasEmbeddingApiKey: true,
+        envEmbeddingProvider: "google",
+        hasWorkersAiBinding: false,
+      }),
+    );
+    // `aria-disabled`, never `disabled`: announced as unavailable and still
+    // reachable by keyboard, which is the convention `providerRow` owns.
+    expect(providerSelect().getAttribute("aria-disabled")).toBe("true");
+    expect(providerSelect().disabled).toBe(false);
+    // Still the STORED value — the box edits the store, which is what applies
+    // the moment the variable is unset (DW-281).
+    expect(providerSelect().value).toBe("openai");
+    // …and the hint still says WHICH provider the environment forces.
+    expect(announcedFor(providerSelect())).toContain(
+      settingsEnvOverrideCopy("provider", "google"),
+    );
+
+    fireEvent.change(providerSelect(), { target: { value: "workers-ai" } });
+
+    // The draft never moved, so BOTH halves of the credential the env-selected
+    // vendor reads are still there — the endpoint and the key. Asserting only
+    // the endpoint would leave the key, which is the half that cannot be
+    // retyped from memory, untested.
+    await waitFor(() => expect(providerSelect().value).toBe("openai"));
+    expect((screen.getByLabelText("Embedding endpoint") as HTMLInputElement).value).toBe(
+      "https://embed.example",
+    );
+    expect(announcedFor(screen.getByLabelText("Embedding API key"))).toContain(
+      SETTINGS_KEY_STORED_COPY,
+    );
+    expectNoSaveAttempted();
+  });
+
+  it("leaves an UNPINNED select editable, still applying the three-field rule", async () => {
+    // The unchanged half: with no env override the select writes, and moving it
+    // to another vendor blanks the endpoint and the key that belonged to the
+    // one being left behind (DW-69/DW-72). Both halves again, in the other
+    // direction — the pin above is only meaningful because this is what it is
+    // holding back.
+    await mount(
+      payload({
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "https://embed.example",
+        hasEmbeddingApiKey: true,
+        envEmbeddingProvider: null,
+      }),
+    );
+    expect(providerSelect().getAttribute("aria-disabled")).toBeNull();
+    expect(announcedFor(screen.getByLabelText("Embedding API key"))).toContain(
+      SETTINGS_KEY_STORED_COPY,
+    );
+
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+
+    await waitFor(() => expect(providerSelect().value).toBe("google"));
+    expect((screen.getByLabelText("Embedding endpoint") as HTMLInputElement).value).toBe(
+      "",
+    );
+    expect(announcedFor(screen.getByLabelText("Embedding API key"))).toContain(
+      SETTINGS_KEY_ABSENT_COPY,
+    );
   });
 
   it("describes without marking on a read-only deployment", async () => {

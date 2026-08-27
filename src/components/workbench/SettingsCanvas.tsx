@@ -719,9 +719,16 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
           id={id}
           className="wb-set-select"
           // The ENV override wins at run time, so it is what the box shows when
-          // it is set — the same reading the embedding provider select applies.
-          // Showing the stored value beside a run that uses another provider is
-          // the disagreement this whole pair of fields exists to avoid.
+          // it is set. Showing the stored value beside a run that uses another
+          // provider is the disagreement this whole pair of fields exists to
+          // avoid.
+          //
+          // The embedding provider select does the OPPOSITE and shows the
+          // STORED value (DW-281, pinned by "renders the STORED selection while
+          // describing the env one"): there the box edits the store, the store
+          // is what applies the moment `EMBEDDING_PROVIDER` is unset, and the
+          // hint carries the env value in words. Only the pin is shared between
+          // the two rows, not the reading.
           //
           // `selected` rather than the raw draft field, so a store with NOTHING
           // chosen shows Tavily — the provider that would actually run — rather
@@ -797,7 +804,30 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             {textRow("llmTimeoutSeconds", "LLM timeout (seconds)", SETTINGS_TIMEOUT_HINT_COPY)}
           </>
         );
-      case "embeddings":
+      case "embeddings": {
+        // DW-398. `EMBEDDING_PROVIDER` wins over this select in every feeder,
+        // so moving it changes nothing about which vendor embeds — but the move
+        // is NOT inert: `settingsDraftAfterEmbeddingProvider` blanks the
+        // endpoint and the key, and the save deletes both, which is the
+        // credential the env-selected vendor is using. So the row takes the pin
+        // `researchProviderRow` already applies.
+        //
+        // A JUNK `EMBEDDING_PROVIDER` is deliberately NOT pinned here:
+        // `envEmbeddingProvider()` filters through `isEmbeddingProvider`, so it
+        // arrives as `null` and this stays `false`.
+        //
+        // What discriminates the two is whether the variable names a REAL
+        // SELECTION. A supported value does — including one this runtime cannot
+        // serve, like `workers-ai` with no `AI` binding: it is still the vendor
+        // every embedding feeder resolves to, still the vendor
+        // `embeddingApiKeyFor` would read the stored credential for, and the
+        // owner's remedy is to fix the deployment, not to let this box quietly
+        // delete that credential first. An UNSUPPORTED value names no vendor at
+        // all — resolution refuses it outright — so there is no selection for
+        // this box to sabotage, and the store is precisely what applies again
+        // the moment the variable is corrected. Pinning there would lock the
+        // owner out of the only field that will matter next.
+        const envPinned = stored.envEmbeddingProvider !== null;
         return (
           <>
             <p className="wb-set-row">
@@ -807,12 +837,17 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
               <select
                 id={field("embeddingProvider")}
                 className="wb-set-select"
+                // Still the STORED value under a pin, not the env one: this box
+                // edits the store, and the store is what applies the moment the
+                // variable is unset. The hint below says which provider the
+                // environment forces.
                 value={values.embeddingProvider}
                 // Same convention as `providerRow`, same reason: focusable and
-                // readable on a read-only deployment.
-                aria-disabled={stored.readOnly || undefined}
+                // readable on a read-only deployment — and now on an env-pinned
+                // one.
+                aria-disabled={stored.readOnly || envPinned || undefined}
                 onChange={(event) => {
-                  if (stored.readOnly) return;
+                  if (stored.readOnly || envPinned) return;
                   // NOT a plain `set` (DW-69/DW-72). Moving this select moves
                   // THREE fields: the endpoint and the key belong to the vendor
                   // being left behind, and the store deletes both on the save
@@ -965,6 +1000,7 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             </p>
           </>
         );
+      }
       case "intake":
         return (
           <>

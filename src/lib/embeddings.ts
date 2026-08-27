@@ -32,9 +32,10 @@ import { logger } from "./logger";
 /**
  * Misconfiguration identities this process has already spoken about.
  *
- * The four warnings below describe *standing* misconfiguration — a stale
+ * The five warnings below describe *standing* misconfiguration — a stale
  * `EMBEDDING_MODEL`, an override that cannot embed, an unbound `AI` binding, a
- * corpus embedded with a model this deployment no longer uses.
+ * corpus embedded with a model this deployment no longer uses, and an `ollama`
+ * selection with no endpoint behind it (DW-401).
  * Every embed door re-enters the resolvers (`getEmbeddingModelName`,
  * `getEmbeddingModel`, `embedText`, `embedTexts`, `runWorkersAiEmbedding`), and
  * `getWorkersAiBinding` is reached from several seams, not one: `GET`/`PUT
@@ -50,7 +51,7 @@ import { logger } from "./logger";
  * a CHANGED misconfiguration is a new key and speaks again — the guard
  * suppresses repetition, never information.
  *
- * The trade-off that buys, stated plainly and scoped: for THREE of the four
+ * The trade-off that buys, stated plainly and scoped: for THREE of the five
  * identities — the stale `EMBEDDING_MODEL`, the unservable override, the
  * unbound `AI` binding — one that is fixed and then re-introduced with the
  * IDENTICAL value stays silent for the rest of the process. Nothing clears
@@ -58,15 +59,30 @@ import { logger } from "./logger";
  * a new isolate) already fixes, so carrying "resolved" state through every
  * resolution for them would be dead weight.
  *
- * `drift:<active model>` is the ONE deliberate exception (DW-332). Drift is
- * different in kind: it is fixed IN-process, by `rebuildVectorStore`, with no
- * restart involved — and `searchByVector` already computes the signal that a
- * rebuild has landed (`kept.length > 0`, in the same branch chain that decides
- * whether to warn), so it re-arms that single key there through
- * `rearmWarningAbout`. Without it, a corpus that drifts, is rebuilt, and drifts
- * again under the SAME active model would be silent for the rest of the
- * process. Exactly one key re-arms; the other three never do — and the signal
- * is narrower than "the corpus is healthy", which the branch itself records.
+ * TWO keys re-arm, and both for the same reason: the state behind them is
+ * fixable IN-process, so "it is still broken" has to be askable again.
+ *
+ *   - `drift:<active model>` (DW-332). Drift is cleared by `rebuildVectorStore`
+ *     with no restart involved — and `searchByVector` already computes the
+ *     signal that a rebuild has landed (`kept.length > 0`, in the same branch
+ *     chain that decides whether to warn), so it re-arms that key there through
+ *     `rearmWarningAbout`. Without it, a corpus that drifts, is rebuilt, and
+ *     drifts again under the SAME active model would be silent for the rest of
+ *     the process. The signal is narrower than "the corpus is healthy", which
+ *     the branch itself records.
+ *   - `ollama-endpoint:sdk-default` (DW-401). The endpoint ladder's STORE leg
+ *     (`cfg.ollamaBaseUrl`) is moved by a save, so an owner who reads the line
+ *     and fixes the endpoint changes the answer without restarting anything —
+ *     and the evidence is read from the ladder itself, in {@link selectOllama}:
+ *     `getOllamaBaseUrl(cfg)` answering a URL IS the fix having landed. Without
+ *     the re-arm, an endpoint that is fixed and then broken again — the
+ *     variable unset, the stored value replaced with a refused one — would fall
+ *     back to the SDK default in silence for the rest of the process.
+ *
+ * The key is deliberately FIXED rather than carrying the endpoint that would
+ * have been used: there is no such value. The misconfiguration's identity is
+ * "this process is embedding against the SDK's own localhost default because
+ * nothing else resolved", which is one fact however many rungs reach it.
  *
  * ONE warning in this module is left UNGUARDED on purpose and should stay that
  * way: `runWorkersAiEmbedding`'s unexpected-response-shape line. That line
@@ -97,10 +113,12 @@ function warnOnceAbout(key: string, message: string): void {
 /**
  * Forget `key` so the NEXT occurrence of this identity speaks again.
  *
- * The counterpart to `warnOnceAbout`, for the one misconfiguration a caller can
+ * The counterpart to `warnOnceAbout`, for the misconfigurations a caller can
  * see EVIDENCE of ending from inside the process: embedding-model drift,
  * cleared by a corpus rebuild (DW-332) — see the re-arm branch in
- * `searchByVector` for how strong that evidence is and is not. Deleting a key
+ * `searchByVector` for how strong that evidence is and is not — and an Ollama
+ * endpoint that starts resolving again after a save (DW-401), re-armed in
+ * {@link selectOllama} off the ladder's own answer. Deleting a key
  * that was never set is a silent no-op, so a caller can re-arm unconditionally
  * on its success path without first asking whether it ever warned. Named rather
  * than an inline `.delete` at the call site so the Set keeps exactly two
@@ -194,18 +212,25 @@ export function getWorkersAiBinding(): Ai | null {
 function resolveEmbeddingProvider(
   cfg: ReturnType<typeof loadConfigSync>,
 ): EmbeddingProvider | null {
-  // WHICH value wins is untouched (DW-311): `??` still takes the environment
-  // ahead of the store, and a set-but-empty `EMBEDDING_PROVIDER=` still falls
-  // through the truthiness check below into auto-detect exactly as before. The
-  // env read is only lifted into a local so the refusal can say where the value
-  // it is refusing came from.
-  const envOverride = process.env.EMBEDDING_PROVIDER;
-  const override = envOverride ?? cfg.embeddingProvider;
-  if (override) {
-    // Inside this branch `override` is truthy, so it came from the environment
-    // exactly when `envOverride` is: `??` falls through on `undefined`/`null`
-    // only, and a set-but-empty variable is falsy here and never gets in.
-    const source: "env" | "stored" = envOverride ? "env" : "stored";
+  // BOTH legs read through `nonEmpty` (DW-333) — the same trim-and-null, in the
+  // same env-over-store order, that `getVectorSearchSettings` applies to this
+  // very pair. WHICH value wins is unchanged whenever `EMBEDDING_PROVIDER` is
+  // really set: the environment still takes precedence over the store, and a
+  // padded ` openai ` resolves to the provider the gate already reads it as.
+  // What changes is blank. A whitespace-only `EMBEDDING_PROVIDER=" "` used to
+  // be TRUTHY here, so it shadowed a perfectly good stored selection and was
+  // then refused in a sentence quoting the blank — an instruction about a value
+  // the owner cannot see. Blank is now "unset": the store wins, and with
+  // nothing stored resolution falls through to auto-detect exactly as an absent
+  // variable does. The env read stays lifted into a local so the refusal can
+  // still say where the value it is refusing came from (DW-311).
+  const envOverride = nonEmpty(process.env.EMBEDDING_PROVIDER);
+  const override = envOverride ?? nonEmpty(cfg.embeddingProvider);
+  if (override !== null) {
+    // Inside this branch `override` is non-null, so it came from the
+    // environment exactly when `envOverride` is: `??` falls through on `null`
+    // only, and a blank variable is `null` here and never gets in.
+    const source: "env" | "stored" = envOverride !== null ? "env" : "stored";
     if (!isEmbeddingProvider(override)) {
       // Keyed on the SOURCE and the rejected string: swapping one bad override
       // for another bad one is a different misconfiguration, and so is the same
@@ -228,7 +253,7 @@ function resolveEmbeddingProvider(
     if (override === "workers-ai") {
       return getWorkersAiBinding() ? override : null;
     }
-    if (override === "ollama") return override;
+    if (override === "ollama") return selectOllama(cfg);
     return embeddingApiKeyFor(override, cfg) ? override : null;
   }
 
@@ -237,9 +262,8 @@ function resolveEmbeddingProvider(
 
   // Prefer the owner's saved generation provider when it can also embed.
   if (cfg.provider && isEmbeddingProvider(cfg.provider)) {
-    if (cfg.provider === "ollama" || embeddingApiKeyFor(cfg.provider, cfg)) {
-      return cfg.provider;
-    }
+    if (cfg.provider === "ollama") return selectOllama(cfg);
+    if (embeddingApiKeyFor(cfg.provider, cfg)) return cfg.provider;
   }
 
   // Otherwise use any available embedding-capable credential. Do not reuse
@@ -253,10 +277,67 @@ function resolveEmbeddingProvider(
   // embedded a whole corpus against an endpoint the owner never named.
   // `OLLAMA_MODEL` remains an independent, usable signal.
   if (envOllamaBaseUrl() !== undefined || nonEmpty(process.env.OLLAMA_MODEL) !== null) {
-    return "ollama";
+    return selectOllama(cfg);
   }
 
   return null;
+}
+
+/**
+ * The endpoint `createOllama()` uses when it is handed no `baseURL` at all.
+ *
+ * Copied from the SDK rather than imported because it is not exported
+ * (`ollama-ai-provider-v2`, `createOllama`'s `baseURL` default). It is named
+ * here for ONE purpose — saying out loud, in {@link selectOllama}, where the
+ * embeddings actually went — and nothing resolves against it: the fall-through
+ * in {@link _createEmbeddingModel} is still `createOllama()` with no argument,
+ * so a future change to the SDK's default changes the behaviour and this
+ * constant only mis-names it in a log line.
+ */
+const OLLAMA_SDK_DEFAULT_BASE_URL = "http://127.0.0.1:11434/api";
+
+/**
+ * Return `ollama`, and say so when there is no endpoint behind it (DW-401).
+ *
+ * DW-370 taught the auto-detect rung that a REFUSED `OLLAMA_BASE_URL` must not
+ * select `ollama` — but that only covers the rung that reads the variable to
+ * decide. An EXPLICIT selection (`EMBEDDING_PROVIDER=ollama`, or the stored
+ * `embeddingProvider`, or a stored generation provider of `ollama`) does not
+ * consult the endpoint at all, so a deployment with no `OLLAMA_BASE_URL` and no
+ * saved endpoint resolved `ollama`, reached `createOllama()` with no `baseURL`,
+ * and embedded its whole corpus against the SDK's own localhost default —
+ * silently, and successfully, if something happened to be listening there.
+ *
+ * LOG-ONLY, deliberately: the return value is `"ollama"` on every path, exactly
+ * as each rung returned before. The endpoint ladder's fall-through is a real
+ * resolution and stays one — this makes it AUDIBLE, it does not move it, and it
+ * does not hand `createOllama` a URL the ladder refused.
+ *
+ * ONE helper rather than a check at each rung, because all three rungs reach
+ * the same place: the auto-detect tail can get here on `OLLAMA_MODEL` alone,
+ * beside an `OLLAMA_BASE_URL` the ladder threw away. Warning on two of the
+ * three would be an asymmetry with no rule behind it.
+ *
+ * The key re-arms off the ladder's own answer — see the census above for why
+ * this identity is one of the two that may, and what the evidence is.
+ */
+function selectOllama(cfg: ReturnType<typeof loadConfigSync>): "ollama" {
+  const key = "ollama-endpoint:sdk-default";
+  if (getOllamaBaseUrl(cfg) === undefined) {
+    warnOnceAbout(
+      key,
+      "Ollama is the selected embedding provider, but no endpoint resolved " +
+        "(OLLAMA_BASE_URL and the saved Ollama endpoint are both unset or were " +
+        `refused), so embeddings are going to the SDK's own default, ` +
+        `${OLLAMA_SDK_DEFAULT_BASE_URL}. Set OLLAMA_BASE_URL, or save an ` +
+        "endpoint in Settings, if that is not where Ollama is listening.",
+    );
+  } else {
+    // The endpoint resolves again — a save can do that mid-process — so the
+    // next time it does not, this is news once more.
+    rearmWarningAbout(key);
+  }
+  return "ollama";
 }
 
 /**
@@ -506,6 +587,11 @@ function _createEmbeddingModel(
       // answered from the object passed in, so one function could resolve two
       // different configs — which is exactly what the accessor's parameter
       // exists to rule out.
+      // The fall-through to the SDK's own default is deliberate and unchanged
+      // (DW-401): a value the ladder REFUSED must not be handed to
+      // `createOllama` just because something was typed. What changed is that
+      // `selectOllama` has already said out loud, once, that this is where the
+      // call is about to go.
       const baseURL = getOllamaBaseUrl(cfg);
       const ollama = baseURL ? createOllama({ baseURL }) : createOllama();
       return ollama.embedding(modelName);

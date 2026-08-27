@@ -481,6 +481,52 @@ describe("the Ollama endpoint reaches every SDK construction through one ladder"
       warn.mockRestore();
     }
   });
+
+  it("gives the EMBEDDING leg no endpoint either when none resolves (DW-401)", async () => {
+    // The claim the DW-401 warning must not quietly break: naming
+    // `http://127.0.0.1:11434/api` in a log line must NOT turn it into the
+    // value handed to `createOllama`. The SDK is mocked here, so this is the
+    // only place the argument itself is observable — `embeddings.test.ts` runs
+    // against the real provider and can see the model was built, not what it
+    // was built with.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await store({ embeddingProvider: "ollama" });
+
+      expect(getEmbeddingModel()).not.toBeNull();
+      // No argument at all, exactly as before the warning existed.
+      expect(lastOllamaArgs()?.baseURL).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps the embedding leg's REFUSAL a refusal, not a substitution", async () => {
+    // The other half: a stored endpoint the ladder threw away must not be
+    // replaced by the SDK default as a VALUE. The provider still resolves and
+    // the warning still speaks; the construction is still argument-free.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await store({ embeddingProvider: "ollama", ollamaBaseUrl: "localhost:11434" });
+
+      expect(getEmbeddingModel()).not.toBeNull();
+      expect(lastOllamaArgs()?.baseURL).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("hands the embedding leg a USABLE stored endpoint, unchanged", async () => {
+    // …and the positive control, so the two assertions above cannot both pass
+    // on a leg that never reaches `createOllama` at all.
+    await store({
+      embeddingProvider: "ollama",
+      ollamaBaseUrl: "http://ollama.internal:11434",
+    });
+
+    expect(getEmbeddingModel()).not.toBeNull();
+    expect(lastOllamaArgs()?.baseURL).toBe("http://ollama.internal:11434");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -913,6 +959,25 @@ describe("the stored embedding credential and endpoint are read", () => {
     // NOT the stored note's unconditional form — the advice this deployment
     // cannot follow while the variable is set.
     expect(error).not.toContain("or choose another embedding provider");
+  });
+
+  it("serves a JUNK EMBEDDING_PROVIDER as no env provider at all (DW-398)", async () => {
+    // `envEmbeddingProvider()` filters through `isEmbeddingProvider`, so an
+    // unsupported variable never reaches the browser as a selection — it
+    // arrives as `null`, and the payload reads exactly as it does with no
+    // variable set. That is the boundary the settings surface's env pin sits
+    // on: it pins on this field, so a junk value leaves the provider select
+    // editable, which is what the owner needs once they correct the variable
+    // and the STORE becomes the thing that applies.
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+    await store({ embeddingProvider: "openai", embeddingModel: "text-embedding-3-small" });
+
+    const payload = getWorkbenchSettings(false);
+    expect(payload.envEmbeddingProvider).toBeNull();
+    // …and the stored selection is what the derived origin reports, unshadowed.
+    expect(payload.embeddingProvider).toBe("openai");
+    const inputs = draftVectorInputs(settingsDraftFromPayload(payload), payload);
+    expect(inputs.providerOrigin).toBe("stored");
   });
 
   it("reports the provider ORIGIN from config.ts too, without leaking it (DW-281)", async () => {

@@ -355,9 +355,21 @@ export const SETTINGS_VECTOR_BINDING_ENV_NOTE = `${WORKERS_AI_LABEL} embeds thro
  * `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL` and `LLM_CUSTOM_BASE_URL` win at
  * runtime and a save cannot move them, so without these an owner reads an EMPTY
  * box beside a control that is somehow already satisfied, types a value into it,
- * saves successfully, and nothing changes. The box is not disabled — the stored
- * value is still what applies if the variable is ever unset — so the sentence
- * has to carry the whole explanation.
+ * saves successfully, and nothing changes. The FREE-TEXT boxes this rides on —
+ * `model` and `customBaseUrl` — are not disabled, because their stored value is
+ * still what applies if the variable is ever unset and typing it now is a
+ * useful thing to do; so for them the sentence has to carry the whole
+ * explanation on its own.
+ *
+ * The `provider` kind is where that stops being true, and it is a boundary
+ * rather than a retraction: the embedding PROVIDER select is `aria-disabled`
+ * under its pin (DW-398). Editing it is not "store a value that waits its turn"
+ * — `settingsDraftAfterEmbeddingProvider` also blanks the stored embedding
+ * endpoint and key, and the save then deletes them, so under an
+ * `EMBEDDING_PROVIDER` pin an edit that cannot change which vendor embeds can
+ * still destroy the credential that vendor is using. The sentence stays that
+ * row's hint either way: pinned or not, it is still the only thing that says
+ * the variable wins.
  *
  * ONE sentence for all three (DW-71). The endpoint's story is the embedding
  * model's story with a different variable name: `getCustomBaseUrl()` takes

@@ -4673,15 +4673,25 @@ describe("the Settings components stay inside the shell", () => {
     expect(disabledProps).toHaveLength(1);
     expect(canvas).toContain("disabled={saving || payload.readOnly || !dirty}");
 
-    // Every control the read-only flag alone refuses carries the attribute:
-    // the two provider pickers, Epic 7's Intake keep-parsed checkbox, MinerU
-    // enable checkbox and MinerU mode select, and Epic 8's API switch and
+    // Every control the read-only flag ALONE refuses carries the attribute: the
+    // LLM provider picker, Epic 7's Intake keep-parsed checkbox, MinerU enable
+    // checkbox and MinerU mode select, and Epic 8's API switch and
     // unauthenticated-access switch. Counted rather than enumerated so a new
     // refusable control cannot be added without this number moving — the vector
     // switch has its own compound predicate below.
     expect(canvas.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
-      7,
+      6,
     );
+    // TWO controls refuse on read-only OR an env pin: the Deep Research
+    // provider select, and the embedding provider select (DW-398). Both are
+    // selects whose move is DESTRUCTIVE beyond the field itself — the embedding
+    // one blanks the stored endpoint and key — so under a variable that already
+    // decides the answer they announce themselves unavailable rather than
+    // inviting an edit that can only take something away.
+    expect(
+      canvas.match(/aria-disabled=\{stored\.readOnly \|\| envPinned \|\| undefined\}/g),
+    ).toHaveLength(2);
+    expect(canvas.match(/if \(stored\.readOnly \|\| envPinned\) return;/g)).toHaveLength(2);
     expect(canvas).toContain("aria-disabled={vectorRefused || undefined}");
     // …and each with a handler that COMMITS NOTHING when the control is
     // refused. That early return is the whole refusal: React re-applies a
