@@ -23,6 +23,7 @@ import {
 } from "@/lib/monitor-digests";
 import { listDueOutboxEvents } from "@/lib/integration-outbox";
 import { isOwnerBackupDue } from "@/lib/backups";
+import { getOwnerHandle } from "@/lib/owner";
 
 /**
  * POST /api/tasks/scan — the autonomous-maintenance producer (Q2).
@@ -180,7 +181,11 @@ export async function POST(req: Request) {
       }
     }
 
-    const backupOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim();
+    // The site owner, read through the ONE helper that reads
+    // `NEXT_PUBLIC_OWNER_HANDLE` (DW-157). `getOwnerHandle()` returns the
+    // trimmed handle or `null` where this used to yield `undefined`; every use
+    // below is truthiness-guarded, so the substitution is behavior-identical.
+    const backupOwner = getOwnerHandle();
     const backupDue = backupOwner ? await isOwnerBackupDue(backupOwner) : false;
     let backupEnqueued = false;
     if (!forceDry && backupOwner && backupDue) {

@@ -14,6 +14,8 @@
  * wrangler vars and Cloudflare secrets.
  */
 
+import { getOwnerHandle } from "./owner";
+
 export const E2E_COOKIE_NAME = "yopedia_e2e";
 export const E2E_SECRET_MIN_LENGTH = 32;
 export const E2E_FLAG_ENV = "YOPEDIA_E2E";
@@ -41,8 +43,11 @@ export function e2eOwnerUserId(): string | null {
 }
 
 export function e2eOwnerHandle(): string {
-  const handle = process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim();
-  return handle && handle.length > 0 ? handle : E2E_DEFAULT_HANDLE;
+  // Through `getOwnerHandle()` rather than a second raw read of
+  // `NEXT_PUBLIC_OWNER_HANDLE` (DW-157): the helper already treats blank and
+  // whitespace-only as absent, so this is byte-identical to the inline read it
+  // replaced — and keeps `src/lib/owner.ts` the only reader of the env var.
+  return getOwnerHandle() ?? E2E_DEFAULT_HANDLE;
 }
 
 function e2eSecret(): string | null {

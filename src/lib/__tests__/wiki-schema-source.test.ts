@@ -15,7 +15,7 @@
  * invariant" block below). That is about WHOSE Schema the no-argument loader
  * resolves, not about Wiki-vs-root precedence.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -24,8 +24,14 @@ import { _resetLocks } from "../lock";
 import { buildQuerySystemPrompt } from "../query";
 import { loadPageConventions, loadPageTemplates } from "../schema";
 import { PAGE_CONVENTIONS_HEADING, extractSection } from "../schema-source";
-import { _resetStorage } from "../storage";
-import { createWiki, readActiveWikiSchema, wikiArtifactPath } from "../wikis";
+import { _resetStorage, getStorage } from "../storage";
+import { logger } from "../logger";
+import {
+  createWiki,
+  readActiveWikiSchema,
+  wikiArtifactPath,
+  wikiRegistryPath,
+} from "../wikis";
 
 const OWNER = "alice";
 /** A second tenant holding Wikis in the same deployment. Never the site owner. */
@@ -286,6 +292,126 @@ describe("single-owner Schema resolution invariant", () => {
     const prompt = await buildQuerySystemPrompt("", [], [], "prose", OTHER_TENANT);
     expect(prompt).toContain(ownerConventions);
     expect(prompt).not.toContain(otherConventions);
+  });
+
+  it("warns and falls back to the root Schema when the registry is unparseable", async () => {
+    // DW-155 — the catch branch inside `readActiveWikiSchema()`.
+    //
+    // The mechanism this fixture depends on: `readRegistry` catches ENOENT and
+    // ONLY ENOENT, so `JSON.parse` on a corrupt `tenants/<t>/wikis.json` throws
+    // a SyntaxError that propagates out of `getCurrentWiki` into the catch.
+    // Writing an EMPTY or `{}` registry would not reach that branch — it parses
+    // fine and degrades through the null-Wiki path, which the tests above
+    // already cover. The bytes must be genuinely unparseable.
+    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    await fs.writeFile(
+      path.join(tmpDir, wikiRegistryPath(OWNER)),
+      "{ this is not JSON",
+    );
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      const conventions = await loadPageConventions();
+
+      // Non-vacuity guard: `toBe` alone would pass with both sides `""`.
+      expect(conventions).toContain("## Page conventions");
+      expect(conventions).toBe(
+        await loadPageConventions(`${process.cwd()}/SCHEMA.md`),
+      );
+      // Never the Wiki whose registry we just corrupted.
+      expect(conventions).not.toContain("Preserve sequence when it matters");
+      // Silent fallback is the failure mode this branch exists to prevent: a
+      // misconfigured owner or an unreadable registry would otherwise serve the
+      // wrong Schema forever with nothing to diagnose from. So assert the warn
+      // is DIAGNOSABLE, not merely present — a warn whose message and payload
+      // were emptied is the same undiagnosable outcome wearing a tag.
+      //
+      // Filtered to the `"wikis"` tag rather than counting every warn: an
+      // unrelated warn from another module would otherwise fail this spuriously.
+      const wikiWarns = warn.mock.calls.filter((call) => call[0] === "wikis");
+      expect(wikiWarns).toHaveLength(1);
+      const [, message, ...rest] = wikiWarns[0];
+      // Names WHO failed to resolve and WHAT the caller got instead.
+      expect(message).toContain(OWNER);
+      expect(message).toContain("SCHEMA.md");
+      // And carries the underlying error, or the log says a fallback happened
+      // without saying why.
+      expect(rest.some((arg) => arg instanceof Error)).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("resolves the owner's Wiki when the env handle differs in CASE", async () => {
+    // DW-156 — case normalization at the Schema path, not just in isolation.
+    // `ownerToTenant` lowercases the handle into the tenant path segment, so a
+    // deployment configured as `Alice` must reach the same silo as `alice`.
+    const wiki = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+
+    // Both address functions must collapse the case, not just the registry one.
+    expect(wikiRegistryPath("Alice")).toBe(wikiRegistryPath(OWNER));
+    expect(wikiArtifactPath("Alice", wiki.id, "schema.md")).toBe(
+      wikiArtifactPath(OWNER, wiki.id, "schema.md"),
+    );
+
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "Alice"; // restored in afterEach
+
+    // The behavioral assertion alone is NOT enough on this platform: macOS's
+    // default APFS is case-INSENSITIVE, so `tenants/Alice/wikis.json` and
+    // `tenants/alice/wikis.json` are the same file and the read would succeed
+    // with the normalization removed. Watch the storage provider instead and
+    // assert on the KEY the Schema path asked for — that is filesystem-
+    // independent, and it pins the normalization where DW-156 lives (the Schema
+    // resolution) rather than on the isolated path helper.
+    //
+    // Literal strings on purpose: routing the expectation back through
+    // `wikiRegistryPath(...)` would compare the normalizer against itself.
+    const storage = getStorage();
+    const readFile = vi.spyOn(storage, "readFile");
+    try {
+      const active = await loadPageConventions();
+      expect(active).toContain("Preserve sequence when it matters");
+
+      const requested = readFile.mock.calls.map((call) => call[0]);
+      expect(requested).toContain("tenants/alice/wikis.json");
+      expect(requested.some((key) => key.includes("tenants/Alice/"))).toBe(false);
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it("trims AND lowercases the env handle at the Schema path", async () => {
+    // Composition of the two normalizations `ownerToTenant` applies. A handle
+    // configured with stray whitespace is a real deployment mistake, and it
+    // must land in the same silo as the clean lowercase form rather than
+    // creating `tenants/-alice-/`.
+    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "  Alice  "; // restored in afterEach
+
+    const storage = getStorage();
+    const readFile = vi.spyOn(storage, "readFile");
+    try {
+      const active = await loadPageConventions();
+      expect(active).toContain("Preserve sequence when it matters");
+
+      const requested = readFile.mock.calls.map((call) => call[0]);
+      expect(requested).toContain("tenants/alice/wikis.json");
+    } finally {
+      readFile.mockRestore();
+    }
+  });
+
+  it("resolves a Wiki CREATED under a differently-cased handle", async () => {
+    // The other side of the same normalization: the Wiki is created for
+    // `"Alice"` while the env names `"alice"`. Case must never split one owner
+    // into two silos, in either direction.
+    expect(wikiRegistryPath(OWNER)).toBe(wikiRegistryPath("Alice"));
+
+    await createWiki("Alice", { name: "Shelf", scenario: "reading" });
+    expect(process.env.NEXT_PUBLIC_OWNER_HANDLE).toBe(OWNER);
+
+    const active = await loadPageConventions();
+    expect(active).toContain("Preserve sequence when it matters");
   });
 
   it("declares no tenant parameter on either resolution entry point", () => {

@@ -5,6 +5,9 @@ import path from "path";
 import { writeWikiPage, updateIndex, ensureDirectories, readLog } from "../wiki";
 import type { IndexEntry } from "../types";
 import { _resetStorage } from "../storage";
+import { _resetLocks } from "../lock";
+import { createWiki } from "../wikis";
+import { loadPageConventions } from "../schema";
 
 // Mock the LLM module so lint never calls the real API
 vi.mock("../llm", () => ({
@@ -43,15 +46,23 @@ let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
 let originalDataDir: string | undefined;
+let originalOwnerHandle: string | undefined;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lint-test-"));
   originalWikiDir = process.env.WIKI_DIR;
   originalRawDir = process.env.RAW_DIR;
   originalDataDir = process.env.DATA_DIR;
+  originalOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
+  // No site owner by default, so `loadPageConventions()` resolves no active
+  // Wiki and every test below exercises the repo-root fallback DETERMINISTICALLY
+  // — rather than inheriting whatever handle the ambient environment carries.
+  // The active-Wiki block at the bottom of this file sets it deliberately.
+  delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  _resetLocks();
   _resetStorage();
 
   // Default: no LLM key
@@ -75,6 +86,11 @@ afterEach(async () => {
     delete process.env.DATA_DIR;
   } else {
     process.env.DATA_DIR = originalDataDir;
+  }
+  if (originalOwnerHandle === undefined) {
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+  } else {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = originalOwnerHandle;
   }
   _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
@@ -1452,5 +1468,92 @@ describe("lint dispatches the disputed-page check", () => {
 
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0].type).toBe("disputed-page");
+  });
+});
+
+/**
+ * DW-158 — both LLM detectors must resolve the ACTIVE Wiki's Schema.
+ *
+ * `checkContradictions()` and `checkMissingConceptPages()` each call
+ * `loadPageConventions()` with NO argument, which is what makes the resolution
+ * deployment-global (`readActiveWikiSchema` → `NEXT_PUBLIC_OWNER_HANDLE`). The
+ * rest of this file never configures an owner, so pinning either detector to
+ * the repo-root `SCHEMA.md` — `loadPageConventions(`${process.cwd()}/SCHEMA.md`)`
+ * — passes the whole suite. These two tests are the ones that would not.
+ *
+ * Deliberately no `process.chdir` (unlike the root-conventions test above): the
+ * contrast under test is "the active Wiki's seeded conventions" vs "the real
+ * repo-root SCHEMA.md", so the root file must stay reachable for the marker
+ * assertion to mean anything. `"Preserve sequence when it matters"` is the
+ * `reading` Scenario Template's own prose — present in a seeded `schema.md`,
+ * absent from the repo-root file.
+ */
+describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
+  const OWNER = "alice";
+  const WIKI_MARKER = "Preserve sequence when it matters";
+
+  async function seedActiveWiki() {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER; // restored in afterEach
+    await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+  }
+
+  it("checkContradictions prompts with the active Wiki's conventions", async () => {
+    await seedActiveWiki();
+    mockedHasLLMKey.mockReturnValue(true);
+    mockedCallLLM.mockResolvedValue("[]");
+
+    // Two mutually-linked pages, so `buildClusters` forms a cluster and the
+    // detector actually reaches `callLLM`.
+    await writeWikiPage(
+      "active-a",
+      "# Active A\n\nContent about the topic. See [Active B](active-b.md).",
+    );
+    await writeWikiPage(
+      "active-b",
+      "# Active B\n\nContent about the topic. See [Active A](active-a.md).",
+    );
+    await updateIndex([
+      { slug: "active-a", title: "Active A", summary: "Test" },
+      { slug: "active-b", title: "Active B", summary: "Test" },
+    ]);
+
+    await checkContradictions(["active-a", "active-b"]);
+
+    expect(mockedCallLLM).toHaveBeenCalled();
+    const systemPrompt = mockedCallLLM.mock.calls[0][0];
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).toContain(WIKI_MARKER);
+  });
+
+  it("checkMissingConceptPages prompts with the active Wiki's conventions", async () => {
+    await seedActiveWiki();
+    mockedHasLLMKey.mockReturnValue(true);
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await writeWikiPage(
+      "active-c",
+      "# Active C\n\nA page with enough content to be sampled by the detector.",
+    );
+    await writeWikiPage(
+      "active-d",
+      "# Active D\n\nAnother page with enough content to be sampled as well.",
+    );
+
+    await checkMissingConceptPages(["active-c", "active-d"]);
+
+    expect(mockedCallLLM).toHaveBeenCalled();
+    const systemPrompt = mockedCallLLM.mock.calls[0][0];
+    expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
+    expect(systemPrompt).toContain(WIKI_MARKER);
+  });
+
+  it("the repo-root SCHEMA.md does NOT carry the marker", async () => {
+    // Non-vacuity guard for the two pins above: if the root file ever gained
+    // this phrase, they would pass without resolving any Wiki at all.
+    // Explicit path, so the env var cannot steer this either way — no owner
+    // needs clearing, and the static import above is enough.
+    const root = await loadPageConventions(`${process.cwd()}/SCHEMA.md`);
+    expect(root).toContain("## Page conventions");
+    expect(root).not.toContain(WIKI_MARKER);
   });
 });

@@ -1425,7 +1425,8 @@ source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: src/lib/wikis.ts
 severity: low
 reason: src/lib/wikis.ts logs `logger.warn("wikis", ...)` and returns null when `getCurrentWiki`/`readWikiArtifact` throws. The sibling fallbacks (no owner, no Wiki, missing schema.md, empty conventions section) are all covered in `wiki-schema-source.test.ts`; this one is not. A corrupt `tenants/<t>/wikis.json` would serve the root SCHEMA.md forever, which is exactly the silent-misconfiguration case the warn line exists for. Pre-existing — the branch predates this change.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-owner-and-schema-resolution-pins
 
 ### DW-156: Owner-handle case normalization is load-bearing for the single-owner invariant but untested at the Schema path.
 origin: spec-deferred d5cca58d2f5d
@@ -1433,7 +1434,8 @@ source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: src/lib/links.ts:80
 severity: low
 reason: `getOwnerHandle()` returns the raw trimmed env value while `isOwnerHandle()` compares case-insensitively; the two only stay consistent because `ownerToTenant()` (src/lib/links.ts) lowercases before the value becomes a storage key. Nothing pins that `NEXT_PUBLIC_OWNER_HANDLE="Alice"` resolves alice's Wiki. Pre-existing, and adjacent to the invariant this change pins.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-owner-and-schema-resolution-pins
 
 ### DW-157: The backup scheduler re-implements `getOwnerHandle()` inline, so the owner env var has two readers and a `getOwnerHandle` grep misses one.
 origin: spec-deferred 194d538ba460
@@ -1441,7 +1443,8 @@ source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: src/app/api/tasks/scan/route.ts:139
 severity: low
 reason: src/app/api/tasks/scan/route.ts:139 reads `process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim()` directly into `backupOwner` and passes it to `isOwnerBackupDue()` and `enqueueTask({ owner })` — both tenant-keyed. Routing it through `getOwnerHandle()` would leave exactly one reader of the env var. Pre-existing.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-owner-and-schema-resolution-pins
 
 ### DW-158: Neither `lint-checks.ts` detector has any test that it resolves the ACTIVE Wiki's Schema — a mutation pinning both to the repo-root file passes the entire suite.
 origin: spec-deferred 517d89b179e4
@@ -1449,7 +1452,8 @@ source_spec: `spec-dw-19-single-owner-resolution-invariant.md`
 location: src/lib/lint-checks.ts:414 and src/lib/lint-checks.ts:570
 severity: medium
 reason: `checkContradictions()` and `checkMissingConceptPages()` call the no-argument `loadPageConventions()`. The only lint-side conventions test, `src/lib/__tests__/lint.test.ts:670`, writes a bare `SCHEMA.md` into its tmpdir and never sets `NEXT_PUBLIC_OWNER_HANDLE` or calls `createWiki`, so it exercises only the repo-root fallback branch. Replacing both detector calls with `loadPageConventions(`${process.cwd()}/SCHEMA.md`)` — lint permanently ignoring the active Wiki's seeded Schema — leaves lint.test.ts (73), wiki-schema-source.test.ts and cli.test.ts (83) all green, 170 tests passing. Pre-existing: this is Wiki-vs-root precedence (Story 1.2 / AD-10), not DW-19 tenancy, and the gap predates this change. DW-19's own pins are at the loader plus the two call sites that carry a principal; the lint detectors carry none, so there is no non-owner caller to pin them with.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-owner-and-schema-resolution-pins
 
 ### DW-159: `POST /api/wikis` is gated on sign-in but not ownership, so a non-owner can create a Wiki that every downstream surface then treats as inert.
 origin: spec-deferred 0cea96b84531
@@ -4397,4 +4401,20 @@ source_spec: `spec-dw-394-397-names-terms-memo-hardening.md`
 location: src/lib/names-terms.ts:169
 severity: low
 reason: `readEntries` validates only `Array.isArray(parsed)`. The freeze loop added by this story now skips non-object elements, but the `.sort()` that runs BEFORE it dereferences `a.kind` / `a.canonical`, so `[null, entry]` throws `TypeError: Cannot read properties of null (reading 'kind')`. Confirmed empirically during this story: `[null]` alone resolves (the comparator is never called for a single element), two-or-more does not. Pre-existing — the throw predates this change and is unrelated to DW-394/DW-397 — but nothing validates entry shape at the read boundary.
+status: open
+
+### DW-500: `e2eOwnerHandle()`'s consumers were entirely unpinned before this change: every fixture set `NEXT_PUBLIC_OWNER_HANDLE` to the literal string `E2E_DEFAULT_HANDLE` already is.
+origin: spec-deferred 9d558a647013
+source_spec: `spec-dw-155-156-157-158-owner-and-schema-resolution-pins.md`
+location: src/lib/__tests__/auth.test.ts and src/lib/__tests__/middleware-write-gate.test.ts
+severity: low
+reason: `E2E_DEFAULT_HANDLE` is `"e2e-owner"` (`src/lib/e2e-identity.ts:24`), and `e2e-identity.test.ts`, `auth.test.ts`, `middleware-write-gate.test.ts` and `e2e/env.ts` all configured exactly that handle, so `expect(x ?? DEFAULT).toBe(DEFAULT)` was the shape of every assertion — replacing the function body with `return E2E_DEFAULT_HANDLE;` left the whole suite green. This change closes the hole at the handle itself (`src/lib/__tests__/e2e-identity.test.ts`), but the SAME same-string-as-the-default fixture convention still governs `YOPEDIA_OWNER_USER_ID` / `e2eOwnerUserId()` and the middleware write gate, so sibling assertions there may be vacuous for the same reason. Pre-existing; the convention predates this change.
+status: open
+
+### DW-501: `src/lib/__tests__/lint.test.ts:670` still `process.chdir`s into its tmpdir, which makes the suite cwd-sensitive if it ever throws before the `finally`.
+origin: spec-deferred 3964a9e36702
+source_spec: `spec-dw-155-156-157-158-owner-and-schema-resolution-pins.md`
+location: src/lib/__tests__/lint.test.ts:670
+severity: low
+reason: The `includes SCHEMA.md conventions in contradiction detection prompt` test changes the process working directory and restores it in a `finally`. Vitest runs a file's tests in one worker process, so a restore that is skipped leaves every later test in that worker with a cwd it did not set, and `rootSchemaPath()` is `${process.cwd()}/SCHEMA.md`. The new DW-158 block deliberately avoids `chdir` for exactly this reason; making the older test use the explicit `schemaPath` override instead would remove the hazard. Pre-existing.
 status: open

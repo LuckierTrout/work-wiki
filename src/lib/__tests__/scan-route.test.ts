@@ -165,6 +165,72 @@ describe("POST /api/tasks/scan", () => {
     });
   });
 
+  it.each([
+    ["unset", undefined],
+    ["empty", ""],
+    ["blank", "   "],
+  ])(
+    "skips the backup check entirely when the owner handle is %s",
+    async (_label, handle) => {
+      // DW-157 — the owner is read through `getOwnerHandle()`, which treats an
+      // unset, an empty AND a whitespace-only value as "no owner configured",
+      // exactly as the inline `process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim()` it
+      // replaced did. Enqueueing runs (AUTONOMOUS_MAINTENANCE=on), so "no
+      // create-backup task" below is an assertion about the backup block, not
+      // about a dry-run swallowing every enqueue.
+      process.env.AUTONOMOUS_MAINTENANCE = "on";
+      if (handle === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+      else process.env.NEXT_PUBLIC_OWNER_HANDLE = handle;
+      mockedBackupDue.mockResolvedValue(true);
+
+      const res = await scan();
+      const body = await res.json();
+
+      // POSITIVE CONTROL, and the reason the negative assertions below mean
+      // anything: the maintenance tasks DID enqueue on this run. Without it,
+      // a route that short-circuited before the backup block — or before any
+      // enqueue at all — would satisfy every `not.toHaveBeenCalled` here and
+      // the case would pass vacuously.
+      expect(body).toMatchObject({ enabled: true, dry: false, enqueued: 3 });
+      expect(mockedEnqueue).toHaveBeenCalledTimes(3);
+
+      expect(mockedBackupDue).not.toHaveBeenCalled();
+      expect(mockedEnqueue).not.toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "create-backup" }),
+      );
+      expect(body).toMatchObject({
+        backupOwnerConfigured: false,
+        backupDue: false,
+        backupEnqueued: false,
+      });
+    },
+  );
+
+  it("trims the configured owner handle before using it as a storage key", async () => {
+    // DW-157 — the case that actually distinguishes `getOwnerHandle()` from a
+    // bare `process.env.NEXT_PUBLIC_OWNER_HANDLE` read. The handle is not a
+    // label here: `isOwnerBackupDue` resolves it to a TENANT PATH SEGMENT, and
+    // the enqueued task carries it to the backup worker, so an untrimmed
+    // `"  christianlee  "` would address a different manifest than every other
+    // owner-scoped read on the deployment.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "  christianlee  ";
+    mockedBackupDue.mockResolvedValue(true);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedBackupDue).toHaveBeenCalledWith("christianlee");
+    expect(mockedEnqueue).toHaveBeenCalledWith({
+      kind: "create-backup",
+      owner: "christianlee",
+    });
+    expect(body).toMatchObject({
+      backupOwnerConfigured: true,
+      backupDue: true,
+      backupEnqueued: true,
+    });
+  });
+
   it("sweeps orphaned wiki directories on a normal scan and reports the count", async () => {
     // The sweep's ONLY scheduled trigger. It removes bytes nothing references
     // rather than editing pages, so — like the scheduled-agent, monitor and

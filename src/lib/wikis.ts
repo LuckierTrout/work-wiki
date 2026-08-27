@@ -2077,12 +2077,18 @@ export async function readWikiArtifact(
  * INVARIANT (DW-19, single-owner tenancy resolution): this function resolves
  * the tenant DEPLOYMENT-GLOBALLY from `NEXT_PUBLIC_OWNER_HANDLE`, not from a
  * caller — the only place the SCHEMA path turns that env value into a storage
- * key. (It is not the only reader of the env var repo-wide: the backup
- * scheduler in `src/app/api/tasks/scan/route.ts` also reads it as an owner for
- * manifest reads and the `create-backup` task. Two independent readers, same
- * single-owner assumption.) Every other tenant-scoped read/write —
- * `workspace-profile.ts`, `research-projects.ts`, `portable-archive.ts`, and
- * `createWiki`/`getCurrentWiki` above — takes a passed-in `owner` instead.
+ * key. (The env var has exactly one PRODUCTION reader, `getOwnerHandle()` in
+ * `src/lib/owner.ts`: the backup scheduler in
+ * `src/app/api/tasks/scan/route.ts` and `e2eOwnerHandle()` in
+ * `src/lib/e2e-identity.ts` both go through that helper (DW-157), so grepping
+ * for `getOwnerHandle` finds every site-owner resolution in the shipped code.
+ * Test files are the exception and read and write `process.env` directly —
+ * arming an owner is what a fixture DOES. The production half of that is
+ * mechanized by `src/lib/__tests__/owner-single-reader.test.ts`, which scans
+ * `src/` and fails on the next inline read.) Every other tenant-scoped
+ * read/write — `workspace-profile.ts`, `research-projects.ts`,
+ * `portable-archive.ts`, and `createWiki`/`getCurrentWiki` above — takes a
+ * passed-in `owner` instead.
  * That asymmetry is deliberate and correct ONLY because work-wiki ships as a
  * single-owner deployment (see `src/lib/owner.ts`): the site owner's Schema is
  * the site's Schema, so every caller gets it regardless of who they are.
@@ -2125,9 +2131,16 @@ export async function readWikiArtifact(
  * Pinned by the "single-owner Schema resolution invariant" describe block in
  * `src/lib/__tests__/wiki-schema-source.test.ts`: behavioral pins (another
  * tenant's Wiki never wins), consumer-surface pins on the ingest and query
- * prompt builders, and a signature pin that reads the DECLARED parameter list
- * so a defaulted tenant parameter cannot slip past. Adding a tenant parameter
- * must be a deliberate, test-updating change.
+ * prompt builders, a catch-branch pin (a corrupt `wikis.json` warns and falls
+ * back to the root `SCHEMA.md` rather than throwing — DW-155), case-
+ * normalization pins on both sides of the handle (`"Alice"` and `"alice"`
+ * resolve the same tenant, so case never splits the silo — DW-156), and a
+ * signature pin that reads the DECLARED parameter list so a defaulted tenant
+ * parameter cannot slip past. Adding a tenant parameter must be a deliberate,
+ * test-updating change. The two `lint-checks.ts` detectors — the no-argument
+ * call sites with no owner in scope — are pinned at their own surface by the
+ * "resolve the ACTIVE Wiki's Schema" block in
+ * `src/lib/__tests__/lint.test.ts` (DW-158).
  *
  * With no owner, no Wiki, or any read failure this returns null and the
  * caller falls back to the repo-root `SCHEMA.md`.

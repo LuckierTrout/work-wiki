@@ -96,6 +96,54 @@ describe("mint / verify", () => {
   });
 });
 
+/**
+ * DW-157 — `e2eOwnerHandle()` reads the site owner through `getOwnerHandle()`
+ * rather than its own `process.env.NEXT_PUBLIC_OWNER_HANDLE?.trim()`.
+ *
+ * Every other fixture in this file arms the harness with the literal
+ * `"e2e-owner"`, which IS `E2E_DEFAULT_HANDLE` — so on their evidence alone the
+ * function could ignore the environment entirely and hardcode the default, and
+ * the whole suite would stay green. These cases are the ones that separate the
+ * two: they configure a handle that DIFFERS from the default, and they check
+ * the absent-value cases the helper is responsible for collapsing.
+ *
+ * Asserted through `principalFromCookieValue` rather than on `e2eOwnerHandle()`
+ * directly: the handle's only consumer is the principal the middleware and
+ * `getPrincipal` mint, so that is the surface where getting it wrong bites.
+ */
+describe("e2eOwnerHandle at the minted-principal surface", () => {
+  it("carries the CONFIGURED handle, trimmed", async () => {
+    arm({ NEXT_PUBLIC_OWNER_HANDLE: "  christianlee  " });
+
+    const value = await mintE2eCookie(OWNER, SECRET);
+
+    await expect(principalFromCookieValue(value)).resolves.toEqual({
+      id: OWNER,
+      handle: "christianlee",
+    });
+  });
+
+  it.each([
+    ["unset", undefined],
+    ["empty", ""],
+    ["whitespace-only", "   "],
+  ])(
+    "falls back to E2E_DEFAULT_HANDLE when the handle is %s",
+    async (_label, handle) => {
+      // `getOwnerHandle()` returns null for all three, which is exactly what
+      // the inline read this replaced treated as absent.
+      arm({ NEXT_PUBLIC_OWNER_HANDLE: handle });
+
+      const value = await mintE2eCookie(OWNER, SECRET);
+
+      await expect(principalFromCookieValue(value)).resolves.toEqual({
+        id: OWNER,
+        handle: E2E_DEFAULT_HANDLE,
+      });
+    },
+  );
+});
+
 describe("production lock", () => {
   it("is not named in either wrangler file", async () => {
     const roots = [
