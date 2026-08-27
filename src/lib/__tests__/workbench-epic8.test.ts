@@ -150,6 +150,25 @@ describe("the two copies of the contract cannot drift", () => {
     expect(LOOPBACK_STATUSES).toEqual([...contract.LOOPBACK_STATUSES]);
   });
 
+  it("keeps generateChat in chat-provider and sidecar modules off src/lib", async () => {
+    const provider = await readFile(
+      path.join(ROOT, "sidecar/chat-provider.mjs"),
+      "utf8",
+    );
+    const transport = await readFile(
+      path.join(ROOT, "sidecar/chat-transport.mjs"),
+      "utf8",
+    );
+    const server = await readFile(path.join(ROOT, "sidecar/server.mjs"), "utf8");
+    expect(provider).toMatch(/export async function generateChat\(/);
+    expect(server).not.toMatch(/export async function generateChat\(/);
+    expect(server).toMatch(/from ["']\.\/chat-provider\.mjs["']/);
+    for (const src of [provider, transport, server]) {
+      expect(src).not.toMatch(/from\s+["'][^"']*src\/lib/);
+      expect(src).not.toMatch(/import\s*\(\s*["'][^"']*src\/lib/);
+    }
+  });
+
   it("reports the same version from the constant as from the manifest", async () => {
     // The cloud façade uses the literal (a Worker should not bundle the manifest
     // to read one string); the sidecar reads `package.json` off the owner's

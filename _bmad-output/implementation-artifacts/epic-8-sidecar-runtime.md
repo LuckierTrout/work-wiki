@@ -20,8 +20,10 @@ a remediation of the 2026-08-25 retrospective.
 - Pause tickets live in `sidecar/capabilities.mjs`.
 - Browser callers share `src/lib/loopback-client.ts`.
 - Live `/health` classification lives in `src/lib/workbench-loopback-health.ts`.
-- Provider/Chat transport remains in `sidecar/server.mjs`; further splits are
-  follow-on, not acceptance blockers.
+- Provider/Chat transport lives in `sidecar/chat-provider.mjs` and
+  `sidecar/chat-transport.mjs`; `server.mjs` remains the HTTP shell.
+  Pending-turn/session transport in `ChatCanvas.tsx` and the API/MCP
+  category on the Settings pair remain follow-on, not acceptance blockers.
 
 The architecture spine's Rust seed is historical. v1 Agents at the door are
 Node ESM.

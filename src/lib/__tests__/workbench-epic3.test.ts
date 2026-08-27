@@ -382,6 +382,21 @@ describe("Search empty query stays quiet", () => {
   });
 });
 
+describe("sidecar Chat extract boundaries", () => {
+  it("keeps generateChat in chat-provider and sidecar modules off src/lib", async () => {
+    const provider = await readRel("sidecar/chat-provider.mjs");
+    const transport = await readRel("sidecar/chat-transport.mjs");
+    const server = await readRel("sidecar/server.mjs");
+    expect(provider).toMatch(/export async function generateChat\(/);
+    expect(server).not.toMatch(/export async function generateChat\(/);
+    expect(server).toMatch(/from ["']\.\/chat-provider\.mjs["']/);
+    for (const src of [provider, transport, server]) {
+      expect(src).not.toMatch(/from\s+["'][^"']*src\/lib/);
+      expect(src).not.toMatch(/import\s*\(\s*["'][^"']*src\/lib/);
+    }
+  });
+});
+
 describe("sidecar origin, endpoint, and citation integrity", () => {
   it("allows only loopback browser origins", () => {
     expect(allowSidecarOrigin(undefined)).toBe(true);

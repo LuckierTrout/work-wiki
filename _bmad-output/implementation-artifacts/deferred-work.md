@@ -3820,3 +3820,12 @@ status: open
 
 - Legacy manual `sourceUrls` are accepted by research creation, but automated runs replace them with provider results. This behavior predates Epic 6's Workbench flow and belongs to the out-of-scope Knowledge Studio research desk. [`src/lib/research-runtime.ts:682`]
 - The shared kernel URL guard rejects literal private/reserved hosts but does not resolve DNS before fetch, leaving a DNS-rebinding SSRF gap. This predates Epic 6 and affects the shared fetch path rather than only Deep Research. [`src/lib/url-safety.ts:95`]
+
+## Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)
+
+- source_spec: none
+  summary: Extract pending-turn and session transport from ChatCanvas.tsx.
+  evidence: Split from epic-8-retro-architecture-follow-on so this run covers only sidecar/server.mjs provider and Chat transport. ChatCanvas is an independent Workbench extract and can merge without the sidecar change.
+- source_spec: none
+  summary: Extract the API/MCP category from the generic Settings pair.
+  evidence: Split from epic-8-retro-architecture-follow-on so this run covers only sidecar/server.mjs provider and Chat transport. SettingsCanvas and workbench-settings are an independent Settings extract and can merge without the sidecar change.

@@ -129,6 +129,30 @@ afterEach(async () => {
   );
 });
 
+describe("sidecar Chat extract boundaries", () => {
+  it("keeps generateChat in chat-provider and sidecar modules off src/lib", async () => {
+    const provider = await readFile(
+      path.join(process.cwd(), "sidecar/chat-provider.mjs"),
+      "utf8",
+    );
+    const transport = await readFile(
+      path.join(process.cwd(), "sidecar/chat-transport.mjs"),
+      "utf8",
+    );
+    const server = await readFile(
+      path.join(process.cwd(), "sidecar/server.mjs"),
+      "utf8",
+    );
+    expect(provider).toMatch(/export async function generateChat\(/);
+    expect(server).not.toMatch(/export async function generateChat\(/);
+    expect(server).toMatch(/from ["']\.\/chat-provider\.mjs["']/);
+    for (const src of [provider, transport, server]) {
+      expect(src).not.toMatch(/from\s+["'][^"']*src\/lib/);
+      expect(src).not.toMatch(/import\s*\(\s*["'][^"']*src\/lib/);
+    }
+  });
+});
+
 describe("F8-01 server-owned shell capabilities", () => {
   it("issues a capability once and refuses replay", () => {
     let n = 0;
