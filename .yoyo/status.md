@@ -12,17 +12,17 @@
 - **Test count:** 2,054
 - **Wiki pages (schema):** 12 frontmatter fields (title, aliases, confidence, expiry, valid_from, authors, contributors, sources, disputed, supersedes, tags, type)
 - **API routes:** 32
-- **MCP tools:** 31 (search_wiki, read_page, list_pages, create_page, update_page, update_metadata, delete_page, ingest_url, batch_ingest, ingest_text, ingest_x_mention, query_wiki, save_query_answer, agent_context, seed_agent, list_agents, update_agent, delete_agent, list_contributors, get_contributor, lint_wiki, fix_lint_issue, list_discussions, create_discussion, resolve_discussion, add_comment, reingest, ingest_history, dataview_query, list_revisions, read_revision)
-- **Lint checks:** 16 (orphan-page, stale-index, empty-page, missing-crossref, broken-link, contradiction, missing-concept-page, stale-page, low-confidence, unmigrated-page, duplicate-entity, uncited-claims, unresolved-discussions, disputed-page, supersedes-dangling, incomplete-coverage)
+- **MCP tools:** 40 (search_wiki, read_page, list_pages, create_page, update_page, update_metadata, delete_page, merge_pages, ingest_url, batch_ingest_urls, ingest_text, ingest_x_mention, ingest_pdf, ingest_image, query_wiki, save_query_answer, query_history, agent_context, seed_agent, list_agents, update_agent, delete_agent, lint_wiki, fix_lint_issue, reingest, ingest_history, dataview_query, list_revisions, read_revision, revert_revision, wiki_graph, vault_curate, vault_uncurate, list_vaults, vault_pages, vault_create, vault_rename, vault_delete, maintenance_scan, activity_trail)
+- **Lint checks:** 15 (orphan-page, stale-index, empty-page, missing-crossref, broken-link, contradiction, missing-concept-page, stale-page, low-confidence, unmigrated-page, duplicate-entity, uncited-claims, supersedes-dangling, incomplete-coverage, disputed-page)
 
 ### work-wiki Phase Progress
 
 | Phase | Status | Description |
 |-------|--------|-------------|
-| **Phase 1: Schema evolution** | ✅ Complete | Extended frontmatter (confidence, expiry, valid_from, authors, contributors, sources, disputed, supersedes, aliases), type validation/coercion, entity dedup, 16 lint checks with auto-fix, ingest pipeline wiring, SCHEMA.md updated |
-| **Phase 2: Talk pages + attribution** | ✅ Complete | Discussion panel UI + API, contributor profiles with trust scores, threaded comments with nested replies, contributor badges on page view |
+| **Phase 1: Schema evolution** | ✅ Complete | Extended frontmatter (confidence, expiry, valid_from, authors, contributors, sources, disputed, supersedes, aliases), type validation/coercion, entity dedup, 15 lint checks (10 with auto-fix), ingest pipeline wiring, SCHEMA.md updated |
+| **Phase 2: Talk pages + attribution** | ✅ Built, surfaces retired | Discussion panel UI + API, contributor profiles with trust scores, threaded comments with nested replies, contributor badges on page view — all shipped, then every one of those product surfaces was cut with the move to the private, single-owner Workbench (`src/lib/retired.ts`). The `discuss/` storage format, the readers over it, the contributor profile library and revision attribution are unaffected. |
 | **Phase 3: X ingestion loop** | ✅ Complete | Library function + API route + MCP tool (`ingest_x_mention`) complete — GitHub Actions polling workflow blocked on deployment architecture |
-| **Phase 4: Agent identity** | ✅ Complete | Agent registry, seed, scoped search, context API, MCP server (31 tools), contributor profiles, agent CRUD — remaining: grow.sh migration, identity content migration |
+| **Phase 4: Agent identity** | ✅ Complete | Agent registry, seed, scoped search, context API, MCP server (40 tools), contributor profile library (the profiles still compute; the surfaces that rendered them were retired), agent CRUD — remaining: grow.sh migration, identity content migration |
 | **Phase 5: Agent surface research** | ⬜ Not started | Structured claims, fact triples, embeddings experiments |
 
 ### Known tech debt

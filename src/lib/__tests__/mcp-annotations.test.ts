@@ -36,15 +36,17 @@ describe("MCP tool annotations", () => {
     expect(Object.keys(tools)).toHaveLength(40);
   });
 
-  // The tool retirements left the count hand-written in three places, where it
-  // silently went stale. All three are read by integrators and designers —
-  // `public/agent-api.md` is served at `/agent-api`, and `DESIGN-triggers.md`
-  // is the MCP capability assessment — so pin them to the real registration
-  // count rather than to another hand-written number.
+  // The tool retirements left the count hand-written in four places, where it
+  // silently went stale. All four are read by integrators and designers —
+  // `public/agent-api.md` is served at `/agent-api`, `DESIGN-triggers.md` is
+  // the MCP capability assessment, and `.yoyo/status.md` is the repo's headline
+  // status report — so pin them to the real registration count rather than to
+  // another hand-written number.
   it.each([
     ["public/agent-api.md", "public/agent-api.md"],
     ["src/lib/mcp-http.ts", "src/lib/mcp-http.ts"],
     ["DESIGN-triggers.md", "DESIGN-triggers.md"],
+    [".yoyo/status.md", ".yoyo/status.md"],
   ])("%s documents the real tool count", async (_label, relative) => {
     const { readFile } = await import("fs/promises");
     const path = await import("path");
@@ -60,6 +62,53 @@ describe("MCP tool annotations", () => {
     for (const count of documented) {
       expect(Number(count)).toBe(Object.keys(tools).length);
     }
+  });
+
+  /**
+   * `.yoyo/status.md` does not only count the tools — it NAMES them, on a line
+   * the count pin above cannot see at all (`**MCP tools:** 40 (…)` contains no
+   * "40 tools"). That is how the list came to advertise `list_contributors`,
+   * `get_contributor` and the four discussion tools IT carried
+   * (`list_discussions`, `create_discussion`, `resolve_discussion`,
+   * `add_comment` — four of the five retired ones the comment above enumerates;
+   * it never listed `read_discussion`) long after all of them were retired, and
+   * `batch_ingest` after it was renamed `batch_ingest_urls`, while omitting
+   * fifteen tools that do exist: the number and the names drifted
+   * independently, and only the number was ever pinned.
+   *
+   * Compared as a SET (both sides sorted), because registration order is an
+   * implementation detail of `src/mcp.ts` and reordering two calls should not
+   * fail a doc test — whereas a rename, an addition or a retirement changes the
+   * membership and must.
+   */
+  it(".yoyo/status.md names exactly the registered tools", async () => {
+    const { readFile } = await import("fs/promises");
+    const path = await import("path");
+    const text = await readFile(
+      path.resolve(__dirname, "../../..", ".yoyo/status.md"),
+      "utf8",
+    );
+    // Flattened before matching, exactly like the count pin above: these docs
+    // are held to a ~80-column wrap, so a forty-name parenthetical is one
+    // re-wrap away from spanning several lines. Matching the raw text would
+    // then fail with "must carry a `- **MCP tools:** N (…)` line" — pointing at
+    // a missing line rather than at the wrap, which is the wrong bug.
+    const flat = text.replace(/^\s*\*\s?/gm, "").replace(/\s+/g, " ");
+    const line = /-\s+\*\*MCP tools:\*\*\s+(\d+)\s+\(([^)]*)\)/.exec(flat);
+    expect(
+      line,
+      "`.yoyo/status.md` must carry a `- **MCP tools:** N (name, name, …)` line",
+    ).not.toBeNull();
+
+    const registered = Object.keys(tools);
+    // The count on THIS line, which `\b(\d+) tools\b` never matches.
+    expect(Number(line![1])).toBe(registered.length);
+
+    const documented = line![2]
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+    expect([...documented].sort()).toEqual([...registered].sort());
   });
 
   it.each([

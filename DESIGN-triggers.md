@@ -187,8 +187,7 @@ interface WikiTrigger {
   // ---- Condition ----
 
   /** What kind of event fires the trigger */
-  on: "page-write" | "page-delete" | "lint-found" | "discussion-opened"
-    | "discussion-resolved";
+  on: "page-write" | "page-delete" | "lint-found";
 
   /** Optional: limit to specific page slugs (glob patterns allowed) */
   scope?: string[];
@@ -218,6 +217,14 @@ interface WikiTrigger {
   messageTemplate?: string;
 }
 ```
+
+**Note on talk-thread events.** An earlier draft of this union carried
+`discussion-opened` and `discussion-resolved`. Both are gone: the talk-page
+Discussion UI and every `/api/wiki/:slug/discuss` route were retired with the
+commons and now answer 404 (`src/lib/retired.ts`), so nothing opens or resolves
+a thread for a trigger to fire on. Talk pages remain useful as *detection*
+input — the readers over `discuss/` are still live — but not as an event
+source.
 
 ### 3.2 Trigger event (what gets recorded when a trigger fires)
 
@@ -313,8 +320,6 @@ in a way that matches the rule's condition.
 | `page-write` | A page is created or updated | "Notify me when any page I authored is edited" |
 | `page-delete` | A page is deleted | "Alert when a page in the security/ scope is removed" |
 | `lint-found` | A lint check finds a matching issue | "Notify me when lint finds a contradiction" |
-| `discussion-opened` | A new talk thread is created | "Alert when someone opens a discussion on my pages" |
-| `discussion-resolved` | A talk thread is resolved | "Notify me when a dispute I'm involved in resolves" |
 
 **Scope:** Triggers can be scoped to specific page slugs or glob patterns
 (e.g., `["security-*", "auth-*"]`). Unscoped triggers match all pages.

@@ -1176,7 +1176,8 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: .yoyo/status.md:15
 severity: low
 reason: `.yoyo/status.md:15` lists both retired tool names inside "**MCP tools:** 31 (...)". The count was already stale before this pass (the real count was 42, now 40), so this is pre-existing drift in an agent-written status doc rather than a consequence of this change; it is out of the retirement's file scope and `.yoyo/` is upstream-agent territory.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-doc-drift-retired-surfaces
 
 ### DW-129: `SCHEMA.md` still documents the contributor REST routes, wiki pages, and `ContributorBadge` component as live surfaces.
 origin: spec-deferred 08cb76da0f99
@@ -1202,7 +1203,8 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/app/wiki/graph/page.tsx:161
 severity: medium
 reason: `src/app/wiki/graph/page.tsx:161` sets `aria-label="Wiki page relationship graph. Visit the wiki index for a text-based list of all pages."` and the canvas fallback text (`:164`) repeats it, but `/wiki` is listed in `RETIRED_SURFACES` (`src/lib/retired.ts:23`) and 404s. Deleting `HomeGraph.tsx` in this pass made this the only remaining graph canvas, so it is now the sole accessibility escape hatch for the visualization and it leads nowhere. The file was not touched by this pass and fixing it means choosing a live replacement target, which is a product call.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-doc-drift-retired-surfaces
 decision: 2026-08-19 Point at the Workbench Knowledge tree — Retarget the graph canvas's aria-label and fallback text at the Workbench's Knowledge tree (the live text-based list of the active Wiki's pages), updating the copy to name that surface and linking to it, and pin the new target so it cannot rot into another retired route.
 
 ### DW-132: Two more hand-maintained tool/task inventories have no test pinning them against their source of truth.
@@ -3026,7 +3028,8 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: SCHEMA.md:126
 severity: medium
 reason: SCHEMA.md:126-167 lists GET/POST discuss, GET/PATCH the thread, and POST comments as live. All five are entries in RETIRED_SURFACES (src/lib/retired.ts:37-40) and answer 404. Same drift class as DW-129, one heading above the block this change corrected; the intent named only the contributor surface.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-doc-drift-retired-surfaces
 
 ### DW-339: SCHEMA.md's planned-evolution status still calls talk pages and contributor profiles complete, contradicting the new retired-surfaces block.
 origin: spec-deferred 493f9af093ca
@@ -3034,7 +3037,8 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: SCHEMA.md
 severity: low
 reason: The Phase 2 status prose later in SCHEMA.md reads that talk pages and attribution are complete and contributor profiles are implemented, a few hundred lines below the paragraph this change rewrote to say the whole contributor product surface was cut.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-doc-drift-retired-surfaces
 
 ### DW-340: DESIGN-triggers.md still designs triggers on `discussion-opened` / `discussion-resolved` and talk-thread events that retired with the commons.
 origin: spec-deferred 3b9db02a207e
@@ -3042,7 +3046,8 @@ source_spec: `spec-dw-127-309-doc-drift-corrections.md`
 location: DESIGN-triggers.md:190
 severity: low
 reason: DESIGN-triggers.md:190-191 and :316-317 build trigger designs on discussion events whose routes are all RETIRED_SURFACES entries (src/lib/retired.ts:37-40). This change corrected only the tool count at :338, which was the only fact the intent named in that file.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-doc-drift-retired-surfaces
 
 ### DW-341: The eight-member `fix` list is hand-copied in two documents with nothing pinning either to `MaintainFixType`.
 origin: spec-deferred 52bccbf1a637
@@ -4042,4 +4047,68 @@ source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.m
 location: src/lib/tasks.ts:285
 severity: low
 reason: This change pins `MAINTAIN_FIX_TYPES` to `MaintainFixType` in both directions, but the union itself (`src/lib/tasks.ts:285-292`) is a bare literal union with no reference to `AutoFixableCheckType`. A member dropped from `AUTO_FIXABLE_CHECK_TYPES` would still compile here and surface only as a runtime `FixValidationError` on the maintenance path (`src/app/api/tasks/run/route.ts:255`). The bundle intent named the restatements of the fixable list, not the subset relation between the two lists.
+status: open
+
+### DW-460: The graph-page source scan parses the `<canvas>` opening tag with `<canvas\b[^>]*>`, which any `>` inside a prop breaks.
+origin: spec-deferred 1bedb5b742ac
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: src/lib/__tests__/retired-surfaces.test.ts:216
+severity: medium
+reason: `canvasSpan()`/`canvasFallback()` in src/lib/__tests__/retired-surfaces.test.ts stop the opening tag at the first `>`. An inline arrow prop (`onClick={(e) => handleClick(e)}`) would end the match at the `=>`, so `canvasFallback()` would return attribute text concatenated with the real fallback and the fallback/copy assertions would silently measure props instead of markup — a false pass, not a failure. No canvas prop is an arrow today, so the pin holds as written. Inherited verbatim from f342e2f1; a brace/quote-aware scan would fix it.
+status: open
+
+### DW-461: The DW-131 escape hatch is pinned only by regex over the page's source text; no test renders the page and asserts a reachable link.
+origin: spec-deferred 45addfb1aca0
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: src/lib/__tests__/retired-surfaces.test.ts:192
+severity: medium
+reason: All nine DW-131 assertions `fs.readFile` the `.tsx` and regex it. A reviewer demonstrated that adding `aria-hidden="true" tabIndex={-1}` to the visible `<Link>` keeps all 56 tests green while pruning the only reachable alternative from the accessibility tree — the exact defect DW-131 exists to prevent. `vitest.config.ts` already defines a jsdom `dom` project over `src/**/__tests__/**/*.test.tsx` carrying mounted a11y suites (e.g. single-main-landmark-mounted.test.tsx), so a `getByRole("link", { name: /Knowledge tree/ })` check is available.
+status: open
+
+### DW-462: Nothing pins the Knowledge *tab* itself, only the route the escape hatch points at.
+origin: spec-deferred 7ef8dc4c1588
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: src/lib/__tests__/retired-surfaces.test.ts:255
+severity: medium
+reason: The new pins reference `RETIRED_SURFACES`, `src/app/page.tsx` and the mode param; none references `TREE_TABS`, `DEFAULT_TREE_TAB`, `TreePanel` or `buildKnowledgeTree`. Removing or renaming the Knowledge tab, or changing `DEFAULT_TREE_TAB`, leaves every assertion passing while the copy's promise of "a text list of this wiki's pages" stops being kept. DW-131's decision said to pin the new target "so it cannot rot into another retired route" — the route is pinned, the tree is not.
+status: open
+
+### DW-463: The graph canvas is keyboard-focusable and click-activated with no keyboard activation path.
+origin: spec-deferred fe831dd7f6d5
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: src/app/wiki/graph/page.tsx:186
+severity: medium
+reason: src/app/wiki/graph/page.tsx:186 sets `tabIndex={0}` on a canvas that has `onClick`/`onMouseMove`/`onMouseLeave` and no `onKeyDown`. A keyboard-only user gets a focus stop that does nothing on Enter or Space. Pre-existing and untouched by this pass, which fixed the screen-reader escape hatch on the same element.
+status: open
+
+### DW-464: `KNOWLEDGE_TREE_HREF` carries no lens scope, while the graph it is an alternative to is scoped by `?scope=`.
+origin: spec-deferred 438c15df14ac
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: src/lib/workbench-url.ts:59
+severity: low
+reason: The graph renders `mine`, a vault, or another owner's silo. The href is `/?mode=wiki` with no scope, so a reader following it from a scoped graph lands on their own active Wiki's tree — a different set from the one they could not see. The restored comment addresses the "this wiki's pages" vs "all pages" wording but not the scope mismatch.
+status: open
+
+### DW-465: `ensureDiscussDir()`'s doc comment still says it creates the directory, above an empty no-op body.
+origin: spec-deferred 7735b56e55bd
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: src/lib/talk.ts:63
+severity: low
+reason: src/lib/talk.ts:63 reads "Creates the `discuss/` directory if it doesn't exist" over a body whose only content is `/* Storage provider creates parent directories on write — no-op. */`. This pass corrected SCHEMA.md about exactly this fact and left the comment a caller actually reads as the stale one.
+status: open
+
+### DW-466: `.yoyo/status.md`'s header metrics are far staler than the two lines this pass pinned.
+origin: spec-deferred 6c491673c35d
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: .yoyo/status.md:4
+severity: low
+reason: `**Generated:** 2026-06-02`, `- **API routes:** 32` (148 `route.ts` files under src/app/api), `- **Test files:** 58` (325), `- **Test count:** 2,054` (7,461 passing). Pinning the MCP tool list and the lint-check list makes the surrounding metrics read as maintained when they are not.
+status: open
+
+### DW-467: DESIGN-triggers.md contradicts itself on lint-check counts, and none of the three numbers is pinned.
+origin: spec-deferred 5c7ee32b3da7
+source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
+location: DESIGN-triggers.md:454
+severity: low
+reason: `:141` and `:404` say "15 lint check types"; `:454` says "lint checks already detect 14 condition types". 15 matches `ALL_CHECK_TYPES` (src/lib/lint-types.ts) today, so `:454` is the wrong one — but all three are hand-written, and the file's only pin is the MCP tool count in mcp-annotations.test.ts.
 status: open

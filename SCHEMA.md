@@ -125,12 +125,16 @@ overlap (suggesting they should be merged).
 
 ## Talk pages (Phase 2)
 
-Talk pages provide a threaded discussion surface for editorial disputes,
-contradiction resolution, and general commentary on any wiki page.
+Talk pages **were** work-wiki's threaded discussion surface for editorial
+disputes, contradiction resolution, and general commentary on any wiki page.
+The surface is retired — see **Retired surfaces** below — so what follows
+documents the on-disk shape, which the readers that outlived it still depend on.
 
-**Location:** `discuss/<slug>.json` — created on demand by `ensureDiscussDir()`
-in `src/lib/talk.ts`. The `discuss/` directory is gitignored (like `wiki/` and
-`raw/`).
+**Location:** `discuss/<slug>.json`, under the data directory —
+`getDiscussDir()` in `src/lib/talk.ts`. Nothing creates the directory ahead of
+the first write: `ensureDiscussDir()` is an explicit no-op, because the storage
+provider creates parent directories itself. The `discuss/` directory is
+gitignored (like `wiki/` and `raw/`).
 
 **Schema:** Each file contains a JSON array of `TalkThread` objects:
 
@@ -153,18 +157,34 @@ Each `TalkComment` has:
 | `body` | string | Markdown content |
 | `parentId` | `string \| null` | ID of parent comment for threading; `null` for top-level |
 
-**API routes:**
+**Retired surfaces:** the Discussion UI and every REST route under
+`/api/wiki/:slug/discuss` were cut with the move to a private, single-owner
+Workbench. `RETIRED_SURFACES` (`src/lib/retired.ts`) holds the four routes:
+`/api/wiki/:slug/discuss`, `/api/wiki/:slug/discuss/:threadIndex`,
+`/api/wiki/:slug/discuss/:threadIndex/comments` and
+`/api/wiki/:slug/discuss/:threadIndex/ask-yoyo`. Every method those four once
+served now answers a bodiless 404 through `retiredRoute()` — `GET` and `POST`
+on the first, `GET` and `PATCH` on the second, `POST` on each of the last two,
+six method+route pairs over the four listed routes. The "Discussion" tab and the
+discussion badge counts went with the pages that carried them: `/wiki` and
+`/wiki/[slug]` are entries in the same list, and their bodies are
+`retiredPage()`, which is Next's `notFound()`.
 
-- `GET /api/wiki/:slug/discuss` — list all threads for a page
-- `POST /api/wiki/:slug/discuss` — create a new thread
-- `GET /api/wiki/:slug/discuss/:threadIndex` — get a single thread
-- `PATCH /api/wiki/:slug/discuss/:threadIndex` — update thread status (resolve/reopen)
-- `POST /api/wiki/:slug/discuss/:threadIndex/comments` — add a comment (supports `parentId` for replies)
+**Still live:** the storage format above, and the readers with callers.
+`deleteDiscussions()` is one of the steps page deletion runs in
+`src/lib/lifecycle.ts`; `src/lib/discuss-stats-index.ts` keeps the per-slug
+thread counts as a precomputed index that the maintenance scan rebuilds daily;
+and `src/lib/contributors.ts` scans the same `discuss/` files for the comment
+and thread-created counts in a contributor profile.
 
-**UI:** The wiki page view includes a "Discussion" tab showing threads with
-nested reply rendering (indented comments up to 3 visual levels). Discussion
-badge counts appear on wiki index page cards and individual page headers to
-surface active disputes at a glance.
+**Present but unreached:** two further pieces are still exported and still
+correct, with nothing outside the tests calling them.
+`getDiscussionStatsForSlugs()` (`src/lib/talk.ts`) computes per-page thread
+counts, but its only caller is `src/lib/browse.ts`, which has no non-test
+importers of its own now that `/api/wiki/browse` is a `RETIRED_SURFACES` entry.
+The thread-writing half — `listThreads()`, `getThread()`, `createThread()`,
+`addComment()`, `resolveThread()` and `hasOpenThread()` — lost its callers
+when the routes above were retired.
 
 ## Contributor profiles (Phase 2)
 
@@ -691,7 +711,14 @@ sessions should pick from this list:
 
 ## Planned evolution
 
-Phase 1 (schema evolution) and Phase 2 (talk pages + attribution) are complete.
+Phase 1 (schema evolution) is complete. Phase 2 (talk pages + attribution)
+shipped and then lost its product surfaces: the talk-page Discussion UI, the
+public contributor index and the REST routes behind both were cut with the move
+to a private, single-owner Workbench, and are entries in `RETIRED_SURFACES`
+(`src/lib/retired.ts`). What Phase 2 built underneath is unaffected — the
+`discuss/` storage format and its readers, the contributor profile library, and
+revision attribution — as the Talk pages, Contributor profiles and Revision
+attribution sections above describe.
 Phase 3 (X ingestion loop) library and API work is complete — `ingestXMention()`
 and `POST /api/ingest/x-mention` are implemented, along with the MCP tool
 `ingest_x_mention`. The remaining piece is the GitHub Actions polling workflow (#21),
@@ -699,7 +726,10 @@ which is blocked on deployment architecture.
 Phase 4 (agent identity as work-wiki pages) is **substantially complete** — the agent
 registry, context API, `seedAgent()` utility, `agent-identity` page type, scoped
 search, MCP tools (`seed-agent`, `list-agents`, `update-agent`, `delete-agent`,
-`agent-context`), and contributor profiles are implemented. Remaining Phase 4 work:
+`agent-context`), and the contributor profile library are implemented. The
+contributor product surfaces that library fed were retired afterwards
+(`src/lib/retired.ts`); the profiles themselves still compute. Remaining
+Phase 4 work:
 migrating yoyo's actual identity content into work-wiki pages and `grow.sh` integration.
 The schema will continue to evolve toward the full work-wiki model defined in
 [`work-wiki-concept.md`](work-wiki-concept.md). See YOYO.md for the phased roadmap.
