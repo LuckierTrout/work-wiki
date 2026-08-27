@@ -2286,7 +2286,8 @@ source_spec: `spec-dw-98-103-email-ingest-attachment-coverage.md`
 location: src/app/api/email/ingest/route.ts:122
 severity: medium
 reason: (a) An email whose attachments are all unsupported but which has a body: the "queued" line is omitted, the "skipped" line fires, and a zero-attachment form is forwarded — untested end to end. (b) A single attachment over `MAX_DOCUMENT_SIZE` makes the route 400 the *whole* email (`src/app/api/email/ingest/route.ts:122-128`), so the body and every other attachment are lost, and the Worker does no per-attachment size pre-filter before forwarding.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-email-ingest-route-and-worker-tests
 decision: 2026-08-20 Drop the oversized attachment — Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.
 
 ### DW-254: The prototype-chain fix applied to `mediaTypeFor` during review is unpinned by any test.
@@ -3182,7 +3183,8 @@ source_spec: `spec-dw-104-247-248-email-worker-caps-and-accounting.md`
 location: src/app/api/email/ingest/route.ts:202
 severity: medium
 reason: `src/app/api/email/ingest/route.ts` returns `{ accepted, duplicate, ... , supportedAttachmentCount }` on the duplicate path without `skippedAttachmentCount`, while the success path returns both. Pre-dates this change, but it is the same response contract the change corrects. The only test on that path asserts accepted/duplicate/status/slug and nothing about attachment counts.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-email-ingest-route-and-worker-tests
 
 ### DW-358: Quoted-printable transfer encoding is unaccounted for in the raw-size cap, which is derived from base64 expansion alone.
 origin: spec-deferred 18e6b2bf1947
@@ -3239,7 +3241,8 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: workers/email-ingest/index.ts:386
 severity: low
 reason: `workers/email-ingest/index.ts` computes `(env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "")` twice: at :325 for the forwarded request (now pinned by the new transport case) and again at :386 for the `Page:` / `Track it under Recent ingests:` lines in the reply. Reverting only the :386 trim leaves both Worker suites green, so a sender would receive `https://host///u/yopedia/slug`. The new `///` fixture already drives the worker with a trailing-slash site and discards `msg.reply` instead of asserting it.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-email-ingest-route-and-worker-tests
 
 ### DW-364: The Worker's two misconfiguration early-returns -- missing service token and missing site URL -- produce sender-visible replies that no test observes.
 origin: spec-deferred def3eb49a02e
@@ -3247,7 +3250,8 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: workers/email-ingest/index.ts:255-263
 severity: medium
 reason: `workers/email-ingest/index.ts:255-263` replies "the ingest service is not configured" and returns without forwarding when `YOPEDIA_SERVICE_TOKEN` is absent; :326 throws `YOPEDIA_SITE_URL is missing`, caught by the surrounding try/catch into the "could not queue this email" reply. Neither branch is exercised anywhere, so deleting either -- and forwarding an unauthenticated request, or one to a relative URL -- fails nothing. The new `forwardedRequest(siteUrl)` helper already parameterises the site, so the second is one fixture away.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-email-ingest-route-and-worker-tests
 
 ### DW-365: `assetFromArchive` still indexes the unzipped file map with a raw `files[target]`, one line above the `ownLookup` call added to close exactly that pattern.
 origin: spec-deferred d5c3b8bba1b8
@@ -3263,7 +3267,8 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: src/app/api/email/ingest/route.ts:152
 severity: low
 reason: `src/app/api/email/ingest/route.ts:152-157` returns 400 with "Email body exceeds 100,000 characters" for an over-long body. Nothing in the repo posts a body above the cap, so the branch and its `toLocaleString` copy could be deleted or inverted with the suite green. The Worker truncates at the same number before forwarding, so -- like DW-250's branch -- this is a route contract for direct callers.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-email-ingest-route-and-worker-tests
 
 ### DW-367: The route's "no text body or supported document attachment" 400 asserts only its status, in the same file as a new block arguing at length that the copy must be pinned.
 origin: spec-deferred 96774befabcc
@@ -3271,7 +3276,8 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: src/app/api/email/ingest/route.ts:146
 severity: low
 reason: `src/lib/__tests__/email-ingest-route.test.ts`'s "rejects attachment-only email when its file type is unsupported" checks `status === 400` and that nothing was enqueued, leaving "The email has no text body or supported document attachment to ingest" (`route.ts:146-151`) unmatched by anything in the repo -- the same gap DW-250 named for the neighbouring branch.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-email-ingest-route-and-worker-tests
 
 ### DW-368: The Extraction provider picker on the same flat /settings page also offers Custom and renders no base-URL or API-key field, so it stores a provider the runtime refuses to construct with no on-page poi
 origin: spec-deferred ab8661d17322
@@ -3959,4 +3965,36 @@ source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
 location: workers/email-ingest/index.ts (inlineAttachment)
 severity: low
 reason: The predicate is `attachment.disposition === "inline"`, and its comment records the deliberate choice to treat a `null` disposition as a real attachment rather than risk dropping a file the sender really sent. postal-mime also exposes `contentId` and a `related` flag, and DW-359's own text describes the noisy parts as having `disposition: "inline"` AND a `contentId`. A client that emits `Content-ID` without a disposition header therefore keeps the behaviour the entry was filed against. Widening the predicate is a separate decision about which signal to trust.
+status: open
+
+### DW-451: The Worker computes the trimmed site URL twice, so the two copies can still drift; hoisting one const would remove the drift class the new link tests guard against.
+origin: spec-deferred e486073282e7
+source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-tests.md`
+location: workers/email-ingest/index.ts:752
+severity: low
+reason: `(env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "")` appears at workers/email-ingest/index.ts:752 (forwarded request) and again at :813 (acknowledgement links). DW-363 exists only because the second copy was unpinned. Both are now pinned, but a single `const site` hoisted above the `try` -- keeping `if (!site) throw` inside it -- would make drift structurally impossible. Pre-existing duplication; this change pinned it rather than removing it.
+status: open
+
+### DW-452: The Worker's `!response.ok` exit replies with the route's error alone, discarding every loss sentence, so a route refusal hides which attachments were dropped.
+origin: spec-deferred 29a0cc7bff66
+source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-tests.md`
+location: workers/email-ingest/index.ts:808
+severity: low
+reason: `if (!response.ok) { await reply(message, subject, safeError(result)); return; }` at workers/email-ingest/index.ts:808 drops `oversizedLine`, `overBudgetLine` and the over-cap and unsupported sentences. Pre-existing shape -- this change adds a fourth sentence to the set that exit already discarded.
+status: open
+
+### DW-453: Nothing asserts that the Worker's body truncation lands exactly on MAX_EMAIL_CONTENT_CHARS, so an off-by-one there would 400 every long email with the route's new gate test green.
+origin: spec-deferred 1973ea48dc02
+source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-tests.md`
+location: workers/email-ingest/index.ts:739
+severity: low
+reason: `rawContent.slice(0, MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length) + TRUNCATION_MARKER` at workers/email-ingest/index.ts:739 is untouched by this change and unobserved. DW-366 now pins the route's `content.length > MAX_EMAIL_CONTENT_CHARS` 400, which makes the pairing load-bearing: the Worker must truncate to a length the route accepts.
+status: open
+
+### DW-454: The Worker's forwarded `attachmentNames` uses a bare `|| "unnamed attachment"` with no trim, so a whitespace-named part is called "unnamed attachment" in the reply but forwarded as whitespace, which t
+origin: spec-deferred fae8dd937071
+source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-tests.md`
+location: workers/email-ingest/index.ts:747
+severity: low
+reason: workers/email-ingest/index.ts:747 builds the recorded names with `attachment.filename || "unnamed attachment"`, while `replyAttachmentName` (:429) scrubs and trims before falling back. `sanitizeAttachmentNames` in src/lib/email-ingest.ts then drops the whitespace name, so the recorded list and the sender's reply disagree about the same part. Pre-existing; routing that build through `replyAttachmentName` would settle it.
 status: open

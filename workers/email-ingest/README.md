@@ -18,11 +18,14 @@ format:
   crate reads those formats.
 
 The Worker carries at most ten supported documents
-out of one message, and records the first twenty attachment names — forwarded or
-not — in activity history; names past the twentieth are not recorded at all. The
-acknowledgement reports the two losses separately: parts in an unsupported
-format, and supported documents left behind because the message went over that
-ten-document limit. The owner can route accepted mail to an owned vault and/or
+out of one message, each at most 10 MB decoded and 20 MB across the message, and
+records the first twenty attachment names — forwarded or not — in activity
+history; names past the twentieth are not recorded at all. The acknowledgement
+reports the four losses separately, because each asks the sender for a different
+fix: parts in an unsupported format, documents over the 10 MB per-document
+ceiling, documents left behind once the 20 MB total attachment budget was spent,
+and documents left behind because the message went over that ten-document
+limit. The owner can route accepted mail to an owned vault and/or
 agent in Settings. Original documents and supported embedded figures are
 preserved in R2 after synthesis.
 

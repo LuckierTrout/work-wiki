@@ -45,6 +45,12 @@ const CONFIG_KEY = "_idx:email-ingest-config";
  */
 export const MAX_EMAIL_DOCUMENT_BYTES = 10 * 1024 * 1024;
 /**
+ * The figure quoted back to a sender whose attachment was too big. Written the
+ * same way `/api/email/ingest` writes it (`MAX_DOCUMENT_SIZE / 1024 / 1024`), so
+ * the two sides of the same ceiling cannot quote different numbers.
+ */
+const MAX_EMAIL_DOCUMENT_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
+/**
  * Supported attachments forwarded from one email. Must equal the route's
  * `MAX_EMAIL_DOCUMENTS`, which rejects anything above it with a 400 — pinned by
  * the parity test, since this module cannot import the constant.
@@ -423,6 +429,35 @@ function replyAttachmentName(filename: string | null): string {
   );
 }
 
+/**
+ * The tail of a loss sentence: the names of the files it is about.
+ *
+ * Capped at `MAX_EMAIL_ATTACHMENT_NAMES_RECORDED` with a counted remainder, so
+ * one reply line can never grow with the sender's attachment count — a message
+ * of hundreds of eligible parts all refused by the same bound would otherwise
+ * name every one of them at up to 200 characters each. The COUNT the sentence
+ * opens with stays the true total; only the naming is truncated.
+ *
+ * Inline parts are filtered out for the same reason they are excluded from every
+ * reported loss: a signature logo is not a file the sender chose to attach
+ * (DW-359).
+ */
+function replyLossNames(
+  attachments: readonly {
+    filename: string | null;
+    disposition: "attachment" | "inline" | null;
+  }[],
+): string {
+  const names = attachments
+    .filter((attachment) => !inlineAttachment(attachment))
+    .map((attachment) => replyAttachmentName(attachment.filename));
+  const named = names.slice(0, MAX_EMAIL_ATTACHMENT_NAMES_RECORDED);
+  const unnamed = names.length - named.length;
+  return `${named.join(", ")}${
+    unnamed ? `, and ${unnamed} other${unnamed === 1 ? "" : "s"}` : ""
+  }`;
+}
+
 function normalizeAddress(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -559,6 +594,32 @@ export default {
     const eligibleAttachments = parsed.attachments.filter((attachment) =>
       supportedAttachment(attachment.filename, attachment.mimeType),
     );
+    // Sizes, measured ONCE for every eligible part and reused by both bounds
+    // below. `decodedByteLength` allocates nothing — it reads `byteLength` off
+    // the buffer shapes and scans only the string fallback — so measuring here
+    // costs no more than measuring inside the selection loop did.
+    const sizedAttachments = eligibleAttachments.map((attachment) => ({
+      attachment,
+      size: decodedByteLength(attachment.content),
+    }));
+    // The per-DOCUMENT ceiling (DW-253), run BEFORE the selection loop.
+    //
+    // Two byte bounds answer different questions and must not be merged:
+    // `MAX_EMAIL_DOCUMENT_BYTES` mirrors the route's own `MAX_DOCUMENT_SIZE`,
+    // which 400s a single file above it; `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`
+    // bounds what the forwarding loop copies in TOTAL. Partitioning first is
+    // what makes an oversized part cost nothing but itself: it consumes neither
+    // a `MAX_EMAIL_ATTACHMENTS` slot nor any of the aggregate budget, so it can
+    // never turn a legal message into an over-cap or over-budget refusal.
+    //
+    // Forwarding it would only buy a 400 the sender pays for with their body and
+    // every other attachment.
+    const oversizedAttachments = sizedAttachments
+      .filter(({ size }) => size > MAX_EMAIL_DOCUMENT_BYTES)
+      .map(({ attachment }) => attachment);
+    const withinCeilingAttachments = sizedAttachments.filter(
+      ({ size }) => size <= MAX_EMAIL_DOCUMENT_BYTES,
+    );
     // The forwarding selection, bounded by BOTH limits the cap is sized for: the
     // attachment COUNT, and — since DW-360 — the aggregate DECODED byte budget
     // `MAX_RAW_EMAIL_BYTES` is derived from.
@@ -581,11 +642,10 @@ export default {
     const supportedAttachments: typeof eligibleAttachments = [];
     const overBudgetAttachments: typeof eligibleAttachments = [];
     let aggregateBytes = 0;
-    for (const attachment of eligibleAttachments) {
+    for (const { attachment, size } of withinCeilingAttachments) {
       // The count cap is checked first and BREAKS, so parts beyond it stay
       // over-cap losses rather than being re-labelled as over-budget ones.
       if (supportedAttachments.length >= MAX_EMAIL_ATTACHMENTS) break;
-      const size = decodedByteLength(attachment.content);
       if (aggregateBytes + size > MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES) {
         // `continue`, not `break`: a smaller file behind an enormous one still
         // fits, and refusing it would make the loss depend on part order rather
@@ -597,10 +657,19 @@ export default {
       supportedAttachments.push(attachment);
     }
     const unsupportedCount = countableAttachments.length - countable(eligibleAttachments);
+    const oversizedCount = countable(oversizedAttachments);
     const overBudgetCount = countable(overBudgetAttachments);
+    // The residue, so the four terms stay disjoint: an oversized part never
+    // entered the selection loop, so it must be subtracted here or it would be
+    // re-reported as an over-cap casualty — telling the sender to send fewer
+    // files, which would not have helped.
     const overCapCount =
-      countable(eligibleAttachments) - countable(supportedAttachments) - overBudgetCount;
-    const skippedAttachmentCount = unsupportedCount + overBudgetCount + overCapCount;
+      countable(eligibleAttachments) -
+      countable(supportedAttachments) -
+      oversizedCount -
+      overBudgetCount;
+    const skippedAttachmentCount =
+      unsupportedCount + oversizedCount + overBudgetCount + overCapCount;
     // Built once and used by BOTH exits: a sender has to be told which file was
     // left behind whether or not anything else survived to be ingested. DW-360
     // created a new way for `supportedAttachments` to be empty while every part
@@ -615,17 +684,22 @@ export default {
     // under the raw gate — would otherwise name every one of them, at up to 200
     // characters each, in a single outbound reply line. Every other name-bearing
     // surface in this module is capped; this one was not.
-    const overBudgetNames = overBudgetAttachments
-      .filter((attachment) => !inlineAttachment(attachment))
-      .map((attachment) => replyAttachmentName(attachment.filename));
-    const namedOverBudget = overBudgetNames.slice(0, MAX_EMAIL_ATTACHMENT_NAMES_RECORDED);
-    const unnamedOverBudget = overBudgetNames.length - namedOverBudget.length;
     const overBudgetLine = overBudgetCount
       ? `${overBudgetCount} supported attachment${
           overBudgetCount === 1 ? " was" : "s were"
-        } not queued because this email exceeds the ${MAX_EMAIL_AGGREGATE_DOCUMENT_MB} MB total attachment budget: ${namedOverBudget.join(
-          ", ",
-        )}${unnamedOverBudget ? `, and ${unnamedOverBudget} other${unnamedOverBudget === 1 ? "" : "s"}` : ""}.`
+        } not queued because this email exceeds the ${MAX_EMAIL_AGGREGATE_DOCUMENT_MB} MB total attachment budget: ${replyLossNames(
+          overBudgetAttachments,
+        )}.`
+      : "";
+    // The per-document loss, kept as its OWN sentence for the same reason: a
+    // file over the ceiling is not an over-cap casualty and is not an
+    // unsupported format, and reporting it as either tells the sender to make a
+    // change that would not have helped. Named as well as counted, so they know
+    // which file to shrink or split.
+    const oversizedLine = oversizedCount
+      ? `${oversizedCount} attachment${oversizedCount === 1 ? " was" : "s were"} not queued because ${
+          oversizedCount === 1 ? "it is" : "they are"
+        } larger than ${MAX_EMAIL_DOCUMENT_MB} MB: ${replyLossNames(oversizedAttachments)}.`
       : "";
     if (!rawContent && supportedAttachments.length === 0) {
       await reply(
@@ -634,9 +708,10 @@ export default {
         [
           // Keyed on `unsupportedCount`, NOT on the countable list: a sender
           // whose only part was a supported document dropped for the aggregate
-          // budget has not "sent no supported document attachment", and telling
+          // budget (DW-360) or for the per-document ceiling (DW-253) has not
+          // "sent no supported document attachment", and telling
           // them so two paragraphs above a sentence naming that same file is a
-          // contradiction (DW-360). A message whose only part was an inline
+          // contradiction. A message whose only part was an inline
           // signature logo has no countable attachment at all, so it still gets
           // the plain no-text sentence rather than being told to fix a format
           // problem it does not have (DW-359). When something really did fail
@@ -644,6 +719,14 @@ export default {
           unsupportedCount
             ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX/XLS, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, and RTF."
             : "work-wiki found no email text to ingest.",
+          oversizedLine,
+          // Retained rather than reachable. Since the per-document ceiling
+          // partition runs first, a part that alone exceeds the aggregate budget
+          // also exceeds `MAX_EMAIL_DOCUMENT_BYTES` — and the budget is floored
+          // at that ceiling by `Math.max` — so the first within-ceiling part is
+          // always selected and this exit cannot be reached with an over-budget
+          // loss. Kept so the sentence survives if that relationship ever
+          // changes; the reachable over-budget report is in the acknowledgement.
           overBudgetLine,
         ]
           .filter(Boolean)
@@ -742,6 +825,7 @@ export default {
       supportedAttachments.length
         ? `${supportedAttachments.length} supported attachment${supportedAttachments.length === 1 ? " was" : "s were"} queued for ingestion.`
         : "",
+      oversizedLine,
       overBudgetLine,
       overCapCount
         ? `${overCapCount} supported attachment${overCapCount === 1 ? " was" : "s were"} not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`

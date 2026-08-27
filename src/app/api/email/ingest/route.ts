@@ -52,8 +52,9 @@ interface EmailPayload {
   attachmentNames: string[];
   attachments: File[];
   /**
-   * What the inbound Worker never forwarded — unsupported parts plus supported
-   * ones it dropped at its own per-email cap. Both payload branches read it, so
+   * What the inbound Worker never forwarded — unsupported parts, supported ones
+   * over its own per-document byte ceiling, and supported ones it dropped at its
+   * own per-email cap or aggregate byte budget. Both payload branches read it, so
    * it is absent only when a caller omits the field or sends an unusable value
    * (non-numeric, non-finite, or negative); the route then falls back to
    * deriving a minimum from the recorded names.
@@ -186,9 +187,52 @@ export async function POST(request: Request) {
   try {
     const payload = await parsePayload(request);
     const { from, to, subject, messageId, content } = payload;
-    const attachments = payload.attachments.filter((file) =>
+    // Oversize is a per-FILE loss, not a per-message one (DW-253). One
+    // attachment above the ceiling used to 400 the whole email, taking the body
+    // and every other attachment with it; now the offending file is dropped
+    // here, folded into `skippedAttachmentCount` below, and named back to the
+    // caller. The partition runs at the same place the allowlist filter does, so
+    // an oversized file never consumes a `MAX_EMAIL_DOCUMENTS` slot either.
+    const supportedFiles = payload.attachments.filter((file) =>
       isSupportedDocument(file.name, file.type),
     );
+    // ONE predicate, one pass. Deliberately NOT two complementary filters
+    // (`> MAX_DOCUMENT_SIZE` and `<= MAX_DOCUMENT_SIZE`): those are two
+    // independently editable boundaries, and shifting only one puts a file of
+    // exactly `MAX_DOCUMENT_SIZE` into BOTH lists -- staged AND reported as
+    // dropped -- while shifting both silently refuses a document that fits. A
+    // partition cannot drift against itself.
+    const oversizedFiles: File[] = [];
+    const attachments: File[] = [];
+    for (const file of supportedFiles) {
+      (file.size > MAX_DOCUMENT_SIZE ? oversizedFiles : attachments).push(file);
+    }
+    // The `|| "unnamed attachment"` is load-bearing, not decoration:
+    // `sanitizeAttachmentNames` drops a name that scrubs away to nothing, so a
+    // part named `"\r\n"` or `"   "` would shrink this list while an oversized
+    // file really was dropped -- breaking the contract that the field's presence
+    // alone means "a file was dropped for being too big", and leaving the
+    // refusal below with a count and no noun to attach it to.
+    const oversizedAttachmentNames = sanitizeAttachmentNames(
+      oversizedFiles.map((file) => file.name.trim() || "unnamed attachment"),
+    );
+    // Loud server-side, not only sender-side. Oversize used to produce a 400 the
+    // operator could find in the access log; now the bytes are dropped and the
+    // message may well succeed, so without this line an attachment vanishes with
+    // nothing anywhere to say it existed. Logged before any of the guards below,
+    // so the record survives whichever exit this request takes.
+    if (oversizedFiles.length) {
+      logger.warn(
+        "email-ingest",
+        `dropped ${oversizedFiles.length} attachment${
+          oversizedFiles.length === 1 ? "" : "s"
+        } larger than ${MAX_DOCUMENT_SIZE / 1024 / 1024} MB: ${oversizedAttachmentNames.join(", ")}`,
+      );
+    }
+    // Files this route itself refused for format -- the route's analogue of the
+    // Worker's `unsupportedCount`, and what decides whether the refusal below
+    // may still claim nothing supported arrived.
+    const unsupportedFileCount = payload.attachments.length - supportedFiles.length;
     const attachmentNames = sanitizeAttachmentNames(Array.from(new Set([
       ...payload.attachmentNames,
       ...payload.attachments.map((file) => file.name),
@@ -201,8 +245,47 @@ export async function POST(request: Request) {
       );
     }
     if (!content && attachments.length === 0) {
+      // Only here does an oversized file still cost the sender the message:
+      // dropping it left nothing at all to ingest. Two sentences, JOINED rather
+      // than swapped -- an email carrying one 11 MB PDF and one `.exe` has to
+      // learn about both refusals, and which formats are supported. The lead
+      // sentence drops its "or supported document attachment" clause only when
+      // oversize is the sole reason nothing survived, because in that case a
+      // supported document really did arrive; it was too big, not unsupported.
+      //
+      // Count and VERB come from `oversizedFiles`, the true total, never from
+      // the name list: `sanitizeAttachmentNames` hard-truncates at 20, so a
+      // caller posting 21 oversized files would otherwise be told about 20 of
+      // them and never learn the rest were dropped. The names keep the 20 cap
+      // -- one reply line must not grow without bound, and the Worker's
+      // `safeError` guillotines a relayed error at 300 characters -- and the
+      // remainder is reported as a counted tail, the shape `replyLossNames`
+      // uses on the Worker side.
+      //
+      // The `|| "unnamed attachment"` fallback above guarantees a name per file
+      // up to the cap, so `unnamedOversized` is truncation and nothing else.
+      const oversizedCount = oversizedFiles.length;
+      const unnamedOversized = oversizedCount - oversizedAttachmentNames.length;
       return NextResponse.json(
-        { error: "The email has no text body or supported document attachment to ingest" },
+        {
+          error: [
+            oversizedCount && unsupportedFileCount === 0
+              ? "The email has no text body to ingest"
+              : "The email has no text body or supported document attachment to ingest",
+            oversizedCount
+              ? `${oversizedAttachmentNames.join(", ")}${
+                  unnamedOversized
+                    ? `, and ${unnamedOversized} other${unnamedOversized === 1 ? "" : "s"}`
+                    : ""
+                } ${
+                  oversizedCount === 1 ? "is" : "are"
+                } larger than ${MAX_DOCUMENT_SIZE / 1024 / 1024} MB`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(". "),
+          ...(oversizedCount ? { oversizedAttachmentNames } : {}),
+        },
         { status: 400 },
       );
     }
@@ -215,13 +298,6 @@ export async function POST(request: Request) {
     if (attachments.length > MAX_EMAIL_DOCUMENTS) {
       return NextResponse.json(
         { error: `Attach no more than ${MAX_EMAIL_DOCUMENTS} supported documents` },
-        { status: 400 },
-      );
-    }
-    const oversized = attachments.find((file) => file.size > MAX_DOCUMENT_SIZE);
-    if (oversized) {
-      return NextResponse.json(
-        { error: `${oversized.name} is larger than ${MAX_DOCUMENT_SIZE / 1024 / 1024} MB` },
         { status: 400 },
       );
     }
@@ -274,6 +350,39 @@ export async function POST(request: Request) {
     const contentAuthor = validAgent?.id || principal.handle;
     const learningFor = validAgent?.id;
 
+    // Attachment loss accounting (DW-357). Hoisted above the duplicate check so
+    // BOTH exits report the same pair; every input it reads is settled at
+    // payload-parse time and nothing between here and the old site mutates them.
+    //
+    // The Worker's count and the route's own rejections are disjoint losses: the
+    // Worker reports what it never forwarded, and the route can additionally drop
+    // a forwarded file that fails `isSupportedDocument` or exceeds
+    // `MAX_DOCUMENT_SIZE`. Both of the route's own drops are already inside
+    // `payload.attachments.length - attachments.length`, so the oversize skip
+    // needs no arithmetic of its own here. Sum them — and never report below what
+    // is locally derivable, so a caller that sends no count (or an implausibly
+    // low one) still gets an honest floor.
+    //
+    // TWO floors, whichever is higher, because the recorded-name subtraction is
+    // not a bound on the route's own drops: `sanitizeAttachmentNames` discards a
+    // name that scrubs away to nothing, so one oversized file named `"   "`
+    // contributes no name at all and that subtraction answers zero — beside an
+    // `oversizedAttachmentNames` list proving a file was dropped. The route's
+    // own drop count cannot lie about itself, so it is the second floor.
+    const localSkipped = Math.max(
+      0,
+      attachmentNames.length - attachments.length,
+      payload.attachments.length - attachments.length,
+    );
+    const skippedAttachmentCount =
+      payload.skippedAttachmentCount === undefined
+        ? localSkipped
+        : Math.max(
+            localSkipped,
+            payload.skippedAttachmentCount +
+              Math.max(0, payload.attachments.length - attachments.length),
+          );
+
     const jobId = await emailJobId(messageId);
     const existing = await getIngestJob(jobId);
     if (existing) {
@@ -282,7 +391,20 @@ export async function POST(request: Request) {
         duplicate: true,
         jobId,
         status: existing.status,
+        // Deliberately describing THIS request, not the job being acknowledged:
+        // `status` and `slug` come from the stored job, but the counts are
+        // derived from the payload just parsed. A resend carrying a different
+        // attachment set therefore reports its own figures, not those of the
+        // delivery that was actually ingested -- the accounting answers "what
+        // did you just send me", which is the question a sender is asking.
         supportedAttachmentCount: attachments.length,
+        skippedAttachmentCount,
+        // Omitted when empty, so the field's presence alone means "a file was
+        // dropped for being too big". For DIRECT service-principal callers: the
+        // Worker reads only `error`, `jobId` and `slug` off this response, and
+        // its own byte pre-filter means an emailed message can never reach here
+        // with the field populated anyway.
+        ...(oversizedAttachmentNames.length ? { oversizedAttachmentNames } : {}),
         ...(existing.slug ? { slug: existing.slug } : {}),
       });
     }
@@ -418,21 +540,6 @@ export async function POST(request: Request) {
       task.staged = { key, kind: "text" };
     }
 
-    // The Worker's count and the route's own rejections are disjoint losses: the
-    // Worker reports what it never forwarded, and the route can additionally drop
-    // a forwarded file that fails `isSupportedDocument`. Sum them — and never
-    // report below what is locally derivable, so a caller that sends no count (or
-    // an implausibly low one) still gets an honest floor.
-    const localSkipped = Math.max(0, attachmentNames.length - attachments.length);
-    const skippedAttachmentCount =
-      payload.skippedAttachmentCount === undefined
-        ? localSkipped
-        : Math.max(
-            localSkipped,
-            payload.skippedAttachmentCount +
-              Math.max(0, payload.attachments.length - attachments.length),
-          );
-
     const response = await enqueueOrInline(jobId, task, async () => {
       let combined = content;
       const documentSources: DocumentSourceInput[] = [];
@@ -468,6 +575,9 @@ export async function POST(request: Request) {
       accepted: true,
       supportedAttachmentCount: attachments.length,
       skippedAttachmentCount,
+      // Omitted when empty, so the field's presence alone means "a file was
+      // dropped for being too big".
+      ...(oversizedAttachmentNames.length ? { oversizedAttachmentNames } : {}),
       ...(extractIds.length ? { extractIds } : {}),
       // Reported, not just logged. The status stays whatever the body's own
       // compile answered — the message did arrive — but a caller that reads

@@ -24,6 +24,12 @@ interface FakeAttachment {
   filename: string | null;
   mimeType: string;
   content: string | ArrayBuffer | Uint8Array;
+  /**
+   * What `postal-mime` reports for `Content-Disposition`. Omitted by every
+   * fixture that predates DW-359, and `undefined` reads as "not inline" exactly
+   * as `null` does.
+   */
+  disposition?: "attachment" | "inline" | null;
 }
 
 const parseMock = vi.fn();
@@ -32,7 +38,10 @@ vi.mock("postal-mime", () => ({
   default: { parse: (...args: unknown[]) => parseMock(...args) },
 }));
 
-import worker, { decodedByteLength } from "../../../workers/email-ingest/index";
+import worker, {
+  decodedByteLength,
+  MAX_EMAIL_DOCUMENT_BYTES,
+} from "../../../workers/email-ingest/index";
 
 function parsedEmail(attachments: FakeAttachment[]) {
   return {
@@ -137,6 +146,25 @@ async function appendedAttachmentBlobs(attachments: FakeAttachment[]): Promise<B
   // this empty and make the type assertions unfalsifiable.
   expect(blobs.length).toBeGreaterThan(0);
   return blobs;
+}
+
+/**
+ * The forwarded form AND the acknowledgement, for cases that assert on what was
+ * NOT sent as much as on what was.
+ */
+async function forwardedRun(attachments: FakeAttachment[]) {
+  parseMock.mockResolvedValueOnce(parsedEmail(attachments));
+  const msg = message();
+  const bindings = env();
+  await worker.email(
+    msg as unknown as Parameters<typeof worker.email>[0],
+    bindings as unknown as Parameters<typeof worker.email>[1],
+  );
+  expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+  return {
+    form: await bindings.YOPEDIA.fetch.mock.calls[0][0].formData(),
+    reply: msg.reply.mock.calls[0][0] as { text: string },
+  };
 }
 
 const STRING_CONTENT = "id,total\nalpha,10\nbêta,20\n";
@@ -259,6 +287,89 @@ describe("email-ingest attachment content normalization", () => {
       },
     ]);
     expect(parts.map((part) => part.name)).toEqual(["c.data"]);
+  });
+});
+
+/**
+ * The per-document ceiling's INLINE exclusion (DW-253 x DW-359).
+ *
+ * `oversizedCount` is `countable(oversizedAttachments)` and `replyLossNames`
+ * filters inline parts out again, but no fixture in the sibling suite carries an
+ * inline part that is also oversized -- so deleting either filter left the whole
+ * repo green while a sender's signature logo, oversized or not, was reported
+ * back to them as a file they had to shrink.
+ *
+ * It lives HERE, against the mocked parser, for cost: a 10 MiB `Uint8Array` is
+ * one allocation, whereas the same part written into a real MIME fixture is
+ * ~14 MB of base64 string work on every run of the main worker suite.
+ */
+describe("email-ingest oversized inline parts", () => {
+  /** One byte over -- the gate is `>`, so this is the smallest refused document. */
+  const oversized = () => new ArrayBuffer(MAX_EMAIL_DOCUMENT_BYTES + 1);
+
+  it("does not report an oversized INLINE part as a dropped attachment", async () => {
+    const { form, reply } = await forwardedRun([
+      // Inline, eligible by extension, and over the ceiling: excluded from the
+      // forward by the ceiling and from every reported loss by `countable`.
+      {
+        filename: "banner.pdf",
+        mimeType: "application/pdf",
+        content: oversized(),
+        disposition: "inline",
+      },
+      { filename: "report.pdf", mimeType: "application/pdf", content: bytes(3, 64).slice().buffer },
+    ]);
+
+    // Eligibility is unchanged: the ceiling drops it, so only the small file
+    // travels.
+    expect((form.getAll("attachments") as File[]).map((part) => part.name)).toEqual([
+      "report.pdf",
+    ]);
+    // Not a loss, and not a name the sender listed -- the same treatment an
+    // inline part gets everywhere else.
+    expect(form.getAll("attachmentName")).toEqual(["report.pdf"]);
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+
+    expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
+    // The whole point: no oversize sentence at all, and specifically not one
+    // naming a part the sender never attached.
+    expect(reply.text).not.toContain("larger than");
+    expect(reply.text).not.toContain("banner.pdf");
+  });
+
+  it("still names an oversized ATTACHMENT part alongside an oversized inline one", async () => {
+    // The discriminating half. The case above passes if the ceiling filter runs
+    // at all, whatever the inline handling; this one has BOTH kinds oversized,
+    // so a missing `countable`/`!inlineAttachment` reports two losses and names
+    // the logo.
+    const { form, reply } = await forwardedRun([
+      {
+        filename: "banner.pdf",
+        mimeType: "application/pdf",
+        content: oversized(),
+        disposition: "inline",
+      },
+      {
+        filename: "huge.pdf",
+        mimeType: "application/pdf",
+        content: oversized(),
+        disposition: "attachment",
+      },
+      { filename: "report.pdf", mimeType: "application/pdf", content: bytes(4, 64).slice().buffer },
+    ]);
+
+    expect((form.getAll("attachments") as File[]).map((part) => part.name)).toEqual([
+      "report.pdf",
+    ]);
+    // ONE, not two: the inline part is in neither the count nor the names.
+    expect(form.get("skippedAttachmentCount")).toBe("1");
+    expect(form.getAll("attachmentName")).toEqual(["huge.pdf", "report.pdf"]);
+    expect(reply.text).toContain(
+      `1 attachment was not queued because it is larger than ${
+        MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024
+      } MB: huge.pdf.`,
+    );
+    expect(reply.text).not.toContain("banner.pdf");
   });
 });
 
