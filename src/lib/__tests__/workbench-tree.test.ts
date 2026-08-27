@@ -28,6 +28,7 @@ import {
   selectionName,
   selectionRefreshAction,
   shouldDockPreview,
+  workbenchSlugGate,
   type FileNode,
   type KnowledgeGroup,
   type TreeSelection,
@@ -37,7 +38,9 @@ import {
   WORKBENCH_FILE_MAX_DEPTH,
   listWorkbenchFilePaths,
   listRawSourceFilePaths,
+  rawPathSlug,
   readWorkbenchFile,
+  readWorkbenchFileBytes,
   wikiLeafName,
   wikiLeafSlug,
   workbenchFileExists,
@@ -463,6 +466,60 @@ describe("selectionRefreshAction", () => {
 });
 
 // ---------------------------------------------------------------------------
+// The two slug sets, and the slug a raw path spells
+// ---------------------------------------------------------------------------
+
+describe("workbenchSlugGate", () => {
+  it("names as hidden exactly the entries the knowledge tree dropped", () => {
+    const entries = [
+      entry({ slug: "concept-page", type: "concept" }),
+      entry({ slug: "agent-memory", type: "agent-identity" }),
+    ];
+    const gate = workbenchSlugGate(entries, buildKnowledgeTree(entries));
+    expect([...gate.readableSlugs]).toEqual(["concept-page"]);
+    // The `raw/` refusal set: the Files tab must not spell `agent-memory` in a
+    // source filename when the Knowledge tab does not show the page (DW-32).
+    expect([...gate.hiddenSlugs]).toEqual(["agent-memory"]);
+  });
+
+  it("does not name a slug no entry holds — an orphan is not a hidden page", () => {
+    const entries = [entry({ slug: "alpha" })];
+    const gate = workbenchSlugGate(entries, buildKnowledgeTree(entries));
+    // `raw/sources/nobody/...` names no page at all: it is the owner's own file
+    // in the owner's own silo, and refusing it would hide real data to protect
+    // nothing. So the refusal set is derived from the ENTRIES, not from "not
+    // readable".
+    expect(gate.hiddenSlugs.has("nobody")).toBe(false);
+    expect(gate.hiddenSlugs.size).toBe(0);
+  });
+});
+
+describe("rawPathSlug", () => {
+  it("reads the slug a raw display path spells, in every shape raw.ts writes", () => {
+    // `saveRawSource`, `saveRawSourceFor`, `saveRawSourceBytes`.
+    expect(rawPathSlug("raw/sources/alpha.md")).toBe("alpha");
+    expect(rawPathSlug("raw/sources/alpha/ab12.md")).toBe("alpha");
+    expect(rawPathSlug("raw/sources/alpha/ab12.pdf")).toBe("alpha");
+    // The DIRECTORY row spells it too — which is the whole reason `raw/` needs
+    // a directory filter and `wiki/` does not.
+    expect(rawPathSlug("raw/sources/alpha")).toBe("alpha");
+    // Pre-`sources` residue: the slug sits in exactly the same position.
+    expect(rawPathSlug("raw/alpha.md")).toBe("alpha");
+    expect(rawPathSlug("raw/alpha/ab12.md")).toBe("alpha");
+    // `queries/<leaf>` is the ONE two-segment shape `validateSlug` admits.
+    expect(rawPathSlug("raw/sources/queries/leaf.md")).toBe("queries/leaf");
+    expect(rawPathSlug("raw/sources/queries/leaf/ab12.md")).toBe("queries/leaf");
+    // Nothing spelled, so nothing to disclose.
+    expect(rawPathSlug("raw")).toBeNull();
+    expect(rawPathSlug("raw/sources")).toBeNull();
+    expect(rawPathSlug("wiki/alpha.md")).toBeNull();
+    // Deliberately conservative: the legacy flat shapes put a REAL slug in this
+    // position, and the path alone cannot tell the two apart.
+    expect(rawPathSlug("raw/parsed/alpha/ab12.md")).toBe("parsed");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The bounded walk
 // ---------------------------------------------------------------------------
 
@@ -526,9 +583,24 @@ describe("listWorkbenchFilePaths", () => {
   /**
    * The read gate, holding exactly the slugs named — so `gate()` with no
    * arguments is a CLOSED gate (no page is readable), not an open one.
+   *
+   * `hiddenSlugs` — the `raw/` refusal set (DW-32) — is EMPTY here, and
+   * separately: the two are not complements. A slug absent from `readableSlugs`
+   * but absent from the index too is an ORPHANED source, which still lists and
+   * still reads. Cases about the `raw/` gate pass their own set through
+   * {@link hiding}.
    */
   function gate(...slugs: string[]) {
-    return { readableSlugs: new Set(slugs) };
+    return { readableSlugs: new Set(slugs), hiddenSlugs: new Set<string>() };
+  }
+
+  /**
+   * A gate whose `raw/` half refuses the named slugs — the pages the principal's
+   * index holds that `buildKnowledgeTree` dropped. They are absent from
+   * `readableSlugs` too, exactly as `workbenchSlugGate` derives them.
+   */
+  function hiding(...slugs: string[]) {
+    return { readableSlugs: new Set<string>(), hiddenSlugs: new Set(slugs) };
   }
 
   async function seedArtifacts(): Promise<void> {
@@ -1123,7 +1195,10 @@ describe("listWorkbenchFilePaths", () => {
     await fs.writeFile(path.join(tmpDir, "wiki", "concept-page.md"), "x", "utf-8");
     await fs.writeFile(path.join(tmpDir, "wiki", "agent-memory.md"), "x", "utf-8");
 
-    const { paths } = await listWorkbenchFilePaths(OWNER, null, { readableSlugs });
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, {
+      readableSlugs,
+      hiddenSlugs: new Set<string>(),
+    });
     expect(paths).toContain("wiki/concept-page.md");
     expect(paths).not.toContain("wiki/agent-memory.md");
   });
@@ -1176,6 +1251,146 @@ describe("listWorkbenchFilePaths", () => {
     expect(truncated).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // The `raw/` gate (DW-32). Every `raw/` path is slug-derived, so a hidden
+  // page's FILENAME was being spelled in the tree the Knowledge tab refused to
+  // name — the same disclosure `readableSlugs` exists to stop under `wiki/`.
+  // -------------------------------------------------------------------------
+
+  it("withholds a hidden page's source as a leaf, as a directory and as bytes", async () => {
+    await writeSilo("raw", "sources/agentpage/aa11.md");
+    await writeSilo("raw", "sources/alpha/bb22.md");
+    const g = {
+      readableSlugs: new Set(["alpha"]),
+      hiddenSlugs: new Set(["agentpage"]),
+    };
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, g);
+    expect(paths).toContain("raw/sources/alpha/");
+    expect(paths).toContain("raw/sources/alpha/bb22.md");
+    // Not the snapshot filename AND not the directory row that would announce
+    // the page just as loudly.
+    expect(paths).not.toContain("raw/sources/agentpage/");
+    expect(paths.some((p) => p.includes("agentpage"))).toBe(false);
+    // A gate decision, not a cap: nothing was omitted for want of budget.
+    expect(truncated).toBe(false);
+
+    // Every door answers exactly as it does for a path that does not exist.
+    const hidden = "raw/sources/agentpage/aa11.md";
+    expect(await readWorkbenchFile(OWNER, null, hidden, g)).toBeNull();
+    expect(await readWorkbenchFileBytes(OWNER, null, hidden, g)).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, hidden, g)).toBe(false);
+    // And the readable page's own source is untouched by the refusal.
+    const shown = "raw/sources/alpha/bb22.md";
+    await expect(readWorkbenchFile(OWNER, null, shown, g)).resolves.toEqual({
+      content: "x",
+    });
+    expect(await workbenchFileExists(OWNER, null, shown, g)).toBe(true);
+  });
+
+  it("withholds the flat and legacy spellings of a hidden page's source too", async () => {
+    await writeSilo("raw", "hidden.md");
+    await writeSilo("raw", "hidden/ff00.md");
+    await writeSilo("raw", "sources/hidden.md");
+    const g = hiding("hidden");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, g);
+    expect(paths.some((p) => p.includes("hidden"))).toBe(false);
+    for (const displayPath of [
+      "raw/hidden.md",
+      "raw/hidden/ff00.md",
+      "raw/sources/hidden.md",
+    ]) {
+      expect(await readWorkbenchFile(OWNER, null, displayPath, g)).toBeNull();
+      expect(await workbenchFileExists(OWNER, null, displayPath, g)).toBe(false);
+    }
+  });
+
+  it("lists and reads an ORPHANED source, whose slug names no page at all", async () => {
+    await writeSilo("raw", "sources/nobody/cc33.md");
+    const g = hiding("agentpage");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, g);
+    expect(paths).toContain("raw/sources/nobody/");
+    expect(paths).toContain("raw/sources/nobody/cc33.md");
+    await expect(
+      readWorkbenchFile(OWNER, null, "raw/sources/nobody/cc33.md", g),
+    ).resolves.toEqual({ content: "x" });
+  });
+
+  it("keeps the non-slug raw subtrees, and withholds one only on a collision", async () => {
+    await writeSilo("raw", "parsed/alpha/dd44.md");
+    await writeSilo("raw", "assets/e5.png");
+
+    const open = await listWorkbenchFilePaths(OWNER, null, hiding("agentpage"));
+    expect(open.paths).toEqual(
+      expect.arrayContaining([
+        "raw/parsed/",
+        "raw/parsed/alpha/dd44.md",
+        "raw/assets/e5.png",
+      ]),
+    );
+
+    // Conservative and documented: the legacy flat shapes put a real slug in
+    // the first segment, so a hidden page slugged `parsed` withholds that
+    // subtree — the safe direction for a filter that withholds filenames.
+    const collided = await listWorkbenchFilePaths(OWNER, null, hiding("parsed"));
+    expect(collided.paths.some((p) => p.startsWith("raw/parsed"))).toBe(false);
+    expect(collided.paths).toContain("raw/assets/e5.png");
+  });
+
+  it("spells the one two-segment slug shape across two raw segments", async () => {
+    await writeSilo("raw", "sources/queries/kept.md");
+    await writeSilo("raw", "sources/queries/gone.md");
+    await writeSilo("raw", "sources/queries/gone/aa11.md");
+    const g = hiding("queries/gone");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, g);
+    expect(paths).toContain("raw/sources/queries/kept.md");
+    expect(paths).not.toContain("raw/sources/queries/gone.md");
+    expect(paths).not.toContain("raw/sources/queries/gone/");
+    expect(
+      await readWorkbenchFile(OWNER, null, "raw/sources/queries/gone.md", g),
+    ).toBeNull();
+    await expect(
+      readWorkbenchFile(OWNER, null, "raw/sources/queries/kept.md", g),
+    ).resolves.toEqual({ content: "x" });
+  });
+
+  it("spends no budget on a refused raw subtree, so the cap is not reached", async () => {
+    // Four nodes fit in the `raw/` half-share: `raw/`, `raw/sources/`,
+    // `raw/sources/alpha/`, `bb22.md`. If a refused directory or its leaves
+    // were counted, the share would run out and the walk would claim
+    // truncation for a subtree it was never going to show.
+    await writeSilo("raw", "sources/agentpage/aa11.md");
+    await writeSilo("raw", "sources/agentpage/aa22.md");
+    await writeSilo("raw", "sources/alpha/bb22.md");
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, {
+      readableSlugs: new Set(["alpha"]),
+      hiddenSlugs: new Set(["agentpage"]),
+      limit: 8,
+    });
+    expect(truncated).toBe(false);
+    expect(paths).toContain("raw/sources/alpha/bb22.md");
+    expect(paths.some((p) => p.includes("agentpage"))).toBe(false);
+  });
+
+  it("keeps a hidden page's source out of the rescan listing too", async () => {
+    await writeSilo("raw", "sources/agentpage/aa11.md");
+    await writeSilo("raw", "sources/alpha/bb22.md");
+
+    const page = await listRawSourceFilePaths(OWNER, {
+      offset: 0,
+      limit: 10,
+      hiddenSlugs: new Set(["agentpage"]),
+    });
+    expect(page.failed).toBe(false);
+    // The gate is applied INSIDE the walk, so a caller that passes no `allow`
+    // still cannot enumerate a hidden page's sources.
+    expect(page.paths).toEqual(["raw/sources/alpha/bb22.md"]);
+  });
+
   it("stops at the node cap and reports it", async () => {
     for (const name of ["a.md", "b.md", "c.md", "d.md"]) {
       await writeSilo("raw", name);
@@ -1217,7 +1432,11 @@ describe("listWorkbenchFilePaths", () => {
     for (let i = 0; i < 4; i += 1) {
       await writeSilo("raw", `sources/n${i}.txt`);
     }
-    const first = await listRawSourceFilePaths(OWNER, { offset: 0, limit: 2 });
+    const first = await listRawSourceFilePaths(OWNER, {
+      offset: 0,
+      limit: 2,
+      hiddenSlugs: new Set(),
+    });
     expect(first.paths.every((p) => p.startsWith("raw/sources/"))).toBe(true);
     expect(first.paths).toHaveLength(2);
     expect(first.more).toBe(true);
@@ -1225,6 +1444,7 @@ describe("listWorkbenchFilePaths", () => {
     const second = await listRawSourceFilePaths(OWNER, {
       offset: 2,
       limit: 2,
+      hiddenSlugs: new Set(),
     });
     expect(second.paths).toHaveLength(2);
     expect(second.more).toBe(false);
@@ -1238,6 +1458,7 @@ describe("listWorkbenchFilePaths", () => {
       offset: 0,
       limit: 10,
       maxDepth: 2,
+      hiddenSlugs: new Set(),
     });
     expect(page.paths).toEqual([]);
     expect(page.more).toBe(false);

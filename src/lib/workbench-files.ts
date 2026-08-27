@@ -19,6 +19,17 @@
  * deliberately: the listing narrows, the gate's reach does not. The set is a
  * required argument, not an option: omitting it must not be spellable.
  *
+ * `raw/` NEEDS THE SAME GATE, from the other direction (DW-32). Every `raw/`
+ * path is slug-derived — `raw/sources/<slug>/<sha>.md`, `raw/sources/<slug>.md`,
+ * and the pre-`sources` residue `raw/<slug>.md` — so passing every leaf through
+ * put the FILENAME of a page the Knowledge tab hides into the tree the wiki
+ * filter had just kept it out of. So the caller passes a second set, the slugs
+ * its index named that the Knowledge tab does not show, and
+ * {@link rawPathAllowed} refuses any `raw/` path spelling one — as a leaf, as a
+ * DIRECTORY, and at the read gate. Not "everything not readable": a path whose
+ * slug names no page at all is an ORPHANED source in the owner's own silo, and
+ * it still lists and still reads.
+ *
  * Three deliberate limits, all of them because `StorageProvider.listFiles` is
  * single-level in both providers and there is no recursive helper to add one to
  * (adding one would change the storage contract for every caller):
@@ -37,6 +48,7 @@
 
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
+import { RAW_SOURCES_DIR } from "./raw";
 import { getStorage } from "./storage";
 import {
   rawRelPath,
@@ -48,7 +60,11 @@ import {
 import { wikiDirPath } from "./wiki-paths";
 import { WIKI_ARTIFACT_FILES } from "./wiki-scenarios";
 import { readWikiArtifact } from "./wikis";
-import { WORKBENCH_FILE_LIMIT, WORKBENCH_FILE_MAX_DEPTH } from "./workbench-tree";
+import {
+  WORKBENCH_FILE_LIMIT,
+  WORKBENCH_FILE_MAX_DEPTH,
+  type WorkbenchSlugGate,
+} from "./workbench-tree";
 
 // One definition of each cap, declared in the client-safe module because the
 // truncation sentence is derived from the node limit. Re-exported here so
@@ -62,16 +78,31 @@ export interface WorkbenchFileListing {
   truncated: boolean;
 }
 
-export interface WorkbenchFileOptions {
-  /**
-   * The slugs `listReadableWikiPages(principal)` returned. Under the wiki root
-   * a leaf lists only if it is a direct child this set makes readable, so a
-   * non-`.md` leaf and anything deeper never appear — and not every such leaf
-   * lists either, since one name per slug is elected when spellings collide. A
-   * SUBSET of what the gate serves, never a superset: see READ GATE and
-   * {@link wikiLeafFilter}.
-   */
-  readableSlugs: ReadonlySet<string>;
+/**
+ * The caller-supplied gate, plus the two caps.
+ *
+ * The gate is {@link WorkbenchSlugGate} itself rather than two fields restated
+ * here, so a door cannot pass a `readableSlugs` derived from one knowledge tree
+ * and a `hiddenSlugs` derived from another. Both are REQUIRED, so omitting
+ * either is a compile error rather than a silently open root:
+ *
+ *   - `readableSlugs` — the slugs `listReadableWikiPages(principal)` returned
+ *     and `buildKnowledgeTree` kept. Under the wiki root a leaf lists only if it
+ *     is a direct child this set makes readable, so a non-`.md` leaf and
+ *     anything deeper never appear — and not every such leaf lists either, since
+ *     one name per slug is elected when spellings collide. A SUBSET of what the
+ *     gate serves, never a superset: see READ GATE and {@link wikiLeafFilter}.
+ *   - `hiddenSlugs` — the slugs the index named that the Knowledge tab does not
+ *     show. Under the `raw/` root a path (leaf OR directory) whose spelled slug
+ *     is in this set neither lists nor reads: see {@link rawPathAllowed}.
+ *
+ * WHY THE CALLER DERIVES THEM. Which pages the Knowledge tab shows is a
+ * rendering fact this module cannot know, and every door already holds the index
+ * entries the pair comes from. Deriving it here would mean a second
+ * `listWikiPages()` per listing, whose no-index fallback is a full per-page
+ * frontmatter scan.
+ */
+export interface WorkbenchFileOptions extends WorkbenchSlugGate {
   /** Overridable only so the caps themselves are cheap to test. */
   limit?: number;
   maxDepth?: number;
@@ -126,10 +157,91 @@ export function wikiLeafName(displayPath: string): string | null {
   return segments[1].length > 0 ? segments[1] : null;
 }
 
+/** Drop a trailing extension; a leading dot is not one (`.env` keeps its name). */
+function stripRawExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/**
+ * The page slug a `raw/` DISPLAY PATH spells, or `null` for a path that spells
+ * none.
+ *
+ * Every writer in `raw.ts` addresses a Source by page slug —
+ * `saveRawSource` writes `sources/<slug>.md`, `saveRawSourceFor` and
+ * `saveRawSourceBytes` write `sources/<slug>/<rawId>.<ext>` — and the legacy
+ * pre-`sources` residue (`raw/<slug>.md`, `raw/<slug>/<hash>.md`) puts the slug
+ * in the very same position. So the rule is: drop `raw/`, drop a leading
+ * `sources` segment, and the FIRST remaining segment names the slug —
+ * extension-stripped when it is the only one left, and joined with the next
+ * segment when it is `queries`.
+ *
+ * `queries` is joined because `queries/<leaf>` is the ONE two-segment shape
+ * `validateSlug` admits (`wiki.ts`); every other slug is lowercase alphanumeric
+ * and hyphens with no dots and no slashes, which is what makes the
+ * extension-strip unambiguous rather than a guess.
+ *
+ * The `sources` segment is DROPPED rather than read as a slug because it is
+ * {@link RAW_SOURCES_DIR}, the fixed structural root every Source lives under:
+ * reading it as a spelled slug would let one page slugged `sources` blank the
+ * entire Sources tree. Every OTHER first segment IS read as a slug, so
+ * `raw/parsed/…` derives `parsed` and `raw/assets/…` derives `assets` —
+ * deliberately conservative, because the legacy flat shapes put a real slug in
+ * exactly that position and the path alone cannot tell them apart. If a hidden
+ * page were ever slugged `parsed`, that subtree is withheld: the safe direction
+ * for a filter whose job is to withhold filenames, and the same fail-closed
+ * direction {@link wikiLeafFilter} already takes.
+ *
+ * Works on a DIRECTORY display path as well as a leaf, without the trailing
+ * marker the walk appends — `raw/sources/agentpage` answers `agentpage`, which
+ * is what lets one predicate refuse the directory row and its contents alike.
+ */
+export function rawPathSlug(displayPath: string): string | null {
+  const segments = displayPath.split("/");
+  if (segments[0] !== "raw") return null;
+  const rest =
+    segments[1] === RAW_SOURCES_DIR ? segments.slice(2) : segments.slice(1);
+  const first = rest[0];
+  if (first === undefined || first.length === 0) return null;
+  if (first === "queries" && rest.length > 1) {
+    const leaf = rest.length === 2 ? stripRawExtension(rest[1]) : rest[1];
+    return leaf.length > 0 ? `queries/${leaf}` : null;
+  }
+  const slug = rest.length === 1 ? stripRawExtension(first) : first;
+  return slug.length > 0 ? slug : null;
+}
+
+/**
+ * May this `raw/` display path be SHOWN or SERVED? THE one predicate answering
+ * it (DW-32).
+ *
+ * `raw/` used to pass {@link allowEveryLeaf} unfiltered, so the filename of a
+ * page the Knowledge tab hides was still spelled in the Files tree — a
+ * disclosure identical to the one {@link wikiLeafFilter} exists to stop under
+ * `wiki/`. The listing filter, the directory filter and
+ * {@link resolveWorkbenchFile} all call THIS, rather than each restating the
+ * rule, for the reason DW-41/DW-204 records: the filename, the directory name
+ * and the bytes disclose the same slug, so one refusal has to cover all three.
+ *
+ * A path spelling NO slug (`raw/`, `raw/sources`) is allowed — there is nothing
+ * to disclose — and so is a path whose slug is merely absent from the index: an
+ * ORPHANED source is the owner's own file in the owner's own silo (`raw/` is
+ * silo-only since DW-40), and refusing it would hide real data to protect
+ * nothing. Hence a refusal SET rather than a readable-set membership test.
+ */
+export function rawPathAllowed(
+  displayPath: string,
+  hiddenSlugs: ReadonlySet<string>,
+): boolean {
+  if (hiddenSlugs.size === 0) return true;
+  const slug = rawPathSlug(displayPath);
+  return slug === null || !hiddenSlugs.has(slug);
+}
+
 /**
  * Decides whether one leaf may be listed, from the DISPLAY PATH the walk would
- * emit for it (`wiki/a.md`, `raw/sources/a/b.txt`). Directories are never
- * filtered.
+ * emit for it (`wiki/a.md`, `raw/sources/a/b.txt`). Directories go through
+ * {@link DirFilter} instead.
  *
  * The whole path rather than the bare name, because a root's read gate can be
  * depth-sensitive — `resolveWorkbenchFile` serves only a direct child of
@@ -142,6 +254,24 @@ export function wikiLeafName(displayPath: string): string | null {
  * be compared against that constant either.
  */
 type LeafFilter = (displayPath: string) => boolean;
+
+/**
+ * Decides whether one DIRECTORY may be listed and descended, from the display
+ * path the walk would emit for it — WITHOUT the trailing `/` marker.
+ *
+ * A second filter rather than a widening of {@link LeafFilter}, because the two
+ * roots need opposite answers. Under `raw/`, `raw/sources/<slug>/` spells a slug
+ * in its OWN name, so a leaf-only filter would withhold the snapshot filenames
+ * and leave the directory row announcing the page anyway (DW-32). Under `wiki/`
+ * the only directories are structural (`wiki/query-history/`), and
+ * {@link wikiLeafFilter}'s docblock records why they must keep listing — a
+ * directory is a disclosure, not a previewable row. One filter stretched over
+ * both would have to encode that asymmetry inside itself.
+ *
+ * A refused directory is a GATE decision, not truncation: nothing below it was
+ * omitted for want of budget, exactly as for a refused leaf.
+ */
+type DirFilter = (displayPath: string) => boolean;
 
 /**
  * The directory holding this Wiki's seeded artifacts.
@@ -234,6 +364,7 @@ async function walkRoot(
   out: string[],
   budget: Budget,
   allowLeaf: LeafFilter,
+  allowDir: DirFilter,
 ): Promise<void> {
   if (budget.remaining <= 0) {
     budget.truncated = true;
@@ -253,15 +384,21 @@ async function walkRoot(
     if (node.depth >= budget.maxDepth) {
       // Descending would produce level `maxDepth + 1`. Only claim truncation if
       // something down there would actually have been SHOWN — a directory whose
-      // only contents are filtered-out leaves is omitting nothing.
-      if (entries.some((e) => e.isDirectory || allowLeaf(`${node.display}/${e.name}`))) {
+      // only contents are filtered-out leaves is omitting nothing — and neither
+      // is one whose only contents are directories the gate refuses.
+      if (
+        entries.some((e) => {
+          const display = `${node.display}/${e.name}`;
+          return e.isDirectory ? allowDir(display) : allowLeaf(display);
+        })
+      ) {
         budget.truncated = true;
       }
       continue;
     }
     for (const entry of entries) {
       const display = `${node.display}/${entry.name}`;
-      if (!entry.isDirectory && !allowLeaf(display)) continue;
+      if (!(entry.isDirectory ? allowDir(display) : allowLeaf(display))) continue;
       if (budget.remaining <= 0) {
         budget.truncated = true;
         return;
@@ -372,14 +509,23 @@ function wikiLeafFilter(
 }
 
 /**
- * Everything visible passes; `raw/` holds sources, not pages.
+ * The `raw/` root's filter, applied to LEAVES and DIRECTORIES alike.
  *
  * Depth-insensitive on purpose: `resolveWorkbenchFile` applies
  * {@link wikiLeafName} to the `wiki/` branch only and puts no depth bound at all
  * on the `raw/` branch, so a nested source at any listable depth both lists and
- * reads.
+ * reads — unless {@link rawPathAllowed} refuses the slug its path spells, which
+ * is the SAME predicate that branch of the read gate applies (DW-32).
  */
-const allowEveryLeaf: LeafFilter = () => true;
+function rawFilter(hiddenSlugs: ReadonlySet<string>): LeafFilter & DirFilter {
+  return (displayPath) => rawPathAllowed(displayPath, hiddenSlugs);
+}
+
+/**
+ * `wiki/` directories are never filtered — see {@link DirFilter} and
+ * {@link wikiLeafFilter} for why that asymmetry with `raw/` is load-bearing.
+ */
+const allowEveryDir: DirFilter = () => true;
 
 /**
  * Every path the Files tab shows for `wikiId`, as the owner's storage has them.
@@ -468,12 +614,17 @@ export async function listWorkbenchFilePaths(
     truncated: false,
     maxDepth: budget.maxDepth,
   };
+  // ONE filter for both roles under `raw/`: a directory refused here is not
+  // descended, so the snapshot filenames below it never reach the leaf test —
+  // and the directory row that would otherwise announce the page is gone too.
+  const rawGate = rawFilter(options.hiddenSlugs);
   await walkRoot(
     await resolveRoot("raw", siloRaw, rawRelPath("")),
     "raw",
     paths,
     rawBudget,
-    allowEveryLeaf,
+    rawGate,
+    rawGate,
   );
   budget.remaining -= rawShare - rawBudget.remaining;
   budget.truncated = budget.truncated || rawBudget.truncated;
@@ -488,6 +639,7 @@ export async function listWorkbenchFilePaths(
     paths,
     budget,
     wikiLeafFilter(options.readableSlugs, wikiRoot.entries),
+    allowEveryDir,
   );
 
   return { paths, truncated: budget.truncated };
@@ -504,6 +656,13 @@ export async function listWorkbenchFilePaths(
  * early because the tab's per-root budget and node-count paging are not a
  * Sources offset. This walk is the rescan's own listing: files under
  * `raw/sources/` only.
+ *
+ * THE GATE IS NOT THE CALLER'S TO COMPOSE. `hiddenSlugs` is required and
+ * {@link rawPathAllowed} is applied INSIDE the walk — to the `raw/sources/*`
+ * descent as well as to the leaves — while the caller's `allow` stays the SCOPE
+ * filter it always was. Left to the caller, a second call site could get an
+ * ungated enumeration of every hidden page's sources simply by omitting a
+ * callback, which is the shape of omission DW-32 found in the tab listing.
  */
 export async function listRawSourceFilePaths(
   owner: string,
@@ -511,7 +670,10 @@ export async function listRawSourceFilePaths(
     offset?: number;
     limit: number;
     maxDepth?: number;
+    /** Caller SCOPE (format, contract), never the gate — see above. */
     allow?: (displayPath: string) => boolean;
+    /** {@link WorkbenchSlugGate}'s refusal set. Required, like `readableSlugs`. */
+    hiddenSlugs: ReadonlySet<string>;
   },
 ): Promise<{
   paths: string[];
@@ -523,6 +685,9 @@ export async function listRawSourceFilePaths(
   const take = Math.max(1, Math.round(options.limit));
   const maxDepth = options.maxDepth ?? WORKBENCH_FILE_MAX_DEPTH;
   const allow = options.allow ?? (() => true);
+  // The GATE, not the scope filter: `allow` narrows to what the caller can use,
+  // this refuses what no caller may see. Composed here so it cannot be omitted.
+  const gated = (display: string) => rawPathAllowed(display, options.hiddenSlugs);
 
   let siloRaw: string | null = null;
   let failed = false;
@@ -574,8 +739,13 @@ export async function listRawSourceFilePaths(
       // subtree would silently lose Sources.
       const hidesSource = entries.some((entry) => {
         const display = `${node.display}/${entry.name}`;
-        if (entry.isDirectory) return towardSources(display);
-        return display.startsWith("raw/sources/") && allow(display);
+        // A subtree the GATE refuses is not one the cap hid: it was never
+        // going to be enumerated, so the page is still complete over what the
+        // caller may see.
+        if (entry.isDirectory) return towardSources(display) && gated(display);
+        return (
+          display.startsWith("raw/sources/") && gated(display) && allow(display)
+        );
       });
       if (hidesSource) nestedFailed = true;
       continue;
@@ -583,7 +753,7 @@ export async function listRawSourceFilePaths(
     for (const entry of entries) {
       const display = `${node.display}/${entry.name}`;
       if (entry.isDirectory) {
-        if (towardSources(display)) {
+        if (towardSources(display) && gated(display)) {
           queue.push({
             storage: `${node.storage}/${entry.name}`,
             display,
@@ -592,7 +762,8 @@ export async function listRawSourceFilePaths(
         }
         continue;
       }
-      if (!display.startsWith("raw/sources/") || !allow(display)) continue;
+      if (!display.startsWith("raw/sources/") || !gated(display)) continue;
+      if (!allow(display)) continue;
       if (seen < skip) {
         seen += 1;
         continue;
@@ -761,6 +932,15 @@ async function resolveWorkbenchFile(
   if (root === "wiki") {
     const leaf = wikiLeafName(displayPath);
     if (leaf === null || !readableWikiLeaf(leaf, options.readableSlugs)) return null;
+  }
+
+  // The `raw/` half of the gate (DW-32), and the SAME predicate the listing
+  // filter applies — the filename, the directory name and the bytes disclose
+  // the same slug, so one refusal covers all three. Depth-insensitive, unlike
+  // the `wiki/` branch: a source may be nested at any listable depth, and the
+  // slug it spells is in the same position either way.
+  if (root === "raw" && !rawPathAllowed(displayPath, options.hiddenSlugs)) {
+    return null;
   }
 
   let silo: string | null = null;

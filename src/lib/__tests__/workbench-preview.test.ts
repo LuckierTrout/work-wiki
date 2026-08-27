@@ -1274,7 +1274,10 @@ describe("readWorkbenchFile", () => {
 
   /** Exactly the slugs named — `gate()` is a CLOSED gate, not an open one. */
   function gate(...slugs: string[]) {
-    return { readableSlugs: new Set(slugs) };
+    // An OPEN `raw/` gate (no page is hidden) beside whatever `wiki/` gate the
+    // case names — this block is about the `wiki/` read gate, and DW-32's
+    // `raw/` refusal set has its own rows in `workbench-tree.test.ts`.
+    return { readableSlugs: new Set(slugs), hiddenSlugs: new Set<string>() };
   }
 
   async function writeSilo(kind: "wiki" | "raw", name: string, body: string) {
@@ -2039,6 +2042,125 @@ describe("GET /api/workbench/preview", () => {
       // the shell's own value back.
       delete process.env.YOPEDIA_READONLY;
     }
+  });
+
+  /**
+   * Run `body` as a principal that is neither the owner, an admin, nor the
+   * service principal — the only configuration in which `canWritePage`'s realm
+   * branch is reachable at all. `beforeEach` makes every other case the OWNER,
+   * who passes `isAdmin` through `isOwnerHandle`, so without this the whole
+   * branch would be untested and DW-42's fix would be a comment.
+   */
+  async function asNonAdmin(body: () => Promise<void>): Promise<void> {
+    const savedAdmins = process.env.ADMIN_HANDLES;
+    delete process.env.ADMIN_HANDLES;
+    principal.current = { id: "u2", handle: "reader" };
+    try {
+      await body();
+    } finally {
+      if (savedAdmins === undefined) delete process.env.ADMIN_HANDLES;
+      else process.env.ADMIN_HANDLES = savedAdmins;
+      principal.current = { id: "u1", handle: OWNER };
+    }
+  }
+
+  it("does not offer Edit where the write route answers 403 (DW-42)", async () => {
+    // `writePage` writes `type: concept` with no `visibility`, which IS a
+    // commons page — and `canWritePage`'s realm branch refuses ANY write to one
+    // from a principal that is neither the service principal nor an admin.
+    // While `editable` came from `isReadOnly()` alone, such a page offered
+    // `Edit`, seeded the editor, and relayed that 403 only after a full retype.
+    await writePage("commons", "# Commons\n\nstill served in full\n");
+    await asNonAdmin(async () => {
+      const response = await get("kind=page&slug=commons");
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      // Read-only means read-only, NOT hidden: the body is served whole.
+      expect(payload.body).toBe("# Commons\n\nstill served in full\n");
+      expect(payload).toMatchObject({ slug: "commons", editable: false });
+
+      // The SAME page reached from the Files tab agrees. The two branches read
+      // the same bytes, so they must reach the same answer — one rule, two
+      // surfaces, exactly as the read-only pair above.
+      const fromFiles = await (
+        await get("kind=file&path=wiki%2Fcommons.md")
+      ).json();
+      expect(fromFiles).toMatchObject({ slug: "commons", editable: false });
+      expect(fromFiles.body.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("keeps the owner's Edit on that same commons page, from both tabs", async () => {
+    // `isAdmin` is true for `isOwnerHandle`, so the realm branch never refuses
+    // the owner. Without this row the case above would also pass for a payload
+    // that had simply stopped offering `Edit` to everybody.
+    await writePage("commons-owner", "# Commons\n\nbody\n");
+    expect(
+      (await (await get("kind=page&slug=commons-owner")).json()).editable,
+    ).toBe(true);
+    expect(
+      (await (await get("kind=file&path=wiki%2Fcommons-owner.md")).json())
+        .editable,
+    ).toBe(true);
+  });
+
+  it("fails closed on EMPTY metadata, which is what an unparseable block yields", async () => {
+    // A page with no YAML block at all parses to `{}` — the same value
+    // `frontmatterOf` returns when the block throws for want of a closing
+    // `---`. `belongsInCommons({})` is true, so the realm branch refuses a
+    // non-admin: the fail-CLOSED direction, and the same answer
+    // `PUT /api/wiki/[slug]` gives for the same bytes.
+    await fs.writeFile(
+      path.join(root, "wiki", "bare.md"),
+      "# Bare\n\nno frontmatter at all\n",
+      "utf-8",
+    );
+    listed.add("bare");
+    await writeIndex();
+    await asNonAdmin(async () => {
+      const response = await get("kind=page&slug=bare");
+      expect(response.status).toBe(200);
+      const payload = await response.json();
+      expect(payload.body).toBe("# Bare\n\nno frontmatter at all\n");
+      expect(payload.editable).toBe(false);
+      expect(payload.disputed).toBeUndefined();
+    });
+  });
+
+  it("treats an UNPARSEABLE frontmatter block as empty metadata, never as an error", async () => {
+    // No closing `---`, so `parseFrontmatter` THROWS. `editable` now parses
+    // frontmatter itself, so the throw is on the path that decides an
+    // affordance: `frontmatterOf` catches it and yields `{}`, which
+    // `belongsInCommons` reads as a commons page — the fail-CLOSED direction,
+    // and the same answer `PUT /api/wiki/[slug]` gives for the same bytes.
+    await fs.writeFile(
+      path.join(root, "wiki", "broken.md"),
+      "---\ntitle: broken\ntype: concept\n\n# Broken\n\nbody\n",
+      "utf-8",
+    );
+    listed.add("broken");
+    await writeIndex();
+
+    const response = await get("kind=page&slug=broken");
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    // The throw did not escape as a 500, and `disputed` fell back to absent.
+    expect(payload.error).toBeUndefined();
+    expect(payload.disputed).toBeUndefined();
+    expect(payload.body.length).toBeGreaterThan(0);
+    // The owner is an admin, so the realm branch never refuses them.
+    expect(payload.editable).toBe(true);
+
+    // A NON-admin never gets this far: `listWikiPages` marks a page whose
+    // authoritative bytes will not parse `visibility: private` and unowned
+    // (`wiki.ts`), which `canReadPage` denies to everyone but an admin. So
+    // "`editable` only for admin/service" holds for an unparseable block by the
+    // READ gate — upstream of, and unchanged by, this fix. The realm branch's
+    // own answer to empty metadata is what the `bare.md` row above pins, on a
+    // page a non-admin CAN reach.
+    await asNonAdmin(async () => {
+      expect((await get("kind=page&slug=broken")).status).toBe(404);
+    });
   });
 });
 

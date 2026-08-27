@@ -8,7 +8,7 @@ import {
   isV1FileInScope,
   isV1TextPath,
 } from "@/lib/v1-contract";
-import { resolveV1Caller, v1ReadableSlugs } from "@/lib/v1-route";
+import { resolveV1Caller, v1SlugGate } from "@/lib/v1-route";
 import { readWorkbenchFile } from "@/lib/workbench-files";
 
 interface RouteContext {
@@ -54,12 +54,12 @@ export async function GET(request: Request, { params }: RouteContext) {
         { status: 415 },
       );
     }
-    const readableSlugs = await v1ReadableSlugs(caller.principal);
+    const slugGate = await v1SlugGate(caller.principal);
     const file = await readWorkbenchFile(
       caller.principal.handle,
       caller.wikiId,
       path,
-      { readableSlugs },
+      slugGate,
     );
     if (!file) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });

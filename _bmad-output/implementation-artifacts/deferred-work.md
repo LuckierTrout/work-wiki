@@ -293,7 +293,8 @@ location: src/lib/workbench-files.ts
 source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: medium
 reason: `listWorkbenchFilePaths` filters `.md` leaves under the wiki root against the slug set `listReadableWikiPages` returned, so a page hidden from the Knowledge tab cannot surface in Files by filename. `raw/` is not filtered: `saveRawSource` writes `raw/<slug>.md` and `saveRawSourceFor` writes `raw/<slug>/<hash>.md`, so the source tree still spells the slug of a page the filter excludes. In the single-owner Workbench this epic ships, every file under the tenant belongs to the signed-in owner, so nothing crosses an owner boundary today — the exposure is limited to agent-scoped pages and to legacy flat-tree residue. Filtering `raw/` needs a source→page mapping the walk does not have (one raw file can back several pages, and an orphaned source backs none), so it belongs with whichever story gives Sources a real read model — Epic 2.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-workbench-read-write-gate-parity
 
 ### DW-33: Wiki mode now shows two Wiki switchers and two create controls at once — the new header pair and Story 1.2's canvas card.
 origin: spec-deferred 6403cc2df74f
@@ -386,7 +387,8 @@ location: src/app/api/workbench/preview/route.ts
 source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: The route sets `editable: true` for any slug in `readableSlugsFromKnowledge(...)`, which is `canReadPage`'s set — everything not `private`. `canWritePage` (`src/lib/authz.ts:190-197`) refuses `writeKind: "body"` for a page where `belongsInCommons(meta)` holds, to any principal that is not the service principal or an admin. So the read set is strictly larger than the body-write set, and for such a principal the Preview shows `Edit`, opens the dialog, seeds the editor and only then relays the write route's 403. Not reachable in Epic 1 — the one operator is an admin through `isOwnerHandle` — and narrowing it is not this story's call either: the intent defines `editable` as "a compiled Page is the one thing this story makes editable", with no clause about write ACLs. Deriving the affordance from `canWritePage` belongs with whichever story introduces a second principal.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-workbench-read-write-gate-parity
 
 ### DW-43: Follow-up review still recommended for 1-5-view-first-preview-with-gfm-and-wikilinks after the damping cap was spent
 origin: review-budget-followup
@@ -4320,4 +4322,35 @@ source_spec: `spec-dw-202-203-204-workbench-file-path-invariants.md`
 location: src/lib/wiki.ts (writeWikiPage / writeWikiPageIfContentMatches); src/app/api/workbench/preview/route.ts
 severity: medium
 reason: The elected-winner rule keys on the candidate names present AT LISTING TIME, which is what lets a lone variant keep listing (it must: on a case-INSENSITIVE store that name is the only real Page). But the wiki write path targets `<slug>.md` unconditionally (`writeWikiPage`/`writeWikiPageIfContentMatches`, `src/lib/wiki.ts`), so on a case-sensitive store the first save from that row creates a SECOND object. From then on the collision exists, the election correctly drops the `.MD` row, and its bytes are orphaned with no surface that mentions them. So the decision's mechanism ("drop the sibling") is implemented while its stated purpose ("every visible row reads and writes the same object") holds only after a collision already exists — never for the row that creates one. Same root cause as the entry above: the fix has to reach the save half, which the recorded decision scoped out.
+status: open
+
+### DW-491: `raw/assets/<slug>/<file>` is silo-mirrored and still spells a hidden page's slug, so DW-32's disclosure survives in the assets subtree.
+origin: spec-deferred 5c91aa99b543
+source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
+location: src/lib/workbench-files.ts:199
+severity: medium
+reason: `syncSiloForPage` mirrors `raw/assets/<slug>/<file>` into `tenants/<t>/raw/assets/<slug>/` (src/lib/silo.ts:148), which is exactly the tree the Files tab walks and `/api/workbench/media` serves bytes from. `rawPathSlug` reads only the FIRST segment under `raw/` (after dropping `sources`), so that path derives the slug `assets`, not `<slug>`, and `rawPathAllowed` admits it. The directory row `raw/assets/<hidden>/` therefore still announces the page. Triaged `patch` (medium) in the 2026-08-27 review pass and NOT applied — the session hit its token budget first. The fix is to drop a leading `assets` segment the way `sources` is dropped. Note the intent-contract's I/O matrix calls `raw/assets/…` a "non-slug raw subtree", which is false for this shape; `raw/parsed/<slug>/…` has the same shape but is written only to the flat non-silo key (src/lib/raw.ts:279), so it is NOT reachable from the tab.
+status: open
+
+### DW-492: A page slugged plain `queries` with sharded sources is not refused — the two-segment `queries/<leaf>` branch swallows the snapshot id.
+origin: spec-deferred 62d6499278be
+source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
+location: src/lib/workbench-files.ts:207
+severity: low
+reason: `validateSlug` admits `queries` as an ordinary one-segment slug as well as the prefixed `queries/<leaf>` shape. For a page slugged `queries`, `saveRawSourceFor` writes `raw/sources/queries/<sha>.md`; `rawPathSlug` sees head `queries` with a following segment and returns `queries/<sha>` instead of `queries`, so a hidden page slugged `queries` is not refused. Fix: have `rawPathAllowed` test BOTH candidates (`queries` and `queries/<leaf>`) when the head is `queries`. Triaged `patch` (low), not applied — session budget.
+status: open
+
+### DW-493: `rescanSources`' `hiddenSlugs` forwarding is never exercised with a non-empty set, so the gate on the one door a caller can point at an arbitrary raw path is unpinned.
+origin: spec-deferred eb0f588d2212
+source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
+location: src/lib/source-rescan.ts:126
+severity: medium
+reason: Every `rescanSources` call site in the suite passes `hiddenSlugs: new Set()` (src/lib/__tests__/epic8-remediation.test.ts, ten sites); `epic8-v1-routes.test.ts` mocks `@/lib/source-rescan` wholesale; the new rescan row in `workbench-tree.test.ts` calls `listRawSourceFilePaths` DIRECTLY, not through `rescanSources`. Replacing `hiddenSlugs: input.hiddenSlugs` with `new Set()` at src/lib/source-rescan.ts:126 leaves the whole suite green, and a POST of `{"paths":["raw/sources/<hidden>/<sha>.md"]}` would then read and enqueue the hidden page's source. The explicit-`paths` branch skips the listing entirely, so that forward is its ONLY gate. Triaged `patch` (medium), not applied — session budget.
+status: open
+
+### DW-494: `frontmatterOf`'s docblock and two test comments claim parity with `PUT /api/wiki/[slug]` for an UNPARSEABLE frontmatter block; that route answers 500, not 403.
+origin: spec-deferred 52b740415ffc
+source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
+location: n/a
+reason: `readWikiPageWithFrontmatter` (src/lib/wiki.ts:534-546) calls `parseFrontmatter` with no catch, so an unclosed `
 status: open

@@ -1197,14 +1197,19 @@ describe("the two routes", () => {
     // rejects. The artifact half has since Story 1.8; the page half since DW-37
     // gave `PUT /api/wiki/[slug]` the read-only gate it had been missing — until
     // then this half consulted nothing precisely BECAUSE that route refused
-    // nothing. The executed tests pin the behaviour; this pins that the
-    // conditions stay in ONE expression.
+    // nothing. The page half also carries that route's realm-aware ACL since
+    // DW-42 (`canWriteFrontmatter(..., "body")`), which is the OTHER refusal it
+    // answers 403 to; the artifact half keeps `isOwnerHandle`, which is what
+    // `PUT /api/workbench/artifact` refuses on. The executed tests pin the
+    // behaviour; this pins that the conditions stay in ONE expression.
     expect(source).toMatch(
-      /editable:\s*\n?\s*format === "markdown" &&\s*\n?\s*\(\(slug !== undefined && !isReadOnly\(\)\) \|\|\s*\n?\s*\(artifact !== undefined && !isReadOnly\(\) && isOwnerHandle\(principal\.handle\)\)\)/,
+      /editable:\s*format === "markdown" &&\s*\(\(slug !== undefined &&\s*!isReadOnly\(\) &&\s*canWriteFrontmatter\(fm, principal, "body"\)\) \|\|\s*\(artifact !== undefined && !isReadOnly\(\) && isOwnerHandle\(principal\.handle\)\)\)/,
     );
     // The `kind=page` branch says the same thing about the same route — the two
     // surfaces onto one Page must not disagree about whether it can be saved.
-    expect(source).toContain("editable: !isReadOnly(),");
+    expect(source).toContain(
+      'editable: !isReadOnly() && canWriteFrontmatter(fm, principal, "body"),',
+    );
     expect(source).not.toContain("editable: true,");
   });
 

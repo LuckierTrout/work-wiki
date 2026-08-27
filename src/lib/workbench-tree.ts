@@ -786,6 +786,59 @@ export function readableSlugsFromKnowledge(
   return slugs;
 }
 
+/**
+ * The two slug sets every workbench file door is gated on, derived together.
+ *
+ * `readableSlugs` is what the `wiki/` root admits; `hiddenSlugs` is what the
+ * `raw/` root REFUSES — the slugs the principal's own index named that
+ * {@link buildKnowledgeTree} did not show. `raw/` paths are slug-derived
+ * (`raw/sources/<slug>/<sha>.md`, and the legacy flat `raw/<slug>.md`), so
+ * without the second set the Files tree spells the filename of a page the
+ * Knowledge tab hides (DW-32) — the same disclosure `readableSlugs` exists to
+ * stop under `wiki/`.
+ *
+ * NOT "everything not readable": a `raw/` path whose spelled slug names no
+ * index entry at all is an ORPHANED source in the owner's own silo, and
+ * refusing it would hide real data to protect nothing. So the refusal set is
+ * derived from the ENTRIES, not from the universe of possible slugs.
+ */
+export interface WorkbenchSlugGate {
+  /** Slugs the Knowledge tab shows — the `wiki/` root's admissible set. */
+  readableSlugs: ReadonlySet<string>;
+  /**
+   * Slugs the principal's index named that the Knowledge tab does NOT show —
+   * the `raw/` root's refusal set.
+   */
+  hiddenSlugs: ReadonlySet<string>;
+}
+
+/**
+ * Produce both sets from the ONE `(entries, groups)` pair every door already
+ * holds.
+ *
+ * A function, and the only one, for the reason {@link readableSlugsFromKnowledge}
+ * gives and one more: the pair must not be spellable two ways. Seven doors build
+ * this gate (SSR first paint, three `/api/workbench/*` routes, three `/api/v1`
+ * routes), and a call site that derived `hiddenSlugs` from a DIFFERENT knowledge
+ * tree than `readableSlugs` would produce a gate that both hides a readable
+ * page's sources and shows a hidden one's — exactly the drift DW-41 found
+ * between the listing filter and the read gate.
+ *
+ * `groups` must be `buildKnowledgeTree(entries)`; passing both is what keeps
+ * this module free of the storage read the entries came from.
+ */
+export function workbenchSlugGate(
+  entries: readonly IndexEntry[],
+  groups: readonly KnowledgeGroup[],
+): WorkbenchSlugGate {
+  const readableSlugs = readableSlugsFromKnowledge(groups);
+  const hiddenSlugs = new Set<string>();
+  for (const entry of entries) {
+    if (!readableSlugs.has(entry.slug)) hiddenSlugs.add(entry.slug);
+  }
+  return { readableSlugs, hiddenSlugs };
+}
+
 /** Flat lookup by slug across every group — the Preview column's page read. */
 export function findKnowledgePage(
   groups: readonly KnowledgeGroup[],

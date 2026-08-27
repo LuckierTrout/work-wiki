@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
+import { canWriteFrontmatter } from "@/lib/authz";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
-import { parseFrontmatter } from "@/lib/frontmatter";
+import { parseFrontmatter, type Frontmatter } from "@/lib/frontmatter";
 import { stripFrontmatterBlock } from "@/lib/markdown";
 import { isOwnerHandle } from "@/lib/owner";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
@@ -29,7 +30,7 @@ import {
 import {
   buildKnowledgeTree,
   findKnowledgePage,
-  readableSlugsFromKnowledge,
+  workbenchSlugGate,
 } from "@/lib/workbench-tree";
 
 /**
@@ -41,8 +42,8 @@ import {
  * THE GATE IS RE-DERIVED HERE, NEVER TRUSTED FROM THE CLIENT. The column already
  * holds `knowledge` and `files`, so it could send a slug it believes is
  * readable — which would make the browser the authority on what the server will
- * read. Deriving `readableSlugsFromKnowledge(buildKnowledgeTree(await
- * listReadableWikiPages(principal)))` costs one index read and makes the
+ * read. Deriving `workbenchSlugGate(entries, buildKnowledgeTree(entries))` over
+ * `await listReadableWikiPages(principal)` costs one index read and makes the
  * Preview's reach identical to the tree's BY CONSTRUCTION: both surfaces run the
  * same two functions over the same principal.
  *
@@ -97,6 +98,29 @@ function bodyFor(format: PreviewFormat, content: string, whole = false): string 
   return format === "markdown" ? stripFrontmatterBlock(content) : content;
 }
 
+/**
+ * The frontmatter of bytes this route ALREADY READ, or `{}` when there is none
+ * and when there is one that will not parse.
+ *
+ * Both branches call this, and each calls it ONCE: `disputed` and `editable`
+ * are two questions about one file, and two parses (or a parse plus a re-read)
+ * is how they would come to disagree.
+ *
+ * A block with no closing `---` throws in `parseFrontmatter`. Empty metadata is
+ * the fail-CLOSED answer for `editable`, not a permissive one: `belongsInCommons`
+ * treats a record with no `visibility` and no `type` as a commons page, so
+ * `canWriteFrontmatter(..., "body")` refuses every principal but the service
+ * principal and an admin — the same answer `PUT /api/wiki/[slug]` gives for the
+ * same unparseable file. So the catch is a real decision, not a swallow.
+ */
+function frontmatterOf(content: string): Frontmatter {
+  try {
+    return parseFrontmatter(content).data;
+  } catch {
+    return {};
+  }
+}
+
 export async function GET(request: Request) {
   try {
     return await handle(request);
@@ -125,15 +149,18 @@ async function handle(request: Request) {
   // The gate, derived exactly as `page.tsx` derives it — the two must not be
   // able to drift, so they run the same pair of functions rather than two
   // expressions that happen to agree today.
-  const knowledge = buildKnowledgeTree(await listReadableWikiPages(principal));
-  const readableSlugs = readableSlugsFromKnowledge(knowledge);
+  const entries = await listReadableWikiPages(principal);
+  const knowledge = buildKnowledgeTree(entries);
+  // BOTH halves, from the one derivation `page.tsx` runs: `readableSlugs` for
+  // the `wiki/` root, `hiddenSlugs` for the `raw/` one (DW-32).
+  const slugGate = workbenchSlugGate(entries, knowledge);
 
   if (kind === "page") {
     const slug = params.get("slug");
     if (!slug) return badRequest("A slug is required.");
     // Gate BEFORE the read: a slug outside the set must not reach storage at
     // all, so a timing difference cannot answer what the status code will not.
-    if (!readableSlugs.has(slug)) return notFound();
+    if (!slugGate.readableSlugs.has(slug)) return notFound();
 
     // FRESH (DW-195). This read SEEDS a precondition: `version` below is what
     // the editor sends back as `If-Match`. `pageCache` is module-global and
@@ -146,12 +173,11 @@ async function handle(request: Request) {
     if (!page) return notFound();
 
     const { body, truncated } = capPreviewBody(bodyFor("markdown", page.content));
-    let disputed = false;
-    try {
-      disputed = parseFrontmatter(page.content).data.disputed === true;
-    } catch {
-      disputed = false;
-    }
+    // ONE parse of the bytes this route already read, feeding both `disputed`
+    // and `editable` — the two must be talking about the same file, and a
+    // second read to answer the second question could see different bytes.
+    const fm = frontmatterOf(page.content);
+    const disputed = fm.disputed === true;
     const payload: PreviewPayload = {
       name: findKnowledgePage(knowledge, slug)?.title ?? slug,
       path: `wiki/${slug}.md`,
@@ -168,11 +194,15 @@ async function handle(request: Request) {
       // A compiled Page is the one thing this story makes editable: it is what
       // `PUT /api/wiki/[slug]` writes. Artifacts are Story 1.8, sources Epic 2.
       //
-      // `isReadOnly()` is the SAME refusal that write route now answers 403 to
-      // (DW-37). Offering `Edit` where the save cannot land walks the owner
-      // through a full retype only to fail at `Save`. The bytes still render:
-      // read-only means read-only, not hidden.
-      editable: !isReadOnly(),
+      // BOTH refusals `PUT /api/wiki/[slug]` answers 403 to, and no more
+      // (DW-42). `isReadOnly()` is the deployment one (DW-37); the ACL one is
+      // `canWriteFrontmatter(..., "body")`, whose realm branch refuses ANY
+      // write to a public, non-agent-scoped, non-artifact page from a
+      // principal that is neither the service principal nor an admin. Without
+      // it a readable-but-unwritable page offered `Edit`, seeded the editor,
+      // and relayed the write route's 403 only after a full retype. The bytes
+      // still render: read-only means read-only, not hidden.
+      editable: !isReadOnly() && canWriteFrontmatter(fm, principal, "body"),
     };
     return json(payload);
   }
@@ -197,7 +227,7 @@ async function handle(request: Request) {
   // pulling an arbitrarily large object through the Worker to then discard it
   // would be work done to learn nothing. The gate still runs either way.
   const format = previewFileKind(displayPath);
-  const gate = { readableSlugs };
+  const gate = slugGate;
   let content = "";
   // MEDIA joins `unsupported` on the existence-only branch (Story 7.7), for the
   // same reason and one more. The same: its bytes are not a body, so reading
@@ -261,12 +291,11 @@ async function handle(request: Request) {
     bodyFor(format, content, artifact !== undefined),
   );
 
-  let disputed = false;
-  try {
-    disputed = !!(slug && content) && parseFrontmatter(content).data.disputed === true;
-  } catch {
-    disputed = false;
-  }
+  // The same ONE parse as the `kind=page` branch, over the same bytes that
+  // branch would have read — which is what makes the two branches agree about
+  // `editable` for `wiki/<slug>.md` rather than merely agreeing today.
+  const fm = slug && content ? frontmatterOf(content) : {};
+  const disputed = fm.disputed === true;
   const payload: PreviewPayload = {
     name: segments[segments.length - 1],
     path: displayPath,
@@ -314,14 +343,19 @@ async function handle(request: Request) {
     // itself is only signed-in-gated (`page.tsx`), so without this the affordance
     // is offered on a deployment where no save can ever land.
     //
-    // The page half consults `isReadOnly()` and nothing else, because that is
-    // exactly the set of refusals `PUT /api/wiki/[slug]` answers beyond its
-    // realm-aware ACL: it is signed-in-gated, never owner-gated, so a page save
-    // still lands for any principal the ACL admits. DW-37 added the read-only
-    // gate to that route; this half now says what it says.
+    // The page half consults exactly the refusals `PUT /api/wiki/[slug]`
+    // answers 403 to, and no more: `isReadOnly()` (DW-37) AND that route's
+    // realm-aware ACL, `canWriteFrontmatter(fm, principal, "body")` (DW-42).
+    // It is never owner-gated, unlike the artifact half above — a page save
+    // still lands for any principal the ACL admits. The ACL half runs over the
+    // frontmatter of the SAME bytes the `kind=page` branch parses, so a page
+    // reached from the Files tab and the same page reached from the Knowledge
+    // tab cannot disagree about whether `Edit` is offered.
     editable:
       format === "markdown" &&
-      ((slug !== undefined && !isReadOnly()) ||
+      ((slug !== undefined &&
+        !isReadOnly() &&
+        canWriteFrontmatter(fm, principal, "body")) ||
         (artifact !== undefined && !isReadOnly() && isOwnerHandle(principal.handle))),
   };
   return json(payload);

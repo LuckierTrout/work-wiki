@@ -13,7 +13,7 @@ import { listWorkbenchFilePaths } from "@/lib/workbench-files";
 import {
   buildFileTree,
   buildKnowledgeTree,
-  readableSlugsFromKnowledge,
+  workbenchSlugGate,
   WORKBENCH_FIRST_PAINT_LIMIT,
 } from "@/lib/workbench-tree";
 import { emptyRegistry, getWikiRegistry } from "@/lib/wikis";
@@ -94,12 +94,15 @@ export default async function Home() {
   // EXECUTES it — inlined here it could only be grepped for, and a rewrite that
   // kept this comment and read `pageIndex.entries` instead would stay green.
   const knowledge = buildKnowledgeTree(pageIndex.entries);
-  const readableSlugs = readableSlugsFromKnowledge(knowledge);
+  // Both halves from ONE derivation: `readableSlugs` admits under `wiki/`,
+  // `hiddenSlugs` refuses under `raw/` (DW-32). Spelling the pair separately
+  // here is how the two roots would drift apart again.
+  const slugGate = workbenchSlugGate(pageIndex.entries, knowledge);
 
   const fileListing = await listWorkbenchFilePaths(
     principal.handle,
     wikiRegistry.registry.currentId,
-    { readableSlugs, limit: WORKBENCH_FIRST_PAINT_LIMIT },
+    { ...slugGate, limit: WORKBENCH_FIRST_PAINT_LIMIT },
   )
     .then((listing) => ({ ...listing, unavailable: false }))
     .catch((error) => {

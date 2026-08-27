@@ -4,7 +4,7 @@ import { getErrorMessage } from "@/lib/errors";
 import { isReadOnlyError, READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { RESCAN_MAX_SOURCES, rescanSources } from "@/lib/source-rescan";
 import { V1_FILE_OUT_OF_SCOPE_ERROR, isV1FileInScope } from "@/lib/v1-contract";
-import { readV1JsonBody, resolveV1Caller, v1ReadableSlugs } from "@/lib/v1-route";
+import { readV1JsonBody, resolveV1Caller, v1SlugGate } from "@/lib/v1-route";
 
 interface RouteContext {
   params: Promise<{ wikiId: string }>;
@@ -79,11 +79,11 @@ export async function POST(request: Request, { params }: RouteContext) {
         );
       }
     }
-    const readableSlugs = await v1ReadableSlugs(caller.principal);
+    const slugGate = await v1SlugGate(caller.principal);
     const result = await rescanSources({
       owner: caller.principal.handle,
       wikiId: caller.wikiId,
-      readableSlugs,
+      ...slugGate,
       ...(paths ? { paths } : {}),
       ...(typeof body.limit === "number" ? { limit: body.limit } : {}),
       ...(typeof body.cursor === "number" ? { cursor: body.cursor } : {}),

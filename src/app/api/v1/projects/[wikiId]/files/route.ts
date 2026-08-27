@@ -5,7 +5,7 @@ import {
   V1_TREE_TOO_LARGE_ERROR,
   normalizeFileRoot,
 } from "@/lib/v1-contract";
-import { resolveV1Caller, v1ReadableSlugs } from "@/lib/v1-route";
+import { resolveV1Caller, v1SlugGate } from "@/lib/v1-route";
 import { listWorkbenchFilePaths } from "@/lib/workbench-files";
 
 interface RouteContext {
@@ -16,7 +16,7 @@ interface RouteContext {
  * `GET /api/v1/projects/{id}/files` — the readable tree, as paths (Story 8.2).
  *
  * ONE LISTER, shared with the Workbench's own tree: `listWorkbenchFilePaths`
- * with the same `readableSlugs` gate. A second walker here would be a second
+ * with the same slug gate. A second walker here would be a second
  * answer to "what may this caller see", and the external door is the wrong place
  * to be the more generous of the two.
  *
@@ -39,11 +39,11 @@ export async function GET(request: Request, { params }: RouteContext) {
     const root = normalizeFileRoot(
       new URL(request.url).searchParams.get("root") ?? undefined,
     );
-    const readableSlugs = await v1ReadableSlugs(caller.principal);
+    const slugGate = await v1SlugGate(caller.principal);
     const listing = await listWorkbenchFilePaths(
       caller.principal.handle,
       caller.wikiId,
-      { readableSlugs, limit: V1_MAX_TREE_NODES },
+      { ...slugGate, limit: V1_MAX_TREE_NODES },
     );
     if (listing.truncated) {
       return NextResponse.json(

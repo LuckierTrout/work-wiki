@@ -27,6 +27,7 @@ import { enqueueTask } from "./tasks";
 import type { Task } from "./tasks";
 import { isV1FileInScope, isV1TextPath } from "./v1-contract";
 import { listRawSourceFilePaths, readWorkbenchFile } from "./workbench-files";
+import type { WorkbenchSlugGate } from "./workbench-tree";
 
 /** One call's ceiling. A caller with more Sources calls again. */
 export const RESCAN_MAX_SOURCES = 25;
@@ -57,15 +58,22 @@ export interface SourceRescanResult {
   reason?: string;
 }
 
-export async function rescanSources(input: {
-  owner: string;
-  wikiId: string | null;
-  readableSlugs: ReadonlySet<string>;
-  /** Explicit display paths, or absent for "every Source in the tree". */
-  paths?: readonly string[];
-  limit?: number;
-  cursor?: number;
-}): Promise<SourceRescanResult> {
+export async function rescanSources(
+  /**
+   * The gate is the WHOLE {@link WorkbenchSlugGate}, not just `readableSlugs`:
+   * a rescan must neither enumerate nor compile the source of a page the
+   * Knowledge tab hides (DW-32), and both the listing and the read below need
+   * the same pair to answer that.
+   */
+  input: WorkbenchSlugGate & {
+    owner: string;
+    wikiId: string | null;
+    /** Explicit display paths, or absent for "every Source in the tree". */
+    paths?: readonly string[];
+    limit?: number;
+    cursor?: number;
+  },
+): Promise<SourceRescanResult> {
   const cap = Math.min(
     RESCAN_MAX_SOURCES,
     Math.max(1, Math.round(input.limit ?? RESCAN_MAX_SOURCES)),
@@ -87,6 +95,7 @@ export async function rescanSources(input: {
     const page = await listRawSourceFilePaths(input.owner, {
       offset,
       limit: cap,
+      hiddenSlugs: input.hiddenSlugs,
       allow: (displayPath) =>
         isV1FileInScope(displayPath) && isV1TextPath(displayPath),
     });
@@ -114,6 +123,7 @@ export async function rescanSources(input: {
     try {
       const file = await readWorkbenchFile(input.owner, input.wikiId, path, {
         readableSlugs: input.readableSlugs,
+        hiddenSlugs: input.hiddenSlugs,
       });
       text = file?.content ?? null;
     } catch (error) {

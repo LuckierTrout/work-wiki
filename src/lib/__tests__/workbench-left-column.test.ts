@@ -1050,10 +1050,14 @@ describe("page.tsx loads the trees from the authenticated principal", () => {
     // file calls it on the built tree — an inline expression would have made
     // the rule reachable by grep alone, and a rewrite that kept the comment and
     // read `pageIndex.entries` would have stayed green.
-    expect(source).toContain("readableSlugsFromKnowledge(knowledge)");
+    // BOTH halves come from that one derivation (DW-32): `readableSlugs` admits
+    // under `wiki/`, `hiddenSlugs` refuses under `raw/`, and spelling the pair
+    // separately is how the two roots would drift apart.
+    expect(source).toContain("workbenchSlugGate(pageIndex.entries, knowledge)");
     expect(source).not.toMatch(/readableSlugs\s*=\s*new Set\(/);
+    expect(source).not.toMatch(/hiddenSlugs\s*=\s*new Set\(/);
     expect(source).toContain("WORKBENCH_FIRST_PAINT_LIMIT");
-    expect(source).toContain("{ readableSlugs, limit: WORKBENCH_FIRST_PAINT_LIMIT }");
+    expect(source).toContain("{ ...slugGate, limit: WORKBENCH_FIRST_PAINT_LIMIT }");
     // The gate is the page index, so a failed index read is a failed file read:
     // an empty slug set filters every page out of `wiki/`, and the tab would
     // otherwise show an empty silo where the truth is "we could not find out".

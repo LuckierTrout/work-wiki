@@ -1894,6 +1894,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
       owner: "alice",
       wikiId: null,
       readableSlugs: new Set(),
+      hiddenSlugs: new Set(),
       paths: [],
     });
     expect(result.requested).toBe(0);
@@ -1907,6 +1908,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
       owner: "alice",
       wikiId: null,
       readableSlugs: new Set(),
+      hiddenSlugs: new Set(),
       paths,
       cursor: 0,
     });
@@ -1928,6 +1930,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
         paths: ["raw/sources/note.md"],
       });
       expect(result.results[0]?.queued).toBe(false);
@@ -1954,6 +1957,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
       const listed = await listRawSourceFilePaths("alice", {
         offset: 0,
         limit: 2,
+        hiddenSlugs: new Set(),
         allow: (p) => p.endsWith(".md"),
       });
       expect(listed.paths).toHaveLength(2);
@@ -1963,6 +1967,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
         limit: 2,
       });
       expect(page.requested).toBe(2);
@@ -1972,6 +1977,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
         limit: 2,
         cursor: page.nextCursor ?? 0,
       });
@@ -1982,6 +1988,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
         limit: 2,
         cursor: next.nextCursor ?? 0,
       });
@@ -2009,6 +2016,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
       });
       expect(page.reason).toBe("listing_unavailable");
       expect(page.requested).toBe(0);
@@ -2046,6 +2054,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
         limit: 10,
         cursor: 0,
       });
@@ -2064,6 +2073,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
         limit: 10,
         cursor: 0,
       });
@@ -2100,6 +2110,7 @@ describe("F8-05 / F8-06 v1 contract", () => {
         owner: "alice",
         wikiId: null,
         readableSlugs: new Set(),
+        hiddenSlugs: new Set(),
       });
       expect(failed).toMatchObject({
         requested: 0,

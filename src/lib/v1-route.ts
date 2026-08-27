@@ -22,7 +22,8 @@ import { V1_BODY_TOO_LARGE_ERROR, V1_MAX_BODY_BYTES } from "./v1-contract";
 import { listReadableWikiPages } from "./wiki";
 import {
   buildKnowledgeTree,
-  readableSlugsFromKnowledge,
+  workbenchSlugGate,
+  type WorkbenchSlugGate,
 } from "./workbench-tree";
 import { requireAccessibleWikiId } from "./wiki-access";
 import { getWikiRegistry } from "./wikis";
@@ -79,18 +80,22 @@ export async function resolveV1Caller(
 }
 
 /**
- * The set of page slugs this principal may read.
+ * The slug gate this principal's file doors run on — both halves of it.
  *
  * THE SAME GATE the Workbench's own file listing uses, derived the same way —
- * `listReadableWikiPages` → knowledge tree → slugs. A second expression of "what
- * may this caller see" is how the external door ends up more permissive than the
- * in-product tree, and the door is the one an agent talks to.
+ * `listReadableWikiPages` → knowledge tree → `workbenchSlugGate`. A second
+ * expression of "what may this caller see" is how the external door ends up
+ * more permissive than the in-product tree, and the door is the one an agent
+ * talks to. It returns the PAIR rather than just `readableSlugs` for exactly
+ * that reason: the three `/api/v1` doors keep sharing one expression, and a
+ * route cannot pick up the `wiki/` half while leaving the `raw/` half behind
+ * (DW-32).
  */
-export async function v1ReadableSlugs(
+export async function v1SlugGate(
   principal: Principal,
-): Promise<ReadonlySet<string>> {
+): Promise<WorkbenchSlugGate> {
   const entries = await listReadableWikiPages(principal);
-  return readableSlugsFromKnowledge(buildKnowledgeTree(entries));
+  return workbenchSlugGate(entries, buildKnowledgeTree(entries));
 }
 
 /**

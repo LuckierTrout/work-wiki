@@ -6,7 +6,7 @@ import { listWorkbenchFilePaths } from "@/lib/workbench-files";
 import { INTAKE_SIGN_IN_COPY } from "@/lib/workbench-intake";
 import {
   buildKnowledgeTree,
-  readableSlugsFromKnowledge,
+  workbenchSlugGate,
   WORKBENCH_FILE_LIMIT,
 } from "@/lib/workbench-tree";
 import { getWikiRegistry } from "@/lib/wikis";
@@ -26,11 +26,11 @@ export async function GET() {
       listReadableWikiPages(principal),
     ]);
     const knowledge = buildKnowledgeTree(entries);
-    const readableSlugs = readableSlugsFromKnowledge(knowledge);
+    const slugGate = workbenchSlugGate(entries, knowledge);
     const listing = await listWorkbenchFilePaths(
       principal.handle,
       registry.currentId,
-      { readableSlugs, limit: WORKBENCH_FILE_LIMIT },
+      { ...slugGate, limit: WORKBENCH_FILE_LIMIT },
     );
     return NextResponse.json({
       paths: listing.paths,

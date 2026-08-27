@@ -8,7 +8,7 @@ import { intakeMediaContentType } from "@/lib/workbench-intake";
 import { isPreviewMediaFormat, previewFileKind } from "@/lib/workbench-preview";
 import {
   buildKnowledgeTree,
-  readableSlugsFromKnowledge,
+  workbenchSlugGate,
 } from "@/lib/workbench-tree";
 
 /**
@@ -77,14 +77,17 @@ async function handle(request: Request): Promise<Response> {
     currentId = null;
   }
 
-  const knowledge = buildKnowledgeTree(await listReadableWikiPages(principal));
-  const readableSlugs = readableSlugsFromKnowledge(knowledge);
+  // The entries are hoisted because the gate is derived from the PAIR
+  // `(entries, knowledge)` — `hiddenSlugs` is what the index named and the
+  // knowledge tree dropped, so neither half alone can produce it.
+  const entries = await listReadableWikiPages(principal);
+  const slugGate = workbenchSlugGate(entries, buildKnowledgeTree(entries));
 
   const bytes = await readWorkbenchFileBytes(
     principal.handle,
     currentId,
     displayPath,
-    { readableSlugs },
+    slugGate,
   );
   if (!bytes) return refuse(404);
 
