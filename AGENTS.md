@@ -29,6 +29,62 @@ Agent-grown wiki app — "a shared second brain for humans and agents" — forke
 
 <!-- /bmad:context -->
 
+## Test environments
+
+This section is deliberately outside the `bmad:context` markers, for the same
+reason **Frozen identifiers** below is: that block is replaced on refresh, and
+this convention has to survive it. It also has an enforcing half — the retired
+claim is scanned for in `src/lib/__tests__/workbench-chrome.test.ts`, and that
+scan reads this file too.
+
+- `pnpm test` is one `vitest run` over TWO projects declared inline in
+  `vitest.config.ts`. The file extension picks the project — there is no
+  per-file opt-in:
+  - `**/__tests__/**/*.test.tsx` ⇒ the `dom` project: `environment: "jsdom"`,
+    setup files `./vitest.setup.ts` + `./vitest.setup.dom.ts`. Mount components
+    here (React Testing Library).
+  - `**/__tests__/**/*.test.ts` ⇒ the `node` project: `environment: "node"`,
+    setup file `./vitest.setup.ts`. No DOM, no testing-library — pure functions,
+    routes, and source scans.
+- Run one project alone with `pnpm exec vitest run --project dom` (or
+  `--project node`), optionally with a path. Note the asymmetry: run alone, a
+  project whose include matches nothing exits 1, but the combined `pnpm test`
+  that CI runs exits 0 — which is what the config-load guard below exists for.
+- Symptom of getting it wrong: `document is not defined` (or `window is not
+  defined`) at import time means a mounted suite was written as `.test.ts`.
+  RENAME it to `.test.tsx`; do not add jsdom to the node project.
+- The suite must live under a `__tests__` directory. `vitest.config.ts` throws at
+  CONFIG LOAD when the dom include matches nothing, or when a `*.test.tsx` on
+  disk falls outside it — an uncollected project does not fail a combined run, so
+  a misplaced file would otherwise delete every mounted assertion while the
+  report still reads "all passed".
+- The setup helpers are not aliased. A suite reaches them by relative ladder from
+  its own directory: `import { setElementRect } from "../../../../vitest.setup.dom"`
+  from `src/components/workbench/__tests__/`. `@/` resolves to `src/` only, and
+  the setup files sit at the repo root.
+- Browser-level questions — real layout, real focus across platforms, real
+  assistive technology — are Playwright's, `pnpm test:e2e`
+  (`playwright.config.ts`, specs in `e2e/`). Not in CI; run it locally. Focus
+  ORDER is executable in jsdom (`workbench-sheet.test.tsx` asserts
+  `document.activeElement`); what a screen reader announces is not.
+- jsdom computes no layout, so every box is all-zeros and no stylesheet applies.
+  `vitest.setup.dom.ts` holds every shim and nothing in `src/` does. It
+  unconditionally overrides `Element.prototype.getBoundingClientRect`,
+  `HTMLElement.prototype.offsetWidth`, `offsetParent`, `getClientRects`,
+  `scrollIntoView`, `window.matchMedia` and `document.visibilityState` — every
+  box read in the dom project goes through a wrapper, which delegates to jsdom's
+  own accessor unless a test has declared otherwise.
+- That declaration is `setElementRect(selector, { width })`, which is how a
+  width-derived decision becomes reachable at all (declare before `render()`, and
+  per test — the `afterEach` empties the registry). A declared box is a stated
+  fact, not a measurement: it pins how the component REACTS to a width and can
+  never catch a CSS mistake.
+- When a comment explains why a rule is a pure function rather than a branch in
+  JSX, name the PROJECT the file's own suite runs in ("this file's suite is the
+  `node` project, which mounts nothing"). Do not justify a design by a repo-wide
+  absence of a DOM test environment, and do not describe the whole runner as a
+  single environment — both are false now, and the scan above rejects them.
+
 ## Frozen identifiers
 
 This section is deliberately outside the `bmad:context` markers: that block is

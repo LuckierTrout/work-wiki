@@ -981,8 +981,9 @@ export interface PreviewEditCopy {
  * Which of the two copy sets the confirm dialog and the save show.
  *
  * A function the node suite executes rather than a ternary typed into JSX, for
- * the same reason {@link previewWriteTarget} is one: with no DOM environment, a
- * branch in the component can only be matched as source text, and "the dialog
+ * the same reason {@link previewWriteTarget} is one: that suite is the `node`
+ * project (`environment: "node"`, `*.test.ts`) and mounts nothing, so a branch
+ * in the component could only be matched there as source text — and "the dialog
  * says page when it is about to overwrite the Schema" is a wording bug a source
  * scan cannot see.
  *
@@ -1162,10 +1163,11 @@ export function previewUnreachableAnnouncement(input: {
 // ---------------------------------------------------------------------------
 //
 // Both functions below exist so the DECISIONS they carry are executed by a test
-// rather than grepped for inside a React effect. This repo has no DOM test
-// environment and this story is forbidden from adding one, so a rule that lives
-// in a component body can only ever be pinned by matching its source text — and
-// the two rules here are exactly the kind a rewrite would keep the wording of
+// rather than grepped for inside a React effect. This module's suite is the
+// `node` project (`environment: "node"`, `*.test.ts`), which mounts nothing, so
+// a rule that lives in a component body can only ever be pinned there by
+// matching its source text — and the two rules here are exactly the kind a
+// rewrite would keep the wording of
 // while changing the behaviour: "a response that arrives after the owner picked
 // another row must not reach state" and "a rejected save shows the server's
 // sentence, never the transport's". Same technique the shell already uses for

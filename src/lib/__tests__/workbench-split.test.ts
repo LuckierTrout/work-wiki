@@ -6,10 +6,12 @@
  * EXECUTED: every geometry decision is a pure function in `workbench-split`, and
  * every storage accessor is a guarded read in `workbench-state`, so both are run
  * here rather than grepped for. That is the whole point of keeping them out of
- * the component — `vitest.config.ts` is `environment: "node"` with
- * `include: ["src/**\/__tests__/**\/*.test.ts"]`, so a bound typed into an event
- * handler could only ever be matched as source text, and a rewrite that kept the
- * comment and inverted the comparison would ship with the suite green.
+ * the component — this file is collected by vitest's `node` project
+ * (`environment: "node"`, `include: ["src/**\/__tests__/**\/*.test.ts"]`), which
+ * mounts nothing, so a bound typed into an event handler could only ever be
+ * matched here as source text, and a rewrite that kept the comment and inverted
+ * the comparison would ship with the suite green. The mounted half is
+ * `workbench-split-wiring.test.tsx`, in the `dom` project.
  *
  * SCANNED: the wiring the node suite cannot execute — that the shell measures
  * itself, applies the clamp, hands each handle the SAME bounds it enforces, and

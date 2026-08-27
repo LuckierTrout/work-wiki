@@ -32,10 +32,15 @@ import { ChevronLeftIcon } from "./RailIcons";
  *
  * Nested `<ul>` with native `<button>` rows, `aria-expanded` disclosures and
  * `aria-current` on the selection — deliberately not the ARIA tree pattern. A
- * real ARIA tree needs roving `tabindex` and arrow-key navigation, and this
- * repo has no DOM test environment to verify either (DW-24). What ships here is
- * a complete keyboard surface built entirely from platform semantics, with no
- * focus machinery that could silently rot.
+ * real ARIA tree needs roving `tabindex` and arrow-key navigation — bespoke
+ * focus machinery, and the half of it that matters is the half nothing here can
+ * check: what a screen reader ANNOUNCES as you arrow through a tree, on each
+ * platform, is not a question jsdom or Playwright answers (DW-24). Where focus
+ * lands is executable — `workbench-sheet.test.tsx` does exactly that in the
+ * `dom` project — but a tree that moves focus correctly and announces itself
+ * wrongly is still broken, and no suite in this repo would say so. What ships
+ * here is a complete keyboard surface built entirely from platform semantics,
+ * whose announcement is the browser's own and cannot silently rot.
  *
  * Both tabs stay in the tab order for the same reason: roving `tabindex` on the
  * tablist without arrow-key handling would leave the second tab unreachable.

@@ -8,7 +8,8 @@
  * by the route to refuse a write). Both are pinned here by execution rather
  * than by reading source.
  *
- * `vitest.config.ts` is `environment: "node"` with no DOM (DW-15), so every
+ * This file is collected by vitest's `node` project (`environment: "node"`,
+ * `*.test.ts`), which mounts nothing (DW-15), so every
  * decision the surface makes lives in `../workbench-settings` and is run
  * directly; the route is run against a real temp `DATA_DIR` so the merge, the
  * refusals and the stored bytes are the real ones; and only the wiring inside

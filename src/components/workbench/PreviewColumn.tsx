@@ -103,8 +103,9 @@ import { PreviewLightbox } from "./PreviewLightbox";
  * `PUT /api/workbench/artifact`, which is the only writer for bytes the page
  * route cannot address. WHICH of the two, and which sentences the dialog shows,
  * are `previewEditTarget` and `previewEditCopy`: functions the node suite
- * executes, because this repo has no DOM test environment and a rule typed into
- * JSX here could only ever be grepped for.
+ * executes, because that suite is vitest's `node` project (`environment:
+ * "node"`, `*.test.ts`), which mounts nothing — a rule typed into the JSX here
+ * could only ever be grepped for there.
  *
  * The field names in the strip are the page's own frontmatter keys, not authored
  * labels — the same convention the mockup's `.fm` block uses.

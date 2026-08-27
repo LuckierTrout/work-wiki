@@ -1,10 +1,12 @@
 /**
  * Story 1.3 — the shell's structural invariants, pinned by source scan.
  *
- * Vitest runs `environment: "node"` and only `src/**\/__tests__/**\/*.test.ts`:
- * there is no jsdom and no testing-library, and adding them is out of scope
- * here. So this follows the `single-ia.test.ts` / `create-wiki-ui.test.ts`
- * convention and reads the components as text. What it really pins is that
+ * This file is collected by vitest's `node` project — `environment: "node"`,
+ * `src/**\/__tests__/**\/*.test.ts` — which mounts nothing and loads no
+ * testing-library. Mounted coverage is the sibling `*.test.tsx` half, collected
+ * by the `dom` project. So this follows the `single-ia.test.ts` /
+ * `create-wiki-ui.test.ts` convention and reads the components as text. What it
+ * really pins is that
  * nobody turns mode switching into routing, drops the rail's accessible names,
  * inlines empty-state copy next to the shared module, leaks the Preview serif
  * into chrome, or reintroduces a device branch under the responsive rules.
@@ -515,6 +517,110 @@ describe("globals.css", () => {
     // the page gains an outer scrollbar on a surface built not to scroll.
     const css = await globals();
     expect(css).toMatch(/body:has\(\.wb-shell\) \{\s*min-height: 100dvh;/);
+  });
+});
+
+/**
+ * The retired repo-wide claim, as a set of patterns rather than a set of
+ * sentences.
+ *
+ * Twelve files named a repo-wide absence of any DOM test environment as the
+ * REASON their code was shaped a certain way; the `dom` project shipping made
+ * every one of those premises false while the arguments they carried stayed
+ * true. Matching the
+ * CLAIM rather than one wording is what keeps the guard alive through a reword:
+ * a future agent repeating the mistake will not repeat the phrasing.
+ *
+ * The patterns are deliberately narrow enough to leave the ACCURATE,
+ * project-scoped comments alone — "the `node` project has no DOM", "this suite
+ * runs `environment: \"node\"` with no DOM", "an environment that has no DOM",
+ * "Vitest runs this project as `environment: \"node\"`" all pass, and must, or
+ * the guard would force a rewrite of prose that is already right.
+ *
+ * Two patterns carry a `[x]` character class over a letter that changes
+ * nothing about what they match. It keeps THIS file's own source clear of the
+ * literal claim, so the scan can read itself like every other file instead of
+ * carving out an exception — the one hole a scan like this can have.
+ */
+const RETIRED_DOM_CLAIMS = [
+  /th(is|e) repo(sitory)? (has|had) no dom/i,
+  /there is (still )?no (dom test environment|jsdom|testing-library)/i,
+  /vitest (runs|is) `?environment: "node"/i,
+  /`vitest\.config\.ts` is `environment: "node"/i,
+  /no jsdom and no testing[-]library/i,
+  /forbidden from adding (jsdom|one)/i,
+  /with no dom [e]nvironment/i,
+];
+
+const ROOT = path.resolve(SRC, "..");
+
+/**
+ * Comment wrapping, undone.
+ *
+ * This repo wraps comments at ~78 columns, so the claim under scan is USUALLY
+ * split across two lines with a `*` or `//` between the halves. A line-based
+ * match would see `has no DOM test` and `environment` as unrelated strings and
+ * report a clean tree — which is the failure mode a source scan is least able
+ * to notice about itself.
+ */
+function unwrapComments(source: string): string {
+  return source.replace(/[ \t]*\r?\n[ \t]*(?:\*|\/\/)?[ \t]*/g, " ");
+}
+
+/**
+ * Every file the claim could live in — not just `src/`.
+ *
+ * The config files and `AGENTS.md` are in scope on purpose: `AGENTS.md` is what
+ * the failure message below points a reader at, and a guard that cannot see the
+ * document stating its own rule can watch that document go stale. `e2e/` is the
+ * third environment, and the likeliest place for a fresh half-truth about the
+ * other two.
+ */
+async function scannedFiles(): Promise<string[]> {
+  const files: string[] = [];
+  for (const dir of ["src", "e2e"]) {
+    const entries = await readdir(path.join(ROOT, dir), {
+      recursive: true,
+      encoding: "utf8",
+    });
+    for (const entry of entries) {
+      const file = `${dir}/${entry.split(path.sep).join("/")}`;
+      if (/\.(ts|tsx|css|md)$/.test(file)) files.push(file);
+    }
+  }
+  files.push("AGENTS.md", "vitest.config.ts", "vitest.setup.ts", "vitest.setup.dom.ts");
+  return files;
+}
+
+describe("nothing in the repo says this codebase cannot mount a component (DW-108)", () => {
+  it("carries none of the retired phrasings, wrapped or not", async () => {
+    const files = await scannedFiles();
+    // The walk itself. A count threshold would not catch this: `src/` holds
+    // hundreds of files, so a move that dropped most of the tree would still
+    // clear any number worth writing down. Naming a file that must be in the
+    // list is what fails when the walk stops reaching the components.
+    expect(files).toContain("src/components/workbench/Workbench.tsx");
+    expect(files).toContain("AGENTS.md");
+
+    const offenders: string[] = [];
+    for (const file of files) {
+      const source = unwrapComments(await readFile(path.join(ROOT, file), "utf8"));
+      for (const claim of RETIRED_DOM_CLAIMS) {
+        if (claim.test(source)) offenders.push(`${file}: ${claim}`);
+      }
+    }
+    expect(
+      offenders,
+      `Two vitest projects ship, declared inline in the config: "node" ` +
+        `(environment "node", include src/**/__tests__/**/*.test.ts) and "dom" ` +
+        `(environment "jsdom", include src/**/__tests__/**/*.test.tsx, ` +
+        `setupFiles ./vitest.setup.ts + ./vitest.setup.dom.ts), and ` +
+        `browser-level checks run in Playwright via pnpm test:e2e. So do not ` +
+        `justify a design by a repo-wide absence of a DOM test environment, ` +
+        `and do not describe the whole runner as one environment. Name the ` +
+        `PROJECT the file's own suite runs in instead — see the ` +
+        `"Test environments" section in AGENTS.md.`,
+    ).toEqual([]);
   });
 });
 

@@ -150,12 +150,13 @@ import { CANVAS_ID } from "./ModeCanvas";
  *
  * Every decision it makes is a pure function in `@/lib/workbench-settings`: the
  * category vocabulary, every sentence, the draft/dirty rules, the save-body
- * builder and the vector predicate. `vitest.config.ts` is `environment: "node"`,
- * so a rule typed into the JSX below could only ever be grepped for — and "what
- * does Save actually send" is exactly the kind of rule a rewrite keeps the
- * wording of while changing the behaviour. This file makes no request of its
- * own at all: both the read and the write live in that module, where a stubbed
- * `fetchImpl` drives them without a socket.
+ * builder and the vector predicate. `workbench-settings.test.ts` runs in
+ * vitest's `node` project (`environment: "node"`, `*.test.ts`), which mounts
+ * nothing, so a rule typed into the JSX below could only ever be grepped for
+ * there — and "what does Save actually send" is exactly the kind of rule a
+ * rewrite keeps the wording of while changing the behaviour. This file makes no
+ * request of its own at all: both the read and the write live in that module,
+ * where a stubbed `fetchImpl` drives them without a socket.
  *
  * It takes {@link CANVAS_ID}, `tabIndex={-1}` and `headingId` from `ModeCanvas`
  * while it is open, so the skip link keeps exactly one target and both ids stay

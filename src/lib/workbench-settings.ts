@@ -6,13 +6,14 @@
  * injectable `fetchImpl`): the route imports it on the server, `SettingsCanvas`
  * imports it in the browser, and the node suite EXECUTES it.
  *
- * That last part is the whole reason the module exists. `vitest.config.ts` is
- * `environment: "node"` — there is no DOM and no testing-library — so any rule
- * that lives inside a React effect can only ever be grepped for. "Which
- * categories exist", "may vector search be enabled", "what does Save actually
- * send", and "which sentence does a rejected save show" are exactly the rules a
- * rewrite keeps the wording of while changing the behaviour, so all four are
- * functions here rather than branches typed into JSX.
+ * That last part is the whole reason the module exists. That suite is vitest's
+ * `node` project (`environment: "node"`, `*.test.ts`) — it mounts nothing and
+ * loads no testing-library — so any rule that lives inside a React effect can
+ * only ever be grepped for there. "Which categories exist", "may vector search
+ * be enabled", "what does Save actually send", and "which sentence does a
+ * rejected save show" are exactly the rules a rewrite keeps the wording of
+ * while changing the behaviour, so all four are functions here rather than
+ * branches typed into JSX.
  *
  * It restates no provider list: {@link PROVIDER_INFO} and
  * {@link EMBEDDING_PROVIDERS} come from `providers.ts`, which is already

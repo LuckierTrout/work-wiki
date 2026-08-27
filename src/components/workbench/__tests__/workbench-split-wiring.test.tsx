@@ -6,16 +6,21 @@ import {
   WorkbenchDataProvider,
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
-import { SPLIT_NARROW_QUERY } from "@/lib/workbench-split";
+import {
+  SPLIT_NARROW_QUERY,
+  SPLIT_PREVIEW_LABEL,
+  SPLIT_TREE_LABEL,
+} from "@/lib/workbench-split";
 import { SETTINGS_LABEL } from "@/lib/workbench-settings";
 import { buildFileTree } from "@/lib/workbench-tree";
 import {
   readStoredTreeScroll,
   writeStoredCollapsed,
   writeStoredSelection,
+  writeStoredSplitWidths,
   writeStoredTreeScroll,
 } from "@/lib/workbench-state";
-import { setMediaQuery } from "../../../../vitest.setup.dom";
+import { setElementRect, setMediaQuery } from "../../../../vitest.setup.dom";
 
 /**
  * DW-44/45/47's two headline behaviours, MOUNTED — the halves `workbench-split.
@@ -37,15 +42,21 @@ import { setMediaQuery } from "../../../../vitest.setup.dom";
  *    `[tab, collapsed, narrow]` dep key — the effect can still restore nothing,
  *    and all three assertions still match.
  *
- * COVERAGE LIMIT: the separators are not observable THROUGH THE SHELL here.
- * `Workbench` measures `getBoundingClientRect()` to decide whether it has been
- * measured at all, jsdom answers 0 for every box, so `showSplitHandle` is false
- * and neither `<SplitHandle>` mounts. That is why the IDS are the half worth
- * pinning against the mounted shell: what the separator names has to exist, and
- * whether the separator is on screen is a layout question this environment
- * cannot answer. The control's OWN half — the attribute it emits and the x it
- * forwards — is executed at the bottom of this file, rendered directly, where no
- * measurement is involved.
+ * THE WIDTH IS DECLARED, NOT MEASURED. jsdom runs no layout, so an unaided
+ * mount reports `shellWidth === 0` and `isSplitMeasured` short-circuits every
+ * width-derived decision before it can be made. `setElementRect(".wb-shell",
+ * { width })` from `vitest.setup.dom.ts` states the box the shell reports, and
+ * it is stated BEFORE `render()` because the measure effect runs at mount —
+ * there is no element to hand a width to until after the decision under test has
+ * already been taken. What that buys is the shell's REACTION to a width, and
+ * nothing more: a declared box is a fact the test asserted, so these cases can
+ * never catch a CSS or layout mistake. The geometry itself — every bound, the
+ * clamp, pointer-x → width — stays executed as rules in `workbench-split.test.
+ * ts` against the real stylesheet.
+ *
+ * The control's OWN half — the attribute it emits and the x it forwards — is
+ * executed at the bottom of this file, rendered directly, where no width is
+ * involved at all.
  */
 
 // ONE stable router object, for the reason `workbench-mode-url.test.tsx` gives:
@@ -183,6 +194,309 @@ describe("every aria-controls the shell writes resolves to a real element (DW-45
   });
 });
 
+function shellElement(): HTMLElement {
+  const element = document.querySelector<HTMLElement>(".wb-shell");
+  expect(element).not.toBeNull();
+  return element as HTMLElement;
+}
+
+function separator(label: string): HTMLElement {
+  return screen.getByRole("separator", { name: label });
+}
+
+/**
+ * The decisions the shell makes FROM its width, mounted (DW-113).
+ *
+ * Every number below is `workbench-split.test.ts`'s rule applied to the width
+ * this file declares, restated as a literal on purpose: the arithmetic is spelt
+ * out in each comment so a case that goes red names which rule moved, rather
+ * than re-deriving the expectation from the same functions it is checking.
+ *
+ * Shell arithmetic, once: the frame minus the 48px rail minus the 320px canvas
+ * floor minus whatever the OTHER side column is taking is the room a column may
+ * grow into, never below its own 200px floor.
+ */
+describe("the shell's width-derived decisions, mounted (DW-113)", () => {
+  it("measures at mount, so the grid gets the widths and both separators exist", async () => {
+    // A stored selection docks the Preview without a click, so both dividers are
+    // in scope at once.
+    writeStoredSelection(WIKI_ID, { kind: "page", slug: "alpha" });
+    // BEFORE `render()`: the measure effect runs at mount, and a width declared
+    // afterwards could only ever reach the resize path.
+    setElementRect(".wb-shell", { width: 1400 });
+    await renderShell();
+
+    // The defaults survive 1400px untouched — `splitStyleVars` returns
+    // `undefined` until the shell is BOTH mounted and measured, so these two
+    // properties existing at all is the measurement arriving.
+    expect(shellElement().style.getPropertyValue("--wb-tree")).toBe("280px");
+    expect(shellElement().style.getPropertyValue("--wb-preview")).toBe("360px");
+
+    // `showSplitHandle` gates on `mounted && isSplitMeasured`, so a separator
+    // EXISTING is the same proof from the other side.
+    const tree = separator(SPLIT_TREE_LABEL);
+    const preview = separator(SPLIT_PREVIEW_LABEL);
+    expect(tree.getAttribute("aria-valuenow")).toBe("280");
+    expect(preview.getAttribute("aria-valuenow")).toBe("360");
+    // 1400 − 48 − 320 − 360(preview) = 672 for the tree;
+    // 1400 − 48 − 320 − 280(tree)    = 752 for the Preview.
+    expect(tree.getAttribute("aria-valuemax")).toBe("672");
+    expect(preview.getAttribute("aria-valuemax")).toBe("752");
+  });
+
+  it("re-measures on a window resize, so the layout follows the frame", async () => {
+    // A stored tree wide enough that the two frames disagree about it: at 1400
+    // it fits as stored, at 700 it cannot.
+    writeStoredSplitWidths({ tree: 600, preview: 360 });
+    setElementRect(".wb-shell", { width: 1400 });
+    await renderShell();
+
+    // Preview closed, so the tree's room is 1400 − 48 − 320 = 1032 and 600 fits.
+    expect(shellElement().style.getPropertyValue("--wb-tree")).toBe("600px");
+    expect(separator(SPLIT_TREE_LABEL).getAttribute("aria-valuemax")).toBe("1032");
+
+    // The frame narrows, then the browser says so. Both halves are needed: the
+    // declaration alone changes what the shell WOULD measure, and the event
+    // alone re-measures the width it already had.
+    setElementRect(".wb-shell", { width: 700 });
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    // 700 − 48 − 320 = 332, and the stored 600 is clamped down to it. Delete
+    // `window.addEventListener("resize", measure)` from `Workbench.tsx` and this
+    // stays at 600px / 1032 — the frame moved and the layout did not.
+    //
+    // NOT a claim that a divider is usable at 700px: a real browser hides both
+    // handles below 1200px, and `showSplitHandle` carries no breakpoint on
+    // purpose (`workbench-split.ts` says why — the 900–1199px block pins both
+    // side columns in CSS, and a width comparison here would be a second,
+    // drifting copy of it). jsdom applies no stylesheet, so the element is still
+    // in the tree and its ARIA range is still the shell's own answer, which is
+    // the only thing asserted.
+    expect(shellElement().style.getPropertyValue("--wb-tree")).toBe("332px");
+    const tree = separator(SPLIT_TREE_LABEL);
+    expect(tree.getAttribute("aria-valuenow")).toBe("332");
+    expect(tree.getAttribute("aria-valuemax")).toBe("332");
+  });
+
+  it("shrinks the TREE first when neither preferred width fits", async () => {
+    // The clamp's ORDER is the whole content of the decision, and it is only
+    // visible when both preferences are too large for the frame at once.
+    writeStoredSplitWidths({ tree: 600, preview: 600 });
+    writeStoredSelection(WIKI_ID, { kind: "page", slug: "alpha" });
+    setElementRect(".wb-shell", { width: 1000 });
+    await renderShell();
+
+    // Tree first, against the UNCLAMPED preview: 1000 − 48 − 320 − 600 = 32,
+    // floored at the 200px minimum, so the tree gives up 400px.
+    expect(shellElement().style.getPropertyValue("--wb-tree")).toBe("200px");
+    // Preview second, against the ALREADY-CLAMPED tree: 1000 − 48 − 320 − 200 =
+    // 432, so the Preview gives up only 168px. Clamped in the other order the
+    // Preview would be the one pinned to its floor.
+    expect(shellElement().style.getPropertyValue("--wb-preview")).toBe("432px");
+
+    // …and the range each separator ANNOUNCES agrees with the width it was
+    // clamped to. A handle that announced the floors as its range while the
+    // column rendered at something else is the exact lie `isSplitMeasured`
+    // exists to prevent, and it is invisible to a source scan.
+    const tree = separator(SPLIT_TREE_LABEL);
+    expect(tree.getAttribute("aria-valuenow")).toBe("200");
+    expect(tree.getAttribute("aria-valuemin")).toBe("200");
+    // Degenerate on purpose: at this frame there is no room for the tree to
+    // grow into, so min === max rather than a negative track.
+    expect(tree.getAttribute("aria-valuemax")).toBe("200");
+
+    const preview = separator(SPLIT_PREVIEW_LABEL);
+    expect(preview.getAttribute("aria-valuenow")).toBe("432");
+    expect(preview.getAttribute("aria-valuemax")).toBe("432");
+  });
+
+  it("renders no Preview separator while the Preview is closed", async () => {
+    setElementRect(".wb-shell", { width: 1400 });
+    await renderShell();
+
+    // Measured — so the absence below is the dock rule, not the width being
+    // unknown. Without this line the case would pass on an unmeasured shell,
+    // where NEITHER separator exists.
+    expect(shellElement().style.getPropertyValue("--wb-tree")).toBe("280px");
+    // `queryByRole` on both halves, deliberately: `separator()` wraps
+    // `getByRole`, which THROWS on a miss, so wrapping it in `not.toBeNull()`
+    // would assert nothing it does not already assert by not throwing.
+    expect(screen.queryByRole("separator", { name: SPLIT_TREE_LABEL })).not.toBeNull();
+    expect(screen.queryByRole("separator", { name: SPLIT_PREVIEW_LABEL })).toBeNull();
+    // With the Preview closed its width is not the tree's constraint:
+    // 1400 − 48 − 320 = 1032, where the docked case above reported 672.
+    expect(separator(SPLIT_TREE_LABEL).getAttribute("aria-valuemax")).toBe("1032");
+  });
+
+  it("leaves an undeclared shell exactly as jsdom reports it", async () => {
+    // The other half of the harness's contract, and the reason every suite
+    // written before it is unaffected: with no declaration the shell measures 0,
+    // `isSplitMeasured` is false, and the shell writes no custom property and
+    // mounts no separator — which is precisely what the cases above had to
+    // declare a width to escape.
+    writeStoredSelection(WIKI_ID, { kind: "page", slug: "alpha" });
+    await renderShell();
+    expect(shellElement().style.getPropertyValue("--wb-tree")).toBe("");
+    expect(screen.queryByRole("separator", { name: SPLIT_TREE_LABEL })).toBeNull();
+    expect(screen.queryByRole("separator", { name: SPLIT_PREVIEW_LABEL })).toBeNull();
+  });
+});
+
+/**
+ * The harness's own contract, asserted where it is used rather than as a second
+ * file about the setup file.
+ *
+ * The cases above are what a declaration BUYS. These are the three things it
+ * must not cost: an element nobody declared for still reports what jsdom
+ * reports, a declaration matching nothing changes nothing, and no declaration
+ * outlives the test that made it. Without the last one every suite in the `dom`
+ * project would inherit whatever width the file before it happened to state.
+ */
+/**
+ * …and the harness underneath, which nothing else in the repo pins.
+ *
+ * `vitest.setup.dom.ts` is not under `src/`, so every case above is only as true
+ * as the shim it rests on — and the two rules most easily simplified away
+ * (visibility still gates `getClientRects`, and the LAST matching declaration
+ * wins) are exactly the two the shell's own cases cannot distinguish: the resize
+ * case re-declares the SAME key, and the shell declares nothing hidden. Each
+ * case below fails a plausible rewrite of the shim.
+ */
+describe("the declared-rect harness itself", () => {
+  function probe(): HTMLElement {
+    render(<div className="probe" data-testid="probe" />);
+    return screen.getByTestId("probe");
+  }
+
+  it("answers the declared box through all three reads", () => {
+    setElementRect(".probe", { width: 640, height: 48, left: 12, top: 34 });
+    const element = probe();
+
+    const box = element.getBoundingClientRect();
+    expect(box.width).toBe(640);
+    expect(box.height).toBe(48);
+    expect(box.left).toBe(12);
+    expect(box.top).toBe(34);
+
+    expect(element.offsetWidth).toBe(640);
+
+    const rects = element.getClientRects();
+    expect(rects).toHaveLength(1);
+    expect(rects[0].width).toBe(640);
+    expect(rects[0].top).toBe(34);
+
+    // `height` and `top` ride the RECT alone. There is no `offsetHeight` shim
+    // and no caller for one, so a test that declares a height and then reads
+    // the offset accessor gets jsdom's 0 — pinned here rather than left for a
+    // reader to assume the symmetry that is not there.
+    expect(element.offsetHeight).toBe(0);
+  });
+
+  it("leaves an undeclared element exactly as jsdom reports it", () => {
+    const element = probe();
+    expect(element.getBoundingClientRect().width).toBe(0);
+    expect(element.offsetWidth).toBe(0);
+    // The fixed 1x1 placeholder every suite written before this harness saw,
+    // which is what the sheet's `getClientRects().length > 0` Tab filter reads.
+    const rects = element.getClientRects();
+    expect(rects).toHaveLength(1);
+    expect(rects[0].width).toBe(1);
+  });
+
+  it("keeps a hidden element out of getClientRects even with a box declared", () => {
+    // Visibility gates the LIST, not the rect — and letting a declared box win
+    // over `displayHidden` would put the rail's hidden collapse chevron back
+    // into the sheet's Tab cycle, which is the regression
+    // `workbench-sheet.test.tsx` exists to catch. Both ways `displayHidden` can
+    // actually see, since jsdom applies no stylesheet.
+    setElementRect(".probe", { width: 640 });
+    render(
+      <>
+        <div className="probe" data-testid="by-attribute" hidden />
+        <div className="probe" data-testid="by-inline-style" style={{ display: "none" }} />
+      </>,
+    );
+    for (const id of ["by-attribute", "by-inline-style"]) {
+      const element = screen.getByTestId(id);
+      expect(element.getClientRects()).toHaveLength(0);
+      // …while the box itself is still the declared one: the two reads answer
+      // different questions, and only one of them is about being on screen.
+      expect(element.getBoundingClientRect().width).toBe(640);
+    }
+  });
+
+  it("resolves two overlapping selectors to the LAST one declared", () => {
+    // Order, not specificity: `.probe` is the narrower selector and wins here
+    // only because it was declared second.
+    setElementRect("div", { width: 100 });
+    setElementRect(".probe", { width: 200 });
+    expect(probe().getBoundingClientRect().width).toBe(200);
+  });
+
+  it("gives the opposite answer in the opposite order", () => {
+    // The half that fails if `declaredRect` ever stops at the first match: the
+    // broader selector was declared last, so the broader selector wins.
+    setElementRect(".probe", { width: 200 });
+    setElementRect("div", { width: 100 });
+    expect(probe().getBoundingClientRect().width).toBe(100);
+  });
+
+  it("treats a re-declared selector as the newest statement, not the oldest", () => {
+    // `Map.set` on an existing key keeps its ORIGINAL position, so without the
+    // delete-then-set in `setElementRect` the stale `div` declaration would
+    // still be last in iteration order and answer 300.
+    setElementRect(".probe", { width: 100 });
+    setElementRect("div", { width: 300 });
+    setElementRect(".probe", { width: 200 });
+    expect(probe().getBoundingClientRect().width).toBe(200);
+  });
+
+  it("hands out a copy, so a caller cannot rewrite the registry", () => {
+    // `DOMRect`'s fields are writable and every matching element would otherwise
+    // share one instance — a component that normalised a box in place would
+    // silently change what the NEXT element measures.
+    setElementRect(".probe", { width: 640 });
+    const element = probe();
+    const box = element.getBoundingClientRect();
+    box.width = 1;
+    expect(element.getBoundingClientRect().width).toBe(640);
+  });
+
+  it("ignores a declaration whose selector matches nothing", () => {
+    // Inert by design, and the reason the harness has no equivalent of
+    // `setMediaQuery`'s `observed` guard: `matches()` is asked per element per
+    // call, so a selector that happens to match nothing in one case is not an
+    // authoring mistake the registry could detect at declaration time.
+    setElementRect(".nothing-matches-this", { width: 500 });
+    const element = probe();
+    expect(element.getBoundingClientRect().width).toBe(0);
+    expect(element.offsetWidth).toBe(0);
+    expect(element.getClientRects()[0].width).toBe(1);
+  });
+
+  it("refuses a selector the engine cannot parse, at declaration time", () => {
+    // Left to `matches()`, this `SyntaxError` would surface from an unrelated
+    // element's box read in the middle of a render, with nothing in the stack
+    // pointing at the typo.
+    expect(() => setElementRect(":::nope", { width: 100 })).toThrow(
+      /valid CSS selector/,
+    );
+  });
+
+  it("has forgotten every declaration the previous tests made", () => {
+    // ORDER-DEPENDENT on purpose, and the only way to observe the reset: every
+    // case above declares `.probe`, most of them at 640px. Drop
+    // `resetElementRects()` from `vitest.setup.dom.ts`'s `afterEach` and this
+    // reads one of those widths — the leak every other file in the `dom`
+    // project would silently inherit.
+    const element = probe();
+    expect(element.getBoundingClientRect().width).toBe(0);
+    expect(element.offsetWidth).toBe(0);
+  });
+});
+
 describe("crossing the stacking breakpoint re-runs the tree's scroll memory (DW-47)", () => {
   /**
    * jsdom has no layout engine, so `treeBodyShowing`'s
@@ -301,9 +615,10 @@ describe("a Settings visit gives the tree's scroll memory back too", () => {
 /**
  * …and the separator itself, rendered directly.
  *
- * The shell cannot mount one here (see COVERAGE LIMIT above), but `SplitHandle`
- * needs no shell: it takes no geometry, reads no context and holds no state, so
- * literal props are a faithful mount. That matters because both of DW-44's and
+ * The shell mounts one above, at a declared width — but `SplitHandle` needs no
+ * shell at all: it takes no geometry, reads no context and holds no state, so
+ * literal props are a faithful mount, and the press below needs no width to be
+ * declared for it to be true. That matters because both of DW-44's and
  * DW-45's control-side claims were otherwise pinned only as source text in
  * `workbench-split.test.ts` — `aria-controls={controls}` and `onStart(event.
  * clientX)` are strings to a `toContain`, and neither scan can tell whether React

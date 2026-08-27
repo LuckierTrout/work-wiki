@@ -5,9 +5,10 @@
  * Every route and every surface in the story leans on this one module: the read
  * side derives a version, the write side re-derives it over the bytes it already
  * holds, and the whole guard is exactly as good as "the same input gives the
- * same string and a different input does not". `vitest.config.ts` is
- * `environment: "node"`, and this module is pure with no dependency, so all of
- * it runs here rather than being grepped for inside a route.
+ * same string and a different input does not". This file is collected by
+ * vitest's `node` project (`environment: "node"`, `*.test.ts`), and this module
+ * is pure with no dependency, so all of it runs here rather than being grepped
+ * for inside a route.
  *
  * The I/O matrix rows this module OWNS are the header parsing, the three
  * outcomes, and the two version functions' stability. The rows about a

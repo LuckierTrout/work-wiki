@@ -9,9 +9,11 @@
  * through the filesystem provider, the same fixture convention
  * `workbench-tree.test.ts` uses.
  *
- * The renderer itself is not exercised: vitest runs `environment: "node"` and
- * this story is forbidden from adding jsdom. What it CAN pin without a DOM is
- * the mdast the renderer receives, which is where every wikilink rule lives.
+ * The renderer itself is not exercised: this file is collected by vitest's
+ * `node` project (`environment: "node"`, `*.test.ts`), which mounts nothing —
+ * mounting it would be a `*.test.tsx` in the sibling `jsdom` project. What this
+ * file CAN pin without a DOM is the mdast the renderer receives, which is where
+ * every wikilink rule lives.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
@@ -2007,10 +2009,10 @@ describe("GET /api/workbench/preview", () => {
 // The two request decisions
 // ---------------------------------------------------------------------------
 //
-// These are the rules that used to live inside the React effect, where — with
-// no DOM environment in this suite and none allowed — they could only ever be
-// matched as source text. Both now run against a stub: no network, no timers,
-// no component.
+// These are the rules that used to live inside the React effect, where —
+// nothing being mounted in this suite, which is the `node` project's — they
+// could only ever be matched as source text. Both now run against a stub: no
+// network, no timers, no component.
 
 const PAYLOAD = PAYLOAD_SHAPE;
 
@@ -2531,11 +2533,12 @@ describe("savePreviewBody", () => {
 // The rendered body
 // ---------------------------------------------------------------------------
 //
-// The story's central feature, and until now only grepped for. `environment` is
-// still `"node"` and there is still no jsdom, no `@testing-library` and no
-// `.test.tsx` — the intent's **Never** is untouched. This is the house
-// precedent (`src/components/__tests__/markdown-math.test.ts`): render the
-// component to a static string with `react-dom/server` and assert on the markup.
+// The story's central feature, and until now only grepped for. This file stays
+// in the `node` project, so nothing here mounts: it follows the house precedent
+// (`src/components/__tests__/markdown-math.test.ts`) and renders the component
+// to a static string with `react-dom/server`, then asserts on the markup. That
+// needs no DOM at all, which is what keeps the whole suite in one project
+// rather than splitting a wikilink rule across two.
 //
 // Two regressions this exists to catch, both of which used to keep the whole
 // suite green: making `previewUrlTransform` defer unconditionally (every

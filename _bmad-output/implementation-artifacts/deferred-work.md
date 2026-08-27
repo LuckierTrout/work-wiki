@@ -1001,7 +1001,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/lib/workbench-data-version.ts:9
 severity: medium
 reason: `src/lib/workbench-data-version.ts:9`, `workbench-split.ts:8`, `workbench-settings.ts:10`, `workbench-preview.ts:243`, four components under `src/components/workbench/`, and nine `__tests__` files say so in prose — e.g. "a rule living inside a React effect could only ever be grepped for". After this pass that premise is false, so a future agent will reproduce the workaround on a reason that no longer holds. The spec's Never forbade touching `src/` in this pass, which is why it was not done here.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-dom-test-environment-fidelity
 
 ### DW-109: Most of DW-24's own verbatim list is still scan-only — the collapse toggle, badge rendering at 0 vs > 0, the sidecar dot's three states, and the live-region announcement.
 origin: spec-deferred e63cd3a386e5
@@ -1027,7 +1028,8 @@ source_spec: `spec-dom-test-environment.md`
 location: AGENTS.md
 severity: low
 reason: `AGENTS.md`'s "Running and verifying" section says nothing about it, so a contributor who names a DOM suite `*.test.ts` gets `document is not defined` with no pointer to why. That section sits inside the `bmad:context` managed block, which a refresh rewrites — so the note needs to be placed deliberately rather than appended here.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-dom-test-environment-fidelity
 
 ### DW-112: The DOM suites import their shim helpers through a relative ladder out of `src` (`../../../../vitest.setup.dom`), hardcoding each file's directory depth.
 origin: spec-deferred 60cbf8e54eb5
@@ -1043,7 +1045,8 @@ source_spec: `spec-dom-test-environment.md`
 location: vitest.setup.dom.ts
 severity: low
 reason: The DOM setup file shims `getClientRects()` to a fixed 1x1 but deliberately leaves `getBoundingClientRect()` as jsdom's all-zeros, so every `workbench-split` decision the mounted shell makes — the clamp, the divider bounds, whether a `SplitHandle` renders at all — runs at a width no browser reports, and the window `resize` listener is never exercised. The split RULES have their own node-project suite; what stays unpinned is the shell's reaction to a width. A `getBoundingClientRect` shim would open this up, and needs its own fidelity argument rather than being added in passing.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-dom-test-environment-fidelity
 decision: 2026-08-19 Stub configurable rects — Give the DOM setup a configurable `getBoundingClientRect`/`offsetWidth` harness so a test can declare a shell width, replace the FIDELITY LIMIT note with the new contract, and add mounted cases for the width-derived shell decisions including the resize listener.
 
 ### DW-114: Follow-up review still recommended for dw-dom-test-environment after the damping cap was spent
@@ -4111,4 +4114,20 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: DESIGN-triggers.md:454
 severity: low
 reason: `:141` and `:404` say "15 lint check types"; `:454` says "lint checks already detect 14 condition types". 15 matches `ALL_CHECK_TYPES` (src/lib/lint-types.ts) today, so `:454` is the wrong one — but all three are hand-written, and the file's only pin is the MCP tool count in mcp-annotations.test.ts.
+status: open
+
+### DW-468: `showSplitHandle`'s collapsed-column branch is still unmounted — nothing observes that a collapsed left column withdraws its divider.
+origin: spec-deferred 38041b9ba57d
+source_spec: `spec-dw-108-111-113-dom-test-environment-fidelity.md`
+location: src/components/workbench/__tests__/workbench-split-wiring.test.tsx
+severity: low
+reason: The width harness makes the branch reachable for the first time, but the new cases only exercise `previewOpen` (the Preview divider's condition) and the measured guard. A shell that rendered a tree divider over a zero-width track would keep the whole suite green: `showSplitHandle("tree", …)` returns `!layout.collapsed`, and no mounted case sets `writeStoredCollapsed(true)` at a declared width.
+status: open
+
+### DW-469: DW-24's roving `tabindex` / arrow-key surface is now mountable, and the comment that used to excuse it no longer does.
+origin: spec-deferred fe6c2e7d46db
+source_spec: `spec-dw-108-111-113-dom-test-environment-fidelity.md`
+location: src/components/workbench/TreePanel.tsx
+severity: low
+reason: `TreePanel.tsx`'s docblock rested the deliberate not-an-ARIA-tree decision on there being no way to verify focus machinery. That premise was corrected in this pass (the `dom` project executes focus order — `workbench-sheet.test.tsx` asserts `document.activeElement` after synthetic Tab), which leaves the decision itself defended only by the assistive-technology half. Whether the tablist and the tree rows keep their full keyboard surface is now testable and untested.
 status: open

@@ -13,9 +13,10 @@
  *      is N requests and N outcomes, and one refusal does not take its
  *      neighbours down.
  *
- * Vitest runs `environment: "node"`, so nothing here mounts a component: the
- * UI's own invariants (Import / Upload in the tree header, the shell's drop
- * handlers) are pinned by source scan in `workbench-left-column.test.ts`, and
+ * This file is collected by vitest's `node` project (`environment: "node"`,
+ * `*.test.ts`), so nothing here mounts a component: the UI's own invariants
+ * (Import / Upload in the tree header, the shell's drop handlers) are pinned by
+ * source scan in `workbench-left-column.test.ts`, and
  * every rule that could be executed instead of grepped was put in a module for
  * exactly that reason.
  */

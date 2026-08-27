@@ -25,6 +25,7 @@ import { cleanup } from "@testing-library/react";
 afterEach(() => {
   cleanup();
   resetMediaQueries();
+  resetElementRects();
   setVisibilityState("visible");
 });
 
@@ -192,6 +193,138 @@ Object.defineProperty(HTMLElement.prototype, "offsetParent", {
 });
 
 // ---------------------------------------------------------------------------
+// Declared element rects
+// ---------------------------------------------------------------------------
+//
+// jsdom runs no layout, so every box is all-zeros. `Workbench`'s measure effect
+// is `setShellWidth(shell.getBoundingClientRect().width)` on `.wb-shell`, which
+// means an unaided mount reports `shellWidth === 0` — and `isSplitMeasured` is
+// `shellWidth > 0`, so the clamp, both divider ranges and both `showSplitHandle`
+// gates are short-circuited before they can decide anything. Not one
+// width-derived decision in the shell is reachable from a mounted test.
+//
+// A test therefore DECLARES the box it wants an element to report, and the
+// declaration is keyed by CSS SELECTOR rather than by element. The decision
+// under test happens AT MOUNT: the measure effect runs before `render()` has
+// returned anything a test could hold, so an element-keyed registry could only
+// ever drive the resize path. `setElementRect(".wb-shell", { width: 1400 })`
+// before `render()` is what makes "mounted at 1400px" expressible at all.
+//
+// Unlike `setMediaQuery`, this does NOT refuse an unobserved declaration. A
+// selector matching nothing is inert by design — a test may declare a box for a
+// column that only some of its cases dock, and there is no equivalent of
+// `observed` to consult: `matches()` is asked per element per call, not once at
+// declaration time.
+
+/**
+ * A declared box, as a test states it. Only `width` is required because width is
+ * the only dimension any shell decision reads; the rest default to 0, which is
+ * what jsdom would have reported anyway.
+ *
+ * `width` has a shimmed sibling — `offsetWidth` answers it — and `height` and
+ * `top` deliberately do NOT. They are carried on the rect alone, so they reach
+ * `getBoundingClientRect()` and `getClientRects()` and nothing else: a test that
+ * declares a height and then reads `offsetHeight` still gets jsdom's 0. Nothing
+ * in the shell reads either, and a second shimmed accessor with no caller would
+ * be a fidelity claim this file cannot back.
+ */
+export interface DeclaredRect {
+  width: number;
+  height?: number;
+  left?: number;
+  top?: number;
+}
+
+const declaredRects = new Map<string, DOMRect>();
+const realGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+const realOffsetWidth = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  "offsetWidth",
+);
+
+/**
+ * The box declared for this element, or `null` when no declaration matches.
+ *
+ * LAST MATCHING DECLARATION WINS — for two overlapping selectors as much as for
+ * one re-declared key. The loop does not stop at the first hit: a test that
+ * declares `.wb-shell` and then re-declares it, which is exactly how the resize
+ * path is driven, must get the second number. `Map` preserves insertion order
+ * and a re-`set` keeps the ORIGINAL position, so `setElementRect` deletes the
+ * key first — that is what keeps "last declared" and "last in iteration order"
+ * the same statement.
+ *
+ * A COPY, never the stored instance. `DOMRect`'s fields are writable, so handing
+ * back the registry's own object would let two matching elements share one box
+ * and let code under test corrupt a later read by assigning to `.width`.
+ */
+function declaredRect(element: Element): DOMRect | null {
+  let found: DOMRect | null = null;
+  for (const [selector, rect] of declaredRects) {
+    if (element.matches(selector)) found = rect;
+  }
+  return found ? DOMRect.fromRect(found) : null;
+}
+
+/**
+ * State the box an element reports, for elements matching `selector`.
+ *
+ * Declare BEFORE `render()` for anything a mount effect measures. And declare it
+ * PER TEST, or in a `beforeEach` — never in a `beforeAll`: the `afterEach` above
+ * empties the registry, so a declaration made once for a whole `describe` is
+ * gone from the second case onwards, and the first case passing is what makes
+ * that hard to see. The same reset is why no declaration outlives its file.
+ */
+export function setElementRect(selector: string, rect: DeclaredRect): void {
+  // Refuse a selector the engine cannot parse, in the spirit of
+  // `setMediaQuery`'s `observed` guard above. Left to `matches()`, the
+  // `SyntaxError` would surface from an unrelated element's box read in the
+  // middle of a render — a stack with nothing in it pointing at the typo. A
+  // selector that merely matches NOTHING is still accepted: it is inert by
+  // design, and there is no moment at which this could know.
+  try {
+    document.createDocumentFragment().querySelector(selector);
+  } catch {
+    throw new Error(
+      `setElementRect("${selector}"): not a valid CSS selector, so no element ` +
+        `could ever match it. Declare the box against a selector the element ` +
+        `actually carries (e.g. ".wb-shell").`,
+    );
+  }
+  // Delete-then-set, so re-declaring moves the key to the END of the iteration
+  // order and `declaredRect`'s "last wins" resolves to the newest statement.
+  declaredRects.delete(selector);
+  declaredRects.set(
+    selector,
+    new DOMRect(rect.left ?? 0, rect.top ?? 0, rect.width, rect.height ?? 0),
+  );
+}
+
+/** Empty the registry, so declarations cannot leak between files. */
+export function resetElementRects(): void {
+  declaredRects.clear();
+}
+
+// The three reads a declaration answers. Each one DELEGATES when nothing is
+// declared, so every suite written before this harness existed sees exactly the
+// environment it was written against: all-zeros boxes and a 1x1 placeholder.
+Element.prototype.getBoundingClientRect = function getBoundingClientRect(
+  this: Element,
+): DOMRect {
+  return declaredRect(this) ?? realGetBoundingClientRect.call(this);
+};
+
+Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+  configurable: true,
+  get(this: HTMLElement): number {
+    const rect = declaredRect(this);
+    if (rect) return rect.width;
+    // jsdom's own accessor, which answers 0 — restored by call rather than
+    // restated, so this stays right if jsdom ever grows a real one.
+    return (realOffsetWidth?.get?.call(this) as number | undefined) ?? 0;
+  },
+});
+
+// ---------------------------------------------------------------------------
 // HTMLElement.prototype.getClientRects
 // ---------------------------------------------------------------------------
 //
@@ -201,18 +334,26 @@ Object.defineProperty(HTMLElement.prototype, "offsetParent", {
 // the filtered list is always empty and the cycle returns before it can wrap —
 // the behaviour would be untestable rather than merely unverified.
 //
-// FIDELITY LIMIT: the rect is a fixed 1x1 placeholder and `getBoundingClientRect`
-// is left as jsdom's all-zeros. A mounted `Workbench` therefore measures
-// `shellWidth === 0`, so every `workbench-split` decision it makes — the clamp,
-// the divider bounds, whether a `SplitHandle` renders at all — runs at a width
-// no browser reports. Those rules have their own node-project suite; nothing
-// here should be read as covering them.
+// FIDELITY LIMIT: nothing here is measured. Every box is all-zeros — and this
+// list a fixed 1x1 placeholder — until a test DECLARES one with
+// `setElementRect`, and a declared box is a stated fact rather than a
+// measurement. So a declaration pins the shell's REACTION to a width ("at
+// 1000px the tree gives up its space first, and the separator announces the
+// range it was actually clamped to") and can never catch a CSS or layout
+// mistake: no stylesheet was applied, no track was resolved, and an element
+// whose real width the CSS would have made something else still reports what the
+// test said. The NUMBERS themselves stay `workbench-split.test.ts`'s, where they
+// are executed as rules against the same stylesheet the browser gets.
 
 HTMLElement.prototype.getClientRects = function getClientRects(
   this: HTMLElement,
 ): DOMRectList {
-  const rects =
-    this.isConnected && !displayHidden(this) ? [new DOMRect(0, 0, 1, 1)] : [];
+  // Visibility still gates the list — the Tab cycle's whole question is "is this
+  // control on screen", and a declared box must not smuggle a hidden element
+  // back into it.
+  const visible = this.isConnected && !displayHidden(this);
+  const declared = visible ? declaredRect(this) : null;
+  const rects = visible ? [declared ?? new DOMRect(0, 0, 1, 1)] : [];
   return Object.assign(rects, {
     item: (index: number): DOMRect | null => rects[index] ?? null,
   }) as unknown as DOMRectList;

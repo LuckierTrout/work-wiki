@@ -3,10 +3,11 @@
  * sentence to show when one of them fails.
  *
  * A LIB MODULE rather than logic inside the component, for the reason the rest
- * of `workbench-*.ts` gives: vitest runs `environment: "node"` with no DOM, so
- * anything written inside an event handler could only be grepped for. `fetch`
- * is the global here (through {@link sendForm} / {@link send}), which a test
- * stubs — nothing opens a socket.
+ * of `workbench-*.ts` gives: this module's suite is vitest's `node` project
+ * (`environment: "node"`, `*.test.ts`), which mounts nothing, so anything
+ * written inside an event handler could only be grepped for there. `fetch` is
+ * the global here (through {@link sendForm} / {@link send}), which a test stubs
+ * — nothing opens a socket.
  *
  * ONE REQUEST PER ITEM. The route stores and enqueues exactly one Source, so a
  * drop of N files is N calls and N outcomes: a refused item cannot take its

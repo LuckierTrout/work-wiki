@@ -12,10 +12,12 @@ import {
  *
  * It carries no number, no bound and no geometry. The value it announces, the
  * range it announces, where the pointer went and what a key means all arrive as
- * props or leave as callbacks, because `vitest.config.ts` is `environment:
- * "node"` and a condition typed into a handler here could only ever be grepped
- * for. Everything this control could get wrong is executed in
- * `workbench-split.test.ts` instead.
+ * props or leave as callbacks, because `workbench-split.test.ts` runs in
+ * vitest's `node` project (`environment: "node"`, `*.test.ts`), which mounts
+ * nothing — a condition typed into a handler here could only ever be grepped for
+ * there. Everything this control could get wrong is executed in
+ * `workbench-split.test.ts` instead, and the control itself is mounted in
+ * `workbench-split-wiring.test.tsx`, the jsdom project's half.
  *
  * `role="separator"` with `tabIndex={0}` is the ARIA window-splitter pattern:
  * resizing is functionality, so it is keyboard-operable (WCAG 2.1.1) rather than

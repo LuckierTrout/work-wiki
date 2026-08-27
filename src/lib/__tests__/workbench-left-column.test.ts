@@ -1,10 +1,12 @@
 /**
  * Story 1.4 — the left column's structural invariants, pinned by source scan.
  *
- * Vitest runs `environment: "node"` and only `src/**\/__tests__/**\/*.test.ts`:
- * there is no jsdom and no testing-library, and adding them is out of scope
- * here (DW-24). So this follows the `single-ia.test.ts` / `workbench-chrome.
- * test.ts` convention and reads the sources as text. What it really pins is
+ * This file is collected by vitest's `node` project — `environment: "node"`,
+ * `src/**\/__tests__/**\/*.test.ts` — which mounts nothing and loads no
+ * testing-library (DW-24). Mounted coverage is the sibling `*.test.tsx` half,
+ * collected by the `dom` project. So this follows the `single-ia.test.ts` /
+ * `workbench-chrome.test.ts` convention and reads the sources as text. What it
+ * really pins is
  * that nobody turns the tree into routing, drops the tablist semantics, inlines
  * a sentence next to the shared module, turns the Preview into a navigating or
  * always-editable surface (or lets its reading face leak into chrome),
