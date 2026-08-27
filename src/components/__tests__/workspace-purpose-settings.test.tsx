@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { fireVisibilityChange } from "../../../vitest.setup.dom";
+import { fireVisibilityChange } from "@/test/dom-helpers";
 import {
   WORKSPACE_PURPOSE_READ_ONLY_COPY,
   WorkspacePurposeSettings,

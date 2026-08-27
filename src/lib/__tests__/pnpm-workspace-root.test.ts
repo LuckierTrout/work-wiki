@@ -50,6 +50,7 @@
 import { describe, expect, it, beforeAll } from "vitest";
 import { readFile, readdir } from "fs/promises";
 import path from "path";
+import { walkFiles } from "./source-scan";
 
 const SRC = path.resolve(__dirname, "../..");
 const ROOT = path.resolve(SRC, "..");
@@ -79,8 +80,14 @@ const LOCKFILE = "pnpm-lock.yaml";
 const WORKFLOWS_DIR = ".github/workflows";
 const KNOWN_NESTED = "workers/sandbox-runner";
 
-/** Directories the nested-package walk never descends into. */
-const UNWALKED = new Set(["node_modules", ".git", ".next", ".yoyo"]);
+/**
+ * Directories the nested-package walk never descends into, BEYOND the four the
+ * shared walk already excludes (`node_modules`, `.git`, `.next`, `__tests__` —
+ * see `./source-scan`).
+ *
+ * `.yoyo` is this repo's local snapshot store: not source, and large.
+ */
+const UNWALKED = [".yoyo"] as const;
 
 /**
  * Read a repo file, turning a missing file into a sentence that names what the
@@ -274,23 +281,21 @@ function pnpmDirTargets(yaml: string): string[] {
  * package that no workflow installs and one installed only by hand.
  */
 async function nestedLockfileDirs(): Promise<string[]> {
-  const found: string[] = [];
-  async function walk(rel: string): Promise<void> {
-    const entries = await readdir(path.join(ROOT, rel), {
-      withFileTypes: true,
-    });
-    for (const entry of entries) {
-      const child = rel === "." ? entry.name : `${rel}/${entry.name}`;
-      if (entry.isDirectory()) {
-        if (UNWALKED.has(entry.name)) continue;
-        await walk(child);
-      } else if (entry.name === LOCKFILE && rel !== ".") {
-        found.push(rel);
-      }
-    }
-  }
-  await walk(".");
-  return found.sort();
+  // The shared walk also refuses to descend into `__tests__`, which this one
+  // used to enter. That is correct here rather than merely harmless: a
+  // `pnpm-lock.yaml` under a `__tests__` directory is a FIXTURE staged by a
+  // suite, not a package pnpm would ever install, and reporting it as a nested
+  // package would demand a `pnpm-workspace.yaml` beside a test fixture.
+  const lockfiles = await walkFiles(ROOT, {
+    include: /^pnpm-lock\.yaml$/,
+    skipDirs: UNWALKED,
+  });
+  return lockfiles
+    .map((file) => path.relative(ROOT, path.dirname(file)).split(path.sep).join("/"))
+    // The repo root itself carries the root lockfile and is not a NESTED
+    // package; `path.relative` renders it as the empty string.
+    .filter((rel) => rel !== "")
+    .sort();
 }
 
 describe("pnpm workspace roots", () => {

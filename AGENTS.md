@@ -58,17 +58,50 @@ scan reads this file too.
   disk falls outside it — an uncollected project does not fail a combined run, so
   a misplaced file would otherwise delete every mounted assertion while the
   report still reads "all passed".
-- The setup helpers are not aliased. A suite reaches them by relative ladder from
-  its own directory: `import { setElementRect } from "../../../../vitest.setup.dom"`
-  from `src/components/workbench/__tests__/`. `@/` resolves to `src/` only, and
-  the setup files sit at the repo root.
+- The shim controls are reached through one aliased door, `@/test/dom-helpers`:
+  `import { setElementRect } from "@/test/dom-helpers"` from any `*.test.tsx` in
+  the `dom` project, whatever its depth. DOM PROJECT ONLY — the module loads
+  `vitest.setup.dom.ts`, which touches `window` at import time, so a
+  `node`-project `*.test.ts` importing it dies with `window is not defined`.
+  That symptom means the OPPOSITE of what the bullet above says: do not rename
+  the file to `.test.tsx`; a node suite has no business driving a shim, so take
+  the import out instead. The module is a RE-EXPORT and implements nothing —
+  every shim still lives only in `vitest.setup.dom.ts`, and both halves share
+  one module instance, so the setup file's `afterEach` resets the same
+  registries a suite writes through the door.
+  Do not reach past it with a relative ladder: `@/` resolves
+  to `src/` and the setup files sit at the repo root, so the ladder's length
+  encodes each suite's own directory depth and silently resolves elsewhere the
+  moment a file moves.
+- Scanning a source tree? Use `walkFiles` from `src/lib/__tests__/source-scan.ts`
+  — do not hand-roll a `walk()`. It owns the one exclusion set
+  (`__tests__`, `node_modules`, `.git`, `.next`; extras per call via
+  `skipDirs`), matches the BASENAME, and returns absolute paths. The seven
+  suites' hand-rolled copies had drifted into covering different trees before
+  DW-117 merged them; `source-scan.test.ts` pins its rules, and its header names
+  the three walkers deliberately left alone. The exclusions apply to CHILD directories only — the root
+  argument is never name-checked. Because every caller asserts "no offenders",
+  a narrowed walk passes: give each new scan a member pin naming one real file
+  per subtree plus a count floor, the `english-only.test.ts` idiom.
+- Shared test helpers are NOT named `*.test.ts(x)` — either project would
+  otherwise collect one as a suite with no assertions in it, and the
+  config-load guard rejects a `*.test.tsx` outside the dom include. There are
+  three: `source-scan.ts` and `settings-harness.tsx` sit beside the suites that
+  use them and are imported as `./name`; `src/test/dom-helpers.ts` is the
+  exception, living outside `__tests__` because it must be aliasable as
+  `@/test/…`. Nothing the app ships may import from `@/test/` — it pulls
+  `vitest` and `@testing-library/react` and mutates `HTMLElement.prototype` at
+  load. `src/lib/__tests__/test-infra-conventions.test.ts` enforces all of this.
 - Browser-level questions — real layout, real focus across platforms, real
   assistive technology — are Playwright's, `pnpm test:e2e`
   (`playwright.config.ts`, specs in `e2e/`). Not in CI; run it locally. Focus
   ORDER is executable in jsdom (`workbench-sheet.test.tsx` asserts
   `document.activeElement`); what a screen reader announces is not.
 - jsdom computes no layout, so every box is all-zeros and no stylesheet applies.
-  `vitest.setup.dom.ts` holds every shim and nothing in `src/` does. It
+  `vitest.setup.dom.ts` holds every shim and nothing in `src/` does — still
+  literally true alongside `@/test/dom-helpers` above, which re-exports all
+  seven controls and defines none of them (pinned by
+  `test-infra-conventions.test.ts`). It
   unconditionally overrides `Element.prototype.getBoundingClientRect`,
   `HTMLElement.prototype.offsetWidth`, `offsetParent`, `getClientRects`,
   `scrollIntoView`, `window.matchMedia` and `document.visibilityState` — every

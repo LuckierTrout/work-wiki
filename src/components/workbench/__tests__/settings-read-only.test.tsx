@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { cleanup, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
@@ -8,6 +8,7 @@ import {
   SETTINGS_KEY_STORED_COPY,
   SETTINGS_KEY_UNDO_COPY,
   SETTINGS_MODEL_INHERIT_COPY,
+  SETTINGS_LOADING_COPY,
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_COPY,
@@ -22,6 +23,12 @@ import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
 } from "@/lib/write-precondition";
+import {
+  announcedFor,
+  installSettingsFetchMock,
+  mountSettings,
+  settingsPayload,
+} from "./settings-harness";
 
 /**
  * The Settings controls a read-only deployment refuses, MOUNTED (DW-37, DW-65).
@@ -36,100 +43,20 @@ import {
  * value.
  */
 
-/** The stored settings, as `GET /api/settings` serves them. */
-function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
-  return {
-    // The write precondition `GET /api/settings` serves beside the values — the
-    // opaque stamp the store holds, not a hash of the config (DW-197).
-    version: "s1:00000000000000000000000000000000",
-    chatProvider: "openai",
-    chatModel: "gpt-4o",
-    ingestProvider: "anthropic",
-    ingestModel: "claude-sonnet-4-20250514",
-    customBaseUrl: null,
-    hasCustomApiKey: false,
-    llmTimeoutSeconds: null,
-    vectorSearchEnabled: false,
-    embeddingProvider: "openai",
-    embeddingModel: "text-embedding-3-small",
-    embeddingBaseUrl: null,
-    hasEmbeddingApiKey: true,
-    // No substitution running — this file is about what a read-only deployment
-    // refuses, not about what it embeds with (DW-312).
-    embeddingModelInEffect: null,
-    embeddingModelOverridden: false,
-    envEmbeddingProvider: null,
-    envEmbeddingModel: null,
-    envCustomBaseUrl: null,
-    envEmbeddingApiKeyProviders: [],
-    // Not on Workers, which is irrelevant to this file's `openai` selection —
-    // the binding leg fires for `workers-ai` only (DW-225).
-    hasWorkersAiBinding: false,
-    firecrawlBaseUrl: null,
-    hasFirecrawlApiKey: false,
-    // Deep Research, fresh. The read-only cases below add their own overrides.
-    researchProvider: null,
-    envResearchProvider: null,
-    hasTavilyApiKey: false,
-    hasSerpApiKey: false,
-    serpApiEngine: null,
-    searxngBaseUrl: null,
-    envSearxngBaseUrl: null,
-    searxngCategories: null,
-    envResearchProviders: [],
-    // Epic 7's panes are not what this file is about: the Intake door has no
-    // inbound address configured and MinerU is off, which is the fresh-
-    // deployment answer for both.
-    inboundEmailAddress: null,
-    inboundEmailEnabled: false,
-    intakeKeepParsed: false,
-    mineruMode: "off",
-    mineruLocalBaseUrl: null,
-    hasMinerUApiKey: false,
-    // The loopback door, shut — the fail-closed answer every one of these
-    // fixtures wants, since none of them is about Epic 8's pane.
-    apiEnabled: false,
-    allowUnauthenticated: false,
-    hasLoopbackApiToken: false,
-    loopbackTokenSource: "none",
-    language: "English",
-    readOnly: true,
-    ...overrides,
-  };
-}
-
-let fetchMock: ReturnType<typeof vi.fn>;
-
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-});
-
-afterEach(() => {
-  // FIRST: vitest runs afterEach hooks in reverse registration order, so the
-  // setup file's `cleanup()` lands after this one. Unmounting here tears the
-  // tree down while `fetch` is still stubbed.
-  cleanup();
-  vi.unstubAllGlobals();
-});
-
 /**
- * What a screen reader would actually read out for a control: every id in its
- * `aria-describedby` list, resolved and joined. A single `getElementById` over
- * the whole attribute silently returns null the moment a second id is appended,
- * which would make an assertion on the description pass vacuously.
+ * The stored settings this file asserts against: the shared fixture, plus the
+ * two facts that make it a READ-ONLY deployment carrying a stored key.
+ *
+ * `readOnly` is what every case here is about. `hasEmbeddingApiKey` is on so the
+ * Embedding key row has a STORED key to refuse to remove — with the shared
+ * base's `false` the row would show the absent state and there would be nothing
+ * for read-only to protect.
  */
-function announcedFor(control: HTMLElement): string {
-  const ids = (control.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
-  expect(ids.length).toBeGreaterThan(0);
-  return ids
-    .map((id) => {
-      const target = document.getElementById(id);
-      expect(target).not.toBeNull();
-      return target!.textContent ?? "";
-    })
-    .join(" ");
+function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
+  return settingsPayload({ hasEmbeddingApiKey: true, readOnly: true, ...overrides });
 }
+
+const fetchMock = installSettingsFetchMock();
 
 /**
  * Mount one category and let the single on-mount read settle.
@@ -138,19 +65,11 @@ function announcedFor(control: HTMLElement): string {
  * `llm-models` and Embedding under `embeddings`, so Firecrawl is the only one of
  * the three that no category already reached.
  */
-async function mount(
+function mount(
   category: "llm-models" | "embeddings" | "external-sources",
   stored: WorkbenchSettingsPayload,
 ) {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => ({ workbench: stored }),
-  } as unknown as Response);
-  const view = render(<SettingsCanvas category={category} headingId="wb-set-heading" />);
-  // The loading state is replaced once the read lands.
-  await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
-  return view;
+  return mountSettings(category, stored);
 }
 
 describe("a read-only deployment (DW-37, DW-65)", () => {
@@ -455,7 +374,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       return next() as Response;
     });
     render(<SettingsCanvas category="llm-models" headingId="wb-set-heading" />);
-    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
   }
 
   function read(version: string) {
@@ -571,7 +490,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       json: async () => ({ workbench: withoutVersion }),
     } as unknown as Response);
     render(<SettingsCanvas category="llm-models" headingId="wb-set-heading" />);
-    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
 
     expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe("gpt-4o");
     // …and a save from it carries NO `If-Match`, which the route answers 428

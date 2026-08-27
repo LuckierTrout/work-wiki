@@ -13,7 +13,7 @@ import {
   _resetDataVersionListeners,
   requestDataVersionCheck,
 } from "@/lib/workbench-data-version";
-import { fireVisibilityChange, setVisibilityState } from "../../../../vitest.setup.dom";
+import { fireVisibilityChange, setVisibilityState } from "@/test/dom-helpers";
 
 /**
  * The watcher's EFFECT, mounted (DW-52).

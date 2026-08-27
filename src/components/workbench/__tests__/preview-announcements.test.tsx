@@ -24,7 +24,7 @@ import {
 import { LIVE_REGION_REPEAT_MARK, announcementSentence } from "@/lib/live-region";
 import { buildFileTree } from "@/lib/workbench-tree";
 import { writeStoredSelection } from "@/lib/workbench-state";
-import { setMediaQuery } from "../../../../vitest.setup.dom";
+import { setMediaQuery } from "@/test/dom-helpers";
 
 /**
  * DW-34, DW-50, DW-53 and DW-54 — everything the docked Preview does WITHOUT

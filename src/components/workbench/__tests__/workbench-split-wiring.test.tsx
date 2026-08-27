@@ -20,7 +20,7 @@ import {
   writeStoredSplitWidths,
   writeStoredTreeScroll,
 } from "@/lib/workbench-state";
-import { setElementRect, setMediaQuery } from "../../../../vitest.setup.dom";
+import { setElementRect, setMediaQuery } from "@/test/dom-helpers";
 
 /**
  * DW-44/45/47's two headline behaviours, MOUNTED — the halves `workbench-split.

@@ -8,108 +8,38 @@
  * counts as configured. `workbench-settings.test.ts` reads this component's
  * source and can see none of those.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
   DEFAULT_SERPAPI_ENGINE,
   SETTINGS_FIRECRAWL_COPY,
+  SETTINGS_LOADING_COPY,
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_RESEARCH_COPY,
   SETTINGS_RESEARCH_PROVIDER_LABEL,
   researchProviderUnconfiguredCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import {
+  announcedFor,
+  installSettingsFetchMock,
+  mountSettings,
+  settingsPayload,
+} from "./settings-harness";
 
-function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
-  return {
-    version: "s1:00000000000000000000000000000000",
-    chatProvider: "openai",
-    chatModel: "gpt-4o",
-    ingestProvider: "anthropic",
-    ingestModel: "claude-sonnet-4-20250514",
-    customBaseUrl: null,
-    hasCustomApiKey: false,
-    llmTimeoutSeconds: null,
-    vectorSearchEnabled: false,
-    embeddingProvider: "openai",
-    embeddingModel: "text-embedding-3-small",
-    embeddingBaseUrl: null,
-    hasEmbeddingApiKey: false,
-    embeddingModelInEffect: null,
-    embeddingModelOverridden: false,
-    envEmbeddingProvider: null,
-    envEmbeddingModel: null,
-    envCustomBaseUrl: null,
-    envEmbeddingApiKeyProviders: [],
-    hasWorkersAiBinding: false,
-    firecrawlBaseUrl: null,
-    hasFirecrawlApiKey: false,
-    researchProvider: null,
-    envResearchProvider: null,
-    hasTavilyApiKey: false,
-    hasSerpApiKey: false,
-    serpApiEngine: null,
-    searxngBaseUrl: null,
-    envSearxngBaseUrl: null,
-    searxngCategories: null,
-    envResearchProviders: [],
-    // Epic 7's panes are not what this file is about: the Intake door has no
-    // inbound address configured and MinerU is off, which is the fresh-
-    // deployment answer for both.
-    inboundEmailAddress: null,
-    inboundEmailEnabled: false,
-    intakeKeepParsed: false,
-    mineruMode: "off",
-    mineruLocalBaseUrl: null,
-    hasMinerUApiKey: false,
-    // The loopback door, shut — the fail-closed answer every one of these
-    // fixtures wants, since none of them is about Epic 8's pane.
-    apiEnabled: false,
-    allowUnauthenticated: false,
-    hasLoopbackApiToken: false,
-    loopbackTokenSource: "none",
-    language: "English",
-    readOnly: false,
-    ...overrides,
-  };
-}
+/**
+ * The shared fixture, unchanged: this file's claims are all about a FRESH
+ * deployment, which is exactly what `settingsPayload()`'s base describes, so it
+ * states no deltas of its own.
+ */
+const payload = settingsPayload;
 
-let fetchMock: ReturnType<typeof vi.fn>;
+const fetchMock = installSettingsFetchMock();
 
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-});
-
-afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
-});
-
-async function mount(stored: WorkbenchSettingsPayload) {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => ({ workbench: stored }),
-  } as unknown as Response);
-  const view = render(
-    <SettingsCanvas category="external-sources" headingId="wb-set-heading" />,
-  );
-  await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
-  return view;
-}
-
-function announcedFor(control: HTMLElement): string {
-  const ids = (control.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
-  expect(ids.length).toBeGreaterThan(0);
-  return ids
-    .map((id) => {
-      const target = document.getElementById(id);
-      expect(target).not.toBeNull();
-      return target!.textContent ?? "";
-    })
-    .join(" ");
+/** Mount the External Sources category and let the single on-mount read settle. */
+function mount(stored: WorkbenchSettingsPayload) {
+  return mountSettings("external-sources", stored);
 }
 
 const providerSelect = () =>
@@ -287,7 +217,7 @@ describe("the Deep Research provider select", () => {
       json: async () => ({ saved: true, workbench: payload({ researchProvider: "searxng" }) }),
     } as unknown as Response);
     render(<SettingsCanvas category="external-sources" headingId="wb-set-heading" />);
-    await waitFor(() => expect(screen.queryByText("Loading…")).toBeNull());
+    await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
 
     fireEvent.change(providerSelect(), { target: { value: "searxng" } });
     fireEvent.change(screen.getByLabelText("SearXNG instance URL"), {

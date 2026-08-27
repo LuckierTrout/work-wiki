@@ -1037,7 +1037,8 @@ source_spec: `spec-dom-test-environment.md`
 location: src/hooks/__tests__/useSidecarStatus.test.tsx:5
 severity: low
 reason: Every other import in the suite uses the `@` alias. Moving a test file requires fixing the depth. The natural fix — helpers in `src/test/dom-helpers.ts` re-exported by the setup file — adds a file under `src/`, which the spec's Never forbade in this pass.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-test-infra-shared-helpers
 
 ### DW-113: No mounted test can reach the shell's width-derived decisions, because a mounted `Workbench` measures `shellWidth === 0`.
 origin: spec-deferred d7b2d8e349f5
@@ -1082,7 +1083,8 @@ source_spec: `spec-retire-zh-cn-locale.md`
 location: src/lib/__tests__/
 severity: low
 reason: `brand-copy.test.ts`, `single-ia.test.ts`, `workbench-left-column.test.ts`, `workbench-data-version.test.ts` and the new `english-only.test.ts` each define their own `walk()`; only some skip `node_modules`, and the include filters differ. A shared `__tests__` helper would stop a future scan from looking thorough while reading a narrower tree.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-test-infra-shared-helpers
 
 ### DW-118: No test renders the root layout or the nav, so the app shell's provider tree is guarded only by source-text reads.
 origin: spec-deferred 3681ca6a1583
@@ -2068,7 +2070,8 @@ source_spec: `spec-dw-73-workers-ai-embedding-namespace.md`
 location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
 severity: low
 reason: `payload()`, the `fetchMock` `beforeEach`/`afterEach`, `announcedFor()` and `mount()` are copied word for word — doc comments included — from `src/components/workbench/__tests__/settings-read-only.test.tsx:26-101`. Two independently maintained copies of a screen-reader assertion helper is the same drift the shared `embeddingModelMatchesProvider` predicate exists to prevent on the production side. Extracting a shared workbench test helper edits a passing test file outside this story's surface, so it is a focused cleanup rather than an in-pass patch.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-test-infra-shared-helpers
 
 ### DW-229: LintIssueCard's hand-copied `fixableTypes` set omits `supersedes-dangling`, so one of the ten auto-fixable lint checks renders with no Fix button.
 origin: spec-deferred f19a42b24e75
@@ -4130,4 +4133,28 @@ source_spec: `spec-dw-108-111-113-dom-test-environment-fidelity.md`
 location: src/components/workbench/TreePanel.tsx
 severity: low
 reason: `TreePanel.tsx`'s docblock rested the deliberate not-an-ARIA-tree decision on there being no way to verify focus machinery. That premise was corrected in this pass (the `dom` project executes focus order — `workbench-sheet.test.tsx` asserts `document.activeElement` after synthetic Tab), which leaves the decision itself defended only by the assistive-technology half. Whether the tablist and the tree rows keep their full keyboard surface is now testable and untested.
+status: open
+
+### DW-470: Two source-tree walkers still hand-roll the traversal `walkFiles` now owns, and both descend into `__tests__`.
+origin: spec-deferred d6e15d9fde5e
+source_spec: `spec-dw-112-117-228-test-infra-shared-helpers.md`
+location: src/lib/__tests__/read-only-door-coverage.test.ts:113
+severity: low
+reason: `routeFiles()` (src/lib/__tests__/read-only-door-coverage.test.ts:113) and `retiredSurfacesOnDisk()` (src/lib/__tests__/retired-surfaces.test.ts:49) implement the same "descend and collect by basename" contract as the seven suites migrated here, with no exclusions at all. Neither is named `walk()`, so neither appeared in the intent's census of eight; migrating them was out of scope on the intent's own authority. No file exists under a `__tests__` directory that either would currently mishandle, so this is latent rather than active.
+status: open
+
+### DW-471: The fifth mounted Settings suite still carries its own ~50-field payload because the shared harness is not reachable from its directory.
+origin: spec-deferred 9a412cc9857a
+source_spec: `spec-dw-112-117-228-test-infra-shared-helpers.md`
+location: src/app/settings/__tests__/settings-page-legacy-surface-parity.test.tsx
+severity: low
+reason: `src/app/settings/__tests__/settings-page-legacy-surface-parity.test.tsx` duplicates the fixture the new `settings-harness.tsx` consolidates for the four workbench suites, but the harness lives inside `src/components/workbench/__tests__/` and is reachable only by a `./` sibling import. Folding it in would need the harness to move somewhere aliasable (mirroring `src/test/`), which the intent did not ask for.
+status: open
+
+### DW-472: Two settings fixtures override `version` to a different stamp shape than the shared base with no explanation of why both shapes exist.
+origin: spec-deferred 5159aae5de1b
+source_spec: `spec-dw-112-117-228-test-infra-shared-helpers.md`
+location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
+severity: low
+reason: `settings-vector-namespace.test.tsx` and `settings-embedding-provider-switch.test.tsx` state `version: "w1:2-0000000000000000"` where `settingsPayload()`'s base is `"s1:00000000000000000000000000000000"`. No assertion in either file reads `version`, and both values predate this change, so the consolidation preserved rather than caused the divergence — but it is now visible as an unexplained delta on the shared base.
 status: open

@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
+import { describe, expect, it } from "vitest";
+import { fireEvent, screen } from "@testing-library/react";
 import { embeddingProviderLabel } from "@/lib/providers";
 import {
   SETTINGS_KEY_ABSENT_COPY,
@@ -8,9 +7,14 @@ import {
   SETTINGS_KEY_REMOVE_PENDING_COPY,
   SETTINGS_KEY_STORED_COPY,
   SETTINGS_KEY_UNDO_COPY,
-  SETTINGS_LOADING_COPY,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import {
+  announcedFor,
+  installSettingsFetchMock,
+  mountSettings,
+  settingsPayload,
+} from "./settings-harness";
 
 /**
  * Clear on switch, MOUNTED (DW-69/DW-72).
@@ -25,108 +29,31 @@ import {
  * node suite reading source cannot observe either.
  */
 
-/** The stored settings, as `GET /api/settings` serves them. */
+/**
+ * The stored settings this file asserts against: the shared fixture, as a
+ * deployment already CONFIGURED for OpenAI — its endpoint and its credential.
+ *
+ * Both deltas are the subject: what clearing on switch has to clear. The shared
+ * base has no endpoint and no stored key, which would leave nothing to clear.
+ * The `version` is the store's own stamp shape for this deployment.
+ */
 function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
-  return {
+  return settingsPayload({
     version: "w1:2-0000000000000000",
-    chatProvider: "openai",
-    chatModel: "gpt-4o",
-    ingestProvider: "anthropic",
-    ingestModel: "claude-sonnet-4-20250514",
-    customBaseUrl: null,
-    hasCustomApiKey: false,
-    llmTimeoutSeconds: null,
-    vectorSearchEnabled: false,
-    // A deployment configured for OpenAI: its endpoint and its credential.
-    embeddingProvider: "openai",
-    embeddingModel: "text-embedding-3-small",
     embeddingBaseUrl: "https://o/v1",
     hasEmbeddingApiKey: true,
-    embeddingModelInEffect: null,
-    embeddingModelOverridden: false,
-    envEmbeddingProvider: null,
-    envEmbeddingModel: null,
-    envCustomBaseUrl: null,
-    // No env credential for either vendor — the stored key is the only one in
-    // play, which is what this file is about.
-    envEmbeddingApiKeyProviders: [],
-    hasWorkersAiBinding: false,
-    firecrawlBaseUrl: null,
-    hasFirecrawlApiKey: false,
-    // Deep Research, fresh. This file is about the embedding pair.
-    researchProvider: null,
-    envResearchProvider: null,
-    hasTavilyApiKey: false,
-    hasSerpApiKey: false,
-    serpApiEngine: null,
-    searxngBaseUrl: null,
-    envSearxngBaseUrl: null,
-    searxngCategories: null,
-    envResearchProviders: [],
-    // Epic 7's panes are not what this file is about: the Intake door has no
-    // inbound address configured and MinerU is off, which is the fresh-
-    // deployment answer for both.
-    inboundEmailAddress: null,
-    inboundEmailEnabled: false,
-    intakeKeepParsed: false,
-    mineruMode: "off",
-    mineruLocalBaseUrl: null,
-    hasMinerUApiKey: false,
-    // The loopback door, shut — the fail-closed answer every one of these
-    // fixtures wants, since none of them is about Epic 8's pane.
-    apiEnabled: false,
-    allowUnauthenticated: false,
-    hasLoopbackApiToken: false,
-    loopbackTokenSource: "none",
-    language: "English",
-    readOnly: false,
     ...overrides,
-  };
+  });
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
-
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-});
-
-afterEach(() => {
-  // FIRST: vitest runs afterEach hooks in reverse registration order, so the
-  // setup file's `cleanup()` lands after this one. Unmounting here tears the
-  // tree down while `fetch` is still stubbed.
-  cleanup();
-  vi.unstubAllGlobals();
-});
+// Registers the `fetch` stub and the `cleanup()`-first teardown. Nothing here
+// asserts on the request itself — the mount helper is the only caller — so the
+// mock it returns is not held.
+installSettingsFetchMock();
 
 /** Mount the embeddings category and let the single on-mount read settle. */
-async function mount(stored: WorkbenchSettingsPayload) {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => ({ workbench: stored }),
-  } as unknown as Response);
-  const view = render(<SettingsCanvas category="embeddings" headingId="wb-set-heading" />);
-  await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
-  return view;
-}
-
-/**
- * What a screen reader would actually read out for a control: every id in its
- * `aria-describedby` list, resolved and joined. A single `getElementById` over
- * the whole attribute silently returns null the moment a second id is appended,
- * which would make an assertion on the description pass vacuously.
- */
-function announcedFor(control: HTMLElement): string {
-  const ids = (control.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
-  expect(ids.length).toBeGreaterThan(0);
-  return ids
-    .map((id) => {
-      const target = document.getElementById(id);
-      expect(target).not.toBeNull();
-      return target!.textContent ?? "";
-    })
-    .join(" ");
+function mount(stored: WorkbenchSettingsPayload) {
+  return mountSettings("embeddings", stored);
 }
 
 const providerSelect = () =>

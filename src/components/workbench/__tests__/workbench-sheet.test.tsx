@@ -6,7 +6,7 @@ import {
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
 import { SPLIT_WIDE_QUERY } from "@/lib/workbench-split";
-import { setMediaQuery } from "../../../../vitest.setup.dom";
+import { setMediaQuery } from "@/test/dom-helpers";
 
 /**
  * The Workbench shell's off-canvas sheet, MOUNTED (DW-24).

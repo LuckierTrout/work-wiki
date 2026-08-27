@@ -14,8 +14,9 @@
  * of the rules they have to outrank.
  */
 import { describe, expect, it } from "vitest";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { walkFiles } from "./source-scan";
 import {
   FILES_EMPTY_COPY,
   FILES_TRUNCATED_COPY,
@@ -48,19 +49,46 @@ function globals(): Promise<string> {
   return readFile(path.join(SRC, "app/globals.css"), "utf8");
 }
 
-async function walk(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const dirent of await readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, dirent.name);
-    // `__tests__` is skipped for the same reason `single-ia.test.ts` skips it:
-    // a scan that reads its own assertion text can only ever fail.
-    if (dirent.isDirectory()) {
-      if (dirent.name === "__tests__") continue;
-      out.push(...(await walk(full)));
-    }
-    else if (/\.(tsx?|css)$/.test(dirent.name)) out.push(full);
+/**
+ * The sources this file scans as text. `__tests__` is skipped by `walkFiles`
+ * itself, for the same reason `single-ia.test.ts` needed it skipped: a scan that
+ * reads its own assertion text can only ever fail.
+ */
+const SCANNED_SOURCE = /\.(tsx?|css)$/;
+
+/**
+ * Every source under `src/`, with the walk's reach asserted on the way past.
+ *
+ * The one case that uses this asserts an offender list is EMPTY, which the
+ * emptiest possible corpus satisfies perfectly. Since DW-117 the traversal is
+ * shared with every other scanning suite, so one name appended to
+ * `SKIPPED_DIRS` narrows this scan too — silently, and in the passing
+ * direction. Named files prove the reach; the floor proves the walk did not
+ * collapse to just them.
+ */
+async function scannedSources(): Promise<string[]> {
+  const files = await walkFiles(SRC, { include: SCANNED_SOURCE });
+  const relative = files.map((f) => path.relative(SRC, f));
+  for (const file of [
+    // The two trees a retired left-column affordance could come back in, plus
+    // the stylesheet that would still carry its rule.
+    path.join("components", "workbench", "Workbench.tsx"),
+    path.join("app", "globals.css"),
+    path.join("lib", "workbench-tree.ts"),
+    path.join("hooks", "useToast.ts"),
+  ]) {
+    expect(
+      relative,
+      `scannedSources() no longer reaches ${file} — the scan would report no ` +
+        `offenders because it read almost nothing.`,
+    ).toContain(file);
   }
-  return out;
+  // ~550 files today; 250 leaves room to delete a tree legitimately.
+  expect(
+    files.length,
+    "scannedSources() collapsed — a tree dropped out of the walk",
+  ).toBeGreaterThan(250);
+  return files;
 }
 
 describe("the shell wires the left column without routing", () => {
@@ -989,7 +1017,7 @@ describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => 
 describe("the retired affordance stays retired", () => {
   it("no source under src/ renders `Open project folder`", async () => {
     const offenders: string[] = [];
-    for (const file of await walk(SRC)) {
+    for (const file of await scannedSources()) {
       if ((await readFile(file, "utf8")).includes("Open project folder")) {
         offenders.push(path.relative(SRC, file));
       }

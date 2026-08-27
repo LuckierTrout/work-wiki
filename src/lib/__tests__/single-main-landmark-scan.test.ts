@@ -16,8 +16,9 @@
  * negative-control cases that prove it is honest rather than trusting it.
  */
 import { describe, expect, it } from "vitest";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { walkFiles } from "./source-scan";
 
 const SRC = path.resolve(__dirname, "../..");
 
@@ -35,20 +36,6 @@ const LANDMARK_OWNERS = new Set([path.join("components", "SiteChrome.tsx")]);
 /** Source extensions that can contain JSX the browser will render. */
 const SOURCE_FILE = /\.(?:tsx?|jsx?|mdx)$/;
 
-async function walk(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "__tests__") continue;
-      out.push(...(await walk(full)));
-    } else if (SOURCE_FILE.test(entry.name)) {
-      out.push(full);
-    }
-  }
-  return out;
-}
-
 /**
  * Every directory under `src` that can put an element in the app's document.
  *
@@ -64,11 +51,47 @@ async function walk(dir: string): Promise<string[]> {
  */
 const SCANNED_DIRS = ["app", "components", "hooks"] as const;
 
+/**
+ * One member file per scanned tree, so the walk's REACH is asserted and not
+ * assumed.
+ *
+ * A false negative silently deletes this whole guard (the header says so), and
+ * the emptiest possible corpus is the most complete false negative there is:
+ * every case below asserts an offender list is empty. `hooks` is the pin that
+ * matters most — it is here because `useToast.ts` and `useKeyboardShortcuts.ts`
+ * build trees with `createElement` on EVERY route, and it is also the tree a
+ * name appended to the shared walk's `SKIPPED_DIRS` (DW-117) would delete
+ * without any other suite noticing.
+ */
+const SCANNED_DIR_WITNESSES: readonly string[] = [
+  path.join("app", "layout.tsx"),
+  path.join("components", "SiteChrome.tsx"),
+  path.join("hooks", "useToast.ts"),
+];
+
 async function appAndComponentSources(): Promise<string[]> {
   const files: string[] = [];
   for (const dir of SCANNED_DIRS) {
-    files.push(...(await walk(path.join(SRC, dir))));
+    files.push(...(await walkFiles(path.join(SRC, dir), { include: SOURCE_FILE })));
   }
+  const relative = files.map((f) => path.relative(SRC, f));
+  // Iterated over the WITNESS list, deliberately not over `SCANNED_DIRS`: a
+  // loop keyed by the thing under test goes vacuous exactly when a directory is
+  // dropped from it, which is the edit this is here to catch.
+  for (const witness of SCANNED_DIR_WITNESSES) {
+    expect(
+      relative,
+      `appAndComponentSources() no longer reaches ${witness}, so its tree is ` +
+        `out of the scan — every case below would report no duplicate landmark ` +
+        `because it read nothing that could hold one.`,
+    ).toContain(witness);
+  }
+  // ~330 files today; the floor proves the walk did not collapse to just the
+  // three named witnesses.
+  expect(
+    files.length,
+    "appAndComponentSources() collapsed — a tree dropped out of the walk",
+  ).toBeGreaterThan(150);
   return files;
 }
 
@@ -435,14 +458,20 @@ function selectorPreludes(css: string): string[] {
  */
 const MAIN_AT_SELECTOR_POSITION = /(?:^|[\s,>+~(])main(?![-\w])/;
 
-async function stylesheets(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...(await stylesheets(full)));
-    else if (entry.name.endsWith(".css")) out.push(full);
-  }
-  return out;
+/**
+ * Every stylesheet under `src`, through the shared walk (DW-117).
+ *
+ * This used to be a second hand-rolled traversal in this same file, excluding
+ * nothing — so unlike `appAndComponentSources()` above it descended into
+ * `__tests__`. The covered set is provably unchanged by the switch: `src/`
+ * holds exactly one `.css` file (`app/globals.css`) and NO `__tests__`
+ * directory contains one, so there is nothing for the new exclusion to remove.
+ * Were a fixture stylesheet ever added under a `__tests__` directory, excluding
+ * it is the behaviour this scan wants anyway — a suite's own fixture is not a
+ * rule the app ships.
+ */
+function stylesheets(dir: string): Promise<string[]> {
+  return walkFiles(dir, { include: /\.css$/ });
 }
 
 describe("no stylesheet targets the main element", () => {

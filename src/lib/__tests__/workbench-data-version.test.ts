@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
+import { walkFiles } from "./source-scan";
 
 /**
  * The route's gate is `getPrincipal()`. Mocked here — hoisted, so it governs the
@@ -67,6 +68,55 @@ import { _resetStorage, getStorage } from "../storage";
 
 const SRC = path.resolve(__dirname, "../..");
 const WORKBENCH = path.join(SRC, "components/workbench");
+
+/**
+ * The app sources the two scans below read as text.
+ *
+ * `walkFiles` (`./source-scan`) never descends into `__tests__`, which is what
+ * the two call sites used to re-state as an inline `path.sep`-fenced filter on
+ * every returned path — a suite's own assertion text names `bumpDataVersion(`
+ * and `revalidateTag` verbatim, so a scan that could see itself would always
+ * report itself.
+ */
+const APP_SOURCE = /\.tsx?$/;
+
+/**
+ * Every app source under `src/`, with the walk's reach asserted on the way
+ * past.
+ *
+ * Both scans that use this assert an offender list matches an expected set —
+ * one of them the EMPTY set — and a corpus that shrank satisfies either by
+ * construction. The `bumpDataVersion` scan is the sharper case: its expectation
+ * is a list of seven files, so a walk that stopped reaching `lib/` would fail
+ * loudly, but a walk that stopped reaching `app/` or `components/` would pass
+ * while no longer proving the call site is unique. Since DW-117 the traversal
+ * is shared with every other scanning suite, so one name appended to
+ * `SKIPPED_DIRS` narrows this scan too, silently and in the passing direction.
+ */
+async function scannedAppSources(): Promise<string[]> {
+  const files = await walkFiles(SRC, { include: APP_SOURCE });
+  const relative = files.map((f) => path.relative(SRC, f).split(path.sep).join("/"));
+  for (const file of [
+    // One per tree a stray `bumpDataVersion(` or a banned refresh mechanism
+    // could land in.
+    "lib/data-version.ts",
+    "app/page.tsx",
+    "components/workbench/DataVersionWatcher.tsx",
+    "hooks/useToast.ts",
+  ]) {
+    expect(
+      relative,
+      `scannedAppSources() no longer reaches ${file} — both scans below would ` +
+        `pass because they read almost nothing.`,
+    ).toContain(file);
+  }
+  // ~550 files today; 250 leaves room to delete a tree legitimately.
+  expect(
+    files.length,
+    "scannedAppSources() collapsed — a tree dropped out of the walk",
+  ).toBeGreaterThan(250);
+  return files;
+}
 
 function readSource(relative: string): Promise<string> {
   return fs.readFile(path.join(SRC, relative), "utf8");
@@ -1061,8 +1111,7 @@ describe("the bump lives at the exact write-owner tails", () => {
 
   it("is called from nowhere else in the app", async () => {
     const offenders: string[] = [];
-    for (const file of await walk(SRC)) {
-      if (file.includes(`${path.sep}__tests__${path.sep}`)) continue;
+    for (const file of await scannedAppSources()) {
       if ((await fs.readFile(file, "utf8")).includes("bumpDataVersion(")) {
         offenders.push(path.relative(SRC, file).split(path.sep).join("/"));
       }
@@ -1277,8 +1326,7 @@ describe("the bump lives at the exact write-owner tails", () => {
       /react-query/i,
     ];
     const offenders: string[] = [];
-    for (const file of await walk(SRC)) {
-      if (file.includes(`${path.sep}__tests__${path.sep}`)) continue;
+    for (const file of await scannedAppSources()) {
       const source = await fs.readFile(file, "utf8");
       if (banned.some((pattern) => pattern.test(source))) {
         offenders.push(path.relative(SRC, file).split(path.sep).join("/"));
@@ -1301,16 +1349,6 @@ describe("the bump lives at the exact write-owner tails", () => {
     }
   });
 });
-
-async function walk(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...(await walk(full)));
-    else if (/\.tsx?$/.test(entry.name)) out.push(full);
-  }
-  return out;
-}
 
 describe("the served baseline reaches the browser through the provider", () => {
   it("page.tsx reads it on the server, BEFORE the data it describes", async () => {

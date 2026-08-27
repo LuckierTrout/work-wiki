@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { useSidecarStatus } from "@/hooks/useSidecarStatus";
 import { SIDECAR_HEALTH_URL, SIDECAR_PROBE_TIMEOUT_MS } from "@/lib/sidecar";
-import { fireVisibilityChange, setVisibilityState } from "../../../vitest.setup.dom";
+import { fireVisibilityChange, setVisibilityState } from "@/test/dom-helpers";
 
 /**
  * The rail's sidecar signal, MOUNTED.

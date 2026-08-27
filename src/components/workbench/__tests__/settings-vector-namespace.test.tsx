@@ -1,13 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
+import { describe, expect, it } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import {
   WORKERS_AI_EMBEDDING_MODEL_IDS,
   WORKERS_AI_MODEL_PREFIX,
   embeddingProviderLabel,
 } from "@/lib/providers";
 import {
-  SETTINGS_LOADING_COPY,
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_VECTOR_BINDING_ENV_NOTE,
   SETTINGS_VECTOR_BINDING_NOTE,
@@ -17,6 +15,12 @@ import {
   settingsEnvOverrideCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import {
+  announcedFor,
+  installSettingsFetchMock,
+  mountSettings,
+  settingsPayload,
+} from "./settings-harness";
 
 /**
  * The DW-73 namespace refusal, MOUNTED.
@@ -31,101 +35,26 @@ import {
  * made against the rendered DOM, on the text a screen reader would announce.
  */
 
-/** The stored settings, as `GET /api/settings` serves them. */
-function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
-  return {
-    version: "w1:2-0000000000000000",
-    chatProvider: "openai",
-    chatModel: "gpt-4o",
-    ingestProvider: "anthropic",
-    ingestModel: "claude-sonnet-4-20250514",
-    customBaseUrl: null,
-    hasCustomApiKey: false,
-    llmTimeoutSeconds: null,
-    vectorSearchEnabled: false,
-    embeddingProvider: "workers-ai",
-    embeddingModel: "text-embedding-3-small",
-    embeddingBaseUrl: null,
-    hasEmbeddingApiKey: false,
-    // No substitution by default (DW-312), so every case written before the
-    // pair existed announces exactly what it announced then — the cases that
-    // are ABOUT the substitution opt in by overriding both fields.
-    embeddingModelInEffect: null,
-    embeddingModelOverridden: false,
-    envEmbeddingProvider: null,
-    envEmbeddingModel: null,
-    envCustomBaseUrl: null,
-    envEmbeddingApiKeyProviders: [],
-    // ON Workers. Every case in this file selects `workers-ai`, and without the
-    // binding the gate would refuse for a SECOND reason (DW-225) — which would
-    // change every sentence asserted below and leave nothing here about the
-    // namespace at all. The binding leg has its own cases at the end.
-    hasWorkersAiBinding: true,
-    firecrawlBaseUrl: null,
-    hasFirecrawlApiKey: false,
-    // Deep Research, fresh. Irrelevant to the namespace this file is about.
-    researchProvider: null,
-    envResearchProvider: null,
-    hasTavilyApiKey: false,
-    hasSerpApiKey: false,
-    serpApiEngine: null,
-    searxngBaseUrl: null,
-    envSearxngBaseUrl: null,
-    searxngCategories: null,
-    envResearchProviders: [],
-    // Epic 7's panes are not what this file is about: the Intake door has no
-    // inbound address configured and MinerU is off, which is the fresh-
-    // deployment answer for both.
-    inboundEmailAddress: null,
-    inboundEmailEnabled: false,
-    intakeKeepParsed: false,
-    mineruMode: "off",
-    mineruLocalBaseUrl: null,
-    hasMinerUApiKey: false,
-    // The loopback door, shut — the fail-closed answer every one of these
-    // fixtures wants, since none of them is about Epic 8's pane.
-    apiEnabled: false,
-    allowUnauthenticated: false,
-    hasLoopbackApiToken: false,
-    loopbackTokenSource: "none",
-    language: "English",
-    readOnly: false,
-    ...overrides,
-  };
-}
-
-let fetchMock: ReturnType<typeof vi.fn>;
-
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-});
-
-afterEach(() => {
-  // FIRST: vitest runs afterEach hooks in reverse registration order, so the
-  // setup file's `cleanup()` lands after this one. Unmounting here tears the
-  // tree down while `fetch` is still stubbed.
-  cleanup();
-  vi.unstubAllGlobals();
-});
-
 /**
- * What a screen reader would actually read out for a control: every id in its
- * `aria-describedby` list, resolved and joined. A single `getElementById` over
- * the whole attribute silently returns null the moment a second id is appended,
- * which would make an assertion on the description pass vacuously.
+ * The stored settings this file asserts against: the shared fixture, on Workers
+ * with the vector-capable provider selected.
+ *
+ * Every case here selects `workers-ai`, and without `hasWorkersAiBinding` the
+ * gate would refuse for a SECOND reason (DW-225) — which would change every
+ * sentence asserted below and leave nothing here about the namespace at all.
+ * The binding leg has its own cases at the end, which override it back off.
+ * The `version` is the store's own stamp shape for this deployment.
  */
-function announcedFor(control: HTMLElement): string {
-  const ids = (control.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean);
-  expect(ids.length).toBeGreaterThan(0);
-  return ids
-    .map((id) => {
-      const target = document.getElementById(id);
-      expect(target).not.toBeNull();
-      return target!.textContent ?? "";
-    })
-    .join(" ");
+function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
+  return settingsPayload({
+    version: "w1:2-0000000000000000",
+    embeddingProvider: "workers-ai",
+    hasWorkersAiBinding: true,
+    ...overrides,
+  });
 }
+
+const fetchMock = installSettingsFetchMock();
 
 /**
  * No PUT was attempted — the only `fetch` so far is the surface's single
@@ -145,15 +74,8 @@ function expectNoSaveAttempted(): void {
 }
 
 /** Mount the embeddings category and let the single on-mount read settle. */
-async function mount(stored: WorkbenchSettingsPayload) {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => ({ workbench: stored }),
-  } as unknown as Response);
-  const view = render(<SettingsCanvas category="embeddings" headingId="wb-set-heading" />);
-  await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
-  return view;
+function mount(stored: WorkbenchSettingsPayload) {
+  return mountSettings("embeddings", stored);
 }
 
 /**

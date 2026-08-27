@@ -47,6 +47,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
+import { walkFiles } from "./source-scan";
 import { APP_NAME, APP_TITLE } from "../brand";
 import manifest from "../../app/manifest";
 
@@ -97,29 +98,27 @@ const SOURCE_TEXT =
   /(?:^Dockerfile$|\.(?:tsx?|jsx?|mjs|cjs|md|mdx|json|jsonc|css|html|svg|txt|ya?ml|sh|toml|webmanifest)$)/;
 
 /**
+ * The shared source walk (`./source-scan`) with THIS suite's default filter
+ * bound to it.
+ *
+ * The traversal itself is no longer written here (DW-117) — `walkFiles` owns
+ * the one exclusion set every scan shares. What survives locally is the
+ * `SOURCE_TEXT` DEFAULT, which is point 1 of the header comment: it is the only
+ * source-type filter in this file, so a newly added file type cannot be read by
+ * one scan and invisible to another. A call site naming its own include is
+ * therefore visible as an exception rather than as the norm.
+ *
  * `skipDirs` is per-call on purpose. A globally-skipped directory name would
  * silently shrink `scannedSources()` too — a future `dist/` under `src/`,
  * `integrations/` or `workers/` would drop out of the brand scan without any
  * test noticing, which is the quiet vacuity the pin tests exist to prevent.
  */
-async function walk(
+function walk(
   dir: string,
   include: RegExp = SOURCE_TEXT,
-  skipDirs: string[] = [],
+  skipDirs: readonly string[] = [],
 ): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const out: string[] = [];
-  for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "__tests__" || entry.name === "node_modules") continue;
-      if (skipDirs.includes(entry.name)) continue;
-      out.push(...(await walk(full, include, skipDirs)));
-    } else if (include.test(entry.name)) {
-      out.push(full);
-    }
-  }
-  return out;
+  return walkFiles(dir, { include, skipDirs });
 }
 
 const INTEGRATIONS = path.resolve(SRC, "../integrations");

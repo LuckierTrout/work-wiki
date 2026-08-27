@@ -10,8 +10,9 @@
  * a DOM-rewriting provider would need.
  */
 import { describe, expect, it } from "vitest";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
+import { walkFiles } from "./source-scan";
 
 const SRC = path.resolve(__dirname, "../..");
 const ROOT = path.resolve(SRC, "..");
@@ -22,20 +23,6 @@ const ROOT = path.resolve(SRC, "..");
  * stylesheet rule the identifier scans never read.
  */
 const SCANNED = /\.(?:[cm]?[jt]sx?|css|html)$/;
-
-async function walk(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "__tests__" || entry.name === "node_modules") continue;
-      out.push(...(await walk(full)));
-    } else if (SCANNED.test(entry.name)) {
-      out.push(full);
-    }
-  }
-  return out;
-}
 
 /**
  * Every source that could carry locale machinery, tests excluded.
@@ -51,7 +38,9 @@ async function walk(dir: string): Promise<string[]> {
  */
 async function sources(): Promise<string[]> {
   const trees = [SRC, path.join(ROOT, "workers"), path.join(ROOT, "integrations")];
-  return (await Promise.all(trees.map((t) => walk(t)))).flat();
+  return (
+    await Promise.all(trees.map((t) => walkFiles(t, { include: SCANNED })))
+  ).flat();
 }
 
 /**
@@ -68,6 +57,10 @@ async function scannedSources(): Promise<string[]> {
     "src/app/globals.css",
     "src/components/NavHeader.tsx",
     "src/components/workbench/IconRail.tsx",
+    // `src/hooks` had no witness until DW-117 put every scan behind one shared
+    // walk: appending a directory name to its `SKIPPED_DIRS` would have dropped
+    // all twelve hooks from this scan with nothing here noticing.
+    "src/hooks/useSettings.ts",
     "src/middleware.ts",
     "workers/email-ingest/index.ts",
     "integrations/browser-clipper/popup.js",
