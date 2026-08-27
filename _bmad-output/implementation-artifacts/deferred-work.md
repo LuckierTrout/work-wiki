@@ -115,7 +115,8 @@ location: n/a
 source_spec: `spec-1-1-sign-in-privately-and-retire-commons.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260814-210506-c3ab; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: The independent follow-up review this entry preserved was performed: _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md covers story 1-1-sign-in-privately-and-retire-commons (verdict rejected, follow-up work proposed and filed as DW entries).
 
 ### DW-14: Creating or re-templating a Wiki overwrites the tenant-global workspace profile, including one the owner hand-authored in Settings.
 origin: spec-deferred 60cce7b0cff4
@@ -207,7 +208,8 @@ location: n/a
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: Covered by the Epic 1 retrospective at _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md, which reviewed 1-2-create-a-wiki-from-a-scenario-template and produced findings.
 
 ### DW-24: The whole interactive shell is verified only by reading its own source text; nothing renders, mounts, or measures it.
 origin: spec-deferred fd8367b6c9be
@@ -260,7 +262,8 @@ location: n/a
 source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: Covered by _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md, which reviewed 1-3-nashsu-icon-rail-and-workbench-chrome and produced findings.
 
 ### DW-30: Switching Wikis changes only `purpose.md` and `schema.md` in the trees; `wiki/` and `raw/` are tenant-flat, so the Knowledge tab shows the same pages under every Wiki.
 origin: spec-deferred 166e4d5b97ae
@@ -315,7 +318,8 @@ location: n/a
 source_spec: `spec-1-4-knowledge-tree-and-file-tree.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: Covered by _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md, which reviewed 1-4-knowledge-tree-and-file-tree and produced findings.
 
 ### DW-36: Changing the tree selection while the confirm-gated editor is open discards the owner's unsaved markdown with no warning.
 origin: spec-deferred 3c0e066248f5
@@ -388,7 +392,8 @@ location: n/a
 source_spec: `spec-1-5-view-first-preview-with-gfm-and-wikilinks.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: Covered by _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md, which reviewed 1-5-view-first-preview-with-gfm-and-wikilinks and produced findings.
 
 ### DW-44: The divider's 9px grab strip is under WCAG 2.2 AA's 24px target-size minimum, and its outer half overlaps the tree's own scrollbar.
 origin: spec-deferred 223f18c1acac
@@ -506,7 +511,8 @@ location: n/a
 source_spec: `spec-1-7-dataversion-workbench-refresh.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: Covered by _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md, which reviewed 1-7-dataversion-workbench-refresh and produced findings.
 
 ### DW-56: The Schema write has no lost-update protection, so an editor left open across another actor's save silently clobbers it.
 origin: spec-deferred 078a87eb5dc9
@@ -552,7 +558,8 @@ location: n/a
 source_spec: `spec-1-8-edit-schema.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: Covered by _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md, which reviewed 1-8-edit-schema and produced findings.
 
 ### DW-61: The legacy `/settings` page now offers `Custom` in its provider picker but has no base-URL or key field for it, so selecting it there stores a provider no LLM call can construct.
 origin: spec-deferred 172fbd06f98e
@@ -682,7 +689,8 @@ location: n/a
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: The follow-up-review damping cap (limits.max_followup_reviews = 1) was spent with the story finalized (status: done, verify green) while the review pass still recommended an independent follow-up. The work was committed by bmad-loop run 20260815-022700-cd29; this entry preserves the lingering recommendation for a deliberate later review.
-status: open
+status: done 2026-08-26
+resolution: already resolved: Covered by _bmad-output/implementation-artifacts/epic-1-retro-2026-08-22.md, which reviewed 1-9-settings-for-models-and-embeddings and produced findings.
 
 ### DW-75: LintFilterControls.tsx keeps a hand-copied ALL_CHECK_TYPES with only 11 entries while the lib const in lint-checks.ts has 14, so the lint UI cannot toggle uncited-claims, supersedes-dangling, or incom
 origin: spec-deferred e4d2cbfe1b61
@@ -1892,7 +1900,8 @@ source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
 location: src/lib/wikis.ts, src/lib/lifecycle.ts
 severity: medium
 reason: DW-49 names three classes of bypassing writer: template seeding, raw source files, and "any later writer that lands bytes the Files tab renders". Only the first is closed here. A grep of `src/lib` finds no writer under `tenants/<t>/raw/` today, so there is nothing to bump; the guard test in `workbench-data-version.test.ts` will fail the moment a fourth bump site appears, which is the intended tripwire.
-status: open
+status: done 2026-08-26
+resolution: already resolved: The Epic 2 raw-source writer landed and bumps dataVersion: src/lib/raw.ts:10 imports bumpDataVersion and calls it at raw.ts:153, :158, :192, :197 and :635, with the contract stated at raw.ts:125. Callers: src/app/api/workbench/intake/route.ts:282/485/559 and src/lib/extract-dispatch.ts:116/347.
 
 ### DW-212: `dataVersion` is one global key with no tenant segment, so the two new bumps force a `router.refresh()` in every open Workbench of every other tenant too.
 origin: spec-deferred 1e08fbc6dc92
@@ -2556,7 +2565,8 @@ source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
 location: src/lib/workbench-request.ts (failureMessage)
 severity: low
 reason: `failureMessage` special-cases `TimeoutError`/`AbortError` because those name the mechanism rather than the thing that failed, then returns `cause.message` for anything else. An offline browser rejects with `TypeError: Failed to fetch` (or `NetworkError when attempting to fetch resource`), which is exactly as mechanism-named and sails straight through to the dialog. Carried over verbatim from `WikiSwitcher`; nothing covers a `TypeError` rejection.
-status: open
+status: done 2026-08-26
+resolution: already resolved: failureMessage no longer exists. src/lib/workbench-request.ts now routes every network-level rejection through unconfirmedCause() to unconfirmedWriteMessage(action) instead of relaying cause.message, so 'Failed to fetch' never reaches the owner verbatim.
 
 ### DW-287: Nothing in either vitest project can verify that the live-region repeat mark is actually re-announced by assistive technology.
 origin: spec-deferred 0a52fb9a4a49
@@ -2631,7 +2641,8 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/app/api/research/route.ts
 severity: low
 reason: `await request.json()` sits inside the handler's `try`, and a parser message contains neither "required" nor "invalid", so a caller-fault parse error is reported as a server fault and the raw parser message is echoed to the client. `src/app/api/wikis/route.ts` handles this with an explicit 400. Pre-existing; unchanged by this work.
-status: open
+status: done 2026-08-26
+resolution: already resolved: src/app/api/research/route.ts:79-83 wraps request.json() in its own try answering 400 'Request body must be JSON.', and :84-86 rejects a non-object body with 400 — both ahead of the generic catch. The same guard was applied at src/app/api/research/[id]/route.ts:26-33 and [id]/run/route.ts:37-47.
 
 ### DW-296: The `/required|invalid/i` message regex still routes genuine server faults to 400.
 origin: spec-deferred 912df682cec9
@@ -3050,7 +3061,8 @@ source_spec: `spec-dw-132-249-prose-inventory-parity.md`
 location: src/components/BulkDocumentImport.tsx:25
 severity: low
 reason: `src/components/BulkDocumentImport.tsx:25-26` puts `.org,.rtf,.odt,.ods, .odp,.epub,.mobi` in the `accept` attribute of both file inputs, but `documentExtension` (`src/lib/bulk-document-import.ts:33-36`) maps all of them to "file", so `selectBulkDocuments` rejects them. Nothing compares the `accept` list to the allowlist. Pre-existing; surfaced while enumerating format sites.
-status: open
+status: done 2026-08-26
+resolution: already resolved: src/components/BulkDocumentImport.tsx:330 and :341 now pass accept={ACCEPTED_DOCUMENT_ATTRIBUTE}, derived at src/lib/bulk-document-import.ts:35-38 from SUPPORTED_DOCUMENT_EXTENSIONS + SUPPORTED_DOCUMENT_MIME_TYPES; odt/ods/odp/epub/org/rtf/mobi are real members of DOCUMENT_FORMATS at src/lib/document-formats.ts:34-40. Landed in ab553226 with src/components/__tests__/bulk-document-accept-parity.test.tsx.
 
 ### DW-345: The bulk importer's only copy test restates the sentence as a literal, so it can never fail on drift.
 origin: spec-deferred 0f7b1eaec336
@@ -3058,7 +3070,8 @@ source_spec: `spec-dw-132-249-prose-inventory-parity.md`
 location: src/lib/__tests__/bulk-document-import.test.ts:45
 severity: low
 reason: `src/lib/__tests__/bulk-document-import.test.ts:45` asserts `/Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX, CSV, or ZIP/i` — a literal that would have to be edited alongside the very change it is meant to catch. This is the pattern `prose-inventory-parity.test.ts`'s header explicitly rules out; it would be replaced by adopting the site.
-status: open
+status: done 2026-08-26
+resolution: already resolved: The literal restatement is gone: src/lib/__tests__/bulk-document-import.test.ts:143-153 now derives the expected sentence from Object.values(DOCUMENT_FORMAT_LABELS) ('names every supported format in the rejection sentence, and nothing else'). Removed in ab553226.
 
 ### DW-346: `POST /api/lint/fix`'s JSDoc is a sixth un-derived restatement of the fixable list and names only five of the ten types.
 origin: spec-deferred 4043386addcd
@@ -3090,7 +3103,8 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: workers/email-ingest/README.md:20
 severity: low
 reason: The file is in YOPEDIA_PROSE_EXEMPT because three of its "Yopedia" mentions are deployment history, but this one names a UI path the display rename should have updated. This bundle's intent authorises exemptions, not copy corrections, and the spec's Never list forbids editing it.
-status: open
+status: done 2026-08-26
+resolution: already resolved: workers/email-ingest/README.md:35 now reads 'Create the address entered under work-wiki **Settings -> Email ingestion**'; the retired brand is gone from the prose and the file was dropped from YOPEDIA_PROSE_EXEMPT (src/lib/__tests__/brand-copy.test.ts:381-389). Fixed in 4bdad620.
 
 ### DW-350: .github/workflows/ carries brand strings and is read by no scan.
 origin: spec-deferred c422dc958830
@@ -3272,7 +3286,8 @@ source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
 location: src/lib/storage/filesystem.ts:266
 severity: medium
 reason: src/lib/storage/filesystem.ts:266-299. `readFileWithEtag` resolves `fs.readFile` and `fs.stat` through `Promise.all` — an unordered pair, so a write landing between them can yield old content with a fresh etag, and the CAS then MATCHES on a stale merge base. The etag itself is `${mtime.getTime()}-${size}`, so two saves in the same millisecond that swap equal-length values collide. Measured ~190/200 identical etags for back-to-back rewrites without fsync on a scratch file, 0/100 through the provider's fsync+rename path. Never worse than the unconditional write it replaced, and R2's server-side conditional put is exact — but the fs guard is narrower than "refuses instead" reads. Closing it means a content hash or stat-then-read ordering in the storage layer, whose contract and other consumer (graphify-jobs.ts) are outside this bundle. Documented at src/lib/config.ts's saveConfig docblock rather than hidden.
-status: open
+status: done 2026-08-26
+resolution: already resolved: src/lib/storage/filesystem.ts:50-52 defines contentEtag as sha256:<digest of content>; readFileWithEtag (filesystem.ts:388-395) derives the etag from the bytes it just read with no paired fs.stat, and the compare-and-set at :435 compares contentEtag(current) !== etag. The mtime-size etag and the unordered read/stat pair are both gone. (The now-false sentence at src/lib/config.ts:849 is picked up by the storage-tmp-file-reclamation bundle.)
 
 ### DW-372: A pre-DW-272 build reading the new single-object config carries `__settingsVersion` through as an ordinary key and writes it back, so the stamp stops rotating on a rollback.
 origin: spec-deferred 9589cff245eb
@@ -3349,7 +3364,8 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 location: src/lib/wiki.ts:389
 severity: medium
 reason: `src/lib/wiki.ts:389-401` warns on a non-ENOENT silo failure and falls through to `wikiRelPath(...)`, which is the legacy flat file. `fresh` bypasses `pageCache` but not that fallback, so a transient silo failure on a precondition-bearing read hands the editor the version of the flat copy while `writeWikiPageWithSideEffects` resolves the tenant path — a precondition computed over one file and compared against another. Pre-existing: the fallback predates the version entirely and exists so a not-yet-migrated page still reads. Closing it means letting a precondition-bearing read refuse rather than widen, which needs the same null-contract change the entry above names.
-status: open
+status: done 2026-08-26
+resolution: already resolved: src/lib/wiki.ts:431-439 now rethrows a non-ENOENT silo read failure for strict callers and otherwise logs 'silo read failed for "<slug>"; refusing flat fallback' and sets authoritativeReadFailed; every call site (wiki.ts:448-450, :465-467, :497-499) returns null rather than falling through to wikiRelPath(). The flat-copy widening is gone.
 
 ### DW-381: The re-template confirm still presents the Schema overwrite as unrecoverable, which DW-213 has just made false.
 origin: spec-deferred 612a8939a001
@@ -3381,7 +3397,8 @@ source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md
 location: src/app/api/research/[id]/route.ts; src/app/api/research/[id]/run/route.ts
 severity: medium
 reason: DW-294 named only `POST /api/research`, which this change gated. The `[id]` handlers reach `updateResearchProject`/`deleteResearchProject`, reach no kernel writer, and contain no `isReadOnly` reference — so the feature refuses creates and accepts edits, deletes and runs.
-status: open
+status: done 2026-08-26
+resolution: already resolved: src/app/api/research/[id]/route.ts:17-22 (PATCH) and :85-90 (DELETE) and src/app/api/research/[id]/run/route.ts:27-32 all gate on isReadOnly() and answer 403 with READ_ONLY_REFUSAL.researchMutate (src/lib/read-only.ts:199-200). Landed via d0c6833d / 2c02e234 / cbbd56df.
 
 ### DW-385: The research, Names & Terms and email-ingest stores carry no `assertWritable`, so a CLI, MCP or agent-runtime caller still writes them on a read-only deployment.
 origin: spec-deferred 192b376cbc62
@@ -3613,7 +3630,8 @@ source_spec: `spec-dw-377-data-version-refresh-budget.md`
 location: package.json / pnpm-workspace.yaml
 severity: low
 reason: Both abort with `ERROR packages field missing or empty` from the pnpm workspace config; `npx vitest run` and `npx eslint .` on the same tree run clean. `spec-dw-48-data-version-refresh-retry.md`'s Auto Run Result records the identical failure, so it long predates this story. It matters because `vitest.config.ts`'s own comment states that `.github/workflows/ci.yml` runs `pnpm test` and nothing else — whatever the exact script resolution, the documented developer entry points are broken.
-status: open
+status: done 2026-08-26
+resolution: already resolved: pnpm-workspace.yaml exists at the repo root with a non-empty packages list (added in f5d0243b); `pnpm vitest --version` prints vitest/3.2.4 and `pnpm lint --version` runs eslint v9.39.4 — neither aborts with 'packages field missing or empty'.
 
 ### DW-412: Opening Settings still unmounts the Preview column, silently discarding its unsaved markdown draft — the same loss DW-373 fixed one column over.
 origin: spec-deferred 5531bcb9520c
@@ -3816,7 +3834,8 @@ status: open
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
 location: src/app/api/workbench/intake/route.ts:218
 reason: The intake route enqueues an Ingest job unconditionally, so re-uploading identical content spends a full ingest pass despite the store short-circuiting the byte write. Deferred because the SHA256 skip that would suppress the duplicate job is Story 2.7.
-status: open
+status: done 2026-08-26
+resolution: already resolved: src/app/api/workbench/intake/route.ts:400 resolves an existing content sha256 through authorizedShaSkip()/resolveContentSha256 and :522-556 return { queued: false, skipped: true } via recordSkippedJob instead of enqueuing; the identical-tree path does the same at :488-519. Landed in 0ab1d083.
 
 ### DW-437: `listRawSources` is still non-recursive, so CLI and lint listings miss hashed `raw/sources/<slug>/<id>.md` arrivals.
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
@@ -3840,7 +3859,8 @@ status: open
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
 location: src/lib/workbench-intake-client.ts:117
 reason: The client treats any 2xx as fully stored and queued, so the batch summary reports a queued ingest even when the route explicitly answered `queued: false`. The user is told work is under way that never started. Deferred because the fix needs the batch summary to carry per-item enqueue state.
-status: open
+status: done 2026-08-26
+resolution: already resolved: src/lib/workbench-intake-client.ts:91 returns disposition 'not_queued' when body.queued === false, the disposition union carries it at :46-48, and intakeReport counts it separately at :298 and emits intakeStoredNotQueuedCopy(notQueued) at :314. Landed in 0ab1d083.
 
 ### DW-441: `fetchUrlContent` skips the content-type allowlist entirely when the response omits a Content-Type header.
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
