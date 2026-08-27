@@ -152,7 +152,9 @@ location: src/lib/wikis.ts
 source_spec: `spec-1-2-create-a-wiki-from-a-scenario-template.md`
 severity: medium
 reason: The location was chosen so `reconcileSilos()` (`src/lib/silo.ts:230-265`) cannot delete the seeded files as unindexed orphans, and Story 1.2 does not partition Pages or Sources per Wiki. The consequence is that `/api/v1/projects` (Epic 8, FR-76) has no `path` to report and `files?root=all` cannot yet return `purpose.md`, `schema.md`, `wiki/` and `raw/sources/` from one root. Reopening this requires the per-Wiki Page partitioning that Story 1.4's "the trees show that Wiki's files" implies.
-status: open
+status: done 2026-08-26
+resolution: closed by human decision: The flat tenant tree is the intended shape; record that decision where FR-76 is stated and close the entry rather than carrying an architecture change nothing has asked for since.
+decision: 2026-08-26 Re-anchor the contract — The flat tenant tree is the intended shape; record that decision where FR-76 is stated and close the entry rather than carrying an architecture change nothing has asked for since.
 
 ### DW-18: A Wiki can be created and re-templated but never deleted or renamed, and artifact directories are never cleaned up.
 origin: spec-deferred 5fa916c79323
@@ -1069,6 +1071,7 @@ location: src/app/layout.tsx:70
 severity: low
 reason: `src/lib/slugify.ts`, `src/lib/bm25.ts` and `src/lib/ingest.ts` all preserve CJK by design, and nothing sets `lang` on the article or Preview subtree. Pre-existing rather than caused by this change — the old value tracked the UI locale, not the content language, so it was equally wrong — but the retirement removes the last place where a per-content `lang` could have been derived.
 status: open
+decision: 2026-08-26 Detect and set on the body — Detect the dominant script of a page body at render time and set lang on the article/Preview subtree only, leaving <html lang="en"> for the chrome; no schema change.
 
 ### DW-117: The `walk()` test helper is now copy-pasted across five suites with inconsistent directory exclusions, so the scans silently cover different file sets.
 origin: spec-deferred 5ee27cb93f34
@@ -1395,7 +1398,9 @@ source_spec: `spec-single-main-landmark-sweep.md`
 location: _bmad-output/implementation-artifacts/deferred-work.md (DW-152)
 severity: low
 reason: `deferred-work.md`'s DW-152 `reason:` ends with "... not a mechanical follow-on to the sweep. Note that" and then jumps straight to `status: open`. The missing tail survives only here, in this spec's `deferred[0]` block scalar: "`single-main-landmark-mounted.test.tsx` pins `PrivateWorkspaceNotice`'s wrapper as a `DIV`; that surface has no aside siblings and is not part of this item." The clause was lost flattening a multi-line block scalar onto one ledger line. It matters because the ledger is what the sweep tooling reads, so a later run picking up DW-152 cannot see which surface the item excludes. Recorded here rather than fixed: this run was invoked under an explicit instruction not to modify, re-open or rewrite deferred-work ledger entries — the orchestrator owns their text, status and resolution.
-status: open
+status: done 2026-08-26
+resolution: closed by human decision: DW-152 is being built this sweep with the scoping already carried in its bundle intent, so the truncated ledger text no longer gates anything.
+decision: 2026-08-26 Leave as is — DW-152 is being built this sweep with the scoping already carried in its bundle intent, so the truncated ledger text no longer gates anything.
 
 ### DW-154: Follow-up review still recommended for dw-single-main-landmark-sweep after the damping cap was spent
 origin: review-budget-followup
@@ -1540,6 +1545,7 @@ location: _bmad-output/implementation-artifacts/deferred-work.md:153
 severity: medium
 reason: `deferred-work.md:153` justifies DW-17 with "the per-Wiki Page partitioning that Story 1.4's 'the trees show that Wiki's files' implies", and the same phrase is quoted at `spec-1-2-create-a-wiki-from-a-scenario-template.md:71` and `spec-1-4-knowledge-tree-and-file-tree.md:25,132,310`. After this change that citation resolves to no live text in `epics.md`, so DW-17's rationale now rests on a phrase that no longer exists — which could either keep a migration alive on a dead citation or make it look spuriously resolved. The ledger is orchestrator-owned and the story specs are frozen records, so neither can be corrected from this story.
 status: open
+decision: 2026-08-26 Re-anchor DW-17 only — Update DW-17's reason to cite the current epics.md text (or state that the FR-76 file contract is its sole basis), and leave the three frozen story records as historical quotations with a note that the AC text later changed.
 
 ### DW-171: The PRD still glosses the File Tree as a browse of "the Wiki's files", the same per-Wiki reading this story removed from the epic.
 origin: spec-deferred 5ba851433aa5
@@ -1557,6 +1563,7 @@ location: _bmad-output/implementation-artifacts/spec-1-6-drag-resize-and-durable
 severity: low
 reason: Verified against the current file: `spec-1-6-drag-resize-and-durable-layout.md:246` cites `epics.md:440` (the 320px clause is now at :442), `spec-1-5-view-first-preview- with-gfm-and-wikilinks.md:383` cites `:423` (now :425), `:391` cites `:413` and `:414` (now :415 and :416), and `spec-1-4-knowledge-tree-and-file-tree.md:136` cites `:530` (now :532). The previous pass's triage entry claimed "every other `epics.md:<line>` citation in the repo sits above the edit" — that holds for shipped code under `src/` (the only other citations there are `epics.md:367`, above the edit, and `workbench-split.ts` was corrected) but not for the planning and implementation artifacts. The intent's Never clause puts the completed `spec-1-4` record off limits, and the same freeze applies to the other completed story records, so none of the four can be corrected from this story. Each lands within the same AC block, so a reader is misdirected by two lines rather than to unrelated text.
 status: open
+decision: 2026-08-26 Correct the citations — Bump the four line-addressed citations in spec-1-4, spec-1-5 and spec-1-6 to their current epics.md lines, recording that a citation correction is not an amendment of the approved content.
 
 ### DW-173: Follow-up review still recommended for dw-wiki-lens-copy-and-invariant after the damping cap was spent
 origin: review-budget-followup
@@ -2084,6 +2091,7 @@ location: src/app/u/[handle]/[slug]/edit/page.tsx:24
 severity: low
 reason: src/app/u/[handle]/[slug]/edit/page.tsx returns JSX from its miss branch rather than calling notFound(). DW-85's intent text scopes the 200->404 conversion to the page-view route only, so this story deliberately left it; DW-84's own ledger text is inaccurate here, asserting both non-page routes "keep their pre-existing hard-404 miss behavior" when only /raw/ does. The edit/ segment also has no not-found.tsx of its own, so an honest 404 there needs one carrying the surface-specific copy (the sibling [slug]/ and raw/[slug]/ segments each have one). Pre-existing; surfaced by this change's review.
 status: open
+decision: 2026-08-26 Extend 404 to the edit route — Call notFound() from the miss branch, add src/app/u/[handle]/[slug]/edit/not-found.tsx matching the sibling segments, and rewrite the tests that pin the 200.
 
 ### DW-232: tenantForSlug still resolves a slug through inherited-prototype indexing, the exact defect DW-89 fixed in resolveSlugPath, one file over.
 origin: spec-deferred 2a3579814c9e
@@ -2100,6 +2108,7 @@ location: src/app/api/wiki/[slug]/route.ts
 severity: low
 reason: This story wired aliasTargetForMissing into all three /u/ routes, so the page, edit and raw views forward. The JSON routes were never in scope — the intent names only the edit and raw owner-scoped routes — and were already hard-404 before it. The asymmetry is new even though neither side changed: forwarding the HTML surfaces is what made the API's behavior a divergence rather than the uniform rule. Either forward there too, or return the canonical slug in the 404 envelope so a client can follow it.
 status: open
+decision: 2026-08-26 Canonical slug in the 404 — Keep the 404 status and add the canonical slug to the error envelope on both routes, so a client can follow deliberately; document the field in SCHEMA.md.
 
 ### DW-234: A component mounted while /api/wiki/routes was failing keeps DEFAULT_TENANT hrefs for its whole lifetime, because useSlugTenants has no refresh path after its mount effect.
 origin: spec-deferred 9d5e0be11183
@@ -2478,7 +2487,9 @@ source_spec: `spec-dw-220-221-224-226-227-embedding-resolution.md`
 location: src/lib/embeddings.ts:hasEmbeddingSupport with src/lib/ingest.ts:989
 severity: medium
 reason: DW-224's ledger coordinates are `hasEmbeddingSupport` with `src/lib/ingest.ts:989`, and neither file changed. Under the intent's reading ("stops embedding under the substituted default WITHOUT A WORD") the fix is the warning, and the spec's Never list pins that reading because `src/lib/workbench-settings.ts` and `src/lib/config.ts` both record that Story 2.9 (embed after ingest) and Story 3.4 (search merge) own teaching `hasEmbeddingSupport()` the vector gate. So the harm the ledger measured — a corpus quietly embedded with a model the owner did not choose — is now diagnosable but not prevented, and the tightened predicate moves two more inputs (a bare `@cf/`, a `@cf/` vision id) from "fails at ai.run()" into "substitutes the default". Closing it means refusing to embed on a mismatch, which belongs to those stories.
-status: open
+status: done 2026-08-26
+resolution: closed by human decision: The audible substitution added by the prior bundle is the intended end state; record it and close, since the warning now reaches the owner.
+decision: 2026-08-26 Keep substituting, loudly — The audible substitution added by the prior bundle is the intended end state; record it and close, since the warning now reaches the owner.
 
 ### DW-277: The new Cloudflare-binding refusal is announced only on the vector checkbox; the embedding-provider select that produces the state carries no complaint and no `aria-invalid`.
 origin: spec-deferred c1aba6d1ed22
@@ -2575,6 +2586,7 @@ location: src/lib/live-region.ts and src/components/workbench/__tests__/preview-
 severity: low
 reason: DW-182's fix is an alternating U+200B appended to a repeated sentence. The node and jsdom suites prove only that the region's string CHANGED — which was never in doubt. Whether NVDA, JAWS or VoiceOver re-utters on that change, and whether any of them normalises the mark away before diffing, is asserted in prose only. The DW-182 ledger entry predicted this ("no test in a node or jsdom project can verify"), and the repo already records the equivalent gap for CSS. Without a browser/AT project the suite reads as if the mechanism is proven.
 status: open
+decision: 2026-08-26 Document a manual AT check — Record a short manual verification procedure (which AT, which surface, what to hear) beside live-region.ts and in the test-strategy docs, and close the gap as knowingly manual.
 
 ### DW-288: The scheduled sweep reclaims only the configured owner's tenant, so DW-147's condition still holds unchanged for every other tenant.
 origin: spec-deferred 13ff1f1e878f
@@ -2946,6 +2958,7 @@ location: src/components/workbench/SettingsCanvas.tsx (the checkbox hint selecto
 severity: low
 reason: `SettingsCanvas` selects between `vectorSearchInactiveCopy` and `vectorSearchMissingCopy` on `values.vectorSearchEnabled` — the draft flag — while `validateWorkbenchSettingsPatch` selects on `baseline.vectorSearchEnabled`. Reachable: with the switch stored OFF and the legs met, the owner ticks the box (`vectorRefused` permits it), then moves a leg into an unmet state in the same draft. The checkbox hint reads "Vector search is switched on, but it needs …" while the 400 that lands in the save bar a few rows below reads "… before it can be turned on". The behaviour is unchanged by DW-308 — that composition answered the same way before — but it is the same two-sentences-for-one-state shape DW-279 and DW-308 exist to remove. DW-308's own intent excluded the literal "same frame the client picks" reading by also requiring both frames to be pinned at the route, so closing this needs a decision the intent does not contain: whether the route should read the REQUEST's flag for the frame while st
 status: open
+decision: 2026-08-26 Align the client instead — Have SettingsCanvas select its checkbox hint from the STORED flag rather than the draft, matching the route exactly and leaving DW-308's boundary intact.
 
 ### DW-331: `workspace-purpose-settings.test.tsx` is flaky — one `getByRole("status")` assertion fails intermittently, roughly one run in three.
 origin: spec-deferred 9e7a23de70bf
@@ -3113,6 +3126,7 @@ location: .github/workflows/
 severity: low
 reason: Reviewer found hits at infra-setup.yml:52, deploy-cloudflare.yml:4,79,97,98 and seed-yoyo.yml:4-18,36,92-102. Neither source list reaches the tree. AGENTS.md marks .github/ protected, so folding it in is a decision the intent did not authorise; seed-yoyo.yml:93 also names a second workers.dev subdomain (yopedia.christianlee-flightwall.workers.dev) that the current single-host allowlist entry would not cover.
 status: open
+decision: 2026-08-26 Scan and allowlist — Add .github/ to the brand-copy scan's sources, add the second workers.dev deployment origin to IDENTIFIER_ALLOWLIST and to AGENTS.md's frozen list, and correct any remaining prose the scan then flags.
 
 ### DW-351: Root non-Markdown files beyond the four AGENTS.md freezes stay unread.
 origin: spec-deferred 78dc1d82c3b4
@@ -3466,6 +3480,7 @@ location: src/components/RevisionHistory.tsx
 severity: medium
 reason: `canRevert` in `src/components/RevisionHistory.tsx` carries a realm term and a site-owner term but no `isSignedIn` term, so an anonymous viewer of a public artifact or an agent-scoped page is still shown Revert and its irreversible-sounding confirm in front of a write the middleware 401s. This predates DW-269 (the control was ungated for everyone), and the recorded intent asked only for "the same realm term the Delete gate got", with the spec's Never list forbidding an ownership term — so the signed-in half was deliberately left alone. `ArticleActions` reads `isSignedIn` for exactly this purpose one component over.
 status: open
+decision: 2026-08-26 Add the signed-in term — Include isSignedIn in canRevert so signed-out viewers are never offered Revert, matching ArticleActions, and record the frozen-block renegotiation in the spec.
 
 ### DW-393: An orphan page — on disk but absent from the page index — now makes its ingest-history row undeletable and fails the whole batch.
 origin: spec-deferred a01843f3f763
@@ -3474,6 +3489,7 @@ location: src/app/api/ingest/history/route.ts
 severity: medium
 reason: The DW-270 gate keys on `listReadableWikiPages`, which filters the page INDEX, not a per-page read. `src/lib/lint.ts:94`'s `checkOrphanPages` exists because index/disk drift is a real state here. A done job whose page is in that state used to delete the page and clear the job record; it now answers 404 for the entire request, clearing nothing else selected alongside it. This is exact parity with the pre-existing `ingestIds` preflight, which has always behaved this way, so DW-270 inherited the behaviour rather than inventing it.
 status: open
+decision: 2026-08-26 Fix the drift instead — Keep all-or-nothing, but make the preflight fall back to a disk check when a slug is missing from the index so an orphan page is deletable, and leave the contract unchanged.
 
 ### DW-394: Both guidance memos are keyed by `owner`, but the files they memoize are addressed by TENANT, so two owner strings in one tenant key two entries over one file.
 origin: spec-deferred 1eea774dfd5c
@@ -3498,6 +3514,7 @@ location: src/lib/ingest.ts:1328
 severity: low
 reason: `IngestOptions.guidanceCache` holds two `Map`s. The batch route keeps it out of the queue by building `enqueueTask`'s payload as a separate literal (src/app/api/ingest/batch/route.ts:143-150), and `tasks/run` and the agent ingest route do the same by hand. Nothing structural stops a future `enqueueTask({ kind: "ingest", ...ingestOptions })`: TypeScript does not excess-property-check spread properties, so it would compile and fail at structured-clone/JSON time. An `Omit<IngestOptions, "guidanceCache">` on the payload builders, or a handle passed as its own argument rather than a field on the data bag, would make it a compile error.
 status: open
+decision: 2026-08-26 Type the queue payload — Type enqueueTask's ingest payload as Omit<IngestOptions,"guidanceCache"> so the compiler refuses a serialized handle, leaving the call signature of ingestUrl unchanged.
 
 ### DW-397: Under a handle the dictionary ENTRY OBJECTS are shared across every caller of the operation; only the top-level array is copied.
 origin: spec-deferred db45e54ae4f5
@@ -3724,6 +3741,7 @@ location: src/components/workbench/PreviewColumn.tsx (fetch effect / refresh ann
 severity: medium
 reason: Keeping `PreviewColumn` mounted (DW-412) keeps its fetch effect, `requestDataVersionCheck()` and its polite live region live while the column is `hidden`. A `DataVersionWatcher` bump mid-visit can therefore refetch the row, flip to the stale note, or report a removal into a region that is out of the accessibility tree — the announcement is spent with nobody to hear it, and the column the owner comes back to has changed under them with no report. The spec's Never clause held the fetch/edit lifecycle out of scope, but the mount change is what makes it run off screen at all. `ModeCanvas` has the same shape and the same unanswered question.
 status: open
+decision: 2026-08-26 Pause while withdrawn — Gate PreviewColumn's fetch effect, dataVersion checks and live-region writes on surface visibility (extending the existing SurfaceVisibilityProvider), resuming with one refresh on return; apply the same shape to ModeCanvas.
 
 ### DW-423: Back or a popstate that closes Settings unmounts `SettingsCanvas` under the keyboard, and DW-413 makes focus-in-Settings the normal case rather than the rare one.
 origin: spec-deferred e21c6087e070
@@ -3764,6 +3782,7 @@ location: src/lib/workbench-settings.ts:2143 and src/components/workbench/Settin
 severity: medium
 reason: The intent prescribes landing the throwing parse on the existing shapeless-200 branch, which returns `{ status: "error", message: fallback, unconfirmed: false }`. But `SettingsCanvas.save` clears the held `version` ONLY inside `if (result.unconfirmed)` (src/components/workbench/SettingsCanvas.tsx:209-231), and its own comment there spells out the tie-break: a cleared version yields the truthful 428, a kept one yields 412's "somebody else changed this while you were editing". So the verdict the ledger entry names as the defect is the same verdict its prescribed fix produces. Verified by reverting the change: the whole settings suite, including the new DW-408 cases, passes against the unfixed source, because `SyntaxError` was never an `unconfirmedCause` and already reached the identical fallback through the outer catch. What the change does buy is that the arrived-answer verdict is now DECIDED on the shapeless-200 branch rather than coinciding with it by accident. Closing the stated harm
 status: open
+decision: 2026-08-26 Third verdict — Introduce an 'applied but unreadable' verdict for a 2xx whose body cannot be parsed, have SettingsCanvas clear the held version on it so the next save re-seeds rather than 412s, and pin it at both the client return value and the canvas seam.
 
 ### DW-428: No canvas-level test drives SettingsCanvas with a 2xx whose body read fails, so the DW-408 verdict is pinned only at the client's return value and never at the seam that acts on it.
 origin: spec-deferred 14da776e2f5c
@@ -3815,6 +3834,7 @@ location: _bmad-output/implementation-artifacts/deferred-work.md (DW-411, DW-415
 severity: medium
 reason: `.bmad-loop/runs/20260820-220331-0f16/bundles/c3-pnpm-workspace-root/intent.md` carries `dw_ids: DW-415` and pastes DW-415 verbatim (a CSS specificity issue at src/app/globals.css:2690-2710), while its `## Intent` section is a near-verbatim restatement of DW-411 (`pnpm vitest` / `pnpm lint` abort; location `package.json / pnpm-workspace.yaml`). This story implemented the Intent, so DW-411 is what is resolved. Recording DW-415 as resolved would close a still-real cascade hazard that nothing in this change touches — `src/app/globals.css` was not modified.
 status: open
+decision: 2026-08-26 Reopen DW-415 — Flip DW-415 back to status: open with a note that the bundle keyed to it resolved DW-411 instead, so its globals.css [hidden] specificity work re-enters the next sweep.
 
 ### DW-434: The nested-package guard derives its targets from `--dir`/`-C` workflow flags and on-disk lockfiles, so a package reached by `working-directory:` or `cd x && pnpm install` is only caught once it has a
 origin: spec-deferred 6ef21c2d1d6d
@@ -3842,6 +3862,7 @@ origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upl
 location: src/lib/raw.ts
 reason: `listRawSources` enumerates only the flat top level of `raw/sources/`, so any hashed arrival stored one directory deeper is invisible to every CLI and lint listing built on it. Deferred because the spec accepted the recursive Files walk as the observed surface for this story, leaving the listing helper unchanged.
 status: open
+decision: 2026-08-26 Move the callers — Point the CLI listing and the lint check at listRawSourceSnapshots so hashed arrivals are counted, leaving listRawSources and its documented browse contract unchanged.
 
 ### DW-438: `alreadyStored` followed by `writeFile` is not exclusive, so two concurrent stores of the same new key can overwrite each other.
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
@@ -3867,18 +3888,21 @@ origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upl
 location: src/lib/fetch.ts:232
 reason: The guard reads `if (mimeType && !allowed.includes(...))`, so a response with no Content-Type passes unchecked regardless of what it actually contains. Deferred as pre-existing empty-header behaviour: this story only narrowed the allowlist that is passed in, and tightening the empty case changes behaviour for every existing caller of the shared fetch path.
 status: open
+decision: 2026-08-26 Sniff, then refuse — When Content-Type is absent, sniff the body's leading bytes against the allowlist and refuse only what does not match, so well-behaved headerless servers still work; apply to both doors and pin with fixtures.
 
 ### DW-442: Legacy manual `sourceUrls` are still accepted by research creation even though automated runs replace them with provider results.
 origin: migrated from legacy ledger ("Deferred from: code review of spec-6-1-through-6-5-deep-research.md (2026-08-24)"), 2026-08-26
 location: src/lib/research-runtime.ts:682
 reason: Research creation still honours a caller-supplied `sourceUrls` list, but any automated run overwrites it with the provider's own results, so the field is accepted and then silently discarded. Deferred because the behaviour predates Epic 6's Workbench flow and belongs to the out-of-scope Knowledge Studio research desk.
 status: open
+decision: 2026-08-26 Honour as seeds — Treat manual sourceUrls as seeds: merge them with provider results rather than overwriting at research-runtime.ts:1549, and label them as such in the form.
 
 ### DW-443: The shared kernel URL guard rejects literal private hosts but never resolves DNS before fetching, leaving a DNS-rebinding SSRF gap.
 origin: migrated from legacy ledger ("Deferred from: code review of spec-6-1-through-6-5-deep-research.md (2026-08-24)"), 2026-08-26
 location: src/lib/url-safety.ts:95
 reason: The guard blocks private and reserved addresses only when they appear literally in the URL; a hostname that resolves to such an address — or re-resolves to one between check and fetch — passes. Deferred because the gap predates Epic 6 and lives in the shared fetch path used well beyond Deep Research, so closing it is a cross-cutting change rather than a Deep Research fix.
 status: open
+decision: 2026-08-26 Egress allowlist — Leave the guard synchronous and place the real control at egress — an allowlist or proxy the deployment configures — documenting that literal-IP checking is defence in depth, not the boundary.
 
 ### DW-444: Extract pending-turn and session transport from ChatCanvas.tsx.
 origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
