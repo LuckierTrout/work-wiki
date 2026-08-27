@@ -25,6 +25,7 @@ import {
   MAX_WIKIS,
   ORPHAN_SWEEP_CANDIDATE_CAP,
   ORPHAN_SWEEP_GRACE_MS,
+  ORPHAN_SWEEP_ROTATION_MS,
   applyScenarioTemplate,
   createWiki,
   deleteWiki,
@@ -1128,6 +1129,8 @@ describe("deleting a wiki", () => {
     const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
     const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
     await setCurrentWiki(OWNER, keep.id);
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // so "moved" below is not "left zero"
 
     const removal = vi
       .spyOn(getStorage(), "deleteDirectory")
@@ -1139,12 +1142,87 @@ describe("deleting a wiki", () => {
     }
 
     expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
+    // …AND the signal still moved (DW-382). The registry entry is gone, and
+    // that is what every list, switcher and id lookup in the app reads, so
+    // there IS something new to refetch even though the bytes are still on
+    // disk. Without this assertion the tail could be moved inside the locked
+    // body or guarded on the directory removal having succeeded, and every
+    // other row here would stay green — the same hole the rename suite closes
+    // with "bumps a rename whose purpose.md retitle failed".
+    expect(await readDataVersion()).toBe(before + 1);
     // The bytes are still there — deliberately, for the next sweep to reclaim.
     expect(await exists(wikiDir(drop.id))).toBe(true);
     await ageDirectory(wikiDir(drop.id));
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
     expect(await exists(wikiDir(drop.id))).toBe(false);
     expect(await exists(wikiDir(keep.id))).toBe(true);
+  });
+
+  it("bumps the refresh signal exactly once (DW-382)", async () => {
+    // A delete moves no `currentWikiId` — the current wiki is undeletable — so
+    // the Workbench's selection-reset effect never fires and this counter is the
+    // only thing that can tell ANOTHER client's open tab that a wiki and its
+    // artifacts are gone. Without it that tab goes on listing bytes that no
+    // longer exist until the owner reloads.
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+    const before = await readDataVersion();
+    // Two creates already lifted it off zero, so `before + 1` below is
+    // arithmetic on a stored value rather than a literal an implementation that
+    // simply stores `1` would also satisfy.
+    expect(before).toBeGreaterThan(0);
+
+    expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+
+    // Once, not once per removed file: the registry write and the directory
+    // removal both happened, and the signal is monotonic.
+    expect(await readDataVersion()).toBe(before + 1);
+  });
+
+  it("does not bump for an unknown id or for the refused current wiki", async () => {
+    const first = await createWiki(OWNER, { name: "One", scenario: "business" });
+    const second = await createWiki(OWNER, { name: "Two", scenario: "reading" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // so "unchanged" is not "still zero"
+
+    // The locked body returns before its first write…
+    expect(await deleteWiki(OWNER, "00000000-0000-4000-8000-000000000000")).toBeNull();
+    // …and the current-wiki refusal throws before it too.
+    await expect(deleteWiki(OWNER, second.id)).rejects.toThrow(ClientInputError);
+
+    expect(await readDataVersion()).toBe(before);
+    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([
+      first.id,
+      second.id,
+    ]);
+  });
+
+  it("still reports success when the counter store rejects putIndex", async () => {
+    // The tail is fail-soft for the same reason the two byte-removal steps are:
+    // the registry write has landed, so the wiki is gone from every read in the
+    // app, and a counter hiccup must not send the owner into a retry that 404s.
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    const putIndex = vi
+      .spyOn(getStorage(), "putIndex")
+      .mockRejectedValue(new Error("kv is gone"));
+    try {
+      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+    } finally {
+      putIndex.mockRestore();
+    }
+
+    // The delete resolved and both halves of it landed…
+    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([keep.id]);
+    expect(await exists(wikiDir(drop.id))).toBe(false);
+    // …while the signal genuinely did NOT move — read from the store, not
+    // inferred from the mock having been called.
+    expect(await readDataVersion()).toBe(before);
   });
 });
 
@@ -1431,7 +1509,7 @@ describe("the orphan-directory sweep", () => {
     expect(await exists(wikiDir(drop.id))).toBe(false);
   });
 
-  it("considers at most the per-pass cap and defers the rest to the next sweep (DW-289)", async () => {
+  it("considers at most the per-pass cap and defers the rest to a later pass (DW-289)", async () => {
     // The whole walk — `newestWriteTime` per candidate, the tombstone probe,
     // `deleteDirectory` — runs while `wikis:<tenant>` is HELD, so every create,
     // rename and delete for this tenant queues behind it. Uncapped, the length
@@ -1469,7 +1547,7 @@ describe("the orphan-directory sweep", () => {
       warned.some(
         ([scope, message]) =>
           scope === "wikis" &&
-          String(message).includes(`deferring ${OVERFLOW} to the next sweep`),
+          String(message).includes(`deferring ${OVERFLOW} to a later UTC day`),
       ),
     ).toBe(true);
 
@@ -1508,7 +1586,7 @@ describe("the orphan-directory sweep", () => {
     expect(removed).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
     for (const dir of planted) expect(await exists(dir)).toBe(false);
     expect(
-      warned.some(([, message]) => String(message).includes("to the next sweep")),
+      warned.some(([, message]) => String(message).includes("deferring")),
     ).toBe(false);
   });
 
@@ -1557,7 +1635,7 @@ describe("the orphan-directory sweep", () => {
     expect(skipped).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
     expect(
       warned.some(([, message]) =>
-        String(message).includes(`deferring ${OVERFLOW} to the next sweep`),
+        String(message).includes(`deferring ${OVERFLOW} to a later UTC day`),
       ),
     ).toBe(true);
     expect(await exists(wikiDir(wiki.id))).toBe(true);
@@ -1629,8 +1707,509 @@ describe("the orphan-directory sweep", () => {
     // reclaimable here. Counting all 26 would announce a lost registry's every
     // artifact as a deferred orphan.
     expect(
-      warned.some(([, message]) => String(message).includes("to the next sweep")),
+      warned.some(([, message]) => String(message).includes("deferring")),
     ).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // A future-dated write is not a young one (DW-290)
+  // -------------------------------------------------------------------------
+
+  it("warns rather than whispers about an orphan whose newest write is in the future", async () => {
+    // The age gates a DELETE, so an age this isolate cannot trust must never
+    // authorise one — the skip itself is correct and stays. What was wrong was
+    // the LEVEL: a future-dated directory can never age out on its own, so it is
+    // not the benign, self-clearing case the grace-window INFO line describes.
+    // The bytes sit there until the wall clock passes that date, which for a
+    // restored archive or a skewed provider clock can be months.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const ahead = await plantOrphan("dddddddd-1111-4111-8111-111111111111");
+    // A NEGATIVE age is a future date — `ageDirectory` subtracts it. Four times
+    // the grace window, so this is well past the forward-skew tolerance rather
+    // than a borderline value the row could pass by luck.
+    await ageDirectory(ahead, -ORPHAN_SWEEP_GRACE_MS * 4);
+
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let logged: unknown[][] = [];
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      logged = info.mock.calls.map((call) => [...call]);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+
+    // Not removed — an unverifiable age never authorises a delete.
+    expect(removed).toBe(0);
+    expect(await exists(ahead)).toBe(true);
+    // Named, with the date, and at WARN.
+    const future = warned.filter(
+      ([scope, message]) =>
+        scope === "wikis" &&
+        String(message).includes("dddddddd-1111-4111-8111-111111111111") &&
+        String(message).includes("further into the future"),
+    );
+    expect(future).toHaveLength(1);
+    expect(String(future[0][1])).toMatch(/dated \d{4}-\d{2}-\d{2}T/);
+    // …and NOT also as the grace-window line, which would say the opposite:
+    // that it is merely young and will settle.
+    expect(
+      logged.some(([, message]) =>
+        String(message).includes("skipped orphaned wiki directory"),
+      ),
+    ).toBe(false);
+  });
+
+  it("still treats a small forward skew as an ordinary young directory", async () => {
+    // The tolerance, and the reason the escalation is keyed on `now + grace`
+    // rather than on `now`. A provider clock (`head.uploaded`, or an mtime) and
+    // this isolate's can disagree by a little; the grace window is already the
+    // size of that allowance, so a write dated inside it is jitter and gets the
+    // line it always got.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const skewed = await plantOrphan("dddddddd-2222-4222-8222-222222222222");
+    await ageDirectory(skewed, -ORPHAN_SWEEP_GRACE_MS / 2);
+
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let logged: unknown[][] = [];
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      logged = info.mock.calls.map((call) => [...call]);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+
+    expect(removed).toBe(0);
+    expect(await exists(skewed)).toBe(true);
+    expect(
+      logged.some(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("dddddddd-2222-4222-8222-222222222222") &&
+          String(message).includes("grace window"),
+      ),
+    ).toBe(true);
+    expect(
+      warned.some(([, message]) =>
+        String(message).includes("further into the future"),
+      ),
+    ).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // The per-pass window rotates, so nothing is starved (DW-383)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Which candidates one pass actually reached, in window order.
+   *
+   * `deleteDirectory` is rejected throughout, so NOTHING is removable and the
+   * listing is identical on every pass — which is the only arrangement under
+   * which "the window moved" is an observation rather than a side effect of the
+   * previous pass having reclaimed its own candidates. The per-candidate
+   * failure warn names each directory the pass walked.
+   */
+  async function windowOf(): Promise<string[]> {
+    const removal = vi
+      .spyOn(getStorage(), "deleteDirectory")
+      .mockRejectedValue(new Error("the directory is busy"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+      return warn.mock.calls
+        .map((call) => String(call[1]))
+        .map((message) => /removing orphaned wiki directory "([^"]+)" failed/.exec(message))
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match) => match[1]);
+    } finally {
+      warn.mockRestore();
+      removal.mockRestore();
+    }
+  }
+
+  it("rotates the per-pass window by the cap once per UTC day", async () => {
+    // THE STARVATION THIS FIXES. A candidate that is skipped rather than removed
+    // is listed again next pass and occupies a slot again, so a cap that always
+    // took the same head of the list meant everything sorting behind a
+    // permanently unsweepable directory was never even walked — not deferred,
+    // leaked. Removal is still the progress; rotation only matters in the case
+    // where nothing is removable, which is exactly what this row constructs.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const OVERFLOW = 5;
+    const planted: string[] = [];
+    // `Date` alone is faked — `setTimeout` stays real, so the file lock's own
+    // waits are unaffected. Set BEFORE the directories are aged, so their mtimes
+    // are computed against the same clock the sweep will read.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const day0 = Date.UTC(2026, 0, 15, 6, 0, 0);
+    try {
+      vi.setSystemTime(day0);
+      for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
+        const dir = await plantOrphan(
+          `dddddddd-3333-4333-8333-${String(index).padStart(12, "0")}`,
+        );
+        await ageDirectory(dir);
+        planted.push(dir);
+      }
+
+      const first = await windowOf();
+      // Two passes on the SAME UTC day see the SAME window — a delete run twice
+      // in one afternoon must not re-shuffle the work.
+      const sameDay = await windowOf();
+      // …and a pass later the same UTC day, well after the 15-minute grace
+      // window has elapsed, still does: rotation is keyed on the day, not on
+      // the grace bucket.
+      vi.setSystemTime(day0 + ORPHAN_SWEEP_ROTATION_MS / 4);
+      const laterSameDay = await windowOf();
+      vi.setSystemTime(day0 + ORPHAN_SWEEP_ROTATION_MS);
+      const nextDay = await windowOf();
+
+      expect(first).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
+      expect(sameDay).toEqual(first);
+      expect(laterSameDay).toEqual(first);
+      expect(nextDay).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
+      expect(nextDay).not.toEqual(first);
+      // Every candidate is reached within `ceil(n / cap)` days — here two. The
+      // starved tail of the old behaviour is precisely this difference.
+      const starved = planted
+        .map((dir) => path.basename(dir))
+        .filter((id) => !first.includes(id));
+      expect(starved).toHaveLength(OVERFLOW);
+      for (const id of starved) expect(nextDay).toContain(id);
+      expect(new Set([...first, ...nextDay]).size).toBe(planted.length);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Nothing was reclaimed at any point — the rotation is the only thing this
+    // row observed.
+    for (const dir of planted) expect(await exists(dir)).toBe(true);
+  });
+
+  it("needs ceil(n / cap) days to cover a list more than twice the cap", async () => {
+    // The row above uses `cap + 5`, where two days cover everything and the
+    // window never has to wrap far. `ceil(n / cap)` is the claim three docblocks
+    // make, and it only has content once the answer is more than two: here the
+    // start advances past the end of the list and comes back round, and two
+    // days are provably NOT enough — which is what separates a rotation that
+    // advances by `cap` from one that merely alternates between two windows.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const TOTAL = ORPHAN_SWEEP_CANDIDATE_CAP * 2 + 5;
+    const planted: string[] = [];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const day0 = Date.UTC(2026, 2, 3, 6, 0, 0);
+    try {
+      vi.setSystemTime(day0);
+      for (let index = 0; index < TOTAL; index += 1) {
+        const dir = await plantOrphan(
+          `dddddddd-5555-4555-8555-${String(index).padStart(12, "0")}`,
+        );
+        await ageDirectory(dir);
+        planted.push(dir);
+      }
+
+      const days: string[][] = [];
+      for (let day = 0; day < 3; day += 1) {
+        vi.setSystemTime(day0 + day * ORPHAN_SWEEP_ROTATION_MS);
+        days.push(await windowOf());
+      }
+
+      for (const window of days) {
+        expect(window).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
+        // Each window holds `cap` DISTINCT ids — a start that advanced by less
+        // than the cap would revisit inside a single window once it wrapped.
+        expect(new Set(window).size).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
+      }
+      // Two days genuinely are not enough, so the third is doing real work
+      // rather than repeating one of the first two.
+      const afterTwo = new Set([...days[0], ...days[1]]);
+      expect(afterTwo.size).toBe(ORPHAN_SWEEP_CANDIDATE_CAP * 2);
+      expect(afterTwo.size).toBeLessThan(TOTAL);
+      // …and the third closes it: `ceil(55 / 25) = 3`.
+      expect(new Set([...days[0], ...days[1], ...days[2]]).size).toBe(TOTAL);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    for (const dir of planted) expect(await exists(dir)).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // Stale discard markers on wikis the registry DOES name (DW-291)
+  // -------------------------------------------------------------------------
+
+  /** The `.discarded` marker path for one wiki id. */
+  function tombstone(wikiId: string): string {
+    return path.join(wikiDir(wikiId), ".discarded");
+  }
+
+  it("clears a discard marker from a directory the registry names", async () => {
+    // The marker is the ONE thing that outranks the empty-registry rule, so a
+    // stale one on a LIVE wiki arms a delete of that wiki's artifacts for the
+    // day its `wikis.json` is lost — precisely the state that rule exists to
+    // survive. Nothing else ever removes the file: the directory is not an
+    // orphan, so the sweep's own loop never reaches it.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const purpose = await readWikiArtifact(OWNER, wiki.id, "purpose.md");
+    await fs.writeFile(tombstone(wiki.id), "2020-01-01T00:00:00.000Z\n");
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // The marker is gone and NOTHING else moved — this is a marker clear, not a
+    // reclaim, so the count stays 0 and the artifacts stay byte-identical.
+    expect(removed).toBe(0);
+    expect(await exists(tombstone(wiki.id))).toBe(false);
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toBe(purpose);
+    expect((await listWikis(OWNER)).map((item) => item.id)).toEqual([wiki.id]);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("cleared the stale discard marker") &&
+          String(message).includes(wiki.id),
+      ),
+    ).toBe(true);
+
+    // …and the registry-lost state is now survivable again: an empty registry
+    // finds no marker to act on, so the wiki's bytes stay.
+    await ageDirectory(wikiDir(wiki.id));
+    await fs.rm(abs(wikiRegistryPath(OWNER)));
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("leaves the marker alone on the sweep that runs inside a delete", async () => {
+    // Clearing costs one `fileExists` per registry-claimed directory, and
+    // `deleteWiki` is a user-facing request holding `wikis:<tenant>` — where the
+    // healthy case is a single `listFiles` today and every create, rename and
+    // delete for the tenant queues behind it. The cron tick already tolerates
+    // the full walk, and the fault needs three unlikely failures in a row, so a
+    // few minutes' delay costs nothing.
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+    await fs.writeFile(tombstone(keep.id), "2020-01-01T00:00:00.000Z\n");
+
+    expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+
+    expect(await exists(tombstone(keep.id))).toBe(true);
+    // The SCHEDULED entry point is the one that clears it — same marker, same
+    // registry, different caller.
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await exists(tombstone(keep.id))).toBe(false);
+  });
+
+  it("warns and carries on when a marker cannot be removed", async () => {
+    // Per directory, like every other step in the pass. A marker left one more
+    // day is exactly where it already was; a pass that aborted over it would
+    // strand the orphan it had not reached yet.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await fs.writeFile(tombstone(wiki.id), "2020-01-01T00:00:00.000Z\n");
+    const orphan = await plantOrphan("dddddddd-4444-4444-8444-444444444444");
+    await ageDirectory(orphan);
+
+    const removal = vi
+      .spyOn(getStorage(), "deleteFile")
+      .mockRejectedValue(new Error("the marker is busy"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      removal.mockRestore();
+    }
+
+    // The orphan reclaim — the pass's actual work — still happened.
+    expect(removed).toBe(1);
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(tombstone(wiki.id))).toBe(true);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("could not clear the stale discard marker") &&
+          String(message).includes(wiki.id),
+      ),
+    ).toBe(true);
+  });
+
+  it("says nothing about the directories that carry no marker", async () => {
+    // The probe runs on every registry-claimed directory, so a line per healthy
+    // wiki on every cron tick would train the operator to ignore the one that
+    // matters — the same argument the empty-registry warn is keyed on.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let warned: unknown[][] = [];
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(
+      warned.some(([, message]) => String(message).includes("discard marker")),
+    ).toBe(false);
+    expect(await exists(wikiDir(wiki.id))).toBe(true);
+  });
+
+  it("does not claim it cleared a marker when the probe itself threw", async () => {
+    // An unreadable probe is not evidence — and it is emphatically not evidence
+    // that there was a marker to clear. One `catch` over both steps would print
+    // "could not clear the stale discard marker", asserting a marker exists on
+    // a directory nothing ever managed to look at.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await fs.writeFile(tombstone(wiki.id), "2020-01-01T00:00:00.000Z\n");
+    const orphan = await plantOrphan("dddddddd-6666-4666-8666-666666666666");
+    await ageDirectory(orphan);
+
+    const probe = vi
+      .spyOn(getStorage(), "fileExists")
+      .mockRejectedValue(new Error("the marker cannot be read"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let removed: number;
+    let warned: unknown[][] = [];
+    try {
+      removed = await sweepOrphanWikiDirectories(OWNER);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      probe.mockRestore();
+    }
+
+    // The pass's actual work still happened, and the marker is untouched.
+    expect(removed).toBe(1);
+    expect(await exists(orphan)).toBe(false);
+    expect(await exists(tombstone(wiki.id))).toBe(true);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("could not check whether wiki directory") &&
+          String(message).includes("carries a stale discard marker") &&
+          String(message).includes(wiki.id),
+      ),
+    ).toBe(true);
+    // …and NOT the other sentence, which would be a claim about a file nobody
+    // read.
+    expect(
+      warned.some(([, message]) =>
+        String(message).includes("could not clear the stale discard marker"),
+      ),
+    ).toBe(false);
+  });
+
+  it("bounds and rotates the marker probe over registry-named directories", async () => {
+    // The marker probe walks the CLAIMED directories, and every other DW-291
+    // row here has one or two of them — so `rotatingSweepWindow` returns the
+    // list unchanged and only its identity branch ever runs. Replace the call
+    // with a plain loop and those rows stay green while the per-pass bound is
+    // gone; replace it with `.slice(0, cap)` and they stay green while a marker
+    // sorting past the cap is never reached at all. This is the row that
+    // separates the three.
+    const TOTAL = ORPHAN_SWEEP_CANDIDATE_CAP + 5;
+    const stamp = "2026-01-01T00:00:00.000Z";
+    const claimed = Array.from({ length: TOTAL }, (_, index) => ({
+      id: `eeeeeeee-1111-4111-8111-${String(index).padStart(12, "0")}`,
+      name: `Wiki ${index}`,
+      scenario: "general" as const,
+      createdAt: stamp,
+      updatedAt: stamp,
+    }));
+    // Written straight to disk, because `createWiki` would seed 30 wikis' worth
+    // of artifacts for a row that only cares which directories are NAMED.
+    await fs.mkdir(abs("tenants", TENANT), { recursive: true });
+    await fs.writeFile(
+      abs(wikiRegistryPath(OWNER)),
+      JSON.stringify({ version: 1, wikis: claimed, currentId: claimed[0].id }),
+    );
+    for (const entry of claimed) await fs.mkdir(wikiDir(entry.id), { recursive: true });
+
+    /** Which claimed directories one pass probed for a marker. */
+    async function probedDirectories(): Promise<string[]> {
+      const storage = getStorage();
+      const fileExists = storage.fileExists.bind(storage);
+      const seen: string[] = [];
+      const probe = vi
+        .spyOn(storage, "fileExists")
+        .mockImplementation(async (target: string) => {
+          const match = /wikis\/([^/]+)\/\.discarded$/.exec(target);
+          if (match) seen.push(match[1]);
+          return fileExists(target);
+        });
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+      try {
+        expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+        return seen;
+      } finally {
+        warn.mockRestore();
+        probe.mockRestore();
+      }
+    }
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const day0 = Date.UTC(2026, 4, 9, 6, 0, 0);
+    try {
+      vi.setSystemTime(day0);
+      const first = await probedDirectories();
+      // (a) BOUNDED: 30 claimed directories, at most `cap` round trips.
+      expect(first).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
+      expect(new Set(first).size).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
+
+      // (b) ROTATING: put the marker on a directory day 0 provably did not
+      // reach, rather than on a hand-computed index — the window's start is the
+      // implementation's business, and this row should fail if it moves, not if
+      // the arithmetic in the test does.
+      const victim = claimed.map((entry) => entry.id).find((id) => !first.includes(id));
+      expect(victim).toBeDefined();
+      await fs.writeFile(tombstone(victim!), `${stamp}\n`);
+
+      // Still day 0: the marker is outside this window, so it survives.
+      expect(await probedDirectories()).toEqual(first);
+      expect(await exists(tombstone(victim!))).toBe(true);
+
+      // …and the day its window comes round, it goes. `ceil(30 / 25) = 2`, so
+      // one more day is enough; the loop is bounded rather than exact so the
+      // row pins "eventually, within the documented bound" instead of pinning
+      // which day.
+      let cleared = false;
+      for (let day = 1; day <= 2 && !cleared; day += 1) {
+        vi.setSystemTime(day0 + day * ORPHAN_SWEEP_ROTATION_MS);
+        const probed = await probedDirectories();
+        expect(probed).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
+        cleared = !(await exists(tombstone(victim!)));
+        expect(cleared).toBe(probed.includes(victim!));
+      }
+      expect(cleared).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Nothing was reclaimed and no directory was removed — the registry names
+    // every one of them.
+    for (const entry of claimed) expect(await exists(wikiDir(entry.id))).toBe(true);
   });
 });
 
@@ -1960,6 +2539,114 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
       expect(await readDataVersion()).toBe(versionBefore);
     });
   }
+
+  it("bumps the refresh signal when the restore could not put every file back (DW-210)", async () => {
+    // THE ONE STATE A RE-TEMPLATE COULD CHANGE WITHOUT TELLING ANYBODY.
+    // `restoreSeededFiles` is fail-soft PER ENTRY — one unwritable file must
+    // not skip the restore of the other two — so a partial rollback leaves some
+    // of the NEW template's bytes on disk under a call that reports failure.
+    // The four rows above cover the clean rollback, where not bumping is
+    // correct because the old bytes are back; this is the other half.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bytesBefore = await seededBytes(wiki.id);
+    const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
+    const versionBefore = await readDataVersion();
+    expect(versionBefore).toBeGreaterThan(0); // so "moved" is not "left zero"
+
+    // The fault has to land AFTER all three files were overwritten, or the
+    // failed restore would be putting back a file the seed never touched and
+    // the disk would be identical anyway. `wikis.json` is the last of the four
+    // writes, so faulting it means the seed committed every artifact — and
+    // faulting the SECOND write to `purpose.md` is what then fails its restore
+    // specifically, leaving the new template's purpose beside the old registry.
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const seen = new Map<string, number>();
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        const nth = (seen.get(target) ?? 0) + 1;
+        seen.set(target, nth);
+        if (target.endsWith("wikis.json")) throw new Error(FAULT);
+        if (target.endsWith("purpose.md") && nth === 2) {
+          throw new Error("the artifact store is unavailable");
+        }
+        return write(target, content);
+      });
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        // The ORIGINAL diagnosis propagates, not the restore's: compensation
+        // reports what actually broke.
+        await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+          FAULT,
+        );
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The restore really did fail, on `purpose.md` and on nothing else.
+    expect(
+      warned.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("after a failed re-template failed"),
+      ),
+    ).toHaveLength(1);
+    // …so the disk genuinely diverged: `purpose.md` holds the reading
+    // template's bytes while the registry, the Schema and the profile are all
+    // still on business. THAT is what the bump is announcing.
+    const bytesAfter = await seededBytes(wiki.id);
+    expect(bytesAfter[0]).not.toBe(bytesBefore[0]);
+    expect(bytesAfter.slice(1)).toEqual(bytesBefore.slice(1));
+    expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).toBe(registryBefore);
+    expect((await getCurrentWiki(OWNER))?.scenario).toBe("business");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+
+    // Once — the failure path owes exactly the tail the success path owes.
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+  });
+
+  it("still re-throws the original error when the incomplete-restore bump also fails", async () => {
+    // The tail is fail-soft in both directions: a counter that will not move
+    // must not replace the diagnosis any more than a restore that will not
+    // write does.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const versionBefore = await readDataVersion();
+
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const seen = new Map<string, number>();
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        const nth = (seen.get(target) ?? 0) + 1;
+        seen.set(target, nth);
+        if (target.endsWith("wikis.json")) throw new Error(FAULT);
+        if (target.endsWith("purpose.md") && nth === 2) {
+          throw new Error("the artifact store is unavailable");
+        }
+        return write(target, content);
+      });
+    const putIndex = vi
+      .spyOn(storage, "putIndex")
+      .mockRejectedValue(new Error("kv is gone"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+        FAULT,
+      );
+    } finally {
+      warn.mockRestore();
+      putIndex.mockRestore();
+      spy.mockRestore();
+    }
+
+    // The signal genuinely did not move — read from the store, not inferred
+    // from the mock having been called.
+    expect(await readDataVersion()).toBe(versionBefore);
+  });
 
   it("snapshots exactly the files the seed goes on to write", async () => {
     // `seededFilePaths` derives from `WIKI_ARTIFACT_FILES` while

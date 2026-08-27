@@ -1906,7 +1906,8 @@ source_spec: `spec-dw-49-artifact-seed-data-version-bump.md`
 location: src/lib/wikis.ts (applyScenarioTemplate catch / restoreSeededFiles)
 severity: low
 reason: `restoreSeededFiles` is fail-soft per entry: it warns and swallows, so a restore that cannot write leaves the wiki with some NEW template bytes (the state its own warning calls "may now describe two different scenario templates") while `applyScenarioTemplate` re-throws and skips the tail. An open Preview then holds bytes that really did change with nothing to tell it so. Rare and already-degraded, but the one path where "no commit means nothing to refresh to" is not true.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-wikis-orphan-sweep-and-lifecycle-tails
 
 ### DW-211: DW-49's raw-source half is untouched — no writer under `tenants/<t>/raw/` exists yet, so it needs re-checking when Epic 2 Ingest lands one.
 origin: spec-deferred 376f1759e471
@@ -2620,7 +2621,8 @@ source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
 location: src/lib/wikis.ts (sweepOrphans)
 severity: low
 reason: `sweepOrphans` skips whenever `newest > Date.now() - ORPHAN_SWEEP_GRACE_MS`. A directory whose newest write time is in the future never satisfies that test, on any pass, forever. R2 reports `head.uploaded` and the filesystem provider reports `mtime`, neither of which is guaranteed monotonic against the isolate's clock. The skip is logged at `info`, so nothing escalates.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-wikis-orphan-sweep-and-lifecycle-tails
 
 ### DW-291: A `.discarded` tombstone is never cleared, so it can outlive the condition it records.
 origin: spec-deferred 83a44a70622c
@@ -2628,7 +2630,8 @@ source_spec: `spec-dw-147-150-162-orphan-wiki-sweep-hardening.md`
 location: src/lib/wikis.ts (discardCreatedWikiDirectory)
 severity: low
 reason: The marker is written when `discardCreatedWikiDirectory`'s `deleteDirectory` fails, and nothing removes it except the directory's own deletion. If a `writeRegistry` landed on the store but reported failure, the compensation runs against a directory the registry DOES name; the tombstone is then harmless while the registry stands (`known.has(id)` skips it) but authorises deletion if that `wikis.json` is later lost. Requires three unlikely faults in sequence, hence low.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-wikis-orphan-sweep-and-lifecycle-tails
 
 ### DW-292: A tmp file stranded by process death is hidden from every listing surface and nothing ever reclaims it.
 origin: spec-deferred 470152434e7b
@@ -3431,7 +3434,8 @@ source_spec: `spec-dw-209-289-wiki-rename-refresh-and-sweep-cap.md`
 location: src/lib/wikis.ts (deleteWiki)
 severity: medium
 reason: DW-209 established the rule this change generalises: a registry operation that also moves bytes a Preview renders must bump, because a non-current Wiki's operations change no `currentWikiId` and the Workbench's selection-reset effect never fires. `deleteWiki` (src/lib/wikis.ts) meets that description exactly — it deletes the artifact directory — and still carries no tail. `WikiSwitcher.tsx` calls `router.refresh()` itself, which covers the client that performed the delete but not any other open client. Pre-existing; surfaced by generalising the rule, not caused by it.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-wikis-orphan-sweep-and-lifecycle-tails
 
 ### DW-383: A sweep candidate whose age cannot be read is skipped but still consumes one of the per-pass cap slots on every pass, so enough of them could starve the tail of the list.
 origin: spec-deferred 5c402c238ab7
@@ -3439,7 +3443,8 @@ source_spec: `spec-dw-209-289-wiki-rename-refresh-and-sweep-cap.md`
 location: src/lib/wikis.ts (sweepOrphans / ORPHAN_SWEEP_CANDIDATE_CAP)
 severity: low
 reason: `ORPHAN_SWEEP_CANDIDATE_CAP` truncates the candidate list before `newestWriteTime`, and an unreadable age is treated as too young — a deliberate skip that never clears on its own if the underlying storage error is permanent. The tombstone half of this shape was closed during review (the probe now resolves before the cap); the age half cannot be, because reading the age IS the expensive walk the cap exists to bound. Related to DW-290, which records the future-mtime variant of the same permanently-unsweepable candidate.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-wikis-orphan-sweep-and-lifecycle-tails
 
 ### DW-384: The sibling research routes (PATCH/DELETE `/api/research/[id]`, POST `/api/research/[id]/run`) still write and delete research-project records with no read-only gate.
 origin: spec-deferred 4a4bbd173b0f
@@ -4246,4 +4251,28 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/app/api/tasks/run/route.ts:932
 severity: low
 reason: Before DW-297 a non-list registry made `getResearchProject` return null, so `runResearchProject` threw "Research project not found", which `src/app/api/tasks/run/route.ts:918` poisons at 422. The new throw matches neither `/not found/i` nor `ClientInputError`, so it falls to the 500 at `:932` and the queue re-delivers up to `max_retries: 3` before the DLQ. Bounded and arguably the correct classification for a repairable server fault, but it is an unpinned behaviour change with no test at the task surface.
+status: open
+
+### DW-483: The DW-290 future-dated-mtime warn fires on every sweep pass for as long as the clock has not caught up, with no dedupe or rate limit.
+origin: spec-deferred 675f89601c07
+source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
+location: src/lib/wikis.ts (sweepOrphans, future-dated skip branch)
+severity: low
+reason: A future-dated directory stays a candidate on every pass, so the new warn repeats indefinitely — potentially for months after a restored archive. This is the same noise pattern the neighbouring `tombstonedOnly` comment in `sweepOrphans` argues against ("warning about it every few minutes would train the operator to ignore the line that matters"). Not caused by the escalation itself, which is correct; caused by pairing a per-pass warn with a condition that cannot clear on its own.
+status: open
+
+### DW-484: A registry write that reports failure after its bytes actually landed leaves the registry on the new scenario and the artifacts on the old, with a "clean" rollback and therefore no bump.
+origin: spec-deferred c22cef649f92
+source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
+location: src/lib/wikis.ts (applyScenarioTemplate failure path)
+severity: low
+reason: `applyScenarioTemplate` decides to bump from `restoreSeededFiles`'s completeness alone. If `writeRegistry` throws after the store accepted the bytes, every restore succeeds, `rollbackIncomplete` is false, and no bump fires -- yet the registry now names a scenario the artifacts do not describe. Detecting it needs a registry read-back on the failure path, which neither DW-210 nor this spec's matrix asks for. Same family as the DW-291 "landed but reported failure" shape.
+status: open
+
+### DW-485: The pre-existing DW-289 cap rows became calendar-dependent when the per-pass window started rotating on a UTC-day clock.
+origin: spec-deferred f8ca87e4f546
+source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
+location: src/lib/__tests__/wikis.test.ts (the orphan-directory sweep, DW-289 cap rows)
+severity: low
+reason: Those rows plant `cap + OVERFLOW` orphans against the real system clock, so WHICH window a pass takes now varies with the date the suite runs. They pass on any date today because every assertion is a count or spans all planted directories, but any future row in that `describe` that names a specific directory would be flaky by calendar. Pinning the clock for the whole `describe` is its own piece of work -- the block has ~20 rows that depend on real time for `ageDirectory` and the file lock's waits.
 status: open

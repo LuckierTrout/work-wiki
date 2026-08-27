@@ -522,6 +522,13 @@ async function snapshotSeededFiles(
 /**
  * Put every snapshotted file back, byte for byte. NEVER THROWS.
  *
+ * RETURNS WHETHER THE ROLLBACK WAS COMPLETE — true only when every entry was
+ * restored (DW-210). The per-entry fail-soft below is deliberate and unchanged,
+ * but "some of the new template's bytes are still on disk" is a materially
+ * different outcome from "the wiki is exactly as it was", and the only caller
+ * re-throws either way. Without this answer the caller cannot tell the two
+ * apart, so the partial case moved bytes an open Preview is never told about.
+ *
  * The bytes are written back RAW rather than re-seeded through
  * `putWorkspaceProfile`: re-seeding would re-stamp `updatedAt` and re-serialize
  * through the parser, so "identical to before the call" would stop being true
@@ -532,8 +539,11 @@ async function snapshotSeededFiles(
  * a delete, tolerating ENOENT because a seed that faulted before that write
  * never created it.
  */
-async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void> {
+async function restoreSeededFiles(
+  snapshot: SeededFileSnapshot[],
+): Promise<boolean> {
   const storage = getStorage();
+  let complete = true;
   for (const entry of snapshot) {
     try {
       if (entry.content === null) {
@@ -547,6 +557,9 @@ async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void>
         await storage.writeFile(entry.path, entry.content);
       }
     } catch (error) {
+      // Recorded, not raised: the loop still attempts every remaining entry —
+      // one unwritable file must not skip the restore of the other two.
+      complete = false;
       logger.warn(
         "wikis",
         `restoring "${entry.path}" after a failed re-template failed — this wiki may now describe two different scenario templates`,
@@ -554,6 +567,7 @@ async function restoreSeededFiles(snapshot: SeededFileSnapshot[]): Promise<void>
       );
     }
   }
+  return complete;
 }
 
 /**
@@ -786,6 +800,42 @@ function normalizeArtifactEditReason(
 }
 
 /**
+ * Move `dataVersion` after a write an already-open Preview cannot otherwise
+ * learn about. NEVER THROWS.
+ *
+ * THE ONE COPY OF A TAIL THIS MODULE CARRIES SIX TIMES. `writeWikiArtifact`,
+ * {@link createWiki}, {@link applyScenarioTemplate}, {@link renameWiki} and
+ * {@link deleteWiki} each spelled — or, for the last two, would each have
+ * spelled — the same four lines with one word changed. Six copies of a
+ * fail-soft `try/catch` is six places for the next one to forget the `catch`,
+ * so the shape lives here and the callers supply only the phrase that names
+ * what just landed.
+ *
+ * `after` completes the sentence "the refresh signal did not move after …", so
+ * it is a gerund phrase (`creating wiki "…"`), not a noun.
+ *
+ * CALL IT OUTSIDE `wikis:<tenant>`. `bumpDataVersion` takes
+ * `DATA_VERSION_LOCK` and `withFileLock` is not reentrant, so a call from
+ * inside a locked body would nest two lock keys in an order nothing else in the
+ * repo takes them in. This helper cannot enforce that — only the call sites
+ * can, and `workbench-data-version.test.ts` pins each of them.
+ *
+ * FAIL-SOFT, because every caller has already written its bytes by the time it
+ * gets here: a counter that did not move leaves a stale tree, which the next
+ * poll or reload fixes, while a rejected call reports a landed write as failed
+ * and sends the owner into a retry. (`bumpDataVersion` swallows its own
+ * failures today, so this `catch` is redundant defence — kept so the tail stays
+ * correct if it ever stops.)
+ */
+async function bumpRefreshSignal(after: string): Promise<void> {
+  try {
+    await bumpDataVersion();
+  } catch (error) {
+    logger.warn("wikis", `the refresh signal did not move after ${after}`, error);
+  }
+}
+
+/**
  * Overwrite one seeded artifact — the write half of Story 1.8's Schema editing.
  *
  * WHY THIS IS NOT `writeWikiPageWithSideEffects`. The epic's one-write-path rule
@@ -998,15 +1048,7 @@ export async function writeWikiArtifact(
   } catch (error) {
     logger.warn("wikis", `logging the artifact edit of "${file}" failed`, error);
   }
-  try {
-    await bumpDataVersion();
-  } catch (error) {
-    logger.warn(
-      "wikis",
-      `the refresh signal did not move after editing "${file}"`,
-      error,
-    );
-  }
+  await bumpRefreshSignal(`editing "${file}"`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,17 +1133,23 @@ export async function createWiki(
 
   // Only reached when the locked body committed — the compensation branch above
   // re-throws, so a discarded create never moves the signal.
-  try {
-    await bumpDataVersion();
-  } catch (error) {
-    logger.warn(
-      "wikis",
-      `the refresh signal did not move after creating wiki "${created.id}"`,
-      error,
-    );
-  }
+  await bumpRefreshSignal(`creating wiki "${created.id}"`);
   return created;
 }
+
+/**
+ * What {@link applyScenarioTemplate}'s locked body hands back to its tail.
+ *
+ * Three exits, and the tail owes each a different thing: `unknown` wrote
+ * nothing and answers `null`; `applied` bumps and returns the record; `failed`
+ * re-throws `error` unchanged, having first bumped IF AND ONLY IF the
+ * compensation could not put every file back. Private — the shape exists so the
+ * bump can sit outside `wikis:<tenant>`, not as an API.
+ */
+type RetemplateOutcome =
+  | { kind: "unknown" }
+  | { kind: "applied"; wiki: WikiRecord }
+  | { kind: "failed"; error: unknown; rollbackIncomplete: boolean };
 
 /**
  * Apply a different Scenario Template to an existing Wiki.
@@ -1124,12 +1172,30 @@ export async function createWiki(
  * from the owner. What stops that draft being saved over the new template is
  * the If-Match write precondition (DW-38), which answers 412 — not this tail.
  *
- * The tail is outside the lock, fail-soft, and skipped on both throwing or
- * empty-handed paths: the unknown-id `null` (which writes nothing) and the
- * `restoreSeededFiles` branch (which re-throws). "Re-throws" is not quite "wrote
- * nothing", though: `restoreSeededFiles` is fail-soft PER ENTRY, so a restore
- * that cannot write leaves some new template bytes on disk with no bump to
- * announce them (DW-210) — rare, already-degraded, and out of scope here.
+ * The tail is outside the lock, fail-soft, and skipped on the empty-handed
+ * path: the unknown-id `null` writes nothing, so there is nothing to refresh to.
+ *
+ * THE FAILURE PATH BUMPS TOO, BUT ONLY WHEN THE ROLLBACK WAS INCOMPLETE
+ * (DW-210). {@link restoreSeededFiles} is fail-soft PER ENTRY, so a restore
+ * that cannot write one of the three files can leave NEW template bytes on disk
+ * under a call that reports failure — the one state where a re-template both
+ * changed what a Preview renders and told nobody. It now answers whether every
+ * entry went back, and an incomplete answer earns the same bump a success does
+ * before the original error is re-thrown. A CLEAN rollback still bumps nothing:
+ * the old bytes are back, so a refetch would be churn.
+ *
+ * WHAT THE FLAG PROVES, EXACTLY: that at least one restore entry FAILED — not
+ * that the disk diverged. A seed that faulted on its first write leaves the
+ * later files untouched, so the entry whose restore then failed would have
+ * rewritten identical bytes and nothing moved. Deliberately the safe way round:
+ * over-signalling costs one spurious refetch of bytes that did not change,
+ * under-signalling leaves a Preview rendering a template the owner never
+ * applied. "A restore entry failed" is the strongest thing this path can
+ * cheaply know, and it is the side of the trade to be wrong on.
+ *
+ * The flag is carried OUT of the locked callback rather than bumped inside it,
+ * for the reason the success tail is outside: `bumpDataVersion` takes
+ * `DATA_VERSION_LOCK` and `withFileLock` is not reentrant.
  */
 export async function applyScenarioTemplate(
   owner: string,
@@ -1145,10 +1211,17 @@ export async function applyScenarioTemplate(
   if (!isCreatableScenario(scenario)) {
     throw new ClientInputError("Choose one Scenario Template.");
   }
-  const applied = await withWikiLock(owner, async (held) => {
+  // WHY THE LOCKED BODY RETURNS THE FAILURE INSTEAD OF THROWING IT. The bump
+  // the compensation path now owes (DW-210) has to run OUTSIDE `wikis:<tenant>`
+  // like every other tail in this module, so the one fact only the `catch`
+  // knows — whether `restoreSeededFiles` put every file back — has to reach the
+  // post-lock scope. Carrying it out as a value keeps the error itself
+  // untouched: it is re-thrown below, unwrapped and unreplaced, exactly as a
+  // caller saw it before.
+  const outcome = await withWikiLock(owner, async (held): Promise<RetemplateOutcome> => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
-    if (!wiki) return null;
+    if (!wiki) return { kind: "unknown" };
     // Snapshot BEFORE the first overwrite. The in-memory mutation below needs
     // no undo — the registry is re-read on every call, so a failed write simply
     // leaves the stored `scenario` where it was; the FILES are what persist.
@@ -1172,8 +1245,17 @@ export async function applyScenarioTemplate(
       // contract still does not promise is durability of the newest bytes
       // across a power loss — but that leaves the PREVIOUS whole file, which is
       // exactly the state this branch already handles.
-      await restoreSeededFiles(snapshot);
-      throw error;
+      //
+      // A restore that could not put EVERY file back leaves some of the new
+      // template's bytes on disk under a call that reports failure — the one
+      // state where a re-template changed what a Preview renders and told
+      // nobody (DW-210). That is the flag; the compensation itself is
+      // unchanged, still fail-soft per entry and still attempting all three.
+      return {
+        kind: "failed",
+        error,
+        rollbackIncomplete: !(await restoreSeededFiles(snapshot)),
+      };
     }
     // COMMITTED — the seed and the registry write both landed, so the bytes the
     // snapshot above holds are gone from the artifact path for good unless they
@@ -1182,21 +1264,25 @@ export async function applyScenarioTemplate(
     // so a history miss cannot turn a stored re-template into a reported
     // failure. The `catch` keeps `restoreSeededFiles` as its only compensation.
     await recordRetemplatedArtifacts(owner, wiki.id, snapshot, scenario);
-    return wiki;
+    return { kind: "applied", wiki };
   });
 
   // Unknown id: nothing was written, so there is nothing to refresh to.
-  if (!applied) return null;
-  try {
-    await bumpDataVersion();
-  } catch (error) {
-    logger.warn(
-      "wikis",
-      `the refresh signal did not move after re-templating wiki "${applied.id}"`,
-      error,
-    );
+  if (outcome.kind === "unknown") return null;
+  if (outcome.kind === "failed") {
+    // A CLEAN rollback bumps nothing: the old bytes are back, so telling an
+    // open Preview to refetch would be churn. An INCOMPLETE one earns the same
+    // fail-soft tail a success does, because the disk really did move.
+    if (outcome.rollbackIncomplete) {
+      await bumpRefreshSignal(
+        `an incomplete rollback of the re-template of wiki "${wikiId}"`,
+      );
+    }
+    // The original diagnosis, unwrapped and unreplaced.
+    throw outcome.error;
   }
-  return applied;
+  await bumpRefreshSignal(`re-templating wiki "${outcome.wiki.id}"`);
+  return outcome.wiki;
 }
 
 /**
@@ -1350,15 +1436,7 @@ export async function renameWiki(
 
   // Unknown id: nothing was written, so there is nothing to refresh to.
   if (!renamed) return null;
-  try {
-    await bumpDataVersion();
-  } catch (error) {
-    logger.warn(
-      "wikis",
-      `the refresh signal did not move after renaming wiki "${renamed.id}"`,
-      error,
-    );
-  }
+  await bumpRefreshSignal(`renaming wiki "${renamed.id}"`);
   return renamed;
 }
 
@@ -1405,16 +1483,79 @@ export const ORPHAN_SWEEP_GRACE_MS = 15 * 60 * 1000;
  * next pass's `listFiles`, so the next scheduled tick starts on the remainder
  * with no resume state to persist, corrupt or reconcile.
  *
- * THE RESIDUAL: a candidate that is SKIPPED rather than removed is still listed
- * next pass and still occupies a slot. That is now only the two AGE skips — too
- * young, or an age that could not be read — because the tombstone probe is
- * resolved BEFORE the cap, so an untombstoned directory against a lost registry
- * never reaches it. The young case is self-clearing by construction, and the
- * unreadable-age case is the already-documented one; a large enough set of
- * permanently unreadable directories could still starve the tail of the list,
- * which is accepted against the alternative of an unbounded walk.
+ * THE RESIDUAL, AND WHAT ROTATION DOES ABOUT IT (DW-383): a candidate that is
+ * SKIPPED rather than removed is still listed next pass and still occupies a
+ * slot. That is only the AGE skips — too young, an age that could not be read,
+ * or a write dated in the future — because the tombstone probe is resolved
+ * BEFORE the cap, so an untombstoned directory against a lost registry never
+ * reaches it. The young case is self-clearing by construction; the other two
+ * are not, and a cap that always took the SAME head of the list meant a large
+ * enough set of permanently unsweepable directories starved everything sorting
+ * behind them forever. {@link rotatingSweepWindow} is the answer: the window
+ * still holds at most this many, but WHICH ones advances by exactly this many
+ * per UTC day, so every candidate is reached within `ceil(n / cap)` days.
  */
 export const ORPHAN_SWEEP_CANDIDATE_CAP = 25;
+
+/**
+ * One UTC day, the period {@link rotatingSweepWindow} advances on.
+ *
+ * NOT {@link ORPHAN_SWEEP_GRACE_MS}, and the difference is the whole design.
+ * Grace is a delete-age gate measured against one directory's mtime; this is a
+ * rotation clock shared by every caller of the sweep, and the two answer
+ * different questions. Keying rotation on a 15-minute bucket would make the
+ * window depend on how often the caller happens to sample the clock, and — with
+ * the deployed cron at one tick a day — advance it 96 buckets per pass, where
+ * `gcd(96 * cap, n)` can exceed `cap` and freeze the window on a subset of the
+ * list forever (at `n = MAX_WIKIS`, exactly the pathological population the cap
+ * exists for). A day is the deployed cadence, so one scheduled tick is one
+ * step; and any caller sampling more often than daily simply sees the SAME
+ * window twice, which is the correct answer for `deleteWiki` running twice in a
+ * minute.
+ *
+ * Exported for the same reason {@link ORPHAN_SWEEP_GRACE_MS} and
+ * {@link ORPHAN_SWEEP_CANDIDATE_CAP} are: the suite advances a fake clock by
+ * exactly this period, and a hardcoded `86_400_000` there would go on passing
+ * against a rotation keyed on something else entirely.
+ */
+export const ORPHAN_SWEEP_ROTATION_MS = 86_400_000;
+
+/**
+ * At most {@link ORPHAN_SWEEP_CANDIDATE_CAP} of `names`, rotating once per UTC
+ * day. Stateless — no cursor is persisted, read or reconciled.
+ *
+ * SORTED FIRST, because `listFiles` order is not a storage contract: the
+ * filesystem provider hands back whatever `readdir` gives and R2 paginates by
+ * key, so an unsorted rotation would step through an order that can change
+ * between passes and could revisit the same subset indefinitely. Sorting makes
+ * "advance by `cap`" mean the same thing on every pass.
+ *
+ * BY CODE UNIT, NOT BY `localeCompare`. The order has to be identical on every
+ * isolate that sweeps this tenant, and `localeCompare` with no locale argument
+ * is ICU collation keyed on the RUNTIME's default locale — two isolates
+ * configured differently would take different windows on the same UTC day, so
+ * "advance by `cap`" would stop meaning one thing. It also disagrees with the
+ * byte order the paragraph above reasons about: {@link WIKI_ID_RE} accepts
+ * uppercase hex, and `"BBBB…"` sorts BEFORE `"aaaa…"` by code unit and AFTER it
+ * under collation. A plain `<`/`>` comparator is the deterministic one, and it
+ * is the one that matches what a provider listing by key would hand back.
+ *
+ * `start` is `(day * cap) % n`, so the window advances by exactly `cap` per day
+ * and wraps; two passes on the SAME UTC day see the same window, which is what
+ * keeps repeated deletes in one afternoon from re-shuffling the work. When the
+ * list fits the cap there is nothing to rotate and every name is returned, so
+ * this is a no-op for every healthy tenant.
+ */
+function rotatingSweepWindow(names: string[], now: number): string[] {
+  const sorted = [...names].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  if (sorted.length <= ORPHAN_SWEEP_CANDIDATE_CAP) return sorted;
+  const day = Math.floor(now / ORPHAN_SWEEP_ROTATION_MS);
+  const start = (day * ORPHAN_SWEEP_CANDIDATE_CAP) % sorted.length;
+  return Array.from(
+    { length: ORPHAN_SWEEP_CANDIDATE_CAP },
+    (_, offset) => sorted[(start + offset) % sorted.length],
+  );
+}
 
 /**
  * The most recent write anywhere under `dir`, in epoch millis — or NULL when
@@ -1468,6 +1609,16 @@ async function newestWriteTime(dir: string): Promise<number | null> {
   }
 }
 
+/** Per-pass options for {@link sweepOrphans}. */
+interface SweepOrphansOptions {
+  /**
+   * True only for {@link sweepOrphanWikiDirectories}, the cron entry point.
+   * `deleteWiki`'s inline sweep leaves it unset, which is what keeps the
+   * tombstone reclaim off a user-facing request path.
+   */
+  scheduled?: boolean;
+}
+
 /**
  * Remove one orphaned `wikis/<uuid>/` directory per entry that no registry
  * record claims. Returns how many were removed.
@@ -1511,19 +1662,50 @@ async function newestWriteTime(dir: string): Promise<number | null> {
  * deferred, and the next scheduled pass picks them up. The return value is
  * unchanged — how many directories THIS pass removed.
  *
+ * THE WINDOW ROTATES ONCE PER UTC DAY (DW-383). Which `cap` candidates a pass
+ * considers is {@link rotatingSweepWindow}'s answer, not the first `cap` of
+ * whatever order the provider listed. Removal is still the progress — a
+ * reclaimed directory is simply gone from the next listing — but a candidate
+ * that can never be removed (an unreadable or future-dated age) is listed again
+ * every pass, and against a fixed head those stragglers starved everything
+ * sorting behind them permanently.
+ *
+ * A SCHEDULED PASS ALSO CLEARS STALE TOMBSTONES (DW-291), from directories the
+ * registry DOES name — see {@link clearStaleDiscardTombstones} for why that is
+ * scheduled-only and why it is not a delete candidate.
+ *
  * Residual, and documented rather than fixed: an isolate killed BETWEEN the seed
  * and the registry write on a first-ever create leaves an UNTOMBSTONED directory
  * (the catch never ran), which stays unreclaimable until the tenant owns a Wiki.
  * Bounded by the same guard, and the safe side of it.
  */
-async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<number> {
+async function sweepOrphans(
+  owner: string,
+  registry: WikiRegistry,
+  options: SweepOrphansOptions = {},
+): Promise<number> {
+  // ONE clock reading for the whole pass. The rotation bucket, the delete-age
+  // cutoff and the forward-skew horizon all have to agree about when "now" is,
+  // or a pass that straddles midnight could take one window and log against
+  // another.
+  const now = Date.now();
   const tombstonedOnly = registry.wikis.length === 0;
   const known = new Set(registry.wikis.map((wiki) => wiki.id));
   const entries = await getStorage().listFiles(wikisRootPath(owner));
-  const found = entries
+  const directories = entries
     .filter((entry) => entry.isDirectory)
     .map((entry) => entry.name)
-    .filter((name) => WIKI_ID_RE.test(name) && !known.has(name));
+    .filter((name) => WIKI_ID_RE.test(name));
+  const found = directories.filter((name) => !known.has(name));
+  // The complement of `found`, and the ONLY set the tombstone reclaim below
+  // touches: a directory the registry names is by definition not an orphan, so
+  // nothing in this list is ever a delete candidate. Computed ONLY when that
+  // reclaim will actually run — `deleteWiki`'s inline sweep is a user-facing
+  // request holding `wikis:<tenant>`, and this branch is required to add
+  // nothing to it.
+  const claimed = options.scheduled
+    ? directories.filter((name) => known.has(name))
+    : [];
   if (tombstonedOnly && found.length > 0) {
     // Only when there is actually something being held back — and keyed on the
     // PRE-CAP list, so the line fires for the same states it always did rather
@@ -1538,10 +1720,12 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
   }
   // THE TOMBSTONE PROBE RESOLVES OVER THE FULL LIST, BEFORE THE CAP. In
   // `tombstonedOnly` mode an untombstoned directory is skipped on EVERY pass
-  // forever, so letting one occupy a slot would permanently starve a genuinely
-  // tombstoned DW-162 directory that sorts after it — R2 lists lexicographically,
-  // so "after" is a stable position, not a coin flip, and capping first would be
-  // a regression against the uncapped behaviour rather than a deferral. It also
+  // forever, so letting one occupy a slot would delay a genuinely tombstoned
+  // DW-162 directory that sorts after it — and "after" is a fixed position,
+  // because `rotatingSweepWindow` sorts by code unit before it takes a window.
+  // Rotation would eventually reach it, but a probe that is one `fileExists`
+  // has no business costing a DW-162 directory days it does not need to wait.
+  // It also
   // keeps the truncation warn below honest: it counts directories this pass
   // would really have reclaimed, not every directory a LOST registry makes look
   // like an orphan.
@@ -1573,27 +1757,49 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
   // Capped HERE, on the candidate list, before a single `newestWriteTime` or
   // `deleteDirectory` below — capping the REMOVALS instead would leave the
   // per-candidate walk that holds `wikis:<tenant>` unbounded, which is the cost
-  // this bounds (DW-289).
-  const candidates = eligible.slice(0, ORPHAN_SWEEP_CANDIDATE_CAP);
+  // this bounds (DW-289). ROTATING rather than always the first `cap` of
+  // whatever order the provider listed, so a head of permanently unsweepable
+  // directories cannot starve the tail (DW-383).
+  const candidates = rotatingSweepWindow(eligible, now);
   if (eligible.length > candidates.length) {
     logger.warn(
       "wikis",
       `${eligible.length} orphaned wiki directory candidates found, which is more than the ${ORPHAN_SWEEP_CANDIDATE_CAP} one pass considers — deferring ${
         eligible.length - candidates.length
-      } to the next sweep`,
+      } to a later UTC day, since the considered window advances by ${ORPHAN_SWEEP_CANDIDATE_CAP} per day and every pass within one day sees the same one`,
     );
   }
-  const cutoff = Date.now() - ORPHAN_SWEEP_GRACE_MS;
+  const cutoff = now - ORPHAN_SWEEP_GRACE_MS;
+  // The far side of the same tolerance. A provider clock (`head.uploaded`, or
+  // an mtime) and this isolate's can disagree by a little, and the grace window
+  // is already the size of that allowance; a write dated FURTHER ahead than the
+  // whole window is not jitter, it is a skewed clock or a restored archive.
+  const horizon = now + ORPHAN_SWEEP_GRACE_MS;
   let removed = 0;
   for (const name of candidates) {
     const dir = wikiDirPath(owner, name);
     const newest = await newestWriteTime(dir);
     if (newest === null || newest > cutoff) {
       // The in-flight-create guard. `newestWriteTime` already warned when the
-      // age was unreadable, so only the young case needs a line of its own —
-      // and at INFO, because it is the expected, benign outcome that repeats on
-      // every pass for as long as the directory stays young.
-      if (newest !== null) {
+      // age was unreadable, so only the two READ ages need a line of their own.
+      if (newest !== null && newest > horizon) {
+        // NOT the info line: a future-dated directory can never age out on its
+        // own, so this is not the benign, self-clearing case the info line
+        // describes — the bytes sit there until the wall clock catches up,
+        // which for a restored archive can be months. The age still refuses to
+        // authorise a delete (an age that cannot be trusted must never gate one
+        // (DW-290)), so warning is the whole remedy the sweep has.
+        logger.warn(
+          "wikis",
+          `skipped orphaned wiki directory "${name}": its newest write is dated ${new Date(
+            newest,
+          ).toISOString()}, further into the future than the ${
+            ORPHAN_SWEEP_GRACE_MS / 60_000
+          }-minute grace window allows for clock skew — its bytes stay until the clock passes that date`,
+        );
+      } else if (newest !== null) {
+        // INFO, because it is the expected, benign outcome that repeats on
+        // every pass for as long as the directory stays young.
         logger.info(
           "wikis",
           `skipped orphaned wiki directory "${name}": its newest write is younger than the ${
@@ -1623,7 +1829,99 @@ async function sweepOrphans(owner: string, registry: WikiRegistry): Promise<numb
       `removed orphaned wiki directory "${name}" — no registry entry referenced it`,
     );
   }
+  // AFTER the removals, because removal is the pass's actual work and this is
+  // housekeeping for directories that are not going anywhere.
+  if (options.scheduled) await clearStaleDiscardTombstones(owner, claimed, now);
   return removed;
+}
+
+/**
+ * Remove `.discarded` from directories the registry DOES name (DW-291).
+ * NEVER THROWS.
+ *
+ * {@link discardCreatedWikiDirectory} writes the marker for an id no registry
+ * entry named — a create that provably failed. It can nonetheless end up on a
+ * LIVE Wiki: `writeRegistry` is atomic from the caller's view but not
+ * infallible in its reporting, so a registry write whose bytes landed and whose
+ * acknowledgement did not sends `createWiki` into its compensation for an id
+ * the registry now names. The directory delete then fails too (it is the same
+ * unhealthy provider), and the tombstone lands on a Wiki that works.
+ *
+ * WHY THAT MATTERS ENOUGH TO CLEAN UP: the marker is the ONE thing that
+ * outranks the empty-registry rule in {@link sweepOrphans}. Left in place, it
+ * arms a delete of a real Wiki's artifacts for the day that tenant's
+ * `wikis.json` is lost or unreadable — precisely the state the empty-registry
+ * rule exists to survive. Nothing else ever clears it: no code path rewrites or
+ * removes the file, and the directory it sits in is not an orphan, so the sweep
+ * above never reaches it.
+ *
+ * SCHEDULED SWEEPS ONLY. Clearing costs one `fileExists` per registry-claimed
+ * directory, and {@link deleteWiki} runs its sweep on a user-facing request
+ * while holding `wikis:<tenant>` — where the healthy case costs a single
+ * `listFiles` today and every create, rename and delete for the tenant queues
+ * behind it. The cron tick already tolerates the full walk, and the fault needs
+ * three unlikely failures in a row, so a few minutes' delay costs nothing.
+ *
+ * Bounded by the SAME {@link rotatingSweepWindow} as the orphan candidates, for
+ * the same two reasons: the per-pass round trips stay capped, and a tenant with
+ * more directories than the cap still has every one of them probed within
+ * `ceil(n / cap)` days.
+ *
+ * FAIL-SOFT PER DIRECTORY, like every other step in the pass: an unreadable
+ * probe or an undeletable marker warns and the loop continues. A stale
+ * tombstone left one more day is exactly where it already was. The two failures
+ * are reported SEPARATELY, for the reason the probe in {@link sweepOrphans}
+ * distinguishes them: "could not clear the marker" asserts a marker is there,
+ * and a probe that threw never said so.
+ *
+ * THE RESIDUAL, and it is the reason this narrows the fault rather than closing
+ * it: `claimedDirectories` is empty exactly when the registry is lost or
+ * unreadable — the one state in which a stale marker is dangerous — so a marker
+ * still on disk when `wikis.json` goes is a marker this never gets to see. What
+ * this buys is the window between the bad half-create and that loss, which for
+ * a daily cron is normally the whole of it; two independent rare faults landing
+ * in the same day is what it does not cover. Closing that would mean trusting
+ * an empty registry, which is the one thing {@link sweepOrphans} must never do.
+ */
+async function clearStaleDiscardTombstones(
+  owner: string,
+  claimedDirectories: string[],
+  now: number,
+): Promise<void> {
+  for (const name of rotatingSweepWindow(claimedDirectories, now)) {
+    const marker = wikiDiscardTombstonePath(owner, name);
+    let marked = false;
+    try {
+      marked = await getStorage().fileExists(marker);
+    } catch (error) {
+      // Unreadable is not evidence, the same way it is not in `sweepOrphans` —
+      // and it is emphatically not evidence that there is a marker to clear.
+      logger.warn(
+        "wikis",
+        `could not check whether wiki directory "${name}" carries a stale discard marker — leaving it for the next scheduled sweep`,
+        error,
+      );
+      continue;
+    }
+    if (!marked) continue;
+    try {
+      await getStorage().deleteFile(marker);
+    } catch (error) {
+      logger.warn(
+        "wikis",
+        `could not clear the stale discard marker on wiki directory "${name}" — leaving it for the next scheduled sweep`,
+        error,
+      );
+      continue;
+    }
+    // WARN rather than INFO: unlike the grace-window skip this cannot repeat —
+    // the marker is gone — and it records that a live Wiki was one lost
+    // wikis.json away from being swept.
+    logger.warn(
+      "wikis",
+      `cleared the stale discard marker on wiki directory "${name}" — the registry names it, so a failed half-create had marked a wiki that is in use`,
+    );
+  }
 }
 
 /**
@@ -1650,8 +1948,12 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
   // is also called from `deleteWiki`'s locked body through `sweepOrphans`, the
   // gate here is what a DIRECT caller of this exported entry point meets.
   assertWritable(READ_ONLY_REFUSAL.wikiDirectorySweep);
+  // `scheduled` is set HERE and nowhere else: this is the cron tick, which
+  // already tolerates a full walk of the tenant's directories, so it is the one
+  // caller that can afford the stale-tombstone probe (DW-291). `deleteWiki`'s
+  // inline sweep leaves it unset.
   return withWikiLock(owner, async () =>
-    sweepOrphans(owner, await readRegistry(owner)),
+    sweepOrphans(owner, await readRegistry(owner), { scheduled: true }),
   );
 }
 
@@ -1680,6 +1982,25 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
  * caller does; anything past the cap waits for the next delete or the next cron
  * tick rather than lengthening this one under the tenant lock.
  *
+ * IT DOES BUMP `dataVersion` (DW-382), the same tail {@link createWiki},
+ * {@link applyScenarioTemplate} and {@link renameWiki} carry — a delete is a
+ * Preview-visible byte move like any other. The Workbench's Files tree and the
+ * Wiki switcher both render from data this removes, and a delete moves no
+ * `currentWikiId` (the current Wiki is undeletable), so the selection-reset
+ * effect never fires and the counter is the only thing that can tell ANOTHER
+ * client's open tab that a Wiki and its artifacts are gone. Without it that tab
+ * keeps listing a Wiki whose bytes no longer exist until the owner reloads.
+ *
+ * The tail is OUTSIDE the lock (`bumpDataVersion` takes `DATA_VERSION_LOCK` and
+ * `withFileLock` is not reentrant), fail-soft (both byte-removal steps above
+ * are; a counter that did not move must not turn a landed delete into a 500 the
+ * owner retries into a 404), and fires only when the locked body returned a
+ * record — an unknown id writes nothing, and the current Wiki throws before the
+ * registry write.
+ *
+ * It bumps even when `deleteDirectory` failed: the registry entry is gone, and
+ * that is what every list, switcher and lookup in the app reads.
+ *
  * Pages, Sources, the page index and `tenants/<t>/wiki/**` are untouched: they
  * are tenant-wide, not per-Wiki, so a delete never removes content.
  */
@@ -1696,7 +2017,7 @@ export async function deleteWiki(
   // `DELETE /api/wikis/[id]` already refuses first, so this is the backstop for
   // a direct library caller.
   assertWritable(READ_ONLY_REFUSAL.wikiDelete);
-  return withWikiLock(owner, async () => {
+  const deleted = await withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -1728,6 +2049,11 @@ export async function deleteWiki(
     }
     return wiki;
   });
+
+  // Unknown id: nothing was written, so there is nothing to refresh to.
+  if (!deleted) return null;
+  await bumpRefreshSignal(`deleting wiki "${deleted.id}"`);
+  return deleted;
 }
 
 /** Read one seeded artifact, or null when it is missing. */

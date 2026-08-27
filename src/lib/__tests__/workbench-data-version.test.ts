@@ -1139,90 +1139,103 @@ describe("the bump lives at the exact write-owner tails", () => {
     ]);
   });
 
-  it("has exactly four sites inside wikis.ts, each outside the tenant lock", async () => {
+  it("has one bump helper inside wikis.ts, called from five writers outside the tenant lock", async () => {
     // The list above is FILE-granular, so allowlisting `lib/wikis.ts` would
     // otherwise buy a blanket exemption for a module with seven exported
     // writers in it. This pins WHICH of them bump, the way the `lifecycle.ts`
     // test above pins its own count.
     //
-    // Four, since DW-209: `writeWikiArtifact` (a Schema edit) plus `createWiki`
-    // and `applyScenarioTemplate` (DW-49), because seeding writes `purpose.md`
-    // and `schema.md` through the tail-less `putWikiArtifact` and a re-template
-    // moves nothing else a Preview is keyed on — without the bump a Preview
-    // READING either artifact keeps the old template's bytes — plus `renameWiki`,
-    // which retitles `purpose.md`'s heading and moves the name the Workbench
-    // renders while changing no `currentWikiId`, so the counter is the only
-    // thing that can un-stale an open Preview.
+    // FIVE writers, through ONE private helper. `writeWikiArtifact` (a Schema
+    // edit) plus `createWiki` and `applyScenarioTemplate` (DW-49), because
+    // seeding writes `purpose.md` and `schema.md` through the tail-less
+    // `putWikiArtifact` and a re-template moves nothing else a Preview is keyed
+    // on — without the bump a Preview READING either artifact keeps the old
+    // template's bytes; `renameWiki` (DW-209), which retitles `purpose.md`'s
+    // heading and moves the name the Workbench renders while changing no
+    // `currentWikiId`; and `deleteWiki` (DW-382), which removes a Wiki and its
+    // artifacts while changing no `currentWikiId` either — the current Wiki is
+    // undeletable — so another client's open tab goes on listing bytes that are
+    // gone until the counter moves.
+    //
+    // WHY A HELPER RATHER THAN FIVE COPIES. The tail is four lines of fail-soft
+    // `try`/`catch` with one word changed, and DW-382 and DW-210 would have made
+    // it six copies. One copy is one place for the `catch` to be right.
     //
     // The rest are deliberately absent for three DIFFERENT reasons, and lumping
     // them together would hide the one that matters. `putWikiArtifact`,
     // `seedWikiArtifacts` and `retitlePurpose` write exactly the bytes a Preview
     // renders — they are absent because they run INSIDE `wikis:<tenant>`, where
     // taking `DATA_VERSION_LOCK` would nest two keys, so their CALLERS carry the
-    // tail instead; that is the whole reason the four above are callers.
-    // `sweepOrphanWikiDirectories` and `deleteWiki` REMOVE such bytes, but only
-    // for a Wiki that is by then unreachable — the sweep's directories are
-    // unreferenced and the current Wiki is undeletable — so no Preview can be
-    // open on what they take. `setCurrentWiki` is the only one that genuinely
-    // writes nothing a Preview renders: it moves `currentId` in `wikis.json` and
-    // nothing else, and the selection change is its own refresh trigger.
+    // tail instead; that is the whole reason the five above are callers.
+    // `sweepOrphanWikiDirectories` does remove bytes, and since DW-291 it
+    // removes them from directories the registry DOES name — but the only file
+    // it takes from one of those is a `.discarded` marker, which nothing
+    // renders, is hidden from the Files tab by the dotfile filter, and no
+    // Preview can be open on; everything else it removes belongs to a directory
+    // no registry entry references. `setCurrentWiki` is the only one that
+    // genuinely writes nothing a Preview renders: it moves `currentId` in
+    // `wikis.json` and nothing else, and the selection change is its own
+    // refresh trigger.
 
-    /**
-     * Comments removed, so a call QUOTED in a docblock is never counted as a
-     * call site nor attributed to the function whose body it precedes. Block
-     * comments go entirely; `//` counts as a comment only at the start of a
-     * line, which leaves a `https://` inside a string literal alone.
-     */
-    const stripComments = (text: string): string =>
-      text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
-
-    const source = stripComments(await readSource("lib/wikis.ts"));
+    // `stripComments` and `topLevelFunctionBody` are the file's own helpers, the
+    // ones the `lifecycle.ts` and kernel-store cases above already navigate
+    // with. Comments are removed so a call QUOTED in a docblock is never counted
+    // as a call site nor attributed to the function whose body it precedes.
+    const raw = await readSource("lib/wikis.ts");
+    const source = stripComments(raw);
 
     // BOTH forms, and both are load-bearing. The await form is what the
     // ordering checks below navigate by. The IDENTIFIER form is what sees a
     // bump that was moved inside the lock and fired unawaited — `void
     // bumpDataVersion()`, or a `.then()` chain — which the await form cannot
     // match at all and which would leave the count looking untouched.
-    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(4);
-    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(4);
+    //
+    // ONE site now: the counter is touched in exactly one place in this module,
+    // and that place is the private helper below. A sixth writer that reached
+    // for `bumpDataVersion` directly — and so re-typed the fail-soft `catch`, or
+    // forgot it — fails here.
+    expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(1);
+    expect(source.match(/await bumpDataVersion\(\);/g) ?? []).toHaveLength(1);
 
-    /**
-     * One function's body, from its `export` line to the `}` that closes it.
-     *
-     * Bounded by the function's OWN close, not by the next `export`: the region
-     * between two exports also holds the NEXT one's JSDoc and any private
-     * helper declared in between, so slicing that far attributes their text to
-     * this function. A top-level declaration is the only thing in this file
-     * with a `}` in column 0.
-     */
-    const bodyOf = (name: string): string => {
-      const at = source.indexOf(`export async function ${name}(`);
-      expect(at).toBeGreaterThan(-1);
-      const close = source.indexOf("\n}\n", at);
-      expect(close).toBeGreaterThan(at);
-      return source.slice(at, close);
-    };
+    // THE HELPER. Private — an exported one is an invitation for a module that
+    // does not hold this module's lock discipline to call it — and fail-soft,
+    // because every caller has already written its bytes by the time it runs.
+    expect(source).not.toContain("export async function bumpRefreshSignal(");
+    const helper = topLevelFunctionBody(raw, "async function bumpRefreshSignal(");
+    expect(helper).toMatch(
+      /try \{\s*await bumpDataVersion\(\);\s*\} catch \(error\) \{[\s\S]{0,160}logger\.warn\(\s*"wikis"/,
+    );
 
-    for (const name of [
-      "writeWikiArtifact",
-      "createWiki",
-      "applyScenarioTemplate",
-      "renameWiki",
-    ]) {
-      const body = bodyOf(name);
-      const bump = body.indexOf("await bumpDataVersion();");
-      expect(bump).toBeGreaterThan(-1);
+    // SIX calls: one apiece for four writers, two for `applyScenarioTemplate`,
+    // whose failure path bumps as well when the rollback could not put every
+    // file back (DW-210). Counted over the whole module first, so a call from a
+    // body this loop does not name cannot hide inside the per-body totals.
+    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(6);
+
+    let counted = 0;
+    for (const [name, calls] of [
+      ["writeWikiArtifact", 1],
+      ["createWiki", 1],
+      ["applyScenarioTemplate", 2],
+      ["renameWiki", 1],
+      ["deleteWiki", 1],
+    ] as const) {
+      const body = topLevelFunctionBody(raw, `export async function ${name}(`);
+      const sites = body.match(/await bumpRefreshSignal\(/g) ?? [];
+      expect(sites, `${name} bumps`).toHaveLength(calls);
+      counted += sites.length;
       // OUTSIDE `wikis:<tenant>`. `withFileLock` is not reentrant and
       // `bumpDataVersion` takes `DATA_VERSION_LOCK`, so a bump moved inside the
       // callback would nest two lock keys in an order nothing else in the repo
-      // takes — a tenant-wide deadlock risk. The `withFileLock` call's own close
+      // takes — a tenant-wide deadlock risk. The `withWikiLock` call's own close
       // at the function's top indent has to come first. Two closing forms,
-      // because one caller passes a one-line arrow and two pass a block.
-      // Two accepted spellings: the bare `withFileLock(wikiLockKey(owner), …)`
-      // and `withWikiLock(owner, …)`, the wrapper that took its place when the
-      // lock started minting a `WikiLockHeld` (DW-139). Either one is the Wiki
-      // lock opening; what is being pinned is where its CLOSE falls relative to
-      // the bump, and that is unchanged by the rename.
+      // because one caller passes a one-line arrow and the rest pass a block.
+      // Two accepted spellings for the opening: the bare
+      // `withFileLock(wikiLockKey(owner), …)` and `withWikiLock(owner, …)`, the
+      // wrapper that took its place when the lock started minting a
+      // `WikiLockHeld` (DW-139). Either one is the Wiki lock opening; what is
+      // being pinned is where its CLOSE falls relative to the bump, and that is
+      // unchanged by the rename.
       // `?? -1` so a body with NEITHER spelling fails as "no lock found" and
       // names the function, rather than passing `undefined` into the
       // `indexOf(close, lock)` below — which would search from 0 and find the
@@ -1237,21 +1250,28 @@ describe("the bump lives at the exact write-owner tails", () => {
         .map((close) => body.indexOf(close, lock))
         .filter((at) => at > -1)
         .sort((a, b) => a - b);
-      expect(closes.length).toBeGreaterThan(0);
-      expect(bump).toBeGreaterThan(closes[0]);
+      expect(closes.length, `${name} closes the wiki lock`).toBeGreaterThan(0);
+      // EVERY site, not just the first: `applyScenarioTemplate` has two, and a
+      // check on `indexOf` alone would let the second one sit inside the lock.
+      let from = 0;
+      for (let index = 0; index < sites.length; index += 1) {
+        const bump = body.indexOf("await bumpRefreshSignal(", from);
+        expect(bump, `${name} bump ${index} is outside the lock`).toBeGreaterThan(
+          closes[0],
+        );
+        from = bump + 1;
+      }
     }
-
-    // The four counted above are now accounted for one apiece by four
+    // The six counted over the module are accounted for one apiece by five
     // DISJOINT bodies, so no other function in the module has one — including
     // `seedWikiArtifacts`, which is the whole reason the tails live at the
     // callers: it always runs while `wikis:<tenant>` is held. Asserted directly
     // as well, because that is the refactor this guard exists to catch and a
     // count mismatch names no function.
-    const seederAt = source.indexOf("async function seedWikiArtifacts(");
-    expect(seederAt).toBeGreaterThan(-1);
-    const seederClose = source.indexOf("\n}\n", seederAt);
-    expect(seederClose).toBeGreaterThan(seederAt);
-    expect(source.slice(seederAt, seederClose)).not.toContain("bumpDataVersion");
+    expect(counted).toBe(6);
+    const seeder = topLevelFunctionBody(raw, "async function seedWikiArtifacts(");
+    expect(seeder).not.toContain("bumpDataVersion");
+    expect(seeder).not.toContain("bumpRefreshSignal");
   });
 
   it("has exactly one site inside raw.ts, on the path that actually wrote bytes", async () => {
