@@ -3806,26 +3806,68 @@ severity: low
 reason: `pnpmDirTargets` in src/lib/__tests__/pnpm-workspace-root.test.ts matches pnpm's two directory flags. A workflow step using GitHub Actions' `working-directory:` key, or a plain `cd`, is not scraped. The on-disk lockfile walk added in review covers every real nested package (a pnpm package installed with --frozen-lockfile necessarily has one), so the residual gap is a directory installed without a committed lockfile.
 status: open
 
-## Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)
+### DW-435: Silo sync and remove still copy and delete only `raw/sources/<slug>.md`, never the hashed Intake trees at `raw/sources/<slug>/<rawId>.md`.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
+location: src/lib/silo.ts:106
+reason: `syncSiloForPage` / `removeSiloForPage` address a single flat `raw/sources/<slug>.md` path, so hashed Intake arrivals written under `raw/sources/<slug>/<rawId>.md` are neither mirrored into the silo nor removed with the page. Intake mirrors hashed keys at write time via `{ owner }`, but ingest callers still omit `owner`. Deferred because the cascade delete this depends on is Story 2.10.
+status: open
 
-- Hashed `syncSiloForPage` / `removeSiloForPage` still copy and delete only `raw/sources/<slug>.md`, not hashed Intake trees at `raw/sources/<slug>/<rawId>.md`. Intake mirrors hashed keys at write time via `{ owner }`; ingest callers still omit owner. Cascade delete is Story 2.10. [`src/lib/silo.ts:106`]
-- An identical re-arrival still creates an Ingest job even though the Source bytes are not rewritten. SHA256 skip is Story 2.7. [`src/app/api/workbench/intake/route.ts:218`]
-- `listRawSources` is still non-recursive, so CLI/lint listings miss hashed `raw/sources/<slug>/<id>.md` arrivals. Spec allowed the recursive Files walk as the observed surface. [`src/lib/raw.ts`]
-- `alreadyStored` then `writeFile` is not exclusive, so two concurrent stores of a new key can overwrite. No create-only compare-and-swap. [`src/lib/raw.ts:116`]
-- The client's 15s `send`/`sendForm` deadline wraps a server URL fetch that already uses the same 15s budget. A slow but valid HTML fetch can surface as an unconfirmed write while the route still finishes and stores. [`src/lib/workbench-request.ts:33`]
-- When store succeeds and enqueue returns `queued: false`, the batch sentence still says "Ingest is queued." The client treats any 2xx as stored. [`src/lib/workbench-intake-client.ts:117`]
-- `fetchUrlContent` skips the content-type allowlist when the response omits Content-Type (`if (mimeType && !allowed.includes)`). Pre-existing empty-header behaviour; this story only passed a narrowed list. [`src/lib/fetch.ts:232`]
+### DW-436: An identical re-arrival still creates an Ingest job even though the Source bytes are not rewritten.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
+location: src/app/api/workbench/intake/route.ts:218
+reason: The intake route enqueues an Ingest job unconditionally, so re-uploading identical content spends a full ingest pass despite the store short-circuiting the byte write. Deferred because the SHA256 skip that would suppress the duplicate job is Story 2.7.
+status: open
 
-## Deferred from: code review of spec-6-1-through-6-5-deep-research.md (2026-08-24)
+### DW-437: `listRawSources` is still non-recursive, so CLI and lint listings miss hashed `raw/sources/<slug>/<id>.md` arrivals.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
+location: src/lib/raw.ts
+reason: `listRawSources` enumerates only the flat top level of `raw/sources/`, so any hashed arrival stored one directory deeper is invisible to every CLI and lint listing built on it. Deferred because the spec accepted the recursive Files walk as the observed surface for this story, leaving the listing helper unchanged.
+status: open
 
-- Legacy manual `sourceUrls` are accepted by research creation, but automated runs replace them with provider results. This behavior predates Epic 6's Workbench flow and belongs to the out-of-scope Knowledge Studio research desk. [`src/lib/research-runtime.ts:682`]
-- The shared kernel URL guard rejects literal private/reserved hosts but does not resolve DNS before fetch, leaving a DNS-rebinding SSRF gap. This predates Epic 6 and affects the shared fetch path rather than only Deep Research. [`src/lib/url-safety.ts:95`]
+### DW-438: `alreadyStored` followed by `writeFile` is not exclusive, so two concurrent stores of the same new key can overwrite each other.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
+location: src/lib/raw.ts:116
+reason: The store path checks existence and then writes as two separate steps with no create-only compare-and-swap between them, so two concurrent stores of a key that does not yet exist can both pass the check and the later write wins. Deferred because the storage layer offers no exclusive-create primitive today.
+status: open
 
-## Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)
+### DW-439: The client's 15s send deadline wraps a server URL fetch that already uses the same 15s budget, so a slow but valid fetch surfaces as an unconfirmed write.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
+location: src/lib/workbench-request.ts:33
+reason: `send` / `sendForm` time out at 15s, and the server URL-intake path it calls is itself budgeted at 15s. A slow but ultimately successful HTML fetch can therefore trip the client deadline and be reported as an unconfirmed write while the route completes and stores the source anyway. Deferred because fixing it means renegotiating the two budgets rather than a local change.
+status: open
 
-- source_spec: none
-  summary: Extract pending-turn and session transport from ChatCanvas.tsx.
-  evidence: Split from epic-8-retro-architecture-follow-on so this run covers only sidecar/server.mjs provider and Chat transport. ChatCanvas is an independent Workbench extract and can merge without the sidecar change.
-- source_spec: none
-  summary: Extract the API/MCP category from the generic Settings pair.
-  evidence: Split from epic-8-retro-architecture-follow-on so this run covers only sidecar/server.mjs provider and Chat transport. SettingsCanvas and workbench-settings are an independent Settings extract and can merge without the sidecar change.
+### DW-440: When store succeeds but enqueue returns `queued: false`, the batch sentence still claims "Ingest is queued."
+origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
+location: src/lib/workbench-intake-client.ts:117
+reason: The client treats any 2xx as fully stored and queued, so the batch summary reports a queued ingest even when the route explicitly answered `queued: false`. The user is told work is under way that never started. Deferred because the fix needs the batch summary to carry per-item enqueue state.
+status: open
+
+### DW-441: `fetchUrlContent` skips the content-type allowlist entirely when the response omits a Content-Type header.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
+location: src/lib/fetch.ts:232
+reason: The guard reads `if (mimeType && !allowed.includes(...))`, so a response with no Content-Type passes unchecked regardless of what it actually contains. Deferred as pre-existing empty-header behaviour: this story only narrowed the allowlist that is passed in, and tightening the empty case changes behaviour for every existing caller of the shared fetch path.
+status: open
+
+### DW-442: Legacy manual `sourceUrls` are still accepted by research creation even though automated runs replace them with provider results.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-6-1-through-6-5-deep-research.md (2026-08-24)"), 2026-08-26
+location: src/lib/research-runtime.ts:682
+reason: Research creation still honours a caller-supplied `sourceUrls` list, but any automated run overwrites it with the provider's own results, so the field is accepted and then silently discarded. Deferred because the behaviour predates Epic 6's Workbench flow and belongs to the out-of-scope Knowledge Studio research desk.
+status: open
+
+### DW-443: The shared kernel URL guard rejects literal private hosts but never resolves DNS before fetching, leaving a DNS-rebinding SSRF gap.
+origin: migrated from legacy ledger ("Deferred from: code review of spec-6-1-through-6-5-deep-research.md (2026-08-24)"), 2026-08-26
+location: src/lib/url-safety.ts:95
+reason: The guard blocks private and reserved addresses only when they appear literally in the URL; a hostname that resolves to such an address — or re-resolves to one between check and fetch — passes. Deferred because the gap predates Epic 6 and lives in the shared fetch path used well beyond Deep Research, so closing it is a cross-cutting change rather than a Deep Research fix.
+status: open
+
+### DW-444: Extract pending-turn and session transport from ChatCanvas.tsx.
+origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
+location: src/components/workbench/ChatCanvas.tsx
+reason: Split out of epic-8-retro-architecture-follow-on so that run could cover only the `sidecar/server.mjs` provider and the Chat transport. The ChatCanvas pending-turn and session-transport extraction is independent of the sidecar change and can land and merge on its own.
+status: open
+
+### DW-445: Extract the API/MCP category from the generic Settings pair.
+origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
+location: src/components/workbench/SettingsCanvas.tsx, src/lib/workbench-settings.ts
+reason: Split out of epic-8-retro-architecture-follow-on so that run could cover only the `sidecar/server.mjs` provider and the Chat transport. Pulling the API/MCP category out of the generic SettingsCanvas / workbench-settings pair is an independent Settings extract and can land and merge without the sidecar change.
+status: open
