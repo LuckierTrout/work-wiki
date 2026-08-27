@@ -120,7 +120,7 @@ import {
   formatIfMatch,
   scopedContentVersion,
 } from "../write-precondition";
-import { readWorkbenchFile } from "../workbench-files";
+import { readWorkbenchFile, wikiLeafName } from "../workbench-files";
 import { wikiArtifactPath, wikiRegistryPath } from "../wikis";
 import {
   beginPageCache,
@@ -1186,6 +1186,43 @@ describe("wikilinkSelection", () => {
 // ---------------------------------------------------------------------------
 // The read gate
 // ---------------------------------------------------------------------------
+
+describe("wikiLeafName (DW-204)", () => {
+  // The one spelling of "a direct child of the `wiki/` display root", now
+  // load-bearing for THREE call sites — the Files tab listing filter, the read
+  // gate in `resolveWorkbenchFile`, and this route's editable-Page slug
+  // derivation — which is why it gets a binding of its own rather than being
+  // inferred from whichever of the three happens to be exercised. It replaced
+  // `depth === 1`, `rest.length !== 1` and `segments.length === 2 &&
+  // segments[0] === "wiki"`, three expressions that agreed only by coincidence.
+
+  it("answers the leaf name for a direct child of the wiki root", () => {
+    expect(wikiLeafName("wiki/a.md")).toBe("a.md");
+    // Not `.md`-aware and not slug-aware: the SHAPE is all it decides. Each of
+    // the three callers pairs it with the rest of its own rule — the listing
+    // filter and the read gate with `readableWikiLeaf`, this route with
+    // `wikiLeafSlug` alone.
+    expect(wikiLeafName("wiki/notes.txt")).toBe("notes.txt");
+    expect(wikiLeafName("wiki/cased.MD")).toBe("cased.MD");
+  });
+
+  it("refuses the root itself, a deeper path, and any other root", () => {
+    expect(wikiLeafName("wiki")).toBeNull();
+    // A trailing slash is the walk's DIRECTORY marker, not a leaf.
+    expect(wikiLeafName("wiki/")).toBeNull();
+    expect(wikiLeafName("wiki/d/a.md")).toBeNull();
+    expect(wikiLeafName("raw/a.md")).toBeNull();
+    expect(wikiLeafName("raw")).toBeNull();
+    // The two a `startsWith`/`toLowerCase` rewrite would quietly get wrong: the
+    // root is matched as a whole SEGMENT and matched EXACTLY. `wiki//a.md` is
+    // three segments, and `Wiki/` is not the display root the walk emits.
+    expect(wikiLeafName("wiki//a.md")).toBeNull();
+    expect(wikiLeafName("Wiki/a.md")).toBeNull();
+    // A seeded artifact is shown at the tree root and resolves elsewhere.
+    expect(wikiLeafName("purpose.md")).toBeNull();
+    expect(wikiLeafName("")).toBeNull();
+  });
+});
 
 describe("readWorkbenchFile", () => {
   const OWNER = "yuanhao";

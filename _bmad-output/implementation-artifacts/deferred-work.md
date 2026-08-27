@@ -1840,7 +1840,8 @@ source_spec: `spec-dw-41-workbench-file-listing-gate.md`
 location: src/lib/workbench-files.ts (wikiLeafSlug / wikiLeafFilter)
 severity: low
 reason: The listing became case-insensitive on the extension by deriving from `wikiLeafSlug` (`src/lib/workbench-files.ts`), which lowercases before testing `.md`. Both names therefore pass `readableWikiLeaf` for the same slug, and `resolveWorkbenchFile` builds a key from the name as written, so the two rows read two different objects. The preview route decides "is this the editable Page" from `wikiLeafSlug` alone, so a save reached from the `.MD` row lands on `wiki/cased.md` and the previewed bytes go stale. Pre-existing at the read and edit layers (the gate was already case-insensitive); this change adds the second visible door. Deciding what the tab should do when both exist — hide one, mark the pair, or refuse the slug — is a Files-tab surface decision beyond DW-41's recorded intent.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-workbench-file-path-invariants
 decision: 2026-08-19 List only the canonical file — When two leaves collide on the same wikiLeafSlug, list only the canonical `<slug>.md` row and drop the variant-cased sibling from the Files tab, so every visible row reads and writes the same object; add a test seeding both names on a case-sensitive store.
 
 ### DW-203: On a case-sensitive store, `wiki/cased.md` and `wiki/cased.MD` both list as rows for the one slug `cased`, and an edit from either row writes `<slug>.md`.
@@ -1849,7 +1850,8 @@ source_spec: `spec-dw-41-workbench-file-listing-gate.md`
 location: src/lib/workbench-files.ts (wikiLeafSlug / wikiLeafFilter); the save half is src/app/api/workbench/preview/route.ts (slug derivation) and the wiki write path
 severity: low
 reason: The listing is case-insensitive on the extension because it derives from `wikiLeafSlug` (`src/lib/workbench-files.ts`), which lowercases before testing `.md`. Both names therefore pass `readableWikiLeaf` for the same slug, and `resolveWorkbenchFile` builds a key from the name as written, so the two rows read two different objects. The preview route decides "is this the editable Page" from `wikiLeafSlug` alone (`src/app/api/workbench/preview/route.ts`), so a save reached from the `.MD` row lands on `wiki/cased.md` and the previewed bytes go stale. Wholly pre-existing, and NARROWED rather than introduced by DW-41: the old `wikiLeafFilter` opened with `if (!name.endsWith(".md")) return true`, and `cased.MD` does not end in `.md`, so it listed UNGATED next to `cased.md` before this change; deriving from the read gate now at least subjects it to the slug set. Deciding what the tab should do when both exist — hide one, mark the pair, or refuse the slug — is a Files-tab surface decision beyon
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-workbench-file-path-invariants
 
 ### DW-204: "A direct child of the wiki root" is now spelled three independent times, and only a test binds them together.
 origin: spec-deferred 0c82c718ee92
@@ -1857,7 +1859,8 @@ source_spec: `spec-dw-41-workbench-file-listing-gate.md`
 location: src/lib/workbench-files.ts (wikiLeafFilter, resolveWorkbenchFile); src/app/api/workbench/preview/route.ts
 severity: low
 reason: `wikiLeafFilter` says `depth === 1` (`src/lib/workbench-files.ts`), `resolveWorkbenchFile` says `rest.length !== 1` in a different numbering, and the preview route says `segments.length === 2 && segments[0] === "wiki"`. DW-41 derived the NAME half from one predicate (`readableWikiLeaf`) precisely so it could not drift; the DEPTH half was left restated in each place, held together only by the new "never lists a wiki path the read gate would refuse" test and by prose warnings in three doc comments. Extracting a single shared predicate is not blocked by DW-41's Block If, which froze only the two FILTERS as distinct functions — but it touches the preview route's page/file disambiguation, which DW-41's intent puts out of bounds.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-workbench-file-path-invariants
 
 ### DW-205: The widened 24px grab strip now overlays the leftmost 24px of the canvas and of the docked Preview, so a click, text selection or touch-pan that starts there hits the divider instead of the content.
 origin: spec-deferred 2f67eae2f508
@@ -4301,4 +4304,20 @@ source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
 location: src/lib/maintenance.ts (sweepOrphanWikiDirs)
 severity: low
 reason: `clearStaleDiscardTombstones` (DW-291) runs only on the scheduled path, and the schedule resolves a single owner via `getOwnerHandle()`. `deleteWiki`'s inline sweep runs with `scheduled` unset, so for a tenant created before the DW-159 gate landed the tombstones have no clearer at all — unlike the orphan directories, which `deleteWiki` at least reclaims inline. The new SCOPE note in `maintenance.ts` accounts only for the directories.
+status: open
+
+### DW-489: A `wiki/` display path asked for directly still previews one object and saves another: the read gate and the preview route's slug derivation were left at their old reach, so only the LISTING door was
+origin: spec-deferred 2bf03502f431
+source_spec: `spec-dw-202-203-204-workbench-file-path-invariants.md`
+location: src/app/api/workbench/preview/route.ts (slug derivation); src/lib/workbench-files.ts (resolveWorkbenchFile)
+severity: medium
+reason: DW-202/203 was fixed at the listing on the authority of the recorded 2026-08-19 decision ("list only the canonical `<slug>.md` row and drop the variant-cased sibling from the Files tab"), and the ledger itself records the defect as "pre-existing at the read and edit layers". So the harm is narrowed but not closed: `readWorkbenchFile`/`workbenchFileExists` still serve `wiki/cased.MD`, and `src/app/api/workbench/preview/route.ts` still hands it slug `cased` with `editable: true`. A deep link, a restored selection from `workbench-state`, or any API caller that names the display path directly reproduces the original defect — preview `cased.MD`, save `cased.md`. Deliberately not closed here: the route's page/file disambiguation is what DW-41's intent put out of bounds, and reverting the slug for an odd-cased name would re-break the case-INSENSITIVE store, where that name IS the Page and a case-sensitive test there once made it read-only from the Files tab. Closing it properly needs a rule t
+status: open
+
+### DW-490: The row that CREATES a collision is still editable: a lone `wiki/cased.MD` on a case-sensitive store lists, is handed slug `cased`, and the first save from it writes `wiki/cased.md` — orphaning the pr
+origin: spec-deferred 1aade515c369
+source_spec: `spec-dw-202-203-204-workbench-file-path-invariants.md`
+location: src/lib/wiki.ts (writeWikiPage / writeWikiPageIfContentMatches); src/app/api/workbench/preview/route.ts
+severity: medium
+reason: The elected-winner rule keys on the candidate names present AT LISTING TIME, which is what lets a lone variant keep listing (it must: on a case-INSENSITIVE store that name is the only real Page). But the wiki write path targets `<slug>.md` unconditionally (`writeWikiPage`/`writeWikiPageIfContentMatches`, `src/lib/wiki.ts`), so on a case-sensitive store the first save from that row creates a SECOND object. From then on the collision exists, the election correctly drops the `.MD` row, and its bytes are orphaned with no surface that mentions them. So the decision's mechanism ("drop the sibling") is implemented while its stated purpose ("every visible row reads and writes the same object") holds only after a collision already exists — never for the row that creates one. Same root cause as the entry above: the fix has to reach the save half, which the recorded decision scoped out.
 status: open

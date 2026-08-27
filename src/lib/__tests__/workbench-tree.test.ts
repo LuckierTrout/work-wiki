@@ -8,7 +8,7 @@
  * so it runs against a real temp directory through the filesystem provider,
  * which is what `raw.test.ts` already does for `listRawSources`.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -38,6 +38,8 @@ import {
   listWorkbenchFilePaths,
   listRawSourceFilePaths,
   readWorkbenchFile,
+  wikiLeafName,
+  wikiLeafSlug,
   workbenchFileExists,
 } from "../workbench-files";
 import {
@@ -46,7 +48,8 @@ import {
   writeStoredTreeTab,
 } from "../workbench-state";
 import { wikiArtifactPath } from "../wikis";
-import { tenantForOwner, tenantRawRelPath, tenantWikiRelPath } from "../wiki";
+import { tenantForOwner, tenantRawRelPath, tenantWikiRelPath, wikiRelPath } from "../wiki";
+import { getStorage } from "../storage";
 import { getDataDir } from "../paths";
 import { saveRawSource, saveRawSourceFor, saveRawSourceTree } from "../raw";
 import type { IndexEntry } from "../types";
@@ -503,13 +506,21 @@ describe("listWorkbenchFilePaths", () => {
   });
 
   afterEach(async () => {
-    if (originalWikiDir === undefined) delete process.env.WIKI_DIR;
-    else process.env.WIKI_DIR = originalWikiDir;
-    if (originalRawDir === undefined) delete process.env.RAW_DIR;
-    else process.env.RAW_DIR = originalRawDir;
-    // Only inside the fixture: `tmpDir` and the tenant tree this file wrote.
-    await fs.rm(tmpDir, { recursive: true, force: true });
-    await fs.rm(path.join(root, "tenants"), { recursive: true, force: true });
+    // `finally`, because the storage provider is a MODULE-LEVEL SINGLETON: a
+    // rejecting `fs.rm` would otherwise leak `seedCasedCollision`'s `listFiles`
+    // spy into every later case in this file.
+    try {
+      if (originalWikiDir === undefined) delete process.env.WIKI_DIR;
+      else process.env.WIKI_DIR = originalWikiDir;
+      if (originalRawDir === undefined) delete process.env.RAW_DIR;
+      else process.env.RAW_DIR = originalRawDir;
+      // Only inside the fixture: `tmpDir` and the tenant tree this file wrote.
+      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.rm(path.join(root, "tenants"), { recursive: true, force: true });
+    } finally {
+      // `seedCasedCollision` is the only case that stubs anything.
+      vi.restoreAllMocks();
+    }
   });
 
   /**
@@ -862,6 +873,154 @@ describe("listWorkbenchFilePaths", () => {
     const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("other"));
     expect(paths).not.toContain("wiki/cased.MD");
     expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("other"))).toBeNull();
+  });
+
+  /**
+   * Force the flat wiki root's LISTING to report `names`, the way a
+   * case-SENSITIVE store does.
+   *
+   * The host filesystem cannot be trusted to keep two spellings of one name
+   * apart — macOS's default volume is case-INSENSITIVE, where the second write
+   * lands on the first file and this collision cannot be staged on disk at all.
+   * A name is added only when the disk did not already report it, so on a
+   * case-sensitive host (CI) this is a no-op over a genuinely multi-object
+   * directory. Nothing but `listFiles` is stubbed, and only for the flat wiki
+   * prefix: `readFile` still goes to the real file, which is what makes every
+   * read assertion below worth anything.
+   */
+  function alsoListInWikiRoot(...names: string[]): void {
+    const flatWiki = wikiRelPath("");
+    const storage = getStorage();
+    const real = storage.listFiles.bind(storage);
+    vi.spyOn(storage, "listFiles").mockImplementation(async (prefix: string) => {
+      const entries = await real(prefix);
+      if (prefix !== flatWiki) return entries;
+      const missing = names
+        .filter((name) => !entries.some((e) => e.name === name))
+        .map((name) => ({ name, isDirectory: false }));
+      return missing.length === 0 ? entries : [...entries, ...missing];
+    });
+  }
+
+  /**
+   * Stage the collision DW-202/203 is about: one wiki root holding `cased.md`
+   * AND `cased.MD` under the single slug `cased`.
+   *
+   * Returns the bytes the CANONICAL `cased.md` object actually holds, read back
+   * rather than assumed: on a case-INSENSITIVE host the two names fold onto ONE
+   * file, so the second write overwrites the first and the "two objects" this
+   * case is really about only exists on a case-sensitive host. `twoObjects` says
+   * which world the run is in, so a comment can be honest about what the read
+   * assertions prove here.
+   */
+  async function seedCasedCollision(): Promise<{ canonicalBody: string; twoObjects: boolean }> {
+    const wikiDir = path.join(tmpDir, "wiki");
+    await fs.writeFile(path.join(wikiDir, "cased.md"), "canonical", "utf-8");
+    await fs.writeFile(path.join(wikiDir, "cased.MD"), "variant", "utf-8");
+    const canonicalBody = await fs.readFile(path.join(wikiDir, "cased.md"), "utf-8");
+    alsoListInWikiRoot("cased.MD");
+    return { canonicalBody, twoObjects: canonicalBody === "canonical" };
+  }
+
+  it("lists only the canonical row when a variant-cased sibling collides with it", async () => {
+    // DW-202/203. Both names are one slug, so the preview route hands both rows
+    // the SAME slug — and an edit reached from either writes `cased.md`, leaving
+    // the bytes previewed from the `.MD` row stale. Exactly one `wiki/cased*`
+    // row may exist, and it must be the name the write lands on.
+    const { canonicalBody } = await seedCasedCollision();
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate("cased"));
+    const rows = paths.filter((p) => p.toLowerCase().startsWith("wiki/cased"));
+    expect(rows).toEqual(["wiki/cased.md"]);
+
+    // The spec's second acceptance criterion, pinned rather than argued: the row
+    // the Preview will hand a slug to IS the object a save lands on. Derived
+    // through the same two exported predicates the route uses, so a change to
+    // either shows up here instead of in production.
+    const leaf = wikiLeafName(rows[0]);
+    expect(leaf).not.toBeNull();
+    expect(leaf).toBe(`${wikiLeafSlug(leaf!)}.md`);
+
+    // And the listed row serves the CANONICAL object's bytes, not the variant's.
+    // On a case-INSENSITIVE host the two names fold onto one file, so this only
+    // distinguishes a wrong object from a right one on a case-sensitive host —
+    // there it fails outright if the resolver reached `cased.MD` instead.
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.md", gate("cased"))).toEqual({
+      content: canonicalBody,
+    });
+    // Dropping the defeated sibling is a GATE decision, not a truncation.
+    expect(truncated).toBe(false);
+  });
+
+  it("elects one row per slug even when NO canonical `<slug>.md` exists", async () => {
+    // The shape a "drop it only when a literal `<slug>.md` sits beside it" rule
+    // gets wrong, and the worse half of DW-202/203: two variants, no canonical,
+    // both carrying the slug `cased`. Listing both would hand two rows one slug
+    // AND make a save from either conjure a THIRD object, `cased.md`. The
+    // election is total, so exactly one lists — the lexicographically first,
+    // which is a total order on the names and therefore stable across renders
+    // rather than dependent on the order storage happened to return.
+    await fs.writeFile(path.join(tmpDir, "wiki", "cased.MD"), "upper", "utf-8");
+    await fs.writeFile(path.join(tmpDir, "wiki", "cased.Md"), "mixed", "utf-8");
+    alsoListInWikiRoot("cased.MD", "cased.Md");
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, gate("cased"));
+    expect(paths.filter((p) => p.toLowerCase().startsWith("wiki/cased"))).toEqual([
+      "wiki/cased.MD",
+    ]);
+    expect(truncated).toBe(false);
+    // Both still READ: the election narrows the listing, never the gate.
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("cased"))).not.toBeNull();
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.Md", gate("cased"))).not.toBeNull();
+  });
+
+  it("still READS the defeated sibling it refuses to list", async () => {
+    // The fix is at the LISTING and nowhere else: `readWorkbenchFile` and
+    // `workbenchFileExists` keep their reach, because on a case-INSENSITIVE
+    // store `cased.MD` IS the Page and the preview route must still serve it.
+    // Narrowing the read here would make the collision fix a regression for
+    // every store the collision cannot even happen on.
+    await seedCasedCollision();
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("cased"));
+    expect(paths).not.toContain("wiki/cased.MD");
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("cased"))).not.toBeNull();
+    expect(await workbenchFileExists(OWNER, null, "wiki/cased.MD", gate("cased"))).toBe(true);
+  });
+
+  it("lists neither name of a collision whose slug is not readable", async () => {
+    // The election narrows the listing; it never widens it. With the slug absent
+    // from the gate, `readableWikiLeaf` refuses both names whether or not either
+    // won its slug.
+    await seedCasedCollision();
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("other"));
+    expect(paths.filter((p) => p.toLowerCase().startsWith("wiki/cased"))).toEqual([]);
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.md", gate("other"))).toBeNull();
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("other"))).toBeNull();
+  });
+
+  it("reports truncation for a readable wiki leaf hidden by the depth cap", async () => {
+    // The depth-cap PROBE, which is a second `allowLeaf` call site and the only
+    // one a listing assertion cannot reach — it decides whether the owner is
+    // TOLD the tree is incomplete. It must ask about the child's display path,
+    // not the bare entry name: `wikiLeafName("mine.md")` is null, so a probe
+    // passed the bare name silently answers "nothing showable down there" for
+    // every wiki leaf and the truncation notice disappears.
+    //
+    // The fixture is controlled for both other ways the flag can be set:
+    // `raw/` is left EMPTY (a non-empty one truncates through its own budget at
+    // this cap), and `wiki/` holds NO directory (any would short-circuit the
+    // probe through `e.isDirectory` before the filter is consulted).
+    await fs.writeFile(path.join(tmpDir, "wiki", "mine.md"), "x", "utf-8");
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, {
+      ...gate("mine"),
+      maxDepth: 1,
+    });
+    expect(paths).toContain("wiki/");
+    expect(paths).not.toContain("wiki/mine.md");
+    expect(truncated).toBe(true);
   });
 
   it("shows a wiki subdirectory but none of its leaves, which the gate refuses", async () => {

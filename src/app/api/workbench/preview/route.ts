@@ -13,7 +13,12 @@ import {
 } from "@/lib/wiki-scenarios";
 import { getWikiRegistry } from "@/lib/wikis";
 import { contentVersion, scopedContentVersion } from "@/lib/write-precondition";
-import { readWorkbenchFile, wikiLeafSlug, workbenchFileExists } from "@/lib/workbench-files";
+import {
+  readWorkbenchFile,
+  wikiLeafName,
+  wikiLeafSlug,
+  workbenchFileExists,
+} from "@/lib/workbench-files";
 import {
   capPreviewBody,
   isPreviewMediaFormat,
@@ -212,18 +217,20 @@ async function handle(request: Request) {
     content = file.content;
   }
 
+  const segments = displayPath.split("/");
+
   // `wiki/<slug>.md` is the same bytes a Page selection reads, reached from the
   // other tab — so it carries the slug and is editable through the same route.
-  const segments = displayPath.split("/");
-  // THE SAME name→slug rule the read gate applies, not a second expression of
-  // it: a case-sensitive test here once served `wiki/alpha.MD` (which the gate
-  // admits, because a filesystem need not be case-sensitive) with no slug, so a
-  // page the Knowledge tab edits was read-only from the Files tab. One function
-  // is what stops the two from drifting again.
-  const slug =
-    segments.length === 2 && segments[0] === "wiki"
-      ? (wikiLeafSlug(segments[1]) ?? undefined)
-      : undefined;
+  // THE SAME two rules the read gate applies, not a second expression of
+  // either: `wikiLeafName` for "a direct child of the wiki root" (DW-204, which
+  // retired this route's own `segments.length === 2 && segments[0] === "wiki"`),
+  // and `wikiLeafSlug` for name→slug. A case-sensitive test here once served
+  // `wiki/alpha.MD` (which the gate admits, because a filesystem need not be
+  // case-sensitive) with no slug, so a page the Knowledge tab edits was
+  // read-only from the Files tab. One function each is what stops them drifting
+  // again.
+  const wikiLeaf = wikiLeafName(displayPath);
+  const slug = wikiLeaf === null ? undefined : (wikiLeafSlug(wikiLeaf) ?? undefined);
 
   // The Schema (Story 1.8), derived as a SCOPE rather than as a flag.
   //
