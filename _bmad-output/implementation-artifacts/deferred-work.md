@@ -3151,7 +3151,8 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: low
 reason: maintainerSources() names wrangler.jsonc, package.json, mcp.json and Dockerfile because the root listing is non-recursive markdown-only. That leaves docker-compose.yml, .env.example, next.config.ts, open-next.config.ts, tailwind.config.ts, vitest.config.ts, eslint.config.mjs and postcss.config.mjs unscanned. Widening the root listing to SOURCE_TEXT would cover them but also pull in pnpm-lock.yaml, which needs its own decision.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-brand-copy-scan-coverage
 
 ### DW-352: IDENTIFIER_ALLOWLIST's /yopedia-[a-z-]+/g swallows display prose, the way the workwiki family did before it was anchored.
 origin: spec-deferred 41f20a262d72
@@ -3159,7 +3160,8 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts:52
 severity: medium
 reason: strayYopedia("the yopedia-first workflow") returns no match, so that prose would pass the scan. The workwiki side guards the identical case with its anchored alternation and a "the workwiki-first approach" slip case. The pattern is pre-existing and narrowing it needs evidence about which real Cloudflare resource names depend on it, so the new yopedia case table pins today's behaviour rather than changing it.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-brand-copy-scan-coverage
 
 ### DW-353: Named single files and newly walked roots surface as ENOENT rather than a pin failure when renamed or removed.
 origin: spec-deferred 7e47d62e4062
@@ -3167,7 +3169,8 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: low
 reason: scannedSources() pushes src/mcp.ts and src/middleware.ts by literal path, maintainerSources() pushes four root config files the same way, and walk() calls readdir() on skills/, public/, journal-site/ and .opencode/commands/ without an existence check. A rename throws from inside a content assertion instead of failing the pin test with its diagnostic message. The stat-based pattern already used by the scripts.sync test is the fix.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-brand-copy-scan-coverage
 
 ### DW-354: .agents/skills/ is tracked installer-generated markdown that no scan reads, while the comparable .opencode/commands/ was folded in.
 origin: spec-deferred 41e89080aefb
@@ -3175,7 +3178,8 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: .agents/skills/
 severity: low
 reason: The test's own comment concedes .opencode/commands/ holds BMAD-installer-generated docs; .agents/skills/ is the same class, several hundred tracked markdown files, currently brand-clean. The split is undocumented either way. The intent named .opencode/commands/ and not this root.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-brand-copy-scan-coverage
 
 ### DW-355: The browser clipper's shipped product name has no positive coverage: manifest.json's name, description and action.default_title, and popup.html's title and heading, are read only by the negative brand
 origin: spec-deferred fb9316c76117
@@ -3183,7 +3187,8 @@ source_spec: `spec-dw-235-237-241-242-brand-display-copy-residue.md`
 location: integrations/browser-clipper/manifest.json
 severity: low
 reason: brand-copy.test.ts pins browser-clipper/{popup.html,manifest.json,service-worker.js} into the scan corpus, but only for saysStaleDisplayName / strayWorkwiki / strayYopedia, all of which fail on a WRONG name and stay silent on a MISSING one. A reviewer edited manifest.json to "name": "Clipper" / "default_title": "Save to the app" and popup.html to "Save to the app", and the full suite still passed with zero `work-wiki` left in either file. This is the same half-renamed state DW-235/DW-237 recorded, on the surface with the widest audience — the Chrome extensions list and context menu, persisted inside already-installed extensions. Out of this bundle's scope: the intent names only scripts/setup-cloudflare.sh and the two Worker READMEs.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-brand-copy-scan-coverage
 
 ### DW-356: AGENTS.md's frozen list still omits three yopedia-side identifiers that IDENTIFIER_ALLOWLIST waives: the X-Yopedia-* wire headers and the two deployment origins.
 origin: spec-deferred b4f795fea992
@@ -3191,7 +3196,8 @@ source_spec: `spec-dw-235-237-241-242-brand-display-copy-residue.md`
 location: AGENTS.md
 severity: low
 reason: IDENTIFIER_ALLOWLIST (src/lib/__tests__/brand-copy.test.ts) waives X-Yopedia-* headers, yopedia.yolog.dev and yopedia.yuanhao-li.workers.dev. The workers.dev origin is what skills/work-wiki-mcp/SKILL.md publishes as the MCP endpoint outside agents connect to, so renaming it is as breaking as anything already listed. DW-241 scoped completeness to the four WORKWIKI_* members only, so the yopedia half was never audited for the same gap.
-status: open
+status: done 2026-08-27
+resolution: resolved by sweep bundle dw-brand-copy-scan-coverage
 
 ### DW-357: The duplicate-Message-ID early return omits skippedAttachmentCount entirely, so a resend of an already-seen message reports supportedAttachmentCount with no skipped figure at all.
 origin: spec-deferred 00f8b3678ac9
@@ -4157,4 +4163,28 @@ source_spec: `spec-dw-112-117-228-test-infra-shared-helpers.md`
 location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
 severity: low
 reason: `settings-vector-namespace.test.tsx` and `settings-embedding-provider-switch.test.tsx` state `version: "w1:2-0000000000000000"` where `settingsPayload()`'s base is `"s1:00000000000000000000000000000000"`. No assertion in either file reads `version`, and both values predate this change, so the consolidation preserved rather than caused the divergence — but it is now visible as an unexplained delta on the shared base.
+status: open
+
+### DW-473: IDENTIFIER_ALLOWLIST still waives the X-Yopedia-* wire headers as an unanchored SHAPE, which is the same defect DW-352 fixed for the lowercase-hyphen family.
+origin: spec-deferred cddb7f5d81ed
+source_spec: `spec-dw-351-356-brand-copy-scan-coverage.md`
+location: src/lib/__tests__/brand-copy.test.ts (IDENTIFIER_ALLOWLIST, X-Yopedia- entry)
+severity: medium
+reason: /X-Yopedia-(?:[A-Za-z-]+|\*)/g strips any run of letters and hyphens after the prefix, so strayYopedia("See X-Yopedia-Style-Guide for the docs") reports zero and that display prose passes the scan. The sibling family was narrowed to a closed enumeration with a minimality test; this one was left as a shape. Pre-existing -- the bundle intent named only /yopedia-[a-z-]+/g.
+status: open
+
+### DW-474: Minimality is enforced for YOPEDIA_HYPHEN_IDENTIFIERS only; every other yopedia waiver and all of WORKWIKI_IDENTIFIER_ALLOWLIST can outlive what it waived.
+origin: spec-deferred 1f50b75afdfc
+source_spec: `spec-dw-351-356-brand-copy-scan-coverage.md`
+location: src/lib/__tests__/brand-copy.test.ts
+severity: low
+reason: The new "keeps every waived yopedia resource name earning its place" test sweeps the corpus for the hyphen enumeration only. /u/yopedia, the health-check bodies, yopedia.yolog.dev, yopedia.yuanhao-li.workers.dev, yologdev/yopedia, yopedia--, yopedia_ and the whole workwiki allowlist have no equivalent, so a retired identifier leaves its word permanently waived as display copy -- the failure mode the enumeration comment itself argues is real.
+status: open
+
+### DW-475: The anchored hyphen family's LEADING boundary allows a dot, so a lookalike host such as cdn.yopedia-raw.example.com stays waived.
+origin: spec-deferred 22fbd3206d59
+source_spec: `spec-dw-351-356-brand-copy-scan-coverage.md`
+location: src/lib/__tests__/brand-copy.test.ts (YOPEDIA_HYPHEN_BOUNDS)
+severity: low
+reason: YOPEDIA_HYPHEN_BOUNDS blocks [A-Za-z0-9_-] on both sides. A trailing dot is deliberately allowed and documented (live workers.dev hostname, /tmp/*.log basenames); a LEADING dot is allowed only as a side effect. A leading slash must stay allowed for /tmp/yopedia-r2.log, so this is a narrowing of the lookbehind, not a removal.
 status: open
