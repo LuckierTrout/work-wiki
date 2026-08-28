@@ -35,6 +35,7 @@ import {
   isEmbeddingProvider,
 } from "@/lib/providers";
 import { getErrorMessage } from "@/lib/errors";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerHandle } from "@/lib/owner";
 import {
@@ -151,7 +152,10 @@ export async function PUT(request: Request) {
   // credentials still remain server secrets and never pass through this API.
   if (isReadOnly()) {
     return Response.json(
-      { error: "Settings are read-only in this deployment." },
+      // ONE owner for this sentence (DW-387). The banner the owner read before
+      // pressing renders `SETTINGS_READ_ONLY_COPY`, the character-identical
+      // client mirror, so the page and the 403 can no longer disagree.
+      { error: READ_ONLY_REFUSAL.settingsSave },
       { status: 403 },
     );
   }

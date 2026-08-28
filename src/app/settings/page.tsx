@@ -11,6 +11,7 @@ import { NamesTermsSettings } from "@/components/NamesTermsSettings";
 import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
 import { VaultExportButton } from "@/components/VaultExportButton";
 import { useSettings } from "@/hooks/useSettings";
+import { SETTINGS_READ_ONLY_COPY } from "@/lib/workbench-settings";
 
 // ---------------------------------------------------------------------------
 // Page component
@@ -195,19 +196,31 @@ export default function SettingsPage() {
 
       {/* ---- Read-only banner ----
 
-          Identified, because it is the sentence every refused control below
-          points at through `aria-describedby` (DW-299). `aria-disabled`
-          announces "dimmed" and a `readOnly` input announces "read only";
-          neither says which deployment state caused it, and this is the only
-          place that is stated at all. Not `role="alert"` — nothing failed; it
-          is the deployment's standing state. */}
+          Identified, because it is the sentence the FORM's refused controls
+          point at through `aria-describedby` (DW-299) — the provider, model,
+          endpoint and embedding-model fields and **Save Settings**, all of
+          which stand in front of `PUT /api/settings`. NOT every control below
+          it: **Rebuild Vector Index**, Workspace Purpose, Names & Terms and
+          Email ingestion each meet a different door and render that door's own
+          sentence (DW-386/DW-387).
+
+          `aria-disabled` announces "dimmed" and a `readOnly` input announces
+          "read only"; neither says which deployment state caused it, and this
+          is the only place that is stated for the form. Not `role="alert"` —
+          nothing failed; it is the deployment's standing state. */}
       {readOnly && (
         <div
           id={readOnlyNoteId}
           className="mt-4 rounded-lg border border-amber-500/20 bg-amber-50 p-4 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
         >
-          <strong>Read-only mode</strong> — This deployment has explicitly
-          disabled settings changes.
+          {/* The label stays — it is the visual heading, and what three suites
+              identify this banner by — and the SENTENCE after it is now the one
+              `PUT /api/settings` actually answers (DW-387). It used to be a
+              fourth wording of the same state, so the owner read one sentence
+              here, a second in the Workbench save bar, and a third in the 403.
+              `SETTINGS_READ_ONLY_COPY` is the client mirror of
+              `READ_ONLY_REFUSAL.settingsSave`, pinned character-identical. */}
+          <strong>Read-only mode</strong> — {SETTINGS_READ_ONLY_COPY}
         </div>
       )}
 
@@ -336,9 +349,18 @@ export default function SettingsPage() {
       </div>
 
       <div className="max-w-4xl">
+        {/* `WorkspacePurposeSettings` reads `/api/workspace-profile` for its own
+            flag; the two below take it as a PROP, because this page already
+            knows it and a second read-only fetch would be a second answer to a
+            question already answered (DW-386).
+
+            The flag ONLY — no `describedBy`. Each of these sections stands in
+            front of its own door and renders its own sentence; handing down the
+            banner's id would announce `PUT /api/settings`'s refusal beside
+            controls that route has nothing to do with. */}
         <WorkspacePurposeSettings />
-        <NamesTermsSettings />
-        <EmailIngestSettings />
+        <NamesTermsSettings readOnly={readOnly} />
+        <EmailIngestSettings readOnly={readOnly} />
 
         {/* ---- Your data ---- */}
         <section className="mt-10">

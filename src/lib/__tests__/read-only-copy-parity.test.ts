@@ -32,6 +32,15 @@ import { WORKSPACE_PURPOSE_READ_ONLY_COPY } from "@/components/WorkspacePurposeS
 import { BULK_DELETE_READ_ONLY_COPY } from "@/components/RecentIngests";
 import { CREATE_PAGE_READ_ONLY_COPY } from "@/app/wiki/new/NewWikiForm";
 import { PREVIEW_HISTORY_READ_ONLY_COPY } from "../workbench-preview";
+import { NAMES_TERMS_READ_ONLY_COPY } from "@/components/NamesTermsSettings";
+import { EMAIL_INGEST_READ_ONLY_COPY } from "@/components/EmailIngestSettings";
+import { EMBEDDING_REBUILD_READ_ONLY_COPY } from "@/components/EmbeddingSettings";
+import {
+  RESEARCH_COLLECT_READ_ONLY_COPY,
+  RESEARCH_CREATE_READ_ONLY_COPY,
+  RESEARCH_MUTATE_READ_ONLY_COPY,
+} from "@/components/KnowledgeStudio";
+import { SETTINGS_READ_ONLY_COPY } from "../workbench-settings";
 
 /**
  * A route's own 403 sentence, read out of its source.
@@ -274,12 +283,84 @@ describe("client refusal copy mirrors the server's", () => {
       ["todos/route.ts", "todos"],
       ["todos/[id]/route.ts", "todos"],
       ["sources/meeting/route.ts", "sourceMeeting"],
+      // DW-387 — the two `/settings` doors. Unlike the rest of this list they
+      // DID have a body to preserve; the literals were moved under
+      // `READ_ONLY_REFUSAL` rather than duplicated, because unlike the
+      // wiki-lifecycle routes nothing else in the repo depended on their exact
+      // wording. `PUT /api/workspace-profile` is NOT here: it is a different
+      // door, keeps its own literal, and is pinned by value above.
+      ["settings/route.ts", "settingsSave"],
+      ["settings/rebuild-embeddings/route.ts", "embeddingRebuild"],
     ] as const) {
       const source = await routeSource(route);
       expect(source, route).toContain(`error: READ_ONLY_REFUSAL.${key}`);
       // …and never as a re-typed string beside it.
       expect(source, route).not.toContain(servedAs(READ_ONLY_REFUSAL[key]));
     }
+  });
+
+  it("Names & Terms says exactly what its three doors answer", () => {
+    // DW-386. The surface composed a write in front of a door that had answered
+    // 403 since DW-294 and carried no `readOnly` term at all: submit and Remove
+    // looked live, and Remove opened an irreversible-sounding `window.confirm`
+    // onto the refusal. One sentence for `POST /api/names-terms` and
+    // `PUT`/`DELETE /api/names-terms/[id]` alike, because the server owns one.
+    expect(NAMES_TERMS_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.namesTerms);
+  });
+
+  it("Email ingestion says exactly what PUT /api/email/settings answers", () => {
+    // DW-386's sibling. Not narrowed: the server sentence already names exactly
+    // what this form edits, so there is nothing a narrower one could add.
+    expect(EMAIL_INGEST_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.emailSettings);
+  });
+
+  it("the Research desk says exactly what its THREE doors answer", () => {
+    // DW-386. Create, Run/Cancel/Delete and Collect meet three different doors,
+    // so the desk states three sentences rather than one — and Collect's is not
+    // a research sentence at all: it pushes the brief's URLs into the ordinary
+    // ingest pipeline, and `POST /api/ingest/batch` is what answers.
+    expect(RESEARCH_CREATE_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.researchCreate);
+    expect(RESEARCH_MUTATE_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.researchMutate);
+    expect(RESEARCH_COLLECT_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.ingest);
+    // …and the three are distinct, which is the property that makes rendering
+    // three notes worth anything: one string reused across two doors is how a
+    // re-point goes unnoticed.
+    expect(
+      new Set([
+        RESEARCH_CREATE_READ_ONLY_COPY,
+        RESEARCH_MUTATE_READ_ONLY_COPY,
+        RESEARCH_COLLECT_READ_ONLY_COPY,
+      ]).size,
+    ).toBe(3);
+  });
+
+  it("the /settings banner and the save bar say exactly what PUT /api/settings answers", () => {
+    // DW-387. `/settings` stated THREE different sentences for one deployment
+    // state — the banner ("This deployment has explicitly disabled settings
+    // changes."), this route's inline literal, and the rebuild door's — none of
+    // them owned here. `SETTINGS_READ_ONLY_COPY` is now the single client mirror,
+    // rendered by both the Workbench save bar and the page banner.
+    expect(SETTINGS_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.settingsSave);
+    // And NOT the sentence the settings PUT used to serve, which
+    // `PUT /api/workspace-profile` still owns: two doors, two sentences, and
+    // this is what stops a reword of one from being read as a reword of both.
+    expect(SETTINGS_READ_ONLY_COPY).not.toBe(
+      "Settings are read-only in this deployment.",
+    );
+  });
+
+  it("Rebuild Vector Index says what ITS door answers, not the form's", async () => {
+    // DW-387. The button pointed at the page's read-only banner — the SETTINGS
+    // save sentence — over a door that answers about embeddings. A rebuild
+    // changes no setting at all, so the owner read one sentence before pressing
+    // and would have met another in the 403.
+    expect(EMBEDDING_REBUILD_READ_ONLY_COPY).toBe(
+      READ_ONLY_REFUSAL.embeddingRebuild,
+    );
+    expect(EMBEDDING_REBUILD_READ_ONLY_COPY).not.toBe(SETTINGS_READ_ONLY_COPY);
+    // …and the route no longer spells the old literal anywhere.
+    const route = await routeSource("settings/rebuild-embeddings/route.ts");
+    expect(route).not.toContain("Rebuilding embeddings is disabled in read-only mode.");
   });
 
   it("every server sentence names read-only and reads as a sentence", () => {

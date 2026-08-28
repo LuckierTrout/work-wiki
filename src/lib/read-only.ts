@@ -29,7 +29,11 @@
  * (`DELETE_PAGE_READ_ONLY_COPY`, `EDIT_PAGE_READ_ONLY_COPY`,
  * `REINGEST_READ_ONLY_COPY`, `REVERT_READ_ONLY_COPY`,
  * `WORKSPACE_PURPOSE_READ_ONLY_COPY`, `BULK_DELETE_READ_ONLY_COPY`,
- * `CREATE_PAGE_READ_ONLY_COPY`, and the `workbench-tree`/`workbench-preview`
+ * `CREATE_PAGE_READ_ONLY_COPY`, DW-386's `NAMES_TERMS_READ_ONLY_COPY`,
+ * `EMAIL_INGEST_READ_ONLY_COPY`, `RESEARCH_CREATE_READ_ONLY_COPY`,
+ * `RESEARCH_MUTATE_READ_ONLY_COPY` and `RESEARCH_COLLECT_READ_ONLY_COPY`,
+ * DW-387's `EMBEDDING_REBUILD_READ_ONLY_COPY`, and the
+ * `workbench-tree`/`workbench-preview`
  * pair `WIKI_CREATE_READ_ONLY_COPY`/`WIKI_TEMPLATE_READ_ONLY_COPY` and
  * `PREVIEW_HISTORY_READ_ONLY_COPY`) because this module
  * imports `./config`, which pulls the settings/storage/embeddings graph and
@@ -37,6 +41,13 @@
  * boundary is deliberate, not an oversight, and the drift it allows is pinned
  * instead: `src/lib/__tests__/read-only-copy-parity.test.ts` compares each
  * client constant against the server sentence it mirrors.
+ *
+ * One client mirror does NOT live beside its component: `SETTINGS_READ_ONLY_COPY`
+ * in `workbench-settings.ts`, which the Workbench save bar and the `/settings`
+ * banner both render. That module is already client-safe and already owns the
+ * rest of the settings surface's copy, so a second constant beside either
+ * consumer would be a second owner of one sentence. It mirrors
+ * {@link READ_ONLY_REFUSAL.settingsSave} and is pinned like every other mirror.
  *
  * THE WIKI-LIFECYCLE ROUTES KEEP THEIR INLINE LITERALS. `POST /api/wikis`,
  * `POST /api/wikis/[id]/template`, `PATCH`/`DELETE /api/wikis/[id]` and
@@ -250,6 +261,34 @@ export const READ_ONLY_REFUSAL = {
    */
   maintenanceScan:
     "Maintenance scans cannot run while this deployment is read-only.",
+  /**
+   * `PUT /api/settings` — the deployment's provider, model and endpoint config
+   * (DW-387).
+   *
+   * The door spelled "Settings are read-only in this deployment." inline until
+   * this key existed, which made `/settings` state three different sentences
+   * for one deployment state: the page banner, this route, and the embeddings
+   * rebuild below. One owner ends that; the banner and the Workbench save bar
+   * both render {@link import("./workbench-settings").SETTINGS_READ_ONLY_COPY},
+   * the character-identical client mirror.
+   *
+   * `PUT /api/workspace-profile` KEEPS its own narrower literal — the same
+   * sentence this route used to serve — because it is a different door with a
+   * different scope, and rewriting that handler is out of this change. The
+   * parity suite pins both, so the two can no longer be mistaken for one.
+   */
+  settingsSave:
+    "Settings cannot be changed while this deployment is read-only.",
+  /**
+   * `POST /api/settings/rebuild-embeddings` — re-embedding the whole corpus.
+   *
+   * Its own sentence rather than {@link settingsSave}'s: a rebuild changes no
+   * setting at all, and an owner reading "Settings cannot be changed…" beside a
+   * button labelled **Rebuild Vector Index** would go looking for the field
+   * they were supposed to have edited.
+   */
+  embeddingRebuild:
+    "Embeddings cannot be rebuilt while this deployment is read-only.",
 } as const;
 
 /**

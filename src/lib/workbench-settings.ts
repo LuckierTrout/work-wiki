@@ -228,9 +228,22 @@ export const SETTINGS_SAVE_ACTION = "save these settings";
 /** The polite status line after a landed save. */
 export const SETTINGS_SAVED_COPY = "Settings saved.";
 
-/** `YOPEDIA_READONLY=1`: the store refuses writes deployment-wide. */
+/**
+ * `YOPEDIA_READONLY=1`: the store refuses writes deployment-wide.
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.settingsSave` — what
+ * `PUT /api/settings` answers — and character-identical to it, pinned by
+ * `read-only-copy-parity.test.ts`. It lives here rather than beside a component
+ * because it has TWO consumers, the Workbench save bar and the `/settings`
+ * banner, and this module is already client-safe and already owns the rest of
+ * that surface's copy; a constant beside either one would be a second owner of
+ * one sentence (DW-387).
+ *
+ * `PUT /api/workspace-profile` is a DIFFERENT door and keeps its own literal —
+ * do not assume a reword here is a reword there.
+ */
 export const SETTINGS_READ_ONLY_COPY =
-  "Settings are read-only in this deployment.";
+  "Settings cannot be changed while this deployment is read-only.";
 
 /** Secret fields: what the owner sees instead of a key, and how to drop one. */
 export const SETTINGS_KEY_STORED_COPY = "A key is stored.";

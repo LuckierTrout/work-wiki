@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import SettingsPage from "@/app/settings/page";
+import { EMBEDDING_REBUILD_READ_ONLY_COPY } from "@/components/EmbeddingSettings";
+import { SETTINGS_READ_ONLY_COPY } from "@/lib/workbench-settings";
 
 /**
  * `/settings` on a read-only deployment, MOUNTED (DW-299).
@@ -20,14 +22,34 @@ import SettingsPage from "@/app/settings/page";
  * technique.
  */
 
+/**
+ * The sibling panels, stubbed — but RECORDING what the page handed them.
+ *
+ * Each of these fetches its own endpoint on mount, which is why they are
+ * stubbed at all. Rendering nothing was enough while the page passed them
+ * nothing; now it passes `readOnly` (DW-386), and a stub that discarded its
+ * props would let `<NamesTermsSettings readOnly={readOnly} />` be reverted to
+ * `<NamesTermsSettings />` with this whole file still green — the two surfaces
+ * would go back to looking live in front of their 403s and nothing would say
+ * so. So the props are captured and asserted below.
+ */
+const namesTermsProps: Array<Record<string, unknown>> = [];
+const emailIngestProps: Array<Record<string, unknown>> = [];
+
 vi.mock("@/components/WorkspacePurposeSettings", () => ({
   WorkspacePurposeSettings: () => null,
 }));
 vi.mock("@/components/NamesTermsSettings", () => ({
-  NamesTermsSettings: () => null,
+  NamesTermsSettings: (props: Record<string, unknown>) => {
+    namesTermsProps.push(props);
+    return null;
+  },
 }));
 vi.mock("@/components/EmailIngestSettings", () => ({
-  EmailIngestSettings: () => null,
+  EmailIngestSettings: (props: Record<string, unknown>) => {
+    emailIngestProps.push(props);
+    return null;
+  },
 }));
 vi.mock("@/components/VaultExportButton", () => ({
   VaultExportButton: () => null,
@@ -107,7 +129,15 @@ afterEach(() => {
   // `cleanup()` lands after this one and would unmount with `fetch` unstubbed.
   cleanup();
   vi.unstubAllGlobals();
+  namesTermsProps.length = 0;
+  emailIngestProps.length = 0;
 });
+
+/** What the page last handed a recorded panel. */
+function lastProps(recorded: Array<Record<string, unknown>>): Record<string, unknown> {
+  expect(recorded.length).toBeGreaterThan(0);
+  return recorded[recorded.length - 1];
+}
 
 describe("/settings refuses per control, not by disabling the form (DW-299)", () => {
   beforeEach(() => {
@@ -138,7 +168,7 @@ describe("/settings refuses per control, not by disabling the form (DW-299)", ()
     }
   });
 
-  it("points every refused control at the one refusal sentence", async () => {
+  it("points every control the FORM refuses at the form's refusal sentence", async () => {
     render(<SettingsPage />);
     await waitFor(() =>
       expect((field("provider") as HTMLSelectElement).value).toBe("ollama"),
@@ -152,8 +182,11 @@ describe("/settings refuses per control, not by disabling the form (DW-299)", ()
       field("structuredKnowledgeModel"),
       field("embeddingModel"),
       screen.getByRole("button", { name: "Save Settings" }),
-      screen.getByRole("button", { name: "Rebuild Vector Index" }),
     ];
+    // **Rebuild Vector Index** is deliberately NOT here. It stands in front of
+    // a different door — `POST /api/settings/rebuild-embeddings` — and reads
+    // that door's sentence instead (DW-387); the case below is where it is
+    // pinned.
 
     for (const control of refused) {
       const described = control.getAttribute("aria-describedby");
@@ -172,6 +205,69 @@ describe("/settings refuses per control, not by disabling the form (DW-299)", ()
         ),
       ).toBe(true);
     }
+  });
+
+  it("states the sentence PUT /api/settings actually answers (DW-387)", async () => {
+    // The banner used to be a FOURTH wording of one deployment state — "This
+    // deployment has explicitly disabled settings changes." — while the route
+    // answered something else and the Workbench save bar a third thing. Pinned
+    // against the exported constant rather than a retyped string:
+    // `read-only-copy-parity.test.ts` is what ties that constant to the route,
+    // and this is what ties the banner to the constant.
+    render(<SettingsPage />);
+    await waitFor(() =>
+      expect((field("provider") as HTMLSelectElement).value).toBe("ollama"),
+    );
+
+    const describedIds = field("model").getAttribute("aria-describedby")!.split(" ");
+    const banner = document.getElementById(describedIds[0]);
+    expect(banner).not.toBeNull();
+    // The label three suites identify this banner by, and the pinned sentence
+    // after it.
+    expect(banner!.textContent).toContain("Read-only mode");
+    expect(banner!.textContent).toContain(SETTINGS_READ_ONLY_COPY);
+  });
+
+  it("hands the served readOnly down to Names & Terms and Email ingestion (DW-386)", async () => {
+    // The page is the only thing that knows the flag for these two — they take
+    // it as a prop rather than making a second read-only fetch — so this is the
+    // only place the wiring exists to be broken.
+    render(<SettingsPage />);
+    await waitFor(() =>
+      expect((field("provider") as HTMLSelectElement).value).toBe("ollama"),
+    );
+
+    await waitFor(() => expect(lastProps(namesTermsProps).readOnly).toBe(true));
+    expect(lastProps(emailIngestProps).readOnly).toBe(true);
+    // And NOT the banner's id: each of those sections states what ITS OWN door
+    // answers, and the banner is `PUT /api/settings`'s (DW-387).
+    expect(lastProps(namesTermsProps).describedBy).toBeUndefined();
+    expect(lastProps(emailIngestProps).describedBy).toBeUndefined();
+  });
+
+  it("points Rebuild at the EMBEDDINGS sentence, not the form's (DW-387)", async () => {
+    // `/settings` used to state three different sentences for one deployment
+    // state — the banner, `PUT /api/settings` and this button's door — and this
+    // button read the FORM's. A rebuild changes no setting at all, so the owner
+    // read one sentence before pressing and would have met another in the 403.
+    render(<SettingsPage />);
+    await waitFor(() =>
+      expect((field("provider") as HTMLSelectElement).value).toBe("ollama"),
+    );
+
+    const rebuild = screen.getByRole("button", { name: "Rebuild Vector Index" });
+    const ids = (rebuild.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter(Boolean);
+    expect(ids).toHaveLength(1);
+    const note = document.getElementById(ids[0]);
+    expect(note).not.toBeNull();
+    // Read off the DOM against the exported constant rather than a retyped
+    // string: `read-only-copy-parity.test.ts` is what pins that constant to
+    // what the route answers, and this is what pins the button to the constant.
+    expect(note!.textContent).toBe(EMBEDDING_REBUILD_READ_ONLY_COPY);
+    // …and NOT the banner, which is the whole defect.
+    expect(note!.textContent).not.toContain("Read-only mode");
   });
 
   it("marks the write controls aria-disabled and leaves them focusable", async () => {
@@ -264,6 +360,12 @@ describe("/settings is unchanged on a writable deployment — the control case",
     );
 
     expect(document.body.textContent).not.toContain("Read-only mode");
+    expect(document.body.textContent).not.toContain(SETTINGS_READ_ONLY_COPY);
+    // The flag reaches the two prop-fed sections as FALSE — without this half a
+    // page hardcoding `readOnly` would pass the read-only case above while
+    // refusing both surfaces on a deployment that writes fine.
+    expect(lastProps(namesTermsProps).readOnly).toBe(false);
+    expect(lastProps(emailIngestProps).readOnly).toBe(false);
     const controls = [
       field("provider"),
       field("model"),

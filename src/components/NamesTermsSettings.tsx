@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type {
   NamesTermEntry,
   NamesTermInput,
@@ -28,6 +28,39 @@ const EMPTY_DRAFT: NamesTermInput = {
 
 type Feedback = { ok: boolean; message: string } | null;
 
+/**
+ * Why every writing control on this surface refuses on a read-only deployment
+ * (DW-386).
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.namesTerms` — what
+ * `POST /api/names-terms` and `PUT`/`DELETE /api/names-terms/[id]` all answer —
+ * and character-identical to it, pinned by `read-only-copy-parity.test.ts`.
+ * Exported because it is the sentence the refused controls POINT AT through
+ * `aria-describedby`.
+ *
+ * NOT narrowed. The server sentence already names this store and covers the
+ * three verbs this surface offers (add, update, remove), so there is nothing a
+ * narrower wording could tell the owner that this one does not.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const NAMES_TERMS_READ_ONLY_COPY =
+  "Names & Terms entries cannot be changed while this deployment is read-only.";
+
+export interface NamesTermsSettingsProps {
+  /**
+   * `YOPEDIA_READONLY=1`, as `/settings` already read it from
+   * `GET /api/settings`.
+   *
+   * A PROP rather than a fetch of this component's own: the mounting surface
+   * knows the flag, and a second read would be a second answer to one question
+   * — free to disagree with the banner rendered a few nodes above it.
+   *
+   * Optional and off by default, so every existing caller renders unchanged.
+   */
+  readOnly?: boolean;
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const body = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -43,7 +76,9 @@ function parseAliases(value: string): string[] {
   return value.split(/[\n,;]/).map((alias) => alias.trim()).filter(Boolean);
 }
 
-export function NamesTermsSettings() {
+export function NamesTermsSettings({
+  readOnly = false,
+}: NamesTermsSettingsProps = {}) {
   const [entries, setEntries] = useState<NamesTermEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -52,6 +87,30 @@ export function NamesTermsSettings() {
   const [aliasDraft, setAliasDraft] = useState("");
   const [filter, setFilter] = useState<NamesTermKind | "all">("all");
   const [feedback, setFeedback] = useState<Feedback>(null);
+  /**
+   * The read-only sentence's id, so every control refused for that reason can
+   * resolve it through `aria-describedby`.
+   *
+   * `aria-disabled` on its own announces "dimmed" and nothing about why, and a
+   * `readOnly` input announces "read only" and nothing about why either — the
+   * sentence below the grid is the only place the reason is stated at all.
+   * Rendered only while `readOnly`, so the attribute is only ever set when
+   * there is a node with this id to point at.
+   */
+  const readOnlyNoteId = useId();
+  /**
+   * `aria-describedby` for a control this section refuses: ITS OWN note, and
+   * nothing else.
+   *
+   * NOT composed with the page's read-only banner, even though `/settings`
+   * renders one a few nodes above. That banner states what
+   * `PUT /api/settings` answers — the refusal of the provider form — and these
+   * controls stand in front of `/api/names-terms`. One control, one door, one
+   * sentence: the same rule **Rebuild Vector Index** follows, and the whole
+   * point of DW-387. `undefined` while writable, so nothing describes a refusal
+   * that is not happening.
+   */
+  const refusalIds = readOnly ? readOnlyNoteId : undefined;
 
   async function load() {
     setLoading(true);
@@ -102,7 +161,13 @@ export function NamesTermsSettings() {
   }
 
   async function save(event: React.FormEvent) {
+    // `preventDefault` FIRST, refusal second: the browser would navigate away
+    // on a submission this handler declined to make a request for.
     event.preventDefault();
+    // THE EARLY RETURN IS THE WHOLE REFUSAL — `aria-disabled` dims the button
+    // but leaves it activatable, which is the point: the control keeps its
+    // place in the tab order so the sentence can be announced with it.
+    if (readOnly) return;
     if (!draft.canonical.trim()) return;
     setSaving(true);
     setFeedback(null);
@@ -143,6 +208,10 @@ export function NamesTermsSettings() {
   }
 
   async function remove(entry: NamesTermEntry) {
+    // BEFORE the confirm, never in front of the 403: a dialog asking the owner
+    // to approve a removal the deployment will refuse is a decision they were
+    // never actually offered (the DW-265 shape).
+    if (readOnly) return;
     if (!window.confirm(`Remove “${entry.canonical}” from Names & Terms?`)) return;
     setFeedback(null);
     try {
@@ -211,6 +280,12 @@ export function NamesTermsSettings() {
               <select
                 value={draft.kind}
                 onChange={(event) => {
+                  // `aria-disabled` dims a <select> but does NOT stop it
+                  // moving, and this handler is destructive beyond the field
+                  // itself: leaving "person" wipes role, organization and
+                  // email. The handler is what actually refuses — the
+                  // `WorkspacePurposeSettings` scenario-picker shape.
+                  if (readOnly) return;
                   const kind = event.target.value as NamesTermKind;
                   setDraft({
                     ...draft,
@@ -220,6 +295,10 @@ export function NamesTermsSettings() {
                       : { email: "", role: "", organization: "" }),
                   });
                 }}
+                // A `<select>` has no `readOnly`, which is why this half of
+                // the form refuses differently from the text boxes below.
+                aria-disabled={readOnly || undefined}
+                aria-describedby={refusalIds}
                 className="mt-1.5 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none focus:border-foreground/35"
               >
                 {Object.entries(KIND_LABELS).map(([value, label]) => (
@@ -234,6 +313,8 @@ export function NamesTermsSettings() {
                 maxLength={160}
                 onChange={(event) => setDraft({ ...draft, canonical: event.target.value })}
                 placeholder={isPerson ? "Christian Lee" : "Canonical label"}
+                readOnly={readOnly}
+                aria-describedby={refusalIds}
                 className="mt-1.5 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
               />
             </label>
@@ -246,6 +327,8 @@ export function NamesTermsSettings() {
               rows={2}
               onChange={(event) => setAliasDraft(event.target.value)}
               placeholder="Separate aliases with commas — Chris, C. Lee"
+              readOnly={readOnly}
+              aria-describedby={refusalIds}
               className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
             />
           </label>
@@ -258,6 +341,8 @@ export function NamesTermsSettings() {
                   value={draft.role ?? ""}
                   onChange={(event) => setDraft({ ...draft, role: event.target.value })}
                   placeholder="Product owner"
+                  readOnly={readOnly}
+                  aria-describedby={refusalIds}
                   className="mt-1.5 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
                 />
               </label>
@@ -267,6 +352,8 @@ export function NamesTermsSettings() {
                   value={draft.organization ?? ""}
                   onChange={(event) => setDraft({ ...draft, organization: event.target.value })}
                   placeholder="Company or team"
+                  readOnly={readOnly}
+                  aria-describedby={refusalIds}
                   className="mt-1.5 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
                 />
               </label>
@@ -277,6 +364,8 @@ export function NamesTermsSettings() {
                   value={draft.email ?? ""}
                   onChange={(event) => setDraft({ ...draft, email: event.target.value })}
                   placeholder="name@example.com"
+                  readOnly={readOnly}
+                  aria-describedby={refusalIds}
                   className="mt-1.5 block w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 font-mono text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
                 />
               </label>
@@ -290,6 +379,8 @@ export function NamesTermsSettings() {
               rows={2}
               onChange={(event) => setDraft({ ...draft, description: event.target.value })}
               placeholder="What this refers to, so similar names aren’t confused"
+              readOnly={readOnly}
+              aria-describedby={refusalIds}
               className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
             />
           </label>
@@ -301,14 +392,25 @@ export function NamesTermsSettings() {
               rows={2}
               onChange={(event) => setDraft({ ...draft, guidance: event.target.value })}
               placeholder="For example: use the full name in formal summaries"
+              readOnly={readOnly}
+              aria-describedby={refusalIds}
               className="mt-1.5 block w-full resize-y rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-foreground/30 focus:border-foreground/35"
             />
           </label>
 
           <button
-            className="btn primary mt-5 w-full justify-center"
+            className={`btn primary mt-5 w-full justify-center${
+              readOnly ? " opacity-60" : ""
+            }`}
             type="submit"
-            disabled={saving || !draft.canonical.trim()}
+            // `saving` is TRANSIENT and keeps `disabled`. The empty-draft guard
+            // YIELDS to the refusal: on a read-only deployment the boxes above
+            // are `readOnly`, so the draft can never be filled in and a
+            // `disabled` button would take the one control carrying the
+            // sentence out of the tab order — the DW-191/DW-299 defect.
+            disabled={saving || (!readOnly && !draft.canonical.trim())}
+            aria-disabled={readOnly || undefined}
+            aria-describedby={refusalIds}
           >
             {saving ? "Saving…" : editingId ? "Update entry" : "Remember this"}
           </button>
@@ -390,7 +492,15 @@ export function NamesTermsSettings() {
                         type="button"
                         className="btn ghost"
                         onClick={() => void remove(entry)}
-                        style={{ color: "var(--rust)" }}
+                        // The standing refusal is `aria-disabled`, never
+                        // `disabled`: the button keeps its place in the tab
+                        // order, and `remove` returns before its `window.confirm`.
+                        aria-disabled={readOnly || undefined}
+                        aria-describedby={refusalIds}
+                        style={{
+                          color: "var(--rust)",
+                          ...(readOnly ? { opacity: 0.6 } : {}),
+                        }}
                       >
                         Remove
                       </button>
@@ -403,6 +513,17 @@ export function NamesTermsSettings() {
         </div>
       </div>
 
+      {/* Identified so every refused control above can point at it: this is the
+          only place THIS store's reason is stated. Not `role="alert"` — nothing
+          failed; it is the deployment's standing state. */}
+      {readOnly && (
+        <p
+          id={readOnlyNoteId}
+          className="mt-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          {NAMES_TERMS_READ_ONLY_COPY}
+        </p>
+      )}
       {feedback && (
         <div
           role="status"

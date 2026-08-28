@@ -118,7 +118,7 @@ export function ProviderForm({
    * ONE condition, read by both the credential-status line and the
    * `aria-describedby` that points at it (DW-420).
    *
-   * `EmbeddingSettings.tsx:112` states the rule in as many words: two
+   * `EmbeddingSettings.tsx:142` states the rule in as many words: two
    * expressions would be two rules that agree today, and the way they would
    * disagree is a description pointing at an element that is not in the
    * document. So this const serves both roles, exactly as `showCustom` and

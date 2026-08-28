@@ -245,6 +245,31 @@ describe("POST /api/research failure classification", () => {
     expect(mockedReconcile).not.toHaveBeenCalled();
   });
 
+  it("tells the Studio the deployment is read-only (DW-386)", async () => {
+    // The desk's ONLY source for the flag. Without this the line could be
+    // deleted and every other test would stay green while `/studio` shipped a
+    // Research desk that never refuses: Create, Run, Cancel, Collect and Delete
+    // all live in front of four 403s, and Delete's `window.confirm` open again.
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await GET(new Request("http://localhost/api/research"));
+    const body = await response.json() as { readOnly: boolean };
+
+    expect(response.status).toBe(200);
+    expect(body.readOnly).toBe(true);
+  });
+
+  it("says so when the deployment is writable — the control case", async () => {
+    // Without this half, a route hardcoding `readOnly: true` would pass above
+    // while refusing every research control on a deployment that writes fine.
+    delete process.env.YOPEDIA_READONLY;
+
+    const response = await GET(new Request("http://localhost/api/research"));
+    const body = await response.json() as { readOnly: boolean };
+
+    expect(body.readOnly).toBe(false);
+  });
+
   it("filters the list to one Workbench Wiki", async () => {
     mockedList.mockResolvedValue([
       { id: "a", vaultId: "wiki-a" },

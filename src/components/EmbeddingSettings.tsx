@@ -1,8 +1,29 @@
 "use client";
 
+import { useId } from "react";
+
 // ---------------------------------------------------------------------------
 // EmbeddingSettings — embedding model field + rebuild vector index section
 // ---------------------------------------------------------------------------
+
+/**
+ * Why **Rebuild Vector Index** refuses on a read-only deployment (DW-387).
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.embeddingRebuild` — what
+ * `POST /api/settings/rebuild-embeddings` answers — and character-identical to
+ * it, pinned by `read-only-copy-parity.test.ts`. Exported because it is the
+ * sentence the button POINTS AT through `aria-describedby`.
+ *
+ * ITS OWN sentence rather than the page's banner. The banner states what
+ * `PUT /api/settings` answers ("Settings cannot be changed…"), which is true of
+ * every field above and false of this button: a rebuild edits no setting at
+ * all. Reading the form's sentence before pressing and the rebuild door's
+ * afterwards is exactly the drift DW-387 is about.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const EMBEDDING_REBUILD_READ_ONLY_COPY =
+  "Embeddings cannot be rebuilt while this deployment is read-only.";
 
 export interface EmbeddingSettingsProps {
   embeddingModel: string;
@@ -126,6 +147,22 @@ export function EmbeddingSettings({
   // as well as on being passed, so a caller that hands down an id without the
   // flag cannot leave a dangling pointer.
   const readOnlyNoteId = readOnly && describedBy ? describedBy : null;
+  /**
+   * The id {@link EMBEDDING_REBUILD_READ_ONLY_COPY} is announced under (DW-387).
+   *
+   * Its own node rather than a share of the page's banner: the two sentences
+   * describe two different doors, and one id naming both would announce the
+   * form's refusal beside a button the form's door has nothing to do with.
+   *
+   * `useId()` rather than a module constant like the two notes above, because
+   * unlike them it is minted per MOUNT: `OVERRIDE_NOTE_ID` and
+   * `VECTOR_NOTICE_ID` predate this change and are the page's to keep, but a
+   * second `EmbeddingSettings` in one document would make a hardcoded id a
+   * duplicate, and `aria-describedby` would resolve to whichever copy the
+   * document happened to reach first. Rendered only while `readOnly`, so the
+   * attribute is only ever set when there is a node with this id to point at.
+   */
+  const rebuildReadOnlyNoteId = useId();
   const notes =
     [
       showOverrideNote ? OVERRIDE_NOTE_ID : null,
@@ -230,7 +267,9 @@ export function EmbeddingSettings({
           // and can be announced with the sentence it points at.
           disabled={rebuilding}
           aria-disabled={readOnly || undefined}
-          aria-describedby={readOnly ? readOnlyNoteId ?? undefined : undefined}
+          // ITS OWN door's sentence, not the page banner's — see
+          // `EMBEDDING_REBUILD_READ_ONLY_COPY`.
+          aria-describedby={readOnly ? rebuildReadOnlyNoteId : undefined}
           className={`rounded-md border border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground/80 transition-colors disabled:opacity-50 ${
             readOnly ? "opacity-50 cursor-default" : "hover:bg-foreground/5"
           }`}
@@ -248,6 +287,17 @@ export function EmbeddingSettings({
           )}
         </button>
       </div>
+      {/* Identified so the button above can point at it: this is the only place
+          the reason for ITS refusal is stated. Not `role="alert"` — nothing
+          failed; it is the deployment's standing state. */}
+      {readOnly && (
+        <p
+          id={rebuildReadOnlyNoteId}
+          className="mt-2 text-xs text-amber-700 dark:text-amber-500"
+        >
+          {EMBEDDING_REBUILD_READ_ONLY_COPY}
+        </p>
+      )}
       {rebuildResult && (
         <div
           className={`mt-2 rounded-lg border p-3 text-sm ${

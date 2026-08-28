@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
@@ -92,6 +92,40 @@ const SECTIONS: Array<{
   { id: "connections", label: "Connections", group: "Operate", description: "Capture and automation entry points" },
 ];
 
+/**
+ * Why the Research desk refuses on a read-only deployment (DW-386).
+ *
+ * Three doors stand behind this desk, so three sentences — each the CLIENT
+ * mirror of the one its own door answers, character-identical, and all three
+ * pinned by `read-only-copy-parity.test.ts`:
+ *
+ *   - `POST /api/research` (Create, and Graph insights' **Research this**) —
+ *     `READ_ONLY_REFUSAL.researchCreate`.
+ *   - `POST /api/research/[id]/run` and `DELETE /api/research/[id]` (Run,
+ *     Cancel, Delete) — `READ_ONLY_REFUSAL.researchMutate`.
+ *   - `POST /api/ingest/batch` (Collect) — `READ_ONLY_REFUSAL.ingest`, which is
+ *     not a research sentence at all: Collect pushes the brief's source URLs
+ *     into the ordinary ingest pipeline, and saying "Research projects cannot
+ *     be changed…" beside it would name the wrong refusal.
+ *
+ * ONLY the Research desk. The other Studio panels — Purpose & vaults, Compile,
+ * Original sources, Agent skills, Portability, Connections — write through
+ * doors this change does not cover, so they are deliberately left as they are
+ * rather than half-gated on a flag whose sentences nobody has written yet.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const RESEARCH_CREATE_READ_ONLY_COPY =
+  "Research projects cannot be created while this deployment is read-only.";
+
+/** See {@link RESEARCH_CREATE_READ_ONLY_COPY} — run, cancel and delete. */
+export const RESEARCH_MUTATE_READ_ONLY_COPY =
+  "Research projects cannot be changed while this deployment is read-only.";
+
+/** See {@link RESEARCH_CREATE_READ_ONLY_COPY} — Collect, which is an INGEST. */
+export const RESEARCH_COLLECT_READ_ONLY_COPY =
+  "Sources cannot be ingested while this deployment is read-only.";
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const body = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -137,17 +171,63 @@ export function KnowledgeStudio() {
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  /**
+   * `YOPEDIA_READONLY=1`, as `GET /api/research` reports it (DW-386).
+   *
+   * ON THE BODY, not on a prop, even though `src/app/studio/page.tsx` is an
+   * async SERVER component and could have passed one. This desk RE-READS
+   * `/api/research` on every **Refresh**, and a prop is pinned at first render:
+   * it would go on saying "writable" over a deployment that had since been
+   * flipped, beside the very projects the same refresh had just replaced. The
+   * flag and the projects it gates arrive together, from one answer, or they
+   * can disagree.
+   *
+   * Defaults to FALSE and only ever moves on an explicit `true`, so a route
+   * that stopped serving the field leaves the desk working rather than refusing
+   * everything on an `undefined`: the server refuses either way, and a refusal
+   * invented on the client would be the worse failure.
+   */
+  const [readOnly, setReadOnly] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    /**
+     * The research read is SETTLED on its own, ahead of the rest.
+     *
+     * `Promise.all` rejects on the first failure, so an unrelated endpoint
+     * having a bad day — `/api/vaults`, `/api/agent-skills`, anything in the
+     * list below — used to skip every `set*` call including `setReadOnly`. The
+     * desk then rendered with `readOnly` still `false`: Create, Run, Cancel,
+     * Collect and Delete all live in front of four 403s, and Delete's
+     * `window.confirm` open again — the exact defect DW-386 removed, restored
+     * by a failure that has nothing to do with research. The flag is adopted
+     * whenever ITS door answered, and only the projects it gates ride with it.
+     */
+    const research = await requestJson<{
+      projects: ResearchProject[];
+      availableProviders?: ResearchProvider[];
+      readOnly?: boolean;
+    }>("/api/research").then(
+      (data) => {
+        setProjects(data.projects);
+        setResearchProviders(data.availableProviders ?? []);
+        setReadOnly(data.readOnly === true);
+        return null;
+      },
+      // A research read that FAILED tells us nothing about the deployment
+      // state, so the flag is left exactly as it was rather than reset to
+      // `false` — a refusal withdrawn on a network error would be the same
+      // defect by another route. The error is carried out to be reported with
+      // whatever else went wrong.
+      (error: unknown) => error,
+    );
     try {
-      const [vaultData, agentData, jobData, proposalData, insightData, projectData, skillData, compilationData] = await Promise.all([
+      const [vaultData, agentData, jobData, proposalData, insightData, skillData, compilationData] = await Promise.all([
         requestJson<{ vaults: Vault[] }>("/api/vaults"),
         requestJson<{ agents: Agent[] }>("/api/agents?mine=1"),
         requestJson<{ jobs: IngestJob[] }>("/api/ingest/jobs?limit=16"),
         requestJson<{ proposals: Proposal[] }>("/api/review/proposals?status=pending"),
         requestJson<{ insights: GraphInsight[] }>("/api/knowledge/insights?scope=mine"),
-        requestJson<{ projects: ResearchProject[]; availableProviders?: ResearchProvider[] }>("/api/research"),
         requestJson<{ skills: AgentSkill[] }>("/api/agent-skills"),
         requestJson<{ contributions: SourceContribution[] }>("/api/knowledge/compilation"),
       ]);
@@ -156,10 +236,10 @@ export function KnowledgeStudio() {
       setJobs(jobData.jobs);
       setProposals(proposalData.proposals);
       setInsights(insightData.insights);
-      setProjects(projectData.projects);
-      setResearchProviders(projectData.availableProviders ?? []);
       setSkills(skillData.skills);
       setContributions(compilationData.contributions);
+      if (research) throw research;
+      setFeedback(null);
     } catch (error) {
       setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t load the studio." });
     } finally {
@@ -245,6 +325,7 @@ export function KnowledgeStudio() {
               setSection("research");
             }}
             setFeedback={setFeedback}
+            readOnly={readOnly}
           />
         ) : null}
         {section === "research" ? (
@@ -254,6 +335,7 @@ export function KnowledgeStudio() {
             setProjects={setProjects}
             onEvidence={setEvidence}
             setFeedback={setFeedback}
+            readOnly={readOnly}
           />
         ) : null}
         {section === "files" ? <FilesPanel vaults={vaults} jobs={jobs} /> : null}
@@ -513,15 +595,29 @@ function InsightsPanel({
   onEvidence,
   onProject,
   setFeedback,
+  readOnly = false,
 }: {
   insights: GraphInsight[];
   onEvidence: (value: Evidence) => void;
   onProject: (project: ResearchProject) => void;
   setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
+  /** `YOPEDIA_READONLY=1`, from `GET /api/research` — see the module note. */
+  readOnly?: boolean;
 }) {
   const [creating, setCreating] = useState<string | null>(null);
+  /**
+   * The refusal's id, so every **Research this** button can resolve it through
+   * `aria-describedby`. ONE note for the whole list rather than one per row:
+   * every row refuses at the same door for the same reason, and a note per
+   * insight would be N copies of one sentence to keep in step.
+   */
+  const readOnlyNoteId = useId();
 
   async function research(insight: GraphInsight) {
+    // THE EARLY RETURN IS THE WHOLE REFUSAL: `POST /api/research` answers 403
+    // either way, and this button turned a graph signal into a brief the
+    // deployment was never going to store.
+    if (readOnly) return;
     setCreating(insight.id);
     try {
       const data = await requestJson<{ project: ResearchProject }>("/api/research", {
@@ -567,13 +663,34 @@ function InsightsPanel({
               <p>{insight.summary}</p>
               <small>{insight.slugs.slice(0, 4).join(" · ")}</small>
             </button>
-            <button type="button" className="studio-text-button" onClick={() => void research(insight)} disabled={creating === insight.id}>
+            <button
+              type="button"
+              className="studio-text-button"
+              onClick={() => void research(insight)}
+              // `creating` is TRANSIENT and keeps `disabled`; the standing
+              // refusal is `aria-disabled`, so the button keeps its place in
+              // the tab order and can be announced with its sentence.
+              disabled={!readOnly && creating === insight.id}
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? readOnlyNoteId : undefined}
+            >
               {creating === insight.id ? "Creating…" : "Research this →"}
             </button>
           </article>
         ))}
         {insights.length === 0 ? <EmptyState title="No structural alerts" body="As your graph grows, disconnected pages, bridge pages, and missing relationships will appear here." action={<Link className="btn ghost" href="/wiki/graph">Open graph</Link>} /> : null}
       </div>
+      {/* Identified so every refused button above can point at it. Guarded on
+          there BEING one: with no insights there is no **Research this** to
+          refuse, and a sentence here would announce the refusal of an operation
+          the owner was never offered, pointing at nothing — the same rule the
+          Research desk's own notes follow. Not `role="alert"` — nothing failed;
+          it is the deployment's standing state. */}
+      {readOnly && insights.length > 0 ? (
+        <p id={readOnlyNoteId} className="studio-note">
+          {RESEARCH_CREATE_READ_ONLY_COPY}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -584,12 +701,15 @@ function ResearchPanel({
   setProjects,
   onEvidence,
   setFeedback,
+  readOnly = false,
 }: {
   projects: ResearchProject[];
   providers: ResearchProvider[];
   setProjects: React.Dispatch<React.SetStateAction<ResearchProject[]>>;
   onEvidence: (value: Evidence) => void;
   setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
+  /** `YOPEDIA_READONLY=1`, from `GET /api/research` — see the module note. */
+  readOnly?: boolean;
 }) {
   const [title, setTitle] = useState("");
   const [question, setQuestion] = useState("");
@@ -597,6 +717,18 @@ function ResearchPanel({
   const [sourceUrls, setSourceUrls] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const { slugTenants } = useSlugTenants();
+  /**
+   * THREE ids, because three doors answer three sentences (see the module
+   * note) — and one per DOOR rather than one per row: every project's Run,
+   * Cancel and Delete meet the same refusal, and a note per project would be N
+   * copies of one sentence to keep in step.
+   *
+   * Rendered only while `readOnly`, so an attribute is only ever set when there
+   * is a node with that id to point at.
+   */
+  const createNoteId = useId();
+  const mutateNoteId = useId();
+  const collectNoteId = useId();
 
   useEffect(() => {
     const active = projects.filter((project) => ["queued", "collecting", "ready"].includes(project.status));
@@ -613,7 +745,12 @@ function ResearchPanel({
   }, [projects, setProjects]);
 
   async function createProject(event: React.FormEvent) {
+    // `preventDefault` FIRST, refusal second: the browser would navigate away
+    // on a submission this handler declined to make a request for.
     event.preventDefault();
+    // THE EARLY RETURN IS THE WHOLE REFUSAL — `aria-disabled` dims the button
+    // and leaves it reachable, and this is what stops the request.
+    if (readOnly) return;
     setBusy("create");
     try {
       const data = await requestJson<{ project: ResearchProject }>("/api/research", {
@@ -632,6 +769,10 @@ function ResearchPanel({
   }
 
   async function collect(project: ResearchProject) {
+    // BEFORE the "add a source URL" nudge: on a read-only deployment the
+    // shortfall is not the brief's, and telling the owner to fix a URL list
+    // would send them to do work the deployment will refuse anyway.
+    if (readOnly) return;
     if (project.sourceUrls.length === 0) {
       setFeedback({ ok: false, message: "Add at least one source URL to this brief before collecting." });
       return;
@@ -652,6 +793,7 @@ function ResearchPanel({
   }
 
   async function runAutomated(project: ResearchProject) {
+    if (readOnly) return;
     setBusy(`run:${project.id}`);
     try {
       const data = await requestJson<{ project: ResearchProject }>(`/api/research/${encodeURIComponent(project.id)}/run`, {
@@ -669,6 +811,7 @@ function ResearchPanel({
   }
 
   async function cancel(project: ResearchProject) {
+    if (readOnly) return;
     setBusy(`cancel:${project.id}`);
     try {
       const data = await requestJson<{ project: ResearchProject }>(`/api/research/${encodeURIComponent(project.id)}/run`, {
@@ -686,6 +829,10 @@ function ResearchPanel({
   }
 
   async function remove(project: ResearchProject) {
+    // BEFORE the confirm, never in front of the 403: a dialog asking the owner
+    // to approve a delete the deployment will refuse is a decision they were
+    // never actually offered (the DW-265 shape).
+    if (readOnly) return;
     if (!window.confirm(`Delete the research brief “${project.title}”? This does not delete ingested sources.`)) return;
     setBusy(`delete:${project.id}`);
     try {
@@ -711,12 +858,22 @@ function ResearchPanel({
         </div>
       </section>
       <form className="studio-form-grid" onSubmit={createProject}>
-        <label><span>Brief title</span><input className="studio-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Vendor landscape" required /></label>
-        <label className="wide"><span>Research question</span><textarea className="studio-input" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="What decision should this research inform?" required /></label>
-        <label><span>Search prompts · one per line</span><textarea className="studio-input" rows={4} value={queries} onChange={(event) => setQueries(event.target.value)} placeholder="Key competitors\nPricing signals" required /></label>
-        <label><span>Source URLs · one per line</span><textarea className="studio-input" rows={4} value={sourceUrls} onChange={(event) => setSourceUrls(event.target.value)} placeholder="https://example.com/report" /></label>
-        <div className="wide studio-form-submit"><button className="btn primary" disabled={busy === "create"}>{busy === "create" ? "Saving…" : "Create research brief"}</button></div>
+        {/* The boxes go on SHOWING what is typed — `readOnly`, never
+            `disabled`, so a keyboard or screen-reader user can still read and
+            reach them (the DW-191/DW-299 rule). */}
+        <label><span>Brief title</span><input className="studio-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Vendor landscape" required readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
+        <label className="wide"><span>Research question</span><textarea className="studio-input" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="What decision should this research inform?" required readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
+        <label><span>Search prompts · one per line</span><textarea className="studio-input" rows={4} value={queries} onChange={(event) => setQueries(event.target.value)} placeholder="Key competitors\nPricing signals" required readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
+        <label><span>Source URLs · one per line</span><textarea className="studio-input" rows={4} value={sourceUrls} onChange={(event) => setSourceUrls(event.target.value)} placeholder="https://example.com/report" readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
+        <div className="wide studio-form-submit"><button className="btn primary" disabled={!readOnly && busy === "create"} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? createNoteId : undefined}>{busy === "create" ? "Saving…" : "Create research brief"}</button></div>
       </form>
+      {/* Identified so the form above can point at it — the CREATE door's
+          sentence, which is not the one Run, Cancel and Delete answer. */}
+      {readOnly ? (
+        <p id={createNoteId} className="studio-note">
+          {RESEARCH_CREATE_READ_ONLY_COPY}
+        </p>
+      ) : null}
       <div className="studio-project-list">
         {projects.map((project) => (
           <article className="studio-project" key={project.id}>
@@ -730,10 +887,19 @@ function ResearchPanel({
               <h3>{project.title}</h3><p>{project.question}</p>
             </button>
             <div className="studio-project-actions">
-              <button className="btn primary" type="button" onClick={() => void runAutomated(project)} disabled={busy !== null || (providers.length === 0 && !project.deliveryBlocked) || ["queued", "collecting", "ready"].includes(project.status) || (!!project.completion && !project.deliveryBlocked)}>{busy === `run:${project.id}` ? "Starting…" : project.status === "failed" || project.status === "cancelled" ? "Retry research" : "Run research"}</button>
-              {["queued", "collecting", "ready"].includes(project.status) ? <button className="btn ghost" type="button" onClick={() => void cancel(project)} disabled={busy !== null}>{busy === `cancel:${project.id}` ? "Cancelling…" : "Cancel"}</button> : null}
-              <button className="btn ghost" type="button" onClick={() => void collect(project)} disabled={busy !== null}>{busy === `collect:${project.id}` ? "Collecting…" : `Collect ${project.sourceUrls.length} URLs`}</button>
-              <button className="studio-danger-button" type="button" onClick={() => void remove(project)} disabled={busy !== null}>Delete</button>
+              {/* Every `disabled` here is TRANSIENT state — a run in flight, a
+                  provider that is not configured, a status that cannot be
+                  cancelled — and each YIELDS to the standing refusal, which is
+                  `aria-disabled`: a `disabled` button carries no description
+                  and is out of the tab order, so the sentence beside it would
+                  never be announced. */}
+              <button className="btn primary" type="button" onClick={() => void runAutomated(project)} disabled={!readOnly && (busy !== null || (providers.length === 0 && !project.deliveryBlocked) || ["queued", "collecting", "ready"].includes(project.status) || (!!project.completion && !project.deliveryBlocked))} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>{busy === `run:${project.id}` ? "Starting…" : project.status === "failed" || project.status === "cancelled" ? "Retry research" : "Run research"}</button>
+              {["queued", "collecting", "ready"].includes(project.status) ? <button className="btn ghost" type="button" onClick={() => void cancel(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>{busy === `cancel:${project.id}` ? "Cancelling…" : "Cancel"}</button> : null}
+              {/* Collect points at the INGEST sentence, not the research one:
+                  it pushes the brief's URLs into the ordinary ingest pipeline,
+                  and that is the door that answers. */}
+              <button className="btn ghost" type="button" onClick={() => void collect(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? collectNoteId : undefined}>{busy === `collect:${project.id}` ? "Collecting…" : `Collect ${project.sourceUrls.length} URLs`}</button>
+              <button className="studio-danger-button" type="button" onClick={() => void remove(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>Delete</button>
             </div>
             {project.progress ? <div className="studio-note"><strong>{project.progress.completedQueries}/{project.progress.totalQueries} searches</strong><span>{project.progress.message}</span></div> : null}
             {project.error ? <div className="studio-feedback error">{project.error}</div> : null}
@@ -744,6 +910,21 @@ function ResearchPanel({
         ))}
         {projects.length === 0 ? <EmptyState title="No research briefs" body="Create one here, or turn a graph insight into a prefilled investigation." /> : null}
       </div>
+      {/* ONE note per DOOR, rendered once for the whole list. Both are guarded
+          on there being a project to refuse: with no rows there is no control
+          for either sentence to describe, and a sentence pointing at nothing
+          would announce the refusal of an operation the owner was never
+          offered. */}
+      {readOnly && projects.length > 0 ? (
+        <>
+          <p id={mutateNoteId} className="studio-note">
+            {RESEARCH_MUTATE_READ_ONLY_COPY}
+          </p>
+          <p id={collectNoteId} className="studio-note">
+            {RESEARCH_COLLECT_READ_ONLY_COPY}
+          </p>
+        </>
+      ) : null}
     </div>
   );
 }

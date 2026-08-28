@@ -3506,7 +3506,9 @@ source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md
 location: src/components/NamesTermsSettings.tsx; src/components/EmailIngestSettings.tsx; src/components/KnowledgeStudio.tsx
 severity: medium
 reason: `NamesTermsSettings` and `EmailIngestSettings` render immediately below the `/settings` form that now refuses per control, and `KnowledgeStudio` posts to `/api/research`; all three submit and meet the new 403 afterwards. `READ_ONLY_REFUSAL.namesTerms` and `.emailSettings` consequently have no client counterpart and no parity-test entry.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-read-only-client-parity
+resolution-undo: 07f3607f3fe2d414f4c8b525cf7eac492435161ccb7877f7b0c7e12f2a571bc0 2026-08-28 7374617475733a206f70656e
 
 ### DW-387: `/settings` now states three different sentences for one deployment state, none of them owned by `READ_ONLY_REFUSAL` and none pinned by the parity suite.
 origin: spec-deferred cba66956e0ae
@@ -3514,7 +3516,9 @@ source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md
 location: src/app/settings/page.tsx:147; src/app/api/settings/route.ts:130; src/app/api/settings/rebuild-embeddings/route.ts
 severity: medium
 reason: The banner every refused control now points at reads "Read-only mode — This deployment has explicitly disabled settings changes."; `PUT /api/settings` answers "Settings are read-only in this deployment."; `POST /api/settings/rebuild-embeddings` answers a third wording. Only the banner is on screen, so the owner reads one sentence before pressing and another if anything reaches the route.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-read-only-client-parity
+resolution-undo: 07f3607f3fe2d414f4c8b525cf7eac492435161ccb7877f7b0c7e12f2a571bc0 2026-08-28 7374617475733a206f70656e
 
 ### DW-388: Nothing outside code comments records that `POST /api/tasks/scan` now answers 403 on every cron pass of a read-only deployment.
 origin: spec-deferred 49c9a3138d42
@@ -4701,4 +4705,28 @@ location: src/lib/research-runtime.ts:578
 source_spec: `spec-dw-385-read-only-kernel-guards.md`
 severity: low
 reason: `src/lib/research-runtime.ts:578,648,662` call the newly gated `deleteResearchProject` inside a per-project try whose catch logs "reconcile skipped damaged project <id>". A `ReadOnlyError` arriving there is logged as data damage. Unreachable today — `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses — so no gate or catch was added, but the log line would mislead an operator if a future caller drives reconcile on a read-only deployment.
+status: open
+
+### DW-529: A fourth research refusal sentence lives one screen away, inline and unowned: the Workbench Deep Research canvas.
+origin: spec-deferred 03ea64393d30
+location: src/components/workbench/ResearchCanvas.tsx:265
+source_spec: `spec-dw-386-387-read-only-client-parity.md`
+severity: medium
+reason: `src/components/workbench/ResearchCanvas.tsx:265` renders the literal "Deep Research cannot start while this deployment is read-only." in front of `POST /api/research` and `POST /api/research/[id]/run` — the same two doors this change gave `RESEARCH_CREATE_READ_ONLY_COPY` and `RESEARCH_MUTATE_READ_ONLY_COPY`. It is not in `READ_ONLY_REFUSAL`, has no parity-suite entry, and is not character-identical to either sentence its doors answer, so the Workbench and the Studio now state one deployment state three ways. Pre-existing — the canvas is outside this bundle's surfaces — but it is the DW-387 shape on a surface DW-387 did not name.
+status: open
+
+### DW-530: The Knowledge Studio panels outside the Research desk still compose writes in front of doors that refuse, with no read-only term at all.
+origin: spec-deferred 879face3635e
+location: src/components/KnowledgeStudio.tsx:412
+source_spec: `spec-dw-386-387-read-only-client-parity.md`
+severity: medium
+reason: `SetupPanel` POSTs `/api/vaults` (`src/components/KnowledgeStudio.tsx:412`), `SkillsPanel` creates, patches and deletes agent skills (968, 986, 1004), and `PortabilityPanel` imports an archive (1049). None reads `readOnly`, which the Studio now has on hand, so each still submits and meets its refusal afterwards — the DW-386 shape, on the panels this bundle's intent did not name (it justified `KnowledgeStudio` solely with "posts to `/api/research`"). Recorded in the `KnowledgeStudio.tsx` module note rather than widened into this change.
+status: open
+
+### DW-531: Three Workbench canvases gate the read-only flag with plain `disabled=`, the DW-191/DW-299 shape the rest of the codebase argues against.
+origin: spec-deferred e6d35d1920b4
+location: src/components/workbench/ReviewCanvas.tsx:230
+source_spec: `spec-dw-386-387-read-only-client-parity.md`
+severity: low
+reason: `src/components/workbench/GraphCanvas.tsx:549,558` and `src/components/workbench/ReviewCanvas.tsx:230,242,250` pass `readOnly` straight into `disabled`, and `ResearchCanvas.tsx:259` folds it into `disabled={!canStart}`. A `disabled` control leaves the tab order, so the standing refusal cannot be reached or announced with its reason — the exact defect DW-191 and DW-299 removed from `/settings` and `WorkspacePurposeSettings`. Pre-existing; surfaced by this change only because its comments restate that rule as if it held everywhere.
 status: open

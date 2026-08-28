@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 interface EmailSettingsResponse {
   enabled: boolean;
@@ -19,7 +19,33 @@ interface EmailSettingsResponse {
 
 type Feedback = { ok: boolean; message: string } | null;
 
-export function EmailIngestSettings() {
+/**
+ * Why this form's save refuses on a read-only deployment (DW-386).
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.emailSettings` — what
+ * `PUT /api/email/settings` answers — and character-identical to it, pinned by
+ * `read-only-copy-parity.test.ts`. Exported because it is the sentence the
+ * refused controls POINT AT through `aria-describedby`.
+ *
+ * NOT narrowed: the server sentence already names exactly what this form edits.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const EMAIL_INGEST_READ_ONLY_COPY =
+  "Email ingestion settings cannot be changed while this deployment is read-only.";
+
+export interface EmailIngestSettingsProps {
+  /**
+   * `YOPEDIA_READONLY=1`, as `/settings` already read it from
+   * `GET /api/settings` — a PROP, not a second fetch. See
+   * `NamesTermsSettingsProps.readOnly`.
+   */
+  readOnly?: boolean;
+}
+
+export function EmailIngestSettings({
+  readOnly = false,
+}: EmailIngestSettingsProps = {}) {
   const [settings, setSettings] = useState<EmailSettingsResponse | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [inboundAddress, setInboundAddress] = useState("");
@@ -30,6 +56,23 @@ export function EmailIngestSettings() {
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  /**
+   * The read-only sentence's id, so every control refused for that reason can
+   * resolve it through `aria-describedby`. Rendered only while `readOnly`, so
+   * the attribute is only ever set when there is a node with this id to point
+   * at.
+   */
+  const readOnlyNoteId = useId();
+  /**
+   * `aria-describedby` for a control this form refuses: ITS OWN note, and
+   * nothing else.
+   *
+   * NOT composed with `/settings`'s read-only banner. That banner states what
+   * `PUT /api/settings` answers; these controls stand in front of
+   * `PUT /api/email/settings`. One control, one door, one sentence — see
+   * `NamesTermsSettings.refusalIds`.
+   */
+  const refusalIds = readOnly ? readOnlyNoteId : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -69,7 +112,13 @@ export function EmailIngestSettings() {
     .filter(Boolean);
 
   async function save(event: React.FormEvent) {
+    // `preventDefault` FIRST, refusal second: the browser would navigate away
+    // on a submission this handler declined to make a request for.
     event.preventDefault();
+    // THE EARLY RETURN IS THE WHOLE REFUSAL — the button is `aria-disabled`,
+    // which dims and announces it but leaves it activatable and in the tab
+    // order.
+    if (readOnly) return;
     setSaving(true);
     setFeedback(null);
     try {
@@ -166,8 +215,14 @@ export function EmailIngestSettings() {
             }}
             placeholder="ingest@yourdomain.com"
             aria-label="work-wiki inbound email address"
+            readOnly={readOnly}
+            aria-describedby={refusalIds}
             className="min-w-[240px] flex-1 bg-transparent font-mono text-sm text-foreground outline-none placeholder:text-foreground/30"
           />
+          {/* NOT refused. `copyAddress` writes to the clipboard and nothing
+              else — no request, no stored byte — so a read-only deployment has
+              no reason to withhold it, and it is how the owner gets the address
+              they can still read out of the page. */}
           <button
             type="button"
             onClick={copyAddress}
@@ -195,6 +250,8 @@ export function EmailIngestSettings() {
               }}
               rows={4}
               placeholder="you@example.com"
+              readOnly={readOnly}
+              aria-describedby={refusalIds}
               className="mt-3 w-full resize-y rounded-lg border border-foreground/15 bg-background/60 px-3 py-2 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-foreground/30 focus:border-foreground/35"
             />
           </div>
@@ -233,9 +290,17 @@ export function EmailIngestSettings() {
               <select
                 value={destinationAgentId}
                 onChange={(event) => {
+                  // `aria-disabled` dims a <select> but does not stop it
+                  // moving; the handler is what actually refuses.
+                  if (readOnly) return;
                   setDestinationAgentId(event.target.value);
                   setFeedback(null);
                 }}
+                // A `<select>` has no `readOnly`, so the standing refusal is
+                // `aria-disabled` — never `disabled`, which would take the
+                // stored destination out of the tab order.
+                aria-disabled={readOnly || undefined}
+                aria-describedby={refusalIds}
                 className="mt-2 w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-foreground/35"
               >
                 <option value="">Owner workspace</option>
@@ -249,9 +314,12 @@ export function EmailIngestSettings() {
               <select
                 value={destinationVaultId}
                 onChange={(event) => {
+                  if (readOnly) return;
                   setDestinationVaultId(event.target.value);
                   setFeedback(null);
                 }}
+                aria-disabled={readOnly || undefined}
+                aria-describedby={refusalIds}
                 className="mt-2 w-full rounded-lg border border-foreground/15 bg-background px-3 py-2.5 text-sm text-foreground outline-none transition-colors focus:border-foreground/35"
               >
                 <option value="">No automatic filing</option>
@@ -269,23 +337,50 @@ export function EmailIngestSettings() {
               type="checkbox"
               checked={enabled}
               onChange={(event) => {
+                // Same for a checkbox: `aria-disabled` announces it, the
+                // handler refuses it.
+                if (readOnly) return;
                 setEnabled(event.target.checked);
                 setFeedback(null);
               }}
+              // A checkbox has no meaningful `readOnly` either.
+              aria-disabled={readOnly || undefined}
+              aria-describedby={refusalIds}
               className="h-4 w-4 accent-current"
             />
             Accept email from approved senders
           </label>
           <button
             type="submit"
-            disabled={saving || loading}
-            className="rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-90 disabled:opacity-50"
+            // `saving` and `loading` are TRANSIENT and keep `disabled`, but
+            // both YIELD to the standing refusal: a mount GET that never
+            // resolves would otherwise leave `loading` true forever and take
+            // the one control carrying the sentence out of the tab order —
+            // the DW-191/DW-299 shape, reached by a stalled request instead of
+            // a fieldset. `save` early-returns, which is what actually refuses.
+            disabled={!readOnly && (saving || loading)}
+            aria-disabled={readOnly || undefined}
+            aria-describedby={refusalIds}
+            className={`rounded-md bg-foreground px-4 py-2 text-sm font-medium text-background transition-opacity disabled:opacity-50${
+              readOnly ? " opacity-50 cursor-default" : " hover:opacity-90"
+            }`}
           >
             {saving ? "Saving…" : "Save email settings"}
           </button>
         </div>
       </form>
 
+      {/* Identified so every refused control above can point at it: this is the
+          only place THIS door's reason is stated. Not `role="alert"` — nothing
+          failed; it is the deployment's standing state. */}
+      {readOnly && (
+        <p
+          id={readOnlyNoteId}
+          className="mt-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          {EMAIL_INGEST_READ_ONLY_COPY}
+        </p>
+      )}
       {!settings?.routingReady && !loading && (
         <p className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-400">
           Cloudflare routing is waiting for a managed domain. You can save the future address and approved senders now; mail will remain off until the route is connected.

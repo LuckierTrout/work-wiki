@@ -49,6 +49,11 @@ export async function GET(request: Request) {
         );
     return NextResponse.json({
       projects: filterResearchProjects(projects, wikiId),
+      // The Studio's ONLY read of this door, and so its source of truth for the
+      // flag (DW-386). `/studio` is `"use client"` from the page down, so the
+      // fact cannot arrive as a prop; it rides on the GET the Research desk
+      // already makes rather than on a second fetch that could disagree.
+      readOnly: isReadOnly(),
       availableProviders,
       activeProvider,
       activeProviderConfigured: activeProvider !== null && availableProviders.includes(activeProvider),
