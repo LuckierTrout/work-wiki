@@ -485,6 +485,15 @@
     "label": "Supply and clamp to the real bound",
     "resolution": ""
   },
+  "DW-489": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give resolveWorkbenchFile, readWorkbenchFile, workbenchFileExists and the preview route's slug derivation the same elected-winner rule the listing uses, so a directly-named case variant answers exactly as the listing does on both store kinds, and pin the case-insensitive-store behaviour that a naive revert would break.",
+    "key": "1",
+    "label": "Extend the election to the read layer",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
