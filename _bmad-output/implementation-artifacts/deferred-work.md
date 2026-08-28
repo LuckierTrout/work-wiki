@@ -1884,7 +1884,8 @@ source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
 location: src/components/workbench/TreePanel.tsx (the two scroll effects), src/lib/workbench-state.ts (WORKBENCH_TREE_SCROLL_KEY)
 severity: low
 reason: `globals.css` caps `.wb-tree-body` at `max-height: 40vh` below 900px, a far shorter scroll range than the desktop column. The restore effect assigns `panel.scrollTop = readStoredTreeScroll()[tab]`; a value past the narrow maximum is clamped by the browser, the clamp fires a `scroll` event, and the persist effect writes the clamped number back - so widening again lands the tree somewhere it never was. This is pre-existing in kind: a narrow LOAD already does exactly this, because `WORKBENCH_TREE_SCROLL_KEY` stores one offset per tab and not one per width. DW-47's listener does not create it, but it adds a second route into it (resizing) that used to be inert. Closing it means keying the stored offset by width band, or skipping the persist for a write the restore itself provoked - either is a storage-shape decision, not a patch.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-surface-visibility-lifecycle
 
 ### DW-207: A divider's hover and focus-visible states paint an identical 1px `var(--wb-border)` line, so keyboard focus is visually indistinguishable from hover, and a border-token hairline is unlikely to clear
 origin: spec-deferred 7afb956d7e51
@@ -1900,7 +1901,8 @@ source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
 location: src/components/workbench/TreePanel.tsx (the persist effect's cleanup)
 severity: low
 reason: The persist effect coalesces through one frame (`if (frame !== 0) return; frame = requestAnimationFrame(...)`) and its cleanup ends `if (frame !== 0) cancelAnimationFrame(frame);` - the queued `writeStoredTreeScroll(tab, panel.scrollTop)` never runs. The restore effect then re-runs on the same dep change and assigns the stored value, which is now one frame stale. Pre-existing for `tab` and `collapsed`; DW-47's `narrow` dep adds resizing as a third route into it. The fix is not a safe one-liner: at cleanup time React has already committed the DOM, so on a collapse the panel can be `display: none`, where `scrollTop` reads 0 - and the obvious guard does not help, because `treeBodyShowing(panel, collapsed)` closes over the STALE `collapsed` (still `false`) and `treeScrollActive` returns `!collapsed || rendered`, i.e. `true` regardless of the element. A correct flush has to ask the element directly (`panel.getClientRects().length > 0`), and jsdom answers for every attached element, so the g
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-surface-visibility-lifecycle
 
 ### DW-209: `renameWiki` rewrites `purpose.md` under the tenant lock without moving `dataVersion`, so a Preview open on that artifact keeps the old heading.
 origin: spec-deferred 4e2733a570b3
@@ -3701,7 +3703,8 @@ source_spec: `spec-dw-377-data-version-refresh-budget.md`
 location: src/components/workbench/DataVersionWatcher.tsx (refreshStateRef)
 severity: low
 reason: `refreshStateRef` seeds from `NO_DATA_VERSION_REFRESH` on every mount (`DataVersionWatcher.tsx`), so React StrictMode's development double-mount, a route change, or any remount of the Workbench shell hands the watcher a fresh budget for a version it has already spent one on. Both the rule's docblock and `data-version.ts`'s prose read as a per-tab guarantee ("a degraded read costs a fixed number of wasted renders per observed version") and are really a per-mount one. Pre-existing: DW-48 shipped the same ref-seeded shape and its docblock names the reset as a feature (nothing persisted) without noting it is also the escape hatch from the bound. Not caused by this story, which only changes what the state holds.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-surface-visibility-lifecycle
 
 ### DW-411: `pnpm vitest` and `pnpm lint` abort before running, so the repo's own documented commands cannot be used and every verification runs through `npx`.
 origin: spec-deferred a82805fc5057
@@ -3754,7 +3757,8 @@ source_spec: `spec-dw-373-settings-canvas-mount-preservation.md`
 location: src/components/workbench/ModeCanvas.tsx (the hidden `.wb-canvas` section)
 severity: low
 reason: `.wb-canvas` is the scroll container (`overflow: auto`, `globals.css:2665`) and `display: none` discards the scroll box, so returning from Settings drops the owner at the top of a long canvas. DW-373's premise is that the visit costs nothing; this is the one thing it still costs, and the `hidden` mechanism the intent itself names cannot reach it. Not a regression — the previous unmount lost it too.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-surface-visibility-lifecycle
 
 ### DW-417: The reason a refused `OLLAMA_BASE_URL` was ignored reaches no MOUNTED surface in the one deployment state DW-402 describes, so that owner still reads a bare "No LLM provider configured".
 origin: spec-deferred 7864c5a12629
@@ -3798,7 +3802,8 @@ source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
 location: src/hooks/useDialogA11y.ts (withdrawn)
 severity: medium
 reason: `withdrawn()` (`src/hooks/useDialogA11y.ts`) answers `closest("[hidden]")`, which is this shell's withdrawal convention — but `globals.css` also hides with shell-scoped rules, e.g. `.wb-shell[data-collapsed="true"] .wb-left { display: none }`. An opener or `fallbackFocusRef` inside a collapsed left column is `isConnected`, has no `[hidden]` ancestor, and gets focused into a `display: none` subtree — the exact failure DW-414 is about, reached by the other route. `offsetParent` would catch it but is always `null` in jsdom, so it would disable every restore this suite pins; a fix needs a mechanism the node suites can execute. Pre-existing for the CSS route; this change narrowed the attribute route only.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-surface-visibility-lifecycle
 
 ### DW-422: A withdrawn Preview column keeps its whole data lifecycle running, so a refresh during a Settings visit can refetch and announce into a live region nobody can hear.
 origin: spec-deferred db251d594798
@@ -4568,4 +4573,52 @@ source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
 location: _bmad-output/implementation-artifacts/deferred-work.md (DW-429 decision text)
 severity: low
 reason: The ledger entry's decision reads "Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock ... rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6". This bundle's intent directed implementing the entry's REASON instead, which is a client-side release-effect fix, so nothing in `src/lib/wikis.ts` was touched. The decision's own line numbers are also stale: that suite already asserts six `bumpRefreshSignal` sites around line 1213 and states the `setCurrentWiki` exemption rationale near line 1174. So the decision's separate concern — that a switch moves no `dataVersion` — is neither implemented nor retired, and a future sweep re-reading it would chase dead coordinates.
+status: open
+
+### DW-519: SourcesTree carries the exact rAF-cancel-without-flush cleanup DW-208 removed from TreePanel, plus DW-206's single-offset-across-the-breakpoint storage shape, and has no test coverage at all.
+origin: spec-deferred fefed9ac57e0
+source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle.md`
+location: src/components/workbench/SourcesTree.tsx (the scroll-memory effect)
+severity: medium
+reason: `src/components/workbench/SourcesTree.tsx` scroll-memory effect is byte-for-byte the pre-DW-208 shape: the frame writes `writeStoredSourcesScroll(panel.scrollTop)` and the cleanup is only `removeEventListener` + `cancelAnimationFrame` with no flush. Its restore is a `[]`-keyed mount effect, and `Workbench.tsx` renders it as `mode === "sources" && ...` inside a `settingsOpen ? null : ...` branch, so the component genuinely unmounts on a mode switch and on opening Settings and the cleanup path really runs. `readStoredSourcesScroll` / `writeStoredSourcesScroll` / `WORKBENCH_SOURCES_SCROLL_KEY` appear only in those two files; no suite mounts SourcesTree, so deleting the effect outright would leave the suite green. `readStoredSourcesScroll()` is also a single number shared across the 900px breakpoint, and `.wb-sources-tree` is `overflow: auto` inside a column whose narrow layout is a stacked row.
+status: open
+
+### DW-520: The Preview column's scroll boxes are discarded by the same Settings visit DW-416 fixes for the mode canvas, with no restore and no test.
+origin: spec-deferred 23a6419658a0
+source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle.md`
+location: src/components/workbench/PreviewColumn.tsx (the `.wb-preview` aside)
+severity: medium
+reason: `globals.css` gives `.wb-preview` and `.wb-preview-body` `overflow: auto` (the latter capped at `50vh` below 899px) and `.wb-preview[hidden] { display: none }` withdraws the column for the same visit under DW-412, so `display: none` discards those scroll boxes exactly as it discards the canvas's. `PreviewColumn.tsx` holds no ref or effect for scroll. The existing DW-412 case only compares the editor node and its value, never `scrollTop`. Two of the three surfaces that visit withdraws now come back where the owner left them and the third does not.
+status: open
+
+### DW-521: The restore-clamp-persist echo DW-206 describes still exists WITHIN a band and on the mode canvas; band keying removes the cross-breakpoint route only.
+origin: spec-deferred 470a00a54a16
+source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle.md`
+location: src/components/workbench/TreePanel.tsx (restore + persist effects), src/components/workbench/ModeCanvas.tsx (the DW-416 effect)
+severity: low
+reason: Both TreePanel's and ModeCanvas's restores assign a stored offset and then leave a `scroll` listener live. A `scrollTop` assignment's own `scroll` event is dispatched at the next rendering update (CSSOM View), so the listener receives it regardless of attachment order. Where the surface has not reached its previously persisted content height (async tree data, a shorter list after a refresh, a shorter viewport against `40vh`), the browser clamps the assignment and the echo records the clamp over the owner's offset. Closing it means suppressing a write the restore itself provoked - the second fix DW-206's ledger entry offered and the intent did not choose - which is a mechanism decision, not a patch.
+status: open
+
+### DW-522: `useDialogA11y`'s widened `withdrawn()` still misses `visibility: hidden`, `content-visibility: hidden` and `inert`, which drop a focus() the same way.
+origin: spec-deferred 42d31b7c4a2c
+source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle.md`
+location: src/hooks/useDialogA11y.ts (withdrawn)
+severity: medium
+reason: `getClientRects()` is non-empty for a `visibility: hidden` element, and `globals.css`'s `@media (max-width: 899px)` block hides the closed rail exactly that way (`.wb-rail { transform: translateX(-100%); visibility: hidden }`, its own comment saying visibility is what "takes them out of both"). The predicate's docblock claims "only the ELEMENT can answer it ... a node cannot lie about it", which is broader than what it covers. No currently reachable dialog has a rail control as its opener, so this is not a demonstrated failure - but closing it needs a mechanism the node suites can execute (`Element.checkVisibility` is the candidate), and this spec's Never list rules out the computed-style route.
+status: open
+
+### DW-523: Below 900px with a docked Preview the DOCUMENT scrolls rather than `.wb-canvas`, so DW-416's ref records and restores 0 at that width.
+origin: spec-deferred c3f825a7b28d
+source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle.md`
+location: src/components/workbench/ModeCanvas.tsx (the DW-416 effect)
+severity: low
+reason: `globals.css`'s narrow block makes `.wb-shell` `overflow: visible` / `height: auto` while a Preview is docked, and its own comment says the canvas row then "resolves to its content instead of scrolling inside `.wb-canvas`'s own `overflow: auto`". At that width the owner's real position lives on the scrolling element, which the new effect never reads, and ModeCanvas's comment states "`.wb-canvas` is the mode canvas's SCROLL CONTAINER" without qualifying the width.
+status: open
+
+### DW-524: Both scroll restores run in `useEffect` rather than `useLayoutEffect`, so the surface paints at the top before it is scrolled back.
+origin: spec-deferred 87f90b629902
+source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle.md`
+location: src/components/workbench/TreePanel.tsx, src/components/workbench/ModeCanvas.tsx
+severity: low
+reason: `TreePanel`'s restore (pre-existing) and `ModeCanvas`'s new one both assign `scrollTop` from a passive effect, which runs after paint. The `hidden` attribute is removed in the commit, the browser paints the surface at 0, and only then is the offset re-applied - a visible jump on every un-withdrawal. `useLayoutEffect` puts the pixels back before paint. jsdom cannot observe the difference, so no suite would catch a regression either way.
 status: open

@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import {
   CHAT_SIDECAR_DOWN_COPY,
@@ -115,8 +115,47 @@ export function ModeCanvas({
   // two can never disagree.
   const wikiShowing = wikiActive && !hidden;
 
+  // Where the canvas was scrolled to before it went off screen (DW-416).
+  //
+  // `.wb-canvas` is the mode canvas's SCROLL CONTAINER (`overflow: auto` in
+  // `globals.css`), and `display: none` discards a scroll box: a Settings visit
+  // — whose whole premise under DW-373 is that it costs nothing, the section
+  // stays MOUNTED — still drops the owner at the top of a long canvas on the way
+  // back. This is `TreePanel`'s withdrawal-keyed restore, one column over.
+  //
+  // A REF, not storage. The section survives the visit mounted, so the offset
+  // never has to cross a reload and there is no FR-8 claim to make here: no new
+  // localStorage key, and nothing keyed per MODE either — the section is one
+  // scroll container whichever mode is rendering inside it, exactly as the
+  // browser treats it.
+  const canvasRef = useRef<HTMLElement>(null);
+  const canvasScrollRef = useRef(0);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    // Keyed on `hidden` ALONE: that prop IS the withdrawal, and coming back is
+    // the moment the browser has just reset `scrollTop` to 0.
+    if (!canvas || hidden) return;
+    // The restore runs BEFORE the listener is attached so the position is
+    // established before anything can observe it. It does NOT keep the
+    // assignment's own `scroll` out of the listener: that event is dispatched at
+    // the next rendering update, not synchronously (CSSOM View), so the listener
+    // installed on the next line still receives it and re-records the value just
+    // re-applied — a no-op, EXCEPT where the browser clamped the assignment
+    // because the canvas has not reached its previous content height yet. That
+    // clamp-echo is the one residual here, and it is the same shape `TreePanel`
+    // carries within a band: keying removes the cross-surface route, not the
+    // clamp.
+    canvas.scrollTop = canvasScrollRef.current;
+    const onScroll = () => {
+      canvasScrollRef.current = canvas.scrollTop;
+    };
+    canvas.addEventListener("scroll", onScroll, { passive: true });
+    return () => canvas.removeEventListener("scroll", onScroll);
+  }, [hidden]);
+
   return (
     <section
+      ref={canvasRef}
       className="wb-canvas"
       hidden={hidden}
       // All three are GIVEN UP while Settings is showing: `SettingsCanvas`

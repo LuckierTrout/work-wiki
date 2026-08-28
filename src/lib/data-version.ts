@@ -62,12 +62,18 @@ export const DATA_VERSION_LOCK = "data-version";
  * already out span LESS than
  * `DATA_VERSION_REFRESH_WINDOW_MS - DATA_VERSION_REFRESH_SETTLE_MS` at the
  * moment of that decision, so at most three ever go out for it — however fast
- * the polls arrive, and from whichever of the watcher's triggers (DW-377). Per version, not in total: with a live
- * writer bumping the counter, a server read stuck at `0` costs up to three
- * wasted renders for every write, indefinitely — a 3× amplification over the
- * one-per-version behaviour this replaced (DW-48). That is the accepted price
- * of never stranding a real bump whose re-render merely lagged; the failure it
- * bounds is the loop, not the amplification.
+ * the polls arrive, and from whichever of the watcher's triggers (DW-377). Per
+ * version, not in total: with a live writer bumping the counter, a server read
+ * stuck at `0` costs up to three wasted renders for every write, indefinitely —
+ * a 3× amplification over the one-per-version behaviour this replaced (DW-48).
+ * That is the accepted price of never stranding a real bump whose re-render
+ * merely lagged; the failure it bounds is the loop, not the amplification.
+ *
+ * And PER TAB, which is the scope that budget is actually kept at (DW-410): it
+ * is module state in `workbench-data-version.ts`, so remounting the watcher —
+ * StrictMode's double-mount, a client route change, a remount of the shell —
+ * cannot re-arm it. Only a reload can, and a reload is a new document, a new
+ * module instance, and legitimately a new tab.
  */
 export async function readDataVersion(): Promise<number> {
   try {

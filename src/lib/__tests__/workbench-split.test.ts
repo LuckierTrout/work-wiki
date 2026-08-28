@@ -42,6 +42,7 @@ import {
   SPLIT_STACK_BREAKPOINT,
   SPLIT_TREE_LABEL,
   SPLIT_WIDE_QUERY,
+  TREE_SCROLL_BANDS,
   clampSplitWidth,
   clampSplitWidths,
   isPrimarySplitPress,
@@ -56,6 +57,7 @@ import {
   splitStyleVars,
   splitWidthFromPointer,
   treeScrollActive,
+  treeScrollBand,
   withSplitWidth,
   type SplitLayout,
   type SplitWidths,
@@ -626,6 +628,26 @@ describe("treeScrollActive", () => {
     // about to come back to.
     expect(treeScrollActive(true, false)).toBe(false);
   });
+
+  it("names the layout's scroll range, so the component spells no width (DW-206)", () => {
+    // The band is a property of the LAYOUT: below the 900px stack
+    // `.wb-tree-body` is capped at 40vh, so the same tab has a much shorter
+    // scroll range there and an offset recorded in one is not an offset in the
+    // other. `TreePanel` only forwards what `matchMedia(SPLIT_NARROW_QUERY)`
+    // answered; the mapping is executed here.
+    expect(treeScrollBand(true)).toBe("narrow");
+    expect(treeScrollBand(false)).toBe("wide");
+    // Inverted, every restore would read the other layout's offset — so the two
+    // answers must stay distinct, and both must be bands the storage knows.
+    expect(treeScrollBand(true)).not.toBe(treeScrollBand(false));
+    for (const narrow of [true, false]) {
+      expect(TREE_SCROLL_BANDS).toContain(treeScrollBand(narrow));
+    }
+  });
+
+  it("has exactly the two bands the stylesheet's two ranges give it", () => {
+    expect([...TREE_SCROLL_BANDS]).toEqual(["wide", "narrow"]);
+  });
 });
 
 describe("the accessible names", () => {
@@ -986,38 +1008,113 @@ describe("readStoredSelection", () => {
 });
 
 describe("readStoredTreeScroll", () => {
-  it("defaults both tabs to the top", () => {
+  /**
+   * Per tab AND per WIDTH BAND since DW-206.
+   *
+   * One offset per tab was shared across the 900px breakpoint, where
+   * `globals.css` caps `.wb-tree-body` at `40vh`: crossing into the narrow
+   * layout restored a desktop offset the browser CLAMPS, the clamp fired a
+   * `scroll`, and the persist wrote the clamp straight back — so widening again
+   * landed the tree somewhere it had never been. Each range gets its own
+   * memory, and neither write can reach the other.
+   */
+  const top = { wide: 0, narrow: 0 } as const;
+
+  it("defaults both tabs and both bands to the top", () => {
     stubWindow(memoryStorage());
-    expect(readStoredTreeScroll()).toEqual({ knowledge: 0, files: 0 });
+    expect(readStoredTreeScroll()).toEqual({ knowledge: top, files: top });
   });
 
-  it("restores an offset per tab", () => {
+  it("restores an offset per tab per band", () => {
     stubWindow(
-      memoryStorage({ [WORKBENCH_TREE_SCROLL_KEY]: '{"knowledge":120,"files":0}' }),
+      memoryStorage({
+        [WORKBENCH_TREE_SCROLL_KEY]:
+          '{"knowledge":{"wide":120,"narrow":40},"files":{"wide":0,"narrow":0}}',
+      }),
     );
-    expect(readStoredTreeScroll()).toEqual({ knowledge: 120, files: 0 });
+    expect(readStoredTreeScroll()).toEqual({
+      knowledge: { wide: 120, narrow: 40 },
+      files: top,
+    });
   });
 
-  it("round-trips one tab without forgetting the other", () => {
+  it("round-trips one band without forgetting the other, or the other tab", () => {
     const storage = memoryStorage();
     stubWindow(storage);
-    writeStoredTreeScroll("knowledge", 120);
-    writeStoredTreeScroll("files", 40);
-    expect(readStoredTreeScroll()).toEqual({ knowledge: 120, files: 40 });
+    writeStoredTreeScroll("knowledge", "wide", 120);
+    writeStoredTreeScroll("knowledge", "narrow", 40);
+    writeStoredTreeScroll("files", "wide", 60);
+    expect(readStoredTreeScroll()).toEqual({
+      knowledge: { wide: 120, narrow: 40 },
+      files: { wide: 60, narrow: 0 },
+    });
     // The write rounds: `scrollTop` is fractional on a zoomed or hi-dpi display.
-    writeStoredTreeScroll("files", 40.6);
-    expect(readStoredTreeScroll().files).toBe(41);
+    writeStoredTreeScroll("files", "narrow", 40.6);
+    expect(readStoredTreeScroll().files).toEqual({ wide: 60, narrow: 41 });
   });
 
-  it("degrades an unusable offset to the top of that tab only", () => {
+  it("keeps the two bands out of each other's way (DW-206)", () => {
+    stubWindow(memoryStorage());
+    writeStoredTreeScroll("knowledge", "wide", 900);
+    // The clamp the narrow layout's 40vh cap applies, written back where the
+    // owner is now — and NOT over the desktop offset they will widen into.
+    writeStoredTreeScroll("knowledge", "narrow", 220);
+    expect(readStoredTreeScroll().knowledge).toEqual({ wide: 900, narrow: 220 });
+  });
+
+  it("reads a legacy bare number as that tab's WIDE offset", () => {
+    // Everything before DW-206 stored one number per tab, recorded against a
+    // range only the desktop layout has. The narrow band starts at the top
+    // rather than inheriting an offset from a range it does not share.
+    stubWindow(memoryStorage({ [WORKBENCH_TREE_SCROLL_KEY]: '{"knowledge":120}' }));
+    expect(readStoredTreeScroll()).toEqual({
+      knowledge: { wide: 120, narrow: 0 },
+      files: top,
+    });
+  });
+
+  it("normalises the legacy shape on the first write, not on every read", () => {
+    const storage = memoryStorage({ [WORKBENCH_TREE_SCROLL_KEY]: '{"knowledge":120}' });
+    stubWindow(storage);
+    writeStoredTreeScroll("files", "narrow", 30);
+    expect(JSON.parse(storage.getItem(WORKBENCH_TREE_SCROLL_KEY) ?? "null")).toEqual({
+      knowledge: { wide: 120, narrow: 0 },
+      files: { wide: 0, narrow: 30 },
+    });
+  });
+
+  it("degrades an unusable offset to the top of that tab and band only", () => {
     for (const [raw, expected] of [
-      ['{"knowledge":-10,"files":40}', { knowledge: 0, files: 40 }],
-      ['{"knowledge":12.5,"files":40}', { knowledge: 0, files: 40 }],
-      ['{"knowledge":"120","files":40}', { knowledge: 0, files: 40 }],
-      ['{"knowledge":null,"files":40}', { knowledge: 0, files: 40 }],
-      ['{"files":40}', { knowledge: 0, files: 40 }],
-      ["not json", { knowledge: 0, files: 0 }],
-      ["[120,40]", { knowledge: 0, files: 0 }],
+      // One bad band never costs its neighbour, nor the other tab.
+      [
+        '{"knowledge":{"wide":-10,"narrow":40},"files":{"wide":60,"narrow":0}}',
+        { knowledge: { wide: 0, narrow: 40 }, files: { wide: 60, narrow: 0 } },
+      ],
+      [
+        '{"knowledge":{"wide":12.5,"narrow":40},"files":{"wide":60,"narrow":0}}',
+        { knowledge: { wide: 0, narrow: 40 }, files: { wide: 60, narrow: 0 } },
+      ],
+      [
+        '{"knowledge":{"wide":"120","narrow":40},"files":{"wide":60,"narrow":0}}',
+        { knowledge: { wide: 0, narrow: 40 }, files: { wide: 60, narrow: 0 } },
+      ],
+      [
+        '{"knowledge":{"wide":null,"narrow":40},"files":{"wide":60,"narrow":0}}',
+        { knowledge: { wide: 0, narrow: 40 }, files: { wide: 60, narrow: 0 } },
+      ],
+      // A missing band, a missing tab, and a tab whose value is neither a
+      // number nor a record: all the top of whatever they failed to describe.
+      [
+        '{"knowledge":{"narrow":40}}',
+        { knowledge: { wide: 0, narrow: 40 }, files: { wide: 0, narrow: 0 } },
+      ],
+      ['{"files":{"wide":60}}', { knowledge: top, files: { wide: 60, narrow: 0 } }],
+      ['{"knowledge":"120"}', { knowledge: top, files: top }],
+      ['{"knowledge":[120,40]}', { knowledge: top, files: top }],
+      ['{"knowledge":-10}', { knowledge: top, files: top }],
+      ['{"knowledge":12.5}', { knowledge: top, files: top }],
+      ["not json", { knowledge: top, files: top }],
+      ["[120,40]", { knowledge: top, files: top }],
     ] as const) {
       stubWindow(memoryStorage({ [WORKBENCH_TREE_SCROLL_KEY]: raw }));
       expect({ raw, read: readStoredTreeScroll() }).toEqual({ raw, read: expected });
@@ -1026,11 +1123,11 @@ describe("readStoredTreeScroll", () => {
 
   it("degrades silently on a throwing store and on a server render", () => {
     stubWindow(throwingStorage());
-    expect(readStoredTreeScroll()).toEqual({ knowledge: 0, files: 0 });
-    expect(() => writeStoredTreeScroll("knowledge", 120)).not.toThrow();
+    expect(readStoredTreeScroll()).toEqual({ knowledge: top, files: top });
+    expect(() => writeStoredTreeScroll("knowledge", "wide", 120)).not.toThrow();
     removeWindow();
-    expect(readStoredTreeScroll()).toEqual({ knowledge: 0, files: 0 });
-    expect(() => writeStoredTreeScroll("knowledge", 120)).not.toThrow();
+    expect(readStoredTreeScroll()).toEqual({ knowledge: top, files: top });
+    expect(() => writeStoredTreeScroll("knowledge", "narrow", 120)).not.toThrow();
   });
 });
 
@@ -1446,8 +1543,11 @@ describe("TreePanel remembers where each tree was left", () => {
     // `scrollTop` permanently 0: the restore writes 0, the listener never fires,
     // and the whole feature is dead with every other assertion here green.
     expect(source).toMatch(/ref=\{bodyRef\}\s*\n\s*className="wb-tree-body"/);
-    expect(source).toContain("panel.scrollTop = readStoredTreeScroll()[tab]");
-    expect(source).toContain("writeStoredTreeScroll(tab, panel.scrollTop)");
+    expect(source).toContain("panel.scrollTop = readStoredTreeScroll()[tab][band]");
+    // The persist writes the offset CAPTURED at the scroll event, not a
+    // `scrollTop` re-read inside the frame — see the flush case below.
+    expect(source).toContain("writeStoredTreeScroll(tab, band, pending)");
+    expect(source).not.toContain("writeStoredTreeScroll(tab, panel.scrollTop)");
     // Both effects are keyed on the tab AND on the collapse, because showing a
     // hidden column is the moment the browser has just reset `scrollTop`.
     //
@@ -1459,11 +1559,51 @@ describe("TreePanel remembers where each tree was left", () => {
     // it while the panel was off screen — without the key that effect never
     // runs again, and the tree stops remembering its offset for the rest of the
     // session with every other assertion here still green.
-    expect(source.match(/\}, \[tab, collapsed, narrow, hidden\]\);/g) ?? []).toHaveLength(
-      2,
-    );
-    // The old key is gone from BOTH, or one of them silently kept it.
+    //
+    // …and on `band` (DW-206), which is what makes the two layouts' offsets
+    // separate memories rather than one they take turns overwriting.
+    expect(
+      source.match(/\}, \[tab, band, collapsed, narrow, hidden\]\);/g) ?? [],
+    ).toHaveLength(2);
+    // Every earlier key is gone from BOTH, or one of them silently kept it.
     expect(source.match(/\}, \[tab, collapsed, narrow\]\);/g) ?? []).toHaveLength(0);
+    expect(
+      source.match(/\}, \[tab, collapsed, narrow, hidden\]\);/g) ?? [],
+    ).toHaveLength(0);
+  });
+
+  it("derives the band from the module, and types no band literal (DW-206)", async () => {
+    const source = await component("TreePanel.tsx");
+    // The mapping is `workbench-split`'s, executed by the node suite above.
+    expect(source).toContain("const band = treeScrollBand(narrow);");
+    const code = stripComments(source);
+    // Spelled inline — `narrow ? "narrow" : "wide"` — the mapping could be
+    // inverted here and every scan in this file would still match, while every
+    // restore read the other layout's offset.
+    expect(code).not.toMatch(/"wide"/);
+    expect(code).not.toMatch(/"narrow"/);
+  });
+
+  it("flushes the pending offset instead of dropping it (DW-208)", async () => {
+    const source = await component("TreePanel.tsx");
+    const code = stripComments(source);
+    // Captured AT THE EVENT, while the panel is demonstrably showing. The
+    // cleanup cannot read the element: React has already committed, so on a
+    // collapse the panel is `display: none` and `scrollTop` reads 0, and
+    // `treeBodyShowing(panel, collapsed)` would close over the stale flag.
+    expect(code).toContain("pending = panel.scrollTop;");
+    expect(code).toContain("let pending = -1;");
+    // …and NOT re-read inside the frame, which is what made the value the
+    // cleanup had nothing to flush.
+    expect(code).not.toMatch(/writeStoredTreeScroll\([^)]*panel\.scrollTop/);
+    // The cleanup writes BEFORE it gives up on the frame's write, and only when
+    // there is something pending: a cancel with no flush is the whole bug.
+    const cleanup = code.slice(code.indexOf('removeEventListener("scroll", onScroll)'));
+    expect(cleanup).toContain("cancelAnimationFrame(frame);");
+    expect(cleanup).toContain("if (pending >= 0) writeStoredTreeScroll(tab, band, pending);");
+    expect(cleanup.indexOf("cancelAnimationFrame(frame);")).toBeLessThan(
+      cleanup.indexOf("if (pending >= 0) writeStoredTreeScroll(tab, band, pending);"),
+    );
   });
 
   it("asks the element whether it is showing, not the collapse flag", async () => {

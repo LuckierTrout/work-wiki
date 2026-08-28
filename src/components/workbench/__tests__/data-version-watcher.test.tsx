@@ -11,6 +11,7 @@ import {
   DATA_VERSION_REFRESH_WINDOW_MS,
   DATA_VERSION_ROUTE,
   _resetDataVersionListeners,
+  _resetDataVersionRefreshState,
   requestDataVersionCheck,
 } from "@/lib/workbench-data-version";
 import { fireVisibilityChange, setVisibilityState } from "@/test/dom-helpers";
@@ -101,6 +102,11 @@ async function settle(ms = 0) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // The refresh budget is MODULE state now (DW-410) — per tab by construction,
+  // which is the whole point — so it outlives `cleanup()` exactly the way the
+  // listener registry does. Without this re-arm, one case's spent budget would
+  // silently decide the next one's assertions.
+  _resetDataVersionRefreshState();
   refresh.mockClear();
   fetchMock = answering(0);
   vi.stubGlobal("fetch", fetchMock);
@@ -115,9 +121,10 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
-  // Belt and braces for a file that throws mid-test: the registry is module
-  // state, so a stranded listener would otherwise reach the next file.
+  // Belt and braces for a file that throws mid-test: the registry and the
+  // budget are both module state, so either would otherwise reach the next file.
   _resetDataVersionListeners();
+  _resetDataVersionRefreshState();
 });
 
 describe("DataVersionWatcher lifecycle", () => {
@@ -355,6 +362,61 @@ describe("DataVersionWatcher lifecycle", () => {
       requestDataVersionCheck();
     });
     await settle();
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING + 1);
+  });
+
+  it("keeps a version's budget across a REMOUNT of the watcher (DW-410)", async () => {
+    // The budget used to be a `useRef` seeded from `NO_DATA_VERSION_REFRESH` on
+    // every mount, so StrictMode's double-mount — or a route change, or any
+    // remount of the shell — handed the watcher a brand new budget for a version
+    // it had already spent one on. The ceiling the two wall-clock bounds derive
+    // simply stopped holding, while every assertion about a single mount stayed
+    // green. It is module state now: per TAB by construction, which is what both
+    // this module's docblocks and `data-version.ts`'s always claimed.
+    fetchMock = answering(4);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = mountWatcher(3);
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await settle(DATA_VERSION_POLL_MS);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    // …and now the watcher goes away and comes straight back.
+    first.unmount();
+    mountWatcher(3);
+    await settle();
+
+    // The mount's own poll answers 4 again, and it is DECLINED: the refresh
+    // 0ms ago has not had time to land. With a fresh ref this was a brand new
+    // bump and refreshed on the spot.
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    // Run well past the whole budget. The remaining retry the version is still
+    // owed goes out, and then it stops — at the SAME ceiling an unbroken mount
+    // stops at, never at that ceiling twice over.
+    await settle(DATA_VERSION_POLL_MS * 8);
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING);
+    // Bounded, not silent: the remounted watcher is polling throughout.
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(REFRESH_CEILING);
+  });
+
+  it("…and the test-only reset really does re-arm it", async () => {
+    // The companion the case above needs, or it could be passing vacuously: if
+    // the module state were somehow stuck at "spent" for reasons unrelated to
+    // the budget, "no more refreshes" would be true for the wrong reason. A
+    // reset between the two halves brings the exact same sequence back to life.
+    fetchMock = answering(4);
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountWatcher(3);
+    await settle();
+    await settle(DATA_VERSION_POLL_MS * 8);
+    expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING);
+
+    _resetDataVersionRefreshState();
+
+    await settle(DATA_VERSION_POLL_MS);
     expect(refresh).toHaveBeenCalledTimes(REFRESH_CEILING + 1);
   });
 

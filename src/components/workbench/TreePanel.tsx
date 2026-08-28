@@ -9,7 +9,11 @@ import {
   type CSSProperties,
   type ReactNode,
 } from "react";
-import { SPLIT_NARROW_QUERY, treeScrollActive } from "@/lib/workbench-split";
+import {
+  SPLIT_NARROW_QUERY,
+  treeScrollActive,
+  treeScrollBand,
+} from "@/lib/workbench-split";
 import { readStoredTreeScroll, writeStoredTreeScroll } from "@/lib/workbench-state";
 import {
   FILES_EMPTY_COPY,
@@ -186,19 +190,31 @@ export function TreePanel({
     return () => query.removeEventListener("change", onChange);
   }, []);
 
+  // Which of the tree's two scroll RANGES the current layout has (DW-206). The
+  // mapping is `workbench-split`'s, executed by the node suite: below the
+  // breakpoint `.wb-tree-body` is capped at 40vh, so an offset recorded in one
+  // layout is not an offset in the other — restored across the breakpoint it is
+  // clamped by the browser, the clamp fires a `scroll`, and the persist below
+  // writes the clamp back over the offset the owner is about to widen into.
+  // This component still spells no width and no breakpoint: `narrow` is what
+  // `matchMedia(SPLIT_NARROW_QUERY)` answered, and what it MEANS is decided in
+  // the module.
+  const band = treeScrollBand(narrow);
+
   // Where the owner left this tab. Restored per tab because the two trees are
   // different lengths — one shared offset would drop them somewhere arbitrary on
-  // whichever tab they did not leave. Keyed on `collapsed` too: showing a column
-  // again is the moment the browser has just reset `scrollTop` to 0. And on
-  // `narrow`, because the stylesheet force-shows a collapsed column below the
-  // breakpoint — the same moment, reached by resizing rather than by clicking.
-  // And on `hidden`: a Settings visit withdraws this panel and closing Settings
-  // brings it back, which is that same moment reached a third way.
+  // whichever tab they did not leave — and per band for the reason above. Keyed
+  // on `collapsed` too: showing a column again is the moment the browser has
+  // just reset `scrollTop` to 0. And on `narrow`, because the stylesheet
+  // force-shows a collapsed column below the breakpoint — the same moment,
+  // reached by resizing rather than by clicking. And on `hidden`: a Settings
+  // visit withdraws this panel and closing Settings brings it back, which is
+  // that same moment reached a third way.
   useEffect(() => {
     const panel = bodyRef.current;
     if (!panel || !treeBodyShowing(panel, collapsed)) return;
-    panel.scrollTop = readStoredTreeScroll()[tab];
-  }, [tab, collapsed, narrow, hidden]);
+    panel.scrollTop = readStoredTreeScroll()[tab][band];
+  }, [tab, band, collapsed, narrow, hidden]);
 
   // …and remembering it. Coalesced through `requestAnimationFrame` because a
   // scroll fires far faster than localStorage writes synchronously, and skipped
@@ -213,23 +229,43 @@ export function TreePanel({
   // `hidden` in the key — never runs again when Settings closes. The tree would
   // then stop remembering its offset for the rest of the session, with every
   // other assertion about it still green.
+  //
+  // The offset is captured AT THE SCROLL EVENT rather than inside the frame
+  // (DW-208). The cleanup used to cancel a pending frame without flushing it, so
+  // a scroll in the last frame before a tab switch, a collapse, a breakpoint
+  // crossing or a Settings visit was simply lost — and the restore that follows
+  // then re-applied a one-frame-stale offset. The flush cannot read the element
+  // at cleanup time: React has already committed, so on a collapse the panel is
+  // `display: none` and `scrollTop` reads 0 by the browser's own rules, and the
+  // showing guard would close over the STALE collapse flag this effect was
+  // created with. Capturing at event time removes the question entirely —
+  // `scrollTop` cannot move without a `scroll` event, so the value the frame
+  // would have read and the value the event captured are the same one. `-1` is
+  // the "nothing pending" sentinel, outside the range a stored offset can hold.
   useEffect(() => {
     const panel = bodyRef.current;
     if (!panel || !treeBodyShowing(panel, collapsed)) return;
     let frame = 0;
+    let pending = -1;
     const onScroll = () => {
+      // Read while the panel is demonstrably showing: a scroll event is proof
+      // of that on its own.
+      pending = panel.scrollTop;
       if (frame !== 0) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
-        writeStoredTreeScroll(tab, panel.scrollTop);
+        writeStoredTreeScroll(tab, band, pending);
+        pending = -1;
       });
     };
     panel.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       panel.removeEventListener("scroll", onScroll);
-      if (frame !== 0) cancelAnimationFrame(frame);
+      if (frame === 0) return;
+      cancelAnimationFrame(frame);
+      if (pending >= 0) writeStoredTreeScroll(tab, band, pending);
     };
-  }, [tab, collapsed, narrow, hidden]);
+  }, [tab, band, collapsed, narrow, hidden]);
 
   function body() {
     if (unavailable) {

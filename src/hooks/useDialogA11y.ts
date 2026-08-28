@@ -49,7 +49,8 @@ export interface DialogA11yOptions {
 }
 
 /**
- * Is this node inside a subtree that has been WITHDRAWN with `hidden` (DW-414)?
+ * Is this node OFF SCREEN — withdrawn with `hidden`, or hidden by CSS alone
+ * (DW-414, DW-421)?
  *
  * A surface that goes off screen keeps its nodes in the document, so
  * `isConnected` still answers `true` for an opener that nobody can see or
@@ -58,12 +59,35 @@ export interface DialogA11yOptions {
  * jsdom, which has no layout engine, it is worse than a no-op, because focus
  * really does land inside content that is out of the accessibility tree.
  *
- * `closest`, not a `hidden` check on the node itself: the attribute is spelled
- * on the SURFACE (`.wb-canvas`, `.wb-preview`, `.wb-tree-panel`), several
- * levels above whatever button opened the dialog.
+ * TWO ROUTES, and the `||` is not redundant (DW-421). The attribute is this
+ * shell's STATED withdrawal — spelled on the SURFACE (`.wb-canvas`,
+ * `.wb-preview`, `.wb-tree-panel`), several levels above whatever button opened
+ * the dialog, which is why it is asked with `closest` rather than read off the
+ * node. `globals.css` argues at length that `hidden` is only a presentation
+ * hint an author rule can defeat, so keeping the attribute route means the
+ * convention still answers even where a stylesheet has overridden `display`.
+ *
+ * But withdrawal is not the only way off screen. `globals.css` also hides with
+ * `.wb-shell[data-collapsed="true"] .wb-left { display: none }` — so an opener
+ * or a `fallbackFocusRef` inside a COLLAPSED LEFT COLUMN is connected, has no
+ * `[hidden]` ancestor anywhere, and takes a `focus()` the browser silently
+ * drops. That is this same failure reached by the CSS route, and only the
+ * ELEMENT can answer it: `getClientRects()` is empty for a node that is not
+ * rendered, and a node cannot lie about it.
+ *
+ * The same question `TreePanel`'s `treeBodyShowing` asks about the tree body,
+ * asked with the same mechanism, so both are executable in the same places.
+ *
+ * NOT `offsetParent`, and not `getComputedStyle`. jsdom applies no stylesheets,
+ * so a computed-style check would be a claim no suite can execute; and
+ * `offsetParent` is `null` for every element in jsdom, which would make this
+ * predicate answer `true` for everything and disable every restore the suite
+ * pins. `vitest.setup.dom.ts` shims `getClientRects` off the `hidden` attribute
+ * and an INLINE `display: none` walked up the ancestor chain, which is enough
+ * for both routes to be stated in a test.
  */
 function withdrawn(node: HTMLElement): boolean {
-  return node.closest("[hidden]") !== null;
+  return node.closest("[hidden]") !== null || node.getClientRects().length === 0;
 }
 
 /** Every focusable descendant, in tab order. */
@@ -153,11 +177,12 @@ export function useDialogA11y({
       // The opener is frequently gone by now: confirming Create Wiki replaces
       // the empty state that owned the button. Focusing a detached node is a
       // silent no-op that drops the keyboard user on <body> — and so is
-      // focusing one that is still attached inside a `hidden` subtree (DW-414),
-      // which is what an opener on a withdrawn surface is. Neither is refused
-      // in favour of somewhere else: the fallback is checked the same way, and
-      // if it is withdrawn too then focus is left exactly where the owner put
-      // it, which is on the surface that is actually showing.
+      // focusing one that is still attached but off screen — inside a `hidden`
+      // subtree (DW-414), or under a `display: none` rule such as the collapsed
+      // left column's (DW-421). Neither is refused in favour of somewhere else:
+      // the fallback is checked by the same predicate, and if it is unreachable
+      // too then focus is left exactly where the owner put it, which is on the
+      // surface that is actually showing.
       const opener = openerRef.current;
       const fallback = fallbackRef.current?.current ?? null;
       if (opener?.isConnected && !withdrawn(opener)) opener.focus();

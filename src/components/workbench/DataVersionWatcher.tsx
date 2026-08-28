@@ -4,9 +4,10 @@ import { useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import {
   DATA_VERSION_POLL_MS,
-  NO_DATA_VERSION_REFRESH,
   dataVersionRefreshPlan,
   fetchDataVersion,
+  readDataVersionRefreshState,
+  recordDataVersionRefreshState,
   subscribeDataVersionCheck,
 } from "@/lib/workbench-data-version";
 import { useWorkbenchData } from "./WorkbenchData";
@@ -66,14 +67,23 @@ export function DataVersionWatcher() {
   const { dataVersion } = useWorkbenchData();
   const servedRef = useRef(dataVersion);
   servedRef.current = dataVersion;
-  // The version this watcher last issued refreshes for, and when the first and
-  // most recent of them went out. A re-render whose own read lagged leaves the
-  // baseline behind that version, so a later poll tries again — bounded by the
-  // span those refreshes may cover, because a degraded server read
-  // (`dataVersion` stuck at 0 while the route answers 7) would otherwise
-  // refresh on every single poll, forever. Ref state, so it resets on remount
-  // and is stored nowhere.
-  const refreshStateRef = useRef(NO_DATA_VERSION_REFRESH);
+  // The version refreshes were last issued for, and when the first and most
+  // recent of them went out, live in `workbench-data-version`'s module state —
+  // beside `listeners`, and per TAB for the same reason (DW-410). A re-render
+  // whose own read lagged leaves the baseline behind that version, so a later
+  // poll tries again — bounded by the span those refreshes may cover, because a
+  // degraded server read (`dataVersion` stuck at 0 while the route answers 7)
+  // would otherwise refresh on every single poll, forever.
+  //
+  // NOT A REF ANY MORE, and that is the fix. A ref is seeded on every mount, so
+  // StrictMode's double-mount, a route change or any remount of the shell handed
+  // this watcher a fresh budget for a version it had already spent one on — and
+  // the ceiling the two wall-clock bounds derive stopped holding, silently,
+  // while every assertion about a single mount stayed green. The budget now
+  // survives all three. What still resets it is a RELOAD: a new document is a
+  // new module instance, a new tab, and a new budget — which is the scope both
+  // this module's prose and `data-version.ts`'s have always claimed.
+
   // Keeps a late answer from a poll started before unmount out of a refresh.
   const abortRef = useRef<AbortController | null>(null);
 
@@ -95,9 +105,9 @@ export function DataVersionWatcher() {
         served: servedRef.current,
         polled: result.version,
         now: Date.now(),
-        state: refreshStateRef.current,
+        state: readDataVersionRefreshState(),
       });
-      refreshStateRef.current = plan.state;
+      recordDataVersionRefreshState(plan.state);
       if (!plan.refresh) return;
       router.refresh();
     }

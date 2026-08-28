@@ -465,6 +465,34 @@ export function treeScrollActive(collapsed: boolean, rendered: boolean): boolean
   return !collapsed || rendered;
 }
 
+/** One of the tree's two scroll RANGES — see {@link treeScrollBand} (DW-206). */
+export type TreeScrollBand = "wide" | "narrow";
+
+/** Both bands, in the order the storage shape spells them. */
+export const TREE_SCROLL_BANDS: readonly TreeScrollBand[] = ["wide", "narrow"];
+
+/**
+ * Which of the tree's two scroll RANGES the current layout has (DW-206).
+ *
+ * A property of the LAYOUT, not of the storage. Above the 900px stack the tree
+ * body fills the left column and scrolls the column's whole height; below it,
+ * `globals.css` caps `.wb-tree-body` at `40vh` inside the `@media (max-width:
+ * 899px)` block, so the same content has a much shorter scroll range. One
+ * offset per tab shared across both is therefore not one offset at all: cross
+ * the breakpoint with a desktop offset stored and the browser CLAMPS it to the
+ * narrow maximum, the clamp fires a `scroll`, the persist writes the clamped
+ * value back — and widening again lands the tree somewhere it never was.
+ *
+ * The band is derived HERE for the same reason every other bound is: `TreePanel`
+ * spells no width, reads no `innerWidth` and holds no breakpoint literal — it
+ * asks `matchMedia(SPLIT_NARROW_QUERY)` and hands the boolean over. Spelled
+ * inline in a `.tsx` this mapping could be inverted — every restore reading the
+ * other layout's offset — with every source scan still green.
+ */
+export function treeScrollBand(narrow: boolean): TreeScrollBand {
+  return narrow ? "narrow" : "wide";
+}
+
 /**
  * The identity of the layout a restored selection belongs to.
  *

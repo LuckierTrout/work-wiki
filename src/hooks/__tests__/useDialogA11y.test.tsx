@@ -202,6 +202,72 @@ function WithdrawnHost({
 }
 
 /**
+ * A dialog whose opener sits in a column hidden by CSS ALONE (DW-421).
+ *
+ * The collapsed left column, as far as jsdom can state it. `globals.css` hides
+ * it with `.wb-shell[data-collapsed="true"] .wb-left { display: none }` — a
+ * stylesheet rule, no `hidden` attribute anywhere on the way up — so an opener
+ * or a fallback landmark inside it is `isConnected`, passes the attribute
+ * route, and takes a `focus()` the browser silently drops. That is DW-414's
+ * failure reached the other way, and only asking the ELEMENT can see it.
+ *
+ * jsdom loads no stylesheet, so the rule itself cannot be applied here: the
+ * shim in `vitest.setup.dom.ts` answers `getClientRects()` off the `hidden`
+ * attribute and an INLINE `display: none`, walked up the ancestor chain. The
+ * inline style on the column is therefore the faithful statement of the CSS
+ * route — it is `display: none` from an ancestor with the attribute nowhere in
+ * sight, which is exactly the shape the class rule produces.
+ *
+ * The dialog itself is rendered OUTSIDE the column, where the shell puts it,
+ * and the surface stays VISIBLE: nothing publishes a withdrawal here, so the
+ * hook arms normally and really does reach the restore.
+ */
+function CssHiddenColumnHost({
+  collapsed = false,
+  open = false,
+  fallback = "none",
+}: {
+  /** The column is `display: none`, with no `hidden` attribute in the tree. */
+  collapsed?: boolean;
+  open?: boolean;
+  /** Where the `fallbackFocusRef` landmark lives, if there is one. */
+  fallback?: "none" | "inside" | "outside";
+}) {
+  const insideRef = useRef<HTMLElement | null>(null);
+  const outsideRef = useRef<HTMLElement | null>(null);
+  return (
+    <div data-testid="shell">
+      <div
+        data-testid="column"
+        // No `hidden` — this is the CSS route, and the whole point is that the
+        // attribute check cannot see it.
+        style={collapsed ? { display: "none" } : undefined}
+      >
+        <h2 ref={insideRef as React.RefObject<HTMLHeadingElement>} tabIndex={-1}>
+          Column heading
+        </h2>
+        <button type="button">Column opener</button>
+      </div>
+      <h2 ref={outsideRef as React.RefObject<HTMLHeadingElement>} tabIndex={-1}>
+        Canvas heading
+      </h2>
+      <ConfirmDialog
+        open={open}
+        title="Collapsed"
+        body="The column that opened this is display: none."
+        confirmLabel="Confirm"
+        cancelLabel="Cancel"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+        fallbackFocusRef={
+          fallback === "inside" ? insideRef : fallback === "outside" ? outsideRef : undefined
+        }
+      />
+    </div>
+  );
+}
+
+/**
  * Open the host dialog from a button that a keyboard user is actually ON.
  *
  * `fireEvent.click` does not focus in jsdom, and the hook restores focus to
@@ -403,6 +469,94 @@ describe("a surface that goes off screen (DW-414)", () => {
     // Its own opener, not the one the leaked capture was still holding.
     expect(document.activeElement).toBe(second);
     expect(document.activeElement).not.toBe(first);
+  });
+});
+
+describe("a surface hidden by CSS alone (DW-421)", () => {
+  /**
+   * The same refusal DW-414 pins, reached without the attribute.
+   *
+   * `withdrawn()` used to be `node.closest("[hidden]") !== null` and nothing
+   * else — this shell's stated withdrawal convention, read off an attribute.
+   * But `globals.css` also hides the whole left column with a class rule, so an
+   * opener inside a COLLAPSED column answered "not withdrawn", took the
+   * `focus()`, and dropped the keyboard user on `<body>` with no report. Both
+   * routes are kept: the attribute survives an author rule that overrides the
+   * UA sheet's `display: none`, and the rect check is the one a node cannot lie
+   * about.
+   */
+  it("restores focus to an ordinary opener, unchanged", () => {
+    // The positive control, in the same block: `getClientRects()` answering for
+    // a node that IS on screen is the premise of every case below, and a
+    // predicate that answered "withdrawn" for everything would disable every
+    // restore this file pins while the two refusals below stayed green.
+    const view = render(<CssHiddenColumnHost />);
+    const opener = screen.getByRole("button", { name: "Column opener" });
+    opener.focus();
+    view.rerender(<CssHiddenColumnHost open />);
+    expect(document.activeElement).toBe(
+      screen.getByRole("dialog", { name: "Collapsed" }),
+    );
+
+    view.rerender(<CssHiddenColumnHost />);
+
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("refuses an opener hidden by CSS, with no [hidden] anywhere", () => {
+    const view = render(<CssHiddenColumnHost />);
+    const opener = screen.getByRole("button", { name: "Column opener" });
+    opener.focus();
+    view.rerender(<CssHiddenColumnHost open />);
+
+    // The collapse and the close in one commit — the owner collapses the column
+    // from the rail while a dialog it opened is still up.
+    view.rerender(<CssHiddenColumnHost collapsed />);
+
+    expect(screen.queryByRole("dialog", { name: "Collapsed" })).toBeNull();
+    // Still in the document, and with no `hidden` attribute on the way up: the
+    // ATTRIBUTE route cannot see this, which is the whole case.
+    expect(opener.isConnected).toBe(true);
+    expect(opener.closest("[hidden]")).toBeNull();
+    expect(document.activeElement).not.toBe(opener);
+    expect(screen.getByTestId("column").contains(document.activeElement)).toBe(false);
+  });
+
+  it("falls through to a fallback that IS on screen", () => {
+    // The refusal is not a dead end: a landmark outside the collapsed column is
+    // reachable, and the same predicate says so.
+    const view = render(<CssHiddenColumnHost fallback="outside" />);
+    const opener = screen.getByRole("button", { name: "Column opener" });
+    opener.focus();
+    view.rerender(<CssHiddenColumnHost fallback="outside" open />);
+
+    view.rerender(<CssHiddenColumnHost fallback="outside" collapsed />);
+
+    const landmark = screen.getByRole("heading", { name: "Canvas heading" });
+    expect(document.activeElement).toBe(landmark);
+  });
+
+  it("refuses the FALLBACK too when it is in the same CSS-hidden subtree", () => {
+    // A fallback is by definition a landmark near the opener, so a column that
+    // hides one hides the other. Judged by the same predicate, or "the opener is
+    // unreachable, use the fallback" sends the keyboard into exactly the content
+    // the first check just refused.
+    const view = render(<CssHiddenColumnHost fallback="inside" />);
+    const opener = screen.getByRole("button", { name: "Column opener" });
+    opener.focus();
+    view.rerender(<CssHiddenColumnHost fallback="inside" open />);
+    // Detached on purpose: with the opener still connected the first arm would
+    // answer and this branch would never be reached.
+    opener.remove();
+
+    view.rerender(<CssHiddenColumnHost fallback="inside" collapsed />);
+
+    const column = screen.getByTestId("column");
+    const heading = column.querySelector("h2");
+    expect(heading?.isConnected).toBe(true);
+    expect(heading?.closest("[hidden]")).toBeNull();
+    expect(document.activeElement).not.toBe(heading);
+    expect(column.contains(document.activeElement)).toBe(false);
   });
 });
 

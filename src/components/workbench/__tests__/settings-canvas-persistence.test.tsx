@@ -727,6 +727,54 @@ describe.each(OPENERS)(
  * which the parameterised block above still exercises through both controls.
  */
 describe("a dialog-holding canvas survives Settings, opened from the rail (DW-373)", () => {
+  it("brings the canvas back at the offset it was scrolled to (DW-416)", async () => {
+    // `.wb-canvas` is the mode canvas's SCROLL CONTAINER (`overflow: auto` in
+    // `globals.css`) and `display: none` DISCARDS a scroll box — so the visit
+    // that costs nothing still dropped the owner at the top of a long canvas.
+    // The section survives the visit mounted, which is exactly why the offset
+    // can live in a ref: nothing has to cross a reload, and no new localStorage
+    // key is invented for it.
+    await renderShell();
+    const canvas = modeCanvas();
+    expect(canvas).not.toBeNull();
+    const section = canvas as HTMLElement;
+    section.scrollTop = 300;
+    await act(async () => {
+      section.dispatchEvent(new Event("scroll"));
+    });
+
+    await openFromRail();
+    expect(settingsShowing()).toBe(true);
+    expect(section.hasAttribute("hidden")).toBe(true);
+    // Standing in for the browser's own `scrollTop = 0` on a `display: none`
+    // box, exactly as the tree cases in `workbench-split-wiring.test.tsx` do:
+    // jsdom has no layout engine, so nothing resets it here on its own.
+    section.scrollTop = 0;
+
+    await closeSettings();
+
+    // The SAME node — withdrawn, not rebuilt — back where the owner left it.
+    expect(modeCanvas()).toBe(section);
+    expect(section.hasAttribute("hidden")).toBe(false);
+    expect(section.scrollTop).toBe(300);
+    // In a REF, not in storage: DW-416's scope is the visit, not FR-8's
+    // cross-session restore, so the round trip invents no key for the canvas.
+    expect(
+      Object.keys(window.localStorage).filter((key) => key.includes("canvas")),
+    ).toEqual([]);
+
+    // …and the memory keeps tracking: a scroll after the visit REPLACES it,
+    // rather than the first offset latching for the rest of the session.
+    section.scrollTop = 80;
+    await act(async () => {
+      section.dispatchEvent(new Event("scroll"));
+    });
+    await openFromRail();
+    section.scrollTop = 0;
+    await closeSettings();
+    expect(section.scrollTop).toBe(80);
+  });
+
   it("keeps the typed name and the shown error across Settings and back", async () => {
     await renderShell();
     await openCreateWithRefusedName("Quarterly review");

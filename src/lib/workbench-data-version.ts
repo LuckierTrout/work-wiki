@@ -174,8 +174,10 @@ export const DATA_VERSION_REFRESH_SETTLE_MS = 10_000;
  * and it is a HIGH-WATER MARK — a backwards read can never rewrite it down.
  * `firstRefreshAt` and `lastRefreshAt` are the wall-clock stamps of the first
  * and most recent refresh issued for that version; their SPAN is what the
- * budget is measured against. Ref state in the watcher, so it resets on remount
- * and is never persisted anywhere.
+ * budget is measured against. Held in MODULE state below — see
+ * {@link readDataVersionRefreshState} — which is per TAB by construction, so a
+ * remount cannot hand the watcher a fresh budget for a version it has already
+ * spent one on (DW-410). Never persisted anywhere: a reload is a new tab.
  */
 export interface DataVersionRefreshState {
   readonly version: number;
@@ -184,13 +186,12 @@ export interface DataVersionRefreshState {
 }
 
 /**
- * Nothing has been refreshed for yet. The watcher's ref seed.
+ * Nothing has been refreshed for yet. The tab's seed, and its reset value.
  *
- * FROZEN, because this exact object is handed into every mounted watcher's ref
- * and is also what several branches of the rule below hand straight back. The
- * `readonly` markers are erased at build time; one stray
- * `state.lastRefreshAt = now` anywhere would otherwise mutate the seed shared
- * by every watcher in the tab.
+ * FROZEN, because this exact object seeds the tab's budget below and is also
+ * what several branches of the rule below hand straight back. The `readonly`
+ * markers are erased at build time; one stray `state.lastRefreshAt = now`
+ * anywhere would otherwise mutate the seed shared by every watcher in the tab.
  */
 export const NO_DATA_VERSION_REFRESH: DataVersionRefreshState = Object.freeze({
   version: 0,
@@ -412,4 +413,44 @@ export function requestDataVersionCheck(): void {
 /** Drop every listener. **Test-only**, so files cannot leak state into each other. */
 export function _resetDataVersionListeners(): void {
   listeners.clear();
+}
+
+// ---------------------------------------------------------------------------
+// The budget, per TAB (DW-410)
+// ---------------------------------------------------------------------------
+//
+// This lived in a `useRef` inside `DataVersionWatcher`, seeded from
+// `NO_DATA_VERSION_REFRESH` on every mount — so StrictMode's double-mount, a
+// route change, or any remount of the shell handed the watcher a brand new
+// budget for a version it had already spent one on, and the ceiling the two
+// wall-clock bounds derive stopped being a ceiling. Both this module's prose and
+// `data-version.ts`'s read as a per-TAB guarantee, and this is what makes that
+// true: module scope IS the tab — one instance per document, shared by every
+// mount inside it, gone on reload — which is exactly why `listeners` above is
+// held here too. No store is invented, nothing is persisted, and a reload
+// legitimately starts a fresh tab with a fresh budget.
+
+let refreshState: DataVersionRefreshState = NO_DATA_VERSION_REFRESH;
+
+/** The refreshes this TAB has already issued, for whichever version they were for. */
+export function readDataVersionRefreshState(): DataVersionRefreshState {
+  return refreshState;
+}
+
+/**
+ * Record what {@link dataVersionRefreshPlan} answered. The state is the rule's,
+ * assigned verbatim: no caller compares, computes or bounds anything of its own.
+ */
+export function recordDataVersionRefreshState(state: DataVersionRefreshState): void {
+  refreshState = state;
+}
+
+/**
+ * Re-arm the budget. **Test-only**, and the counterpart of
+ * {@link _resetDataVersionListeners}: module state outlives a `cleanup()`, so
+ * without this one file's spent budget would silently decide the next file's
+ * assertions.
+ */
+export function _resetDataVersionRefreshState(): void {
+  refreshState = NO_DATA_VERSION_REFRESH;
 }

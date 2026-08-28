@@ -508,8 +508,10 @@ describe("crossing the stacking breakpoint re-runs the tree's scroll memory (DW-
    */
   it("restores the stored offset when the viewport narrows, with no tab switch", async () => {
     // Through the accessor the component itself uses, so the fixture cannot
-    // encode a shape the read path would reject.
-    writeStoredTreeScroll("knowledge", 120);
+    // encode a shape the read path would reject. The offset restored on the way
+    // in is the NARROW band's, because that is the layout being entered
+    // (DW-206) — the wide band's own value is the case below.
+    writeStoredTreeScroll("knowledge", "narrow", 120);
     // The DW-47 scenario exactly: collapsed on a desktop, then narrowed.
     writeStoredCollapsed(true);
     await renderShell();
@@ -524,6 +526,123 @@ describe("crossing the stacking breakpoint re-runs the tree's scroll memory (DW-
     expect(panel.scrollTop).toBe(120);
   });
 
+  it("restores the band's OWN offset across the breakpoint, either way (DW-206)", async () => {
+    // The bug this replaces: one offset per tab shared across 900px. Crossing
+    // into the narrow layout restored the DESKTOP offset, `globals.css`'s 40vh
+    // cap made the browser clamp it, the clamp fired a `scroll`, and the persist
+    // wrote the clamp back over the wide value — so widening again landed the
+    // tree somewhere it had never been.
+    writeStoredTreeScroll("knowledge", "wide", 900);
+    writeStoredTreeScroll("knowledge", "narrow", 220);
+    await renderShell();
+
+    const panel = treeBody();
+    expect(panel.scrollTop).toBe(900);
+
+    await act(async () => setMediaQuery(SPLIT_NARROW_QUERY, true));
+    // Its own range, not the desktop one the browser would have clamped.
+    expect(panel.scrollTop).toBe(220);
+
+    // …and a scroll recorded HERE is recorded in this band alone. Standing in
+    // for that clamp: the narrow layout can hold nothing like 900.
+    panel.scrollTop = 260;
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(readStoredTreeScroll().knowledge).toEqual({ wide: 900, narrow: 260 });
+
+    // Widening lands back on the offset the desktop layout actually held.
+    await act(async () => setMediaQuery(SPLIT_NARROW_QUERY, false));
+    expect(panel.scrollTop).toBe(900);
+  });
+
+  it("flushes an offset scrolled in the frame before a re-key (DW-208)", async () => {
+    // The persist effect coalesced through `requestAnimationFrame` and its
+    // cleanup CANCELLED the pending frame without flushing it — so a scroll in
+    // the last frame before a tab switch, a collapse, a breakpoint crossing or a
+    // Settings visit was simply lost, and the restore that followed re-applied a
+    // one-frame-stale offset.
+    //
+    // No frame is allowed to run between the scroll and the re-key: the whole
+    // point is the write the frame never got to make.
+    await renderShell();
+    const panel = treeBody();
+
+    panel.scrollTop = 320;
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      // The re-key, in the same act: `narrow` moves, so both effects tear down
+      // and rebuild before any animation frame callback can fire.
+      setMediaQuery(SPLIT_NARROW_QUERY, true);
+    });
+
+    // Written for the band the panel was IN when the scroll happened, from the
+    // value captured at the event — not a `scrollTop` re-read from a panel React
+    // has already committed over.
+    expect(readStoredTreeScroll().knowledge.wide).toBe(320);
+  });
+
+  it("flushes the pending offset for the OLD tab when the tab switches (DW-208)", async () => {
+    // The same lost write, reached by the transition it was first noticed on.
+    // `tab` is in both effects' key, so a switch tears the persist effect down
+    // between the `scroll` and the frame it queued — and the restore that runs
+    // immediately after would otherwise re-apply a one-frame-stale offset the
+    // next time the owner came back to this tab.
+    await renderShell();
+    const panel = treeBody();
+
+    panel.scrollTop = 180;
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      // The switch, in the same act: no animation frame callback can run
+      // between the two, which is the whole premise.
+      fireEvent.click(screen.getByRole("tab", { name: "Files" }));
+    });
+
+    // Recorded against KNOWLEDGE, the tab the scroll happened on — not against
+    // Files, and not dropped.
+    expect(readStoredTreeScroll().knowledge.wide).toBe(180);
+    expect(readStoredTreeScroll().files.wide).toBe(0);
+  });
+
+  it("flushes the pending offset when the panel is WITHDRAWN mid-frame (DW-208)", async () => {
+    // The third transition into the same lost write: a Settings visit withdraws
+    // the panel behind `hidden` between the `scroll` and the frame it queued.
+    //
+    // COVERAGE LIMIT, and it is the reason the value is captured at the scroll
+    // event rather than re-read in the cleanup. In a browser React has already
+    // committed `hidden` by the time the cleanup runs, so a `scrollTop` re-read
+    // there answers 0 by the platform's own rules and the flush would faithfully
+    // store the top of a tree the owner had scrolled down. jsdom has no layout
+    // engine, so it keeps reporting 260 — verified: a cleanup that re-reads the
+    // element passes this case. What this pins is that the write HAPPENS at all;
+    // that it reads the right number is an argument the comment in `TreePanel`
+    // makes, not one this environment can execute.
+    await renderShell();
+    const panel = treeBody();
+
+    panel.scrollTop = 260;
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      // Settings withdraws the whole left column's panel behind `hidden`.
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    });
+
+    expect(document.querySelector(".wb-tree-panel")?.hasAttribute("hidden")).toBe(true);
+    expect(readStoredTreeScroll().knowledge.wide).toBe(260);
+
+    // Settings is closed again before this case ends: the shell keeps its open
+    // state in the URL, and jsdom's `location` outlives `cleanup()` — a visit
+    // left open here would mount the NEXT case with the tree panel already
+    // withdrawn, and its persist assertions would fail for a reason that has
+    // nothing to do with what it is testing.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    });
+    expect(document.querySelector(".wb-tree-panel")?.hasAttribute("hidden")).toBe(false);
+  });
+
   it("leaves the persist side live on the force-shown tree", async () => {
     // The other half of the restore: an offset that comes back but is never
     // updated sends the owner to where they were two visits ago. Note what this
@@ -533,7 +652,7 @@ describe("crossing the stacking breakpoint re-runs the tree's scroll memory (DW-
     // recording stops again on widening is a `display: none` question, and
     // `getClientRects()` answering for every attached element is exactly why
     // jsdom cannot be asked it.
-    writeStoredTreeScroll("knowledge", 120);
+    writeStoredTreeScroll("knowledge", "wide", 120);
     writeStoredCollapsed(true);
     await renderShell();
     const panel = treeBody();
@@ -547,7 +666,8 @@ describe("crossing the stacking breakpoint re-runs the tree's scroll memory (DW-
       panel.dispatchEvent(new Event("scroll"));
       await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
     });
-    expect(readStoredTreeScroll().knowledge).toBe(240);
+    // In the NARROW band, which is the layout the tree is force-shown in here.
+    expect(readStoredTreeScroll().knowledge.narrow).toBe(240);
   });
 });
 
@@ -564,7 +684,7 @@ describe("a Settings visit gives the tree's scroll memory back too", () => {
    * than its effect.
    */
   it("re-applies the stored offset when Settings hands the column back", async () => {
-    writeStoredTreeScroll("knowledge", 120);
+    writeStoredTreeScroll("knowledge", "wide", 120);
     await renderShell();
     const panel = treeBody();
     expect(panel.scrollTop).toBe(120);
@@ -594,7 +714,7 @@ describe("a Settings visit gives the tree's scroll memory back too", () => {
     // with no client rects, so it attaches nothing — and without `hidden` it
     // never runs again, leaving the tree unable to remember its offset for the
     // rest of the session.
-    writeStoredTreeScroll("knowledge", 120);
+    writeStoredTreeScroll("knowledge", "wide", 120);
     await renderShell();
     const panel = treeBody();
 
@@ -608,7 +728,7 @@ describe("a Settings visit gives the tree's scroll memory back too", () => {
       panel.dispatchEvent(new Event("scroll"));
       await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
     });
-    expect(readStoredTreeScroll().knowledge).toBe(240);
+    expect(readStoredTreeScroll().knowledge.wide).toBe(240);
   });
 });
 

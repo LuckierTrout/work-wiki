@@ -1529,12 +1529,18 @@ describe("DataVersionWatcher", () => {
     // render so a poll compares against the payload now on screen.
     expect(source).toContain("useWorkbenchData()");
     expect(source).toContain("servedRef.current = dataVersion;");
-    // The refresh state is the rule's answer, assigned verbatim. The watcher
+    // The refresh state is the rule's answer, recorded verbatim. The watcher
     // decides nothing about how much of a version's budget has been spent.
-    expect(source).toContain("refreshStateRef.current = plan.state;");
-    // Ref state, seeded from the module's own initial value: it resets on
-    // remount and there is nowhere for it to be persisted.
-    expect(source).toContain("useRef(NO_DATA_VERSION_REFRESH)");
+    expect(source).toContain("recordDataVersionRefreshState(plan.state);");
+    // MODULE state, per tab by construction (DW-410) — the ref being GONE is
+    // the fix. A `useRef` is seeded on every mount, so StrictMode's
+    // double-mount or any remount of the shell handed the watcher a fresh
+    // budget for a version it had already spent one on, and the ceiling the two
+    // wall-clock bounds derive stopped holding.
+    expect(source).toContain("readDataVersionRefreshState()");
+    expect(source).not.toContain("useRef(NO_DATA_VERSION_REFRESH)");
+    expect(source).not.toContain("refreshStateRef");
+    expect(source).not.toContain("NO_DATA_VERSION_REFRESH");
   });
 
   it("spells no comparison or arithmetic of its own — the decision is the executed function", async () => {
@@ -1542,7 +1548,7 @@ describe("DataVersionWatcher", () => {
     expect(source).toContain("dataVersionRefreshPlan({");
     expect(source).toContain("served: servedRef.current,");
     expect(source).toContain("polled: result.version,");
-    expect(source).toContain("state: refreshStateRef.current,");
+    expect(source).toContain("state: readDataVersionRefreshState(),");
     // The clock READING is the watcher's to take — it is the one thing the pure
     // rule cannot get for itself — and it is handed over raw. Nothing is
     // computed from it here.
@@ -1550,7 +1556,7 @@ describe("DataVersionWatcher", () => {
     // Strip the comments first: the docblock explains forward-only comparison
     // and the retry budget in prose, and prose is neither a comparison nor
     // arithmetic. TRAILING comments are stripped too — a whole-line filter
-    // alone leaves `refreshStateRef.current = plan.state; // + 1` behind,
+    // alone leaves `recordDataVersionRefreshState(plan.state); // + 1` behind,
     // which trips both guards below on what is still only prose.
     const code = source
       .split("\n")
@@ -1576,7 +1582,7 @@ describe("DataVersionWatcher", () => {
       code.indexOf("const plan = dataVersionRefreshPlan("),
       code.indexOf("router.refresh();"),
     );
-    expect(stateHandling).toContain("refreshStateRef.current = plan.state;");
+    expect(stateHandling).toContain("recordDataVersionRefreshState(plan.state);");
     expect(stateHandling).not.toMatch(/[+\-]\s*\d/);
     // Nothing is COMPUTED from the reading, and no bound is spelled next to it:
     // no arithmetic hanging off `Date.now()`, no comparison at all, and no
@@ -1613,7 +1619,7 @@ describe("DataVersionWatcher", () => {
     // day a branch declines to refresh AND still has something to record (a
     // give-up that should stop re-arming, say), and then it silently loops.
     // `previewFetchPlan.shown` carries the same guarantee for the same reason.
-    const assigned = run.indexOf("refreshStateRef.current = plan.state;");
+    const assigned = run.indexOf("recordDataVersionRefreshState(plan.state);");
     expect(assigned).toBeGreaterThan(run.indexOf("dataVersionRefreshPlan("));
     expect(assigned).toBeLessThan(run.indexOf("if (!plan.refresh) return;"));
     // …and the refresh is reached only AFTER that guard, exactly once, so the

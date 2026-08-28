@@ -32,7 +32,9 @@ import {
   DEFAULT_SPLIT_WIDTHS,
   SPLIT_DEFAULT_PREVIEW,
   SPLIT_DEFAULT_TREE,
+  TREE_SCROLL_BANDS,
   type SplitWidths,
+  type TreeScrollBand,
 } from "@/lib/workbench-split";
 import {
   DEFAULT_TREE_TAB,
@@ -262,21 +264,64 @@ function storedOffset(value: unknown): number {
 /**
  * How far each tree was scrolled. Per TAB, because the two trees are different
  * lengths and one offset would drop the owner in the wrong place on whichever
- * tab they did not leave.
+ * tab they did not leave — and, since DW-206, per WIDTH BAND as well.
+ *
+ * ONE OFFSET PER TAB WAS WRONG. The tab has two scroll RANGES, not one: above
+ * 900px the tree body scrolls the left column's whole height, and below it
+ * `globals.css` caps `.wb-tree-body` at `40vh`. A single stored number is
+ * therefore recorded in whichever layout the owner happened to be in and
+ * restored into the other, where the browser CLAMPS it — and the clamp fires a
+ * `scroll`, which the persist effect writes straight back. Cross the breakpoint
+ * once and the desktop offset is gone, replaced by the narrow layout's maximum.
+ * Keying by {@link TreeScrollBand} gives each range its own memory, so neither
+ * write can reach the other.
+ *
+ * LEGACY VALUES. A bare number under a tab is what every build before DW-206
+ * wrote. It is read as that tab's WIDE offset — the range only the desktop
+ * layout has, and the layout that number was almost certainly recorded in —
+ * and the narrow band starts at the top rather than inheriting an offset from
+ * a range it does not share. Anything else degrades to 0 for BOTH bands, the
+ * same rule every other read in this file follows.
  */
-export function readStoredTreeScroll(): Record<TreeTabId, number> {
+export function readStoredTreeScroll(): Record<TreeTabId, Record<TreeScrollBand, number>> {
   const record = readStoredRecord(WORKBENCH_TREE_SCROLL_KEY);
-  const offsets = {} as Record<TreeTabId, number>;
+  const offsets = {} as Record<TreeTabId, Record<TreeScrollBand, number>>;
   for (const tab of TREE_TABS) {
-    offsets[tab.id] = record ? storedOffset(record[tab.id]) : 0;
+    const stored: unknown = record ? record[tab.id] : undefined;
+    // The legacy shape, migrated on read: a number here is a pre-DW-206 offset
+    // and belongs to the wide band alone.
+    const legacy = typeof stored === "number";
+    const banded =
+      typeof stored === "object" && stored !== null && !Array.isArray(stored)
+        ? (stored as Record<string, unknown>)
+        : null;
+    const bands = {} as Record<TreeScrollBand, number>;
+    for (const band of TREE_SCROLL_BANDS) {
+      bands[band] = legacy
+        ? band === "wide"
+          ? storedOffset(stored)
+          : 0
+        : banded
+          ? storedOffset(banded[band])
+          : 0;
+    }
+    offsets[tab.id] = bands;
   }
   return offsets;
 }
 
-export function writeStoredTreeScroll(tab: TreeTabId, offset: number): void {
+export function writeStoredTreeScroll(
+  tab: TreeTabId,
+  band: TreeScrollBand,
+  offset: number,
+): void {
+  // Read-modify-write through the narrowing read above, so a legacy or partly
+  // unusable value is normalised into the banded shape by the first write
+  // rather than left for the next read to keep migrating.
+  const current = readStoredTreeScroll();
   writeStoredJson(WORKBENCH_TREE_SCROLL_KEY, {
-    ...readStoredTreeScroll(),
-    [tab]: storedOffset(Math.round(offset)),
+    ...current,
+    [tab]: { ...current[tab], [band]: storedOffset(Math.round(offset)) },
   });
 }
 
