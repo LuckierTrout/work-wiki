@@ -3553,6 +3553,7 @@ location: src/components/RevisionHistory.tsx
 severity: medium
 reason: `canRevert` in `src/components/RevisionHistory.tsx` carries a realm term and a site-owner term but no `isSignedIn` term, so an anonymous viewer of a public artifact or an agent-scoped page is still shown Revert and its irreversible-sounding confirm in front of a write the middleware 401s. This predates DW-269 (the control was ungated for everyone), and the recorded intent asked only for "the same realm term the Delete gate got", with the spec's Never list forbidding an ownership term — so the signed-in half was deliberately left alone. `ArticleActions` reads `isSignedIn` for exactly this purpose one component over.
 status: open
+decision: 2026-08-28 Add the signed-in term — Include isSignedIn in canRevert so signed-out viewers are never offered Revert, matching ArticleActions, and record the frozen-block renegotiation in the spec.
 decision: 2026-08-26 Add the signed-in term — Include isSignedIn in canRevert so signed-out viewers are never offered Revert, matching ArticleActions, and record the frozen-block renegotiation in the spec.
 
 ### DW-393: An orphan page — on disk but absent from the page index — now makes its ingest-history row undeletable and fails the whole batch.

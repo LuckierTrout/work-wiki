@@ -278,6 +278,15 @@
     "label": "Retire the dead writers only",
     "resolution": ""
   },
+  "DW-392": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Include isSignedIn in canRevert so signed-out viewers are never offered Revert, matching ArticleActions, and record the frozen-block renegotiation in the spec.",
+    "key": "1",
+    "label": "Add the signed-in term",
+    "resolution": ""
+  },
   "DW-398": {
     "answered_at": "2026-08-22",
     "bundle_name": "",
