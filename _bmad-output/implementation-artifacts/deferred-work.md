@@ -1564,6 +1564,7 @@ location: _bmad-output/implementation-artifacts/deferred-work.md:153
 severity: medium
 reason: `deferred-work.md:153` justifies DW-17 with "the per-Wiki Page partitioning that Story 1.4's 'the trees show that Wiki's files' implies", and the same phrase is quoted at `spec-1-2-create-a-wiki-from-a-scenario-template.md:71` and `spec-1-4-knowledge-tree-and-file-tree.md:25,132,310`. After this change that citation resolves to no live text in `epics.md`, so DW-17's rationale now rests on a phrase that no longer exists — which could either keep a migration alive on a dead citation or make it look spuriously resolved. The ledger is orchestrator-owned and the story specs are frozen records, so neither can be corrected from this story.
 status: open
+decision: 2026-08-28 Re-anchor DW-17 only — Update DW-17's reason to cite the current epics.md text (or state that the FR-76 file contract is its sole basis), and leave the three frozen story records as historical quotations with a note that the AC text later changed.
 decision: 2026-08-26 Re-anchor DW-17 only — Update DW-17's reason to cite the current epics.md text (or state that the FR-76 file contract is its sole basis), and leave the three frozen story records as historical quotations with a note that the AC text later changed.
 
 ### DW-171: The PRD still glosses the File Tree as a browse of "the Wiki's files", the same per-Wiki reading this story removed from the epic.

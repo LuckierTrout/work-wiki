@@ -80,6 +80,15 @@
     "label": "Give Settings a URL",
     "resolution": ""
   },
+  "DW-170": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Update DW-17's reason to cite the current epics.md text (or state that the FR-76 file contract is its sole basis), and leave the three frozen story records as historical quotations with a note that the AC text later changed.",
+    "key": "1",
+    "label": "Re-anchor DW-17 only",
+    "resolution": ""
+  },
   "DW-176": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
