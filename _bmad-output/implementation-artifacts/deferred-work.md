@@ -4102,6 +4102,7 @@ location: src/lib/mcp-http.ts:525
 severity: medium
 reason: `src/lib/mcp-http.ts`'s `run` calls `autoFixRefusal` on `type`, then does `...(a as { type: string; slug: string; target?: string; message?: string })`. `dispatchMcp` does not validate `tools/call` arguments, so a non-string `slug` reaches `handleFixLintIssue` and surfaces as a 404 naming `[object Object]`. The REST door type-checks all four fields via `LINT_FIX_REQUEST`. Pre-existing (the cast predates this change) and outside DW-348, whose title scopes the defect to `type`.
 status: open
+decision: 2026-08-28 Budget the body inside the cap — Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.
 
 ### DW-456: `POST /api/lint/fix` never passes the owner's handle as `author`, so every REST lint fix is attributed to the default `"lint-fix"` while both MCP doors pass the real principal.
 origin: spec-deferred 679ba44876d9
