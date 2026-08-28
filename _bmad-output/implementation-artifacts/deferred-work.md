@@ -4175,7 +4175,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: src/lib/workbench-url.ts:59
 severity: low
 reason: The graph renders `mine`, a vault, or another owner's silo. The href is `/?mode=wiki` with no scope, so a reader following it from a scoped graph lands on their own active Wiki's tree — a different set from the one they could not see. The restored comment addresses the "this wiki's pages" vs "all pages" wording but not the scope mismatch.
-status: open
+status: done 2026-08-28
+resolution: closed by human decision: DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
+decision: 2026-08-28 Keep both, close as recorded — DW-390's decision deliberately carved the two indexes out; the doc comments at discuss-stats-index.ts:63-70 and contributor-index.ts:213-221 already record the readerless state, so nothing further is owed.
 
 ### DW-465: `ensureDiscussDir()`'s doc comment still says it creates the directory, above an empty no-op body.
 origin: spec-deferred 7735b56e55bd
