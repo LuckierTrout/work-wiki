@@ -14,6 +14,7 @@ import {
   settingsCategory,
 } from "@/lib/workbench-settings";
 import { workbenchMode } from "@/lib/workbench-modes";
+import { CANVAS_ID } from "@/components/workbench/ModeCanvas";
 
 /**
  * `g s` opens Settings ON THE MOUNTED SHELL (DW-62).
@@ -151,13 +152,22 @@ function settingsShowing(): boolean {
 }
 
 describe("g s on the mounted Workbench (DW-62)", () => {
-  it("opens the in-shell Settings surface and announces it, without navigating", async () => {
+  it("opens the in-shell Settings surface, mirrors it into the URL, and does not navigate", async () => {
     await renderShell();
     expect(settingsShowing()).toBe(false);
+    const before = window.history.length;
 
     await press("g", "s");
 
     expect(settingsShowing()).toBe(true);
+    // The key writes the URL, exactly as the rail control does (DW-167) — one
+    // shared push helper, so there is no second spelling of "open Settings"
+    // that reaches a different address. Pinned HERE rather than left to the
+    // second-press case: that one asserts `history.length` is UNCHANGED, which a
+    // first press that wrote nothing at all satisfies just as well, so without
+    // this the whole URL half of `g s` could be deleted with the suite green.
+    expect(window.location.search).toBe("?mode=wiki&settings=1");
+    expect(window.history.length).toBe(before + 1);
     // The rail marks Settings as the surface on screen, exactly as its own
     // control does — the keystroke and the click reach one piece of state.
     expect(currentRailItem()).toBe(SETTINGS_LABEL);
@@ -170,16 +180,32 @@ describe("g s on the mounted Workbench (DW-62)", () => {
     expect(document.querySelector("nav.wb-rail")).not.toBeNull();
   });
 
-  it("leaves the surface open on a second press", async () => {
+  it("leaves the surface open on a second press, and takes the keyboard back to it", async () => {
     // `g s` reads "go to Settings" — that is its description in `SHORTCUTS` and
     // in the help overlay — so it OPENS rather than toggles. The rail control is
     // the one that toggles, because it renders an active state and therefore
     // reads as something that can be switched off; a key naming a destination
     // carries no such state, and a second press that closed the surface would
     // be a shortcut that undoes itself.
+    //
+    // "Go to" is a promise about the KEYBOARD, though, and that is the half
+    // DW-425 was missing. The focus move used to be keyed on `settingsOpen`, so
+    // the effect had no change to observe on a second press: the surface was
+    // announced again and the keyboard stayed wherever it had drifted to — a
+    // shortcut that says it went somewhere and did not. A nonce bumped on every
+    // press is what makes the destination reachable twice.
     await renderShell();
 
     await press("g", "s");
+    expect(document.activeElement).toBe(document.getElementById(CANVAS_ID));
+
+    // The keyboard drifts off the surface — an Escape, a click on chrome, a
+    // blur. `<body>` is where a browser leaves it, and it is where the
+    // dispatcher listens, so the second press really is reachable from here.
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+    const before = window.history.length;
+
     await press("g", "s");
 
     expect(settingsShowing()).toBe(true);
@@ -187,6 +213,12 @@ describe("g s on the mounted Workbench (DW-62)", () => {
     // Still the Settings sentence — the region carries a repeat mark rather
     // than a different announcement, and `announced()` strips it.
     expect(announced()).toBe(SETTINGS_ANNOUNCEMENT);
+    // …and the keyboard is where the announcement says it is.
+    expect(document.activeElement).toBe(document.getElementById(CANVAS_ID));
+    // No SECOND entry, though: the surface is already in the URL, so the href
+    // this press would write is the one already showing and nothing is pushed.
+    // An entry per repeat would be a Back the owner has to press twice.
+    expect(window.history.length).toBe(before);
     expect(router.push).not.toHaveBeenCalled();
   });
 

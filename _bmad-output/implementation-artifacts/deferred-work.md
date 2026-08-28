@@ -1532,7 +1532,8 @@ source_spec: `spec-dw-27-workbench-mode-url-sync.md`
 location: src/components/workbench/Workbench.tsx (toggleSettings)
 severity: low
 reason: DW-27 is scoped to the mode by its own ledger text ("the active mode has no URL representation"), and Settings is a surface, not a mode — so this is not a regression: Back left the app before this change too, on every surface. What changed is that modes now have a Back that stays, which makes Settings the one surface where it still does not. Worth an explicit decision alongside whatever story owns the Settings draft lifecycle.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-settings-history-and-focus
 decision: 2026-08-19 Give Settings a URL — Represent the open Settings surface in the URL alongside `?mode=` (a `settings=1` param or a `mode=settings` value), accept it on load through the same ordering as the mode restore, and make Back close Settings before it leaves the app — reusing `src/lib/workbench-url.ts` rather than adding a second convention.
 
 ### DW-168: A deep link followed by a signed-out browser loses its `?mode=` at the sign-in redirect, which is the case a shared or bookmarked link is most likely to be in.
@@ -3813,7 +3814,8 @@ source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
 location: src/components/workbench/Workbench.tsx (applyMode / popstate)
 severity: medium
 reason: `applyMode` (`src/components/workbench/Workbench.tsx`) sets `settingsOpen` false from the `popstate` listener as well as from a rail pick. The rail pick is safe — the control the owner pressed holds focus — but a Back press moves focus nowhere, so if the owner is inside the Settings surface its section unmounts under them and the keyboard lands on `<body>`. The new focus effect deliberately runs in one direction only, and this is the case that argues for a second: pre-existing, but widened by the fact that opening Settings now always puts the keyboard inside it.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-settings-history-and-focus
 
 ### DW-424: `ShortcutsHelp` renders `role="dialog"` without `aria-modal`, so a global `g <key>` still fires from inside the open help overlay.
 origin: spec-deferred 84f95020424e
@@ -3829,7 +3831,8 @@ source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
 location: src/components/workbench/Workbench.tsx (the settings focus effect)
 severity: low
 reason: `g s` OPENS rather than toggles (DW-62), so a second press leaves `settingsOpen` true and the new focus effect — keyed on the state transition — does not re-run. The announcement is still made (`settings-shortcut.test.tsx` pins the repeat), so the owner is told they arrived somewhere the keyboard did not go. Making the key idempotent about focus needs a nonce or a move inside the callbacks, which the effect deliberately avoided so that both openers share exactly one landing site.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-settings-history-and-focus
 
 ### DW-426: The `g s`-over-an-open-dialog rows of the DW-373 suite now pin a path a real keyboard user can no longer take.
 origin: spec-deferred ba989ecca8af
@@ -3837,7 +3840,8 @@ source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
 location: src/components/workbench/__tests__/settings-canvas-persistence.test.tsx (the `g s` opener)
 severity: low
 reason: The new modal guard suppresses dispatch from inside `[role="dialog"][aria-modal="true"]`, and `useDialogA11y` traps focus there — so with a Create Wiki dialog on screen a browser keyboard user cannot reach `g s` at all; only the rail control can open Settings over an open dialog. The suite's `press()` fires at `document.body` (deliberately, so `isInputElement` does not swallow it), which keeps those rows green while making them unreachable in a browser. The preservation they check is real and still reached by the rail control; what is stale is the claim that both openers reach that state identically.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-settings-history-and-focus
 
 ### DW-427: DW-408's prescribed fix does not remove the harm its own ledger entry states: an unparseable 200 still answers `unconfirmed: false`, so the owner keeps a version the save superseded and the next save
 origin: spec-deferred a42911c607ff
@@ -4497,4 +4501,36 @@ source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
 location: src/app/api/settings/route.ts (embeddingProvider patch branch)
 severity: medium
 reason: `applyWorkbenchSettings` clears `embeddingApiKey`/`embeddingBaseUrl` through `embeddingProviderChanged` regardless of `EMBEDDING_PROVIDER`, so a direct PUT, a stale tab, or a CLI reaches the destruction the select now refuses. This matches the repo's existing convention — the `researchProvider` pin is UI-only too — and the recorded decision names the select specifically, so a route-level refusal is a separate decision.
+status: open
+
+### DW-511: The DW-373 rail rows pin a state the rail control itself cannot produce: with a Create Wiki dialog open, a real user can reach Settings through neither opener.
+origin: spec-deferred b7350e592148
+source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
+location: src/components/workbench/__tests__/settings-canvas-persistence.test.tsx (the rail-only block)
+severity: medium
+reason: `CreateWikiDialog.tsx:109` and `ConfirmDialog.tsx:67` both render the dialog root as `fixed inset-0 z-[120] ... bg-black/40` — a full-viewport overlay above `.wb-rail`, which carries no z-index of its own — so a pointer click aimed at the rail's Settings control lands on the backdrop. `useDialogA11y` traps Tab inside the dialog, so the control is unreachable by keyboard too. `fireEvent.click(rail(...))` succeeds only because jsdom does no hit-testing. This is the same class of defect DW-426 named, reached through the pointer surface instead of the keyboard one, and it is PRE-EXISTING: those rows drove the rail control before this change as well. DW-167 does now create a reachable path to the state (Settings entry -> mode pick -> open the dialog -> Back), so the preservation the rows check is still real; what is stale is the block's claim that the rail control is how a user gets there.
+status: open
+
+### DW-512: Back from a deep-linked `?settings=1` still leaves the app holding the unsaved Settings draft, because the mount seed adds no entry.
+origin: spec-deferred 0b5ecd6edb91
+source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
+location: src/components/workbench/Workbench.tsx (the mount seed)
+severity: low
+reason: The seed uses `replaceState`, matching the mode restore's own contract that Back must still leave the app on the first press. So a `?settings=1` link opened in a fresh tab is the first entry of its session and has nothing behind it to close the surface on — verbatim the symptom DW-167 describes, now reachable through the URL the fix introduces. Fixed for the in-session case only; the code comment states the residue rather than claiming otherwise. Closing it needs a decision about seeding a second entry on load, which would change the mode's Back contract too.
+status: open
+
+### DW-513: The popstate focus bump is unconditional on where the keyboard was, so Back pressed with focus on the rail still pulls it to `#wb-canvas`.
+origin: spec-deferred 0af697b7be93
+source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
+location: src/components/workbench/Workbench.tsx (the popstate listener)
+severity: low
+reason: DW-423's own text scopes the defect to "if the owner is inside the Settings surface". The rail-close path deliberately leaves focus alone for exactly that reason — the control the owner pressed holds the keyboard — so the two paths are asymmetric. A narrowing (`document.getElementById(CANVAS_ID)?.contains(document.activeElement)` sampled in the handler, before the commit) would restore the symmetry; nothing pins the case today.
+status: open
+
+### DW-514: The URL names the Settings surface but not its category, so a copied link reopens the default pane while the live region announces it.
+origin: spec-deferred 592f71cccf15
+source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
+location: src/lib/workbench-url.ts (the not-in-the-URL list)
+severity: low
+reason: `settingsCategoryId` is local `useState` with no URL and no storage. DW-167 asks only that the link reopen the surface, so this is within intent — but it means the address bar and the announced sentence can disagree about which pane the visitor lands on. Documented as an exclusion in `workbench-url.ts`'s header alongside the tab, the collapse flag, the selection and the widths.
 status: open

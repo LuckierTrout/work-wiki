@@ -49,6 +49,12 @@ import type { WikiRecord } from "@/lib/wikis";
  * just gone `display: none` was dropped on `<body>` with the whole shell to Tab
  * back through. It lands on the Settings section now, from both openers.
  *
+ * WHICH OPENER A CASE CAN USE IS ITSELF A CONTRACT (DW-426). `g s` is refused
+ * anywhere inside an `aria-modal` dialog, so a case that opens one first is
+ * reachable through the RAIL CONTROL ALONE — those live in their own block
+ * below, and the parameterised block keeps only the cases both controls can
+ * genuinely reach. See {@link OPENERS} and {@link press}.
+ *
  * COVERAGE LIMIT, inherited from `wiki-canvas-persistence.test.tsx`: jsdom has
  * no layout engine and applies no user-agent stylesheet, so `hidden` here is an
  * ATTRIBUTE and nothing more — nothing mounted below can see a pixel. What it
@@ -220,6 +226,15 @@ function clickRail(label: string): HTMLButtonElement {
  * `document.body` rather than any control: `isInputElement` suppresses the
  * shortcut inside form fields, so aiming these at the focused dialog's name
  * field would be testing the suppression instead of the dispatch.
+ *
+ * WHICH MAKES THIS UNSOUND OVER AN OPEN MODAL (DW-426). `isInModalDialog`
+ * suppresses the shortcut anywhere inside `[role="dialog"][aria-modal="true"]`
+ * (`useKeyboardShortcuts.ts`), and `useDialogA11y` puts focus in the dialog and
+ * traps Tab there — so with one open, a real keyboard user has NO way to put
+ * the keyboard on `<body>` and press this. A press dispatched from here anyway
+ * pins a path that cannot be taken, and the fix it defends could be reverted
+ * without the suite noticing. Every case that holds an open modal therefore
+ * drives the RAIL control instead; see {@link OPENERS}.
  */
 async function press(...keys: string[]) {
   for (const key of keys) {
@@ -229,11 +244,20 @@ async function press(...keys: string[]) {
 }
 
 /**
- * The two ways in, driven identically.
+ * The two ways in, driven identically — for every case that can be reached BOTH
+ * ways.
  *
- * Every case below runs against both, because the preservation is the SHELL's
- * render and not either control's doing — a fix wired into one path only would
- * pass a suite that drove the other.
+ * The parameterised cases run against both, because the preservation is the
+ * SHELL's render and not either control's doing — a fix wired into one path only
+ * would pass a suite that drove the other.
+ *
+ * WHAT IS NOT PARAMETERISED, and why (DW-426): a case that opens an
+ * `aria-modal` dialog first cannot use `g s` at all. `isInModalDialog` stops the
+ * dispatcher for any press inside such a dialog, and the dialog holds focus and
+ * traps Tab — so there is no keystroke a browser keyboard user could reach the
+ * surface with while one is open. Those cases live in their own rail-only block
+ * below, with the same assertions; parameterising them meant firing `g s` at
+ * `document.body` and pinning a path the product deliberately refuses.
  *
  * CLOSING is the rail control in both — see {@link closeSettings} for why that
  * one control is the closer these cases drive.
@@ -275,6 +299,48 @@ const OPENERS = [
 async function closeSettings() {
   clickRail(SETTINGS_LABEL);
   await act(async () => {});
+}
+
+/**
+ * Open Settings with the rail control — the ONLY opener a case holding an open
+ * modal dialog can drive (DW-426).
+ *
+ * Spelled as its own helper rather than reusing `OPENERS[0].open`, so the
+ * rail-only block reads as a deliberate choice rather than as a row that lost
+ * its parameter.
+ */
+async function openFromRail() {
+  clickRail(SETTINGS_LABEL);
+  await act(async () => {});
+  expect(router.push).not.toHaveBeenCalled();
+}
+
+/** How long to wait for a traversal jsdom may never perform. */
+const POPSTATE_TIMEOUT_MS = 1000;
+
+/**
+ * Traverse the session history and let the `popstate` land.
+ *
+ * The same helper `workbench-mode-url.test.tsx` documents in full: jsdom queues
+ * traversal on its own event loop and fires `popstate` some tasks later, so a
+ * `setTimeout(0)` would let the assertion run against the pre-traversal tree and
+ * pass for the wrong reason. The timeout is a deadline, not a fallback.
+ */
+async function traverse(go: () => void) {
+  await act(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener("popstate", onPop);
+        reject(new Error(`no popstate within ${POPSTATE_TIMEOUT_MS}ms`));
+      }, POPSTATE_TIMEOUT_MS);
+      function onPop() {
+        clearTimeout(timer);
+        resolve();
+      }
+      window.addEventListener("popstate", onPop, { once: true });
+      go();
+    });
+  });
 }
 
 /** Is the in-shell Settings surface showing? The helper `settings-shortcut` uses. */
@@ -401,116 +467,8 @@ async function openCreateWithRefusedName(name: string): Promise<HTMLButtonElemen
 }
 
 describe.each(OPENERS)(
-  "an open Create Wiki dialog survives Settings, opened via $name (DW-373)",
+  "the shell survives Settings, opened via $name (DW-373)",
   ({ open }) => {
-    it("keeps the typed name and the shown error across Settings and back", async () => {
-      await renderShell();
-      await openCreateWithRefusedName("Quarterly review");
-
-      await open();
-      expect(settingsShowing()).toBe(true);
-      await closeSettings();
-      expect(settingsShowing()).toBe(false);
-
-      // Same dialog, same draft, same failure — not a fresh one seeded with the
-      // template's default name.
-      expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
-      expect((screen.getByLabelText("Wiki name") as HTMLInputElement).value).toBe(
-        "Quarterly review",
-      );
-      expect(screen.getByRole("alert").textContent).toBe(CREATE_CONFLICT);
-    });
-
-    it("is HIDDEN rather than unmounted while Settings is showing", async () => {
-      await renderShell();
-      await openCreateWithRefusedName("Quarterly review");
-
-      await open();
-
-      // Out of the accessibility tree: testing-library's default queries respect
-      // `hidden`, so a dialog behind it is unreachable by role and by label —
-      // the same thing a screen reader and a Tab press see.
-      expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
-      // By ROLE, not by label: `queryByLabelText` walks the DOM and knows
-      // nothing about the accessibility tree, so it finds a hidden field and
-      // would report this as a failure whichever way the fix went.
-      expect(screen.queryByRole("textbox", { name: "Wiki name" })).toBeNull();
-      expect(screen.queryByRole("heading", { name: "Wiki" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
-      // The refused create's message specifically: `SettingsCanvas` renders an
-      // alert of its own here (the stubbed payload is not a settings body), so
-      // "no alert at all" would be asserting the wrong thing.
-      expect(screen.queryAllByRole("alert").map((node) => node.textContent)).not.toContain(
-        CREATE_CONFLICT,
-      );
-
-      // …but still in the DOCUMENT, holding the draft AND the error. This is
-      // what tells hiding apart from the unmount that was the defect: an
-      // unmounted dialog has no node to find at all.
-      expect(nameFieldNode()?.value).toBe("Quarterly review");
-      expect(alertNode()?.textContent).toBe(CREATE_CONFLICT);
-
-      // And the attribute that does it, on the SECTION the stylesheet's rule
-      // names — not on the dialog, which must stay `open`.
-      const section = modeCanvas();
-      expect(section?.hasAttribute("hidden")).toBe(true);
-      expect(section?.contains(nameFieldNode())).toBe(true);
-      // The hidden section holds neither of the two things that must be unique.
-      expect(section?.hasAttribute("id")).toBe(false);
-      expect(section?.hasAttribute("tabindex")).toBe(false);
-    });
-
-    it("holds neither the body scroll lock nor the Tab trap while hidden", async () => {
-      await renderShell();
-      openCreateWith("Quarterly review");
-      // The lock is real while the dialog is on screen — a positive control, so
-      // the negative below cannot pass because the lock was never taken.
-      expect(document.body.style.overflow).toBe("hidden");
-
-      await open();
-
-      // `hidden` removes the pixels and the a11y tree entry, and NOTHING the
-      // dialog did to the document: the scroll lock and the capture-phase Tab
-      // listener both outlive it unless the hook stands down.
-      expect(document.body.style.overflow).toBe("");
-
-      // Tab is not trapped. The trap is a capture-phase listener that calls
-      // `preventDefault` and pulls focus back into the dialog; armed over a
-      // hidden surface, the keyboard user is stuck on a canvas they cannot see —
-      // here, unable to Tab through Settings.
-      const railButton = rail("Graph");
-      railButton.focus();
-      const tab = new KeyboardEvent("keydown", {
-        key: "Tab",
-        bubbles: true,
-        cancelable: true,
-      });
-      railButton.dispatchEvent(tab);
-      expect(tab.defaultPrevented).toBe(false);
-      expect(document.activeElement).toBe(railButton);
-
-      // …and closing Settings re-arms both. The trap is driven from OUTSIDE the
-      // dialog, which is the branch that pulls a drifted focus back in — a Tab
-      // pressed from inside would only wrap at the last item and prove nothing
-      // here.
-      await closeSettings();
-      expect(document.body.style.overflow).toBe("hidden");
-      const outside = rail("Graph");
-      outside.focus();
-      const trapped = new KeyboardEvent("keydown", {
-        key: "Tab",
-        bubbles: true,
-        cancelable: true,
-      });
-      outside.dispatchEvent(trapped);
-      expect(trapped.defaultPrevented).toBe(true);
-      expect(
-        screen
-          .getByRole("dialog", { name: "Create Wiki" })
-          .contains(document.activeElement),
-      ).toBe(true);
-    });
-
     it("takes the keyboard to the Settings section (DW-413)", async () => {
       // Opening Settings used to move focus NOWHERE. The canvas the owner was
       // standing in goes `display: none` in the same commit, so a real browser
@@ -518,10 +476,22 @@ describe.each(OPENERS)(
       // `<body>` — with the rail and the settings nav to Tab through before
       // reaching the surface they just asked for. Both openers move it now, and
       // to the same place: the destination is the shell's, not either control's.
+      //
+      // The keyboard starts on a NON-MODAL control inside the mode canvas, not
+      // in an open Create Wiki dialog (DW-426). The dialog is `aria-modal`, and
+      // `isInModalDialog` stops the dispatcher before `g s` reaches anything —
+      // so a row that opened one and then pressed the key from `document.body`
+      // pinned a path no browser keyboard user can take. The empty state's own
+      // opener is the same starting point minus the modal: a focusable control
+      // that goes `display: none` under the withdrawn canvas, which is the whole
+      // reason the keyboard has to be caught.
       await renderShell();
-      openCreateWith("Quarterly review");
-      const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
-      expect(document.activeElement).toBe(dialog);
+      const standing = screen.getByRole("button", {
+        name: "Create Wiki",
+      }) as HTMLButtonElement;
+      standing.focus();
+      expect(document.activeElement).toBe(standing);
+      expect(modeCanvas()?.contains(standing)).toBe(true);
 
       await open();
 
@@ -534,9 +504,11 @@ describe.each(OPENERS)(
       expect(landed.getAttribute("tabindex")).toBe("-1");
       // Not into the subtree that just went off screen, which is the other
       // failure this replaces: jsdom does not blur through an ancestor `hidden`
-      // the way a browser does, so a restore aimed at the dialog's opener would
-      // land here rather than being the silent no-op it is in a browser.
+      // the way a browser does, so focus left where it was would still read as
+      // "inside the mode canvas" here rather than as the `<body>` it becomes in
+      // a browser.
       expect(modeCanvas()?.contains(landed)).toBe(false);
+      expect(landed).not.toBe(standing);
     });
 
     it("does not move focus when Settings CLOSES", async () => {
@@ -579,34 +551,6 @@ describe.each(OPENERS)(
       expect(editor.value).toBe("# Alpha, half rewritten");
       expect(screen.getByRole("textbox")).toBe(editor);
       expect(previewColumn()?.hasAttribute("hidden")).toBe(false);
-    });
-
-    it("stands the Preview's open confirm down while the column is withdrawn", async () => {
-      // The second half of the withdrawal, and the half `hidden` cannot do on
-      // its own: the attribute takes the pixels, the accessibility tree and the
-      // tab order, and nothing the dialog did to the DOCUMENT. The column
-      // publishes `visible={false}` through `SurfaceVisibilityProvider` for
-      // exactly this, the way the mode canvas already does.
-      await renderShell(TREE_DATA);
-      fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
-      await act(async () => {});
-      fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
-      // A positive control, so the negative below cannot pass because the lock
-      // was never taken at all.
-      expect(document.body.style.overflow).toBe("hidden");
-
-      await open();
-
-      expect(document.body.style.overflow).toBe("");
-      // Stood down, NOT closed: `ConfirmDialog` renders nothing when `open` goes
-      // false, so a node still in the document is what tells the two apart.
-      expect(screen.queryByRole("dialog")).toBeNull();
-      expect(previewColumn()?.querySelector('[role="dialog"][aria-modal="true"]')).not.toBeNull();
-
-      // …and coming back re-arms it.
-      await closeSettings();
-      expect(document.body.style.overflow).toBe("hidden");
-      expect(screen.getByRole("dialog")).toBeTruthy();
     });
 
     it("keeps a collapsed Knowledge group collapsed across Settings and back", async () => {
@@ -680,61 +624,6 @@ describe.each(OPENERS)(
       expect(
         document.getElementById("wb-left-column")?.getAttribute("aria-label"),
       ).toBe(`${SETTINGS_LABEL} panel`);
-    });
-
-    it("does not pull focus into the hidden canvas when the dialog closes there", async () => {
-      // DW-414's real trigger, driven through the shell rather than the hook.
-      //
-      // `WikiWorkbench` resets `createOpen` whenever the ACTIVE WIKI moves
-      // (`[currentWikiId, currentId]`), and a refreshed server render can land
-      // that while Settings is showing — so the dialog closes inside a canvas
-      // that is behind `hidden`, with its recorded opener withdrawn along with
-      // it. The restore has to refuse: focusing a `display: none` node is a
-      // silent no-op in a browser that leaves the keyboard on `<body>`, and in
-      // jsdom it really does move focus into content nobody can reach, which is
-      // what makes the refusal observable at all.
-      const view = await renderShell({ ...DATA, wikis: [WIKI] });
-      openCreateWith("Quarterly review");
-      const canvas = modeCanvas();
-      expect(canvas?.contains(nameFieldNode())).toBe(true);
-
-      await open();
-      const landed = document.activeElement;
-      expect(landed).toBe(document.getElementById(CANVAS_ID));
-
-      // The refreshed render that moves the active Wiki under the withdrawn
-      // canvas. Nothing about it touches Settings.
-      await refreshShell(view, { ...DATA, wikis: [WIKI], currentWikiId: WIKI.id });
-
-      // The dialog really did close — otherwise there is nothing to refuse and
-      // nothing to release.
-      expect(nameFieldNode()).toBeNull();
-      expect(modeCanvas()?.querySelector('[role="dialog"]')).toBeNull();
-      // …and focus never left the surface the owner is actually on.
-      expect(document.activeElement).toBe(landed);
-      expect(settingsShowing()).toBe(true);
-      expect(modeCanvas()?.contains(document.activeElement)).toBe(false);
-
-      // WHAT ACTUALLY LEAKED, and the half that is only visible one cycle
-      // later. `armed` was already false when the dialog closed, so no effect
-      // re-ran and no restore was attempted at all — what the close left behind
-      // is the OPENER CAPTURE. Held, the next open records nothing, and the
-      // close after that aims at the button the first dialog was opened from,
-      // which the intervening renders detached: focus would land on
-      // `WikiWorkbench`'s fallback heading instead of on the control the owner
-      // is standing on.
-      await refreshShell(view, { ...DATA, wikis: [WIKI] });
-      await closeSettings();
-      const reopened = openCreateWith("Second draft");
-      expect(reopened.isConnected).toBe(true);
-
-      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      await act(async () => {});
-
-      expect(document.activeElement).toBe(reopened);
-      expect(document.activeElement).not.toBe(
-        screen.getByRole("heading", { name: "Wiki" }),
-      );
     });
 
     it("keeps exactly one #wb-canvas, on the Settings section", async () => {
@@ -819,6 +708,258 @@ describe.each(OPENERS)(
     });
   },
 );
+
+/**
+ * The same preservation, driven from the RAIL CONTROL ONLY (DW-426).
+ *
+ * Every case here has an `aria-modal` dialog open when Settings is reached —
+ * the Create Wiki dialog, or the Preview editor's confirm — and that is exactly
+ * the state in which `g s` is unreachable: `isInModalDialog` refuses the press,
+ * and the dialog holds focus and traps Tab so the owner cannot move the keyboard
+ * out to `document.body` to make it reachable. The block immediately below pins
+ * that refusal as the product's intent.
+ *
+ * They were parameterised over both openers until this entry, which meant the
+ * `g s` row fired the sequence at `document.body` with a modal open — reporting
+ * green on a path a browser keyboard user has no way to take. The DW-373 /
+ * DW-412 / DW-414 coverage they carry is unchanged and is not weakened by
+ * dropping the second opener: what those cases are about is the SHELL's render,
+ * which the parameterised block above still exercises through both controls.
+ */
+describe("a dialog-holding canvas survives Settings, opened from the rail (DW-373)", () => {
+  it("keeps the typed name and the shown error across Settings and back", async () => {
+    await renderShell();
+    await openCreateWithRefusedName("Quarterly review");
+
+    await openFromRail();
+    expect(settingsShowing()).toBe(true);
+    await closeSettings();
+    expect(settingsShowing()).toBe(false);
+
+    // Same dialog, same draft, same failure — not a fresh one seeded with the
+    // template's default name.
+    expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
+    expect((screen.getByLabelText("Wiki name") as HTMLInputElement).value).toBe(
+      "Quarterly review",
+    );
+    expect(screen.getByRole("alert").textContent).toBe(CREATE_CONFLICT);
+  });
+
+  it("is HIDDEN rather than unmounted while Settings is showing", async () => {
+    await renderShell();
+    await openCreateWithRefusedName("Quarterly review");
+
+    await openFromRail();
+
+    // Out of the accessibility tree: testing-library's default queries respect
+    // `hidden`, so a dialog behind it is unreachable by role and by label —
+    // the same thing a screen reader and a Tab press see.
+    expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
+    // By ROLE, not by label: `queryByLabelText` walks the DOM and knows
+    // nothing about the accessibility tree, so it finds a hidden field and
+    // would report this as a failure whichever way the fix went.
+    expect(screen.queryByRole("textbox", { name: "Wiki name" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Wiki" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create" })).toBeNull();
+    // The refused create's message specifically: `SettingsCanvas` renders an
+    // alert of its own here (the stubbed payload is not a settings body), so
+    // "no alert at all" would be asserting the wrong thing.
+    expect(screen.queryAllByRole("alert").map((node) => node.textContent)).not.toContain(
+      CREATE_CONFLICT,
+    );
+
+    // …but still in the DOCUMENT, holding the draft AND the error. This is
+    // what tells hiding apart from the unmount that was the defect: an
+    // unmounted dialog has no node to find at all.
+    expect(nameFieldNode()?.value).toBe("Quarterly review");
+    expect(alertNode()?.textContent).toBe(CREATE_CONFLICT);
+
+    // And the attribute that does it, on the SECTION the stylesheet's rule
+    // names — not on the dialog, which must stay `open`.
+    const section = modeCanvas();
+    expect(section?.hasAttribute("hidden")).toBe(true);
+    expect(section?.contains(nameFieldNode())).toBe(true);
+    // The hidden section holds neither of the two things that must be unique.
+    expect(section?.hasAttribute("id")).toBe(false);
+    expect(section?.hasAttribute("tabindex")).toBe(false);
+  });
+
+  it("holds neither the body scroll lock nor the Tab trap while hidden", async () => {
+    await renderShell();
+    openCreateWith("Quarterly review");
+    // The lock is real while the dialog is on screen — a positive control, so
+    // the negative below cannot pass because the lock was never taken.
+    expect(document.body.style.overflow).toBe("hidden");
+
+    await openFromRail();
+
+    // `hidden` removes the pixels and the a11y tree entry, and NOTHING the
+    // dialog did to the document: the scroll lock and the capture-phase Tab
+    // listener both outlive it unless the hook stands down.
+    expect(document.body.style.overflow).toBe("");
+
+    // Tab is not trapped. The trap is a capture-phase listener that calls
+    // `preventDefault` and pulls focus back into the dialog; armed over a
+    // hidden surface, the keyboard user is stuck on a canvas they cannot see —
+    // here, unable to Tab through Settings.
+    const railButton = rail("Graph");
+    railButton.focus();
+    const tab = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    railButton.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(railButton);
+
+    // …and closing Settings re-arms both. The trap is driven from OUTSIDE the
+    // dialog, which is the branch that pulls a drifted focus back in — a Tab
+    // pressed from inside would only wrap at the last item and prove nothing
+    // here.
+    await closeSettings();
+    expect(document.body.style.overflow).toBe("hidden");
+    const outside = rail("Graph");
+    outside.focus();
+    const trapped = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    outside.dispatchEvent(trapped);
+    expect(trapped.defaultPrevented).toBe(true);
+    expect(
+      screen
+        .getByRole("dialog", { name: "Create Wiki" })
+        .contains(document.activeElement),
+    ).toBe(true);
+  });
+
+  it("stands the Preview's open confirm down while the column is withdrawn", async () => {
+    // The second half of the withdrawal, and the half `hidden` cannot do on
+    // its own: the attribute takes the pixels, the accessibility tree and the
+    // tab order, and nothing the dialog did to the DOCUMENT. The column
+    // publishes `visible={false}` through `SurfaceVisibilityProvider` for
+    // exactly this, the way the mode canvas already does.
+    await renderShell(TREE_DATA);
+    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+    // A positive control, so the negative below cannot pass because the lock
+    // was never taken at all.
+    expect(document.body.style.overflow).toBe("hidden");
+
+    await openFromRail();
+
+    expect(document.body.style.overflow).toBe("");
+    // Stood down, NOT closed: `ConfirmDialog` renders nothing when `open` goes
+    // false, so a node still in the document is what tells the two apart.
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(previewColumn()?.querySelector('[role="dialog"][aria-modal="true"]')).not.toBeNull();
+
+    // …and coming back re-arms it.
+    await closeSettings();
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("does not pull focus into the hidden canvas when the dialog closes there", async () => {
+    // DW-414's real trigger, driven through the shell rather than the hook.
+    //
+    // `WikiWorkbench` resets `createOpen` whenever the ACTIVE WIKI moves
+    // (`[currentWikiId, currentId]`), and a refreshed server render can land
+    // that while Settings is showing — so the dialog closes inside a canvas
+    // that is behind `hidden`, with its recorded opener withdrawn along with
+    // it. The restore has to refuse: focusing a `display: none` node is a
+    // silent no-op in a browser that leaves the keyboard on `<body>`, and in
+    // jsdom it really does move focus into content nobody can reach, which is
+    // what makes the refusal observable at all.
+    const view = await renderShell({ ...DATA, wikis: [WIKI] });
+    openCreateWith("Quarterly review");
+    const canvas = modeCanvas();
+    expect(canvas?.contains(nameFieldNode())).toBe(true);
+
+    await openFromRail();
+    const landed = document.activeElement;
+    expect(landed).toBe(document.getElementById(CANVAS_ID));
+
+    // The refreshed render that moves the active Wiki under the withdrawn
+    // canvas. Nothing about it touches Settings.
+    await refreshShell(view, { ...DATA, wikis: [WIKI], currentWikiId: WIKI.id });
+
+    // The dialog really did close — otherwise there is nothing to refuse and
+    // nothing to release.
+    expect(nameFieldNode()).toBeNull();
+    expect(modeCanvas()?.querySelector('[role="dialog"]')).toBeNull();
+    // …and focus never left the surface the owner is actually on.
+    expect(document.activeElement).toBe(landed);
+    expect(settingsShowing()).toBe(true);
+    expect(modeCanvas()?.contains(document.activeElement)).toBe(false);
+
+    // WHAT ACTUALLY LEAKED, and the half that is only visible one cycle
+    // later. `armed` was already false when the dialog closed, so no effect
+    // re-ran and no restore was attempted at all — what the close left behind
+    // is the OPENER CAPTURE. Held, the next open records nothing, and the
+    // close after that aims at the button the first dialog was opened from,
+    // which the intervening renders detached: focus would land on
+    // `WikiWorkbench`'s fallback heading instead of on the control the owner
+    // is standing on.
+    await refreshShell(view, { ...DATA, wikis: [WIKI] });
+    await closeSettings();
+    const reopened = openCreateWith("Second draft");
+    expect(reopened.isConnected).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await act(async () => {});
+
+    expect(document.activeElement).toBe(reopened);
+    expect(document.activeElement).not.toBe(
+      screen.getByRole("heading", { name: "Wiki" }),
+    );
+  });
+
+  it("leaves the keyboard in the re-armed dialog when BACK reveals its canvas", async () => {
+    // The traversal twin of "does not move focus when Settings CLOSES", and the
+    // one case where the shell's landing site and a modal want the same
+    // keyboard.
+    //
+    // Back out of Settings is a canvas swap with no control holding the
+    // keyboard, so the shell moves focus to `#wb-canvas` (DW-423). But the same
+    // commit un-hides the mode canvas, which re-arms `useDialogA11y`: it focuses
+    // the dialog container and re-arms the Tab trap. `useDialogA11y` is a CHILD
+    // effect and runs first, so an unguarded shell move lands afterwards and
+    // leaves the keyboard OUTSIDE an `aria-modal` dialog that is trapping Tab —
+    // a keyboard user who can neither operate the canvas they are on nor Tab off
+    // it. The dialog wins: it is the thing claiming the page is inert.
+    await renderShell();
+    const opener = openCreateWith("Quarterly review");
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+    expect(document.activeElement).toBe(dialog);
+
+    // Into Settings, where the move DOES happen — the dialog is withdrawn under
+    // the hidden canvas, so it is holding nothing. This is the positive control
+    // that stops the guard from being "never move focus at all".
+    await openFromRail();
+    expect(settingsShowing()).toBe(true);
+    expect(document.activeElement).toBe(document.getElementById(CANVAS_ID));
+
+    await traverse(() => window.history.back());
+
+    // The surface really did close — otherwise there is nothing to compete for.
+    expect(settingsShowing()).toBe(false);
+    const revealed = screen.getByRole("dialog", { name: "Create Wiki" });
+    expect(revealed).toBe(dialog);
+    // …and the keyboard is in the dialog, not on the section behind it.
+    expect(document.activeElement).toBe(dialog);
+    expect(document.activeElement).not.toBe(document.getElementById(CANVAS_ID));
+    // The trap is armed, which is what makes the section behind it the wrong
+    // place to be standing.
+    expect(document.body.style.overflow).toBe("hidden");
+    // …and the draft survived the round trip, dialog and opener both.
+    expect(nameFieldNode()?.value).toBe("Quarterly review");
+    expect(opener.isConnected).toBe(true);
+  });
+});
 
 describe("a global shortcut does not fire from inside a modal (DW-413)", () => {
   it("ignores g s typed in the Create Wiki dialog", async () => {

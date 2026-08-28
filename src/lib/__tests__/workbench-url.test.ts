@@ -1,12 +1,13 @@
 /**
- * DW-27 — the Workbench's URL rules, EXECUTED.
+ * DW-27 / DW-167 — the Workbench's URL rules, EXECUTED.
  *
- * The shell mirrors its active mode into `?mode=` and resolves the mode it
- * mounts in from the URL first and storage second. Every one of those decisions
- * lives in `workbench-url.ts` precisely so this suite can run it: typed into the
- * mount effect instead, "the URL wins" could only ever be grepped for, and an
- * inverted precedence would keep every source scan green while making every
- * deep link resolve to whatever the visitor last used.
+ * The shell mirrors its active mode into `?mode=` and the open Settings surface
+ * into `?settings=1`, and resolves the surface it mounts in from the URL first
+ * and storage second. Every one of those decisions lives in `workbench-url.ts`
+ * precisely so this suite can run it: typed into the mount effect instead, "the
+ * URL wins" could only ever be grepped for, and an inverted precedence would
+ * keep every source scan green while making every deep link resolve to whatever
+ * the visitor last used.
  *
  * Runs on `environment: "node"`, which is also the SSR check: the module is
  * imported here with no `window` in scope at all.
@@ -15,10 +16,12 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_WORKBENCH_MODE } from "../workbench-modes";
 import {
   WORKBENCH_MODE_PARAM,
+  WORKBENCH_SETTINGS_PARAM,
   initialMode,
   locationHref,
-  modeHref,
   readModeFromSearch,
+  readSettingsFromSearch,
+  surfaceHref,
   type WorkbenchLocation,
 } from "../workbench-url";
 
@@ -46,6 +49,10 @@ describe("readModeFromSearch", () => {
     // same `isWorkbenchModeId` the localStorage read uses — a query param is
     // exactly as untrusted as a stored value, so there is no second validator.
     expect(readModeFromSearch("?mode=Chat")).toBeNull();
+    // And the one that decides the whole shape of DW-167: Settings is a SURFACE
+    // over a mode, never a mode value, so it gets its own param. A
+    // `mode=settings` would destroy the mode underneath the surface and leave
+    // closing it nowhere to land.
     expect(readModeFromSearch("?mode=settings")).toBeNull();
   });
 
@@ -55,7 +62,7 @@ describe("readModeFromSearch", () => {
 
   it("takes the FIRST of a repeated param, and rejects it on its own merits", () => {
     // A hand-edited or concatenated link can carry `mode` twice. `get` answers
-    // with the first, which is the half `modeHref` then overwrites in place —
+    // with the first, which is the half `surfaceHref` then overwrites in place —
     // so the read and the write agree on which occurrence is the live one, and
     // a second occurrence cannot outvote it. Worth pinning precisely because
     // the module's stated premise is that a query param is exactly as untrusted
@@ -103,23 +110,132 @@ describe("locationHref", () => {
   });
 });
 
-describe("modeHref", () => {
+describe("readSettingsFromSearch", () => {
+  it("reads the one spelling that means open", () => {
+    expect(readSettingsFromSearch("?mode=chat&settings=1")).toBe(true);
+    // With or without the leading `?`, like every other reader here.
+    expect(readSettingsFromSearch("settings=1")).toBe(true);
+    // Wherever it sits among other params.
+    expect(readSettingsFromSearch("?wiki=abc&settings=1&mode=graph")).toBe(true);
+  });
+
+  it("answers false for absent, empty and every other value alike", () => {
+    // ONE accepted spelling. `settings=0` is not "closed spelled out" — it is
+    // simply not the flag, which is the same answer as no param at all, because
+    // the writer DELETES the param rather than writing a falsy value.
+    expect(readSettingsFromSearch("")).toBe(false);
+    expect(readSettingsFromSearch("?mode=chat")).toBe(false);
+    expect(readSettingsFromSearch("?settings=")).toBe(false);
+    expect(readSettingsFromSearch("?settings=0")).toBe(false);
+    expect(readSettingsFromSearch("?settings=yes")).toBe(false);
+    expect(readSettingsFromSearch("?settings=true")).toBe(false);
+    // A valueless `?settings` parses as the empty string, not as present-and-on.
+    expect(readSettingsFromSearch("?settings")).toBe(false);
+  });
+
+  it("takes the FIRST of a repeated param, and rejects it on its own merits", () => {
+    // The same `get` semantics `readModeFromSearch` is pinned on one describe
+    // up, and worth pinning separately because this reader compares a VALUE
+    // rather than narrowing a type — a `some(v => v === "1")` spelling would
+    // pass every other case here and let a trailing `&settings=1` outvote the
+    // occurrence the writer owns.
+    expect(readSettingsFromSearch("?settings=1&settings=0")).toBe(true);
+    expect(readSettingsFromSearch("?settings=0&settings=1")).toBe(false);
+    // …and the writer collapses the duplicate either way, because `set` replaces
+    // every occurrence with one and `delete` removes them all — so a link like
+    // this survives exactly one trip through the shell.
+    expect(surfaceHref(at("?settings=0&settings=1"), "chat", true)).toBe(
+      "/?settings=1&mode=chat",
+    );
+    expect(surfaceHref(at("?settings=0&settings=1"), "chat", false)).toBe(
+      "/?mode=chat",
+    );
+  });
+
+  it("names the param once, and it is `settings`", () => {
+    expect(WORKBENCH_SETTINGS_PARAM).toBe("settings");
+  });
+});
+
+describe("surfaceHref", () => {
   it("writes the mode onto a location that had none", () => {
-    expect(modeHref(at(""), "lint")).toBe("/?mode=lint");
+    expect(surfaceHref(at(""), "lint", false)).toBe("/?mode=lint");
   });
 
   it("replaces the mode in place, keeping every other param", () => {
     // The Wiki id and anything a later story adds belong to other features; the
-    // shell has no business dropping them to say which mode is showing. `set`
+    // shell has no business dropping them to say which surface is showing. `set`
     // updates in place, so the param order the owner's link had survives too.
-    expect(modeHref(at("?wiki=abc&mode=wiki"), "search")).toBe("/?wiki=abc&mode=search");
-    expect(modeHref(at("?mode=wiki&wiki=abc"), "search")).toBe("/?mode=search&wiki=abc");
+    expect(surfaceHref(at("?wiki=abc&mode=wiki"), "search", false)).toBe(
+      "/?wiki=abc&mode=search",
+    );
+    expect(surfaceHref(at("?mode=wiki&wiki=abc"), "search", false)).toBe(
+      "/?mode=search&wiki=abc",
+    );
   });
 
   it("keeps the hash, which is a scroll target and not the shell's to discard", () => {
-    expect(modeHref(at("?wiki=abc", "/", "#notes"), "graph")).toBe(
+    expect(surfaceHref(at("?wiki=abc", "/", "#notes"), "graph", false)).toBe(
       "/?wiki=abc&mode=graph#notes",
     );
+  });
+
+  it("writes the Settings flag ALONGSIDE the mode, never instead of it", () => {
+    // The mode underneath the surface is still named, which is what gives
+    // closing Settings somewhere to land — and what makes a copied link reopen
+    // the surface OVER the canvas it was opened from rather than over a default.
+    expect(surfaceHref(at("?wiki=abc"), "graph", true)).toBe(
+      "/?wiki=abc&mode=graph&settings=1",
+    );
+    expect(surfaceHref(at(""), "chat", true)).toBe("/?mode=chat&settings=1");
+    // In place, like the mode, when the location already carries it.
+    expect(surfaceHref(at("?settings=1&wiki=abc"), "chat", true)).toBe(
+      "/?settings=1&wiki=abc&mode=chat",
+    );
+  });
+
+  it("DELETES the flag when Settings is closed rather than writing it off", () => {
+    // A closed surface is the ordinary state, so the ordinary URL is the one
+    // without the param. `settings=0` would make the closed state two strings
+    // instead of one, and the shell compares strings to decide whether to write
+    // a history entry at all.
+    expect(surfaceHref(at("?mode=chat&settings=1"), "chat", false)).toBe("/?mode=chat");
+    expect(surfaceHref(at("?wiki=abc&settings=1&mode=chat"), "graph", false)).toBe(
+      "/?wiki=abc&mode=graph",
+    );
+    // Including a value the reader would already have called closed: the writer
+    // leaves no `settings` key behind whatever it found.
+    expect(surfaceHref(at("?settings=0"), "lint", false)).toBe("/?mode=lint");
+    expect(surfaceHref(at("?settings=1", "/", "#notes"), "lint", false)).toBe(
+      "/?mode=lint#notes",
+    );
+  });
+
+  it("names both params when the location carried only the flag", () => {
+    // A hand-shortened or hand-edited link. The two params are independent —
+    // the flag is read straight from the URL while the mode falls back to
+    // storage — so the builder has to be able to ADD the mode beside a flag it
+    // did not write, which is what makes the seed's one `replaceState` able to
+    // normalize such a URL into one that names a whole surface.
+    expect(surfaceHref(at("?settings=1"), "chat", true)).toBe(
+      "/?settings=1&mode=chat",
+    );
+    expect(readSettingsFromSearch("?settings=1")).toBe(true);
+    // …and the mode is storage's answer, because the URL names none.
+    expect(readModeFromSearch("?settings=1")).toBeNull();
+    expect(initialMode("?settings=1", "lint")).toBe("lint");
+  });
+
+  it("round-trips through its own reader, both ways", () => {
+    // The writer and the reader are the two halves of one convention, and the
+    // only thing that keeps them from drifting is running them against each
+    // other.
+    for (const open of [true, false]) {
+      const href = surfaceHref(at("?wiki=abc"), "graph", open);
+      const query = href.slice(href.indexOf("?"));
+      expect(readSettingsFromSearch(query)).toBe(open);
+      expect(readModeFromSearch(query)).toBe("graph");
+    }
   });
 
   it("normalizes the query string while preserving every value", () => {
@@ -134,7 +250,7 @@ describe("modeHref", () => {
       ["?flag", "/?flag=&mode=lint"],
       ["?tags=x,y", "/?tags=x%2Cy&mode=lint"],
     ] as const) {
-      const href = modeHref(at(search), "lint");
+      const href = surfaceHref(at(search), "lint", false);
       expect(href).toBe(expected);
       const before = new URLSearchParams(search);
       const after = new URLSearchParams(href.slice(href.indexOf("?")));
@@ -143,25 +259,42 @@ describe("modeHref", () => {
   });
 
   it("is idempotent on the normalized form, which is what makes the skip-the-write check sound", () => {
-    // `selectMode` and the mount seed both compare this against the current
-    // href and write no history entry when they agree. That comparison is only
-    // meaningful if applying the rule twice cannot produce a third string —
-    // i.e. the normalized form has to be a FIXED POINT, which is what makes the
-    // one-off rewrite above a one-off.
+    // `selectMode`, `toggleSettings`, `openSettings` and the mount seed all
+    // compare this against the current href and write no history entry when they
+    // agree. That comparison is only meaningful if applying the rule twice
+    // cannot produce a third string — i.e. the normalized form has to be a FIXED
+    // POINT, which is what makes the one-off rewrite above a one-off.
     //
     // Fed from the raw inputs, not from this function's own output: handing it
     // back its already-normalized answer can only exercise strings that survive
     // round-tripping, so it could never fail for the reason this test exists.
-    for (const search of ["?wiki=abc", "?q=a%20b", "?flag", "?tags=x,y", "?mode=todos"]) {
-      const once = modeHref(at(search, "/", "#notes"), "todos");
-      const query = once.slice(once.indexOf("?"), once.indexOf("#"));
-      expect(modeHref(at(query, "/", "#notes"), "todos")).toBe(once);
+    //
+    // Run for BOTH flag values, because the delete branch has its own way to
+    // fail: a writer that emitted `settings=0` would be stable on the second
+    // pass and still wrong on the first.
+    for (const open of [true, false]) {
+      for (const search of [
+        "?wiki=abc",
+        "?q=a%20b",
+        "?flag",
+        "?tags=x,y",
+        "?mode=todos",
+        "?mode=todos&settings=1",
+        "?settings=0",
+      ]) {
+        const once = surfaceHref(at(search, "/", "#notes"), "todos", open);
+        const query = once.slice(once.indexOf("?"), once.indexOf("#"));
+        expect(surfaceHref(at(query, "/", "#notes"), "todos", open)).toBe(once);
+      }
     }
-    // The one input that is already its own normalized form.
-    expect(modeHref(at("?mode=todos"), "todos")).toBe("/?mode=todos");
+    // The two inputs that are already their own normalized form.
+    expect(surfaceHref(at("?mode=todos"), "todos", false)).toBe("/?mode=todos");
+    expect(surfaceHref(at("?mode=todos&settings=1"), "todos", true)).toBe(
+      "/?mode=todos&settings=1",
+    );
   });
 
   it("leaves a path other than `/` alone", () => {
-    expect(modeHref(at("", "/nested"), "review")).toBe("/nested?mode=review");
+    expect(surfaceHref(at("", "/nested"), "review", false)).toBe("/nested?mode=review");
   });
 });

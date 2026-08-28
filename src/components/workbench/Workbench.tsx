@@ -54,8 +54,8 @@ import {
 import {
   initialMode,
   locationHref,
-  modeHref,
-  readModeFromSearch,
+  readSettingsFromSearch,
+  surfaceHref,
 } from "@/lib/workbench-url";
 import {
   DEFAULT_SETTINGS_CATEGORY,
@@ -136,8 +136,11 @@ import { useReviewBadge } from "./useReviewBadge";
  * surface yet; honouring it structurally now is what lets Story 3.2 lift a
  * draft into this state without a rewrite.
  *
- * The active mode is nonetheless MIRRORED into `?mode=` (DW-27), so a mode can
- * be linked, bookmarked and reached with Back. That is `window.history`
+ * The active mode is nonetheless MIRRORED into `?mode=` (DW-27), and an open
+ * Settings surface into `?settings=1` beside it (DW-167), so a surface can be
+ * linked, bookmarked and reached with Back — and so Back from Settings on the
+ * first entry of a session closes the surface instead of leaving the app with
+ * its unsaved draft. That is `window.history`
  * pushState / replaceState — Next 15's sanctioned shallow-routing call, which
  * updates the URL with no server round trip and no unmount — never the router,
  * and never a `next/navigation` search-params hook (it would force a Suspense
@@ -149,10 +152,11 @@ import { useReviewBadge } from "./useReviewBadge";
  * patches the history methods, the search-params hook elsewhere in the tree SEES
  * each write — and `Analytics` (mounted app-wide by `ClientProviders`) captures
  * a `$pageview` whenever it changes. So a mode switch is now a pageview — one
- * per rail click, plus one more when the mount seed corrects the URL.
- * Recorded rather than suppressed: a mode has an address now, so counting a
+ * per rail click, plus one more when the mount seed corrects the URL — and so
+ * is opening or closing Settings, for the same reason and by the same route.
+ * Recorded rather than suppressed: a surface has an address now, so counting a
  * switch as a page view is the honest reading, and the alternative is teaching
- * `Analytics` to special-case a param this component owns.
+ * `Analytics` to special-case the two params this component owns.
  *
  * DOM order is rail → left column → canvas → Preview, so the tab order the
  * accessibility floor specifies falls out of the markup instead of `tabindex`
@@ -314,6 +318,23 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // `sheetOpenRef` and `latestRef` already use.
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  // …and the same for the Settings SURFACE, which the URL now carries too
+  // (DW-167). The `popstate` handler has to ask "did this traversal move the
+  // surface?" as well as "did it move the mode?", and `openSettings` reads the
+  // mode without taking a dependency on it — both for the reason above: a
+  // listener rebuilt on every surface change is a listener registered on the
+  // wrong render.
+  const settingsOpenRef = useRef(settingsOpen);
+  settingsOpenRef.current = settingsOpen;
+  // …and the category, for the SAME reason and nothing else: `applySurface`
+  // announces the Settings sentence on a traversal into the surface, and that
+  // sentence names the pane. Closed over as state it would make `applySurface`
+  // — and `applyMode`, `selectMode`, `openResearch` and the `popstate`
+  // listener behind them — a new identity on every category pick, which is
+  // exactly the listener churn `modeRef` exists to avoid. Only the ANNOUNCEMENT
+  // reads it; `selectSettingsCategory` still drives the state.
+  const settingsCategoryIdRef = useRef(settingsCategoryId);
+  settingsCategoryIdRef.current = settingsCategoryId;
   // Read inside handlers and the mount effect without taking a dependency on
   // them — assigned during render, the `useDialogA11y` idiom `PreviewColumn`
   // already follows. The mount effect must see the trees the FIRST render was
@@ -399,10 +420,12 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   }, [dataVersion]);
 
   useEffect(() => {
-    // The URL wins over storage, and only for the MODE (DW-27): a deep link is
-    // an explicit instruction, while the stored mode is a preference from an
-    // earlier session. Everything below still reads storage and nothing else —
-    // the tab, the collapse flag, the widths and the row are browser-local view
+    // The URL wins over storage for the MODE (DW-27) and is the WHOLE of the
+    // Settings surface's restore (DW-167): a deep link is an explicit
+    // instruction, while the stored mode is a preference from an earlier
+    // session, and Settings has no stored counterpart at all to lose an
+    // argument to. Everything below still reads storage and nothing else — the
+    // tab, the collapse flag, the widths and the row are browser-local view
     // state with nothing to link to.
     //
     // URL-first is not an SSR guarantee. This is an EFFECT, exactly like the
@@ -418,18 +441,37 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // verbatim. The accessors are guarded reads with no side effect, so the
     // extra calls cost nothing and the frozen forms stay exactly as they were.
     const restoredMode = initialMode(window.location.search, readStoredMode());
+    // SILENT, exactly like the mode restore: no announcement and no focus move,
+    // because landing on a link somebody sent is not a change the owner made.
+    // The surface is restored OVER the mode the same URL names, so closing it
+    // reveals the canvas the link intended rather than a default.
+    const restoredSettings = readSettingsFromSearch(window.location.search);
     const restoredTab = readStoredTreeTab();
     setModeState(restoredMode);
+    setSettingsOpen(restoredSettings);
     setCollapsed(readStoredCollapsed());
     setTreeTab(readStoredTreeTab());
     setWidths(readStoredSplitWidths());
-    // Seed the URL so the FIRST entry names its mode too. Without this, Back
-    // after one switch lands on an entry with no `mode` at all and the popstate
-    // handler below would have to invent a policy for it. `replaceState`, so no
-    // entry is added and the owner's Back button still leaves the app on the
-    // first press.
+    // Seed the URL so the FIRST entry names its mode AND its surface too.
+    // Without this, Back after one switch lands on an entry with no `mode` at
+    // all and the popstate handler below would have to invent a policy for it.
+    // `replaceState`, so no entry is added and the owner's Back button still
+    // leaves the app on the first press.
+    //
+    // That REPLACE is what makes DW-167's second half work IN SESSION: the
+    // entry Settings is then pushed onto names the surface as closed, so Back
+    // from Settings lands on it and closes the surface instead of leaving.
+    //
+    // It does NOT cover a `?settings=1` deep link opened in a fresh tab. That
+    // entry is the first in its session, this replace only rewrites it in place,
+    // and there is nothing behind it — so Back leaves the app, taking whatever
+    // the owner had typed into Settings with it. Unfixable from here: a seeded
+    // extra entry would mean the owner's first Back never left the app they
+    // arrived on, which is worse. The residue is bounded to a link that was
+    // COPIED while Settings was open and followed into a new tab; every
+    // in-session route to the surface pushes its own entry.
     try {
-      const seeded = modeHref(window.location, restoredMode);
+      const seeded = surfaceHref(window.location, restoredMode, restoredSettings);
       if (seeded !== locationHref(window.location)) {
         window.history.replaceState(null, "", seeded);
       }
@@ -620,48 +662,110 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   const closeSheet = useCallback(() => setSheetClosed(true), [setSheetClosed]);
 
   /**
-   * Everything a mode change does to this shell, with nothing said about the
-   * URL. Split out of `selectMode` so a `popstate` — which arrives with the URL
+   * Send the keyboard to `#wb-canvas` — the shell's ONE landing site — on the
+   * next commit (DW-413, DW-423, DW-425).
+   *
+   * A NONCE rather than a boolean the effect keys on. Keyed on `settingsOpen`,
+   * the move fired exactly once per transition into the surface: a second `g s`
+   * announced Settings and moved nothing, because the flag was already true and
+   * the effect had no change to observe; and Back OUT of Settings moved nothing
+   * either, because the effect only ran in one direction. A counter moves on
+   * every bump, so the same destination can be reached again and can be reached
+   * from both directions — while the paths that must NOT move focus (the rail
+   * control closing Settings, a traversal that only changes the mode) simply do
+   * not bump it.
+   *
+   * `#wb-canvas` is the right target in both directions because `ModeCanvas` and
+   * `SettingsCanvas` hand the id and `tabIndex={-1}` back and forth: whichever
+   * section is on screen is the one answering to it.
+   */
+  const [canvasFocusNonce, setCanvasFocusNonce] = useState(0);
+  const bumpCanvasFocus = useCallback(() => setCanvasFocusNonce((n) => n + 1), []);
+
+  /**
+   * Everything a SURFACE change does to this shell, with nothing said about the
+   * URL — the mode AND whether Settings is open over it, because since DW-167
+   * both are in the URL and a traversal can move either or both.
+   *
+   * Split out of `selectMode` so a `popstate` — which arrives with the URL
    * ALREADY moved — can reuse it without writing a second history entry for the
    * traversal that just happened.
    */
-  const applyMode = useCallback(
-    (next: WorkbenchModeId) => {
+  const applySurface = useCallback(
+    (next: WorkbenchModeId, settings: boolean) => {
       setModeState(next);
       // Storage is written on this path too, including from `popstate`: what is
       // on screen and what a param-less reload would restore must not diverge.
       // Outside any state updater, the rule `toggleCollapsed` already follows —
-      // React invokes updaters twice under StrictMode.
+      // React invokes updaters twice under StrictMode. The MODE only: Settings
+      // is deliberately not a stored preference (see its declaration above).
       writeStoredMode(next);
-      announce(workbenchMode(next).label);
+      // An `if`/`else`, never a ternary inside one `announce(…)` call: a
+      // traversal INTO Settings has to say the Settings sentence and one OUT of
+      // it the mode's, and `workbench-chrome.test.ts` pins
+      // `announce(workbenchMode(next).label)` as a literal — a conditional
+      // argument would defeat that pin while changing nothing else.
+      if (settings) {
+        announce(
+          settingsAnnouncement(settingsCategory(settingsCategoryIdRef.current).label),
+        );
+      } else {
+        announce(workbenchMode(next).label);
+      }
       // Leaving Settings is what DISCARDS the draft: `SettingsCanvas` owns it,
       // so unmounting the surface is the whole of "unsaved edits are discarded
       // on leave". No diff, no prompt, nothing sent.
-      setSettingsOpen(false);
+      setSettingsOpen(settings);
       closeSheet();
     },
     [announce, closeSheet],
   );
 
+  /**
+   * Picking a MODE is picking a surface with Settings closed — the wrapper the
+   * rail's mode controls and `openResearch` use, so neither has to restate the
+   * flag.
+   */
+  const applyMode = useCallback(
+    (next: WorkbenchModeId) => {
+      applySurface(next, false);
+    },
+    [applySurface],
+  );
+
+  /**
+   * The ONE place a history entry is written for a surface the owner picked.
+   *
+   * Compared against the URL, not against the state this is about to change:
+   * re-clicking the mode already showing, or pressing `g s` with Settings
+   * already open, adds no entry for Back to swallow before it reaches the
+   * surface the owner came from. The comparison is only sound because
+   * `surfaceHref` is idempotent on its own normalized output — see its header.
+   *
+   * Both params move together because one builder writes both: there is never a
+   * moment where the URL names half a surface.
+   */
+  const pushSurface = useCallback((next: WorkbenchModeId, settings: boolean) => {
+    try {
+      const href = surfaceHref(window.location, next, settings);
+      if (href !== locationHref(window.location)) {
+        window.history.pushState(null, "", href);
+      }
+    } catch {
+      // Same degrade as the mount seed, and the reason every caller applies the
+      // surface BEFORE calling this rather than wrapping the pair: the surface
+      // has already changed and been written down, so a history failure costs
+      // the owner a linkable URL and nothing else. Rethrowing would take the
+      // surface change — and the focus move that follows it — with it.
+    }
+  }, []);
+
   const selectMode = useCallback(
     (next: WorkbenchModeId) => {
       applyMode(next);
-      try {
-        // Compared against the URL, not against `mode`: no dependency on the
-        // state this is about to change, and re-clicking the mode already
-        // showing adds no entry for Back to swallow before it reaches the
-        // previous mode.
-        if (readModeFromSearch(window.location.search) !== next) {
-          window.history.pushState(null, "", modeHref(window.location, next));
-        }
-      } catch {
-        // Same degrade as the mount seed, and the reason this sits AFTER
-        // `applyMode` rather than around it: the mode has already switched and
-        // been written down, so a history failure costs the owner a linkable
-        // URL and nothing else. Rethrowing would take the mode switch with it.
-      }
+      pushSurface(next, false);
     },
-    [applyMode],
+    [applyMode, pushSurface],
   );
 
   const openResearch = useCallback(
@@ -680,21 +784,36 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // (EXPERIENCE.md:175).
   useEffect(() => {
     const onPopState = () => {
-      const next = initialMode(window.location.search, readStoredMode());
+      const search = window.location.search;
+      const next = initialMode(search, readStoredMode());
+      const settings = readSettingsFromSearch(search);
       // Not every entry in this session is one the shell wrote. The skip link
       // in `SiteChrome` is an `<a href="#wb-canvas">`, and following it pushes a
-      // fragment entry carrying the SAME `?mode=` — so Back from there is a
-      // traversal with no mode change in it. Handing that to `applyMode` would
-      // close Settings (discarding the draft `SettingsCanvas` holds), rewrite
-      // storage and announce a surface switch that never happened. `modeRef`
-      // rather than `mode`, so this listener is registered once and not rebuilt
-      // on every mode change.
-      if (next === modeRef.current) return;
-      applyMode(next);
+      // fragment entry carrying the SAME query — so Back from there is a
+      // traversal with no surface change in it. Handing that to `applySurface`
+      // would close Settings (discarding the draft `SettingsCanvas` holds),
+      // rewrite storage and announce a surface switch that never happened.
+      //
+      // The guard compares the PAIR (DW-167). Back out of Settings moves the
+      // flag and nothing else — the mode underneath is exactly the mode the
+      // previous entry named — so a guard that looked at the mode alone would
+      // swallow the headline case of this entry with the very check that
+      // protects the fragment entry. `modeRef`/`settingsOpenRef` rather than the
+      // state, so this listener is registered once and not rebuilt on every
+      // surface change.
+      if (next === modeRef.current && settings === settingsOpenRef.current) return;
+      // Read BEFORE `applySurface`, which is what moves the ref on the next
+      // render: a traversal that swaps the canvas has no control holding the
+      // keyboard, so the landing site has to catch it (DW-423). A traversal that
+      // only changes the MODE moves nothing — the canvas the owner was standing
+      // in is still the canvas on screen.
+      const movedSettings = settings !== settingsOpenRef.current;
+      applySurface(next, settings);
+      if (movedSettings) bumpCanvasFocus();
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [applyMode]);
+  }, [applySurface, bumpCanvasFocus]);
 
   // Opening Settings is `useState` on the ONE mounted shell, exactly as a mode
   // switch is — never `router.push`, never a `<Link>`. The announcement names
@@ -709,12 +828,30 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     if (settingsOpen) {
       setSettingsOpen(false);
       announce(workbenchMode(mode).label);
+      // NOT bumped. This control is what closed the surface and already holds
+      // the keyboard; moving it would take the owner off the thing they pressed.
     } else {
       setSettingsOpen(true);
       announce(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
+      // The canvas the owner was standing in goes `display: none` in this same
+      // commit, so the keyboard has to be caught (DW-413).
+      bumpCanvasFocus();
     }
+    // One entry per press, both ways — the surface has an address now, so Back
+    // undoes the press that opened it and Forward redoes it. AFTER the state
+    // change, like every other caller, so a `SecurityError` costs the linkable
+    // URL and nothing else.
+    pushSurface(mode, !settingsOpen);
     closeSheet();
-  }, [announce, closeSheet, mode, settingsCategoryId, settingsOpen]);
+  }, [
+    announce,
+    bumpCanvasFocus,
+    closeSheet,
+    mode,
+    pushSurface,
+    settingsCategoryId,
+    settingsOpen,
+  ]);
 
   /**
    * The keyboard's way in, and it OPENS rather than toggles (DW-62).
@@ -765,8 +902,16 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   const openSettings = useCallback(() => {
     setSettingsOpen(true);
     announce(settingsAnnouncement(settingsCategory(settingsCategoryId).label));
+    // Bumped on EVERY press, including one with the surface already open: the
+    // announcement said "Settings" and the keyboard has to be where the
+    // announcement says it is (DW-425). `modeRef`, so this callback's identity
+    // does not move with the mode — `useShortcutAction` re-registers on it.
+    bumpCanvasFocus();
+    // …and no entry when the surface is already open: `pushSurface` compares the
+    // href it would write, and `g s` on open Settings would write the same one.
+    pushSurface(modeRef.current, true);
     closeSheet();
-  }, [announce, closeSheet, settingsCategoryId]);
+  }, [announce, bumpCanvasFocus, closeSheet, pushSurface, settingsCategoryId]);
 
   // Claimed for as long as this shell is mounted, and released when it is not —
   // so `g s` on a page with no Workbench still navigates to `/settings`, which
@@ -1269,31 +1414,40 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   }, [sheetOpen]);
 
   /**
-   * Opening Settings takes the keyboard to it (DW-413).
+   * Swapping the canvas takes the keyboard to it (DW-413, DW-423, DW-425).
    *
    * Before this, opening Settings moved focus NOWHERE: the mode canvas the
    * owner was standing in goes `display: none` in the same commit, so a browser
    * blurs whatever held focus inside it and drops the keyboard on `<body>` —
    * with the whole shell to Tab back through, past a rail and a nav, to reach
-   * the surface they just asked for. `#wb-canvas` is the Settings section: it
-   * already carries `CANVAS_ID` and `tabIndex={-1}` because `ModeCanvas` gives
-   * both up while hidden, which is exactly what makes it able to receive this.
+   * the surface they just asked for. `#wb-canvas` is whichever section is on
+   * screen: it carries `CANVAS_ID` and `tabIndex={-1}` because the hidden one
+   * gives both up, which is exactly what makes it able to receive this — and
+   * what makes it the right destination when Settings CLOSES on a traversal too,
+   * where the surface goes away with no control holding the keyboard.
    *
    * Read from the DOCUMENT rather than through a ref, because the two sections
    * hand that id back and forth — a ref would have to be threaded into
    * `SettingsCanvas` and would then name the node whether or not it is the one
    * currently answering to `#wb-canvas`.
    *
-   * ONE direction only. Closing Settings does not move focus from here: the
-   * rail control the owner pressed is the thing that closed it and already
-   * holds the keyboard, and `g s` cannot close it at all (DW-62).
+   * Keyed on the NONCE, not on `settingsOpen`. The boolean could only report a
+   * change of state, so a second `g s` over an open surface announced Settings
+   * and moved nothing (DW-425) and a Back that took the surface away moved
+   * nothing either (DW-423). The bump sites are the whole policy — both openers
+   * and a traversal that MOVES the flag — and the paths that must leave the
+   * keyboard alone (the rail control closing Settings, a traversal that only
+   * changes the mode) are exactly the ones that do not bump.
    *
-   * That is a statement about THIS effect, not about the commit. If the
-   * revealed surface has a dialog open on it, `useDialogA11y` re-arms as the
-   * canvas comes back and focuses the dialog container — DW-26's designed
-   * behaviour, and the reason a Create Wiki draft survives a Settings visit
-   * with the keyboard back inside it. Nothing here competes with that: this
-   * effect returns before touching focus whenever `settingsOpen` is false.
+   * Guarding on the initial value keeps the MOUNT silent, which is what lets a
+   * `?settings=1` deep link restore the surface without stealing focus from
+   * whatever the visitor was doing: a restore is not a change the owner made.
+   *
+   * If the revealed surface has a dialog open on it, `useDialogA11y` re-arms as
+   * the canvas comes back and focuses the dialog container — DW-26's designed
+   * behaviour, and the reason a Create Wiki draft survives a Settings visit with
+   * the keyboard back inside it. Nothing here competes with that: this effect
+   * runs only when something bumped the nonce.
    *
    * Declared AFTER the sheet's restore above, so that below the breakpoint —
    * where picking Settings from the sheet closes the sheet in the same commit —
@@ -1301,9 +1455,38 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    * the trigger they used to ask for it.
    */
   useEffect(() => {
-    if (!settingsOpen) return;
+    if (canvasFocusNonce === 0) return;
+    // …unless the canvas being revealed holds a LIVE modal dialog.
+    //
+    // Back out of Settings and the rail's own close are the same commit as far
+    // as the mode canvas is concerned: `hidden` comes off, `SurfaceVisibility`
+    // goes true, and `useDialogA11y` re-arms and focuses the dialog container.
+    // That is a CHILD effect, so it has already run by the time this one does —
+    // and moving focus to `#wb-canvas` behind it would leave the keyboard
+    // OUTSIDE an `aria-modal` dialog whose Tab trap is armed, which is the one
+    // place a keyboard user must never be. The rail close never reaches here
+    // (it does not bump); the traversal does, so the guard is what makes the two
+    // paths agree.
+    //
+    // "Live" is the distinction, not "present": a dialog stood down under the
+    // withdrawn canvas is still in the DOCUMENT — that is DW-373's whole design
+    // — so a bare `[role="dialog"][aria-modal="true"]` query would find the
+    // Create Wiki dialog on the way INTO Settings and refuse the move this
+    // effect exists for. A modal inside a `[hidden]` subtree is withdrawn along
+    // with its surface and holds nothing.
+    //
+    // Deliberately NOT keyed on `document.activeElement`: jsdom does not blur
+    // through an ancestor `hidden` the way a browser does, so "is focus already
+    // in the dialog?" answers differently in the two environments and the guard
+    // would be pinned to the wrong one.
+    const modals = document.querySelectorAll<HTMLElement>(
+      '[role="dialog"][aria-modal="true"]',
+    );
+    for (const modal of modals) {
+      if (modal.closest("[hidden]") === null) return;
+    }
     document.getElementById(CANVAS_ID)?.focus();
-  }, [settingsOpen]);
+  }, [canvasFocusNonce]);
 
   // Where inside the grab strip the press landed, in width space (DW-44).
   // Measured ONCE on `pointerdown` and replayed into every `pointermove`, so the

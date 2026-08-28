@@ -11,9 +11,23 @@ import {
   writeStoredSelection,
 } from "@/lib/workbench-state";
 import { announcementSentence } from "@/lib/live-region";
+import { CANVAS_ID } from "@/components/workbench/ModeCanvas";
+import {
+  DEFAULT_SETTINGS_CATEGORY,
+  SETTINGS_LABEL,
+  settingsAnnouncement,
+  settingsCategory,
+} from "@/lib/workbench-settings";
 
 /**
- * DW-27 — the active mode mirrored into `?mode=`, MOUNTED.
+ * DW-27 / DW-167 — the active surface mirrored into the URL, MOUNTED.
+ *
+ * The mode goes into `?mode=` and an open Settings surface into `?settings=1`,
+ * alongside it rather than instead of it — so a copied link reopens Settings
+ * over the canvas it was opened from, and Back on the first entry of a session
+ * closes the surface instead of leaving the app with an unsaved Settings draft
+ * in it. The keyboard follows the canvas in both directions (DW-423): a
+ * traversal has no control holding it, so `#wb-canvas` has to catch it.
  *
  * `workbench-url.test.ts` executes the URL rules and `workbench-chrome.test.ts`
  * reads the shell as text — between them they can see that `pushState` is
@@ -173,6 +187,21 @@ function announced(): string {
   return announcementSentence(regions[regions.length - 1]?.textContent ?? "");
 }
 
+/** Is the in-shell Settings surface showing? */
+function settingsShowing(): boolean {
+  return document.querySelector(".wb-set-pad") !== null;
+}
+
+/** The section currently answering to `#wb-canvas` — the shell's landing site. */
+function landingSite(): HTMLElement | null {
+  return document.getElementById(CANVAS_ID);
+}
+
+/** The announcement the Settings surface produces, from the module that owns it. */
+const SETTINGS_ANNOUNCEMENT = settingsAnnouncement(
+  settingsCategory(DEFAULT_SETTINGS_CATEGORY).label,
+);
+
 /** How long to wait for a traversal jsdom may never perform. */
 const POPSTATE_TIMEOUT_MS = 1000;
 
@@ -242,7 +271,7 @@ describe("Workbench mode ↔ URL", () => {
   });
 
   it("rewrites a normalizable query once on load, adding no entry", async () => {
-    // `modeHref` rebuilds the query with `URLSearchParams.toString()`, which
+    // `surfaceHref` rebuilds the query with `URLSearchParams.toString()`, which
     // re-encodes rather than echoing: `%20` becomes `+`. So on a URL like this
     // the seed's `seeded !== locationHref` comparison is true from the encoding
     // ALONE, even though `mode` was already correct — the rewrite is real and
@@ -329,31 +358,172 @@ describe("Workbench mode ↔ URL", () => {
   });
 
   it("closes Settings on Back, and leaves the mode the entry names", async () => {
+    // Settings is a SURFACE over a mode, so the entry that carries it names the
+    // mode underneath as well — which is what gives closing it somewhere to
+    // land. Before DW-167 the surface was in no entry at all, so this Back went
+    // straight past it to the previous MODE and the owner lost two steps for
+    // one press.
     await renderShell();
     fireEvent.click(railItem("Chat"));
-    fireEvent.click(railItem("Settings"));
-    expect(current()).toBe("Settings");
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    expect(current()).toBe(SETTINGS_LABEL);
+    expect(window.location.search).toBe("?mode=chat&settings=1");
+
+    await traverse(() => window.history.back());
+
+    expect(settingsShowing()).toBe(false);
+    expect(current()).toBe("Chat");
+    expect(window.location.search).toBe("?mode=chat");
+    // A traversal IS a change the owner made, so it announces the surface it
+    // lands on — here the mode the entry names, not the one two steps back.
+    expect(announced()).toBe("Chat");
+    // DW-423: the canvas swapped with no control holding the keyboard, so the
+    // landing site has to catch it or the owner is dropped on `<body>`.
+    expect(document.activeElement).toBe(landingSite());
+    expect(landingSite()?.querySelector(".wb-set-pad")).toBeNull();
+
+    await traverse(() => window.history.forward());
+
+    // …and Forward puts it back, announcement and keyboard included.
+    expect(settingsShowing()).toBe(true);
+    expect(current()).toBe(SETTINGS_LABEL);
+    expect(window.location.search).toBe("?mode=chat&settings=1");
+    expect(announced()).toBe(SETTINGS_ANNOUNCEMENT);
+    expect(document.activeElement).toBe(landingSite());
+  });
+
+  it("restores an open Settings surface from a deep link, silently", async () => {
+    // The copied-link case, and the whole of Settings' persistence: there is no
+    // stored Settings preference and there must not be one, so the param is the
+    // only thing that can bring the surface back.
+    window.history.replaceState(null, "", "/?mode=chat&settings=1");
+    writeStoredMode("wiki");
+    const before = window.history.length;
+    const resting = document.activeElement;
+
+    await renderShell();
+
+    expect(settingsShowing()).toBe(true);
+    expect(current()).toBe(SETTINGS_LABEL);
+    expect(window.location.search).toBe("?mode=chat&settings=1");
+    // A restore is not a change the owner made: no entry, nothing announced,
+    // and the keyboard left exactly where the visitor had it.
+    expect(window.history.length).toBe(before);
+    expect(announced()).toBe("");
+    expect(document.activeElement).toBe(resting);
+    // …and the mode UNDERNEATH the surface came back with it, which is what
+    // closing Settings then reveals. A `mode=settings` spelling could not have
+    // carried this.
+    expect(readStoredMode()).toBe("chat");
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    expect(current()).toBe("Chat");
+  });
+
+  it("honours a settings flag that carries no mode, and seeds the mode beside it", async () => {
+    // The two params are read independently: the flag comes straight from the
+    // URL, the mode falls back to storage when the URL names none. So a
+    // hand-shortened link still opens the surface it asked for, over the canvas
+    // the owner last used rather than over nothing — and the seed's one
+    // `replaceState` writes the mode in beside the flag, so the FIRST entry of
+    // the session names a whole surface and Back has no half-named entry to
+    // land on.
+    window.history.replaceState(null, "", "/?settings=1");
+    writeStoredMode("lint");
+    const before = window.history.length;
+
+    await renderShell();
+
+    expect(settingsShowing()).toBe(true);
+    expect(current()).toBe(SETTINGS_LABEL);
+    expect(window.location.search).toBe("?settings=1&mode=lint");
+    // Still a restore: normalized in place, with nothing announced and no entry.
+    expect(window.history.length).toBe(before);
+    expect(announced()).toBe("");
+
+    // …and the mode it seeded is the one the surface is open OVER.
+    fireEvent.click(railItem(SETTINGS_LABEL));
+
+    expect(current()).toBe("Lint");
+    expect(window.location.search).toBe("?mode=lint");
+  });
+
+  it("pushes one entry when Settings opens from the rail, and lands the keyboard", async () => {
+    await renderShell();
+    const before = window.history.length;
+
+    const opener = railItem(SETTINGS_LABEL);
+    opener.focus();
+    fireEvent.click(opener);
+    await act(async () => {});
+
+    expect(settingsShowing()).toBe(true);
+    expect(window.location.search).toBe("?mode=wiki&settings=1");
+    // Exactly one — the press is a step the owner can undo, and no more than a
+    // step.
+    expect(window.history.length).toBe(before + 1);
+    expect(document.activeElement).toBe(landingSite());
+
+    // …and Back on the FIRST entry of the session closes the surface rather
+    // than leaving the app holding an unsaved Settings draft (DW-167).
+    await traverse(() => window.history.back());
+
+    expect(settingsShowing()).toBe(false);
+    expect(current()).toBe("Wiki");
+    expect(announced()).toBe("Wiki");
+    expect(document.activeElement).toBe(landingSite());
+    // Nothing navigated: the shell is the same mounted tree.
+    expect(screen.getByText("canvas")).toBeTruthy();
+  });
+
+  it("drops the flag and adds an entry when the rail control CLOSES Settings", async () => {
+    await renderShell();
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    const before = window.history.length;
+
+    const closer = railItem(SETTINGS_LABEL);
+    closer.focus();
+    fireEvent.click(closer);
+    await act(async () => {});
+
+    expect(settingsShowing()).toBe(false);
+    // DELETED, not written off: the closed surface has one URL, which is what
+    // makes the skip-the-write comparison meaningful.
+    expect(window.location.search).toBe("?mode=wiki");
+    expect(window.history.length).toBe(before + 1);
+    // The keyboard stays on the control that was pressed — it is what closed
+    // the surface and it already holds focus.
+    expect(document.activeElement).toBe(closer);
+  });
+
+  it("moves no focus on a traversal that only changes the mode", async () => {
+    // The other half of the nonce's policy. The canvas the owner was standing
+    // in is still the canvas on screen, so a focus move here would take the
+    // keyboard off whatever they were using to traverse.
+    await renderShell();
+    fireEvent.click(railItem("Chat"));
+    const resting = railItem("Graph");
+    resting.focus();
 
     await traverse(() => window.history.back());
 
     expect(current()).toBe("Wiki");
     expect(announced()).toBe("Wiki");
+    expect(document.activeElement).toBe(resting);
   });
 
-  it("adds no entry when the mode already showing is clicked again", async () => {
+  it("adds no entry when the surface already showing is clicked again", async () => {
+    // Nothing about the URL moved, so there is nothing to undo: an entry here
+    // would be one Back has to swallow before it can reach the mode the owner
+    // came from. The guard is a comparison against the href the shell WOULD
+    // write, so it covers both params at once.
     await renderShell();
     fireEvent.click(railItem("Chat"));
-    fireEvent.click(railItem("Settings"));
     const before = window.history.length;
 
     fireEvent.click(railItem("Chat"));
 
-    // Settings still closes — the click is not a no-op, it is a return to the
-    // mode canvas.
     expect(current()).toBe("Chat");
     expect(window.location.search).toBe("?mode=chat");
-    // …but an entry here would be one Back has to swallow before it can reach
-    // the mode the owner came from.
     expect(window.history.length).toBe(before);
 
     await traverse(() => window.history.back());
@@ -361,26 +531,52 @@ describe("Workbench mode ↔ URL", () => {
     expect(current()).toBe("Wiki");
   });
 
+  it("closes Settings and adds one entry when a MODE is picked from it", async () => {
+    // Picking a mode with Settings open is a return to a canvas, and since
+    // DW-167 the URL says so — the flag really is dropped, so the press is a
+    // step Back can undo, exactly as the rail's own Settings control is.
+    await renderShell();
+    fireEvent.click(railItem("Chat"));
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    const before = window.history.length;
+
+    fireEvent.click(railItem("Chat"));
+
+    expect(settingsShowing()).toBe(false);
+    expect(current()).toBe("Chat");
+    expect(window.location.search).toBe("?mode=chat");
+    expect(window.history.length).toBe(before + 1);
+
+    await traverse(() => window.history.back());
+
+    expect(settingsShowing()).toBe(true);
+  });
+
   it("leaves everything alone on a traversal that does not move the mode", async () => {
     await renderShell();
     fireEvent.click(railItem("Settings"));
     expect(current()).toBe("Settings");
     const settingsAnnouncement = announced();
+    const resting = railItem("Graph");
+    resting.focus();
     // The skip link `SiteChrome` renders on this route is an
     // `<a href="#wb-canvas">`, and following it pushes a fragment entry that
-    // carries the SAME `?mode=`. Back from there is a traversal the shell did
-    // not author and in which no mode changed.
-    window.history.pushState(null, "", "/?mode=wiki#wb-canvas");
+    // carries the SAME query — mode and Settings flag both. Back from there is
+    // a traversal the shell did not author and in which no surface changed.
+    window.history.pushState(null, "", "/?mode=wiki&settings=1#wb-canvas");
 
     await traverse(() => window.history.back());
 
-    // Handing this to the mode-change path would close Settings — which is what
-    // DISCARDS the draft `SettingsCanvas` is holding — rewrite storage, and
-    // announce a surface switch that never happened.
-    expect(current()).toBe("Settings");
+    // Handing this to the surface-change path would close Settings — which is
+    // what DISCARDS the draft `SettingsCanvas` is holding — rewrite storage, and
+    // announce a surface switch that never happened. Widening the guard to the
+    // PAIR (DW-167) is what keeps that true now that the flag is in the URL.
+    expect(current()).toBe(SETTINGS_LABEL);
     expect(announced()).toBe(settingsAnnouncement);
     expect(readStoredMode()).toBe("wiki");
-    expect(window.location.search).toBe("?mode=wiki");
+    expect(window.location.search).toBe("?mode=wiki&settings=1");
+    // …and the keyboard did not move either: nothing swapped.
+    expect(document.activeElement).toBe(resting);
   });
 
   it("restores a stored row on a deep link whose mode is not the stored one", async () => {
@@ -407,27 +603,38 @@ describe("Workbench mode ↔ URL", () => {
     expect(screen.queryByRole("complementary", { name: "Preview" })).toBeNull();
   });
 
-  it("puts the mode in the URL and nothing else", async () => {
-    // DW-27 is the mode only. The tab and the collapse flag are browser-local
-    // view preferences with nothing to link to, and putting either here would
-    // make every tab click a history entry the owner has to Back through.
+  it("puts the mode and the Settings surface in the URL, and nothing else", async () => {
+    // The URL carries exactly two things. The tree tab, the collapse flag, the
+    // selection and the column widths are browser-local view preferences with
+    // nothing to link to, and putting any of them here would make every tab
+    // click a history entry the owner has to Back through.
     await renderShell(LOADED);
     const search = window.location.search;
     const length = window.history.length;
 
     fireEvent.click(screen.getByRole("tab", { name: "Files" }));
     fireEvent.click(railItem("Collapse left column"));
-    // Settings especially: the rail marks it `aria-current` exactly as it marks
-    // a mode, so it is the surface most easily mistaken for one. It is not in
-    // the URL — the mode underneath it still is — and that stays true both ways.
-    fireEvent.click(railItem("Settings"));
-    fireEvent.click(railItem("Settings"));
 
     expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe(
       "true",
     );
     expect(window.location.search).toBe(search);
     expect(window.history.length).toBe(length);
+
+    // Settings IS in it (DW-167) — ALONGSIDE the mode rather than as a mode
+    // value, so the canvas underneath is still named and closing the surface
+    // reveals it. The rail marks it `aria-current` exactly as it marks a mode,
+    // and that resemblance is the reason the param has to be a separate one.
+    fireEvent.click(railItem(SETTINGS_LABEL));
+
+    expect(window.location.search).toBe(`${search}&settings=1`);
+    expect(window.history.length).toBe(length + 1);
+
+    // …and it comes back off, deleted rather than set to a falsy value.
+    fireEvent.click(railItem(SETTINGS_LABEL));
+
+    expect(window.location.search).toBe(search);
+    expect(window.history.length).toBe(length + 2);
   });
 
   /**
@@ -493,6 +700,36 @@ describe("Workbench mode ↔ URL", () => {
       expect(current()).toBe("Chat");
       expect(announced()).toBe("Chat");
       expect(readStoredMode()).toBe("chat");
+    });
+
+    it("still opens Settings and still lands the keyboard on it", async () => {
+      // The surface change, the announcement and the focus move all sit OUTSIDE
+      // the try, and the focus bump specifically comes before the push — so a
+      // history refusal costs the linkable URL and cannot cost DW-413's landing.
+      await renderShell();
+      vi.spyOn(window.history, "pushState").mockImplementation(() => {
+        throw new DOMException("blocked", "SecurityError");
+      });
+
+      const escaped: unknown[] = [];
+      const onError = (event: ErrorEvent) => {
+        event.preventDefault();
+        escaped.push(event.error);
+      };
+      window.addEventListener("error", onError);
+      try {
+        fireEvent.click(railItem(SETTINGS_LABEL));
+        await act(async () => {});
+      } finally {
+        window.removeEventListener("error", onError);
+      }
+
+      expect(escaped).toHaveLength(0);
+      expect(settingsShowing()).toBe(true);
+      expect(announced()).toBe(SETTINGS_ANNOUNCEMENT);
+      expect(document.activeElement).toBe(landingSite());
+      // Only the URL is lost — the flag never made it in.
+      expect(window.location.search).toBe("?mode=wiki");
     });
   });
 });
