@@ -2118,7 +2118,9 @@ source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
 location: src/app/u/[handle]/[slug]/edit/page.tsx:24
 severity: low
 reason: src/app/u/[handle]/[slug]/edit/page.tsx returns JSX from its miss branch rather than calling notFound(). DW-85's intent text scopes the 200->404 conversion to the page-view route only, so this story deliberately left it; DW-84's own ledger text is inaccurate here, asserting both non-page routes "keep their pre-existing hard-404 miss behavior" when only /raw/ does. The edit/ segment also has no not-found.tsx of its own, so an honest 404 there needs one carrying the surface-specific copy (the sibling [slug]/ and raw/[slug]/ segments each have one). Pre-existing; surfaced by this change's review.
-status: open
+status: done 2026-08-28
+resolution: closed by human decision: The edit route's soft miss is intentional; record it as a decision so the pinning tests stand on one.
+decision: 2026-08-28 Keep the 200 deliberately — The edit route's soft miss is intentional; record it as a decision so the pinning tests stand on one.
 decision: 2026-08-26 Extend 404 to the edit route — Call notFound() from the miss branch, add src/app/u/[handle]/[slug]/edit/not-found.tsx matching the sibling segments, and rewrite the tests that pin the 200.
 
 ### DW-232: tenantForSlug still resolves a slug through inherited-prototype indexing, the exact defect DW-89 fixed in resolveSlugPath, one file over.
