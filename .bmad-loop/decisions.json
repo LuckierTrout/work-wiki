@@ -413,6 +413,15 @@
     "label": "Move the callers",
     "resolution": ""
   },
+  "DW-441": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "When Content-Type is absent, sniff the body's leading bytes against the allowlist and refuse only what does not match, so well-behaved headerless servers still work; apply to both doors and pin with fixtures.",
+    "key": "1",
+    "label": "Sniff, then refuse",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

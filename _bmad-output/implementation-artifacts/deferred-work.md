@@ -3986,6 +3986,7 @@ origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upl
 location: src/lib/fetch.ts:232
 reason: The guard reads `if (mimeType && !allowed.includes(...))`, so a response with no Content-Type passes unchecked regardless of what it actually contains. Deferred as pre-existing empty-header behaviour: this story only narrowed the allowlist that is passed in, and tightening the empty case changes behaviour for every existing caller of the shared fetch path.
 status: open
+decision: 2026-08-28 Sniff, then refuse — When Content-Type is absent, sniff the body's leading bytes against the allowlist and refuse only what does not match, so well-behaved headerless servers still work; apply to both doors and pin with fixtures.
 decision: 2026-08-26 Sniff, then refuse — When Content-Type is absent, sniff the body's leading bytes against the allowlist and refuse only what does not match, so well-behaved headerless servers still work; apply to both doors and pin with fixtures.
 
 ### DW-442: Legacy manual `sourceUrls` are still accepted by research creation even though automated runs replace them with provider results.
