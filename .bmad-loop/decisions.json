@@ -449,6 +449,15 @@
     "label": "Exclude inline parts entirely",
     "resolution": ""
   },
+  "DW-449": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Verify Email Routing's current inbound per-message limit, record it in workers/email-ingest/README.md and beside the constant, and clamp MAX_RAW_EMAIL_BYTES to it so MAX_RAW_EMAIL_MB quotes a figure a sender can actually reach.",
+    "key": "1",
+    "label": "Verify and clamp",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

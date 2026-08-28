@@ -4052,6 +4052,7 @@ location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
 severity: low
 reason: Email Routing is reported to enforce an inbound per-message limit of roughly 25 MiB. Nothing in `wrangler.jsonc`, `workers/email-ingest/README.md` or this repo records that figure, and it could not be verified offline, so nothing was clamped. If the premise holds, the shapes this derivation was widened to admit — ten byte-dense quoted-printable parts at 65,431,170 bytes — never reach the Worker at all, and the refusal copy invites a resend under a ceiling the transport rejects first.
 status: open
+decision: 2026-08-28 Verify and clamp — Verify Email Routing's current inbound per-message limit, record it in workers/email-ingest/README.md and beside the constant, and clamp MAX_RAW_EMAIL_BYTES to it so MAX_RAW_EMAIL_MB quotes a figure a sender can actually reach.
 
 ### DW-450: `inlineAttachment` reads only `disposition`, so a signature logo sent with a Content-ID but no Content-Disposition header still produces the phantom skipped- attachment line DW-359 exists to remove.
 origin: spec-deferred 1e0945b2e0c0
