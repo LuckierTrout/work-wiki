@@ -10,7 +10,8 @@ import type { LintIssue } from "./types";
  * `./llm` and `./wiki`, none of which can cross into a browser bundle, which
  * is why the lint UI used to keep a hand-copied second copy that drifted three
  * entries behind (DW-75). Every import here is type-only, so this module emits
- * no runtime dependency beyond the array itself.
+ * no runtime dependency beyond its own declarations — the two arrays below and
+ * {@link disputedClearGuidance}, which is here for the same one-home reason.
  *
  * It is deliberately NOT a const added to `src/lib/types.ts`: that file is
  * declaration-only today (no imports, no value exports), and adding an emitted
@@ -75,3 +76,38 @@ export const AUTO_FIXABLE_CHECK_TYPES = [
 
 /** A check type that `fixLintIssue` can resolve without a human. */
 export type AutoFixableCheckType = (typeof AUTO_FIXABLE_CHECK_TYPES)[number];
+
+/**
+ * The ONE sentence that tells a reader how a `disputed` flag actually gets
+ * cleared — and who is allowed to clear it.
+ *
+ * TWO SITES SAY THIS, and they used to say it separately: the `disputed-page`
+ * issue's own `suggestion` (`./lint-checks`, which the stdio MCP server's
+ * `fix_lint_issue` description points agents at) and the refusal
+ * `fixLintIssue` throws when someone tries to auto-fix it (`./lint-fix`). Both
+ * were written before DW-121 made the realm gate cover METADATA writes, so both
+ * told every reader to go and run a `PATCH /api/wiki/<slug>` that
+ * `canWritePage`'s realm branch now refuses for every non-admin, non-service
+ * principal on a public knowledge page (DW-389). Correcting one and not the
+ * other leaves half the instruction wrong, which is why the clause lives here,
+ * in the client-safe module both server halves already import, rather than
+ * being hand-copied a third time.
+ *
+ * THE QUALIFICATION IS BY PAGE CLASS, not a flat "you cannot do this". The
+ * realm gate only covers what `belongsInCommons` selects — public,
+ * non-agent-scoped, non-artifact pages. On a private, agent-scoped or artifact
+ * page the owner's toggle still works exactly as it always did, so the sentence
+ * says where the refusal applies instead of claiming the loop is shut.
+ *
+ * `slug` is interpolated into the PATCH so the path can be copy-pasted; a
+ * caller with no usable slug should pass `""` rather than invent one, matching
+ * `autoFixRefusal`'s contract.
+ */
+export function disputedClearGuidance(slug: string): string {
+  return (
+    `clear the Disputed toggle in the page editor ` +
+    `(PATCH /api/wiki/${slug} with metadata { disputed: false }) — on a public ` +
+    `knowledge page that PATCH is admin- or service-only, so an owner who is ` +
+    `not an admin has to ask one to clear the flag`
+  );
+}

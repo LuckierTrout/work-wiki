@@ -24,6 +24,7 @@ import {
   ALL_CHECK_TYPES,
 } from "../lint-checks";
 import type { LintIssue } from "../types";
+import { disputedClearGuidance } from "../lint-types";
 
 // We use writeWikiPage / ensureDirectories to set up wiki pages on disk.
 import { writeWikiPage, updateIndex, ensureDirectories } from "../wiki";
@@ -951,6 +952,26 @@ describe("checkDisputedPages", () => {
     // Talk is retired — no reconciliation thread may be advertised.
     expect(issue.suggestion?.toLowerCase()).not.toContain("discussion");
     expect(issue.suggestion?.toLowerCase()).not.toContain("talk");
+  });
+
+  it("says WHO can complete the PATCH, and says it in the shared clause (DW-389)", async () => {
+    await createPageWithIndex("contested-page", "Contested Page", {
+      disputed: true,
+      created: "2025-01-01",
+    });
+
+    const [issue] = await checkDisputedPages();
+    // DW-121 made the commons realm gate cover metadata writes, so on a public
+    // knowledge page this PATCH is refused for every non-admin, non-service
+    // principal. Naming the request without naming that is an instruction that
+    // 403s the reader who follows it.
+    expect(issue.suggestion).toContain("admin- or service-only");
+    expect(issue.suggestion).toContain("public");
+    expect(issue.suggestion).toContain("has to ask one");
+    // ONE home for the clause: `./lint-fix`'s auto-fix refusal carries the same
+    // string for the same slug, and the only way both can stay right is if
+    // neither spells it out. `lint-fix.test.ts` asserts the other half.
+    expect(issue.suggestion).toContain(disputedClearGuidance("contested-page"));
   });
 
   it("does NOT flag a page with disputed: false", async () => {

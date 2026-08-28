@@ -198,6 +198,28 @@ describe("private single-owner middleware gate", () => {
     expect(isBearerMachineWrite(publicRead)).toBe(false);
   });
 
+  it("does not let a session-less BROWSER revert bypass the gate (DW-392)", async () => {
+    // `RevisionHistory`'s Revert gate carries a signed-in term, and its whole
+    // justification is this: the revisions path is on the in-route exemption
+    // list, but `isBearerMachineWrite` only honours that list when a `Bearer`
+    // credential is actually present — which a browser never sends. Without
+    // this row the exemption could grow into an unconditional one and the
+    // client gate's stated premise would be false with every suite green.
+    const browserRevert = new NextRequest(
+      "https://workwiki.app/api/wiki/transformers/revisions",
+      { method: "POST" },
+    );
+    expect(authenticatesInRoute(browserRevert.nextUrl.pathname)).toBe(true);
+    expect(isBearerMachineWrite(browserRevert)).toBe(false);
+
+    // …and the gate it therefore reaches answers 401, not a pass-through.
+    const { response } = await run("/api/wiki/transformers/revisions", {
+      method: "POST",
+      userId: null,
+    });
+    expect(response?.status).toBe(401);
+  });
+
   it("keeps Clerk's session proxy reachable", async () => {
     const { auth, response } = await run("/__clerk/v1/client");
     expect(response?.status).toBe(200);

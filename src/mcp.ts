@@ -2488,8 +2488,9 @@ export function createMcpServer(): McpServer {
       // placeholder is not good enough). The same guidance is already reachable
       // at a better surface: every non-fixable check emits it in the issue's
       // own `suggestion` with the real slug filled in — `checkDisputedPages`
-      // interpolates `entry.slug` into that sentence inline as it builds the
-      // issue — which is where the description above points the agent.
+      // passes `entry.slug` to `disputedClearGuidance`, the one clause
+      // `NOT_AUTO_FIXABLE` renders too (DW-389), as it builds the issue —
+      // which is where the description above points the agent.
       type: z
         .enum(AUTO_FIXABLE_CHECK_TYPES)
         .describe(

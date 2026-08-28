@@ -10,6 +10,7 @@ import { findDuplicateEntities } from "./alias-index";
 import { parseSources } from "./sources";
 import { listRawSources, readRawSource } from "./raw";
 import { getPageIndex } from "./page-index";
+import { disputedClearGuidance } from "./lint-types";
 
 /**
  * All known lint check types (const tuple for Zod enum compatibility).
@@ -708,8 +709,17 @@ export async function checkLowConfidence(): Promise<LintIssue[]> {
  * the old one called `getDiscussionStats()` to describe open threads. Talk is
  * retired, so the message states the flag and the suggestion names the
  * surviving clear path — the Disputed toggle in the page editor, which is a
- * `PATCH /api/wiki/<slug>` metadata write. Clearing stays an owner decision;
- * there is no auto-fix (see the `disputed-page` branch in `./lint-fix`).
+ * `PATCH /api/wiki/<slug>` metadata write.
+ *
+ * That path is NOT open to every owner, and the suggestion says so. DW-121 made
+ * the commons realm gate cover metadata writes as well as body writes, so on a
+ * public knowledge page (what `belongsInCommons` selects) the PATCH is refused
+ * for every non-admin, non-service principal and a non-admin owner has to ask
+ * an admin; on a private, agent-scoped or artifact page the owner's own toggle
+ * still works. The sentence itself comes from {@link disputedClearGuidance} so
+ * it cannot drift from the refusal `./lint-fix` throws for the same check
+ * (DW-389). Clearing stays a human decision either way; there is no auto-fix
+ * (see the `disputed-page` branch in `./lint-fix`).
  */
 export async function checkDisputedPages(): Promise<LintIssue[]> {
   const pages = await listWikiPages();
@@ -724,7 +734,7 @@ export async function checkDisputedPages(): Promise<LintIssue[]> {
       slug: entry.slug,
       message: `Page is flagged disputed — its sources disagree and no review has cleared it`,
       severity: "warning",
-      suggestion: `Review "${entry.slug}", reconcile the conflicting claims in the page body, then clear the Disputed toggle in the page editor (PATCH /api/wiki/${entry.slug} with metadata { disputed: false })`,
+      suggestion: `Review "${entry.slug}", reconcile the conflicting claims in the page body, then ${disputedClearGuidance(entry.slug)}`,
     });
   }
   return issues;

@@ -76,7 +76,11 @@ import {
   FixValidationError,
   FixNotFoundError,
 } from "../lint-fix";
-import { ALL_CHECK_TYPES, AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
+import {
+  ALL_CHECK_TYPES,
+  AUTO_FIXABLE_CHECK_TYPES,
+  disputedClearGuidance,
+} from "../lint-types";
 
 const mockedReadWikiPage = vi.mocked(readWikiPage);
 const mockedReadWikiPageWithFrontmatter = vi.mocked(readWikiPageWithFrontmatter);
@@ -1045,6 +1049,28 @@ describe("fixLintIssue", () => {
     // PATCH the message names can be copy-pasted as-is.
     await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
       "PATCH /api/wiki/contested-page with metadata { disputed: false }",
+    );
+    // …and names WHO can actually complete it (DW-389). Since DW-121 the realm
+    // gate covers metadata writes, so on a public knowledge page that PATCH is
+    // admin- or service-only; a refusal that sends a non-admin owner off to run
+    // a request the server also refuses has moved the dead end, not removed it.
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      "admin- or service-only",
+    );
+  });
+
+  it("carries the SAME clause the disputed-page issue suggestion does (DW-389)", async () => {
+    // The two sites were hand-copied and drifted apart the moment DW-121 landed
+    // — one of them corrected is still half an instruction. Both now render
+    // `disputedClearGuidance`, so this asserts the refusal really is built from
+    // it rather than restating it a third time; the check side is pinned in
+    // `lint-checks.test.ts` against the same helper call.
+    await expect(fixLintIssue("disputed-page", "contested-page")).rejects.toThrow(
+      disputedClearGuidance("contested-page"),
+    );
+    // Interpolation is per-call, not a captured constant.
+    await expect(fixLintIssue("disputed-page", "other-page")).rejects.toThrow(
+      disputedClearGuidance("other-page"),
     );
   });
 

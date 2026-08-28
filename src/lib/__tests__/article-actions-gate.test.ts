@@ -165,9 +165,22 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     const history = await read("RevisionHistory.tsx");
     expect(history).toContain("realmDeniesRevert: boolean;");
     expect(history).not.toMatch(/realmDeniesRevert\s*=\s*false/);
+    // DW-392 added the SIGNED-IN conjunct in front of the realm/site-owner
+    // disjunction, and nothing else: the site owner is necessarily signed in,
+    // so the door they kept on a realm page is untouched. Ownership is still
+    // absent, deliberately — see the `isOwner` assertion below.
     expect(history).toContain(
-      "const canRevert = isSiteOwner || !realmDeniesRevert;",
+      "const canRevert = isSignedInViewer && (isSiteOwner || !realmDeniesRevert);",
     );
+    expect(history).toContain("const isSignedInViewer = isLoaded && isSignedIn;");
+    // Still NO ownership term. `POST /api/wiki/[slug]/revisions` gates on the
+    // realm and the private-page ACL, never on who owns the page, so an
+    // `isOwner`/`ownsOrContributes` conjunct here would hide Revert from
+    // viewers the server admits — wider-vs-narrower in the forbidden
+    // direction's mirror. The signed-in term is not that: the route resolves a
+    // principal or refuses.
+    expect(history).not.toMatch(/canRevert\s*=[^;]*\bisOwner\b/);
+    expect(history).not.toMatch(/canRevert\s*=[^;]*ownsOrContributes/);
     // …and the panel hands its answer to every row, which is what actually
     // removes the button.
     expect(elementText(history, "RevisionItem")).toContain("canRevert={canRevert}");
@@ -259,6 +272,14 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     expect(actionSpecifiers).toContain("@/lib/viewer-handle");
     // …and the session read really does happen, one hop away.
     expect(importSpecifiers(await readLib(CLIENT_LIB))).toContain("@clerk/nextjs");
+    // The revision island's identity imports, same shape and the same reason:
+    // DW-392's signed-in term must come from the shared hook, not from a
+    // second `useUser` mounted beside it (the `not.toContain("useUser")` sweep
+    // below is what enforces the negative half).
+    const historySpecifiers = importSpecifiers(await read("RevisionHistory.tsx"));
+    expect(historySpecifiers).toContain("@/lib/viewer-handle");
+    expect(historySpecifiers).toContain("@/lib/owner");
+    expect(historySpecifiers).not.toContain("@clerk/nextjs");
     // Not in the island itself — a second `useUser` here would be the drift the
     // extraction exists to prevent.
     expect(actionSpecifiers).not.toContain("@clerk/nextjs");
@@ -275,6 +296,11 @@ describe("the commons-realm fact reaches the Delete gate (DW-120)", () => {
     expect(lib).toContain('"use client"');
     expect(lib).toMatch(/\(\^\|_\)\(x\|twitter\)\$/);
     expect(lib).toContain("export function useViewerHandle()");
+    // Both halves the Revert gate now needs are the hook's, not the island's.
+    expect(lib).toContain("isSignedIn: boolean;");
+    expect(await read("RevisionHistory.tsx")).toContain(
+      "const { isLoaded, isSignedIn, handle } = useViewerHandle();",
+    );
 
     // Neither island restates it.
     for (const component of ["ArticleActions.tsx", "RevisionHistory.tsx"]) {

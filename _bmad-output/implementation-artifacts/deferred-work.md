@@ -3534,7 +3534,9 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/lib/lint-fix.ts:729-730 and src/lib/lint-checks.ts:727
 severity: medium
 reason: `src/lib/lint-fix.ts:729-730` and the check's own `suggestion` at `src/lib/lint-checks.ts:727` both say: clear the Disputed toggle in the page editor (PATCH /api/wiki/<slug> with metadata { disputed: false }). After DW-121 that PATCH is refused for every non-admin principal on a public knowledge page, so the instruction names a loop only an agent token's owner-as-admin, a service principal or a site admin can complete. In this deployment the human IS the site owner and therefore an admin, so the action still works for them; the copy is inaccurate for anyone else. The spec scoped lint copy out of this pass (Design Notes, "Non-admin metadata loop"). Both sites must move together — closing only lint-fix.ts leaves half the copy wrong.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-authz-gate-and-copy-tails
+resolution-undo: c0c5d313c4b41b5ea3bf4ff4e9578c846882c4d983ec1d048fc027665386a2a6 2026-08-28 7374617475733a206f70656e
 
 ### DW-390: Deleting the reconciliation-thread writer took the last programmatic caller of the whole talk thread API with it.
 origin: spec-deferred 83dd95b177cf
@@ -3561,7 +3563,9 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/components/RevisionHistory.tsx
 severity: medium
 reason: `canRevert` in `src/components/RevisionHistory.tsx` carries a realm term and a site-owner term but no `isSignedIn` term, so an anonymous viewer of a public artifact or an agent-scoped page is still shown Revert and its irreversible-sounding confirm in front of a write the middleware 401s. This predates DW-269 (the control was ungated for everyone), and the recorded intent asked only for "the same realm term the Delete gate got", with the spec's Never list forbidding an ownership term — so the signed-in half was deliberately left alone. `ArticleActions` reads `isSignedIn` for exactly this purpose one component over.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-authz-gate-and-copy-tails
+resolution-undo: c0c5d313c4b41b5ea3bf4ff4e9578c846882c4d983ec1d048fc027665386a2a6 2026-08-28 7374617475733a206f70656e
 decision: 2026-08-28 Add the signed-in term — Include isSignedIn in canRevert so signed-out viewers are never offered Revert, matching ArticleActions, and record the frozen-block renegotiation in the spec.
 decision: 2026-08-26 Add the signed-in term — Include isSignedIn in canRevert so signed-out viewers are never offered Revert, matching ArticleActions, and record the frozen-block renegotiation in the spec.
 
@@ -4729,4 +4733,28 @@ location: src/components/workbench/ReviewCanvas.tsx:230
 source_spec: `spec-dw-386-387-read-only-client-parity.md`
 severity: low
 reason: `src/components/workbench/GraphCanvas.tsx:549,558` and `src/components/workbench/ReviewCanvas.tsx:230,242,250` pass `readOnly` straight into `disabled`, and `ResearchCanvas.tsx:259` folds it into `disabled={!canStart}`. A `disabled` control leaves the tab order, so the standing refusal cannot be reached or announced with its reason — the exact defect DW-191 and DW-299 removed from `/settings` and `WorkspacePurposeSettings`. Pre-existing; surfaced by this change only because its comments restate that rule as if it held everywhere.
+status: open
+
+### DW-532: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`'s golden example still quotes the pre-DW-389 `disputed-page` suggestion verbatim.
+origin: spec-deferred 2d89eeccb2ef
+location: _bmad-output/implementation-artifacts/spec-dw-75-76-lint-check-parity-and-disputed-surface.md:140-146
+source_spec: `spec-dw-389-392-authz-gate-and-copy-tails.md`
+severity: low
+reason: Line 144 of that done spec reproduces the old one-line `suggestion` template, which no longer matches `checkDisputedPages` now that the clause comes from `disputedClearGuidance`. It reads as a record of what DW-76 built rather than a live expectation, and DW-389's decision authorised renegotiating only `spec-dw-121-230-269-270-…`, so it was left as recorded rather than edited. A reader consulting that spec for the current copy gets the version the realm gate falsified.
+status: open
+
+### DW-533: `SCHEMA.md` still carries the unqualified "clear it with the Disputed toggle" instruction DW-121 falsified.
+origin: spec-deferred f6826d0c0181
+location: SCHEMA.md:633-641
+source_spec: `spec-dw-389-392-authz-gate-and-copy-tails.md`
+severity: medium
+reason: The `disputed-page` entry in the lint-check reference says clearing is "done via the Disputed toggle in the page editor (`PATCH /api/wiki/<slug>` with metadata `{ disputed: false }`)" with no admin/service qualification. DW-389 enumerated the two lint COPY sites (`lint-fix.ts`, `lint-checks.ts`) and both now render `disputedClearGuidance`; this is a third, reader-facing site of the same falsified sentence, in documentation rather than lint output, and it was already wrong before this change.
+status: open
+
+### DW-534: Under the armed E2E cookie identity there is no `ClerkProvider`, so every client identity gate — Revert now included — fails closed for the E2E owner.
+origin: spec-deferred d182696f7703
+location: src/app/layout.tsx:88, src/lib/viewer-handle.ts
+source_spec: `spec-dw-389-392-authz-gate-and-copy-tails.md`
+severity: low
+reason: `src/app/layout.tsx:88` renders the shell WITHOUT `<ClerkProvider>` when `isE2eIdentityArmed()`, while `middleware.ts` admits the owner from the `yopedia_e2e` cookie. `useViewerHandle` reads Clerk, so `isSignedIn` and `handle` are unavailable on that path: Delete and Re-ingest were already hidden from the E2E owner for this reason, and DW-392's signed-in term extends the same blind spot to Revert. Nothing breaks today — neither `e2e/workbench-owner.spec.ts` nor `e2e/retired-routes.spec.ts` exercises an article affordance — but an E2E case that ever does will see a control the server would admit.
 status: open

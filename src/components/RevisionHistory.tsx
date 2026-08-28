@@ -46,8 +46,36 @@ interface RevisionHistoryProps {
    * REVERT TAKES NO OWNERSHIP TERM, deliberately. The route gates on the realm
    * and on the private-page ACL, not on page ownership, so adding an `isOwner`
    * term here would hide the control from viewers the server would have
-   * allowed. Only the realm term is threaded, and the site owner (an admin
-   * server-side) keeps the door on realm pages.
+   * allowed. This prop is the realm half alone; the site owner (an admin
+   * server-side) keeps the door on realm pages, and the identity half of the
+   * gate — signed-in, plus site owner — is decided beside `canRevert` below.
+   *
+   * IT DOES TAKE A SIGNED-IN TERM (DW-392, 2026-08-28). That is not the same
+   * thing: being signed in is a precondition the server really does enforce,
+   * where ownership is not. The enforcing layer is `middleware.ts`, not the
+   * per-page ACL — `canWritePage` only restricts PRIVATE pages ("authentication
+   * for public edits is the write-gate middleware's job", per its own docblock),
+   * so on a public artifact it would answer `true` for an anonymous principal.
+   * The private-deployment gate is what answers a session-less browser POST 401
+   * "Authentication required." before the route is entered at all: the
+   * revisions path is exempt from that gate ONLY under `isBearerMachineWrite`,
+   * which requires a `Bearer` credential a browser does not send.
+   *
+   * So an anonymous viewer of a public artifact or an agent-scoped page — a
+   * page the realm leaves alone, where `!realmDeniesRevert` was the whole gate —
+   * was being offered a Revert button per row, with an irreversible-sounding
+   * `window.confirm` in front of it, for a write that was never going to run.
+   * The added term narrows this gate TOWARD the server's answer; an `isOwner`
+   * term would narrow it PAST that answer, which is why the renegotiation
+   * recorded in `spec-dw-121-…-authz-realm-parity-and-read-gates` covers the
+   * signed-in half alone.
+   *
+   * HARDENING, NOT A LIVE BUG TODAY. `handlePrivateRequest` makes this whole
+   * deployment single-owner: a session-less browser navigation is redirected to
+   * `/sign-in` and any other signed-in user gets a 404, so no anonymous viewer
+   * reaches the article at all right now. The gate is written for the state the
+   * component claims to hold — an offered control the server refuses — not for
+   * the one deployment configuration that hides the component first.
    */
   realmDeniesRevert: boolean;
   /**
@@ -79,24 +107,42 @@ export function RevisionHistory({
 }: RevisionHistoryProps) {
   const router = useRouter();
   // The identity half of the Revert gate, mirroring `ArticleActions`: only the
-  // browser holds the Clerk session, so `isSiteOwner` can only be decided here,
-  // while the realm arrives as a prop from the server. `ADMIN_HANDLES` is
+  // browser holds the Clerk session, so whether the viewer is signed in and
+  // whether they are the site owner can both only be decided here, while the
+  // realm arrives as a prop from the server. `ADMIN_HANDLES` is
   // server-only, so an admin who is not the site owner is under-offered Revert —
-  // narrower than the server's answer, which is the one safe direction. The
-  // handle comes from the shared `@/lib/viewer-handle` hook (already lowercased,
-  // which is why `isOwnerHandle` is called on it directly) so this gate and the
-  // Delete/Re-ingest gates read one copy of the resolution rule.
-  const { isLoaded, handle } = useViewerHandle();
-  // `isLoaded` guards ONLY this term. Before the session resolves `handle` is
+  // narrower than the server's answer, which is the one safe direction. Both
+  // facts come from the shared `@/lib/viewer-handle` hook (whose handle is
+  // already lowercased, which is why `isOwnerHandle` is called on it directly)
+  // so this gate and the Delete/Re-ingest gates read one copy of the resolution
+  // rule — the Clerk hook is never called a second time in this island, and
+  // `article-actions-gate.test.ts` pins that as a source scan.
+  const { isLoaded, isSignedIn, handle } = useViewerHandle();
+  // `isLoaded` guards this term because before the session resolves `handle` is
   // null for a viewer who will turn out to be the site owner, so an unguarded
   // `isOwnerHandle` would answer `false` by accident of a missing handle rather
   // than by a decision — and on a realm page that is the difference between
   // "we do not know yet" and "no". Guarded, the fail-closed hydration answer is
-  // deliberate and matches how `ArticleActions` treats its own session-derived
-  // affordances. A non-realm page is unaffected either way: `!realmDeniesRevert`
-  // already makes `canRevert` true there.
+  // deliberate and matches `ArticleActions`'s `canCurate`, the one affordance
+  // over there that is `isLoaded`-guarded for the same reason (`canDelete` and
+  // `canReingest` lean on `handleLc` being null instead). It guards the
+  // signed-in term below for the same reason, which
+  // is now what decides a NON-realm page too: `!realmDeniesRevert` alone no
+  // longer makes `canRevert` true there.
   const isSiteOwner = isLoaded && isOwnerHandle(handle);
-  const canRevert = isSiteOwner || !realmDeniesRevert;
+  // The signed-in term (DW-392), and the reason `isLoaded` now guards two
+  // things. A signed-out viewer of a page the realm does not restrict — a
+  // public artifact, an agent-scoped page — passed `!realmDeniesRevert` and was
+  // shown Revert on every row, in front of a POST the deployment gate in
+  // `middleware.ts` answers 401 before the route runs (see the prop docblock:
+  // the per-page ACL is NOT what refuses here). Same shape as
+  // `ArticleActions`'s `canCurate` (`isLoaded && !!isSignedIn && …`), and read
+  // from the SAME hook, so the islands cannot disagree about who is looking.
+  // Unresolved sessions fail closed: absent beats briefly offered.
+  const isSignedInViewer = isLoaded && isSignedIn;
+  // The site owner is necessarily signed in, so the new conjunct closes no door
+  // the previous expression opened for them.
+  const canRevert = isSignedInViewer && (isSiteOwner || !realmDeniesRevert);
   // One sentence for the whole list; every Revert button points at it.
   const readOnlyNoteId = useId();
   const [open, setOpen] = useState(false);
@@ -247,8 +293,9 @@ export function RevisionHistory({
 
           {/* Gated on `canRevert` as well as `readOnly`: the sentence explains a
               control, and `aria-describedby` on that control is the only thing
-              that points at it. With Revert hidden by the realm it would be an
-              orphaned paragraph — a refusal shown to a reader who was never
+              that points at it. With Revert hidden — by the realm, or since
+              DW-392 by the viewer being signed out or unresolved — it would be
+              an orphaned paragraph: a refusal shown to a reader who was never
               offered the action, with zero referrers for its id. */}
           {readOnly &&
             canRevert &&

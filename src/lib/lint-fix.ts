@@ -8,7 +8,7 @@ import {
   rewriteWikilinksByTarget,
 } from "./markdown-link-rewrite";
 import { serializeFrontmatter } from "./frontmatter";
-import type { AutoFixableCheckType } from "./lint-types";
+import { disputedClearGuidance, type AutoFixableCheckType } from "./lint-types";
 import type { LintIssue } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -832,8 +832,16 @@ const NOT_AUTO_FIXABLE: Record<
   // asserts that a human read the conflicting claims and decided the page is
   // now correct. An auto-fix would clear the flag without that review, which
   // is exactly the state the flag exists to prevent.
+  //
+  // The manual path it hands back is `disputedClearGuidance` — the SAME clause
+  // the `disputed-page` issue's own `suggestion` carries (`./lint-checks`), so
+  // a caller that refuses here and a caller reading the issue are told one
+  // thing. Both used to spell the PATCH out separately, and both spelled it out
+  // as if any owner could run it; DW-121 made that metadata write admin- or
+  // service-only on a public knowledge page, and correcting one copy would have
+  // left the other still wrong (DW-389).
   "disputed-page": (slug) =>
-    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then clear the Disputed toggle in the page editor (PATCH /api/wiki/${slug} with metadata { disputed: false }).`,
+    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then ${disputedClearGuidance(slug)}.`,
 };
 
 /**

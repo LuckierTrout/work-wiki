@@ -119,9 +119,36 @@ baseline_revision: 'b6249adc7223d10f7b1d93e4566ed68b5fb2218f'
 
 **Never:**
 - Do not remove the `WriteKind` parameter from `canWritePage` / `canWriteFrontmatter` / `resolveWriteDenial`, and do not delete the `WriteKind` type — the refusal verb and the attempted write kind stay expressible.
-- Do not add an ownership gate to Revert (the ledger observes it; the recorded intent asks only for the realm term).
+- Do not add an OWNERSHIP gate to Revert (the ledger observes it; the recorded intent asks only for the realm term). Narrowed 2026-08-28 — see the note beneath the Never list.
 - Do not touch `talk.ts`'s remaining readers (`deleteDiscussions`, `getDiscussRelPrefix`, `getDiscussionStatsForSlugs`, `listThreads`, `createThread`), the retired talk HTTP surfaces, or `belongsInCommons` itself.
 - Do not edit `_bmad-output/implementation-artifacts/deferred-work.md`.
+
+**2026-08-28 — the Revert clause was narrowed to ownership only (DW-392).** As
+frozen, "do not add an ownership gate to Revert" was read as "Revert takes no
+identity term at all", and `canRevert` shipped as `isSiteOwner ||
+!realmDeniesRevert`. That left an anonymous viewer of a page the realm does not
+restrict — a public artifact, an agent-scoped page — offered a Revert button per
+row with an irreversible-sounding `window.confirm` in front of it, for a
+`POST /api/wiki/<slug>/revisions` the deployment gate in `middleware.ts` answers
+401 "Authentication required." before the route runs (`isBearerMachineWrite`
+exempts that path only when a `Bearer` credential is present, which a browser
+does not send). The refusing layer is the middleware, NOT the per-page ACL: this
+spec's own `canWritePage` restricts private pages only, so it would answer
+`true` for an anonymous principal on a public artifact. DW-392's 2026-08-28
+decision authorises adding the SIGNED-IN term and nothing else. The reasoning
+the original clause encodes is untouched: the route gates on the realm and the
+private-page ACL, not on page ownership, so an `isOwner`/`ownsOrContributes`
+term would narrow the client gate PAST the server's answer and hide the control
+from viewers it admits — which is why the clause is narrowed rather than
+deleted, and why `isOwner` stays forbidden here.
+
+This is HARDENING, not a live user-visible bug on this deployment.
+`handlePrivateRequest` makes the whole app single-owner: a session-less browser
+navigation is redirected to `/sign-in` and any other signed-in user gets a 404,
+so no anonymous viewer renders the article — the offered button existed only in
+the component's own claim about who may act. The gate is written against that
+claim rather than against the one deployment configuration that hides the
+component first.
 
 ## I/O & Edge-Case Matrix
 
@@ -135,7 +162,7 @@ baseline_revision: 'b6249adc7223d10f7b1d93e4566ed68b5fb2218f'
 | Re-ingest affordance, page owner on realm page | `ownsOrContributes`, `hasSourceUrl`, realm-restricted | Button not rendered | n/a |
 | Re-ingest affordance, site owner on realm page | `isOwnerHandle(username)` | Button rendered (server admits) | n/a |
 | Revert affordance, ordinary viewer on realm page | history expanded, realm-restricted | Revert button not rendered; View still is | n/a |
-| Revert affordance, non-realm page | private/agent/artifact page | Unchanged — Revert rendered as today | n/a |
+| Revert affordance, non-realm page | private/agent/artifact page | Unchanged — Revert rendered as today (narrowed 2026-08-28 by DW-392 to SIGNED-IN viewers only; see the note above) | n/a |
 | Bulk delete, `jobIds` job whose page is unreadable | job owned by caller, `slug` page exists and is private to another user | 404 `"One or more selected ingests were not found."` before any ACL sentence | Nothing deleted |
 | Bulk delete, `jobIds` job whose page is already gone | done job, `slug` no longer stored | Job record cleared, 200 | Unchanged cleanup |
 | Disputed false→true via ingest / merge / patch | page flips `disputed: true` | Page written, `listThreads(slug)` stays empty | Unchanged write result |

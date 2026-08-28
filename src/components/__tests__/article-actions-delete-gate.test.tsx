@@ -627,4 +627,115 @@ describe("ArticleView — the realm fact it computes, seen on the article (DW-12
       ),
     ).toBe(true);
   });
+
+  /**
+   * DW-392 — the IDENTITY half of the Revert gate, on a page the realm leaves
+   * alone.
+   *
+   * Every case above varies the page or the viewer's ownership while the viewer
+   * stays signed in, so none of them could see the tail DW-269 left open: on an
+   * artifact (public, but outside `belongsInCommons`, so `realmDeniesRevert` is
+   * `false`) the old `isSiteOwner || !realmDeniesRevert` was unconditionally
+   * true — and an ANONYMOUS reader was shown a Revert button per row, with
+   * "The current content will be saved as a revision first" in front of it, for
+   * a `POST /api/wiki/[slug]/revisions` the deployment gate never lets reach the
+   * route: the revisions path is exempt from that gate only when a `Bearer`
+   * credential is present (`isBearerMachineWrite`), so a session-less browser
+   * POST is answered 401 "Authentication required.".
+   *
+   * The artifact frontmatter is the point of the row: on a realm page the
+   * button was already gone for the realm's reason, which would have made these
+   * assertions pass without the identity term existing at all.
+   *
+   * ONLY THE CLIENT HALF IS ANONYMOUS HERE. `renderArticle` always hands
+   * `ArticleView` the page owner as its server principal, so these rows isolate
+   * the island's identity term rather than modelling an end-to-end anonymous
+   * request — which this single-owner deployment could not serve anyway
+   * (`handlePrivateRequest` redirects a session-less navigation to `/sign-in`).
+   * The gate is hardening against the state the component claims to hold.
+   */
+  const ARTIFACT = {
+    title: "Chart",
+    owner: OWNER,
+    visibility: "public",
+    type: "html",
+  } as Frontmatter;
+
+  /** Expand the history panel and return once its one row has rendered. */
+  async function openHistory() {
+    fireEvent.click(screen.getByRole("button", { name: /History/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy(),
+    );
+  }
+
+  it("hides Revert from a SIGNED-OUT viewer of a non-realm page (DW-392)", async () => {
+    clerk.current = { isLoaded: true, isSignedIn: false, user: null };
+    await renderArticle(ARTIFACT);
+    await openHistory();
+
+    expect(screen.queryByRole("button", { name: /^Restore revision from/ })).toBeNull();
+    // Reading an old revision is not a write and is never refused, so View has
+    // to survive — hiding it would be the mirror of the bug being fixed.
+    expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy();
+    // NO `canWritePage` comparison on this row, unlike every row above, and
+    // deliberately. That predicate is the per-page ACL and it only restricts
+    // PRIVATE pages — "authentication for public edits is the write-gate
+    // middleware's job", as its own docblock says — so it answers `true` for an
+    // anonymous principal on a public artifact. The refusal this row is
+    // narrower than lives one layer up, in `middleware.ts`, and asserting it
+    // here against `canWritePage` would pin a fact that is not true.
+  });
+
+  it("offers Revert to the signed-in page OWNER of a non-realm page", async () => {
+    // The unchanged row: `beforeEach` signs in the page owner, and an artifact
+    // is outside the realm, so this viewer was offered Revert before DW-392 and
+    // must still be. Without it, "signed-out sees no Revert" would also pass for
+    // a gate that had been narrowed to nobody at all.
+    await renderArticle(ARTIFACT);
+    await openHistory();
+
+    expect(
+      screen.getByRole("button", { name: /^Restore revision from/ }),
+    ).toBeTruthy();
+  });
+
+  it("still offers Revert to a signed-in NON-owner of the same page", async () => {
+    // The row that fails a gate narrowed too far: `bob` owns nothing here and
+    // is not the site owner, so the signed-in term must be the ONLY thing the
+    // previous case removed — no ownership term crept in with it.
+    //
+    // The `canWritePage` comparison below is the PER-PAGE ACL's answer, and
+    // that is all it claims. It is not "the server admits bob": on this
+    // single-owner deployment `handlePrivateRequest` would 404 him before the
+    // article rendered. The ACL is the layer this gate mirrors (it is what
+    // `realmDeniesRevert` is computed from), so it is the layer worth pinning
+    // an ownership-free door against.
+    clerk.current = { isLoaded: true, isSignedIn: true, user: { username: "bob" } };
+    await renderArticle(ARTIFACT);
+    await openHistory();
+
+    expect(
+      screen.getByRole("button", { name: /^Restore revision from/ }),
+    ).toBeTruthy();
+    expect(
+      canWritePage(
+        { owner: OWNER, visibility: "public", type: "html" },
+        principalFor("bob"),
+        "body",
+      ),
+    ).toBe(true);
+  });
+
+  it("hides Revert while the session is UNRESOLVED, rather than briefly offering it", async () => {
+    // Clerk answers `isLoaded: false` on the first client render. Fail closed:
+    // a button that appears and then vanishes is worse than one that arrives a
+    // beat late, and the viewer it would have appeared for may be anonymous.
+    clerk.current = { isLoaded: false, isSignedIn: false, user: null };
+    await renderArticle(ARTIFACT);
+    await openHistory();
+
+    expect(screen.queryByRole("button", { name: /^Restore revision from/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy();
+  });
 });

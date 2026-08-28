@@ -35,21 +35,39 @@ import {
  * that kept the prop but wired it past the confirm fails here.
  */
 
-const { router } = vi.hoisted(() => ({
+const { router, clerk } = vi.hoisted(() => ({
   router: { refresh: vi.fn(), push: vi.fn() },
+  clerk: {
+    current: { isLoaded: true, isSignedIn: true, user: null } as {
+      isLoaded: boolean;
+      isSignedIn: boolean;
+      user: { username?: string } | null;
+    },
+  },
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => router }));
 // `RevisionHistory` reads the Clerk session for the identity half of its Revert
-// gate (the site owner keeps the door on a realm page). Signed out here: these
-// cases are about the deployment's read-only state, not about who is looking.
-vi.mock("@clerk/nextjs", () => ({
-  useUser: () => ({ isLoaded: true, isSignedIn: false, user: null }),
-}));
+// gate: the site owner keeps the door on a realm page, and since DW-392 a
+// signed-out viewer has no Revert button at all — the route resolves a
+// principal or refuses, so an anonymous browser POST never lands.
+//
+// SIGNED IN by default, therefore, and deliberately so: these cases are about
+// the deployment's read-only state, not about who is looking, and with the mock
+// signed out the Revert button would be absent for the identity reason and
+// every read-only assertion below would pass vacuously. No username, so the
+// viewer is NOT the site owner — the read-only refusal is what has to be
+// visible, not an admin's extra door. Mutable (rather than a frozen literal) so
+// the one case that IS about the signed-out viewer can say so.
+vi.mock("@clerk/nextjs", () => ({ useUser: () => clerk.current }));
+
+/** The default session every case starts from — see the mock above. */
+const SIGNED_IN_READER = { isLoaded: true, isSignedIn: true, user: null };
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let confirmMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  clerk.current = { ...SIGNED_IN_READER };
   router.refresh.mockClear();
   router.push.mockClear();
   fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }) as unknown as Response);
@@ -505,8 +523,17 @@ describe("Revert, on a read-only deployment", () => {
   const TIMESTAMP = 1_700_000_000_000;
   const REVERT_LABEL = `Restore revision from ${new Date(TIMESTAMP).toLocaleString()}`;
 
-  /** The history panel loads its rows on expand, so every case starts there. */
-  async function openHistory(readOnly: boolean) {
+  /**
+   * Mount the panel and expand it. `realmDeniesRevert={false}` — this suite is
+   * about the READ-ONLY refusal, so the realm must not be what hides the button
+   * (that gate has its own suite in `article-actions-delete-gate.test.tsx`). A
+   * page outside the commons realm is what the server-computed prop would carry
+   * here.
+   *
+   * Waits on View rather than on Revert: View is ungated, so it is the row
+   * marker that is still there in the one case below where Revert is not.
+   */
+  async function renderHistory(readOnly: boolean) {
     fetchMock.mockImplementation(
       async () =>
         ({
@@ -525,17 +552,18 @@ describe("Revert, on a read-only deployment", () => {
           }),
         }) as unknown as Response,
     );
-    // `realmDeniesRevert={false}` — this suite is about the READ-ONLY refusal,
-    // so the realm must not be what hides the button (that gate has its own
-    // suite in `article-actions-delete-gate.test.tsx`). A page outside the
-    // commons realm is what the server-computed prop would carry here.
     render(
       <RevisionHistory slug="alpha" realmDeniesRevert={false} readOnly={readOnly} />,
     );
     fireEvent.click(screen.getByRole("button", { name: /History/ }));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: REVERT_LABEL })).toBeTruthy(),
+      expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy(),
     );
+  }
+
+  /** The history panel loads its rows on expand, so every case starts there. */
+  async function openHistory(readOnly: boolean) {
+    await renderHistory(readOnly);
     return screen.getByRole("button", { name: REVERT_LABEL });
   }
 
@@ -583,5 +611,26 @@ describe("Revert, on a read-only deployment", () => {
       action: "revert",
       timestamp: TIMESTAMP,
     });
+  });
+
+  it("shows a SIGNED-OUT viewer neither the button nor the note about it (DW-392)", async () => {
+    // The read-only sentence is rendered only when `canRevert` is true, because
+    // the Revert button's `aria-describedby` is its ONLY referrer. Since DW-392
+    // `canRevert` also carries the signed-in term, so an anonymous viewer must
+    // lose both together — a refusal shown to a reader who was never offered
+    // the action, with nothing pointing at its id, is the orphan that gating
+    // exists to prevent.
+    clerk.current = { isLoaded: true, isSignedIn: false, user: null };
+    await renderHistory(true);
+
+    expect(screen.queryByRole("button", { name: REVERT_LABEL })).toBeNull();
+    expect(screen.queryByText(REVERT_READ_ONLY_COPY)).toBeNull();
+    // The dialog is the harm, so absence of the control is asserted at the
+    // outermost surface too: nothing this viewer can reach raises the confirm.
+    fireEvent.click(screen.getByRole("button", { name: /^View revision from/ }));
+    expect(confirmMock).not.toHaveBeenCalled();
+    // Reading an old revision is not a write: View survives the identity gate
+    // exactly as it survives the read-only one.
+    expect(screen.getByRole("button", { name: /^View revision from/ })).toBeTruthy();
   });
 });
