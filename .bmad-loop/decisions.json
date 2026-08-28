@@ -314,6 +314,15 @@
     "label": "Clear the key on switch",
     "resolution": ""
   },
+  "DW-70": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Make _createEmbeddingModel read embeddingBaseUrl for ollama, redefining ollamaBaseUrl as the chat endpoint only, and document and pin the split so the two settings stop overlapping.",
+    "key": "2",
+    "label": "Route ollama through it",
+    "resolution": ""
+  },
   "DW-72": {
     "answered_at": "2026-08-21",
     "bundle_name": "",

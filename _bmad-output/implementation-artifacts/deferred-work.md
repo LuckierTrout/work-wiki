@@ -656,6 +656,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `_createEmbeddingModel` applies `config.embeddingBaseUrl` for `openai` and `google` only; `ollama` reaches its server through `getOllamaBaseUrl()` and `workers-ai` through the Cloudflare binding. The vector gate agrees (both are in `SELF_TRANSPORTING_EMBEDDING_PROVIDERS` and are not asked for an endpoint), so nothing is broken — but the field still accepts a value that goes nowhere. Hiding it per provider, or routing `ollama`'s embedding endpoint through it, both change what `ollamaBaseUrl` means and want one decision rather than a fix inside this surface.
 status: open
+decision: 2026-08-28 Route ollama through it — Make _createEmbeddingModel read embeddingBaseUrl for ollama, redefining ollamaBaseUrl as the chat endpoint only, and document and pin the split so the two settings stop overlapping.
 
 ### DW-71: `LLM_CUSTOM_BASE_URL` wins at runtime but is invisible on the surface, so the Custom endpoint box can be typed into and saved with no effect.
 origin: spec-deferred 982384b4e50e
