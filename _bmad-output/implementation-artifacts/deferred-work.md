@@ -1563,7 +1563,8 @@ source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
 location: _bmad-output/implementation-artifacts/deferred-work.md:153
 severity: medium
 reason: `deferred-work.md:153` justifies DW-17 with "the per-Wiki Page partitioning that Story 1.4's 'the trees show that Wiki's files' implies", and the same phrase is quoted at `spec-1-2-create-a-wiki-from-a-scenario-template.md:71` and `spec-1-4-knowledge-tree-and-file-tree.md:25,132,310`. After this change that citation resolves to no live text in `epics.md`, so DW-17's rationale now rests on a phrase that no longer exists — which could either keep a migration alive on a dead citation or make it look spuriously resolved. The ledger is orchestrator-owned and the story specs are frozen records, so neither can be corrected from this story.
-status: open
+status: done 2026-08-28
+resolution: already resolved: deferred-work.md: DW-17 is now `status: done 2026-08-26` ("closed by human decision", re-anchor-the-contract), so the dead AC citation no longer keeps any migration alive.
 decision: 2026-08-28 Re-anchor DW-17 only — Update DW-17's reason to cite the current epics.md text (or state that the FR-76 file contract is its sole basis), and leave the three frozen story records as historical quotations with a note that the AC text later changed.
 decision: 2026-08-26 Re-anchor DW-17 only — Update DW-17's reason to cite the current epics.md text (or state that the FR-76 file contract is its sole basis), and leave the three frozen story records as historical quotations with a note that the AC text later changed.
 
@@ -1799,7 +1800,8 @@ source_spec: `spec-dw-38-write-preconditions-and-conflict-surface.md`
 location: src/lib/lifecycle.ts:731
 severity: medium
 reason: The guard sits at the HTTP boundary, which is what the intent's operative clause asks for ("enforce `If-Match` on the three routes"), but every DW entry's `location` field also names a kernel writer (`src/lib/lifecycle.ts`, `writeWikiArtifact`, `saveConfig`). `writeWikiPageWithSideEffects` is called unconditionally from `src/mcp.ts`, `src/cli.ts`, `src/lib/agents.ts`, `src/lib/lint-fix.ts`, `src/lib/query.ts`, `src/lib/search.ts`, `src/lib/memory-proposals.ts`, `src/lib/document-sources.ts`, `src/lib/patch-metadata.ts`, `src/app/api/wiki/route.ts` and the revisions route. DW-38's own justification for doing the work now is "Epic 2 gives the same pages a second writer" — and that writer is an ingest path that never travels the guarded route.
-status: open
+status: done 2026-08-28
+resolution: already resolved: src/lib/lifecycle.ts WritePageOptions.expectedContent is now passed by the named kernel callers (agents.ts:832,977; lint-fix.ts; query.ts:521; search.ts:189; memory-proposals.ts:430; document-sources.ts:126; patch-metadata.ts:190; ingest.ts:1484,2265; ingest-bookkeeping.ts:76,207; merge.ts:200,580).
 decision: 2026-08-19 Decide with the Epic 2 ingest writer
 
 ### DW-197: `stableSerialize` collapses every non-plain object to `{}` and has no cycle or depth bound, so `objectVersion` can report "no change" between two genuinely different values.
