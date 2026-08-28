@@ -521,6 +521,15 @@
     "label": "Seed a second entry",
     "resolution": ""
   },
+  "DW-514": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a settings-category param to workbench-url.ts, write it on category change and restore it on mount, so a copied link reopens the pane the address bar names and the announcement agrees with it.",
+    "key": "1",
+    "label": "Put the category in the URL",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

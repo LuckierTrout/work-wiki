@@ -4581,6 +4581,7 @@ location: src/lib/workbench-url.ts (the not-in-the-URL list)
 severity: low
 reason: `settingsCategoryId` is local `useState` with no URL and no storage. DW-167 asks only that the link reopen the surface, so this is within intent — but it means the address bar and the announced sentence can disagree about which pane the visitor lands on. Documented as an exclusion in `workbench-url.ts`'s header alongside the tab, the collapse flag, the selection and the widths.
 status: open
+decision: 2026-08-28 Put the category in the URL — Add a settings-category param to workbench-url.ts, write it on category change and restore it on mount, so a copied link reopens the pane the address bar names and the announcement agrees with it.
 
 ### DW-515: `applyTemplate`'s unconfirmed sentence is never dropped when the server render lands, so the card's re-template confirm comes back live under a stale "the outcome is unknown" alert — DW-429's harm on
 origin: spec-deferred 2988d6ff7781
