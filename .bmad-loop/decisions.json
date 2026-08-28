@@ -188,6 +188,15 @@
     "label": "Drop the oversized attachment",
     "resolution": ""
   },
+  "DW-287": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Record a short manual verification procedure (which AT, which surface, what to hear) beside live-region.ts and in the test-strategy docs, and close the gap as knowingly manual.",
+    "key": "1",
+    "label": "Document a manual AT check",
+    "resolution": ""
+  },
   "DW-293": {
     "answered_at": "2026-08-20",
     "bundle_name": "",

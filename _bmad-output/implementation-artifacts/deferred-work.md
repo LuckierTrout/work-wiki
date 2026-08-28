@@ -2619,6 +2619,7 @@ location: src/lib/live-region.ts and src/components/workbench/__tests__/preview-
 severity: low
 reason: DW-182's fix is an alternating U+200B appended to a repeated sentence. The node and jsdom suites prove only that the region's string CHANGED — which was never in doubt. Whether NVDA, JAWS or VoiceOver re-utters on that change, and whether any of them normalises the mark away before diffing, is asserted in prose only. The DW-182 ledger entry predicted this ("no test in a node or jsdom project can verify"), and the repo already records the equivalent gap for CSS. Without a browser/AT project the suite reads as if the mechanism is proven.
 status: open
+decision: 2026-08-28 Document a manual AT check — Record a short manual verification procedure (which AT, which surface, what to hear) beside live-region.ts and in the test-strategy docs, and close the gap as knowingly manual.
 decision: 2026-08-26 Document a manual AT check — Record a short manual verification procedure (which AT, which surface, what to hear) beside live-region.ts and in the test-strategy docs, and close the gap as knowingly manual.
 
 ### DW-288: The scheduled sweep reclaims only the configured owner's tenant, so DW-147's condition still holds unchanged for every other tenant.
