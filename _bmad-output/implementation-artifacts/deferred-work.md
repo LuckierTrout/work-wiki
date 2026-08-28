@@ -3692,7 +3692,8 @@ source_spec: `spec-dw-374-375-376-unconfirmed-write-reporting.md`
 location: src/components/workbench/WikiSwitcher.tsx (switchWiki)
 severity: low
 reason: `switchWiki` guards only on `switching`, which `finally` clears, and the `<select>` is live again the moment the unconfirmed sentence appears. Two PUTs to /api/wikis/current can then settle out of order, leaving the active wiki — which decides which schema.md every prompt executes — set by whichever answer landed last. DW-375 names only create, rename and delete, and a `<select>` has no confirm to latch, so this needs its own decision about what the right affordance is (roll the picker back and hold it, or leave it live because a switch is idempotent per target).
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-unconfirmed-write-latch
 
 ### DW-410: The dataVersion refresh budget is per MOUNTED WATCHER, not per tab, so any remount silently re-arms it.
 origin: spec-deferred 9aba3688e217
@@ -3867,7 +3868,8 @@ source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
 location: src/components/WikiWorkbench.tsx:147-149
 severity: medium
 reason: Both release effects do only `setAwaitingCreate(false)` / `setAwaitingWrite(false)` keyed on `[wikis, currentWikiId]` (src/components/WikiWorkbench.tsx:147-149, src/components/workbench/WikiSwitcher.tsx:182-184) and neither clears the error. The reset effect that would close the dialog keys on the ACTIVE wiki, which a refresh answering "nothing changed" need not move. WikiSwitcher.tsx:428's comment asserts the opposite — "The release effect drops both together, because a server render is what makes both stale at once" — so the intended behaviour is documented and not implemented. Pre-existing on both surfaces; DW-407 brings the card into the same shape rather than creating it.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-unconfirmed-write-latch
 decision: 2026-08-22 Bump at the kernel tail — Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.
 
 ### DW-430: Dismissing the card's create dialog on the unconfirmed path destroys the only explanation the owner has, and the disabled opener behind it says nothing.
@@ -3876,7 +3878,8 @@ source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
 location: src/components/WikiWorkbench.tsx:296-318
 severity: low
 reason: The unknown-outcome sentence lives inside the overlay, and the latch deliberately leaves Cancel and Esc live so the owner can go and look at the screen. After that dismissal the empty state offers a `Create Wiki` button that is `disabled`, carries no `aria-describedby`, and cannot be pressed to reopen the dialog and re-read the message — so a screen-reader user gets "dimmed" and nothing else, which is the exact failure mode the neighbouring read-only note exists to avoid. Pre-existing since `awaitingCreate` began covering the unconfirmed path; DW-407 does not widen it.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-unconfirmed-write-latch
 
 ### DW-431: The Dockerfile's deps stage does not copy the new root pnpm-workspace.yaml while its build stage's `COPY . .` does, so the two stages disagree about whether /app is a workspace root, and no docker bui
 origin: spec-deferred ef4f6e35a444
@@ -4533,4 +4536,36 @@ source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
 location: src/lib/workbench-url.ts (the not-in-the-URL list)
 severity: low
 reason: `settingsCategoryId` is local `useState` with no URL and no storage. DW-167 asks only that the link reopen the surface, so this is within intent — but it means the address bar and the announced sentence can disagree about which pane the visitor lands on. Documented as an exclusion in `workbench-url.ts`'s header alongside the tab, the collapse flag, the selection and the widths.
+status: open
+
+### DW-515: `applyTemplate`'s unconfirmed sentence is never dropped when the server render lands, so the card's re-template confirm comes back live under a stale "the outcome is unknown" alert — DW-429's harm on
+origin: spec-deferred 2988d6ff7781
+source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
+location: src/components/WikiWorkbench.tsx (applyTemplate)
+severity: medium
+reason: `applyTemplate` (src/components/WikiWorkbench.tsx) composes the same unconfirmed sentence through `writeFailure` and fires `router.refresh()`, but raises no latch, so there is nothing for the new release effect to gate on and `templateError` is not among the errors it clears. The dialog stays open (`setTemplateOpen(false)` runs only on success) and the reset effect keys on `[currentWikiId, currentId]`, which a re-template does not move. After the refresh the owner sees a live `Overwrite` under an alert saying nobody knows what happened, over a card already showing the new scenario. Deliberately out of this bundle's scope — the confirm is idempotent per scenario, which answers the double-write risk but not the stale-sentence one.
+status: open
+
+### DW-516: The card's `awaitingCreate` and the header switcher's `awaitingWrite` are independent flags on two components rendered in the same viewport, so an unconfirmed create on one surface leaves the other's
+origin: spec-deferred 4dcd16aec101
+source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
+location: src/components/WikiWorkbench.tsx and src/components/workbench/WikiSwitcher.tsx
+severity: medium
+reason: `Workbench.tsx` renders `WikiSwitcher` in the left column header and `WikiWorkbench` as `children` at the same time. An unconfirmed create from the card raises `awaitingCreate` and dims its `Create Wiki`, while the header's `New Wiki` — which opens the same `CreateWikiDialog` onto the same `POST /api/wikis` — is not latched at all, and the inverse holds. Nothing enforces unique wiki names, so one click on the other surface seeds the second wiki the latch exists to prevent. Pre-existing since DW-375/DW-407 shipped the two flags separately; no suite mounts both surfaces together.
+status: open
+
+### DW-517: A latched `<select>` refuses a switch silently: it reports as enabled, snaps back with no announcement, and `selectDescribedBy` names no reason.
+origin: spec-deferred 36079a9e55f4
+source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
+location: src/components/workbench/WikiSwitcher.tsx (the switcher <select> and selectDescribedBy)
+severity: low
+reason: While `awaitingWrite` is up the picker carries `disabled={switching}` (false) and `aria-disabled` only for `readOnly`, so it announces as an ordinary live combobox; the change is swallowed by `switchWiki`'s early return and React re-applies the value. The switcher's own `<p role="alert">` is on screen and was announced when it appeared, but it carries no id and is not in `selectDescribedBy`, so a keyboard or screen-reader owner who tries again gets nothing at all. This is the shape the neighbouring `WIKI_READ_ONLY_COPY` description exists to avoid for the read-only refusal.
+status: open
+
+### DW-518: DW-429's recorded `decision:` names a kernel remedy this bundle did not implement, and its cited coordinates no longer match the tree.
+origin: spec-deferred 9ea259f90049
+source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
+location: _bmad-output/implementation-artifacts/deferred-work.md (DW-429 decision text)
+severity: low
+reason: The ledger entry's decision reads "Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock ... rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6". This bundle's intent directed implementing the entry's REASON instead, which is a client-side release-effect fix, so nothing in `src/lib/wikis.ts` was touched. The decision's own line numbers are also stale: that suite already asserts six `bumpRefreshSignal` sites around line 1213 and states the `setCurrentWiki` exemption rationale near line 1174. So the decision's separate concern — that a switch moves no `dataVersion` — is neither implemented nor retired, and a future sweep re-reading it would chase dead coordinates.
 status: open

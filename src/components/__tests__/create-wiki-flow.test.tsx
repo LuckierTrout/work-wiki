@@ -106,6 +106,20 @@ function button(name: string): HTMLButtonElement {
   return screen.getByRole("button", { name }) as HTMLButtonElement;
 }
 
+/**
+ * Resolved through the DOM, exactly as `wiki-canvas-read-only.test.tsx` does it:
+ * an id nothing renders describes nothing, and the attribute alone cannot tell
+ * the two apart. The joined LIST is what this card now writes, so the resolution
+ * has to walk every id rather than look one up.
+ */
+function describedByText(element: Element): string {
+  return (element.getAttribute("aria-describedby") ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent?.trim() ?? "")
+    .join(" ");
+}
+
 function openTemplateDialog() {
   mount([WIKI], WIKI.id);
   fireEvent.click(screen.getByRole("button", { name: "Change template" }));
@@ -396,6 +410,37 @@ describe("Create Wiki", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("keeps that stated refusal when an unrelated server render arrives", async () => {
+    // The other edge of DW-429's clear, and the reason it is gated on the latch
+    // rather than run on every arrival. `wikis` is a fresh array on ANY server
+    // render — somebody ingesting a source moves `dataVersion` and the shell
+    // refetches — and "A wiki with that name already exists." is not made untrue
+    // by that. Clearing it here would leave the owner a live confirm, an open
+    // dialog, and no idea what the last press did wrong.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "A wiki with that name already exists." }, { ok: false, status: 409 }),
+    );
+    const view = mount([], null);
+    fireEvent.click(screen.getByRole("button", { name: "Create Wiki" }));
+    fireEvent.click(button("Create"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("A wiki with that name already exists.");
+    // The route ANSWERED, so nothing latched — which is what makes the arrival
+    // below a render the owner never asked for.
+    expect(button("Create").disabled).toBe(false);
+
+    view.rerender(
+      <WorkbenchDataProvider value={data([], null)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "A wiki with that name already exists.",
+    );
+    expect(button("Create").disabled).toBe(false);
+  });
+
   it("guards a 2xx whose body carries no wiki at all", async () => {
     // Pushing `undefined` into `wikis` here crashes the very next render on
     // `wiki.id`, which is a BLANK PAGE rather than the message below — the one
@@ -527,7 +572,8 @@ describe("a request that never settles (DW-175, DW-283)", () => {
       const view = mount([], null);
       fireEvent.click(button("Create Wiki"));
       fireEvent.click(button("Create"));
-      await screen.findByRole("alert");
+      const sentence = (await screen.findByRole("alert")).textContent ?? "";
+      expect(sentence).toContain("unknown");
       await waitFor(() => expect(button("Create").disabled).toBe(true));
 
       // A fresh array is what a server render IS — `page.tsx` reads the registry
@@ -543,6 +589,58 @@ describe("a request that never settles (DW-175, DW-283)", () => {
       );
 
       await waitFor(() => expect(button("Create").disabled).toBe(false));
+      // …and the SENTENCE goes with the latch (DW-429). It said the outcome was
+      // unknown and sent the owner to look at the screen; this render is that
+      // screen. Leaving it standing beside a confirm the same commit made live
+      // is a dialog contradicting itself — the button says "go ahead", the
+      // alert above it says nobody knows what happened.
+      expect(screen.queryByRole("alert")).toBeNull();
+      // Nowhere on the surface, not merely out of the alert channel: the empty
+      // state behind the overlay carries its own copy of the same sentence.
+      expect(screen.queryByText(sentence)).toBeNull();
+    });
+
+    it(`keeps the create sentence in the empty state when the owner dismisses after a ${name}`, async () => {
+      // The exact move the message invites — "check what the screen shows
+      // before trying again" means dismiss this dialog and look — and the
+      // sentence lives INSIDE the thing being dismissed. Before DW-430 that
+      // round trip destroyed the owner's only explanation and left them in
+      // front of a dimmed `Create Wiki` that said nothing at all.
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      const view = mount([], null);
+      fireEvent.click(button("Create Wiki"));
+      fireEvent.click(button("Create"));
+      const alert = await screen.findByRole("alert");
+      const sentence = alert.textContent ?? "";
+      expect(sentence).toContain("unknown");
+      await waitFor(() => expect(button("Create").disabled).toBe(true));
+
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      const opener = button("Create Wiki");
+      // Still `disabled` and NOT `aria-disabled`: the latch is transient, like
+      // `switching` in the header, and the read-only convention is the opposite
+      // case. What changes is that the dimming now says something.
+      expect(opener.disabled).toBe(true);
+      expect(opener.hasAttribute("aria-disabled")).toBe(false);
+      // Resolved through the DOM, so an id pointing at nothing fails here.
+      expect(describedByText(opener)).toBe(sentence);
+      // NOT a second alert: the dialog's own owns that channel, and announcing
+      // the same sentence twice would also break every `findByRole("alert")`
+      // above, which expects exactly one.
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      // A server render is what settles it — and takes both halves away.
+      view.rerender(
+        <WorkbenchDataProvider value={data([], null)}>
+          <WikiWorkbench />
+        </WorkbenchDataProvider>,
+      );
+
+      await waitFor(() => expect(button("Create Wiki").disabled).toBe(false));
+      expect(screen.queryByText(sentence)).toBeNull();
+      expect(button("Create Wiki").getAttribute("aria-describedby")).toBeNull();
     });
 
     it(`shuts the create dialog's ENTER path too after a ${name}`, async () => {

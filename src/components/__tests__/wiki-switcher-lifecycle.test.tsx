@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { WikiSwitcher } from "@/components/workbench/WikiSwitcher";
 import { WIKI_READ_ONLY_COPY, WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
@@ -793,7 +801,8 @@ describe("an unconfirmed write latches the confirm until a server render (DW-375
       const view = mount();
       write.open();
       fireEvent.click(button(write.confirm));
-      await screen.findByRole("alert");
+      const sentence = (await screen.findByRole("alert")).textContent ?? "";
+      expect(sentence).toContain("unknown");
       await waitFor(() => expect(button(write.confirm).disabled).toBe(true));
 
       // A fresh array is what a server render IS — `page.tsx` reads the registry
@@ -805,6 +814,13 @@ describe("an unconfirmed write latches the confirm until a server render (DW-375
       );
 
       await waitFor(() => expect(button(write.confirm).disabled).toBe(false));
+      // …and the SENTENCE goes with the latch (DW-429). The openers' promise to
+      // KEEP it across a dismiss-and-reopen is only half a rule: the other half
+      // is that it dies when the render it was waiting for lands. Without this
+      // the dialog contradicts itself — a live confirm under an alert saying
+      // nobody knows what the last press did.
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText(sentence)).toBeNull();
     });
   }
 
@@ -922,6 +938,32 @@ describe("an unconfirmed write latches the confirm until a server render (DW-375
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("leaves a STATED refusal's SENTENCE alone when an unrelated render arrives", async () => {
+    // The other edge of DW-429's clear, and the reason it is gated on the latch
+    // rather than run on every arrival. `wikis` is a fresh array on ANY server
+    // render — somebody ingesting a source moves `dataVersion` and the shell
+    // refetches — and "Wiki name is required." is not made untrue by that.
+    // Clearing it here would leave the owner a live confirm, an open dialog, and
+    // no idea what the last press did wrong.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "Wiki name is required." }, { ok: false, status: 400 }),
+    );
+    const view = mount();
+    fireEvent.click(button("Rename Wiki"));
+    fireEvent.change(screen.getByLabelText("Wiki name"), { target: { value: "Q4" } });
+    fireEvent.click(button("Rename"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Wiki name is required.");
+    // The route ANSWERED, so nothing latched — which is what makes the arrival
+    // below a render the owner never asked for.
+    await waitFor(() => expect(button("Rename").disabled).toBe(false));
+
+    view.rerender(<WikiSwitcher wikis={[CURRENT, OTHER]} currentWikiId={CURRENT.id} />);
+
+    expect(screen.getByRole("alert").textContent).toBe("Wiki name is required.");
+    expect(button("Rename").disabled).toBe(false);
+  });
+
   it("latches on a 502 too — the widened classifier reaches every write here", async () => {
     // DW-374 and DW-375 meeting: the switcher composes no verdict of its own, so
     // widening `writeFailure` is what puts a gateway on this path at all.
@@ -940,6 +982,190 @@ describe("an unconfirmed write latches the confirm until a server render (DW-375
     await waitFor(() => expect(refresh).toHaveBeenCalled());
     await waitFor(() => expect(button("Create").disabled).toBe(true));
     expect(button("Cancel").disabled).toBe(false);
+  });
+});
+
+/**
+ * DW-409: the fourth write, and the one with no confirm button to shut.
+ *
+ * `switchWiki` guarded only on `switching`, which `finally` clears the moment
+ * the abandoned PUT lands here — so from the instant the unconfirmed sentence
+ * appeared the `<select>` was live again and a second `PUT /api/wikis/current`
+ * could go out over a first nobody could account for. Two of those settle in
+ * whatever order the network gives them, and the winner decides which
+ * `schema.md` every prompt on this shell executes.
+ *
+ * The hold needs no new affordance. The picker keeps `disabled={switching}` —
+ * a latch that took it out of the tab order would stop a keyboard owner reading
+ * which Wiki is even active — so the refusal is the handler's early return,
+ * which commits no state and lets React re-apply the controlled value. That is
+ * the mechanism `WikiSwitcherProps.readOnly` documents in full.
+ */
+describe("an unconfirmed switch holds the picker too (DW-409)", () => {
+  const abort = () =>
+    Object.assign(new Error("signal timed out"), { name: "TimeoutError" });
+
+  it("refuses a second change, and takes one again once a server render arrives", async () => {
+    const THIRD: WikiRecord = { ...OTHER, id: "wiki 5/6", name: "Third" };
+    fetchMock.mockRejectedValueOnce(abort());
+    const view = render(
+      <WikiSwitcher wikis={[CURRENT, OTHER, THIRD]} currentWikiId={CURRENT.id} />,
+    );
+    const select = () => screen.getByLabelText("Active wiki") as HTMLSelectElement;
+
+    fireEvent.change(select(), { target: { value: OTHER.id } });
+
+    const alert = await screen.findByRole("alert");
+    const sentence = alert.textContent ?? "";
+    expect(sentence).toContain("unknown");
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    // The optimistic pick is rolled back, and `switching` is already false — so
+    // before this fix the control was fully live here.
+    await waitFor(() => expect(select().value).toBe(CURRENT.id));
+    expect(select().disabled).toBe(false);
+
+    // A DIFFERENT wiki, so the value really moves and React really fires the
+    // change — re-picking the one it already holds is a no-op event and would
+    // ask the guard nothing.
+    fireEvent.change(select(), { target: { value: THIRD.id } });
+
+    // No second PUT, and the picker is back on the wiki the server last
+    // confirmed. The spy is the assertion: the `<select>` is not `disabled`, so
+    // the event really was dispatched and the early return really refused it.
+    expect(currentWrites()).toHaveLength(1);
+    expect(JSON.parse(String(currentWrites()[0][1].body))).toEqual({ id: OTHER.id });
+    await waitFor(() => expect(select().value).toBe(CURRENT.id));
+
+    // The render the sentence sent the owner to look at. It takes the sentence
+    // with it (DW-429) and gives the picker back — a switch left dead until the
+    // page is reloaded would be the worse bug of the two.
+    view.rerender(
+      <WikiSwitcher wikis={[CURRENT, OTHER, THIRD]} currentWikiId={CURRENT.id} />,
+    );
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(screen.queryByText(sentence)).toBeNull();
+
+    fireEvent.change(select(), { target: { value: THIRD.id } });
+    await waitFor(() => expect(currentWrites()).toHaveLength(2));
+    expect(JSON.parse(String(currentWrites()[1][1].body))).toEqual({ id: THIRD.id });
+  });
+
+  it("carries the switch's sentence INTO a dialog the shared latch shut", async () => {
+    // The latch is one flag for four writes, so an unconfirmed switch also
+    // kills `Create`. Opening `New Wiki` then presents a dead confirm — and the
+    // switcher's own `<p role="alert">` explaining why is behind the overlay's
+    // `fixed inset-0` backdrop and outside its `aria-modal` subtree: covered for
+    // a sighted owner, unreachable for a screen-reader one. That is the
+    // dimmed-control-that-says-nothing shape DW-430 removes on the canvas card,
+    // and it is newly reachable here, so the dialog falls back to the
+    // switcher's sentence while latched.
+    fetchMock.mockRejectedValueOnce(abort());
+    mount();
+
+    fireEvent.change(screen.getByLabelText("Active wiki"), {
+      target: { value: OTHER.id },
+    });
+    const sentence = (await screen.findByRole("alert")).textContent ?? "";
+    expect(sentence).toContain("unknown");
+    expect(sentence).toContain("switch wiki");
+
+    fireEvent.click(button("New Wiki"));
+
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+    expect(button("Create").disabled).toBe(true);
+    // Inside the overlay, which is the whole point — asserted by containment
+    // rather than by text, since the switcher's own copy is still in the DOM
+    // behind the backdrop.
+    const inDialog = await within(dialog).findByRole("alert");
+    expect(inDialog.textContent).toBe(sentence);
+  });
+
+  it("leaves a dialog's OWN sentence outranking the fallback", async () => {
+    // `createError` is the more specific answer: this dialog's request is the
+    // one the owner pressed. A create that latches while a switch is in flight
+    // is reachable — `New Wiki` is the one action control without
+    // `disabled={switching}` — so the fallback must never overwrite it.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "A wiki with that name already exists." }, {
+        ok: false,
+        status: 409,
+      }),
+    );
+    mount();
+    fireEvent.click(button("New Wiki"));
+    fireEvent.click(button("Create"));
+
+    const stated = await screen.findByRole("alert");
+    expect(stated.textContent).toBe("A wiki with that name already exists.");
+    // A stated refusal raises no latch, so the confirm is live and the owner may
+    // fix the name and press again immediately.
+    await waitFor(() => expect(button("Create").disabled).toBe(false));
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("drops the other dialogs' stale sentences when a switch raises the shared latch", async () => {
+    // The openers keep an error across a dismiss-and-reopen precisely because
+    // the latch is assumed to be THAT dialog's own. A switch breaks the
+    // assumption: it raises the same flag, so a stated refusal the create dialog
+    // left behind would be re-presented beside a confirm that is dead for an
+    // entirely different request. `switchWiki` clears the three on the way up.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "A wiki with that name already exists." }, {
+        ok: false,
+        status: 409,
+      }),
+    );
+    mount();
+    fireEvent.click(button("New Wiki"));
+    fireEvent.click(button("Create"));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "A wiki with that name already exists.",
+    );
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fetchMock.mockRejectedValueOnce(abort());
+    fireEvent.change(screen.getByLabelText("Active wiki"), {
+      target: { value: OTHER.id },
+    });
+    const sentence = (await screen.findByRole("alert")).textContent ?? "";
+    expect(sentence).toContain("switch wiki");
+
+    fireEvent.click(button("New Wiki"));
+
+    // The 409 is gone; what is left is the switch's own sentence, which is the
+    // reason the confirm is actually down.
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+    const shown = await within(dialog).findByRole("alert");
+    expect(shown.textContent).not.toContain("already exists");
+    expect(shown.textContent).toBe(sentence);
+  });
+
+  it("takes the next switch immediately after a STATED refusal", async () => {
+    // The other edge of the rule, and the reason the latch cannot simply follow
+    // "the switch failed": a route that answered with a reason ANSWERED. Nothing
+    // landed, nothing is unknown, and holding the picker would strand the owner
+    // waiting for a refresh that is never issued.
+    const THIRD: WikiRecord = { ...OTHER, id: "wiki 5/6", name: "Third" };
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "That wiki no longer exists." }, { ok: false, status: 404 }),
+    );
+    render(
+      <WikiSwitcher wikis={[CURRENT, OTHER, THIRD]} currentWikiId={CURRENT.id} />,
+    );
+    const select = () => screen.getByLabelText("Active wiki") as HTMLSelectElement;
+
+    fireEvent.change(select(), { target: { value: OTHER.id } });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("That wiki no longer exists.");
+    expect(refresh).not.toHaveBeenCalled();
+    await waitFor(() => expect(select().value).toBe(CURRENT.id));
+
+    fireEvent.change(select(), { target: { value: THIRD.id } });
+
+    await waitFor(() => expect(currentWrites()).toHaveLength(2));
+    expect(JSON.parse(String(currentWrites()[1][1].body))).toEqual({ id: THIRD.id });
   });
 });
 

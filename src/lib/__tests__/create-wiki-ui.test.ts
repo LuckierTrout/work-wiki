@@ -218,9 +218,17 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // The guard follows the switcher: DW-33 retired this card's copy, so the
     // left column header is where the invariant now lives — retargeted, not
     // dropped.
+    //
+    // And so does a switch issued over one whose outcome NOBODY KNOWS (DW-409):
+    // `finally` clears `switching` the moment the aborted PUT lands, so the
+    // picker is live again while the unconfirmed sentence is still on screen —
+    // and the second PUT that follows can settle behind the first, leaving the
+    // shell on a wiki the owner had already left. `awaitingWrite` is the half
+    // that outlives the request; the `<select>` carries `disabled={switching}`
+    // alone, so the handler's early return is the whole refusal.
     const switcher = await read("workbench/WikiSwitcher.tsx");
     expect(switcher).toContain("disabled={switching}");
-    expect(switcher).toContain("if (switching) return;");
+    expect(switcher).toContain("if (switching || awaitingWrite) return;");
   });
 
   it("leaves switching and the persistent create control to the header (DW-33)", async () => {

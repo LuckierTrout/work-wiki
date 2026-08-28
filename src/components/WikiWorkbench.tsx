@@ -72,6 +72,15 @@ export function WikiWorkbench() {
    */
   const templateNoteId = useId();
   const createNoteId = useId();
+  /**
+   * The RETAINED unknown-outcome sentence's id (DW-430).
+   *
+   * A third id rather than a reuse of `createNoteId`: the read-only sentence and
+   * this one are true independently — a writable deployment renders only this
+   * one — and `aria-describedby` takes a LIST, so both can describe the opener
+   * at once without either standing in for the other.
+   */
+  const createUnknownNoteId = useId();
   const [createOpen, setCreateOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [pendingScenario, setPendingScenario] = useState<CreatableScenario>("business");
@@ -100,6 +109,21 @@ export function WikiWorkbench() {
    * which is the only thing that can say what is actually there.
    */
   const [awaitingCreate, setAwaitingCreate] = useState(false);
+  /**
+   * `awaitingCreate` mirrored where the release effect can READ it without
+   * DEPENDING on it (DW-429).
+   *
+   * The effect below has to know whether the latch was up, because that is what
+   * separates a sentence the arriving render makes stale from a stated refusal
+   * the owner is still reading — a 400 the route answered is not made untrue by
+   * somebody else's page write moving `wikis`. But `awaitingCreate` cannot join
+   * `[wikis, currentWikiId]`: the effect would then fire on the very commit that
+   * RAISES the latch and drop it again before the request it is guarding has any
+   * answer. A ref changes no identity and triggers no effect, so it carries the
+   * fact across without arming anything — which is exactly why every
+   * `setAwaitingCreate` below sets it on the adjacent line.
+   */
+  const awaitingCreateRef = useRef(false);
   // Confirming Create Wiki unmounts the empty state that holds the opening
   // button, so the dialogs need somewhere else to put focus on close.
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -121,6 +145,32 @@ export function WikiWorkbench() {
   // UNDER the id (a refresh that answers a shorter list), and the dialogs
   // below are aimed at the record, not at the id.
   const currentId = current?.id ?? null;
+  /**
+   * The unknown-outcome sentence, retained OUTSIDE the overlay it was raised in
+   * (DW-430).
+   *
+   * The message tells the owner to dismiss the dialog and look at the screen —
+   * and until this existed, doing so destroyed the only explanation on the page
+   * and left them in front of a dimmed `Create Wiki` that says nothing at all.
+   * So the sentence is rendered in the empty state too, and the opener points
+   * its description at it.
+   *
+   * Derived from `createError`, never a copy constant: it IS the sentence
+   * `writeFailure` composed, and a second spelling of it would drift. Gated on
+   * the latch so it is on screen for exactly as long as the button is dead —
+   * `createError` also carries stated refusals, which belong to the dialog and
+   * are gone from the empty state's problem the moment it closes.
+   */
+  const createUnknownNote = awaitingCreate ? createError : null;
+  // `aria-describedby` takes a space-separated LIST, so the two sentences are
+  // JOINED rather than one replacing the other — the switcher's
+  // `selectDescribedBy` idiom. In practice they never co-occur (a read-only
+  // deployment's `create` returns before it can latch), but writing it as an
+  // either/or would make that accident load-bearing.
+  const createDescribedBy =
+    [readOnly ? createNoteId : null, createUnknownNote ? createUnknownNoteId : null]
+      .filter(Boolean)
+      .join(" ") || undefined;
 
   /**
    * A new active Wiki invalidates every decision these dialogs are holding.
@@ -146,16 +196,28 @@ export function WikiWorkbench() {
   }, [currentWikiId, currentId]);
 
   /**
-   * The create door reopens when a server render lands — whatever it says.
+   * The create door reopens when a server render lands — whatever it says —
+   * and the sentence the latch was raised beside goes with it (DW-429).
    *
    * `wikis` is a fresh array on every server render (`page.tsx` reads the
    * registry each time), so its identity is the arrival signal. Deliberately
    * NOT "when the new wiki appears": a refresh that answers without it must
    * still give the owner their button back rather than leaving a control dead
    * with no explanation.
+   *
+   * `createError` is dropped WITH the latch and only with it. "The outcome is
+   * unknown, go and look at the screen" is a statement about a question this
+   * render has just answered, so leaving it standing over a live confirm — in
+   * the dialog and in the empty state alike — tells the owner their create is
+   * still in doubt while the button beside it says otherwise. But clearing it
+   * unconditionally would wipe a STATED refusal ("Wiki name is required.") on
+   * any unrelated refresh, so the ref above gates the whole body.
    */
   useEffect(() => {
+    if (!awaitingCreateRef.current) return;
+    awaitingCreateRef.current = false;
     setAwaitingCreate(false);
+    setCreateError(null);
   }, [wikis, currentWikiId]);
 
   // React flushes every effect TEARDOWN before any effect body, so this lands
@@ -201,6 +263,7 @@ export function WikiWorkbench() {
       // for the length of the refresh — stale but real, and with its one action
       // shut so the owner cannot seed a second wiki into that window.
       setAwaitingCreate(true);
+      awaitingCreateRef.current = true;
       // Claimed BEFORE the close, consumed by the effect that runs once the
       // dialog has finished restoring focus to the doomed opener.
       refocusHeadingRef.current = true;
@@ -227,6 +290,7 @@ export function WikiWorkbench() {
         // it the owner is told the outcome is unknown in front of a screen that
         // will never resolve it.
         setAwaitingCreate(true);
+        awaitingCreateRef.current = true;
         router.refresh();
       }
     } finally {
@@ -307,9 +371,21 @@ export function WikiWorkbench() {
             // The window this card can seed a duplicate wiki in: a create has
             // gone out — landed, or with nobody able to say — the refresh has
             // not come back, and `No wiki yet.` may already be false. See
-            // `awaitingCreate` for both halves. `disabled`, not `aria-disabled`:
-            // this is transient, like `switching` in the header, not a standing
-            // refusal a screen-reader user needs a sentence for.
+            // `awaitingCreate` for both halves.
+            //
+            // `disabled`, not `aria-disabled`: this is a transient in-flight
+            // state, like `switching` in the header, and it lifts on its own
+            // when the server render lands. That is the whole reason — NOT that
+            // it needs no explanation, which is what this comment used to
+            // claim. It does need one (DW-430), and the note below gives it.
+            //
+            // Which is why that note is ordinary empty-state text and not just
+            // a description: `disabled` takes the button out of the tab order,
+            // so nothing ever moves focus here and a sentence reachable only
+            // through `aria-describedby` would be a sentence nobody is read.
+            // On screen it explains the dimming to everyone; the description
+            // ties the two together for anyone who reaches the button by other
+            // means.
             disabled={awaitingCreate}
             // The deployment's standing refusal, which is the opposite case:
             // `POST /api/wikis` has answered 403 since before this card existed,
@@ -317,7 +393,10 @@ export function WikiWorkbench() {
             // empty state out of the tab order along with the button. See
             // `WikiSwitcherProps.readOnly` for the convention.
             aria-disabled={readOnly || undefined}
-            aria-describedby={readOnly ? createNoteId : undefined}
+            // Both sentences, joined — see `createDescribedBy`, and see
+            // `disabled` above for why the latched one is also on screen in its
+            // own right rather than living only in this attribute.
+            aria-describedby={createDescribedBy}
             onClick={() => {
               // BEFORE the dialog opens, never after: a form the owner fills in
               // and submits before being refused is worse than a control that
@@ -336,6 +415,17 @@ export function WikiWorkbench() {
               className="mt-3 text-sm text-amber-700 dark:text-amber-400"
             >
               {WIKI_CREATE_READ_ONLY_COPY}
+            </p>
+          )}
+          {/* Why the button above is dead, surviving the dismissal the sentence
+              itself invites. NOT `role="alert"`: the dialog's own alert already
+              owns that channel and is on screen at the same moment — a second
+              one would announce the same sentence twice and break every
+              `findByRole("alert")` that expects one. Muted, not amber: this is
+              transient, unlike the deployment's standing refusal above. */}
+          {createUnknownNote && (
+            <p id={createUnknownNoteId} className="mt-3 text-sm text-foreground/60">
+              {createUnknownNote}
             </p>
           )}
         </div>

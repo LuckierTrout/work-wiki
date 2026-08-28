@@ -320,7 +320,8 @@ describe("WikiSwitcher", () => {
     // same line.
     const switcher = await read("WikiSwitcher.tsx");
     // `create`, `rename`, `remove` — every write behind a dialog. `switchWiki`
-    // is guarded on `switching`, its own flag, asserted separately above.
+    // is the fourth and is guarded on `switching`, its own in-flight flag,
+    // rather than on `busy`; it is pinned just below.
     //
     // `awaitingWrite` rides ALONGSIDE `busy` in the same line (DW-375): the two
     // shut the same door for different lengths of time — `busy` for the length
@@ -329,6 +330,26 @@ describe("WikiSwitcher", () => {
     // is reachable with `busy` already back to false.
     expect(switcher.match(/if \(busy \|\| awaitingWrite\) return;/g) ?? []).toHaveLength(3);
     expect(switcher.match(/if \(busy\) return;/g) ?? []).toHaveLength(0);
+
+    // The FOURTH write — and the one guard here that is NOT unreachable, so it
+    // is pinned for a different reason than the three above (DW-409).
+    //
+    // The `<select>` carries `disabled={switching}` alone, deliberately: a latch
+    // that took the control out of the tab order would stop a keyboard owner
+    // reading which Wiki is even active. So once `finally` clears `switching`
+    // the change event really is dispatched, this early return really is what
+    // refuses it, and `wiki-switcher-lifecycle.test.tsx` observes exactly that —
+    // deleting the line fails a mounted case rather than passing unnoticed.
+    //
+    // What the scan adds is the SPELLING. The behaviour a mounted case pins is
+    // "a second change writes nothing", which `switching` alone also satisfies
+    // for as long as the first request is in flight; the two-flag form is what
+    // extends the refusal past `finally` to the window where the outcome is
+    // unknown. Fixing the literal here is what stops the guard being narrowed
+    // back to `switching` alone — the exact shape DW-409 found.
+    expect(
+      switcher.match(/if \(switching \|\| awaitingWrite\) return;/g) ?? [],
+    ).toHaveLength(1);
 
     // The SECOND keyboard path into `rename`, guarded on exactly what the
     // confirm is guarded on. It is unreachable behind the handler's own early
@@ -356,6 +377,36 @@ describe("WikiSwitcher", () => {
     // unreachable behind it, which is the whole reason the line above is pinned
     // by a scan rather than trusted to a mounted test.
     expect(card).toContain("confirmDisabled={awaitingCreate}");
+  });
+
+  it("mirrors every latch raise into the ref its release effect reads (DW-429)", async () => {
+    // Both surfaces hold the same pair: a `useState` latch the render reads, and
+    // a `useRef` mirror the release effect reads WITHOUT depending on — because
+    // a dependency would fire that effect on the very commit that raises the
+    // latch and drop it again before the write it guards has any answer.
+    //
+    // Nothing in the type system ties the two halves together, and the failure
+    // runs in the worst direction: a future raise that sets the state and
+    // forgets the ref line leaves the effect returning early FOREVER, so the
+    // latch is stuck UP — a confirm dead for the rest of the session that no
+    // server render can revive, with the sentence beside it never cleared
+    // either. Every mounted case drives one write, sets both halves, and stays
+    // green; only a count can see the half that was not written.
+    //
+    // Counted rather than spot-checked, so a fifth write cannot arrive with one
+    // half wired. Both docblocks promise "on the adjacent line"; this is what
+    // makes the promise enforceable.
+    const switcher = await read("WikiSwitcher.tsx");
+    // `create`, `rename`, `remove`, `switchWiki` — the four writes.
+    expect(switcher.match(/setAwaitingWrite\(true\)/g) ?? []).toHaveLength(4);
+    expect(switcher.match(/awaitingWriteRef\.current = true/g) ?? []).toHaveLength(4);
+
+    const card = await readFile(path.join(SRC, "components/WikiWorkbench.tsx"), "utf8");
+    // `create`'s two raises: the success path and the unconfirmed one. The card
+    // latches on success too, because the empty state behind the closed dialog
+    // still offers `Create Wiki` for the length of the refresh.
+    expect(card.match(/setAwaitingCreate\(true\)/g) ?? []).toHaveLength(2);
+    expect(card.match(/awaitingCreateRef\.current = true/g) ?? []).toHaveLength(2);
   });
 
   it("labels the switcher for assistive tech and names the create control", async () => {

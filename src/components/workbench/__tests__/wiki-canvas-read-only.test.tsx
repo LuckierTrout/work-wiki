@@ -137,7 +137,13 @@ describe("the empty state's Create Wiki refuses the same way", () => {
     expect(button.hasAttribute("disabled")).toBe(false);
     button.focus();
     expect(document.activeElement).toBe(button);
-    expect(describedByText(button)).toContain(WIKI_CREATE_READ_ONLY_COPY);
+    // EXACTLY this sentence and nothing appended. The description is a joined
+    // LIST since DW-430 — the unconfirmed-write note rides beside this one — and
+    // that note is gated on a latch no read-only deployment can raise, because
+    // `create` refuses before it can reach a request. A list that named it here
+    // would resolve through an id nothing renders and silently describe the
+    // opener with an empty string on the end.
+    expect(describedByText(button)).toBe(WIKI_CREATE_READ_ONLY_COPY);
     // Its OWN sentence, not the template one: the two controls never share a
     // render, so a merged sentence would always name an unreachable action.
     expect(screen.getByText(WIKI_CREATE_READ_ONLY_COPY)).toBeTruthy();
