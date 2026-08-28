@@ -359,6 +359,15 @@
     "label": "Pause while withdrawn",
     "resolution": ""
   },
+  "DW-427": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Introduce an 'applied but unreadable' verdict for a 2xx whose body cannot be parsed, have SettingsCanvas clear the held version on it so the next save re-seeds rather than 412s, and pin it at both the client return value and the canvas seam.",
+    "key": "1",
+    "label": "Third verdict",
+    "resolution": ""
+  },
   "DW-428": {
     "answered_at": "2026-08-22",
     "bundle_name": "",
