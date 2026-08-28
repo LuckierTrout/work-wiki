@@ -2108,8 +2108,9 @@ describe("GET /api/workbench/preview", () => {
     // A page with no YAML block at all parses to `{}` — the same value
     // `frontmatterOf` returns when the block throws for want of a closing
     // `---`. `belongsInCommons({})` is true, so the realm branch refuses a
-    // non-admin: the fail-CLOSED direction, and the same answer
-    // `PUT /api/wiki/[slug]` gives for the same bytes.
+    // non-admin: the fail-CLOSED direction, and — for THESE bytes, which parse
+    // cleanly to empty metadata — the same answer `PUT /api/wiki/[slug]` gives,
+    // whose ACL refuses the same principals on the same `{}` with a 403.
     await fs.writeFile(
       path.join(root, "wiki", "bare.md"),
       "# Bare\n\nno frontmatter at all\n",
@@ -2131,8 +2132,14 @@ describe("GET /api/workbench/preview", () => {
     // No closing `---`, so `parseFrontmatter` THROWS. `editable` now parses
     // frontmatter itself, so the throw is on the path that decides an
     // affordance: `frontmatterOf` catches it and yields `{}`, which
-    // `belongsInCommons` reads as a commons page — the fail-CLOSED direction,
-    // and the same answer `PUT /api/wiki/[slug]` gives for the same bytes.
+    // `belongsInCommons` reads as a commons page — the fail-CLOSED direction.
+    // This is where the two routes DIVERGE (DW-494): on an ORDINARY deployment
+    // `PUT /api/wiki/[slug]` lets the same throw reach its outer catch and
+    // answers 500 for these bytes, not the 403 an ACL would give. (Under
+    // `YOPEDIA_READONLY` it answers 403 for every slug before any parse, so the
+    // divergence is about the ordinary path.) Preview deliberately does not
+    // propagate — an unrenderable file is not a server fault, so it reports the
+    // bytes and closes the affordance.
     await fs.writeFile(
       path.join(root, "wiki", "broken.md"),
       "---\ntitle: broken\ntype: concept\n\n# Broken\n\nbody\n",

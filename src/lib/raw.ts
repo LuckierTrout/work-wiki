@@ -40,6 +40,34 @@ export const RAW_SOURCES_DIR = "sources";
  */
 export const RAW_PARSED_DIR = "parsed";
 
+/**
+ * The structural root of the binary-asset tree under `raw/`.
+ *
+ * Its PER-PAGE subtree is `assets/<slug>/<file>` — images pulled out of a
+ * document arrival (`preserveDocumentSources`) and images fetched for a page
+ * (`fetch.ts`) land there, and `syncSiloForPage` mirrors the whole
+ * `assets/<slug>` directory into the owner's tenant silo. That subtree is the
+ * reason the Workbench read gate has to know this root by name: its second
+ * segment is a page slug exactly as it is under {@link RAW_SOURCES_DIR}, so a
+ * gate reading the FIRST segment derives `assets` and discloses every hidden
+ * page's asset directory (DW-491).
+ *
+ * NOT everything under this root is per-page: `illustration.ts` writes
+ * `assets/illustrations/<key>.jpg`, a shared cache with no slug in it. Such a
+ * subtree has its first segment read as a slug anyway — the fail-closed
+ * direction {@link RAW_PARSED_DIR} also takes, since the path alone cannot
+ * prove a segment is not somebody's slug.
+ *
+ * The constant is the STORAGE-root spelling, shared by the silo mirror and that
+ * read gate so the two cannot drift apart. It is deliberately NOT every
+ * `assets/…` literal in the tree: `fetch.ts`, `illustration.ts`, the
+ * `/api/assets` route and the vault export spell it too, but there the string
+ * doubles as the MARKDOWN-FACING ref namespace (`![](assets/<slug>/<file>)`)
+ * and the exported vault's layout — a separate contract that `rawRelPath` maps
+ * onto this root, and that must not start moving whenever this one does.
+ */
+export const RAW_ASSETS_DIR = "assets";
+
 /** Storage-relative path for something under `raw/sources/`. */
 export function rawSourceRelPath(rest: string): string {
   return rawRelPath(`${RAW_SOURCES_DIR}/${rest}`);

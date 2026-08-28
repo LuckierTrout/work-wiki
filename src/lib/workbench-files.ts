@@ -21,7 +21,8 @@
  *
  * `raw/` NEEDS THE SAME GATE, from the other direction (DW-32). Every `raw/`
  * path is slug-derived — `raw/sources/<slug>/<sha>.md`, `raw/sources/<slug>.md`,
- * and the pre-`sources` residue `raw/<slug>.md` — so passing every leaf through
+ * the silo-mirrored binary tree `raw/assets/<slug>/<file>` (DW-491), and the
+ * pre-`sources` residue `raw/<slug>.md` — so passing every leaf through
  * put the FILENAME of a page the Knowledge tab hides into the tree the wiki
  * filter had just kept it out of. So the caller passes a second set, the slugs
  * its index named that the Knowledge tab does not show, and
@@ -48,7 +49,7 @@
 
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
-import { RAW_SOURCES_DIR } from "./raw";
+import { RAW_ASSETS_DIR, RAW_SOURCES_DIR } from "./raw";
 import { getStorage } from "./storage";
 import {
   rawRelPath,
@@ -164,6 +165,32 @@ function stripRawExtension(name: string): string {
 }
 
 /**
+ * Is `raw/assets/<x>` the LEGACY NESTED SOURCE of a page slugged `assets`,
+ * rather than the per-page binary root?
+ *
+ * The two trees collide on one prefix. `raw/assets/<slug>/<file>` is the binary
+ * mirror, whose second segment is a page slug — but `raw/<slug>/<hash>.md` is
+ * the pre-`sources` residue, and for the page slugged `assets` that residue is
+ * spelled `raw/assets/<hash>.md`, identical in shape to a binary file sitting
+ * directly under the root.
+ *
+ * A file EXTENSION is what tells them apart, and it is the same fact the
+ * extension-strip above already relies on: `validateSlug` admits only lowercase
+ * alphanumerics and hyphens, so a slug never contains a dot. So exactly one
+ * remaining segment WITH a dot is a legacy file belonging to the page `assets`
+ * — keep the head and read `assets` as the slug — while a dotless segment is a
+ * per-page directory row and the head is dropped.
+ *
+ * Getting this backwards is a DISCLOSURE, not a cosmetic miss: dropping the
+ * head unconditionally makes `rawPathSlug("raw/assets/ff00.md")` answer `ff00`,
+ * so a hidden page slugged `assets` has its legacy source listed and served —
+ * the DW-32 hole, merely relocated to a different slug.
+ */
+function isLegacyAssetsLeaf(segments: readonly string[]): boolean {
+  return segments.length === 3 && segments[2].lastIndexOf(".") > 0;
+}
+
+/**
  * The page slug a `raw/` DISPLAY PATH spells, or `null` for a path that spells
  * none.
  *
@@ -172,7 +199,8 @@ function stripRawExtension(name: string): string {
  * `saveRawSourceBytes` write `sources/<slug>/<rawId>.<ext>` — and the legacy
  * pre-`sources` residue (`raw/<slug>.md`, `raw/<slug>/<hash>.md`) puts the slug
  * in the very same position. So the rule is: drop `raw/`, drop a leading
- * `sources` segment, and the FIRST remaining segment names the slug —
+ * STRUCTURAL ROOT segment (`sources`, and `assets` under the condition spelled
+ * out below), and the FIRST remaining segment names the slug —
  * extension-stripped when it is the only one left, and joined with the next
  * segment when it is `queries`.
  *
@@ -181,16 +209,40 @@ function stripRawExtension(name: string): string {
  * and hyphens with no dots and no slashes, which is what makes the
  * extension-strip unambiguous rather than a guess.
  *
- * The `sources` segment is DROPPED rather than read as a slug because it is
- * {@link RAW_SOURCES_DIR}, the fixed structural root every Source lives under:
- * reading it as a spelled slug would let one page slugged `sources` blank the
- * entire Sources tree. Every OTHER first segment IS read as a slug, so
- * `raw/parsed/…` derives `parsed` and `raw/assets/…` derives `assets` —
- * deliberately conservative, because the legacy flat shapes put a real slug in
- * exactly that position and the path alone cannot tell them apart. If a hidden
- * page were ever slugged `parsed`, that subtree is withheld: the safe direction
- * for a filter whose job is to withhold filenames, and the same fail-closed
- * direction {@link wikiLeafFilter} already takes.
+ * A leading {@link RAW_SOURCES_DIR} or {@link RAW_ASSETS_DIR} segment is
+ * DROPPED rather than read as a slug, because each is a fixed structural root
+ * whose NEXT segment is the page slug: every Source lives under
+ * `raw/sources/<slug>/…`, and `syncSiloForPage` mirrors the per-page binary
+ * tree at `raw/assets/<slug>/<file>` (DW-491). Reading the root itself as a
+ * spelled slug would let one page slugged `sources` blank the entire Sources
+ * tree; NOT dropping `assets` did the opposite and worse — every hidden page's
+ * `raw/assets/<slug>/` row derived the slug `assets`, so the directory row went
+ * on announcing a page the Knowledge tab hides, which is the disclosure DW-32
+ * exists to stop.
+ *
+ * The drop is EXCLUSIVE — one structural root is consumed, never two — so a
+ * real page slugged `assets` still derives `assets` from
+ * `raw/sources/assets/<hash>.md` and from the legacy flat `raw/assets.md`.
+ * Sequential drops would turn the former into the slug `<hash>` and silently
+ * unhide it.
+ *
+ * The `assets` drop carries ONE exception, because that root is the only one
+ * whose prefix a real page can also occupy: `raw/assets/<hash>.md` is the
+ * pre-`sources` nested residue of a page actually slugged `assets`, and it has
+ * the same shape as a binary file directly under the root. The extension tells
+ * them apart — see {@link isLegacyAssetsLeaf}, which is where that rule and the
+ * disclosure it prevents are spelled out. `raw/assets/<slug>/…` is unambiguous
+ * and always drops.
+ *
+ * Every OTHER first segment IS read as a slug, so `raw/parsed/…` derives
+ * `parsed` — deliberately conservative, because the legacy flat shapes put a
+ * real slug in exactly that position and the path alone cannot tell them apart.
+ * If a hidden page were ever slugged `parsed`, that subtree is withheld: the
+ * safe direction for a filter whose job is to withhold filenames, and the same
+ * fail-closed direction {@link wikiLeafFilter} already takes. `raw/assets/` is
+ * not conservative in that way for a reason: unlike `parsed`, that root has
+ * writers putting a page slug in the segment beneath it, so reading the root as
+ * the slug withholds nothing and discloses everything under it.
  *
  * Works on a DIRECTORY display path as well as a leaf, without the trailing
  * marker the walk appends — `raw/sources/agentpage` answers `agentpage`, which
@@ -199,8 +251,11 @@ function stripRawExtension(name: string): string {
 export function rawPathSlug(displayPath: string): string | null {
   const segments = displayPath.split("/");
   if (segments[0] !== "raw") return null;
-  const rest =
-    segments[1] === RAW_SOURCES_DIR ? segments.slice(2) : segments.slice(1);
+  const head = segments[1];
+  const dropsHead =
+    head === RAW_SOURCES_DIR ||
+    (head === RAW_ASSETS_DIR && !isLegacyAssetsLeaf(segments));
+  const rest = dropsHead ? segments.slice(2) : segments.slice(1);
   const first = rest[0];
   if (first === undefined || first.length === 0) return null;
   if (first === "queries" && rest.length > 1) {

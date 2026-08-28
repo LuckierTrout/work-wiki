@@ -110,8 +110,19 @@ function bodyFor(format: PreviewFormat, content: string, whole = false): string 
  * the fail-CLOSED answer for `editable`, not a permissive one: `belongsInCommons`
  * treats a record with no `visibility` and no `type` as a commons page, so
  * `canWriteFrontmatter(..., "body")` refuses every principal but the service
- * principal and an admin — the same answer `PUT /api/wiki/[slug]` gives for the
- * same unparseable file. So the catch is a real decision, not a swallow.
+ * principal and an admin. For EMPTY metadata that is exactly the answer
+ * `PUT /api/wiki/[slug]` gives — a file with no YAML block at all parses to
+ * `{}` there too, and the same ACL refuses the same principals with a 403.
+ *
+ * For an UNPARSEABLE block the two routes DIVERGE, deliberately (DW-494): on an
+ * ORDINARY deployment that route's `readWikiPageWithFrontmatter` throws before
+ * its ACL check ever runs, and the outer catch classifies the throw as 500 (400
+ * only for `invalid slug`). Under `YOPEDIA_READONLY` its `isReadOnly()` guard
+ * refuses every slug with a 403 before any of that, so the 500 is the
+ * ordinary-path answer. This route does not propagate the throw, because a
+ * Preview that cannot render is not a server fault — it reports the bytes it
+ * read and marks the affordance closed. So the catch is a real decision, not a
+ * swallow.
  */
 function frontmatterOf(content: string): Frontmatter {
   try {

@@ -1874,6 +1874,41 @@ describe("PUT /api/wiki/[slug] — the write precondition", () => {
     });
   });
 
+  it("answers 500 for stored bytes whose frontmatter block will not parse", async () => {
+    // DW-494. The Workbench Preview route's `frontmatterOf` documents its
+    // relationship to THIS route, and for two releases that prose claimed the
+    // 403 it produces for an unparseable block was "the same answer
+    // `PUT /api/wiki/[slug]` gives" — a claim about a different route with
+    // nothing pinning it, which is exactly how it survived being false.
+    //
+    // What this route actually does: `readWikiPageWithFrontmatter(slug,
+    // { fresh: true, strict: true })` runs BEFORE the If-Match check and before
+    // the write ACL, `parseFrontmatter` throws on the unclosed `---`, and the
+    // outer catch classifies it 500 (400 only for `invalid slug`). No ACL runs,
+    // so no 403. Preview deliberately DIVERGES: it catches the same throw,
+    // yields `{}` and closes the affordance rather than reporting a fault.
+    //
+    // Ordinary deployment only — `YOPEDIA_READONLY` is cleared per test, and
+    // under it this route refuses every slug with a 403 before any of this.
+    await fs.writeFile(
+      path.join(process.env.WIKI_DIR!, "pc-unparseable.md"),
+      "---\ntitle: broken\ntype: concept\n\n# Broken\n\nbody\n",
+      "utf-8",
+    );
+
+    // No `If-Match`: the read that throws happens before the precondition is
+    // ever consulted, so a valid header is not needed to reach it.
+    const response = await put("pc-unparseable", null);
+
+    expect(response.status).toBe(500);
+    const body = (await response.json()) as { error: string };
+    // Not cloaked as an absence, and not an ACL refusal — the PARSE is what
+    // reached the catch, which is what makes the 500 the honest classification
+    // rather than an incidental one.
+    expect(body.error).not.toContain("page not found");
+    expect(body.error).toMatch(/frontmatter/i);
+  });
+
   /**
    * `strict` reaches FURTHER than the Page file. `readWikiPage` forwards it to
    * `getPageIndex({ strict })`, which rethrows where the default logs

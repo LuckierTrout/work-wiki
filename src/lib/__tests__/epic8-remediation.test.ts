@@ -68,7 +68,7 @@ import { rescanSources } from "../source-rescan";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
 import { listIngestJobs } from "../ingest-jobs";
-import { saveRawSource, saveRawSourceTree } from "../raw";
+import { saveRawSource, saveRawSourceFor, saveRawSourceTree } from "../raw";
 import { listRawSourceFilePaths } from "../workbench-files";
 import * as tasks from "../tasks";
 
@@ -1935,6 +1935,68 @@ describe("F8-05 / F8-06 v1 contract", () => {
       });
       expect(result.results[0]?.queued).toBe(false);
       expect(await listIngestJobs({ owner: "alice" })).toEqual([]);
+    } finally {
+      enqueue.mockRestore();
+      if (originalDataDir === undefined) delete process.env.DATA_DIR;
+      else process.env.DATA_DIR = originalDataDir;
+      _resetStorage();
+      _resetLocks();
+    }
+  });
+
+  it("refuses an explicit path whose page the Knowledge tab hides", async () => {
+    // DW-493. The explicit-`paths` branch skips the listing entirely, so
+    // forwarding `hiddenSlugs` into `readWorkbenchFile` is its ONLY gate —
+    // otherwise the rescan door compiles bytes the Files tab will not serve.
+    // Every other case in the suite passes an empty set, so replacing that
+    // forward with `new Set()` left the suite green.
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "epic8-rescan-hidden-"));
+    const originalDataDir = process.env.DATA_DIR;
+    process.env.DATA_DIR = tmp;
+    _resetLocks();
+    _resetStorage();
+    const enqueue = vi.spyOn(tasks, "enqueueTask").mockResolvedValue(true);
+    try {
+      // BOTH spellings the ledger's exploit names: the flat
+      // `raw/sources/<slug>.md`, and the sharded `raw/sources/<slug>/<sha>.md`
+      // that `saveRawSourceFor` writes — which is the shape DW-32 was filed
+      // against.
+      await saveRawSource("hidden-note", "compile me", { owner: "alice" });
+      await saveRawSourceFor("hidden-note", "aa11bb22", "compile me too", {
+        owner: "alice",
+      });
+      const paths = [
+        "raw/sources/hidden-note.md",
+        "raw/sources/hidden-note/aa11bb22.md",
+      ];
+
+      const refused = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        hiddenSlugs: new Set(["hidden-note"]),
+        paths,
+      });
+      // The same answer an absent path gets — no existence oracle.
+      expect(refused.results).toEqual([
+        { path: paths[0], queued: false, reason: "not_found" },
+        { path: paths[1], queued: false, reason: "not_found" },
+      ]);
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(await listIngestJobs({ owner: "alice" })).toEqual([]);
+
+      // CONTROL: the same bytes, the same path, a refusal set naming someone
+      // else. Without this the case above would pass for bytes that were never
+      // written, and would keep passing if the gate were deleted.
+      const allowed = await rescanSources({
+        owner: "alice",
+        wikiId: null,
+        readableSlugs: new Set(),
+        hiddenSlugs: new Set(["someone-else"]),
+        paths,
+      });
+      expect(allowed.results.map((row) => row.queued)).toEqual([true, true]);
+      expect(await listIngestJobs({ owner: "alice" })).toHaveLength(2);
     } finally {
       enqueue.mockRestore();
       if (originalDataDir === undefined) delete process.env.DATA_DIR;

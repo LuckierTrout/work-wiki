@@ -792,7 +792,8 @@ export function readableSlugsFromKnowledge(
  * `readableSlugs` is what the `wiki/` root admits; `hiddenSlugs` is what the
  * `raw/` root REFUSES — the slugs the principal's own index named that
  * {@link buildKnowledgeTree} did not show. `raw/` paths are slug-derived
- * (`raw/sources/<slug>/<sha>.md`, and the legacy flat `raw/<slug>.md`), so
+ * (`raw/sources/<slug>/<sha>.md`, the silo-mirrored binary tree
+ * `raw/assets/<slug>/<file>` (DW-491), and the legacy flat `raw/<slug>.md`), so
  * without the second set the Files tree spells the filename of a page the
  * Knowledge tab hides (DW-32) — the same disclosure `readableSlugs` exists to
  * stop under `wiki/`.

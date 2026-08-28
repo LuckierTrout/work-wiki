@@ -4412,7 +4412,9 @@ source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
 location: src/lib/workbench-files.ts:199
 severity: medium
 reason: `syncSiloForPage` mirrors `raw/assets/<slug>/<file>` into `tenants/<t>/raw/assets/<slug>/` (src/lib/silo.ts:148), which is exactly the tree the Files tab walks and `/api/workbench/media` serves bytes from. `rawPathSlug` reads only the FIRST segment under `raw/` (after dropping `sources`), so that path derives the slug `assets`, not `<slug>`, and `rawPathAllowed` admits it. The directory row `raw/assets/<hidden>/` therefore still announces the page. Triaged `patch` (medium) in the 2026-08-27 review pass and NOT applied — the session hit its token budget first. The fix is to drop a leading `assets` segment the way `sources` is dropped. Note the intent-contract's I/O matrix calls `raw/assets/…` a "non-slug raw subtree", which is false for this shape; `raw/parsed/<slug>/…` has the same shape but is written only to the flat non-silo key (src/lib/raw.ts:279), so it is NOT reachable from the tab.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-raw-path-gate-parity
+resolution-undo: 78fc2a306dbc82574ae9fc972ff0290fa59608409488f39809bb76b051332b92 2026-08-28 7374617475733a206f70656e
 
 ### DW-492: A page slugged plain `queries` with sharded sources is not refused — the two-segment `queries/<leaf>` branch swallows the snapshot id.
 origin: spec-deferred 62d6499278be
@@ -4428,14 +4430,18 @@ source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
 location: src/lib/source-rescan.ts:126
 severity: medium
 reason: Every `rescanSources` call site in the suite passes `hiddenSlugs: new Set()` (src/lib/__tests__/epic8-remediation.test.ts, ten sites); `epic8-v1-routes.test.ts` mocks `@/lib/source-rescan` wholesale; the new rescan row in `workbench-tree.test.ts` calls `listRawSourceFilePaths` DIRECTLY, not through `rescanSources`. Replacing `hiddenSlugs: input.hiddenSlugs` with `new Set()` at src/lib/source-rescan.ts:126 leaves the whole suite green, and a POST of `{"paths":["raw/sources/<hidden>/<sha>.md"]}` would then read and enqueue the hidden page's source. The explicit-`paths` branch skips the listing entirely, so that forward is its ONLY gate. Triaged `patch` (medium), not applied — session budget.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-raw-path-gate-parity
+resolution-undo: 78fc2a306dbc82574ae9fc972ff0290fa59608409488f39809bb76b051332b92 2026-08-28 7374617475733a206f70656e
 
 ### DW-494: `frontmatterOf`'s docblock and two test comments claim parity with `PUT /api/wiki/[slug]` for an UNPARSEABLE frontmatter block; that route answers 500, not 403.
 origin: spec-deferred 52b740415ffc
 source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
 location: n/a
 reason: `readWikiPageWithFrontmatter` (src/lib/wiki.ts:534-546) calls `parseFrontmatter` with no catch, so an unclosed `
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-workbench-raw-path-gate-parity
+resolution-undo: 78fc2a306dbc82574ae9fc972ff0290fa59608409488f39809bb76b051332b92 2026-08-28 7374617475733a206f70656e
 
 ### DW-495: Merge-base reads outside the three files this bundle named still read through pageCache without strict, including the MCP edit door that documents itself as mirroring the PUT route this change fixed.
 origin: spec-deferred 98230f132919
@@ -4767,4 +4773,20 @@ location: src/lib/discuss-stats-index.ts:69, src/lib/contributor-index.ts:218
 source_spec: `spec-dw-390-retire-dead-talk-writers.md`
 severity: medium
 reason: `src/lib/talk.ts`'s `syncDiscussStatsHook` and `recordTalkContributorHook` were the only production callers of `syncDiscussStatsForSlug` (discuss-stats-index.ts:69) and `recordTalkForAuthor` (contributor-index.ts:218). After DW-390 both are reached only from their own unit tests. Their prose is now stale: discuss-stats-index.ts:6 says the index is "maintained incrementally directly from talk.ts", :65 says the function is "called from talk.ts mutations ... under the discuss:<slug> lock" (that lock is gone), and contributor-index.ts:25 and :214 still call it "the talk hook". Both modules were deliberately left untouched: the DW-390 decision says to leave the discuss-stats/contributor indexes exactly as they are, so this is recorded rather than resolved. This is the DW-390 shape one module out.
+status: open
+
+### DW-536: `/api/assets/[...path]` gates only on `visibility: private`, so the assets of a page the Knowledge tab hides for any OTHER reason are still served to anyone, unauthenticated.
+origin: spec-deferred 898a204cc270
+location: src/app/api/assets/[...path]/route.ts:73
+source_spec: `spec-dw-491-493-494-workbench-raw-path-gate-parity.md`
+severity: medium
+reason: DW-491 closed the disclosure at the Workbench doors (`listWorkbenchFilePaths`, `readWorkbenchFile`, `readWorkbenchFileBytes`, `/api/workbench/media`), which all route through `rawPathAllowed`. `/api/assets/[...path]` reads the SAME bytes out of the same `raw/assets/<slug>/<file>` tree (route.ts:83, `rawRelPath("assets/" + segments.join("/"))`) and its only gate is `page.frontmatter.visibility === "private"` (route.ts:73-79). `hiddenSlugs` is broader than that: `workbenchSlugGate` refuses every slug the principal's index named that `buildKnowledgeTree` dropped — agent-scoped types and artifacts included, none of which need `visibility: private`. So after this change the Files tab withholds `raw/assets/agentpage/pic.png` while a plain `GET /api/assets/agentpage/pic.png` still returns the bytes. Pre-existing: that route's gate predates DW-491 and was not touched here. Whether the two gates SHOULD agree is a product decision — `/api/assets/` is deliberately no-auth so public pages skip pri
+status: open
+
+### DW-537: The v1 rescan ROUTE's `v1SlugGate` -> `hiddenSlugs` wiring is still unpinned; DW-493 pinned the forward inside `rescanSources`, one level below the door.
+origin: spec-deferred 85f7687e3987
+location: src/app/api/v1/projects/[wikiId]/sources/rescan/route.ts:82
+source_spec: `spec-dw-491-493-494-workbench-raw-path-gate-parity.md`
+severity: medium
+reason: DW-493's new case calls `rescanSources` directly and does pin the forward at src/lib/source-rescan.ts:126 (verified: replacing it with `new Set()` fails exactly that case and nothing else). What remains untested is the route that a real caller hits: `POST /api/v1/projects/[wikiId]/sources/rescan` derives the gate with `v1SlugGate(caller.principal)` and spreads it into the call (route.ts:82-88). Nothing asserts that derivation yields a NON-EMPTY `hiddenSlugs` for a hidden page, or how it composes with the route's own `!path.startsWith("raw/sources/")` -> 403 scope check — because `src/lib/__tests__/epic8-v1-routes.test.ts:54` mocks `@/lib/source-rescan` wholesale, so no test in the suite drives the real function through the POST door. Pre-existing: that mock and that wiring predate this change.
 status: open

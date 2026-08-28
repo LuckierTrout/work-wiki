@@ -29,7 +29,7 @@ import {
   tenantForOwner,
   validateTenant,
 } from "./wiki";
-import { rawSourceRelPath, tenantRawSourceRelPath } from "./raw";
+import { RAW_ASSETS_DIR, rawSourceRelPath, tenantRawSourceRelPath } from "./raw";
 import { logger } from "./logger";
 
 async function copyText(src: string, dst: string): Promise<boolean> {
@@ -145,7 +145,7 @@ export async function syncSiloForPage(
     n++;
 
   // binary assets: raw/assets/<slug>/<file> (immutable — copy only new)
-  const assetRel = `assets/${slug}`;
+  const assetRel = `${RAW_ASSETS_DIR}/${slug}`;
   const mirroredAssets = new Set(
     (await listSafe(tenantRawRelPath(tenant, assetRel))).map((f) => f.name),
   );
@@ -174,7 +174,7 @@ export async function removeSiloForPage(
     deleteSafe(tenantRawRelPath(tenant, `${slug}.md`)),
     deleteSafe(`tenants/${tenant}/discuss/${slug}.json`),
     deleteDirSafe(tenantWikiRelPath(tenant, `.revisions/${slug}`)),
-    deleteDirSafe(tenantRawRelPath(tenant, `assets/${slug}`)),
+    deleteDirSafe(tenantRawRelPath(tenant, `${RAW_ASSETS_DIR}/${slug}`)),
   ]);
 }
 

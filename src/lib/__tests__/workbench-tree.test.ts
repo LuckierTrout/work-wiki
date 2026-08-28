@@ -517,6 +517,52 @@ describe("rawPathSlug", () => {
     // position, and the path alone cannot tell the two apart.
     expect(rawPathSlug("raw/parsed/alpha/ab12.md")).toBe("parsed");
   });
+
+  it("reads the slug under `assets/`, the other root with a slug beneath it", () => {
+    // DW-491. `syncSiloForPage` and `preserveDocumentSources` write
+    // `raw/assets/<slug>/<file>`, so the segment after `assets` is a page slug
+    // exactly as it is after `sources`. Deriving `assets` here let the
+    // directory row `raw/assets/agentpage/` announce a hidden page.
+    expect(rawPathSlug("raw/assets/agentpage/pic.png")).toBe("agentpage");
+    expect(rawPathSlug("raw/assets/agentpage")).toBe("agentpage");
+    // DW-492 (OPEN — this row is NOT coverage of it): a page slugged plain
+    // `queries` still escapes refusal, because the two-segment branch swallows
+    // the segment after it. Dropping the `assets` head carries that hole into
+    // this subtree too; what passes here is the `queries/<leaf>` shape only.
+    expect(rawPathSlug("raw/assets/queries/leaf/pic.png")).toBe("queries/leaf");
+
+    // Nothing spelled below the root, so nothing to disclose.
+    expect(rawPathSlug("raw/assets")).toBeNull();
+    expect(rawPathSlug("raw/assets/")).toBeNull();
+
+    // EXCLUSIVE: one structural root is consumed, never two. A page genuinely
+    // slugged `assets` keeps deriving `assets` — sequential drops would read
+    // `ab12` here and silently unhide it.
+    expect(rawPathSlug("raw/sources/assets/ab12.md")).toBe("assets");
+    expect(rawPathSlug("raw/sources/assets")).toBe("assets");
+    // The legacy flat name is not a structural root either.
+    expect(rawPathSlug("raw/assets.md")).toBe("assets");
+
+    // A non-page subtree under `assets/` reads its first segment as a slug,
+    // the same conservative direction `parsed` takes.
+    expect(rawPathSlug("raw/assets/illustrations/k.jpg")).toBe("illustrations");
+  });
+
+  it("keeps the legacy NESTED source of a page slugged `assets` on that slug", () => {
+    // The ONE prefix two trees collide on. `raw/assets/<hash>.md` is the
+    // pre-`sources` residue of a page ACTUALLY slugged `assets` — the same
+    // shape `writeSilo("raw", "hidden/ff00.md")` pins for every other slug —
+    // and it is indistinguishable by shape from a binary file sitting directly
+    // under the per-page root. An UNCONDITIONAL drop reads `ff00` here, so a
+    // hidden page slugged `assets` has its source listed and served: the DW-32
+    // hole relocated to another slug, not closed. The extension separates them,
+    // because `validateSlug` admits no dots in a slug.
+    expect(rawPathSlug("raw/assets/ff00.md")).toBe("assets");
+    expect(rawPathSlug("raw/assets/e5.png")).toBe("assets");
+    // Dotless, so it is a per-page directory row and the head IS dropped.
+    expect(rawPathSlug("raw/assets/agentpage")).toBe("agentpage");
+    expect(rawPathSlug("raw/assets/agentpage/pic.png")).toBe("agentpage");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1286,6 +1332,55 @@ describe("listWorkbenchFilePaths", () => {
       content: "x",
     });
     expect(await workbenchFileExists(OWNER, null, shown, g)).toBe(true);
+  });
+
+  it("withholds a hidden page's MIRRORED ASSETS at every door too", async () => {
+    // DW-491. `syncSiloForPage` mirrors `raw/assets/<slug>/<file>` into this
+    // silo, so the second segment is a page slug — but the gate read the FIRST
+    // one, derived `assets`, and admitted the whole tree. The directory row
+    // `raw/assets/agentpage/` announced the page just as loudly as a filename.
+    await writeSilo("raw", "assets/agentpage/pic.png");
+    await writeSilo("raw", "assets/alpha/ok.png");
+    const g = {
+      readableSlugs: new Set(["alpha"]),
+      hiddenSlugs: new Set(["agentpage"]),
+    };
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, g);
+    expect(paths).toContain("raw/assets/alpha/");
+    expect(paths).toContain("raw/assets/alpha/ok.png");
+    expect(paths).not.toContain("raw/assets/agentpage/");
+    expect(paths.some((p) => p.includes("agentpage"))).toBe(false);
+    // A gate decision, not a cap.
+    expect(truncated).toBe(false);
+
+    const hidden = "raw/assets/agentpage/pic.png";
+    expect(await readWorkbenchFile(OWNER, null, hidden, g)).toBeNull();
+    expect(await readWorkbenchFileBytes(OWNER, null, hidden, g)).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, hidden, g)).toBe(false);
+    // The readable page's own assets are untouched by the refusal.
+    const shown = "raw/assets/alpha/ok.png";
+    expect(await workbenchFileExists(OWNER, null, shown, g)).toBe(true);
+    expect(await readWorkbenchFileBytes(OWNER, null, shown, g)).not.toBeNull();
+  });
+
+  it("still withholds the legacy nested source of a hidden page slugged `assets`", async () => {
+    // The regression the `assets` drop can introduce, at the doors rather than
+    // in the table: `raw/assets/ff00.md` is the pre-`sources` residue of a page
+    // ACTUALLY slugged `assets`. If the drop is unconditional the gate reads
+    // `ff00`, `hiddenSlugs: {"assets"}` no longer matches, and the page the
+    // Knowledge tab hides is listed and served — DW-32, relocated.
+    await writeSilo("raw", "assets/ff00.md");
+    const g = hiding("assets");
+
+    const { paths, truncated } = await listWorkbenchFilePaths(OWNER, null, g);
+    expect(paths).not.toContain("raw/assets/ff00.md");
+    expect(paths.some((p) => p.includes("ff00"))).toBe(false);
+    expect(truncated).toBe(false);
+
+    const hidden = "raw/assets/ff00.md";
+    expect(await readWorkbenchFile(OWNER, null, hidden, g)).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, hidden, g)).toBe(false);
   });
 
   it("withholds the flat and legacy spellings of a hidden page's source too", async () => {

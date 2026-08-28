@@ -1,6 +1,7 @@
 import type { ExtractedDocument } from "./document-extract";
 import { serializeFrontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
+import { RAW_ASSETS_DIR } from "./raw";
 import { getStorage } from "./storage";
 import {
   rawRelPath,
@@ -161,7 +162,10 @@ export async function preserveDocumentSources(
         `image-${assetIndex + 1}`,
       );
       const storedName = `source-${shortDigest}-${assetIndex + 1}-${assetName}`;
-      await storage.writeAsset(rawRelPath(`assets/${slug}/${storedName}`), asset.bytes);
+      await storage.writeAsset(
+        rawRelPath(`${RAW_ASSETS_DIR}/${slug}/${storedName}`),
+        asset.bytes,
+      );
       assets.push({
         filename: asset.filename,
         mediaType: asset.mediaType,
