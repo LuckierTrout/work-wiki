@@ -86,10 +86,15 @@ scan reads this file too.
 - Shared test helpers are NOT named `*.test.ts(x)` — either project would
   otherwise collect one as a suite with no assertions in it, and the
   config-load guard rejects a `*.test.tsx` outside the dom include. There are
-  three: `source-scan.ts` and `settings-harness.tsx` sit beside the suites that
-  use them and are imported as `./name`; `src/test/dom-helpers.ts` is the
-  exception, living outside `__tests__` because it must be aliasable as
-  `@/test/…`. Nothing the app ships may import from `@/test/` — it pulls
+  six. Five sit beside the suites that use them and are imported as `./name`:
+  `src/lib/__tests__/source-scan.ts`, `src/lib/__tests__/discuss-fixtures.ts`
+  (the only writer of `discuss/<slug>.json` in the tests),
+  `src/lib/__tests__/email-ingest-wire.ts`,
+  `src/lib/__tests__/internal-link-fixture.ts` and
+  `src/components/workbench/__tests__/settings-harness.tsx`.
+  `src/test/dom-helpers.ts` is the exception, living outside `__tests__`
+  because it must be aliasable as `@/test/…`. Nothing the app ships may
+  import from `@/test/` — it pulls
   `vitest` and `@testing-library/react` and mutates `HTMLElement.prototype` at
   load. `src/lib/__tests__/test-infra-conventions.test.ts` enforces all of this.
 - Browser-level questions — real layout, real focus across platforms, real

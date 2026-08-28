@@ -3544,7 +3544,9 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/lib/talk.ts, src/lib/browse.ts:184
 severity: medium
 reason: `listThreads`, `createThread`, `getThread`, `addComment`, `resolveThread` and `hasOpenThread` now have no non-test callers; only `deleteDiscussions` (lifecycle.ts), `getDiscussRelPrefix` (discuss-stats-index.ts, contributors.ts) and `getDiscussionStatsForSlugs` (browse.ts) are still read, and the talk HTTP surfaces that drove the rest are retired. A knock-on: `browse.ts:184` still renders a per-page discussion count that nothing can increase any more, and pre-existing reconciliation threads stay on disk feeding it. Retiring that surface — and the discuss-stats/contributor indexes hanging off it — is wider than DW-230 asked, and the spec's Never list forbids touching talk.ts's remaining readers, so it is recorded rather than resolved. The retirement banner in talk.ts says the same thing so the dead surface is not mistaken for live API.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-retire-dead-talk-writers
+resolution-undo: 380d8804c9b253bf823aa9f1e6238eec0464915b46b8ab7aa9eb9a35e287b7e2 2026-08-28 7374617475733a206f70656e
 decision: 2026-08-21 Retire the dead writers only — Delete listThreads, createThread, getThread, addComment, resolveThread and hasOpenThread from src/lib/talk.ts along with their now-orphaned tests, leaving deleteDiscussions, getDiscussRelPrefix and getDiscussionStatsForSlugs (and therefore browse's count and the discuss-stats/contributor indexes) exactly as they are.
 
 ### DW-391: A non-admin page owner can no longer take their own public knowledge page private — the realm became a one-way door for them.
@@ -4757,4 +4759,12 @@ location: src/app/layout.tsx:88, src/lib/viewer-handle.ts
 source_spec: `spec-dw-389-392-authz-gate-and-copy-tails.md`
 severity: low
 reason: `src/app/layout.tsx:88` renders the shell WITHOUT `<ClerkProvider>` when `isE2eIdentityArmed()`, while `middleware.ts` admits the owner from the `yopedia_e2e` cookie. `useViewerHandle` reads Clerk, so `isSignedIn` and `handle` are unavailable on that path: Delete and Re-ingest were already hidden from the E2E owner for this reason, and DW-392's signed-in term extends the same blind spot to Revert. Nothing breaks today — neither `e2e/workbench-owner.spec.ts` nor `e2e/retired-routes.spec.ts` exercises an article affordance — but an E2E case that ever does will see a control the server would admit.
+status: open
+
+### DW-535: Deleting talk.ts's derived-index hooks left syncDiscussStatsForSlug and recordTalkForAuthor with zero production callers, and their doc comments still describe the deleted talk.ts caller.
+origin: spec-deferred 34c447f2691e
+location: src/lib/discuss-stats-index.ts:69, src/lib/contributor-index.ts:218
+source_spec: `spec-dw-390-retire-dead-talk-writers.md`
+severity: medium
+reason: `src/lib/talk.ts`'s `syncDiscussStatsHook` and `recordTalkContributorHook` were the only production callers of `syncDiscussStatsForSlug` (discuss-stats-index.ts:69) and `recordTalkForAuthor` (contributor-index.ts:218). After DW-390 both are reached only from their own unit tests. Their prose is now stale: discuss-stats-index.ts:6 says the index is "maintained incrementally directly from talk.ts", :65 says the function is "called from talk.ts mutations ... under the discuss:<slug> lock" (that lock is gone), and contributor-index.ts:25 and :214 still call it "the talk hook". Both modules were deliberately left untouched: the DW-390 decision says to leave the discuss-stats/contributor indexes exactly as they are, so this is recorded rather than resolved. This is the DW-390 shape one module out.
 status: open

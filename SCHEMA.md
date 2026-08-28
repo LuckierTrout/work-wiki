@@ -151,7 +151,7 @@ Each `TalkComment` has:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Unique ID (timestamp-based, e.g. `"1714600000000"`) |
+| `id` | string | Unique ID within the file. The retired writers minted these from a monotonic clock (e.g. `"1714600000000"`), which is what any file already on disk holds; nothing in production mints one now, and the test fixture's ids follow their own scheme. |
 | `author` | string | Who wrote this comment (user handle or agent ID) |
 | `created` | ISO date string | When the comment was posted |
 | `body` | string | Markdown content |
@@ -177,14 +177,20 @@ thread counts as a precomputed index that the maintenance scan rebuilds daily;
 and `src/lib/contributors.ts` scans the same `discuss/` files for the comment
 and thread-created counts in a contributor profile.
 
-**Present but unreached:** two further pieces are still exported and still
-correct, with nothing outside the tests calling them.
+**Present but unreached:** one further piece is still exported and still
+correct, with nothing outside the tests reaching it.
 `getDiscussionStatsForSlugs()` (`src/lib/talk.ts`) computes per-page thread
 counts, but its only caller is `src/lib/browse.ts`, which has no non-test
 importers of its own now that `/api/wiki/browse` is a `RETIRED_SURFACES` entry.
-The thread-writing half — `listThreads()`, `getThread()`, `createThread()`,
-`addComment()`, `resolveThread()` and `hasOpenThread()` — lost its callers
-when the routes above were retired.
+
+**Deleted:** the thread-writing half of `src/lib/talk.ts` is gone. It lost its
+callers when the routes above were retired, so nothing *authors a thread or a
+comment* any more — no production code path adds to a `discuss/<slug>.json`,
+and the only writer of that content left in the repo is the test fixture
+`src/lib/__tests__/discuss-fixtures.ts`. The FILE is still handled, though:
+`src/lib/contributors.ts` and `src/lib/discuss-stats-index.ts` read it,
+`src/lib/silo.ts` copies it wholesale into a tenant silo (and deletes it from
+one), and `deleteDiscussions()` deletes it on page teardown.
 
 ## Contributor profiles (Phase 2)
 

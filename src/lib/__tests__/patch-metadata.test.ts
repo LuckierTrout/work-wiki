@@ -16,7 +16,7 @@ import { withDurableLock } from "../lock";
 import { getStorage } from "../storage";
 import { serializeFrontmatter } from "../frontmatter";
 import { resetAliasIndex } from "../alias-index";
-import { listThreads } from "../talk";
+import { readDiscussFixture } from "./discuss-fixtures";
 import {
   WRITE_DENIAL,
   WRITE_DENIAL_REALM,
@@ -372,7 +372,7 @@ describe("patchMetadata — disputed transition", () => {
     const page = await readWikiPageWithFrontmatter("dispute-page");
     expect(page!.frontmatter.disputed).toBe(true);
     // …and nothing was written to the discussion store.
-    expect(await listThreads("dispute-page")).toEqual([]);
+    expect(await readDiscussFixture("dispute-page")).toEqual([]);
   });
 
   it("opens no thread when patching an already-disputed page either", async () => {
@@ -397,7 +397,7 @@ describe("patchMetadata — disputed transition", () => {
       principal: SERVICE,
     });
 
-    expect(await listThreads("already-disputed")).toEqual([]);
+    expect(await readDiscussFixture("already-disputed")).toEqual([]);
   });
 });
 

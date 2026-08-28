@@ -9,14 +9,8 @@ import {
   rebuildDiscussStatsIndex,
   statsFromThreads,
 } from "../discuss-stats-index";
-import {
-  createThread,
-  addComment,
-  resolveThread,
-  deleteDiscussions,
-  getDiscussionStatsForSlugs,
-  _resetTimestamp,
-} from "../talk";
+import { deleteDiscussions, getDiscussionStatsForSlugs } from "../talk";
+import { writeDiscussFixture } from "./discuss-fixtures";
 import { _resetLocks } from "../lock";
 import { _resetStorage } from "../storage";
 import type { TalkThread } from "../types";
@@ -30,7 +24,6 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
-  _resetTimestamp();
   _resetLocks();
   _resetStorage();
 });
@@ -97,22 +90,24 @@ describe("syncDiscussStatsForSlug / removeDiscussStatsForSlug (after seeding)", 
   });
 });
 
-describe("talk mutations maintain the index (after seeding)", () => {
+// The incremental-hook case that used to live here — "createThread /
+// addComment / resolveThread keep stats fresh" — was deleted with its subject
+// (DW-390). Those writers called `syncDiscussStatsForSlug` from `talk.ts`;
+// both the writers and that hook are gone, so the case pinned nothing. The
+// index is now maintained by `deleteDiscussions` (below) and the rebuild scan.
+describe("talk teardown maintains the index (after seeding)", () => {
   beforeEach(seedEmptyIndex);
 
-  it("createThread / addComment / resolveThread keep stats fresh", async () => {
-    await createThread("p", "Title", "alice", "first");
-    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 1 });
-
-    await addComment("p", 0, "bob", "reply");
-    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 1 });
-
-    await resolveThread("p", 0, "resolved");
-    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 0 });
-  });
-
   it("deleteDiscussions removes the slug entry", async () => {
-    await createThread("p", "Title", "alice", "first");
+    const threads = await writeDiscussFixture("p", [
+      { title: "Title", comments: [{ author: "alice", body: "first" }] },
+    ]);
+    // The entry has to be THERE for its removal to mean anything: the writers
+    // that used to sync it are gone, so seed it through this module's own
+    // upsert (the rebuild scan's incremental twin).
+    await syncDiscussStatsForSlug("p", threads);
+    expect((await getDiscussStatsIndex())?.p).toEqual({ total: 1, open: 1 });
+
     await deleteDiscussions("p");
     expect((await getDiscussStatsIndex())?.p).toBeUndefined();
   });
@@ -120,9 +115,12 @@ describe("talk mutations maintain the index (after seeding)", () => {
 
 describe("rebuildDiscussStatsIndex", () => {
   it("scans the discuss dir and rebuilds all entries", async () => {
-    await createThread("a", "A", "alice", "x");
-    await createThread("b", "B", "bob", "y");
-    await resolveThread("b", 0, "resolved");
+    await writeDiscussFixture("a", [
+      { title: "A", status: "open", comments: [{ author: "alice", body: "x" }] },
+    ]);
+    await writeDiscussFixture("b", [
+      { title: "B", status: "resolved", comments: [{ author: "bob", body: "y" }] },
+    ]);
     await rebuildDiscussStatsIndex();
     const idx = await getDiscussStatsIndex();
     expect(idx?.a).toEqual({ total: 1, open: 1 });
@@ -139,14 +137,10 @@ describe("getDiscussionStatsForSlugs read parity (fast path vs fallback)", () =>
   });
 
   it("fallback directory scan (empty index) matches the populated fast path", async () => {
-    // Write discuss files directly so the index is NEVER maintained.
-    const discussDir = path.join(tmpDir, "discuss");
-    await fs.mkdir(discussDir, { recursive: true });
-    await fs.writeFile(
-      path.join(discussDir, "a.json"),
-      JSON.stringify([thread("open"), thread("resolved")]),
-      "utf-8",
-    );
+    await writeDiscussFixture("a", [
+      { title: "t", status: "open", comments: [{ author: "alice" }] },
+      { title: "t", status: "resolved", comments: [{ author: "alice" }] },
+    ]);
 
     // Index is absent → read falls back to the directory scan.
     expect(await getDiscussStatsIndex()).toBeNull();
