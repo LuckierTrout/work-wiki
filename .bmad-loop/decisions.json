@@ -8,6 +8,15 @@
     "label": "Stub configurable rects",
     "resolution": ""
   },
+  "DW-116": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Detect the dominant script of a page body at render time and set lang on the article/Preview subtree only, leaving <html lang=\"en\"> for the chrome; no schema change.",
+    "key": "1",
+    "label": "Detect and set on the body",
+    "resolution": ""
+  },
   "DW-125": {
     "answered_at": "2026-08-19",
     "bundle_name": "",

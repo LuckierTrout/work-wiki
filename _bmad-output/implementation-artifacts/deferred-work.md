@@ -1079,6 +1079,7 @@ location: src/app/layout.tsx:70
 severity: low
 reason: `src/lib/slugify.ts`, `src/lib/bm25.ts` and `src/lib/ingest.ts` all preserve CJK by design, and nothing sets `lang` on the article or Preview subtree. Pre-existing rather than caused by this change — the old value tracked the UI locale, not the content language, so it was equally wrong — but the retirement removes the last place where a per-content `lang` could have been derived.
 status: open
+decision: 2026-08-28 Detect and set on the body — Detect the dominant script of a page body at render time and set lang on the article/Preview subtree only, leaving <html lang="en"> for the chrome; no schema change.
 decision: 2026-08-26 Detect and set on the body — Detect the dominant script of a page body at render time and set lang on the article/Preview subtree only, leaving <html lang="en"> for the chrome; no schema change.
 
 ### DW-117: The `walk()` test helper is now copy-pasted across five suites with inconsistent directory exclusions, so the scans silently cover different file sets.
