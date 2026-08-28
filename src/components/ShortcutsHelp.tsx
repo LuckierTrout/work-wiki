@@ -2,6 +2,7 @@
 
 import { useEffect, useCallback } from "react";
 import { useShortcutsHelp, SHORTCUTS } from "@/hooks/useKeyboardShortcuts";
+import { useDialogA11y } from "@/hooks/useDialogA11y";
 
 /** Detect platform for modifier key display */
 function modKey(): string {
@@ -16,27 +17,60 @@ export function ShortcutsHelp() {
 
   const close = useCallback(() => setShowHelp(false), [setShowHelp]);
 
+  // Esc, the Tab trap, initial focus, the scroll lock and the focus restore all
+  // come from the shared hook — the same behaviour every other overlay in the
+  // app has. Adopting it is what lets the overlay honestly claim
+  // `aria-modal="true"` below, which is in turn what brings it inside
+  // `isInModalDialog` so a global `g <key>` cannot navigate out from under an
+  // open help sheet (DW-424).
+  const { dialogRef } = useDialogA11y({ open: showHelp, onDismiss: close });
+
+  /**
+   * `?` from INSIDE the sheet.
+   *
+   * `KeyboardShortcutsProvider` owns `?`, but its handler now returns early for
+   * any target inside this overlay — and `useDialogA11y` focuses the container
+   * on open, so that is the ordinary case. Without this the key that opens the
+   * sheet would no longer close it.
+   *
+   * Scoped to targets inside `dialogRef.current`, and it is the SCOPE that does
+   * the work: outside the overlay the provider's handler still owns the key,
+   * and it refuses a `?` typed into a text field. A listener here that answered
+   * every `?` while the sheet was open would dismiss it out from under someone
+   * typing a question mark somewhere else on the page.
+   *
+   * Capture phase plus `stopPropagation`, so exactly one of the two handlers
+   * acts on any one press — without it the provider's bubble-phase toggle would
+   * be free to flip the sheet back open in the same keystroke wherever the
+   * modal guard did not already stop it.
+   */
   useEffect(() => {
     if (!showHelp) return;
-    function handleKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        close();
-      }
+    function handleKey(event: KeyboardEvent) {
+      if (event.key !== "?") return;
+      const root = dialogRef.current;
+      const target = event.target;
+      if (!root || !(target instanceof Node) || !root.contains(target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
     }
-    document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
-  }, [showHelp, close]);
+    document.addEventListener("keydown", handleKey, true);
+    return () => document.removeEventListener("keydown", handleKey, true);
+  }, [showHelp, close, dialogRef]);
 
   if (!showHelp) return null;
 
   return (
     <div
+      ref={dialogRef}
+      tabIndex={-1}
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50"
       onClick={(e) => {
         if (e.target === e.currentTarget) close();
       }}
       role="dialog"
+      aria-modal="true"
       aria-label="Keyboard shortcuts"
     >
       <div className="w-full max-w-md mx-4 rounded-lg border border-foreground/10 bg-background shadow-xl">

@@ -210,11 +210,11 @@ export function KnowledgeStudio() {
         ))}
       </aside>
 
-      <div className="studio-main">
+      <section className="studio-main" aria-labelledby="studio-main-heading">
         <header className="studio-main-header">
           <div>
             <p className="receipt">{SECTIONS.find((item) => item.id === section)?.group}</p>
-            <h2 className="display">{SECTIONS.find((item) => item.id === section)?.label}</h2>
+            <h2 id="studio-main-heading" className="display">{SECTIONS.find((item) => item.id === section)?.label}</h2>
           </div>
           <button type="button" className="btn ghost" onClick={() => void refresh()} disabled={loading}>
             {loading ? "Refreshing…" : "Refresh"}
@@ -268,7 +268,7 @@ export function KnowledgeStudio() {
         ) : null}
         {section === "portability" ? <PortabilityPanel setFeedback={setFeedback} /> : null}
         {section === "connections" ? <ConnectionsPanel vaults={vaults} /> : null}
-      </div>
+      </section>
 
       <aside className="studio-evidence" aria-label="Evidence and actions">
         <div className="studio-evidence-heading">

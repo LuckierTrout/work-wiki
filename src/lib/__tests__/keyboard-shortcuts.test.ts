@@ -120,9 +120,13 @@ describe("isInModalDialog", () => {
   });
 
   it("returns false for a role=dialog that is NOT aria-modal", () => {
-    // `ShortcutsHelp` renders exactly this, on purpose: `?` has to go on
-    // toggling the help overlay from inside it. Matching the role alone would
-    // suppress the key that closes the sheet it is showing.
+    // MODAL is the whole of what the guard claims. `ShortcutsHelp` used to be
+    // the shipped example here; since DW-424 it declares `aria-modal="true"`
+    // and handles `?` itself, so no surface in the app renders a non-modal
+    // `role="dialog"` today. The distinction still has to hold: a plain
+    // `role="dialog"` makes no promise that the rest of the page is inert, so
+    // matching on the role alone would suppress global keys over any
+    // non-modal popover added later.
     const help = node({ role: "dialog" });
     const inside = node({}, help);
     expect(isInModalDialog(help as unknown as EventTarget)).toBe(false);

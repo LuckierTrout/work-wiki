@@ -105,6 +105,7 @@ export function NavHeader() {
                 <li key={href}>
                   <Link
                     href={href}
+                    aria-current={isActive ? "page" : undefined}
                     className="transition-colors"
                     style={{
                       display: "inline-block",
@@ -265,6 +266,7 @@ export function NavHeader() {
                 key={href}
                 href={href}
                 onClick={() => setMobileOpen(false)}
+                aria-current={isActive ? "page" : undefined}
                 className="block transition-colors"
                 style={{
                   paddingInline: 24,
@@ -293,6 +295,7 @@ export function NavHeader() {
                   key={href}
                   href={href}
                   onClick={() => setMobileOpen(false)}
+                  aria-current={isActive ? "page" : undefined}
                   className="block transition-colors"
                   style={{
                     paddingInline: 24,
@@ -310,6 +313,7 @@ export function NavHeader() {
               <Link
                 href="/settings"
                 onClick={() => setMobileOpen(false)}
+                aria-current={pathname.startsWith("/settings") ? "page" : undefined}
                 className="block transition-colors"
                 style={{
                   paddingInline: 24,
@@ -326,6 +330,7 @@ export function NavHeader() {
               <Link
                 href="/lint"
                 onClick={() => setMobileOpen(false)}
+                aria-current={pathname.startsWith("/lint") ? "page" : undefined}
                 className="block transition-colors"
                 style={{
                   paddingInline: 24,

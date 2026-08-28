@@ -418,6 +418,11 @@ describe("NavHeader", () => {
   });
 
   it("marks the primary link for the route the reader is on", () => {
+    // `aria-current`, not `fontWeight` (DW-260). The bar used to signal the
+    // active route through inline weight and colour alone, which announced
+    // NOTHING to a screen reader — and forced this suite to assert on styling
+    // because that was the only observable signal. Asserting the ARIA property
+    // is both the accessible fact and a claim a restyle cannot break.
     nav.pathname = "/ingest/history";
     mountNav();
 
@@ -425,22 +430,32 @@ describe("NavHeader", () => {
     // still lights the Ingest link.
     const active = screen
       .getAllByRole("link", { name: "Ingest" })
-      .find((link) => link.style.fontWeight === "600");
-    expect(active).toBeTruthy();
+      .filter((link) => link.getAttribute("aria-current") === "page");
+    expect(active.length).toBeGreaterThan(0);
 
     const chat = screen
       .getAllByRole("link", { name: "Chat" })
-      .find((link) => link.style.fontWeight === "600");
-    expect(chat).toBeUndefined();
+      .filter((link) => link.getAttribute("aria-current") === "page");
+    expect(chat).toHaveLength(0);
+
+    // The hamburger panel is a SECOND render of the same links, with its own
+    // copy of the active computation — so it needs its own assertion or half
+    // the signal is unobserved.
+    openMobileMenu();
+    const mobileActive = screen
+      .getAllByRole("link", { name: "Ingest" })
+      .filter((link) => link.getAttribute("aria-current") === "page");
+    expect(mobileActive.length).toBeGreaterThan(active.length);
   });
 
   it("marks nothing when the reader is on a route outside the primary set", () => {
     nav.pathname = "/studio";
     mountNav();
+    openMobileMenu();
 
     for (const label of PRIMARY) {
       for (const link of screen.getAllByRole("link", { name: label })) {
-        expect(link.style.fontWeight).not.toBe("600");
+        expect(link.getAttribute("aria-current")).toBeNull();
       }
     }
   });

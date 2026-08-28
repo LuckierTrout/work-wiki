@@ -44,11 +44,18 @@ export function isInputElement(target: EventTarget | null): boolean {
  * Vault lightbox each render `aria-modal="true"`, and modals never stack
  * (UX-DR17), so one query answers for all of them.
  *
- * `ShortcutsHelp` is deliberately OUTSIDE it. That overlay is a `role="dialog"`
- * with no `aria-modal`, because `?` has to go on toggling it from inside — a
- * help sheet you cannot dismiss with the key that opened it would be the bug
- * this suppression would have introduced. Matching on the pair rather than on
- * the role alone is what keeps it working.
+ * `ShortcutsHelp` is INSIDE it too, as of DW-424. That overlay used to be a
+ * `role="dialog"` with no `aria-modal` so that `?` went on toggling it from
+ * inside — but the price was that `g i` typed over the open help sheet
+ * navigated out from under it, which is the same broken promise. It now adopts
+ * `useDialogA11y` and declares `aria-modal="true"`, so this guard covers it,
+ * and `?` is handled by the overlay ITSELF: a listener scoped to targets inside
+ * its own container, closing the sheet the provider's own `?` toggle can no
+ * longer see. Esc likewise belongs to the shared hook now.
+ *
+ * The selector is unchanged by that: the pair is still what is matched, because
+ * a non-modal `role="dialog"` makes no inertness promise to break. Nothing
+ * shipped renders one today, which is not a reason to loosen the match.
  *
  * Duck-typed on `closest` rather than `instanceof Element`, the convention
  * {@link isInputElement} above already follows: the node suite drives these

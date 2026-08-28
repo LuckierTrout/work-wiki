@@ -360,28 +360,36 @@ describe("exactly one main landmark", () => {
     // deliberately not the inline `style` text beside it — asserting the
     // padding literals would turn a landmark suite into a change detector that
     // a Prettier rewrap or a spacing tweak breaks.
-    const columns: ReadonlyArray<[string, string]> = [
+    //
+    // The TAG is carried too, defaulting to `div`. `KnowledgeStudio` is the one
+    // deliberate exception (DW-152): its column is a `<section
+    // aria-labelledby>` so the substance between the two labelled rails is
+    // reachable as a `region`. That is not a `main` — `LANDMARK_PATTERNS` above
+    // does not match it — so the sweep's one-main invariant is untouched, and
+    // pinning the tag here keeps the exception a stated one rather than
+    // something a later edit could spread to the other seven.
+    const columns: ReadonlyArray<[string, string] | [string, string, string]> = [
       ["components/ReviewDesk.tsx", "shell paper-route fade"],
       ["components/SystemHealthDesk.tsx", "shell paper-route fade"],
       ["components/IntegrationDesk.tsx", "shell paper-route fade"],
       ["components/KnowledgeAtlas.tsx", "shell paper-route fade"],
       ["components/ChatWorkspace.tsx", "shell fade"],
       ["components/PrivateWorkspaceNotice.tsx", "shell fade"],
-      ["components/KnowledgeStudio.tsx", "studio-main"],
+      ["components/KnowledgeStudio.tsx", "studio-main", "section"],
       ["components/VaultExplorer.tsx", "vault-explorer-shell vault-explorer-grid"],
     ];
-    for (const [relative, className] of columns) {
+    for (const [relative, className, tag = "div"] of columns) {
       // Comment-stripped, so a commented-out copy of the old markup cannot
       // satisfy the check while the live wrapper has drifted.
       const source = withoutComments(await readFile(path.join(SRC, relative), "utf8"));
       // `\s+` because several of these wrappers are formatted multi-line, with
-      // `className` on the line below `<div`. Matching the attribute on the
+      // `className` on the line below the tag. Matching the attribute on the
       // same ELEMENT is the claim; how it is line-wrapped is not.
-      const wrapper = new RegExp(`<div\\s+className="${className}"`);
+      const wrapper = new RegExp(`<${tag}\\s+className="${className}"`);
       expect(
         wrapper.test(source),
         `${relative}'s content column must still be the same element with the ` +
-          `same classes, only demoted from <main> to <div>. '${className}' is ` +
+          `same classes, only demoted from <main> to <${tag}>. '${className}' is ` +
           `what its CSS is keyed on, so losing or renaming it restyles the ` +
           `surface rather than just fixing the landmark.`,
       ).toBe(true);
