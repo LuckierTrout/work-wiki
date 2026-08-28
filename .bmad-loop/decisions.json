@@ -287,6 +287,15 @@
     "label": "Add the signed-in term",
     "resolution": ""
   },
+  "DW-393": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Return per-entry outcomes from the bulk delete instead of an all-or-nothing 404, applying the same shape to the ingestIds preflight so the two stay in parity, and surface the partial result in the client.",
+    "key": "1",
+    "label": "Per-entry results",
+    "resolution": ""
+  },
   "DW-398": {
     "answered_at": "2026-08-22",
     "bundle_name": "",

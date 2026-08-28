@@ -3563,6 +3563,7 @@ location: src/app/api/ingest/history/route.ts
 severity: medium
 reason: The DW-270 gate keys on `listReadableWikiPages`, which filters the page INDEX, not a per-page read. `src/lib/lint.ts:94`'s `checkOrphanPages` exists because index/disk drift is a real state here. A done job whose page is in that state used to delete the page and clear the job record; it now answers 404 for the entire request, clearing nothing else selected alongside it. This is exact parity with the pre-existing `ingestIds` preflight, which has always behaved this way, so DW-270 inherited the behaviour rather than inventing it.
 status: open
+decision: 2026-08-28 Per-entry results — Return per-entry outcomes from the bulk delete instead of an all-or-nothing 404, applying the same shape to the ingestIds preflight so the two stay in parity, and surface the partial result in the client.
 decision: 2026-08-26 Fix the drift instead — Keep all-or-nothing, but make the preflight fall back to a disk check when a slug is missing from the index so an orphan page is deletable, and leave the contract unchanged.
 
 ### DW-394: Both guidance memos are keyed by `owner`, but the files they memoize are addressed by TENANT, so two owner strings in one tenant key two entries over one file.
