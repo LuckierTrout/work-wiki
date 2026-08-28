@@ -3060,6 +3060,7 @@ location: src/components/workbench/SettingsCanvas.tsx (modelSubstitution)
 severity: low
 reason: `modelSubstitution` reads `stored.embeddingModelOverridden` / `stored.embeddingModelInEffect`, while the env sentence and `vectorModelIssue` on the same row come from `values`. An owner who corrects the model in the box still reads "Not in effect. This deployment embeds with …" until a PUT lands. This is unavoidable without the server — the rule runs over the env and the store together — and it is documented in code and in DEPLOY.md ("re-reads it on save"), but the same row now mixes two freshness contracts and no test mounts the edit-then-read path. Whether the note should be suppressed while the model or provider field is dirty is a decision the intent does not contain.
 status: open
+decision: 2026-08-28 Suppress while dirty — Suppress the payload-derived substitution note while embeddingModel or embeddingProvider is dirty, so the row never describes pre-edit server state beside draft-derived sentences, and add a mounted edit-then-read case.
 
 ### DW-338: SCHEMA.md's Talk pages section still documents all five `/api/wiki/:slug/discuss...` routes as live surfaces.
 origin: spec-deferred d5560fb0b17e

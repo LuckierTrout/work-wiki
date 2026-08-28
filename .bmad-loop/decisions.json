@@ -233,6 +233,15 @@
     "label": "Re-arm drift only",
     "resolution": ""
   },
+  "DW-337": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Suppress the payload-derived substitution note while embeddingModel or embeddingProvider is dirty, so the row never describes pre-edit server state beside draft-derived sentences, and add a mounted edit-then-read case.",
+    "key": "1",
+    "label": "Suppress while dirty",
+    "resolution": ""
+  },
   "DW-358": {
     "answered_at": "2026-08-21",
     "bundle_name": "",
