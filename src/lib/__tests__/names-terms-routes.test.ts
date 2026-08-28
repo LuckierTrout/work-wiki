@@ -105,10 +105,13 @@ describe("Names & Terms API", () => {
 /**
  * The three writers on a read-only deployment (DW-300).
  *
- * The store behind them is not a kernel writer and refuses nothing of its own,
- * so before these gates the Settings panel reported a save, an edit and a
- * delete that had all happened. One sentence for all three, because they are
- * one store reached by three verbs.
+ * Before these gates the store behind them refused nothing of its own, so the
+ * Settings panel reported a save, an edit and a delete that had all happened.
+ * DW-385 has since gated the three writers in the KERNEL too, with this same
+ * sentence, for callers that never pass a route; these gates stay because they
+ * answer BEFORE the body parse, so a malformed body cannot pre-empt the refusal
+ * with a 400. One sentence for all three, because they are one store reached by
+ * three verbs.
  */
 describe("Names & Terms writers on a read-only deployment", () => {
   const context = () => ({ params: Promise.resolve({ id: "entry-1" }) });

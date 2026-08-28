@@ -76,9 +76,10 @@ describe("POST /api/research failure classification", () => {
   });
 
   it("403s on a read-only deployment without reaching the store", async () => {
-    // DW-294. `createResearchProject` writes the project record straight to
-    // storage and reaches no kernel writer, so nothing behind this handler
-    // would have refused — the form simply reported a create that happened.
+    // DW-294. Before this gate nothing behind the handler refused, so the form
+    // reported a create that happened. `createResearchProject` gates in the
+    // kernel too since DW-385 (same sentence) for callers with no route in
+    // front; this gate stays because it answers before the body parse.
     process.env.YOPEDIA_READONLY = "1";
 
     const response = await POST(request(BODY));

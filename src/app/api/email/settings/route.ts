@@ -52,9 +52,10 @@ export async function PUT(request: Request) {
 
   // Deployment read-only (DW-300). AFTER `requireOwner()`, so the not-found
   // cloak still wins: a non-owner must not learn from a 403 that this door
-  // exists at all. Before the parse and before `saveEmailIngestConfig`, which
-  // reaches no kernel writer and so refuses nothing of its own — without this
-  // the form reports a save that never happened.
+  // exists at all. Before the parse, so a malformed body cannot pre-empt the
+  // refusal with a 400. `saveEmailIngestConfig` refuses in the kernel too now
+  // (DW-385, same sentence) — this gate is what keeps the ORDER, and it is
+  // still what stops the form reporting a save that never happened.
   if (isReadOnly()) {
     return NextResponse.json(
       { error: READ_ONLY_REFUSAL.emailSettings },

@@ -61,6 +61,21 @@
  * about it — the scan answers its own {@link READ_ONLY_REFUSAL.maintenanceScan}
  * before the sweep is ever called.
  *
+ * "THE FOUR KERNEL WRITERS" IS DW-188'S STARTING SET, NOT THE WHOLE LIST. The
+ * wiki-lifecycle writers above joined them, and DW-385 added three more stores
+ * that had carried HTTP gates only — {@link import("./research-projects").createResearchProject}
+ * and {@link import("./research-projects").deleteResearchProject},
+ * `createNamesTerm`/`updateNamesTerm`/`deleteNamesTerm` in `names-terms.ts`,
+ * and {@link import("./email-ingest").saveEmailIngestConfig} — each reusing the
+ * sentence its route already serves ({@link READ_ONLY_REFUSAL.researchCreate},
+ * `.researchMutate`, `.namesTerms`, `.emailSettings`), so one deployment state
+ * still reads as one sentence whether the caller came through a route or
+ * straight into `src/lib`. Their routes KEEP the early `isReadOnly()` gate: it
+ * refuses before the body parse, so a malformed body cannot pre-empt the
+ * refusal with a 400. The research CAS primitives
+ * (`applyResearchProjectMutation` and its wrappers) are deliberately left OPEN
+ * — see the note on that function.
+ *
  * A CLIENT SENTENCE MAY BE NARROWER THAN THE SERVER'S. The Revert control is
  * the case: the server refusal it meets is `pageWrite`, the KERNEL's sentence
  * for any page write, because the revert route maps the writer's error rather

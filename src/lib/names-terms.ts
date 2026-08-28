@@ -1,5 +1,6 @@
 import { isEnoent } from "./errors";
 import { withFileLock } from "./lock";
+import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 
@@ -322,6 +323,14 @@ export async function createNamesTerm(
   owner: string,
   input: NamesTermInput,
 ): Promise<NamesTermEntry> {
+  // Deployment read-only (DW-385). AHEAD of `withFileLock`, so a refused call
+  // does not first queue behind the tenant's in-flight dictionary work.
+  //
+  // Today the `/api/names-terms` handlers are the only callers of these three
+  // and they gate already, so this changes no behaviour the app has; it is here
+  // for the DIRECT LIBRARY caller added next, which no HTTP gate can reach.
+  // Same reasoning as the wiki-lifecycle gates in `read-only.ts`.
+  assertWritable(READ_ONLY_REFUSAL.namesTerms);
   return withFileLock(lockKey(owner), async () => {
     const entries = await readEntries(owner);
     if (entries.length >= MAX_ENTRIES) {
@@ -347,6 +356,8 @@ export async function updateNamesTerm(
   id: string,
   input: NamesTermInput,
 ): Promise<NamesTermEntry | null> {
+  // Deployment read-only (DW-385) — see {@link createNamesTerm}.
+  assertWritable(READ_ONLY_REFUSAL.namesTerms);
   return withFileLock(lockKey(owner), async () => {
     const entries = await readEntries(owner);
     const index = entries.findIndex((entry) => entry.id === id);
@@ -365,6 +376,8 @@ export async function updateNamesTerm(
 }
 
 export async function deleteNamesTerm(owner: string, id: string): Promise<boolean> {
+  // Deployment read-only (DW-385) — see {@link createNamesTerm}.
+  assertWritable(READ_ONLY_REFUSAL.namesTerms);
   return withFileLock(lockKey(owner), async () => {
     const entries = await readEntries(owner);
     const filtered = entries.filter((entry) => entry.id !== id);

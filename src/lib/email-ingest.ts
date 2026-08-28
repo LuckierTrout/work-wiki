@@ -1,3 +1,4 @@
+import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
 
 const EMAIL_CONFIG_INDEX_KEY = "email-ingest-config";
@@ -110,6 +111,13 @@ export async function saveEmailIngestConfig(input: {
   destinationVaultId?: string;
   destinationAgentId?: string;
 }): Promise<EmailIngestConfig> {
+  // Deployment read-only (DW-385). The store's only writer. Today
+  // `PUT /api/email/settings` is its only caller and gates already, so this
+  // changes no behaviour the app has; it is here for the DIRECT LIBRARY caller
+  // added next — a CLI command, an MCP tool, a maintenance script — which no
+  // HTTP gate can reach. Same reasoning as the wiki-lifecycle gates in
+  // `read-only.ts`.
+  assertWritable(READ_ONLY_REFUSAL.emailSettings);
   const config: EmailIngestConfig = {
     enabled: input.enabled,
     inboundAddress: normalizeEmailAddress(input.inboundAddress),

@@ -229,6 +229,7 @@ source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: medium
 reason: `src/lib/sidecar.ts` documents the fail-closed answer but not the CORS headers the sidecar must return for the deployed origin, Chrome's Private Network Access preflight for a public-to-local request, or Safari's mixed-content handling of a loopback URL. Under any of those the probe answers `down` permanently and Chat shows "Start the local sidecar on 127.0.0.1:19828 to use Chat." to an owner whose sidecar is already running. Epic 1 needs only the up/down signal, and Epic 3 owns the sidecar itself — the response contract belongs with whichever story first ships a real one.
 status: open
+decision: 2026-08-28 Allow a configured deployment origin — Add a configured allowed-origin list to sidecar/server.mjs alongside the loopback default, answer the Private Network Access preflight for it, document the full response contract (CORS headers, PNA, mixed-content) in src/lib/sidecar.ts, and pin that a non-loopback configured origin passes the probe while an unconfigured one still fails closed.
 
 ### DW-26: Switching away from Wiki unmounts `WikiWorkbench`, discarding an open Create Wiki dialog, a typed wiki name, and any error already shown.
 origin: spec-deferred eb1d417b7c7d
@@ -3495,7 +3496,9 @@ source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md
 location: src/lib/research-projects.ts; src/lib/names-terms.ts; src/lib/email-ingest.ts
 severity: medium
 reason: DW-314's whole argument is that a route gate is not enough because a direct library caller reaches the kernel with no route in front. This change applied that argument to `wikis.ts` only; `createResearchProject`, `createNamesTerm`/`updateNamesTerm`/`deleteNamesTerm` and `saveEmailIngestConfig` got HTTP gates alone.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-read-only-kernel-guards
+resolution-undo: 228a442950964e6d36ebc8b9e564fa2523daaedbc7b5c0ed3d96be6ad65d5e59 2026-08-28 7374617475733a206f70656e
 
 ### DW-386: Three surfaces now compose a write in front of a door this change taught to answer 403, with no read-only mirror — the DW-264/DW-265 shape, one bundle later.
 origin: spec-deferred 56c9d9c9eb3d
@@ -4284,6 +4287,7 @@ location: src/lib/research-projects.ts:184
 severity: medium
 reason: Every research operation for that owner refuses, including the deletes that could shrink the file, and the 500 body carries no remediation. The lease equivalent tells the operator what to do (`research-runtime.ts:886`: "Repair the lease state, then retry."). Refusing is the intended DW-297 behaviour; the missing half is a recovery route.
 status: open
+decision: 2026-08-28 Quarantine-and-restart route — Add an owner-only repair route that moves an unparseable registry aside to a timestamped quarantine key, starts a fresh empty registry, and returns the quarantined path; have the refusing 500 body name that route, and pin that no readable registry is ever quarantined.
 
 ### DW-478: `PATCH`/`DELETE /api/research/[id]` and the v1 `deep_research` action still map `ClientInputError` to 500, the same misclassification DW-296 fixed one door over.
 origin: spec-deferred 189d32bd8390
@@ -4356,6 +4360,7 @@ location: src/app/api/wikis/route.ts:65
 severity: medium
 reason: `handlePrivateRequest` (src/middleware.ts:248-259) admits on `YOPEDIA_OWNER_USER_ID`; `isOwnerHandle` (src/lib/owner.ts:22-25) compares against `NEXT_PUBLIC_OWNER_HANDLE`. `getPrincipal` falls back to the raw Clerk id as the handle when a user has no username and no linked X account (src/lib/auth.ts:135-147, a case it logs), and `NEXT_PUBLIC_*` is inlined at build time so a username change needs a redeploy. In both cases the owner passes the middleware and is then 403'd by the handle gate with a message saying they are not the owner, with no in-app recovery. Pre-existing at `PUT /api/workbench/artifact`; DW-159 widens it to Wiki creation.
 status: open
+decision: 2026-08-28 Gate on the stable id — Resolve owner-ness through the stable Clerk id (principal.userId === YOPEDIA_OWNER_USER_ID) with the handle comparison kept only as a fallback for principals that carry no id, apply it at every isOwnerHandle call site, and pin that a principal admitted by the middleware is never refused by a route gate.
 
 ### DW-487: `requireOwnerPrincipal` is fail-OPEN when no owner handle is configured while the direct `isOwnerHandle` gates are fail-CLOSED, and nothing records the divergence.
 origin: spec-deferred 4a169ed4676e
@@ -4664,4 +4669,36 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/components/workbench/TreePanel.tsx, src/components/workbench/ModeCanvas.tsx
 severity: low
 reason: `TreePanel`'s restore (pre-existing) and `ModeCanvas`'s new one both assign `scrollTop` from a passive effect, which runs after paint. The `hidden` attribute is removed in the commit, the browser paints the surface at 0, and only then is the offset re-applied - a visible jump on every un-withdrawal. `useLayoutEffect` puts the pixels back before paint. jsdom cannot observe the difference, so no suite would catch a regression either way.
+status: open
+
+### DW-525: The `dom` vitest project is red at BASELINE — 13 files / 229 tests fail with `TypeError: Cannot read properties of undefined (reading 'clear')` on `window.localStorage`. Unrelated to this change and o
+origin: spec-deferred 199a5cbc7479
+location: vitest dom project setup
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+severity: medium
+reason: `pnpm exec vitest run --project dom` reports 13 failed files / 229 failed tests both WITH this change and with the whole change stashed (`git stash push -u -- src _bmad-output`), at HEAD 9312ba420b3bd738a6bd52aede3261627c00db41. The `node` project is 277 files / 6843 pass / 0 fail with this change.
+status: open
+
+### DW-526: The research, Names & Terms and email-ingest route catches now classify a mid-request-flip `ReadOnlyError` as 400 or 500 instead of 403.
+origin: spec-deferred d082697c56ec
+location: src/app/api/names-terms/route.ts:48
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+severity: low
+reason: Gating the kernel writers created a path these catches never saw before. `POST /api/names-terms` (route.ts:48-53) and `PUT /api/names-terms/[id]` ([id]/route.ts:39-46) map any thrown error to 400/409, so a refusal would be answered as a client-input error carrying the read-only sentence; `DELETE /api/names-terms/[id]`, `PUT /api/email/settings` and `POST /api/research` map it to 500. Reachable only if YOPEDIA_READONLY changes between the route's isReadOnly() gate and the kernel call, so the write is still refused and the copy is still right — only the status is wrong. The repo already has the fix shape at `src/app/api/ingest/reingest/route.ts:90` ("Backstop for a flag that flipped mid-request"). Same class: the Review-accept door (`src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts`) gates early with `reviewQueue` but its `isReadOnlyError` catch now surfaces `researchCreate`, so one door can state two sentences.
+status: open
+
+### DW-527: The research CAS primitives stay writable by a direct library caller, so DW-385's guarantee has a named hole at `PATCH /api/research/[id]`'s writer.
+origin: spec-deferred 9303b9f7d20e
+location: src/lib/research-projects.ts:228
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+severity: medium
+reason: `applyResearchProjectMutation`, `mutateResearchProject`, `updateResearchProjectIf` and `updateResearchProject` are deliberately ungated because several `research-runtime`/`research-completion` callers read a `null` return as "lost the CAS race" and compensate; a throw would strand a run. But `updateResearchProjectIf` is also what `src/app/api/research/[id]:58` calls to edit an owner's title, question and queries, so a CLI/MCP/agent-runtime caller can still patch a project's fields on a read-only deployment. Closing it needs a non-throwing refusal path for the fail-soft callers — a larger change than a gate. Recorded in the `applyResearchProjectMutation` docstring.
+status: open
+
+### DW-528: `reconcileResearchProjects` would relabel a read-only refusal as a damaged project.
+origin: spec-deferred 5c97dda65344
+location: src/lib/research-runtime.ts:578
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+severity: low
+reason: `src/lib/research-runtime.ts:578,648,662` call the newly gated `deleteResearchProject` inside a per-project try whose catch logs "reconcile skipped damaged project <id>". A `ReadOnlyError` arriving there is logged as data damage. Unreachable today — `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses — so no gate or catch was added, but the log line would mislead an operator if a future caller drives reconcile on a read-only deployment.
 status: open

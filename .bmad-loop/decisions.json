@@ -179,6 +179,15 @@
     "label": "Canonical slug in the 404",
     "resolution": ""
   },
+  "DW-25": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a configured allowed-origin list to sidecar/server.mjs alongside the loopback default, answer the Private Network Access preflight for it, document the full response contract (CORS headers, PNA, mixed-content) in src/lib/sidecar.ts, and pin that a non-loopback configured origin passes the probe while an unconfigured one still fails closed.",
+    "key": "1",
+    "label": "Allow a configured deployment origin",
+    "resolution": ""
+  },
   "DW-253": {
     "answered_at": "2026-08-20",
     "bundle_name": "",
@@ -483,6 +492,24 @@
     "intent": "Record the verified Cloudflare Email Routing inbound ceiling as a named constant in workers/email-ingest/index.ts with its source in workers/email-ingest/README.md, clamp `MAX_RAW_EMAIL_BYTES` with `Math.min` against it, and update the sender-visible figure and the allowlist-parity test. Requires the human to supply the number.",
     "key": "1",
     "label": "Supply and clamp to the real bound",
+    "resolution": ""
+  },
+  "DW-477": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add an owner-only repair route that moves an unparseable registry aside to a timestamped quarantine key, starts a fresh empty registry, and returns the quarantined path; have the refusing 500 body name that route, and pin that no readable registry is ever quarantined.",
+    "key": "1",
+    "label": "Quarantine-and-restart route",
+    "resolution": ""
+  },
+  "DW-486": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Resolve owner-ness through the stable Clerk id (principal.userId === YOPEDIA_OWNER_USER_ID) with the handle comparison kept only as a fallback for principals that carry no id, apply it at every isOwnerHandle call site, and pin that a principal admitted by the middleware is never refused by a route gate.",
+    "key": "1",
+    "label": "Gate on the stable id",
     "resolution": ""
   },
   "DW-489": {

@@ -77,9 +77,12 @@ afterEach(() => {
 /**
  * The settings save on a read-only deployment (DW-300).
  *
- * `saveEmailIngestConfig` reaches no kernel writer, so before this gate the
+ * Before this gate `saveEmailIngestConfig` refused nothing of its own, so the
  * panel reported a save that had happened — including flipping ingestion ON for
- * a deployment that refuses every ingest behind it.
+ * a deployment that refuses every ingest behind it. DW-385 has since gated the
+ * writer itself with this same sentence, for callers that never pass a route;
+ * this gate stays because it answers after `requireOwner()` (the not-found
+ * cloak still wins) and before the body parse.
  */
 describe("PUT /api/email/settings on a read-only deployment", () => {
   const VALID = {

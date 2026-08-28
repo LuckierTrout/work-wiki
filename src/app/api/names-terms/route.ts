@@ -27,12 +27,13 @@ export async function POST(request: Request) {
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });
   }
-  // Deployment read-only (DW-300). After the 401 and before the parse: the
-  // store this reaches is not a kernel writer and refuses nothing of its own,
-  // and `parseNamesTermInput` throws a 400 on a malformed body — which would
+  // Deployment read-only (DW-300). After the 401 and before the parse:
+  // `parseNamesTermInput` throws a 400 on a malformed body, which would
   // otherwise blame the caller's input for a write the deployment was never
-  // going to accept. The `[id]` PUT and DELETE gate at the same point with the
-  // same sentence.
+  // going to accept. `createNamesTerm` also refuses in the kernel now (DW-385,
+  // same sentence, for the callers that never pass a route), so this gate is
+  // about WHICH answer the caller gets first, not about whether one exists. The
+  // `[id]` PUT and DELETE gate at the same point with the same sentence.
   if (isReadOnly()) {
     return NextResponse.json(
       { error: READ_ONLY_REFUSAL.namesTerms },

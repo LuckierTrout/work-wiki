@@ -1,5 +1,6 @@
 import { ClientInputError, isEnoent } from "./errors";
 import { withDurableLock, withFileLock } from "./lock";
+import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { hasResearchSlot } from "./research-concurrency";
@@ -224,6 +225,28 @@ function serializeProjects(projects: ResearchProject[]): string {
  * is invisible to another Worker isolate, so a queued→collecting claim that
  * only locked in memory could run twice. Exported so tests can race two
  * callers without that lock.
+ *
+ * DELIBERATELY NOT READ-ONLY GATED (DW-385), unlike
+ * {@link createResearchProject} and {@link deleteResearchProject}. This and its
+ * wrappers ({@link mutateResearchProject}, {@link updateResearchProjectIf},
+ * {@link updateResearchProject}) are mostly an IN-FLIGHT run's own progress
+ * recorders, reached from `research-runtime`/`research-completion` behind doors
+ * that already refuse — and `GET /api/research` skips reconciliation entirely
+ * when read-only, so a read-only deployment does not drive them. Several of
+ * those callers read a `null` return as "lost the CAS race" and compensate; a
+ * throw here would turn that fail-soft path into a stranded run, which is the
+ * reason the exemption exists.
+ *
+ * WHAT THE EXEMPTION COSTS, NAMED. They are not reached ONLY by the runtime:
+ * `PATCH /api/research/[id]` calls {@link updateResearchProjectIf} to edit an
+ * owner's title, question and queries. That route gates on `isReadOnly()`, so
+ * the deployed app refuses — but a DIRECT LIBRARY caller with no route in front
+ * can still patch a research project's fields while read-only. That is a known,
+ * deliberate limit of DW-385, not an oversight: closing it means giving the
+ * runtime's fail-soft callers a path that does not throw, which is a larger
+ * change than adding a gate. The ENTRY POINTS that would otherwise write and
+ * then fail — {@link createResearchProject}, {@link deleteResearchProject} and
+ * `retireResearchProject` — are gated instead.
  */
 export async function applyResearchProjectMutation<T>(
   owner: string,
@@ -304,6 +327,12 @@ export async function createResearchProject(
   owner: string,
   input: ResearchProjectInput,
 ): Promise<ResearchProject> {
+  // Deployment read-only (DW-385). FIRST, ahead of the clean and the lock.
+  // Today `POST /api/research` and the Review-accept handler are the only
+  // callers and both gate already, so this changes no behaviour the app has; it
+  // is here for the DIRECT LIBRARY caller added next, which no HTTP gate can
+  // reach. Same reasoning as the wiki-lifecycle gates in `read-only.ts`.
+  assertWritable(READ_ONLY_REFUSAL.researchCreate);
   const cleaned = cleanInput(input);
   return lockedMutation(owner, (projects) => {
     if (projects.length >= MAX_PROJECTS) {
@@ -498,6 +527,11 @@ export async function withResearchProjectLifecycleFence<T>(
 }
 
 export async function deleteResearchProject(owner: string, id: string): Promise<boolean> {
+  // Deployment read-only (DW-385). BEFORE the fence, not inside it:
+  // `withResearchProjectLifecycleFence` is a `withDurableLock`, which writes a
+  // CAS lease object on the R2 provider before the callback runs — so a gate
+  // one line lower would have written to a deployment it was about to refuse.
+  assertWritable(READ_ONLY_REFUSAL.researchMutate);
   return withResearchProjectLifecycleFence(owner, id, async () => {
     // Recheck under the same fence used by lease rotation. A caller's earlier
     // release/confirm can otherwise race a recovery that publishes a successor.

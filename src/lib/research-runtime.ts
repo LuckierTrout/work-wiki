@@ -45,6 +45,7 @@ import {
   type ResearchProvider,
   type ResearchSearchResult,
 } from "./research-providers";
+import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
 import { researchPageSlug } from "./research-slug";
 import {
   extractThinking,
@@ -451,6 +452,15 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
 
 /** Request retirement, but let an active worker release its own lease. */
 export async function retireResearchProject(owner: string, id: string): Promise<boolean> {
+  // Deployment read-only (DW-385). THE ENTRY POINT has to gate even though the
+  // CAS mutator it calls first is deliberately open: this function TOMBSTONES
+  // before it deletes — `mutateResearchProject` below sets `deleteRequested`,
+  // `cancelRequested`, `status: "cancelled"` and the progress message
+  // "Deleted." — and only reaches the gated `deleteResearchProject` at its last
+  // statement. Gating the delete alone would leave a caller with no route in
+  // front holding a project marked deleted, cancelled and drained, plus an
+  // error. Refusing here is what makes "read-only" mean nothing changed.
+  assertWritable(READ_ONLY_REFUSAL.researchMutate);
   const project = await getResearchProject(owner, id);
   if (!project) return false;
   let workerStillRunning = false;

@@ -62,12 +62,12 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
-  // Deployment read-only (DW-294). Gated HERE rather than left to a kernel
-  // writer, because `createResearchProject` reaches none: it writes the project
-  // record straight to storage, so there is nothing behind this handler that
-  // would refuse. Ordered after the 401 (an unauthenticated caller still learns
-  // it is unauthenticated) and before the body parse, so the refusal cannot be
-  // pre-empted by a 400 about a field the deployment was never going to store.
+  // Deployment read-only (DW-294). `createResearchProject` now gates in the
+  // kernel too (DW-385, same sentence), so this is no longer the only refusal
+  // behind the door — but it stays for the reason it was added: ordered after
+  // the 401 (an unauthenticated caller still learns it is unauthenticated) and
+  // BEFORE the body parse, so the refusal cannot be pre-empted by a 400 about a
+  // field the deployment was never going to store.
   if (isReadOnly()) {
     return NextResponse.json(
       { error: READ_ONLY_REFUSAL.researchCreate },
