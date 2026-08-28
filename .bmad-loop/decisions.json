@@ -503,6 +503,15 @@
     "label": "Write to the object that was read",
     "resolution": ""
   },
+  "DW-510": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Refuse an embeddingProvider patch at PUT /api/settings while EMBEDDING_PROVIDER is set, so the stored key and endpoint cannot be destroyed by a caller that bypasses the select, and pin the refusal alongside the existing pin tests.",
+    "key": "1",
+    "label": "Refuse at the route",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

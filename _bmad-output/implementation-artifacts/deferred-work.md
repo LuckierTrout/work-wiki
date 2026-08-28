@@ -4547,6 +4547,7 @@ location: src/app/api/settings/route.ts (embeddingProvider patch branch)
 severity: medium
 reason: `applyWorkbenchSettings` clears `embeddingApiKey`/`embeddingBaseUrl` through `embeddingProviderChanged` regardless of `EMBEDDING_PROVIDER`, so a direct PUT, a stale tab, or a CLI reaches the destruction the select now refuses. This matches the repo's existing convention — the `researchProvider` pin is UI-only too — and the recorded decision names the select specifically, so a route-level refusal is a separate decision.
 status: open
+decision: 2026-08-28 Refuse at the route — Refuse an embeddingProvider patch at PUT /api/settings while EMBEDDING_PROVIDER is set, so the stored key and endpoint cannot be destroyed by a caller that bypasses the select, and pin the refusal alongside the existing pin tests.
 
 ### DW-511: The DW-373 rail rows pin a state the rail control itself cannot produce: with a Create Wiki dialog open, a real user can reach Settings through neither opener.
 origin: spec-deferred b7350e592148
