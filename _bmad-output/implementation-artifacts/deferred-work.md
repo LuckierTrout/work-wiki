@@ -1398,7 +1398,8 @@ source_spec: `spec-single-main-landmark-sweep.md`
 location: src/components/KnowledgeStudio.tsx:213, src/components/VaultExplorer.tsx:369
 severity: low
 reason: `src/components/KnowledgeStudio.tsx:213` (`.studio-main`) sits between `<aside className="studio-nav" aria-label="Knowledge Studio sections">` and `<aside className="studio-evidence" aria-label="Evidence and actions">`. `src/components/VaultExplorer.tsx:369` is the same shape: after the sweep the grid's only landmark children are `<aside aria-label="Vault explorer">` and `<aside aria-label="Document preview">`. A screen-reader user can jump to both rails but not to the substance between them. Three independent reviewers raised it. Not patched here for two reasons: DW-11's intent authorises `<div>` OR `<section>` without selecting between them per site and promises nothing about region navigability, and this spec's frozen intent-contract says "Do not add ARIA roles, headings or landmarks to compensate". Restoring the region means a named `<section>` (or `role="region"` + `aria-label`) on those two wrappers — a deliberate a11y decision, not a mechanical follow-on to the sweep. Note that
-status: open
+status: done 2026-08-28
+resolution: already resolved: Resolved in commit 3287cecd: src/components/KnowledgeStudio.tsx:213 is now <section className="studio-main" aria-labelledby="studio-main-heading">, matching VaultExplorer.tsx:454, and pinned by src/components/__tests__/studio-content-region.test.tsx:79.
 decision: 2026-08-19 Name the KnowledgeStudio region — Give KnowledgeStudio's .studio-main wrapper a named `<section>` (or role="region" with aria-label) matching the shape VaultExplorer already uses, restoring region navigability between the two rails, and update the landmark scan and mounted tests to expect it. Record in the spec record that the frozen "do not add landmarks" clause was deliberately renegotiated for this one wrapper.
 
 ### DW-153: The DW-152 entry in the deferred-work ledger is truncated mid-sentence, losing the clause that scopes it away from PrivateWorkspaceNotice.
@@ -2370,7 +2371,8 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/components/NavHeader.tsx:39
 severity: low
 reason: `getActiveHref` (src/components/NavHeader.tsx:39) drives `fontWeight`, colour and background on the active link and nothing else; there is no `aria-current="page"` anywhere in the file. The new mounted assertions therefore have to match `link.style.fontWeight === "600"`, which couples the suite to styling because it is the only observable signal the component emits. Pre-existing; adding the attribute is a production change this coverage-only story walled off.
-status: open
+status: done 2026-08-28
+resolution: already resolved: Resolved in commit 3287cecd: src/components/NavHeader.tsx now emits aria-current="page" on the active link at :108, :269, :298, :316 and :333, so the current route is announced rather than conveyed by fontWeight alone.
 
 ### DW-261: layout.tsx's metadata export and its inline theme script are still guarded only by source scans, even though the file now has a mounted suite.
 origin: spec-deferred 8326245b9bba
@@ -3829,7 +3831,8 @@ source_spec: `spec-dw-412-413-414-settings-transition-focus-and-state.md`
 location: src/components/ShortcutsHelp.tsx:39
 severity: medium
 reason: `src/components/ShortcutsHelp.tsx:39` renders the overlay as `role="dialog"` with only an `aria-label`. `isInModalDialog`'s selector requires `aria-modal="true"` — correctly, because `?` has to keep toggling the overlay from inside it — so the new guard does not cover this surface: `g i` typed over the help overlay still navigates out from under it, and the overlay itself is not announced as modal to a screen reader. Fixing it means deciding whether that overlay is modal at all (it locks no scroll and traps no Tab), which is a surface decision this change did not make.
-status: open
+status: done 2026-08-28
+resolution: already resolved: Resolved in commit 3287cecd: src/components/ShortcutsHelp.tsx:72-74 renders role="dialog" with aria-modal="true", bringing it inside isInModalDialog's selector (src/hooks/useKeyboardShortcuts.ts:65), pinned by src/components/__tests__/shortcuts-help-modality.test.tsx.
 
 ### DW-425: A second `g s` while Settings is already open announces Settings but moves no focus, so the key cannot be used to recover a lost keyboard.
 origin: spec-deferred 01eefb117c1c
@@ -4006,7 +4009,8 @@ source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
 location: workers/email-ingest/index.ts (forwarding selection)
 severity: medium
 reason: The Worker enforces no per-document limit of its own — `MAX_EMAIL_DOCUMENT_BYTES` appears only in comments and in the `Math.max` floor — so anything from 10 MiB up to the 20 MiB aggregate budget now reaches `src/app/api/email/ingest/route.ts:221-225`, which rejects the WHOLE message with "<name> is larger than 10 MB". That band was roughly 10-10.5 MiB before this change. The Worker-side per-attachment size pre-filter that would drop the oversized part instead is DW-253's subject, still open and out of this bundle's scope.
-status: open
+status: done 2026-08-28
+resolution: already resolved: Resolved in commit 39bbbe82: workers/email-ingest/index.ts:617-622 partitions oversizedAttachments (size > MAX_EMAIL_DOCUMENT_BYTES) out before the selection loop, and src/app/api/email/ingest/route.ts:205-208 collects an oversized file into oversizedFiles instead of 400-ing the whole message.
 
 ### DW-448: Nothing bounds the parse-time buffered peak, which this change roughly doubled by raising the raw cap.
 origin: spec-deferred 32f52b5643ef
