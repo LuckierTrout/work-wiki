@@ -3829,6 +3829,7 @@ location: src/components/workbench/PreviewColumn.tsx (fetch effect / refresh ann
 severity: medium
 reason: Keeping `PreviewColumn` mounted (DW-412) keeps its fetch effect, `requestDataVersionCheck()` and its polite live region live while the column is `hidden`. A `DataVersionWatcher` bump mid-visit can therefore refetch the row, flip to the stale note, or report a removal into a region that is out of the accessibility tree — the announcement is spent with nobody to hear it, and the column the owner comes back to has changed under them with no report. The spec's Never clause held the fetch/edit lifecycle out of scope, but the mount change is what makes it run off screen at all. `ModeCanvas` has the same shape and the same unanswered question.
 status: open
+decision: 2026-08-28 Pause while withdrawn — Gate PreviewColumn's fetch effect, dataVersion checks and live-region writes on surface visibility (extending the existing SurfaceVisibilityProvider), resuming with one refresh on return; apply the same shape to ModeCanvas.
 decision: 2026-08-26 Pause while withdrawn — Gate PreviewColumn's fetch effect, dataVersion checks and live-region writes on surface visibility (extending the existing SurfaceVisibilityProvider), resuming with one refresh on return; apply the same shape to ModeCanvas.
 
 ### DW-423: Back or a popstate that closes Settings unmounts `SettingsCanvas` under the keyboard, and DW-413 makes focus-in-Settings the normal case rather than the rare one.
