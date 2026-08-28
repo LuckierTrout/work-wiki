@@ -404,6 +404,15 @@
     "label": "Reopen DW-415",
     "resolution": ""
   },
+  "DW-437": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Point the CLI listing and the lint check at listRawSourceSnapshots so hashed arrivals are counted, leaving listRawSources and its documented browse contract unchanged.",
+    "key": "1",
+    "label": "Move the callers",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

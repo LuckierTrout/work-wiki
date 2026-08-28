@@ -3959,6 +3959,7 @@ origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upl
 location: src/lib/raw.ts
 reason: `listRawSources` enumerates only the flat top level of `raw/sources/`, so any hashed arrival stored one directory deeper is invisible to every CLI and lint listing built on it. Deferred because the spec accepted the recursive Files walk as the observed surface for this story, leaving the listing helper unchanged.
 status: open
+decision: 2026-08-28 Move the callers — Point the CLI listing and the lint check at listRawSourceSnapshots so hashed arrivals are counted, leaving listRawSources and its documented browse contract unchanged.
 decision: 2026-08-26 Move the callers — Point the CLI listing and the lint check at listRawSourceSnapshots so hashed arrivals are counted, leaving listRawSources and its documented browse contract unchanged.
 
 ### DW-438: `alreadyStored` followed by `writeFile` is not exclusive, so two concurrent stores of the same new key can overwrite each other.
