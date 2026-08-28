@@ -494,6 +494,15 @@
     "label": "Extend the election to the read layer",
     "resolution": ""
   },
+  "DW-490": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Make the wiki write path target the object the row was read from rather than an unconditional <slug>.md, so a save from a lone case-variant row rewrites that object instead of creating a second one, and pin the behaviour on both a case-sensitive and a case-insensitive store.",
+    "key": "1",
+    "label": "Write to the object that was read",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

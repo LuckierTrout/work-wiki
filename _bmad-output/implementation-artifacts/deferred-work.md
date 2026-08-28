@@ -4387,6 +4387,7 @@ location: src/lib/wiki.ts (writeWikiPage / writeWikiPageIfContentMatches); src/a
 severity: medium
 reason: The elected-winner rule keys on the candidate names present AT LISTING TIME, which is what lets a lone variant keep listing (it must: on a case-INSENSITIVE store that name is the only real Page). But the wiki write path targets `<slug>.md` unconditionally (`writeWikiPage`/`writeWikiPageIfContentMatches`, `src/lib/wiki.ts`), so on a case-sensitive store the first save from that row creates a SECOND object. From then on the collision exists, the election correctly drops the `.MD` row, and its bytes are orphaned with no surface that mentions them. So the decision's mechanism ("drop the sibling") is implemented while its stated purpose ("every visible row reads and writes the same object") holds only after a collision already exists — never for the row that creates one. Same root cause as the entry above: the fix has to reach the save half, which the recorded decision scoped out.
 status: open
+decision: 2026-08-28 Write to the object that was read — Make the wiki write path target the object the row was read from rather than an unconditional <slug>.md, so a save from a lone case-variant row rewrites that object instead of creating a second one, and pin the behaviour on both a case-sensitive and a case-insensitive store.
 
 ### DW-491: `raw/assets/<slug>/<file>` is silo-mirrored and still spells a hidden page's slug, so DW-32's disclosure survives in the assets subtree.
 origin: spec-deferred 5c91aa99b543
