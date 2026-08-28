@@ -242,6 +242,15 @@
     "label": "Suppress while dirty",
     "resolution": ""
   },
+  "DW-350": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add .github/ to the brand-copy scan's sources, add the second workers.dev deployment origin to IDENTIFIER_ALLOWLIST and to AGENTS.md's frozen list, and correct any remaining prose the scan then flags.",
+    "key": "1",
+    "label": "Scan and allowlist",
+    "resolution": ""
+  },
   "DW-358": {
     "answered_at": "2026-08-21",
     "bundle_name": "",

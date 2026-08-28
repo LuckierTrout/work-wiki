@@ -3177,6 +3177,7 @@ location: .github/workflows/
 severity: low
 reason: Reviewer found hits at infra-setup.yml:52, deploy-cloudflare.yml:4,79,97,98 and seed-yoyo.yml:4-18,36,92-102. Neither source list reaches the tree. AGENTS.md marks .github/ protected, so folding it in is a decision the intent did not authorise; seed-yoyo.yml:93 also names a second workers.dev subdomain (yopedia.christianlee-flightwall.workers.dev) that the current single-host allowlist entry would not cover.
 status: open
+decision: 2026-08-28 Scan and allowlist — Add .github/ to the brand-copy scan's sources, add the second workers.dev deployment origin to IDENTIFIER_ALLOWLIST and to AGENTS.md's frozen list, and correct any remaining prose the scan then flags.
 decision: 2026-08-26 Scan and allowlist — Add .github/ to the brand-copy scan's sources, add the second workers.dev deployment origin to IDENTIFIER_ALLOWLIST and to AGENTS.md's frozen list, and correct any remaining prose the scan then flags.
 
 ### DW-351: Root non-Markdown files beyond the four AGENTS.md freezes stay unread.
