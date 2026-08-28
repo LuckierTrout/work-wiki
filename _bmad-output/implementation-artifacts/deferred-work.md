@@ -4119,6 +4119,7 @@ location: src/mcp.ts:2501
 severity: medium
 reason: The route JSDoc this change wrote states the type "Reads `message` ALONE — no `slug`, no `targetSlug`", and `LINT_FIX_REQUEST` makes `slug` optional for exactly that reason. But `src/mcp.ts` declares `slug: z.string()` (required) and `src/lib/mcp-http.ts` lists `["type", "slug"]` as required, so an agent must invent a dummy slug. No test on either transport exercises this type. Pre-existing; surfaced by the JSDoc making the asymmetry explicit.
 status: open
+decision: 2026-08-28 Supply and clamp to the real bound — Record the verified Cloudflare Email Routing inbound ceiling as a named constant in workers/email-ingest/index.ts with its source in workers/email-ingest/README.md, clamp `MAX_RAW_EMAIL_BYTES` with `Math.min` against it, and update the sender-visible figure and the allowlist-parity test. Requires the human to supply the number.
 
 ### DW-458: `autoFixRefusal(type, "")` renders `PATCH /api/wiki/` with an empty slug segment, contradicting the copy-pasteability rationale the change states for gating at the doors.
 origin: spec-deferred 48ad75afbe4a

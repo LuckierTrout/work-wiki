@@ -476,6 +476,15 @@
     "label": "Budget the body inside the cap",
     "resolution": ""
   },
+  "DW-457": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Record the verified Cloudflare Email Routing inbound ceiling as a named constant in workers/email-ingest/index.ts with its source in workers/email-ingest/README.md, clamp `MAX_RAW_EMAIL_BYTES` with `Math.min` against it, and update the sender-visible figure and the allowlist-parity test. Requires the human to supply the number.",
+    "key": "1",
+    "label": "Supply and clamp to the real bound",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
