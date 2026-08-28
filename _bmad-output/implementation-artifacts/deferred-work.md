@@ -628,6 +628,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `save` re-seeds the whole draft from the stored values the route answers with, which is what clears `dirty` — but the fields stay editable during the request, so anything typed in that window is replaced without a word. The alternatives (freeze the form while saving, or merge only untouched fields) are both behavioural choices this story's acceptance does not settle.
 status: open
+decision: 2026-08-28 Freeze the form while saving — Disable the Settings form's inputs for the duration of the save request so nothing can be typed into the window whose contents would be discarded, with a test pinning that the fields are inert while the PUT is in flight.
 
 ### DW-68: Storing an embedding key through the new surface flips `hasEmbeddingSupport()` on for the existing ingest caller even with vector search switched off.
 origin: spec-deferred 050a745f1202

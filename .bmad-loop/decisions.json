@@ -296,6 +296,15 @@
     "label": "Keep deadline, fix the copy",
     "resolution": ""
   },
+  "DW-67": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Disable the Settings form's inputs for the duration of the save request so nothing can be typed into the window whose contents would be discarded, with a test pinning that the fields are inert while the PUT is in flight.",
+    "key": "1",
+    "label": "Freeze the form while saving",
+    "resolution": ""
+  },
   "DW-69": {
     "answered_at": "2026-08-21",
     "bundle_name": "",
