@@ -3930,6 +3930,7 @@ location: _bmad-output/implementation-artifacts/deferred-work.md (DW-411, DW-415
 severity: medium
 reason: `.bmad-loop/runs/20260820-220331-0f16/bundles/c3-pnpm-workspace-root/intent.md` carries `dw_ids: DW-415` and pastes DW-415 verbatim (a CSS specificity issue at src/app/globals.css:2690-2710), while its `## Intent` section is a near-verbatim restatement of DW-411 (`pnpm vitest` / `pnpm lint` abort; location `package.json / pnpm-workspace.yaml`). This story implemented the Intent, so DW-411 is what is resolved. Recording DW-415 as resolved would close a still-real cascade hazard that nothing in this change touches — `src/app/globals.css` was not modified.
 status: open
+decision: 2026-08-28 Reopen DW-415 — Flip DW-415 back to status: open with a note that the bundle keyed to it resolved DW-411 instead, so its globals.css [hidden] specificity work re-enters the next sweep.
 decision: 2026-08-26 Reopen DW-415 — Flip DW-415 back to status: open with a note that the bundle keyed to it resolved DW-411 instead, so its globals.css [hidden] specificity work re-enters the next sweep.
 
 ### DW-434: The nested-package guard derives its targets from `--dir`/`-C` workflow flags and on-disk lockfiles, so a package reached by `working-directory:` or `cd x && pnpm install` is only caught once it has a

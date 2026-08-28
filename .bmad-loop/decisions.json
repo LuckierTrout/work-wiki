@@ -395,6 +395,15 @@
     "label": "Bounded per-page read fallback",
     "resolution": ""
   },
+  "DW-433": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Flip DW-415 back to status: open with a note that the bundle keyed to it resolved DW-411 instead, so its globals.css [hidden] specificity work re-enters the next sweep.",
+    "key": "1",
+    "label": "Reopen DW-415",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
