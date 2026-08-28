@@ -422,6 +422,15 @@
     "label": "Sniff, then refuse",
     "resolution": ""
   },
+  "DW-442": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Remove sourceUrls from ResearchProjectInput, the create route and the Knowledge Studio form, so nothing collects a value the runtime discards.",
+    "key": "1",
+    "label": "Drop the field",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

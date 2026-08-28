@@ -3994,6 +3994,7 @@ origin: migrated from legacy ledger ("Deferred from: code review of spec-6-1-thr
 location: src/lib/research-runtime.ts:682
 reason: Research creation still honours a caller-supplied `sourceUrls` list, but any automated run overwrites it with the provider's own results, so the field is accepted and then silently discarded. Deferred because the behaviour predates Epic 6's Workbench flow and belongs to the out-of-scope Knowledge Studio research desk.
 status: open
+decision: 2026-08-28 Drop the field — Remove sourceUrls from ResearchProjectInput, the create route and the Knowledge Studio form, so nothing collects a value the runtime discards.
 decision: 2026-08-26 Honour as seeds — Treat manual sourceUrls as seeds: merge them with provider results rather than overwriting at research-runtime.ts:1549, and label them as such in the form.
 
 ### DW-443: The shared kernel URL guard rejects literal private hosts but never resolves DNS before fetching, leaving a DNS-rebinding SSRF gap.
