@@ -512,6 +512,15 @@
     "label": "Refuse at the route",
     "resolution": ""
   },
+  "DW-512": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Push a second history entry on a deep-linked ?settings=1 load so Back closes the Settings surface in a fresh tab, accepting and re-pinning the matching change to the mode's Back contract.",
+    "key": "1",
+    "label": "Seed a second entry",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

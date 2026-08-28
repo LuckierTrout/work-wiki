@@ -4564,6 +4564,7 @@ location: src/components/workbench/Workbench.tsx (the mount seed)
 severity: low
 reason: The seed uses `replaceState`, matching the mode restore's own contract that Back must still leave the app on the first press. So a `?settings=1` link opened in a fresh tab is the first entry of its session and has nothing behind it to close the surface on — verbatim the symptom DW-167 describes, now reachable through the URL the fix introduces. Fixed for the in-session case only; the code comment states the residue rather than claiming otherwise. Closing it needs a decision about seeding a second entry on load, which would change the mode's Back contract too.
 status: open
+decision: 2026-08-28 Seed a second entry — Push a second history entry on a deep-linked ?settings=1 load so Back closes the Settings surface in a fresh tab, accepting and re-pinning the matching change to the mode's Back contract.
 
 ### DW-513: The popstate focus bump is unconditional on where the keyboard was, so Back pressed with focus on the rail still pulls it to `#wb-canvas`.
 origin: spec-deferred 0af697b7be93
