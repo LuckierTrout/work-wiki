@@ -170,6 +170,15 @@
     "label": "Cap revisions and degrade backups",
     "resolution": ""
   },
+  "DW-233": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep the 404 status and add the canonical slug to the error envelope on both routes, so a client can follow deliberately; document the field in SCHEMA.md.",
+    "key": "1",
+    "label": "Canonical slug in the 404",
+    "resolution": ""
+  },
   "DW-253": {
     "answered_at": "2026-08-20",
     "bundle_name": "",

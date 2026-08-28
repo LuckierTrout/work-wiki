@@ -2138,6 +2138,7 @@ location: src/app/api/wiki/[slug]/route.ts
 severity: low
 reason: This story wired aliasTargetForMissing into all three /u/ routes, so the page, edit and raw views forward. The JSON routes were never in scope — the intent names only the edit and raw owner-scoped routes — and were already hard-404 before it. The asymmetry is new even though neither side changed: forwarding the HTML surfaces is what made the API's behavior a divergence rather than the uniform rule. Either forward there too, or return the canonical slug in the 404 envelope so a client can follow it.
 status: open
+decision: 2026-08-28 Canonical slug in the 404 — Keep the 404 status and add the canonical slug to the error envelope on both routes, so a client can follow deliberately; document the field in SCHEMA.md.
 decision: 2026-08-26 Canonical slug in the 404 — Keep the 404 status and add the canonical slug to the error envelope on both routes, so a client can follow deliberately; document the field in SCHEMA.md.
 
 ### DW-234: A component mounted while /api/wiki/routes was failing keeps DEFAULT_TENANT hrefs for its whole lifetime, because useSlugTenants has no refresh path after its mount effect.
