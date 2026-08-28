@@ -4024,6 +4024,7 @@ location: workers/email-ingest/index.ts (selection loop and loss counts)
 severity: medium
 reason: DW-359 moved inline parts out of `unsupportedCount`, `overCapCount` and `overBudgetCount` but deliberately left eligibility alone, so the selection loop in `workers/email-ingest/index.ts` still spends `MAX_EMAIL_ATTACHMENTS` slots and `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` on them. A message with three inline logos and nine real PDFs can therefore be told "2 supported attachments were not queued because this email exceeds the 10-attachment limit" while the sender attached nine files. The converse is pinned by "reports over-budget, over-cap and unsupported losses in one scrubbed acknowledgement": an eligible inline `.md` past the cap is reported nowhere. Fixing it means deciding whether inline parts should be forwarded at all, which DW-359 explicitly did not ask for.
 status: open
+decision: 2026-08-28 Exclude inline parts entirely — Filter inline parts out of eligibleAttachments before the selection loop so they never consume an attachment slot or aggregate-budget bytes and are never forwarded, and pin that a message of inline logos plus real files reports counts matching what the sender actually attached.
 
 ### DW-447: Raising the raw cap widens the band in which the Worker forwards a single attachment above the route's per-document ceiling, and the route answers that with a 400 that loses the body and every sibling
 origin: spec-deferred 3496e6f2df4d

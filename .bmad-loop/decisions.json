@@ -440,6 +440,15 @@
     "label": "Per-runtime guard",
     "resolution": ""
   },
+  "DW-446": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Filter inline parts out of eligibleAttachments before the selection loop so they never consume an attachment slot or aggregate-budget bytes and are never forwarded, and pin that a message of inline logos plus real files reports counts matching what the sender actually attached.",
+    "key": "1",
+    "label": "Exclude inline parts entirely",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
