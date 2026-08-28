@@ -458,6 +458,15 @@
     "label": "Verify and clamp",
     "resolution": ""
   },
+  "DW-450": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Widen inlineAttachment to treat a part carrying a contentId that the HTML body references as inline even when disposition is absent, leaving a bare null disposition with no contentId as a real attachment, and pin both shapes with fixtures.",
+    "key": "1",
+    "label": "Trust Content-ID too",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

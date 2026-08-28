@@ -4061,6 +4061,7 @@ location: workers/email-ingest/index.ts (inlineAttachment)
 severity: low
 reason: The predicate is `attachment.disposition === "inline"`, and its comment records the deliberate choice to treat a `null` disposition as a real attachment rather than risk dropping a file the sender really sent. postal-mime also exposes `contentId` and a `related` flag, and DW-359's own text describes the noisy parts as having `disposition: "inline"` AND a `contentId`. A client that emits `Content-ID` without a disposition header therefore keeps the behaviour the entry was filed against. Widening the predicate is a separate decision about which signal to trust.
 status: open
+decision: 2026-08-28 Trust Content-ID too — Widen inlineAttachment to treat a part carrying a contentId that the HTML body references as inline even when disposition is absent, leaving a bare null disposition with no contentId as a real attachment, and pin both shapes with fixtures.
 
 ### DW-451: The Worker computes the trimmed site URL twice, so the two copies can still drift; hoisting one const would remove the drift class the new link tests guard against.
 origin: spec-deferred e486073282e7
