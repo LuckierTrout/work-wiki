@@ -89,6 +89,15 @@
     "label": "Re-anchor DW-17 only",
     "resolution": ""
   },
+  "DW-172": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Bump the four line-addressed citations in spec-1-4, spec-1-5 and spec-1-6 to their current epics.md lines, recording that a citation correction is not an amendment of the approved content.",
+    "key": "1",
+    "label": "Correct the citations",
+    "resolution": ""
+  },
   "DW-176": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
