@@ -4041,7 +4041,9 @@ source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
 location: workers/email-ingest/index.ts (PostalMime.parse, ahead of the selection loop)
 severity: medium
 reason: `PostalMime.parse(message.raw)` decodes the entire MIME tree before the selection loop runs, so the DW-360 budget governs only the `FormData` copies of SELECTED parts. The peak the ledger entry's `reason` also names — "the parsed MIME tree" — is bounded solely by `MAX_RAW_EMAIL_BYTES`, which this change took from 32,781,108 to 65,496,679 bytes. The source comments now state this plainly rather than implying the budget bounds the whole payload, but nothing enforces it and no test observes a buffered peak.
-status: open
+status: done 2026-08-28
+resolution: closed by human decision: The pre-parse size refusal already bounds the buffered peak and the source comments now say so explicitly; MAX_RAW_EMAIL_BYTES is accepted as the peak's stated bound at its current value.
+decision: 2026-08-28 Close: the stated bound is enough — The pre-parse size refusal already bounds the buffered peak and the source comments now say so explicitly; MAX_RAW_EMAIL_BYTES is accepted as the peak's stated bound at its current value.
 
 ### DW-449: The 62.4 MB now quoted to senders may exceed Cloudflare Email Routing's own inbound message ceiling, making the widening unreachable in production.
 origin: spec-deferred a47c1f40039c
