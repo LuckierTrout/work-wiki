@@ -530,6 +530,15 @@
     "label": "Put the category in the URL",
     "resolution": ""
   },
+  "DW-518": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add the fail-soft bumpDataVersion() tail to setCurrentWiki outside the lock as the recorded DW-429 decision directs, updating the exemption rationale and raising the bumpRefreshSignal count guard in workbench-data-version.test.ts at their current lines rather than the decision's stale ones.",
+    "key": "1",
+    "label": "Implement the kernel tail",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

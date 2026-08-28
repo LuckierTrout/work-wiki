@@ -4614,6 +4614,7 @@ location: _bmad-output/implementation-artifacts/deferred-work.md (DW-429 decisio
 severity: low
 reason: The ledger entry's decision reads "Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock ... rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6". This bundle's intent directed implementing the entry's REASON instead, which is a client-side release-effect fix, so nothing in `src/lib/wikis.ts` was touched. The decision's own line numbers are also stale: that suite already asserts six `bumpRefreshSignal` sites around line 1213 and states the `setCurrentWiki` exemption rationale near line 1174. So the decision's separate concern — that a switch moves no `dataVersion` — is neither implemented nor retired, and a future sweep re-reading it would chase dead coordinates.
 status: open
+decision: 2026-08-28 Implement the kernel tail — Add the fail-soft bumpDataVersion() tail to setCurrentWiki outside the lock as the recorded DW-429 decision directs, updating the exemption rationale and raising the bumpRefreshSignal count guard in workbench-data-version.test.ts at their current lines rather than the decision's stale ones.
 
 ### DW-519: SourcesTree carries the exact rAF-cancel-without-flush cleanup DW-208 removed from TreePanel, plus DW-206's single-offset-across-the-breakpoint storage shape, and has no test coverage at all.
 origin: spec-deferred fefed9ac57e0
