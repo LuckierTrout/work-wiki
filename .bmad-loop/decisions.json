@@ -296,6 +296,15 @@
     "label": "Per-entry results",
     "resolution": ""
   },
+  "DW-396": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Type enqueueTask's ingest payload as Omit<IngestOptions,\"guidanceCache\"> so the compiler refuses a serialized handle, leaving the call signature of ingestUrl unchanged.",
+    "key": "1",
+    "label": "Type the queue payload",
+    "resolution": ""
+  },
   "DW-398": {
     "answered_at": "2026-08-22",
     "bundle_name": "",

@@ -3590,6 +3590,7 @@ location: src/lib/ingest.ts:1328
 severity: low
 reason: `IngestOptions.guidanceCache` holds two `Map`s. The batch route keeps it out of the queue by building `enqueueTask`'s payload as a separate literal (src/app/api/ingest/batch/route.ts:143-150), and `tasks/run` and the agent ingest route do the same by hand. Nothing structural stops a future `enqueueTask({ kind: "ingest", ...ingestOptions })`: TypeScript does not excess-property-check spread properties, so it would compile and fail at structured-clone/JSON time. An `Omit<IngestOptions, "guidanceCache">` on the payload builders, or a handle passed as its own argument rather than a field on the data bag, would make it a compile error.
 status: open
+decision: 2026-08-28 Type the queue payload — Type enqueueTask's ingest payload as Omit<IngestOptions,"guidanceCache"> so the compiler refuses a serialized handle, leaving the call signature of ingestUrl unchanged.
 decision: 2026-08-26 Type the queue payload — Type enqueueTask's ingest payload as Omit<IngestOptions,"guidanceCache"> so the compiler refuses a serialized handle, leaving the call signature of ingestUrl unchanged.
 
 ### DW-397: Under a handle the dictionary ENTRY OBJECTS are shared across every caller of the operation; only the top-level array is copied.
