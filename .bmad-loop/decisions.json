@@ -215,6 +215,15 @@
     "label": "Guide the merge door",
     "resolution": ""
   },
+  "DW-330": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Have validateWorkbenchSettingsPatch select the refusal frame from the request's vectorSearchEnabled while still deciding refusal from the stored flag, so client and route agree; pin the previously contradictory composition.",
+    "key": "1",
+    "label": "Frame from the request",
+    "resolution": ""
+  },
   "DW-332": {
     "answered_at": "2026-08-21",
     "bundle_name": "",
