@@ -431,6 +431,15 @@
     "label": "Drop the field",
     "resolution": ""
   },
+  "DW-443": {
+    "answered_at": "2026-08-28",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Make validateUrlSafety async, add a Node implementation that resolves DNS and pins the resolved address through to connect time, and a Workers implementation that relies on an egress proxy or allowlist; document which protection each target actually has.",
+    "key": "1",
+    "label": "Per-runtime guard",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",

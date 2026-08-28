@@ -4002,6 +4002,7 @@ origin: migrated from legacy ledger ("Deferred from: code review of spec-6-1-thr
 location: src/lib/url-safety.ts:95
 reason: The guard blocks private and reserved addresses only when they appear literally in the URL; a hostname that resolves to such an address — or re-resolves to one between check and fetch — passes. Deferred because the gap predates Epic 6 and lives in the shared fetch path used well beyond Deep Research, so closing it is a cross-cutting change rather than a Deep Research fix.
 status: open
+decision: 2026-08-28 Per-runtime guard — Make validateUrlSafety async, add a Node implementation that resolves DNS and pins the resolved address through to connect time, and a Workers implementation that relies on an egress proxy or allowlist; document which protection each target actually has.
 decision: 2026-08-26 Egress allowlist — Leave the guard synchronous and place the real control at egress — an allowlist or proxy the deployment configures — documenting that literal-IP checking is defence in depth, not the boundary.
 
 ### DW-444: Extract pending-turn and session transport from ChatCanvas.tsx.
