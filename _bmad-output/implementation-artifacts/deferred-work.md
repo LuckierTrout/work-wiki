@@ -3706,7 +3706,9 @@ source_spec: `spec-dw-332-embedding-drift-warning-rearm.md`
 location: src/lib/embeddings.ts (searchByVector re-arm branch, modelMatches)
 severity: medium
 reason: `modelMatches` deliberately returns true when `metadata.model` is absent (pre-migration / KV-fallback vectors must survive the filter — pinned by the existing test "keeps unlabelled (legacy) vectors with no model metadata"). Seeding one unlabelled vector plus stale-tagged ones and alternating three queries produced TWO drift lines where the throttle should give one. A gate of `kept.some((m) => m.metadata.model === currentModel)` would close it, but that also narrows the decided `kept.length > 0` trigger. The inline comment at the re-arm branch was corrected to stop claiming corpus-level proof.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-decision-dw-405
+resolution-undo: 4c8db2531685e908deb653b0b51867faff0f7335da87372d944149e467972190 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 decision: 2026-08-22 Require a positive labelled match — Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.
 
@@ -5369,4 +5371,12 @@ location: src/lib/__tests__/embeddings.test.ts (describe("searchByVector") drift
 source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: low
 reason: Mutating the gate to `matches.every((m) => m.metadata?.model === currentModel)` leaves all 173 tests in `embeddings.test.ts` passing. This is deliberate — the intent forbids pinning the unlabelled-legacy case either way while DW-405 is open — but it means whichever way DW-405 is eventually decided, the change will be unguarded until that entry adds its own pin.
+status: open
+
+### DW-602: Two `searchByVector` calls in flight at once can interleave so that a window read BEFORE the drift key was burnt applies its re-arm AFTER, un-burning the key and letting the same standing drift speak
+origin: spec-deferred 66e879681741
+location: src/lib/embeddings.ts:1015 (searchByVector re-arm/warn branch chain)
+source_spec: `spec-dw-405-drift-rearm-labelled-proof.md`
+severity: low
+reason: The gate, the `warnOnceAbout` burn and the `rearmWarningAbout` delete all run after `await getStorage().queryEmbeddings(...)`, and nothing carries a sequence number across that await. A healthy read that resolves late therefore re-arms on evidence gathered before another query burnt the key, and the next drifted read emits a second line — the repetition DW-310's throttle exists to prevent. Pre-existing and independent of the gate's shape: it holds identically under DW-332's `kept.length > 0`, DW-404's whole-window gate and this one, so this change neither causes nor worsens it. Not reproduced by a test: it needs a specific interleave of concurrent in-flight queries, unlike DW-404's and DW-405's reproductions, which are deterministic on sequential reads. Cost when it does happen is one extra breadcrumb line, and a guard would mean threading a burn sequence number through the door.
 status: open

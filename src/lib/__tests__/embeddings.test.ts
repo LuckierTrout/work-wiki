@@ -910,11 +910,101 @@ describe("searchByVector", () => {
     expect(result[3]).toEqual([]);
   });
 
+  it("does NOT re-arm on a window carried ENTIRELY by UNLABELLED vectors", async () => {
+    // DW-405. `modelMatches` deliberately keeps vectors with no `model`
+    // metadata — dropping them would empty the corpus after a first deploy —
+    // so a window carried by one is a WHOLE-WINDOW match under DW-404's gate
+    // alone, and re-armed the key on a corpus where every LABELLED vector was
+    // still stale. Alternating queries then produced TWO drift lines where
+    // DW-310's throttle guarantees one. The positive-proof conjunct
+    // (`kept.some((m) => m.metadata.model === currentModel)`) closes it: the
+    // window has to demonstrably HOLD an active-model-labelled vector.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. An UNLABELLED legacy vector joins the stale one. The filter keeps it
+      //    (no `model` key to compare) and drops `page-a`, so this is not even
+      //    a whole-window match…
+      await getStorage().upsertEmbedding("legacy", [0.9, 0.1, 0], { contentHash: "x" });
+      const two = await searchByVector("two", 10);
+      // 3. …and with the stale vector gone the window is whole-window UNLABELLED,
+      //    which is the case DW-404 alone could not tell from a finished rebuild.
+      await removeEmbedding("page-a");
+      const three = await searchByVector("three", 10);
+      const four = await searchByVector("four", 10);
+      // 4. The unlabelled vector goes away and the corpus is fully stale again
+      //    under the SAME active model.
+      await removeEmbedding("legacy");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const five = await searchByVector("five", 10);
+      return [one, two, three, four, five];
+    });
+
+    // Still ONE line: no read over an unlabelled-only window re-armed the key.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Pin the CAUSE too: the probe reads still RETURNED the unlabelled vector.
+    // The narrowing is on the re-arm gate alone, never on what the door
+    // answers — `modelMatches` stays permissive.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["legacy"]);
+    expect(result[2].map((r) => r.slug)).toEqual(["legacy"]);
+    expect(result[3].map((r) => r.slug)).toEqual(["legacy"]);
+    expect(result[4]).toEqual([]);
+  });
+
+  it("DOES re-arm on a window holding an ACTIVE-model vector beside an unlabelled one", async () => {
+    // The other side of DW-405's line, and the reason the gate is a CONJUNCTION
+    // rather than `matches.every((m) => m.metadata.model === currentModel)`:
+    // the two differ on exactly this window, and the 2026-08-22 decision keeps
+    // it re-arming. `modelMatches` is permissive by design, and a legacy vector
+    // riding along with a genuinely rebuilt one is not evidence the rebuild
+    // failed — the filter dropped nothing AND an active-model vector is there.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. Rebuilt: `page-a` is re-tagged under the ACTIVE model, and an
+      //    unlabelled legacy vector sits beside it. Whole-window match WITH
+      //    positive proof → re-arm.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      await getStorage().upsertEmbedding("legacy", [0.9, 0.1, 0], { contentHash: "x" });
+      const two = await searchByVector("two", 10);
+      // 3. Drift again under the SAME active model.
+      await removeEmbedding("legacy");
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // Twice: the mixed labelled/unlabelled read re-armed, so the second drift
+    // is audible. Under `matches.every(...)` the unlabelled vector would have
+    // vetoed the re-arm and this would be ONE line.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[1]).toContain('active="text-embedding-3-small"');
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a", "legacy"]);
+    expect(result[2]).toEqual([]);
+  });
+
   it("does NOT re-arm on an EMPTY window", async () => {
-    // DW-404, the other half of the gate. `kept.length === matches.length` is
-    // vacuously true when the store returns nothing, so the re-arm also
-    // requires a NON-EMPTY window — an empty read establishes nothing at all,
-    // and re-arming on it would be strictly worse than the old gate.
+    // DW-404's non-empty requirement, now carried by DW-405's proof conjunct.
+    // `kept.length === matches.length` is vacuously true when the store returns
+    // nothing, so something has to reject an EMPTY window — an empty read
+    // establishes nothing at all, and re-arming on it would be strictly worse
+    // than the old gate. Since 2026-08-22 that is `kept.some(...)`, which is
+    // false on an empty array; the standalone `matches.length > 0` conjunct it
+    // subsumed is gone, so THIS pin is what fails if `some` is dropped.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
