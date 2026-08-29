@@ -330,6 +330,10 @@ vi.mock("../raw", () => ({
 
 vi.mock("../config", () => ({
   getEffectiveSettings: vi.fn(),
+  // `runStatus()` warms the sync config cache before reading it (DW-502). The
+  // export has to exist here or every `runStatus` case below dies on
+  // `loadConfig is not a function` rather than on an assertion.
+  loadConfig: vi.fn(),
 }));
 
 vi.mock("../query", () => ({
@@ -609,6 +613,34 @@ describe("CLI command execution", () => {
     // NOT a note on the verdict above it: the label says what it is about, so
     // the successful `anthropic` line is not read as being qualified.
     expect(lines.join("\n")).not.toContain("Provider note:");
+  });
+
+  it("runStatus() warms the config cache BEFORE reading effective settings (DW-502)", async () => {
+    // ORDER is the whole assertion. `getEffectiveSettings()` is synchronous and
+    // reads the store through `loadConfigSync()`, which answers `{}` until an
+    // async load has warmed the cache — so a `loadConfig()` that ran after it,
+    // or not at all, leaves a cold CLI process reporting env-only settings.
+    //
+    // This suite mocks `../config` wholesale, so it can only pin the CALL, never
+    // the effect: a mocked `getEffectiveSettings` returns a full object whatever
+    // the cache holds. `cli-status-config-load.test.ts` pins the effect against
+    // the real module and a real store.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources } = await import("../raw");
+    const { getEffectiveSettings, loadConfig } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(vi.mocked(loadConfig)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(getEffectiveSettings)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(loadConfig).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(getEffectiveSettings).mock.invocationCallOrder[0],
+    );
   });
 
   it("runQuery() prints answer to stdout and sources to stderr", async () => {

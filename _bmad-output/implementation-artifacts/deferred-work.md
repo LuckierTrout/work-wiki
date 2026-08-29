@@ -4513,7 +4513,9 @@ source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
 location: src/cli.ts:558-571
 severity: medium
 reason: `src/cli.ts:558-571` calls `getEffectiveSettings()` without a preceding `loadConfig()`. `loadConfigSync()` returns `{}` on a cold cache (`src/lib/config.ts:937-946`), so on a fresh CLI process the store leg of every ladder is empty. This predates and outlives this change: the `LLM provider:` verdict itself, not only the new endpoint line, cannot see a stored provider or a stored refused base URL.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-cli-status-config-load
+resolution-undo: d1de44965745c9ea1c77d07106312772d442610b53dfe209dff67edc7de99718 2026-08-29 7374617475733a206f70656e
 
 ### DW-503: `getConfiguredModel`'s pre-switch guard refuses a keyless Custom provider with no Settings destination, unlike its five sibling refusals.
 origin: spec-deferred 13c8781cd594
@@ -4877,4 +4879,36 @@ location: src/app/api/query/stream/route.ts:253
 source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
 severity: medium
 reason: `finishReason: "length"` arrives on the `finish` part and falls into the route's bookkeeping tail, so the body simply ends. Same owner-visible failure as DW-64 — a half answer that reads as a whole one — from a different cause, and the notice machinery this change adds is one branch away from covering it. Not the deadline, so outside an intent that names TimeoutError/AbortError only.
+status: open
+
+### DW-548: `hasLLMKey()` reads `loadConfigSync()` for the two store-only providers, so a cold CLI or MCP process tells an owner who saved Ollama or Custom that no API key is configured.
+origin: spec-deferred 3903ad16168b
+location: src/lib/llm.ts:226-243
+source_spec: `spec-dw-502-cli-status-config-load.md`
+severity: medium
+reason: `src/lib/llm.ts:226-243` falls through to `loadConfigSync()` for `cfg.provider === "ollama"` (line 232) and `"custom"` (line 243). `callLLM` warms the cache (`src/lib/llm.ts:481`), but `hasLLMKey()` runs first and short-circuits: `src/lib/query.ts:330`, `src/lib/ingest.ts:1042` and `src/lib/ingest.ts:1562` all gate on it. On a cold process the store leg is `{}`, so `pnpm cli query` answers "No API key configured." and ingest degrades to the fallback page for a provider the owner did save. Same class as DW-502, at a call site DW-502's intent did not reach. `src/mcp.ts` exposes the same entry points and warms nothing either.
+status: open
+
+### DW-549: `yopedia status` prints "not configured" for a config object it could not read, which is the same sentence it prints when nothing was ever stored.
+origin: spec-deferred 28bf2339b3bc
+location: src/cli.ts:584
+source_spec: `spec-dw-502-cli-status-config-load.md`
+severity: medium
+reason: `runStatus` now warms through `loadConfig()` (`src/lib/config.ts:813-816`), which flattens `readStoredConfig`'s `unreadable` answer to `{}`. `readConfig()` (`src/lib/config.ts:782`) keeps that distinction. So malformed JSON, a non-object parse, or a storage read failure all surface as "nothing was ever set" on the one surface with no Settings screen to go and look at — the exact conflation DW-402 closed for the `Ollama endpoint:` row, one row above it. The intent named `loadConfig()` explicitly, so widening the row set was out of scope for DW-502.
+status: open
+
+### DW-550: `loadConfigSync()`'s doc comment still justifies its `{}` answer with a startup sequence that does not exist in this repo.
+origin: spec-deferred 6cf381b01ada
+location: src/lib/config.ts:930-937
+source_spec: `spec-dw-502-cli-status-config-load.md`
+severity: low
+reason: `src/lib/config.ts:930-937` says the cold-cache `{}` is safe because "The app's startup sequence calls `loadConfig()` before any LLM call". There is no startup hook: no `instrumentation.ts` anywhere in the repo, and neither `next.config.ts` nor `src/app/layout.tsx` calls `loadConfig`. Every surface warms at its own call site instead (`src/app/api/status/route.ts:6-8`, and now `src/cli.ts`). That comment is the premise DW-502's call site was written against; leaving it invites the next caller to make the same assumption.
+status: open
+
+### DW-551: `src/cli.ts` calls `main()` unconditionally at module load, so every test that imports it runs a CLI command and could exit the vitest worker.
+origin: spec-deferred 86487c972526
+location: src/cli.ts:703
+source_spec: `spec-dw-502-cli-status-config-load.md`
+severity: low
+reason: There is no `require.main`/`import.meta` guard — `main().catch(...)` runs at `src/cli.ts:703`. Under vitest, argv parses to `help`, so importing the module prints the whole HELP block into the run's stdout (visible in `cli.test.ts` and `cli-status-config-load.test.ts` output today). The catch arm ends in `process.exit(1)`, so an argv that parsed to any other command would abort the worker mid-collection. Pre-existing; DW-502 added a second static importer of the module rather than creating the hazard.
 status: open

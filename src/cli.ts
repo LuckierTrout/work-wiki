@@ -558,10 +558,33 @@ export async function runList(raw: boolean): Promise<void> {
 export async function runStatus(): Promise<void> {
   const { listWikiPages } = await import("./lib/wiki");
   const { listRawSources } = await import("./lib/raw");
-  const { getEffectiveSettings } = await import("./lib/config");
+  const { getEffectiveSettings, loadConfig } = await import("./lib/config");
 
   const pages = await listWikiPages();
   const sources = await listRawSources();
+
+  // WHY the store is loaded before it is read (DW-502).
+  //
+  // `getEffectiveSettings()` is synchronous: it reads the store through
+  // `loadConfigSync()`, which answers `{}` whenever the in-memory cache is not
+  // warm — and re-stamps that `{}` for another `CACHE_TTL_MS` (5 s,
+  // `src/lib/config.ts`) each time it does. So the hazard is "no async load
+  // inside the last 5 seconds", not something peculiar to fresh processes; a CLI
+  // process is simply the case that hits it EVERY time, since nothing ran ahead
+  // of this command to warm anything. Unwarmed, every ladder's store leg goes
+  // blind and `status` reports env-only settings: a provider the owner saved is
+  // invisible, and a stored `ollamaBaseUrl` the resolver refused has no refusal
+  // to report.
+  //
+  // WARMING AT THE CALL, which is what the web surface does too — there is no
+  // startup hook in this repo to warm anything globally. `src/app/api/status/
+  // route.ts` awaits `loadConfig()` immediately before `getProviderInfo()`, per
+  // request, for exactly this reason; this is the same move on the CLI side.
+  //
+  // No error handling belongs here: `loadConfig()` answers `{}` for a missing or
+  // unreadable config and never throws, so the four rows below print either way.
+  await loadConfig();
+
   const settings = getEffectiveSettings();
 
   console.log(`Wiki pages:\t${pages.length}`);
