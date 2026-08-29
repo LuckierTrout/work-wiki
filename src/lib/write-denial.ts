@@ -47,7 +47,13 @@
  *     so a caller who owned a job whose page they could not read reached the
  *     delete ACL holding it. The route now checks `readable.has(slug)` inside
  *     the ACL loop (after the "already gone" cleanup branch, so both selection
- *     paths are gated at once), and answers the same 404 selection sentence.
+ *     paths are gated at once), and records the same selection sentence against
+ *     that entry. Since DW-393 the not-found family is PER-ENTRY: the entry
+ *     lands in the response's `failed[]` with that one sentence while the rest
+ *     of the batch still deletes, rather than the whole request answering 404.
+ *     Nothing about the cloak changed — the sentence is identical for a missing
+ *     entry, a job that is not yours, and a job whose page you may not read —
+ *     only the blast radius of the refusal did.
  *
  * WHAT `patchMetadata` CONTRIBUTES. It is one of the eight read-cloaking sites
  * (its `else` throws `NOT_FOUND`). It used to be set apart by its `writeKind: "metadata"`,

@@ -3587,7 +3587,9 @@ source_spec: `spec-dw-121-230-269-270-authz-realm-parity-and-read-gates.md`
 location: src/app/api/ingest/history/route.ts
 severity: medium
 reason: The DW-270 gate keys on `listReadableWikiPages`, which filters the page INDEX, not a per-page read. `src/lib/lint.ts:94`'s `checkOrphanPages` exists because index/disk drift is a real state here. A done job whose page is in that state used to delete the page and clear the job record; it now answers 404 for the entire request, clearing nothing else selected alongside it. This is exact parity with the pre-existing `ingestIds` preflight, which has always behaved this way, so DW-270 inherited the behaviour rather than inventing it.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-decision-dw-393
+resolution-undo: 113ce535213b06bbb9fb350653e1916208c6c4796dc71d6a018aa1fe5248dc1e 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Per-entry results — Return per-entry outcomes from the bulk delete instead of an all-or-nothing 404, applying the same shape to the ingestIds preflight so the two stay in parity, and surface the partial result in the client.
 decision: 2026-08-26 Fix the drift instead — Keep all-or-nothing, but make the preflight fall back to a disk check when a slug is missing from the index so an orphan page is deletable, and leave the contract unchanged.
 
@@ -5325,4 +5327,12 @@ location: src/app/wiki/graph/__tests__/graph-escape-hatch-mounted.test.tsx
 source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
 severity: low
 reason: `graph-escape-hatch-mounted.test.tsx` stubs `useGraphSimulation`, and its `handleClick` is a fresh `vi.fn()` per render that no test dispatches a click at; no other suite mounts this page or exercises the hook. "Pointer is the remaining activation path" is the premise the DW-463 removal rests on, asserted in three comments and observed nowhere. A hoisted spy plus `fireEvent.click(theCanvas())` would make it a fact.
+status: open
+
+### DW-597: Thirteen dom suites under src/components/workbench/__tests__/ fail at window.localStorage.clear() on Node 26, unrelated to any code change.
+origin: spec-deferred 8c924f9045ee
+location: src/components/workbench/__tests__/ (13 files); vitest.setup.dom.ts
+source_spec: `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md`
+severity: medium
+reason: 233 tests across 13 files die with "TypeError: Cannot read properties of undefined (reading 'clear')". Reproduced on a stashed tree at 34f1863d, so it is not a branch regression. Root cause confirmed by probe: Node 26.8.1's built-in `localStorage` global shadows jsdom's own and is `undefined` unless the process is started with `--localstorage-file` ("ExperimentalWarning: localStorage is not available because --localstorage-file was not provided"). Every other dom suite passes. Needs a repo-wide decision (pin Node, pass the flag, or shim the global in vitest.setup.dom.ts), so it was not fixed inside this bundle.
 status: open

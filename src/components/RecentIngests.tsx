@@ -41,6 +41,14 @@ interface EmailJob {
 }
 
 /**
+ * How many DISTINCT failure reasons the partial-delete banner will state
+ * (DW-393). A batch is capped at 50 items and each can carry arbitrary server
+ * exception text, so the banner is bounded rather than concatenating whatever
+ * arrives; the count in front of the reasons stays exact either way.
+ */
+const MAX_FAILURE_REASONS = 3;
+
+/**
  * Why the bulk delete refuses, said out loud.
  *
  * CHARACTER-IDENTICAL to `READ_ONLY_REFUSAL.bulkPageDelete`, the sentence
@@ -298,7 +306,14 @@ export function RecentIngests() {
         deletedIngestIds?: string[];
         deletedJobIds?: string[];
         deletedPageSlugs?: string[];
-        failed?: { id: string; error: string }[];
+        // `kind` disambiguates the id (DW-393). Every id in `failed[]` is one
+        // this client submitted — the server walks `ingestIds` then `jobIds` to
+        // build it — but the two are SEPARATE namespaces, so the same literal
+        // string can appear in both arrays and the selection keys they map to
+        // (`ingest:` vs `job:`) differ. Guessing from `ingestIds.includes(id)`
+        // resolves such a collision to `ingest` every time; `kind` says which
+        // row the refusal actually belongs to.
+        failed?: { id: string; kind?: "ingest" | "job"; error: string }[];
       };
       if (!response.ok) {
         throw new Error(data.error || `Delete failed (${response.status})`);
@@ -317,28 +332,62 @@ export function RecentIngests() {
       );
       forgetRecentJobs([...deletedJobIds]);
 
-      const failedIds = new Set((data.failed ?? []).map((failure) => failure.id));
+      // Keep the failures SELECTED so the owner can see what survived and retry
+      // or deselect it. `kind` is authoritative when the server sent it; the
+      // `ingestIds.includes(id)` fallback is what older answers (no `kind`)
+      // still resolve through.
+      const failures = data.failed ?? [];
       setSelected(
         new Set(
-          [...failedIds].map((id) =>
-            ingestIds.includes(id) ? `ingest:${id}` : `job:${id}`,
-          ),
+          failures.map((failure) => {
+            const kind =
+              failure.kind ??
+              (ingestIds.includes(failure.id) ? "ingest" : "job");
+            return `${kind}:${failure.id}`;
+          }),
         ),
       );
 
       const removedCount = deletedIngestIds.size + deletedJobIds.size;
       const pageCount = data.deletedPageSlugs?.length ?? 0;
-      if ((data.failed?.length ?? 0) > 0) {
+      if (failures.length > 0) {
+        // Every DISTINCT reason, not blindly the first: a partial result can
+        // mix "not found" with a real delete error, and showing only one of
+        // them hides the half the owner can actually act on. BOUNDED, because
+        // up to 50 items can each carry arbitrary server exception text — and
+        // empty reasons are dropped rather than rendered as "undefined".
+        const reasons = [
+          ...new Set(failures.map((failure) => failure.error).filter(Boolean)),
+        ].slice(0, MAX_FAILURE_REASONS);
+        const detail = reasons.length > 0 ? ` ${reasons.join(" ")}` : "";
         setDeleteError(
-          `${data.failed!.length} selected item${data.failed!.length === 1 ? "" : "s"} could not be deleted. ${data.failed![0].error}`,
+          `${failures.length} selected item${failures.length === 1 ? "" : "s"} could not be deleted.${detail}`,
         );
       } else {
         setSelectionMode(false);
         setSelected(new Set());
       }
-      setDeleteNotice(
-        `${removedCount} ingest record${removedCount === 1 ? "" : "s"} cleared${pageCount > 0 ? ` · ${pageCount} wiki page${pageCount === 1 ? "" : "s"} deleted` : ""}. Raw sources were retained.`,
-      );
+      // Composed from the NON-ZERO halves only. A batch that failed outright
+      // still answers 200 with an empty `deletedIngestIds` (DW-393), and
+      // "0 ingest records cleared" beside the error reads as a second,
+      // contradictory outcome rather than as a report of the same one — so an
+      // all-zero result says nothing at all, and a result that cleared pages
+      // but no records (a job whose `deleteIngestJob` threw after its page
+      // went) reports only the half that happened.
+      const cleared: string[] = [];
+      if (removedCount > 0) {
+        cleared.push(
+          `${removedCount} ingest record${removedCount === 1 ? "" : "s"} cleared`,
+        );
+      }
+      if (pageCount > 0) {
+        cleared.push(
+          `${pageCount} wiki page${pageCount === 1 ? "" : "s"} deleted`,
+        );
+      }
+      if (cleared.length > 0) {
+        setDeleteNotice(`${cleared.join(" · ")}. Raw sources were retained.`);
+      }
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : "Couldn’t delete the selected ingests.");
     } finally {
@@ -519,17 +568,31 @@ export function RecentIngests() {
         </div>
       )}
       {(deleteNotice || deleteError) && (
-        <p
+        // BOTH sentences, not whichever one won (DW-393). A partial delete sets
+        // the error AND the notice, and they report different halves of the
+        // same outcome — rendering `deleteError || deleteNotice` meant an owner
+        // who cleared nine rows with one refused saw only the refusal and no
+        // confirmation that the other nine (and their pages) are gone. One
+        // live region so the pair is announced together; the refusal leads,
+        // and the colours keep them distinguishable.
+        <div
           aria-live="polite"
-          style={{
-            color: deleteError ? "var(--rust)" : "var(--muted)",
-            fontSize: 12,
-            lineHeight: 1.45,
-            margin: "0 0 12px",
-          }}
+          style={{ fontSize: 12, lineHeight: 1.45, margin: "0 0 12px" }}
         >
-          {deleteError || deleteNotice}
-        </p>
+          {deleteError && (
+            <p style={{ color: "var(--rust)", margin: 0 }}>{deleteError}</p>
+          )}
+          {deleteNotice && (
+            <p
+              style={{
+                color: "var(--muted)",
+                margin: deleteError ? "4px 0 0" : 0,
+              }}
+            >
+              {deleteNotice}
+            </p>
+          )}
+        </div>
       )}
       <ul className="stack" style={{ gap: 9, listStyle: "none", margin: 0, padding: 0 }}>
         {emailJobs.map((job) => {

@@ -69,6 +69,15 @@ const mockedDeletePage = vi.mocked(deleteWikiPage);
 const mockedGetJob = vi.mocked(getIngestJob);
 const mockedDeleteJob = vi.mocked(deleteIngestJob);
 
+/**
+ * The route's one not-found sentence, restated here as a LITERAL rather than
+ * imported: the route does not export it, and pinning a copy is what makes a
+ * reworded refusal fail this suite instead of silently agreeing with itself.
+ * Every not-found reason — missing ledger entry, unreadable page, job that is
+ * not yours, job whose page you may not read — must answer exactly this.
+ */
+const SELECTION_NOT_FOUND = "One or more selected ingests were not found.";
+
 const ledgerEntry = (id: string, slug: string) => ({
   ingest_id: id,
   source_type: "url",
@@ -157,15 +166,269 @@ describe("DELETE /api/ingest/history", () => {
     expect((await response.json()).error).toMatch(/select at least one/i);
   });
 
-  it("cloaks ledger entries the caller cannot read", async () => {
+  it("cloaks ledger entries the caller cannot read, per entry", async () => {
+    // DW-393 turned this refusal from a whole-batch 404 into a row in
+    // `failed[]`. The cloak is unchanged — same sentence, no mutation — but the
+    // batch evaluation succeeded, so the transport says 200.
     mockedListReadable.mockResolvedValue([]);
 
     const response = await DELETE(request({ ingestIds: ["ing-a"] }));
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.failed).toEqual([
+      { id: "ing-a", kind: "ingest", error: SELECTION_NOT_FOUND },
+    ]);
+    expect(data.deletedIngestIds).toEqual([]);
     expect(mockedDeletePage).not.toHaveBeenCalled();
   });
 
-  it("rejects active jobs because clearing status would not cancel their work", async () => {
+  it("refuses an unknown ingest id per entry rather than vetoing the batch", async () => {
+    const response = await DELETE(request({ ingestIds: ["ing-nope"] }));
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.failed).toEqual([
+      { id: "ing-nope", kind: "ingest", error: SELECTION_NOT_FOUND },
+    ]);
+    expect(data.deletedIngestIds).toEqual([]);
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  it("deletes the readable half of a batch that also names an orphan page (DW-393)", async () => {
+    // THE BUG DW-393 FIXED, driven end to end. `page-orphan` is on disk but
+    // absent from the page index — the drift `checkOrphanPages` exists for — so
+    // it can never be readable, and under the old all-or-nothing 404 its ledger
+    // row was permanently undeletable AND vetoed everything selected with it.
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-ok", "page-ok"),
+      ledgerEntry("ing-orphan", "page-orphan"),
+    ]);
+    mockedListReadable.mockResolvedValue([
+      { slug: "page-ok", title: "Page OK", summary: "" },
+    ]);
+    mockedReadPage.mockImplementation(async (slug) => ({
+      slug,
+      title: slug,
+      content: `---\nowner: owner\nvisibility: private\n---\n# ${slug}`,
+      path: `/test/wiki/${slug}.md`,
+      body: `# ${slug}`,
+      frontmatter: { owner: "owner", visibility: "private" },
+    }));
+    mockedDeletePage.mockResolvedValue({
+      slug: "page-ok",
+      removedFromIndex: true,
+      strippedBacklinksFrom: [],
+    });
+
+    const response = await DELETE(
+      request({ ingestIds: ["ing-ok", "ing-orphan"] }),
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    expect(mockedDeletePage).toHaveBeenCalledTimes(1);
+    expect(mockedDeletePage).toHaveBeenCalledWith("page-ok", "owner");
+    expect(data.deletedIngestIds).toEqual(["ing-ok"]);
+    expect(data.deletedPageSlugs).toEqual(["page-ok"]);
+    expect(data.failed).toEqual([
+      { id: "ing-orphan", kind: "ingest", error: SELECTION_NOT_FOUND },
+    ]);
+    // The refused entry mutated NOTHING: its page was never even read.
+    expect(mockedReadPage).not.toHaveBeenCalledWith("page-orphan");
+  });
+
+  it("refuses a ledger entry with no primary_slug, per entry", async () => {
+    // The third not-found reason enumerated in the route's doc comment and in
+    // the spec's Always clause. A slugless entry names no page, so there is
+    // nothing to read or delete for it — and it must answer the SAME sentence
+    // as a missing entry and an unreadable one, or the refusal becomes an
+    // oracle for which of the three went wrong.
+    mockedReadLedger.mockResolvedValue([
+      { ...ledgerEntry("ing-slugless", "unused"), primary_slug: "" },
+    ]);
+    mockedListReadable.mockResolvedValue([]);
+
+    const response = await DELETE(request({ ingestIds: ["ing-slugless"] }));
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.failed).toEqual([
+      { id: "ing-slugless", kind: "ingest", error: SELECTION_NOT_FOUND },
+    ]);
+    expect(data.deletedIngestIds).toEqual([]);
+    expect(mockedReadPage).not.toHaveBeenCalled();
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  it("never reports a refused ingest id as deleted, even when a job clears its slug", async () => {
+    // THE DOUBLE-REPORT. `deletedIngestIds` is derived from the slugs that did
+    // NOT fail, and an already-gone page never fails — it is skipped by
+    // `if (!page) continue`. So when a JOB contributes the very slug a refused
+    // `ingestIds` entry also names, that refused id reached `removedSlugs`
+    // through the job's back door and the answer claimed it was both deleted
+    // and refused. Only reachable since DW-393 made the refusal per-entry;
+    // before, this batch was a flat 404.
+    mockedReadLedger.mockResolvedValue([ledgerEntry("ing-x", "shared-slug")]);
+    mockedListReadable.mockResolvedValue([]);
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-j",
+      owner: "owner",
+      status: "done",
+      slug: "shared-slug",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+    mockedReadPage.mockResolvedValue(null);
+
+    const response = await DELETE(
+      request({ ingestIds: ["ing-x"], jobIds: ["job-j"] }),
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    expect(data.failed).toEqual([
+      { id: "ing-x", kind: "ingest", error: SELECTION_NOT_FOUND },
+    ]);
+    // The refused id appears in the answer EXACTLY once, as a failure.
+    expect(data.deletedIngestIds).not.toContain("ing-x");
+    // The job's own already-gone cleanup still runs — that is the behaviour the
+    // fix must not trade away to close the double-report.
+    expect(data.deletedJobIds).toEqual(["job-j"]);
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  it("attributes a deleteWikiPage failure to its own entry and keeps the rest", async () => {
+    // The per-slug failure path, which nothing else in this suite drives: every
+    // other case resolves `deleteWikiPage`. Without this, the two attribution
+    // lines that map `failedSlugs` back onto the submitted ids could be deleted
+    // outright and the suite would stay green — while the shipped route told an
+    // owner "2 ingest records cleared" with the page still on disk.
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-ok", "page-ok"),
+      ledgerEntry("ing-bad", "page-bad"),
+    ]);
+    mockedListReadable.mockResolvedValue([
+      { slug: "page-ok", title: "Page OK", summary: "" },
+      { slug: "page-bad", title: "Page Bad", summary: "" },
+    ]);
+    mockedReadPage.mockImplementation(async (slug) => ({
+      slug,
+      title: slug,
+      content: `---\nowner: owner\nvisibility: private\n---\n# ${slug}`,
+      path: `/test/wiki/${slug}.md`,
+      body: `# ${slug}`,
+      frontmatter: { owner: "owner", visibility: "private" },
+    }));
+    mockedDeletePage.mockImplementation(async (slug) => {
+      if (slug === "page-bad") throw new Error("disk write failed");
+      return { slug, removedFromIndex: true, strippedBacklinksFrom: [] };
+    });
+
+    const response = await DELETE(
+      request({ ingestIds: ["ing-ok", "ing-bad"] }),
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    expect(data.deletedPageSlugs).toEqual(["page-ok"]);
+    expect(data.deletedIngestIds).toEqual(["ing-ok"]);
+    expect(data.deletedIngestIds).not.toContain("ing-bad");
+    expect(data.failed).toEqual([
+      { id: "ing-bad", kind: "ingest", error: "disk write failed" },
+    ]);
+  });
+
+  it("deletes the deletable half of a mixed jobIds batch (DW-393)", async () => {
+    // The path DW-393 was actually filed about. `ingestIds` are already
+    // readability-filtered by the history GET, so the UI rarely offers one that
+    // the preflight would refuse — but job records are NOT filtered, so a
+    // selection mixing a deletable job with one the caller does not own is the
+    // shape an owner really hits.
+    const actualAuthz =
+      await vi.importActual<typeof import("@/lib/authz")>("@/lib/authz");
+    mockedCanWrite.mockImplementation(actualAuthz.canWriteFrontmatter);
+    mockedListReadable.mockResolvedValue([
+      { slug: "owner-note", title: "Owner Note", summary: "" },
+    ]);
+    mockedGetJob.mockImplementation(async (jobId) =>
+      jobId === "job-mine"
+        ? {
+            jobId,
+            owner: "owner",
+            status: "done",
+            slug: "owner-note",
+            createdAt: "2026-08-06T10:00:00.000Z",
+            updatedAt: "2026-08-06T10:01:00.000Z",
+          }
+        : {
+            jobId,
+            owner: "bob",
+            status: "done",
+            slug: "bob-secret",
+            createdAt: "2026-08-06T10:00:00.000Z",
+            updatedAt: "2026-08-06T10:01:00.000Z",
+          },
+    );
+    mockedReadPage.mockImplementation(async (slug) => ({
+      slug,
+      title: slug,
+      content: `---\nowner: owner\nvisibility: private\n---\n# ${slug}`,
+      path: `/test/wiki/${slug}.md`,
+      body: `# ${slug}`,
+      frontmatter: { owner: "owner", visibility: "private" },
+    }));
+    mockedDeletePage.mockResolvedValue({
+      slug: "owner-note",
+      removedFromIndex: true,
+      strippedBacklinksFrom: [],
+    });
+
+    const response = await DELETE(
+      request({ jobIds: ["job-bob", "job-mine"] }),
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json();
+
+    // The deletable job went all the way through, page and record.
+    expect(mockedDeletePage).toHaveBeenCalledTimes(1);
+    expect(mockedDeletePage).toHaveBeenCalledWith("owner-note", "owner");
+    expect(mockedDeleteJob).toHaveBeenCalledTimes(1);
+    expect(mockedDeleteJob).toHaveBeenCalledWith("job-mine", "owner");
+    expect(data.deletedJobIds).toEqual(["job-mine"]);
+    // Bob's job is only ever a failure row, in SUBMISSION order.
+    expect(data.failed).toEqual([
+      { id: "job-bob", kind: "job", error: SELECTION_NOT_FOUND },
+    ]);
+    expect(mockedReadPage).not.toHaveBeenCalledWith("bob-secret");
+  });
+
+  it("refuses a job that is not the caller's per entry, without deleting it", async () => {
+    mockedGetJob.mockResolvedValue({
+      jobId: "job-bob",
+      owner: "bob",
+      status: "done",
+      slug: "bob-note",
+      createdAt: "2026-08-06T10:00:00.000Z",
+      updatedAt: "2026-08-06T10:01:00.000Z",
+    });
+
+    const response = await DELETE(request({ jobIds: ["job-bob"] }));
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.failed).toEqual([
+      { id: "job-bob", kind: "job", error: SELECTION_NOT_FOUND },
+    ]);
+    expect(data.deletedJobIds).toEqual([]);
+    expect(mockedDeleteJob).not.toHaveBeenCalled();
+    // Bob's page was never read, let alone deleted — the job record is the
+    // only thing this refusal ever touched.
+    expect(mockedReadPage).not.toHaveBeenCalledWith("bob-note");
+    expect(mockedDeletePage).not.toHaveBeenCalled();
+  });
+
+  it("rejects active jobs and refuses the WHOLE batch with them", async () => {
+    // Same pinning as the 403 above, on the other refusal DW-393 left alone:
+    // `ing-a` is deletable and is submitted alongside the processing job, and
+    // it must survive untouched. Clearing an active job's record would not
+    // cancel its work, so the batch is refused outright.
     mockedGetJob.mockResolvedValue({
       jobId: "job-active",
       owner: "owner",
@@ -174,16 +437,44 @@ describe("DELETE /api/ingest/history", () => {
       updatedAt: "2026-08-06T10:01:00.000Z",
     });
 
-    const response = await DELETE(request({ jobIds: ["job-active"] }));
+    const response = await DELETE(
+      request({ ingestIds: ["ing-a"], jobIds: ["job-active"] }),
+    );
     expect(response.status).toBe(409);
     expect(mockedDeleteJob).not.toHaveBeenCalled();
+    expect(mockedDeletePage).not.toHaveBeenCalled();
   });
 
-  it("preflights page delete permission before mutating the batch", async () => {
+  it("preflights page delete permission and refuses the WHOLE batch", async () => {
+    // TWO items, one of them perfectly deletable. A singleton could not tell a
+    // whole-batch 403 apart from a per-entry one, so this is what pins the half
+    // of DW-393 that did NOT change: the delete-ACL denial is about an item the
+    // caller can see and deselect, so it still vetoes everything beside it.
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-a", "page-a"),
+      ledgerEntry("ing-denied", "page-denied"),
+    ]);
+    mockedListReadable.mockResolvedValue([
+      { slug: "page-a", title: "Page A", summary: "" },
+      { slug: "page-denied", title: "Page Denied", summary: "" },
+    ]);
+    mockedReadPage.mockImplementation(async (slug) => ({
+      slug,
+      title: slug,
+      content: `---\nowner: owner\nvisibility: private\n---\n# ${slug}`,
+      path: `/test/wiki/${slug}.md`,
+      body: `# ${slug}`,
+      frontmatter: { owner: "owner", visibility: "private" },
+    }));
     mockedCanWrite.mockReturnValue(false);
 
-    const response = await DELETE(request({ ingestIds: ["ing-a"] }));
+    const response = await DELETE(
+      request({ ingestIds: ["ing-a", "ing-denied"] }),
+    );
     expect(response.status).toBe(403);
+    // Not even the item that would have succeeded — the ACL loop runs to
+    // completion before the delete loop starts, which is what makes the refusal
+    // atomic rather than half-applied.
     expect(mockedDeletePage).not.toHaveBeenCalled();
   });
 
@@ -195,17 +486,22 @@ describe("DELETE /api/ingest/history", () => {
    * makes "this page is public knowledge" provable. This door was the last one
    * cloaked on only ONE of its two selection paths:
    *
-   *   - `ingestIds` are preflighted against `listReadableWikiPages` and 404 for
-   *     a page the caller cannot read, so they arrive readable.
+   *   - `ingestIds` are preflighted against `listReadableWikiPages` and are
+   *     refused per entry for a page the caller cannot read, so the ones that
+   *     reach the ACL arrive readable.
    *   - `jobIds` pass only `job.owner !== principal.handle` — a check on the
    *     JOB record — and the job's `slug` page was never read-gated. A caller
    *     who owned a job whose page they may not read reached the delete ACL
    *     holding an unreadable page.
    *
    * DW-270 closed that with a `readable.has(slug)` check inside the ACL loop,
-   * so the second case below is now a 404 rather than a 403 whose silence had
-   * to be argued from the resolver. The realm explanation is still earned per
-   * page from the predicate rather than assumed from the fact of a refusal.
+   * so the second case below answers the selection sentence rather than a 403
+   * whose silence had to be argued from the resolver. DW-393 then made that
+   * refusal PER-ENTRY — a row in `failed[]` on a 200 instead of a whole-batch
+   * 404 — which changes the transport and nothing about the cloak: same
+   * sentence, same silence, still no mutation. The realm explanation is still
+   * earned per page from the predicate rather than assumed from the fact of a
+   * refusal.
    */
   it("explains the realm when a selected page really is public knowledge", async () => {
     mockedCanWrite.mockReturnValue(false);
@@ -223,7 +519,7 @@ describe("DELETE /api/ingest/history", () => {
     expect((await response.json()).error).toBe(WRITE_DENIAL_REALM.bulkDelete);
   });
 
-  it("404s a jobIds selection whose page the caller cannot read (DW-270)", async () => {
+  it("cloaks a jobIds selection whose page the caller cannot read (DW-270)", async () => {
     // THE FORMER LEAK PATH, driven end to end.
     //
     // `owner` owns job-a, so it clears the only gate the `jobIds` path has —
@@ -231,8 +527,10 @@ describe("DELETE /api/ingest/history", () => {
     // `listReadableWikiPages`. Before DW-270 nothing read-gated it and the
     // route answered a 403 whose silence depended entirely on the resolver
     // picking the generic sentence. Now the page never reaches the ACL: the
-    // answer is the same 404 selection sentence the two preflights use, so an
-    // unreadable page looks like an unselectable one.
+    // answer is the same selection sentence the two preflights use, so an
+    // unreadable page looks like an unselectable one. Since DW-393 it arrives
+    // as this job's own row in `failed[]` on a 200 — the sentence and the
+    // silence are what this case pins, not the status.
     //
     // The real `canWriteFrontmatter` is restored for this case (the shared stub
     // is what makes the other cases synthetic), so a regression that dropped
@@ -259,9 +557,14 @@ describe("DELETE /api/ingest/history", () => {
     });
 
     const response = await DELETE(request({ jobIds: ["job-a"] }));
-    expect(response.status).toBe(404);
-    const { error } = await response.json();
-    expect(error).toBe("One or more selected ingests were not found.");
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.failed).toHaveLength(1);
+    const [failure] = data.failed as { id: string; kind: string; error: string }[];
+    expect(failure.id).toBe("job-a");
+    expect(failure.kind).toBe("job");
+    const error = failure.error;
+    expect(error).toBe(SELECTION_NOT_FOUND);
     // Not a permission sentence, and not a description of the page: no realm,
     // no slug, nothing that says the page exists.
     expect(error).not.toBe(WRITE_DENIAL.bulkDelete);
@@ -269,6 +572,10 @@ describe("DELETE /api/ingest/history", () => {
     expect(error).not.toMatch(/agent-maintained/i);
     expect(error).not.toMatch(/permission/i);
     expect(error).not.toMatch(/bob-secret/);
+    // The id echoed back is the caller's OWN submitted job id, and it is the
+    // only id in the answer — nothing about Bob's page rides along.
+    expect(JSON.stringify(data)).not.toMatch(/bob-secret/);
+    expect(data.deletedJobIds).toEqual([]);
     expect(mockedDeletePage).not.toHaveBeenCalled();
     expect(mockedDeleteJob).not.toHaveBeenCalled();
   });
@@ -315,8 +622,9 @@ describe("DELETE /api/ingest/history", () => {
     // The reason the read gate lives INSIDE the ACL loop, after
     // `if (!page) continue`, rather than in the `jobIds` preflight. A done job
     // whose page has since been deleted is not in `listReadableWikiPages` —
-    // there is no page to read — so a flat gate up front would 404 exactly the
-    // records this route exists to clean up.
+    // there is no page to read — so a flat gate up front would refuse exactly
+    // the records this route exists to clean up, dropping each of them into
+    // `failed[]` forever instead of clearing them.
     mockedListReadable.mockResolvedValue([]);
     mockedGetJob.mockResolvedValue({
       jobId: "job-gone",

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readLedger } from "@/lib/ingest";
+import { readLedger, type LedgerEntry } from "@/lib/ingest";
 import { getPrincipal } from "@/lib/auth";
 import {
   deleteWikiPage,
@@ -22,15 +22,35 @@ const MAX_BULK_DELETE = 50;
 
 /**
  * The one sentence this route answers for "that is not a selection you can
- * make" — a missing ledger entry, a job that is not yours, and (since DW-270) a
- * job whose page you may not read.
+ * make" — a missing ledger entry, an entry with no `primary_slug`, an entry
+ * whose page is outside `listReadableWikiPages`, a job that does not exist, a
+ * job that is not yours, and (since DW-270) a job whose page you may not read.
  *
- * ONE CONSTANT BECAUSE THE THREE MUST BE INDISTINGUISHABLE. The read gate's
- * whole job is to make an unreadable page look like an unselectable one; three
- * hand-typed literals could drift a word apart and turn the 404 back into the
- * existence oracle it exists to prevent. Deliberately vague about WHICH
- * selection failed and why — naming the entry would answer the question the
- * cloak is refusing.
+ * ONE CONSTANT BECAUSE ALL OF THEM MUST BE INDISTINGUISHABLE. The read gate's
+ * whole job is to make an unreadable page look like an unselectable one;
+ * hand-typed literals could drift a word apart and turn the refusal back into
+ * the existence oracle it exists to prevent. Deliberately vague about WHY a
+ * selection failed — naming the reason would answer the question the cloak is
+ * refusing.
+ *
+ * PER-ENTRY SINCE DW-393, NOT A WHOLE-BATCH 404. Each of these reasons is
+ * recorded against the offending id in the response's `failed[]` array and the
+ * rest of the batch still deletes; the handler answers 200 because the batch
+ * EVALUATION succeeded, which is the same shape the route already used when
+ * `deleteWikiPage` threw for one slug. An all-or-nothing 404 let a single
+ * orphan page — on disk but absent from the page index — make its ledger row
+ * permanently undeletable AND veto every other selected item.
+ *
+ * ECHOING THE ID BACK IS NOT A LEAK. The id in `failed[]` is one the CALLER
+ * just submitted, so it tells them nothing they did not already have.
+ * Distinguishing WHY it failed is the leak, and that is what this single
+ * sentence prevents.
+ *
+ * THE OTHER TWO REFUSALS STAY WHOLE-BATCH. The delete-ACL 403 (which may name a
+ * readable page's realm) and the queued/processing 409 are stable, actionable
+ * refusals about items the caller can SEE and deselect, and both already fire
+ * before any mutation — so atomicity costs them nothing. Only the not-found
+ * family, which is exactly the family a caller cannot act on, became per-entry.
  */
 const SELECTION_NOT_FOUND = "One or more selected ingests were not found.";
 
@@ -182,35 +202,41 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    // Preflight the full batch before mutating anything: every ledger entry must
-    // be visible to the caller, every job must be theirs + terminal, and every
-    // existing page must pass the normal per-page delete ACL.
+    // Preflight the full batch before mutating anything: every job must be
+    // theirs + terminal, and every existing page must pass the normal per-page
+    // delete ACL. A selection the caller cannot make at all is DROPPED from the
+    // batch here (DW-393) and reported against its own id in `failed[]` below,
+    // so one unselectable item no longer vetoes the ones beside it.
     const ledger = await readLedger();
     const readable = new Set(
       (await listReadableWikiPages(principal)).map((page) => page.slug),
     );
     const ledgerById = new Map(ledger.map((entry) => [entry.ingest_id, entry]));
-    const selectedEntries = ingestIds.map((id) => ledgerById.get(id));
-    if (
-      selectedEntries.some(
-        (entry) => !entry || !entry.primary_slug || !readable.has(entry.primary_slug),
-      )
-    ) {
-      return NextResponse.json(
-        { error: SELECTION_NOT_FOUND },
-        { status: 404 },
-      );
+    const refusedIngestIds = new Set<string>();
+    const selectedEntries: LedgerEntry[] = [];
+    for (const id of ingestIds) {
+      const entry = ledgerById.get(id);
+      if (!entry || !entry.primary_slug || !readable.has(entry.primary_slug)) {
+        // Absent, slugless, or outside the page index (the orphan case) — one
+        // sentence for all three, and its slug never reaches `slugs`, so
+        // nothing is read, deleted, or attributed for it.
+        refusedIngestIds.add(id);
+        continue;
+      }
+      selectedEntries.push(entry);
     }
 
+    const refusedJobIds = new Set<string>();
     const selectedJobs: IngestJob[] = [];
     for (const jobId of jobIds) {
       const job = await getIngestJob(jobId);
       if (!job || job.owner !== principal.handle) {
-        return NextResponse.json(
-          { error: SELECTION_NOT_FOUND },
-          { status: 404 },
-        );
+        refusedJobIds.add(jobId);
+        continue;
       }
+      // STILL WHOLE-BATCH. A queued or processing job is a selection the caller
+      // can see and deselect, and clearing its record would not cancel the work
+      // — so the batch is refused outright rather than half-applied.
       if (job.status !== "done" && job.status !== "failed") {
         return NextResponse.json(
           { error: "Queued or processing ingests cannot be deleted." },
@@ -221,11 +247,17 @@ export async function DELETE(request: NextRequest) {
     }
 
     const slugs = new Set<string>();
-    for (const entry of selectedEntries) slugs.add(entry!.primary_slug);
+    for (const entry of selectedEntries) slugs.add(entry.primary_slug);
     for (const job of selectedJobs) {
       if (job.status === "done" && job.slug) slugs.add(job.slug);
     }
 
+    // Hoisted above the ACL loop (DW-393) because the read gate now RECORDS a
+    // per-slug failure here instead of returning. Everything downstream —
+    // `removedSlugs`, `deletedIngestIds`, the delete-loop skip and the
+    // per-entry attribution — already reads this map, so the gate needs no new
+    // machinery to keep an unreadable page out of every one of them.
+    const failedSlugs = new Map<string, string>();
     const existingSlugs = new Set<string>();
     for (const slug of slugs) {
       const page = await readWikiPageWithFrontmatter(slug);
@@ -233,8 +265,9 @@ export async function DELETE(request: NextRequest) {
       // THE READ CLOAK, and it lands HERE for two reasons (DW-270).
       //
       // WHY IT WAS NEEDED. `ingestIds` were already safe: the preflight above
-      // 404s any entry whose page is outside `listReadableWikiPages`. `jobIds`
-      // were not — the only gate they pass is `job.owner !== principal.handle`,
+      // refuses any entry whose page is outside `listReadableWikiPages`.
+      // `jobIds` were not — the only gate they pass is
+      // `job.owner !== principal.handle`,
       // a check on the JOB record, so a caller who owned a job whose page they
       // may not read reached the ACL below holding that page. This route was
       // the one deny site in the app that could describe a page the caller was
@@ -247,27 +280,29 @@ export async function DELETE(request: NextRequest) {
       // AFTER `if (!page) continue`, which preserves the already-gone cleanup
       // that only the `jobIds` path exercises: a done job whose page has since
       // been deleted is not readable, and a flat gate up in the preflight would
-      // 404 exactly those records instead of clearing them.
+      // refuse exactly those records instead of clearing them.
       //
       // The sentence is `SELECTION_NOT_FOUND`, the same constant both preflights
-      // answer — an unreadable page must look like an unselectable one, not like
-      // a permission the caller lacks.
+      // use — an unreadable page must look like an unselectable one, not like
+      // a permission the caller lacks. Since DW-393 it is RECORDED against this
+      // slug rather than returned: the job holding it lands in `failed[]` with
+      // that one sentence, its page is never deleted, its job record is never
+      // cleared, and the rest of the batch proceeds.
       //
       // WHAT THIS ORDERING KNOWINGLY LEAVES BEHIND. Because the gate sits after
       // `if (!page) continue`, a `jobIds` selection whose page EXISTS but is
-      // unreadable answers 404, while one whose page is already GONE answers
-      // 200 — so a caller who owns the job can still tell those two apart. That
-      // is a deliberate trade, not an oversight: the only way to close it is to
-      // gate before the cleanup branch, which would 404 every already-gone
-      // record instead of clearing it and break the one repair this route
-      // exists to perform. The residue is narrow — it leaks "a page still
-      // exists at this slug" to someone who already holds a job record naming
-      // that slug, and nothing about the page's owner, realm or contents.
+      // unreadable lands in `failed[]`, while one whose page is already GONE is
+      // cleared — so a caller who owns the job can still tell those two apart.
+      // That is a deliberate trade, not an oversight: the only way to close it
+      // is to gate before the cleanup branch, which would refuse every
+      // already-gone record instead of clearing it and break the one repair
+      // this route exists to perform. The residue is narrow — it leaks "a page
+      // still exists at this slug" to someone who already holds a job record
+      // naming that slug, and nothing about the page's owner, realm or
+      // contents.
       if (!readable.has(slug)) {
-        return NextResponse.json(
-          { error: SELECTION_NOT_FOUND },
-          { status: 404 },
-        );
+        failedSlugs.set(slug, SELECTION_NOT_FOUND);
+        continue;
       }
       if (!canWriteFrontmatter(page.frontmatter, principal, "delete")) {
         // Read-cloaked above, so the resolver may name this page's realm: a
@@ -285,7 +320,6 @@ export async function DELETE(request: NextRequest) {
     }
 
     const deletedPageSlugs: string[] = [];
-    const failedSlugs = new Map<string, string>();
     for (const slug of slugs) {
       if (!existingSlugs.has(slug)) continue;
       try {
@@ -304,29 +338,62 @@ export async function DELETE(request: NextRequest) {
     // Return every ledger id for a successfully removed page, not just the ids
     // submitted. Multiple dedup ingests can point at the same canonical page;
     // the UI must remove all now-stale rows for that slug.
+    //
+    // MINUS THE ONES WE REFUSED (DW-393). `removedSlugs` is `slugs` less the
+    // FAILED ones, and a slug whose page was already gone never enters
+    // `failedSlugs` — so if a JOB in the same batch contributes a slug that a
+    // refused `ingestIds` entry also names, that refused id would otherwise be
+    // reported as deleted AND as failed in the same answer. Only the ids the
+    // caller submitted and we refused are subtracted, so the "other ledger rows
+    // for the same slug" sweep above survives intact.
     const deletedIngestIds = ledger
       .filter((entry) => removedSlugs.has(entry.primary_slug))
-      .map((entry) => entry.ingest_id);
+      .map((entry) => entry.ingest_id)
+      .filter((id) => !refusedIngestIds.has(id));
+
+    // `failed[]` is walked in SUBMISSION order — every `ingestIds` entry, then
+    // every `jobIds` entry — over the ids the caller actually sent, so a
+    // refused id (dropped from `selectedEntries`/`selectedJobs` in the
+    // preflight) still gets its own row rather than vanishing from the answer.
+    const entriesByIngestId = new Map(
+      selectedEntries.map((entry) => [entry.ingest_id, entry]),
+    );
+    const jobsById = new Map(selectedJobs.map((job) => [job.jobId, job]));
 
     const deletedJobIds: string[] = [];
     const failed: { id: string; kind: "ingest" | "job"; error: string }[] = [];
-    for (const entry of selectedEntries) {
-      const failure = failedSlugs.get(entry!.primary_slug);
-      if (failure) failed.push({ id: entry!.ingest_id, kind: "ingest", error: failure });
+    for (const id of ingestIds) {
+      if (refusedIngestIds.has(id)) {
+        failed.push({ id, kind: "ingest", error: SELECTION_NOT_FOUND });
+        continue;
+      }
+      const entry = entriesByIngestId.get(id);
+      if (!entry) continue;
+      const failure = failedSlugs.get(entry.primary_slug);
+      if (failure) failed.push({ id, kind: "ingest", error: failure });
     }
-    for (const job of selectedJobs) {
+    for (const jobId of jobIds) {
+      if (refusedJobIds.has(jobId)) {
+        failed.push({ id: jobId, kind: "job", error: SELECTION_NOT_FOUND });
+        continue;
+      }
+      const job = jobsById.get(jobId);
+      if (!job) continue;
+      // Covers both a `deleteWikiPage` throw and the read gate above: either
+      // way the page is still there, so the job record that points at it must
+      // stay too.
       const failure = job.slug ? failedSlugs.get(job.slug) : undefined;
       if (failure) {
-        failed.push({ id: job.jobId, kind: "job", error: failure });
+        failed.push({ id: jobId, kind: "job", error: failure });
         continue;
       }
       try {
-        await deleteIngestJob(job.jobId, principal.handle);
-        deletedJobIds.push(job.jobId);
+        await deleteIngestJob(jobId, principal.handle);
+        deletedJobIds.push(jobId);
       } catch (error) {
         const message = getErrorMessage(error);
-        failed.push({ id: job.jobId, kind: "job", error: message });
-        logger.error("ingest", `Bulk ingest job delete failed for ${job.jobId}`, error);
+        failed.push({ id: jobId, kind: "job", error: message });
+        logger.error("ingest", `Bulk ingest job delete failed for ${jobId}`, error);
       }
     }
 
