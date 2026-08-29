@@ -8,7 +8,7 @@
  * observe the thing that matters: that a route refuses before it reads.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/owner-route", () => {
   const requireOwnerOrServicePrincipal = vi.fn();
@@ -91,6 +91,8 @@ import { POST as postRescan } from "@/app/api/v1/projects/[wikiId]/sources/resca
 import { POST as postSearch } from "@/app/api/v1/projects/[wikiId]/search/route";
 
 import { isReadOnly } from "@/lib/config";
+import { ClientInputError } from "@/lib/errors";
+import { ReadOnlyError } from "@/lib/read-only";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
 import { buildWikiGraph } from "@/lib/graph-build";
 import { rescanSources } from "@/lib/source-rescan";
@@ -552,6 +554,69 @@ describe("reviews", () => {
     );
     expect(own.status).toBe(200);
     expect(research).toHaveBeenCalled();
+  });
+
+  /**
+   * DW-478. `deep_research` calls `createResearchProject`, so the store's typed
+   * refusals — the `MAX_PROJECTS` cap and `cleanInput`'s verdict on
+   * `item.title` — reach this catch. It answered 500 for all of them, and an
+   * agent told "500" retries a request that can never succeed.
+   */
+  describe("deep_research classifies what the store throws", () => {
+    const pending = {
+      id: "r-deep",
+      kind: "gap",
+      title: "Gap",
+      summary: "Need a page",
+      path: "wiki/x.md",
+      queries: ["q"],
+      status: "pending",
+      updatedAt: "2026-08-26T00:00:00.000Z",
+    };
+    const deepResearch = () =>
+      patchReview(
+        send("http://local/api/v1/projects/current/reviews/r-deep", "PATCH", {
+          action: "deep_research",
+        }),
+        { params: Promise.resolve({ wikiId: "current", reviewId: "r-deep" }) },
+      );
+
+    beforeEach(() => {
+      getItem.mockResolvedValue(pending as never);
+    });
+
+    // The file-global `beforeEach` calls `vi.clearAllMocks()`, which clears
+    // CALLS but not IMPLEMENTATIONS — so a rejection left standing here would
+    // surface as a failure in whatever row is added below this block, for a
+    // reason nowhere near itself. Reset both seams back to their module-factory
+    // state on the way out.
+    afterEach(() => {
+      research.mockReset();
+      getItem.mockReset();
+    });
+
+    it.each([
+      ["400s", new ClientInputError("This workspace already has the maximum of 100 research projects."), 400],
+      ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
+    ])("%s a store fault", async (_label, fault, status) => {
+      research.mockRejectedValue(fault);
+
+      const response = await deepResearch();
+
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ error: fault.message });
+    });
+
+    it("still 403s a read-only refusal ahead of the input branch", async () => {
+      // The read-only branch is checked FIRST in the catch: a `ReadOnlyError`
+      // reaching here from a direct library gate must not be reclassified.
+      research.mockRejectedValue(new ReadOnlyError("This deployment is read-only."));
+
+      const response = await deepResearch();
+
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: "This deployment is read-only." });
+    });
   });
 
   it("POST .../reviews/resolve skips by id and names the misses", async () => {

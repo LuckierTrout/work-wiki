@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
-import { getErrorMessage } from "@/lib/errors";
+import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { isReadOnlyError, READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { normalizeReviewCount } from "@/lib/review-count";
 import {
@@ -155,9 +155,16 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       confirmRequired: true,
     });
   } catch (error) {
+    // The read-only 403 stays FIRST: a `ReadOnlyError` is not the caller's bad
+    // input and must not be reclassified by the branch below.
     if (isReadOnlyError(error)) {
       return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
     }
-    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    // Classification by TYPE alone, the `src/app/api/research/route.ts` idiom
+    // (DW-478). `deep_research` calls `createResearchProject`, so both the
+    // `MAX_PROJECTS` refusal and `cleanInput`'s verdict on `item.title` land
+    // here — and an agent told "500" retries a request that can never succeed.
+    const status = error instanceof ClientInputError ? 400 : 500;
+    return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }
 }

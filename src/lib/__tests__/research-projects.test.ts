@@ -31,9 +31,10 @@ async function seedRawRegistry(owner: string, raw: string): Promise<void> {
   await fs.writeFile(target, raw, "utf-8");
 }
 
-/** Seed `count` stored projects directly, so a cap row does not need 100 creates. */
-async function seedProjects(owner: string, count: number): Promise<void> {
-  const projects = Array.from({ length: count }, (_, i) => ({
+/** One stored row in exactly the shape the store itself writes. */
+function seedRow(i: number, extra: Record<string, unknown> = {}) {
+  const stamp = `2020-01-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`;
+  return {
     id: `seed-${i}`,
     title: `Project ${i}`,
     question: "seeded",
@@ -41,9 +42,27 @@ async function seedProjects(owner: string, count: number): Promise<void> {
     sourceUrls: [],
     pageSlugs: [],
     status: "draft",
-    createdAt: `2020-01-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`,
-    updatedAt: `2020-01-01T00:00:${String(i % 60).padStart(2, "0")}.000Z`,
-  }));
+    createdAt: stamp,
+    updatedAt: stamp,
+    ...extra,
+  };
+}
+
+/**
+ * Seed `count` stored projects directly, so a cap row does not need 100 creates.
+ *
+ * `tombstoned` marks the FIRST n of them `deleteRequested` — the soft-deleted
+ * state `retireResearchProject` leaves behind while a worker still holds the
+ * row, which the panel hides.
+ */
+async function seedProjects(
+  owner: string,
+  count: number,
+  { tombstoned = 0 }: { tombstoned?: number } = {},
+): Promise<void> {
+  const projects = Array.from({ length: count }, (_, i) =>
+    seedRow(i, i < tombstoned ? { deleteRequested: true } : {}),
+  );
   await seedRawRegistry(owner, JSON.stringify(projects, null, 2));
 }
 
@@ -133,6 +152,41 @@ describe("research projects", () => {
       const after = await listResearchProjects("alice");
       expect(after).toHaveLength(MAX_PROJECTS);
       expect(after.map((p) => p.id)).toContain("seed-0");
+    });
+
+    /**
+     * DW-479. The cap counted `projects.length` while the panel renders
+     * `filterResearchProjects`, so a tenant holding tombstones was refused at a
+     * cap the UI said had room — a dead end, because the rows occupying the
+     * slots are invisible to the owner. The cap now counts the same visible set.
+     */
+    it("does not count a tombstoned row against the cap", async () => {
+      await seedProjects("alice", MAX_PROJECTS, { tombstoned: 2 });
+
+      const project = await createResearchProject("alice", {
+        title: "The panel says there is room",
+        question: "Fits?",
+      });
+
+      // Accepted AND appended — nothing was evicted to make space.
+      const stored = await listResearchProjects("alice");
+      expect(stored).toHaveLength(MAX_PROJECTS + 1);
+      expect(stored.map((p) => p.id)).toContain(project.id);
+      expect(stored.map((p) => p.id)).toContain("seed-0");
+      // The tombstones are still there: the cap stopped counting them, it did
+      // not reap or rewrite them.
+      expect(stored.filter((p) => p.deleteRequested)).toHaveLength(2);
+      expect(filterResearchProjects(stored, null)).toHaveLength(MAX_PROJECTS - 1);
+    });
+
+    it("still refuses when every row at the cap is visible", async () => {
+      // The discriminator for the row above: hiding is what buys the slot, not
+      // "the cap got looser".
+      await seedProjects("alice", MAX_PROJECTS);
+
+      await expect(
+        createResearchProject("alice", { title: "No room", question: "Fits?" }),
+      ).rejects.toBeInstanceOf(ClientInputError);
     });
 
     it("still appends one below the cap", async () => {
@@ -264,6 +318,130 @@ describe("research projects", () => {
       expect(await listResearchProjects("alice")).toEqual([]);
       const project = await createResearchProject("alice", { title: "First", question: "New?" });
       expect((await listResearchProjects("alice")).map((p) => p.id)).toEqual([project.id]);
+    });
+  });
+
+  /**
+   * DW-476. `parseRegistry` refused a non-array but validated no ELEMENT, so a
+   * list of anything at all was cast to `ResearchProject[]` and died later —
+   * `[1,2,3]` blew up in `listResearchProjects`' `b.updatedAt.localeCompare` as
+   * an opaque `TypeError`, far from the file that caused it, and only on the
+   * paths that happen to sort. The per-element guard lives in the same shared
+   * helper as the non-array check, so both read sites refuse together.
+   */
+  describe("a registry whose elements are not research projects", () => {
+    /** A row the app would otherwise accept, minus the field the sort reads. */
+    function withoutUpdatedAt(): Record<string, unknown> {
+      const row: Record<string, unknown> = seedRow(0);
+      delete row.updatedAt;
+      return row;
+    }
+
+    const badRegistries: [string, string][] = [
+      ["a list of numbers", JSON.stringify([1, 2, 3])],
+      ["a list of empty objects", JSON.stringify([{}])],
+      ["a row missing updatedAt", JSON.stringify([withoutUpdatedAt()])],
+      // An unrecognized status is refused rather than read as "not editable":
+      // the `EDITABLE` sets around the app all decide by membership, so an
+      // unknown literal would quietly mean "locked forever".
+      ["a row with an unknown status", JSON.stringify([seedRow(0, { status: "archived" })])],
+      ["a row whose queries are not strings", JSON.stringify([seedRow(0, { queries: [7] })])],
+      // Load-bearing twice over since DW-479: a truthy non-boolean would hide
+      // the row from the panel forever AND free a cap slot nothing reclaims.
+      [
+        "a row whose deleteRequested is the string \"false\"",
+        JSON.stringify([seedRow(0, { deleteRequested: "false" })]),
+      ],
+    ];
+
+    it.each(badRegistries)("rejects reads when the registry is %s", async (_label, raw) => {
+      await seedRawRegistry("alice", raw);
+
+      // A plain Error, NOT a ClientInputError: a wrong-shaped stored file is a
+      // server fault (500), the same rule the non-array throw already states.
+      // The INDEX is part of the contract: with no repair route, it is the
+      // operator's only handle on a registry that refuses every door.
+      await expect(listResearchProjects("alice")).rejects.toThrow(
+        "Research project entry 0 is invalid.",
+      );
+      await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(ClientInputError);
+      await expect(getResearchProject("alice", "seed-0")).rejects.toThrow(
+        "Research project entry 0 is invalid.",
+      );
+    });
+
+    it.each(badRegistries)(
+      "rejects a create against %s and leaves the stored bytes byte-identical",
+      async (_label, raw) => {
+        await seedRawRegistry("alice", raw);
+        const storage = getStorage();
+        const spies = [
+          vi.spyOn(storage, "writeFile"),
+          vi.spyOn(storage, "writeFileIfMatch"),
+          vi.spyOn(storage, "writeFileIfAbsent"),
+        ];
+
+        try {
+          // The CAS read refuses too, so the create never sees `[]` and never
+          // replaces the file.
+          const create = () =>
+            createResearchProject("alice", { title: "Overwrite", question: "Lands?" });
+          await expect(create()).rejects.toThrow("Research project entry 0 is invalid.");
+          // A SERVER fault at this door too, not just at the read doors: the
+          // whole point of the plain `Error` is that every door answers 500.
+          await expect(create()).rejects.not.toBeInstanceOf(ClientInputError);
+          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+        } finally {
+          for (const spy of spies) spy.mockRestore();
+        }
+
+        expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
+      },
+    );
+
+    it.each([
+      [
+        "an update",
+        async () => {
+          await updateResearchProject("alice", "seed-0", { status: "complete" });
+        },
+      ],
+      [
+        "a delete",
+        async () => {
+          await deleteResearchProject("alice", "seed-0");
+        },
+      ],
+    ])("rejects %s and leaves the stored bytes byte-identical", async (_label, run) => {
+      const raw = JSON.stringify([{}]);
+      await seedRawRegistry("alice", raw);
+
+      await expect(run()).rejects.toThrow("Research project entry 0 is invalid.");
+      await expect(run()).rejects.not.toBeInstanceOf(ClientInputError);
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
+    });
+
+    it("still reads a registry the app itself wrote", async () => {
+      // The guard must not be stricter than the writer: every status the store
+      // can persist, plus the optional fields a run adds, still parse.
+      await seedRawRegistry(
+        "alice",
+        JSON.stringify([
+          seedRow(0),
+          seedRow(1, { status: "queued", vaultId: "alice--launch" }),
+          seedRow(2, { status: "collecting", progress: { completedQueries: 1, totalQueries: 3, message: "" } }),
+          seedRow(3, { status: "ready", thinking: ["looking"] }),
+          seedRow(4, { status: "complete", synthesis: "done", results: [] }),
+          seedRow(5, { status: "failed", error: "provider down" }),
+          seedRow(6, { status: "cancelled", deleteRequested: true }),
+        ]),
+      );
+
+      const stored = await listResearchProjects("alice");
+      expect(stored).toHaveLength(7);
+      expect(filterResearchProjects(stored, null)).toHaveLength(6);
+      expect(await getResearchProject("alice", "seed-4")).toMatchObject({ status: "complete" });
     });
   });
 

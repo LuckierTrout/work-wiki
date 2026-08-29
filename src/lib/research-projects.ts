@@ -169,6 +169,53 @@ function cleanInput(input: ResearchProjectInput) {
 }
 
 /**
+ * Every field the store itself writes on every row, checked one row at a time.
+ *
+ * Mirrors `isSlot` in `research-concurrency.ts`. Most optional fields
+ * (`vaultId`, `synthesis`, `results`, the lifecycle stamps) are deliberately
+ * NOT checked: the guard's job is to catch a registry that is not a registry,
+ * not to freeze the row's optional surface — a row from a future writer that
+ * carries an extra FIELD is still readable, a row missing `updatedAt` is not
+ * (the {@link listResearchProjects} sort would die on it with an opaque
+ * TypeError).
+ *
+ * `deleteRequested` is the one optional field that IS checked, because it is
+ * load-bearing twice over: {@link filterResearchProjects} hides a truthy row
+ * from the panel, and since DW-479 the `MAX_PROJECTS` guard counts that same
+ * visible set. A stored `deleteRequested: "false"` is truthy, so an unchecked
+ * string would hide the row from its owner forever AND free a cap slot nothing
+ * can reclaim. Requiring a real boolean turns that into a loud refusal.
+ *
+ * THE CAVEAT THIS ACCEPTS, NAMED: an extra field is forward-compatible but a
+ * new `status` LITERAL is not, because the guard requires `STATUSES`
+ * membership. During a rolling deploy or a rollback, a newer isolate that
+ * writes a status this build does not know wedges the whole registry for this
+ * build — every door for that owner 500s until the newer build is back. The
+ * alternative (accepting any string) is what DW-476 was: an unknown literal
+ * flows into the `EDITABLE` membership tests around the app and quietly means
+ * "locked forever". Refusing loudly is the better failure, but adding a status
+ * literal is a two-phase change — teach the readers first, then write it.
+ */
+function isResearchProject(value: unknown): value is ResearchProject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const project = value as Record<string, unknown>;
+  const isStrings = (v: unknown) => Array.isArray(v) && v.every((s) => typeof s === "string");
+  return (
+    typeof project.id === "string" &&
+    typeof project.title === "string" &&
+    typeof project.question === "string" &&
+    typeof project.createdAt === "string" &&
+    typeof project.updatedAt === "string" &&
+    isStrings(project.queries) &&
+    isStrings(project.sourceUrls) &&
+    isStrings(project.pageSlugs) &&
+    typeof project.status === "string" &&
+    STATUSES.has(project.status as ResearchProjectStatus) &&
+    (project.deleteRequested === undefined || typeof project.deleteRequested === "boolean")
+  );
+}
+
+/**
  * Parse stored registry bytes, refusing anything that is not a list.
  *
  * A registry that parses to an object/string/number used to read as "no
@@ -178,16 +225,42 @@ function cleanInput(input: ResearchProjectInput) {
  * {@link readProjects} would still let the CAS read in
  * {@link applyResearchProjectMutation} see `[]` and write over the file.
  *
+ * A list whose ELEMENTS are not projects is refused by the same helper for the
+ * same reason (DW-476). The non-array check alone let `[1,2,3]` or `[{}]` be
+ * cast straight to `ResearchProject[]`, which then died in
+ * {@link listResearchProjects}' `b.updatedAt.localeCompare` as an opaque
+ * `TypeError` — far from the file that caused it, and only on the paths that
+ * happen to sort. Checking here is what makes every door say the same thing.
+ *
+ * WHY ONE BAD ELEMENT REFUSES THE WHOLE REGISTRY rather than skipping the row.
+ * This is the widest blast radius in this helper — a single malformed row 500s
+ * every research door for that owner, the panel included — and it is chosen on
+ * purpose, the same fail-closed discipline `parseSlots` applies to a lease
+ * file. Skipping the bad row would present a SHORT registry as the tenant's
+ * complete one, which is DW-297's "unreadable is not empty" mistake with extra
+ * steps: the cap would clear against the short count and the next write would
+ * serialize the survivors, silently dropping the skipped rows off disk for
+ * good. Refusing loses nothing — the projects are not gone, they are
+ * unreadable — so the message below carries the INDEX of the first bad row.
+ * With no repair route (deliberately out of scope), that index is the
+ * operator's only handle on a registry that now refuses every read and every
+ * write for the tenant.
+ *
  * The throw is a plain `Error` on purpose — a wrong-shaped stored file is a
  * server fault (500), never a `ClientInputError`. Matches `parseSlots` in
- * `research-concurrency.ts`, which refuses a non-array lease file the same way.
+ * `research-concurrency.ts`, which refuses a non-array lease file and an
+ * invalid lease entry the same way.
  */
 function parseRegistry(raw: string): ResearchProject[] {
   const parsed: unknown = JSON.parse(raw);
   if (!Array.isArray(parsed)) {
     throw new Error("Research projects file is not a list.");
   }
-  return parsed as ResearchProject[];
+  const bad = parsed.findIndex((entry) => !isResearchProject(entry));
+  if (bad !== -1) {
+    throw new Error(`Research project entry ${bad} is invalid.`);
+  }
+  return parsed;
 }
 
 async function readProjects(owner: string): Promise<ResearchProject[]> {
@@ -209,9 +282,14 @@ async function readProjects(owner: string): Promise<ResearchProject[]> {
  * slice is what lets a delete bring such a registry back DOWN to the cap
  * instead of shedding unrelated rows on the way.
  *
- * The cap is enforced in exactly one place: `createResearchProject` refuses
- * when `projects.length >= MAX_PROJECTS` before anything is pushed, so no
- * create can grow the registry past it.
+ * The cap is still enforced in exactly one place: `createResearchProject`
+ * refuses before anything is pushed, so no create can grow the VISIBLE set
+ * past it. What it counts is `filterResearchProjects(projects, null).length`,
+ * not `projects.length` (DW-479) — so the STORED array this function writes can
+ * transiently sit above `MAX_PROJECTS` while soft-deleted rows are held, by
+ * exactly the number of tombstones outstanding. That is not eviction pressure
+ * and must not become any: a write that shed rows to get back under the cap
+ * would be the same silent data loss the slice was.
  */
 function serializeProjects(projects: ResearchProject[]): string {
   return JSON.stringify(projects, null, 2);
@@ -322,6 +400,25 @@ export async function getResearchProject(
  * {@link applyResearchProjectMutation} leaves the stored registry
  * byte-identical (`StorageProvider.writeFileIfAbsent`/`writeFileIfMatch` are
  * atomic from the caller's view) and there is nothing behind to clean up.
+ *
+ * WHY THE CAP COUNTS THE VISIBLE SET, NOT `projects.length` (DW-479). A
+ * `deleteRequested` row is a tombstone {@link filterResearchProjects} hides
+ * from the panel, so counting it refused a create the UI said there was room
+ * for — a dead end the owner could not clear, because the thing occupying the
+ * slot is invisible to them. Counting `filterResearchProjects(projects, null)`
+ * makes the cap and the panel read the ONE definition of "visible" so they
+ * cannot drift again; `null` scope is deliberate, the cap is per tenant across
+ * every Wiki. The residual, named: a tenant holding tombstones can store more
+ * than `MAX_PROJECTS` rows. Reaping is the NORMAL path but is not promptly
+ * guaranteed — `retireResearchProject` returns `true` with the tombstone still
+ * stored whenever a worker owns the row or the slot is not yet confirmed gone,
+ * and the follow-up reap runs in `reconcileResearchProjects`, which is driven
+ * by `GET /api/research` and so only advances while someone is looking. A
+ * `deliveryBlocked` row is skipped by that reconcile entirely and waits on an
+ * operator's explicit Retry. So the overhang can persist; it is still the right
+ * trade, because the alternative is a PERMANENT refusal at a cap the panel says
+ * has room, which the owner cannot clear at all. Nothing here reaps or rewrites
+ * a tombstone; the cap only stops counting it.
  */
 export async function createResearchProject(
   owner: string,
@@ -335,7 +432,7 @@ export async function createResearchProject(
   assertWritable(READ_ONLY_REFUSAL.researchCreate);
   const cleaned = cleanInput(input);
   return lockedMutation(owner, (projects) => {
-    if (projects.length >= MAX_PROJECTS) {
+    if (filterResearchProjects(projects, null).length >= MAX_PROJECTS) {
       throw new ClientInputError(
         `This workspace already has the maximum of ${MAX_PROJECTS} research projects.`,
       );

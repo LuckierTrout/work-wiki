@@ -4314,7 +4314,9 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/lib/research-projects.ts:184
 severity: medium
 reason: `[1,2,3]` or `[{}]` passes `Array.isArray`, is cast to `ResearchProject[]`, and dies in `listResearchProjects`' sort at `b.updatedAt.localeCompare(a.updatedAt)`. The sibling `parseSlots` in `research-concurrency.ts` validates every element with `isSlot`; this helper does not. Pre-existing shape, unchanged by DW-297.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-research-store-input-and-cap-hardening
+resolution-undo: f70679012685b822f439980b39143a3ed0cc418fae086e8cb4ced5c0b240e6bf 2026-08-29 7374617475733a206f70656e
 
 ### DW-477: A non-list registry now wedges a tenant with no in-product repair path.
 origin: spec-deferred a0633dfd255b
@@ -4331,7 +4333,9 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:157
 severity: medium
 reason: `src/app/api/research/[id]/route.ts:77` and `:96` catch-all at 500 with no `ClientInputError` branch, and `src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:157-161` maps every non-read-only error to 500 while passing `item.title` straight into `createResearchProject`. So the MAX_PROJECTS refusal and `cleanInput`'s newly-typed blank-title refusal both surface there as server faults.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-research-store-input-and-cap-hardening
+resolution-undo: f70679012685b822f439980b39143a3ed0cc418fae086e8cb4ced5c0b240e6bf 2026-08-29 7374617475733a206f70656e
 
 ### DW-479: `retireResearchProject`'s soft delete counts against the create cap while the panel hides those rows.
 origin: spec-deferred d96380ea82bf
@@ -4339,7 +4343,9 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/lib/research-runtime.ts:453
 severity: medium
 reason: `retireResearchProject` sets `deleteRequested` when a worker is live; `createResearchProject` counts `projects.length` including those rows, while `filterResearchProjects` (research-projects.ts:250) hides them. A tenant with stuck `deleteRequested` rows is refused at the cap while the UI shows fewer than MAX_PROJECTS. Pre-existing, surfaced by the cap work.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-research-store-input-and-cap-hardening
+resolution-undo: f70679012685b822f439980b39143a3ed0cc418fae086e8cb4ced5c0b240e6bf 2026-08-29 7374617475733a206f70656e
 
 ### DW-480: `POST /api/research/[id]/run` still classifies failures by message regex.
 origin: spec-deferred 1caab8b40809
@@ -5125,4 +5131,52 @@ location: src/lib/__tests__/storage-fs-fault-identity.test.ts
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: low
 reason: `storage-fs-fault-identity.test.ts` pins that a failed publication leaves no scratch file and propagates the original error for `atomicWrite`; nothing does the same for `createOnlyWrite` (a non-`EEXIST` `fs.link` failure, tmp cleanup on a throwing publish) or for a rejecting R2 `put`.
+status: open
+
+### DW-575: `parseRegistry`'s bare `JSON.parse` still lets a raw `SyntaxError` escape, unlike the `parseSlots` it mirrors.
+origin: spec-deferred 7b7a597668da
+location: src/lib/research-projects.ts:221
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+severity: low
+reason: `research-projects.ts` calls `JSON.parse(raw)` unwrapped, so truncated or non-JSON registry bytes surface as `Unexpected token } in JSON at position 41` — the same opaque-error-far-from-the-cause shape DW-476 existed to kill. The sibling `parseSlots` (`research-concurrency.ts:88-94`) wraps it and throws "Research lease file is unreadable." The per-element message was mirrored; this first one was not. Pre-existing since DW-297.
+status: open
+
+### DW-576: `GET /api/research/[id]/run` has no catch, so a refused registry escapes as a framework 500 with no `{ error }` body.
+origin: spec-deferred 5bac45c721bc
+location: src/app/api/research/[id]/run/route.ts:105
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+severity: low
+reason: The handler calls `getResearchProject` outside any try block. Since DW-297 that call throws on a wrong-shaped registry, and DW-476 widens which registries throw, so this door answers a bare framework error rather than the JSON error body every sibling door returns. Pre-existing hole opened by DW-297, not by this change.
+status: open
+
+### DW-577: `POST /api/research/[id]/run` still classifies by message regex and has no `ClientInputError` branch.
+origin: spec-deferred 0bb1680d33f8
+location: src/app/api/research/[id]/run/route.ts:88
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+severity: low
+reason: The catch decides 404/409/500 with `/not found/i` and `/already running/i` against the error message — the exact anti-pattern DW-296 deleted from `POST /api/research`, where a storage `EINVAL: invalid argument` was mislabelled as the caller's fault. This door is not named by the DW-478 intent, so it was left alone; the regex is pre-existing.
+status: open
+
+### DW-578: `ClientInputError` is classified by `instanceof` at ~16 route sites, the mechanism `read-only.ts` documents as unreliable across a duplicated module graph.
+origin: spec-deferred af2f5b90fa56
+location: src/lib/errors.ts:21
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+severity: low
+reason: `src/lib/read-only.ts:20-22` states `isReadOnlyError` matches on `err.name` rather than `instanceof` "so a duplicated module graph (vitest's two projects, bundler chunking, the stdio MCP entry point) cannot turn a route's 403 back into a 500." The identical failure mode applies to every `error instanceof ClientInputError` site and would degrade silently to 500 in production with no test able to see it. A `isClientInputError(err)` helper beside the class in `errors.ts` would close it repo-wide. Pre-existing across every such site; this change added four more.
+status: open
+
+### DW-579: `research-completion.ts` dereferences `project.completion.sources` after only a phase check, so a wrong-shaped `completion` still dies with an opaque TypeError.
+origin: spec-deferred 08eb77ec7c66
+location: src/lib/research-completion.ts:649
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+severity: low
+reason: A stored `completion: { phase: "sources" }` with no `sources` array reaches `.findIndex(...)` / `.map(...)` and throws the same class of error DW-476 removed from the sort. `isResearchProject` deliberately does not validate nested optional structures, so the registry guard does not cover this path. Pre-existing.
+status: open
+
+### DW-580: The v1 façade answers 4xx with machine tokens everywhere except the new `deep_research` 400, which emits an English sentence.
+origin: spec-deferred 1a77a9c8b8f4
+location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:167
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+severity: low
+reason: `v1-contract.ts` supplies `unknown_action` / `not_found` / `wiki_not_found`, and the route's other 4xx bodies use them, so an agent switch-casing on `error` gets a token — except this branch, which passes the store's prose through `getErrorMessage`. Nothing in the repo pins a v1 4xx vocabulary and the door's 403 already emits a sentence, so this is an inconsistency in the façade's error contract rather than a broken one. Worth one focused pass over v1 error bodies.
 status: open

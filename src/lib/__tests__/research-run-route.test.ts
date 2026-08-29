@@ -28,6 +28,7 @@ vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
 import { POST } from "@/app/api/research/[id]/run/route";
 import { DELETE, PATCH } from "@/app/api/research/[id]/route";
 import { getPrincipal } from "@/lib/auth";
+import { ClientInputError } from "@/lib/errors";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import {
   ResearchProviderOverrideError,
@@ -280,6 +281,39 @@ describe("PATCH and DELETE /api/research/[id]", () => {
     >);
 
     expect((await PATCH(patchRequest({ title: "New" }), { params })).status).toBe(409);
+  });
+
+  /**
+   * DW-478. Both catches used to answer 500 for everything, so the store's
+   * typed refusals — the `MAX_PROJECTS` cap and `cleanInput`'s blank
+   * title/question — surfaced as server faults at these doors while
+   * `POST /api/research` already classified them correctly. Classification is by
+   * TYPE alone; the message passes through unchanged either way.
+   */
+  it.each([
+    ["400s", new ClientInputError("Research question is required"), 400],
+    ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
+  ])("%s a store fault on PATCH", async (_label, fault, status) => {
+    mockedUpdate.mockRejectedValue(fault);
+
+    const response = await PATCH(patchRequest({ title: "New" }), { params });
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: fault.message });
+  });
+
+  it.each([
+    ["400s", new ClientInputError("Research question is required"), 400],
+    ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
+  ])("%s a store fault on DELETE", async (_label, fault, status) => {
+    mockedDelete.mockRejectedValue(fault);
+
+    const response = await DELETE(new Request("http://localhost/api/research/p1", {
+      method: "DELETE",
+    }), { params });
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: fault.message });
   });
 
   it("retires on DELETE so the lease is released", async () => {
