@@ -3022,8 +3022,10 @@ describe("the settings client", () => {
     await expect(saveWorkbenchSettings({}, { fetchImpl: served })).resolves.toEqual({
       status: "error",
       message: "Vector search needs an API key before it can be turned on.",
-      // The route ANSWERED, so nothing about this save is unknown.
+      // The route ANSWERED, so nothing about this save is unknown — and its
+      // body was read, so the held version is untouched.
       unconfirmed: false,
+      unreadable: false,
     });
 
     // A plain `Error` is not something `fetch` produces for a dead connection —
@@ -3035,6 +3037,7 @@ describe("the settings client", () => {
       status: "error",
       message: SETTINGS_SAVE_FAILED_COPY,
       unconfirmed: false,
+      unreadable: false,
     });
 
     const blank = stubFetch(() => ({ ok: false, status: 500, body: { error: "  " } })).impl;
@@ -3044,6 +3047,7 @@ describe("the settings client", () => {
       // widened to unknown — see the gateway case below.
       message: SETTINGS_SAVE_FAILED_COPY,
       unconfirmed: false,
+      unreadable: false,
     });
   });
 
@@ -3064,6 +3068,9 @@ describe("the settings client", () => {
         status: "error",
         message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
         unconfirmed: true,
+        // Nothing was read off a 2xx here: this is silence, not an unreadable
+        // answer, and the two verdicts stay apart.
+        unreadable: false,
       });
     }
 
@@ -3082,6 +3089,7 @@ describe("the settings client", () => {
         status: "error",
         message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
         unconfirmed: true,
+        unreadable: false,
       });
       // Still no transport vocabulary: the FACT the cause carries is used, the
       // string it carries never is.
@@ -3094,8 +3102,17 @@ describe("the settings client", () => {
   it("treats a shapeless 200 as an error, because the draft is re-seeded from it", async () => {
     const shapeless = stubFetch(() => ({ ok: true, status: 200, body: { saved: true } })).impl;
     const result = await saveWorkbenchSettings({}, { fetchImpl: shapeless });
-    expect(result.status).toBe("error");
+    expect(result).toEqual({
+      status: "error",
+      message: SETTINGS_SAVE_FAILED_COPY,
+      unconfirmed: false,
+      unreadable: true,
+    });
     expect(result.status === "error" && result.unconfirmed).toBe(false);
+    // …and `unreadable` on its own (DW-427): the body yielded no payload, so the
+    // caller must clear the version it was holding even though the route
+    // answered. Which side of that line a cause falls on is the whole point.
+    expect(result.status === "error" && result.unreadable).toBe(true);
   });
 
   it("treats an UNPARSEABLE 200 the same way — the route answered (DW-408)", async () => {
@@ -3122,11 +3139,17 @@ describe("the settings client", () => {
       status: "error",
       message: SETTINGS_SAVE_FAILED_COPY,
       unconfirmed: false,
+      unreadable: true,
     });
     // Asserted on its own as well as inside the object: the status line came
     // back, so the patch's outcome is KNOWN and the owner must not be told
     // otherwise — only the ability to re-seed the draft was lost.
     expect(result.status === "error" && result.unconfirmed).toBe(false);
+    // …which is what `unreadable` is for (DW-427). "The outcome is unknown" is
+    // the one thing this branch must not say, and "the version I am holding is
+    // still good" is the other — so the fact gets its own field rather than
+    // being folded into `unconfirmed`.
+    expect(result.status === "error" && result.unreadable).toBe(true);
     expect(result.status === "error" && result.message).not.toBe(
       unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
     );
@@ -3139,12 +3162,12 @@ describe("the settings client", () => {
    * These three ARE unconfirmed causes, and thrown from `json()` they arrive
    * after a 200 status line — so a `.catch(() => null)` written without a guard
    * would quietly reclassify them as the route's arrived answer. That is a
-   * behaviour flip with a consumer behind it: `SettingsCanvas.save` clears the
-   * held version ONLY on `unconfirmed: true`. Calling a dead body read
-   * "arrived" keeps a version the save may already have superseded, and the
-   * next save is refused as 412 — "somebody else changed this while you were
-   * editing", about an actor that does not exist — where clearing it yields the
-   * truthful 428. Unchanged from before DW-408, deliberately.
+   * behaviour flip with a consumer behind it, and since DW-427 it is no longer
+   * the held version that flips — `SettingsCanvas.save` clears on `unreadable`
+   * as well — but the SENTENCE. Calling a dead body read "arrived" tells the
+   * owner their settings were not saved, which is the one claim nobody is in a
+   * position to make: the request left and no verdict came back. The verdict
+   * these three answer is unchanged from before DW-408, deliberately.
    */
   it.each([
     ["TimeoutError", Object.assign(new Error("signal timed out"), { name: "TimeoutError" })],
@@ -3161,11 +3184,18 @@ describe("the settings client", () => {
         throw cause;
       },
     });
-    await expect(saveWorkbenchSettings({}, { fetchImpl: impl })).resolves.toEqual({
+    const result = await saveWorkbenchSettings({}, { fetchImpl: impl });
+    expect(result).toEqual({
       status: "error",
       message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
       unconfirmed: true,
+      unreadable: false,
     });
+    // The line between the two verdicts, from the other side (DW-427). Both
+    // clear the held version, so folding them together would look harmless —
+    // but only ONE of them may put "the outcome is unknown" in front of the
+    // owner, and that is this one.
+    expect(result.status === "error" && result.unreadable).toBe(false);
   });
 
   it("sends the seeded version as `If-Match` (DW-63)", async () => {
@@ -3190,17 +3220,25 @@ describe("the settings client", () => {
     // unknown, and send `SettingsCanvas` to clear the version it was holding,
     // all for a write that provably did not land.
     expect(UNCONFIRMED_STATUSES).not.toContain(503);
-    const unreadable = stubFetch(() => ({
+    const storeUnreadable = stubFetch(() => ({
       ok: false,
       status: 503,
       body: { error: CONFIG_UNREADABLE_COPY },
     })).impl;
     await expect(
-      saveWorkbenchSettings({ chatModel: "gpt-4o" }, { fetchImpl: unreadable, version: "w1:2-abc" }),
+      saveWorkbenchSettings(
+        { chatModel: "gpt-4o" },
+        { fetchImpl: storeUnreadable, version: "w1:2-abc" },
+      ),
     ).resolves.toEqual({
       status: "error",
       message: CONFIG_UNREADABLE_COPY,
       unconfirmed: false,
+      // And NOT `unreadable`: that verdict is about a 2xx whose body yielded no
+      // payload. This is a refusal status the route chose, arrived and read,
+      // over a write it declined before merging anything — so the version the
+      // caller is holding is still current and must survive.
+      unreadable: false,
     });
   });
 
@@ -3219,6 +3257,8 @@ describe("the settings client", () => {
       status: "error",
       message: WRITE_CONFLICT_COPY,
       unconfirmed: false,
+      // An arrived refusal applied nothing, so the held version is still current.
+      unreadable: false,
     });
 
     // …and the 428 the route answers a missing precondition with, the same way.
@@ -3231,6 +3271,7 @@ describe("the settings client", () => {
       status: "error",
       message: WRITE_PRECONDITION_REQUIRED_COPY,
       unconfirmed: false,
+      unreadable: false,
     });
   });
 

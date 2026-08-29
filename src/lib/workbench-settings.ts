@@ -3098,6 +3098,27 @@ export type SettingsSaveResult =
        * into a silent false.
        */
       unconfirmed: boolean;
+      /**
+       * The answer ARRIVED and its body yielded no payload — a 2xx that failed
+       * to parse, or that parsed to something shapeless. One fact, one branch.
+       *
+       * The caller must clear the version it was holding, exactly as it does
+       * for `unconfirmed` and for the same reason: a 2xx is no proof the route
+       * did NOT run, so the stored config may already have moved past it and the
+       * next save would be refused as a conflict. That refusal flatly states the
+       * save was not applied and attributes the change to somewhere else —
+       * when the change it is describing may be the owner's own save, one
+       * moment earlier. Clearing it re-seeds instead. REQUIRED for the
+       * same reason `unconfirmed` is — a future construction site must not be
+       * able to forget the verdict into a silent false.
+       *
+       * Two things it is NOT. Not the UNKNOWN outcome: the status line came
+       * back, so this claims nothing about whether the patch landed, only that
+       * nothing usable came back to re-seed from. And not this route's own 503,
+       * which is an arrived refusal that applied nothing and whose held version
+       * is therefore still current.
+       */
+      unreadable: boolean;
     };
 
 /**
@@ -3123,7 +3144,9 @@ export type SettingsSaveResult =
  * A 200 whose body carries no usable `workbench` object is an ERROR, not a
  * success: the caller re-seeds its draft from that object, and treating a
  * shapeless 200 as landed would clear the dirty flag over values nobody
- * confirmed were stored.
+ * confirmed were stored. It is the ONE branch that answers `unreadable: true`
+ * (DW-427), which is how the caller learns that the held version — not the
+ * outcome — is the thing that can no longer be relied on.
  */
 export async function saveWorkbenchSettings(
   patch: WorkbenchSettingsPatch,
@@ -3167,6 +3190,13 @@ export async function saveWorkbenchSettings(
       return {
         status: "error",
         ...refusedWriteFailure(response.status, served, action, fallback),
+        // A refusal STATUS arrived, so nothing was applied and the held version
+        // is untouched — including on this route's own 503, which refuses before
+        // merging anything. Says nothing about the body: the parse above is
+        // unguarded, so a refusal body that dies mid-read lands here too, with
+        // `served` empty and the fallback shown. Either way no 2xx payload was
+        // lost, which is the only thing this verdict is about.
+        unreadable: false,
       };
     }
     // Two different failures hide behind one `response.json()`, and they get
@@ -3183,24 +3213,43 @@ export async function saveWorkbenchSettings(
     // A body read that DIES MID-STREAM — an abort, a `TypeError` off a dropped
     // socket — is the same missing confirmation as any other unconfirmed cause,
     // and is rethrown to the outer catch untouched. That distinction is not
-    // cosmetic: `SettingsCanvas.save` clears the held version ONLY on
-    // `unconfirmed: true`, so calling this one "arrived" would keep a version
-    // the save may already have superseded and make the next save a 412 —
-    // "somebody else changed this while you were editing", about an actor that
-    // does not exist — where clearing it yields the truthful 428.
+    // cosmetic: it decides which sentence the owner reads, because the unknown
+    // outcome is what `unconfirmed` composes and a status line that arrived must
+    // never be described as silence.
+    //
+    // What the two halves SHARE is the held version, and that is the second
+    // verdict (DW-427). Either way nothing usable came back, and a 2xx from an
+    // intermediary is no proof the route did NOT run — so keeping the version
+    // risks a 412 on the next save, which asserts outright that it was not
+    // applied and attributes the change to somewhere else, when the change it
+    // is describing may be the owner's own. Clearing it yields the 428 instead,
+    // which claims only that the save could not be checked — true either way.
+    // The arrived half therefore answers `unreadable: true` below, and
+    // `SettingsCanvas.save` clears on either verdict.
     const body: unknown = await response.json().catch((cause: unknown) => {
       if (unconfirmedCause(cause)) throw cause;
       return null;
     });
     const payload = workbenchSettingsFrom(body);
-    // A shapeless 200 is the ROUTE's own answer, arrived: it ran and it replied,
-    // so nothing here is unknown — the draft simply cannot be re-seeded from it.
+    // A shapeless 200 is an answer that ARRIVED, and that is the whole of what
+    // is known: a status line came back, so the owner must not be told the
+    // outcome is unknown. Whether the ROUTE itself ran — and rotated the version
+    // this caller is holding — is precisely what the missing payload leaves
+    // open, which is why the verdict below is `unreadable` rather than `ok`.
     return payload
       ? { status: "ok", payload }
-      : { status: "error", message: fallback, unconfirmed: false };
+      : { status: "error", message: fallback, unconfirmed: false, unreadable: true };
   } catch (cause) {
     // Deliberately discards the cause's message — see the docblock — but not the
     // FACT it carries: an abort and a `TypeError` mean the patch may have landed.
-    return { status: "error", ...thrownWriteFailure(cause, action, fallback) };
+    // No 2xx body was READ THROUGH to a verdict on any path that reaches here —
+    // the guarded `.catch` above keeps the arrived-but-unreadable ones on their
+    // own branch — so the second verdict is stated as false rather than left to
+    // a default.
+    return {
+      status: "error",
+      ...thrownWriteFailure(cause, action, fallback),
+      unreadable: false,
+    };
   }
 }

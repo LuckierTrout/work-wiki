@@ -3895,7 +3895,9 @@ source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
 location: src/lib/workbench-settings.ts:2143 and src/components/workbench/SettingsCanvas.tsx:209
 severity: medium
 reason: The intent prescribes landing the throwing parse on the existing shapeless-200 branch, which returns `{ status: "error", message: fallback, unconfirmed: false }`. But `SettingsCanvas.save` clears the held `version` ONLY inside `if (result.unconfirmed)` (src/components/workbench/SettingsCanvas.tsx:209-231), and its own comment there spells out the tie-break: a cleared version yields the truthful 428, a kept one yields 412's "somebody else changed this while you were editing". So the verdict the ledger entry names as the defect is the same verdict its prescribed fix produces. Verified by reverting the change: the whole settings suite, including the new DW-408 cases, passes against the unfixed source, because `SyntaxError` was never an `unconfirmedCause` and already reached the identical fallback through the outer catch. What the change does buy is that the arrived-answer verdict is now DECIDED on the shapeless-200 branch rather than coinciding with it by accident. Closing the stated harm
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-settings-unreadable-2xx-verdict
+resolution-undo: 4d80075769a62111f426aa27ea50d8781617bbcfe442aaaa529e20b88bcfb7fa 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Third verdict — Introduce an 'applied but unreadable' verdict for a 2xx whose body cannot be parsed, have SettingsCanvas clear the held version on it so the next save re-seeds rather than 412s, and pin it at both the client return value and the canvas seam.
 decision: 2026-08-26 Third verdict — Introduce an 'applied but unreadable' verdict for a 2xx whose body cannot be parsed, have SettingsCanvas clear the held version on it so the next save re-seeds rather than 412s, and pin it at both the client return value and the canvas seam.
 
@@ -3905,7 +3907,9 @@ source_spec: `spec-dw-407-408-unconfirmed-write-reporting-gaps.md`
 location: src/components/workbench/__tests__/settings-read-only.test.tsx:565-600
 severity: medium
 reason: `settings-read-only.test.tsx`'s own docblock says the client-level suite "cannot see the seam this describe exists for: that the canvas ACTS on `unconfirmed` by clearing the version it is holding". Its UNCONFIRMED table carries a 504 (which never reaches a 2xx body parse) and a TypeError thrown from the fetch call itself; there is no `ok: true` case anywhere in the file whose `json` rejects. So what `If-Match` the NEXT save carries after an unparseable or dead-stream 200 is unobserved end to end.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-settings-unreadable-2xx-verdict
+resolution-undo: 4d80075769a62111f426aa27ea50d8781617bbcfe442aaaa529e20b88bcfb7fa 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-22 Per-leg client reporting — Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly — "Your text was saved; the metadata change was not — <served error>" — leaving all server copy and the frozen sentences untouched.
 
 ### DW-429: When the unconfirmed-write latch lifts with the dialog still open, the confirm comes back live underneath a now-stale "the outcome is unknown" alert, on both the card and the switcher.
@@ -4935,4 +4939,44 @@ location: src/components/workbench/SettingsCanvas.tsx:341 (save result handling)
 source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
 severity: medium
 reason: `SettingsCanvas`'s save keeps the draft on any non-ok result (SettingsCanvas.tsx:341-343), and the draft that produced the refusal already had `embeddingBaseUrl` and `embeddingApiKey` blanked by `settingsDraftAfterEmbeddingProvider`. The owner of a tab opened before `EMBEDDING_PROVIDER` was set can only escape by reverting the select by hand or reloading, and the refusal sentence names neither. The same keep-the-draft behaviour applies to every other 400 on this surface, so re-seeding the draft from the answered payload for this refusal specifically — or saying "reload" in the copy — is a surface decision this bundle did not carry.
+status: open
+
+### DW-554: `SETTINGS_SAVE_FAILED_COPY` tells the owner their settings were not saved on the one branch whose whole justification is that nobody knows whether they were.
+origin: spec-deferred 9e310e9c443f
+location: src/lib/workbench-settings.ts:3232 and src/lib/workbench-settings.ts (SETTINGS_SAVE_FAILED_COPY)
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+severity: medium
+reason: The `unreadable` verdict clears the held version on the stated ground that a 2xx is no proof the route did not run (`src/lib/workbench-settings.ts:3103-3119`), and the canvas acts on it (`SettingsCanvas.tsx:343`). The sentence shown beside that action is "Settings couldn't be saved." — an assertion the same reasoning says nobody is in a position to make. The neighbouring `it.each` docblock in `workbench-settings.test.ts` spells out exactly that objection for the sibling branch. Fixing it means a new owner-facing sentence for a third outcome, which is an intent-level copy decision this bundle's intent did not open.
+status: open
+
+### DW-555: Once the held version is cleared, the Settings canvas is a dead end: every later save is refused 428 and the only recovery is a reload that destroys the draft.
+origin: spec-deferred cd771655dc8e
+location: src/components/workbench/SettingsCanvas.tsx:343-372
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+severity: medium
+reason: `SettingsCanvas.save` clears `payload.version` and nothing on this surface ever restores it — the read effect runs once on mount and there is no re-seed affordance. Every subsequent save therefore carries no `If-Match` and is answered 428, whose recovery half is "copy it, reload, and apply it to the current version". `SkillsCanvas.toggle` shows the available shape: re-read ONLY the version via `fetchWorkbenchSettings()` and leave the draft alone. Pre-existing since DW-376; DW-427 brings a second branch to the same dead end rather than creating it, and the one-call-site scan at `workbench-settings.test.ts:4661` means adding a re-seed is a deliberate decision.
+status: open
+
+### DW-556: `savePreviewBody` reads its 2xx body with an unguarded `.catch(() => null)` and still answers `{ status: "ok" }`, so a body read that dies mid-stream is reported to Preview as a LANDED save.
+origin: spec-deferred c4281a7f973b
+location: src/lib/workbench-preview.ts (savePreviewBody success-body parse)
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+severity: medium
+reason: That is the exact misclassification DW-408 fixed for Settings, still live on the sibling write client: `workbench-preview.ts` parses the success body without the `unconfirmedCause` rethrow that `saveWorkbenchSettings` now has, so an abort or a dropped socket during the body read is indistinguishable from a clean save. Out of scope here — this bundle's intent names the Settings client only — but nothing else records it.
+status: open
+
+### DW-557: The refusal branch's body parse in `saveWorkbenchSettings` is unguarded, so a refusal body read that dies mid-stream is classified as an arrived, fully read refusal.
+origin: spec-deferred fd171f2e691e
+location: src/lib/workbench-settings.ts:3179-3183
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+severity: low
+reason: `const body = (await response.json().catch(() => null))` on the `!response.ok` path has no `unconfirmedCause` rethrow, unlike the success parse twenty lines below. An aborted or dropped refusal body therefore yields `served === ""` and the fallback sentence, with the held version kept. That is defensible — a refusal status arrived and nothing was applied — but it is decided by omission rather than stated, and the asymmetry with the guarded success parse is invisible.
+status: open
+
+### DW-558: `SettingsSaveResult`'s two booleans can express four states when only three are legal; nothing forbids `{ unconfirmed: true, unreadable: true }`.
+origin: spec-deferred e475024c9518
+location: src/lib/workbench-settings.ts:3087-3120
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+severity: low
+reason: The Design Notes enumerate exactly three verdicts, and `saveWorkbenchSettings` cannot currently construct the fourth — but the type permits it, no test pins that the two are never both true, and a future construction site could produce it silently. A single discriminated `verdict: "refused" | "unconfirmed" | "unreadable"` would make it unconstructible; changing the shape now would touch every call site and every assertion.
 status: open

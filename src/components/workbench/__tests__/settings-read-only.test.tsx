@@ -431,11 +431,12 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
   it("CLEARS the version when a landed save answers without one (DW-199)", async () => {
     // The convention `PreviewColumn` already spells for this seam: what the
     // surface knows after a versionless 200 is "the current version is
-    // unknown". Sending nothing gets 428 — "this save could not be checked" —
-    // which is true. Re-sending the version this very save superseded gets 412
-    // — "somebody else changed this while you were editing" — about an actor
-    // that does not exist, and it can only ever be refused. Neither can
-    // clobber, so the tie goes to the honest refusal.
+    // unknown". Sending nothing gets the 428, which claims only that the save
+    // could not be checked — true. Re-sending the version this very save
+    // superseded can only ever be refused, and refused with the 412: a flat
+    // statement that the save was not applied, blamed on a change made
+    // somewhere else, when the change is this owner's own save one moment
+    // earlier. Neither can clobber, so the tie goes to the honest refusal.
     const versionless = () => ({
       ok: true,
       status: 200,
@@ -510,6 +511,15 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
    * that the next save therefore carries no `If-Match`. That reconciliation is
    * the whole of this surface's response — there is no re-read here that does
    * not throw away every unsaved edit — so it has to be executed.
+   *
+   * The 2xx BODY READ has two sides, and they part company here (DW-408,
+   * DW-427). A body read that DIES mid-stream is unconfirmed and gets the
+   * unknown-outcome sentence, so it belongs in this table and is a row in it. A
+   * 2xx whose body simply yields no payload is `unreadable` instead: the status
+   * line arrived, so that sentence would be a lie — but the held version is
+   * just as untrustworthy, which is why the two end at the same reconciliation.
+   * That half is deliberately NOT a row here, because the sentence assertions
+   * below would be wrong for it; it gets its own table immediately after.
    */
   const UNCONFIRMED: ReadonlyArray<readonly [string, () => unknown]> = [
     [
@@ -526,6 +536,16 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       () => {
         throw new TypeError("Failed to fetch");
       },
+    ],
+    [
+      "a 200 whose body read died mid-stream",
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new TypeError("Failed to fetch");
+        },
+      }),
     ],
   ];
 
@@ -565,9 +585,87 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       // THE reconciliation. If the save landed, the stored config has moved past
       // the version this canvas is holding, so that version is the one thing on
       // screen that can now be a lie. The next save carries NONE — refused as
-      // 428 "this could not be checked", which is true — rather than the
-      // superseded one, which could only ever be refused as 412 "somebody else
-      // changed this while you were editing", about an actor that does not exist.
+      // the 428, which claims only that the save could not be checked, and is
+      // true — rather than the superseded one, which could only ever be refused
+      // as the 412: a flat "your save was not applied", blamed on a change made
+      // somewhere else, when the change may be this owner's own save.
+      typeChatModel("gpt-4.1-mini");
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      expect(ifMatchOf(2)).toBeUndefined();
+      await waitFor(() =>
+        expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
+      );
+      expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
+        "gpt-4.1-mini",
+      );
+    });
+  }
+
+  /**
+   * The other side of that table, and the seam `workbench-settings.test.ts`
+   * cannot reach (DW-428).
+   *
+   * BOTH producers of `unreadable` are driven here, because both are newly
+   * changed canvas behaviour and the client suite only pins the returned value.
+   * A body that would not PARSE and a body that parses to something with no
+   * `workbench` in it are one branch and one verdict in the client — but they
+   * are two different things a route or a proxy can do, and until this change
+   * BOTH of them left the canvas holding its version. Covering only the parse
+   * failure would reproduce, for the widened half, exactly the gap DW-428
+   * exists to close.
+   */
+  const UNREADABLE: ReadonlyArray<readonly [string, () => unknown]> = [
+    [
+      "a body that would not parse",
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("Unexpected token '<', \"<html>\"... is not valid JSON");
+        },
+      }),
+    ],
+    [
+      "a body that parsed to no payload at all",
+      () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
+    ],
+  ];
+
+  for (const [label, unreadable] of UNREADABLE) {
+    it(`drops the stale If-Match after a 2xx with ${label} (DW-428)`, async () => {
+      // A 2xx from something sitting in front of the route is no proof the route
+      // did NOT run, so the held version may already have been superseded.
+      // Keeping it risks a 412 on the next save — a flat "your save was not
+      // applied", blamed on a change made somewhere else, when the change would
+      // be this owner's own. Sending nothing gets the 428, which claims only
+      // that the save could not be checked, and is true either way.
+      await mountWritable([
+        read(SEEDED),
+        unreadable,
+        () => ({
+          ok: false,
+          status: 428,
+          json: async () => ({ error: WRITE_PRECONDITION_REQUIRED_COPY }),
+        }),
+      ]);
+
+      typeChatModel("gpt-4.1");
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+
+      // The status line ARRIVED, so the unknown-outcome sentence stays off this
+      // branch — and a 2xx carrying no payload is not a landed save either.
+      await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+      expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+      expect(screen.queryByText(SETTINGS_SAVED_COPY)).toBeNull();
+      // …and nothing off the unusable body reaches the owner, whichever way it
+      // was unusable.
+      expect(screen.queryByText(/not valid JSON|"saved"/)).toBeNull();
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
+
+      // THE reconciliation: the next save carries NONE, and is refused with the
+      // 428 sentence rather than a conflict one, with every edit still on screen.
       typeChatModel("gpt-4.1-mini");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));

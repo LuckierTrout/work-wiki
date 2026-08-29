@@ -328,11 +328,11 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       // the same seam. What this surface knows at that point is "the current
       // version is unknown", and the next save saying so (428, "could not be
       // checked") is truthful, where the kept one would be a version this very
-      // save definitively superseded: it can only ever be refused, and it would
-      // be refused with 412's "somebody else changed this while you were
-      // editing" — a sentence about an actor that does not exist. Neither
-      // answer can clobber, so the tie is broken on which refusal tells the
-      // owner the truth.
+      // save definitively superseded: it can only ever be refused, and the 412
+      // it would be refused with states outright that the save was not applied
+      // and puts the change down to somewhere else — when the change is this
+      // owner's own save, one moment earlier. Neither answer can clobber, so
+      // the tie is broken on which refusal tells the owner the truth.
       setPayload(result.payload);
       setDraft(settingsDraftFromPayload(result.payload));
       setStatus(SETTINGS_SAVED_COPY);
@@ -340,25 +340,32 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       // Every edit stays on screen — a refused save must never be the thing
       // that loses it — and the SERVER's sentence is shown, never a transport's.
       setSaveError(result.message);
-      if (result.unconfirmed) {
-        // NOTHING came back, so the patch may already be stored (DW-376). The
-        // sentence above says so; this is the part the owner cannot do for
-        // themselves.
+      if (result.unconfirmed || result.unreadable) {
+        // TWO different facts, one action (DW-427). `unconfirmed`: nobody
+        // answered, so the patch may already be stored (DW-376). `unreadable`:
+        // the route answered a 2xx and its body yielded nothing we could read —
+        // which is why the two get DIFFERENT sentences above, one saying the
+        // outcome is unknown and one not claiming that over a status line that
+        // arrived.
         //
-        // The held version is the only thing on this surface that can now be a
-        // LIE: if the save landed, the stored config has moved past it. Clearing
-        // it is the same argument the landed-save branch makes above, arriving
-        // from the other side — what this surface knows is "the current version
-        // is unknown", and the next save saying so (428, "this could not be
-        // checked") is truthful, where the kept one would be refused as 412's
-        // "somebody else changed this while you were editing", a sentence about
-        // an actor that does not exist. Neither can clobber; the tie is broken
-        // on which refusal tells the owner the truth.
+        // They end at the same action because the held version is the one thing
+        // on this surface that can now be a LIE either way: a save that landed
+        // has moved the stored config past it, and a 2xx from an intermediary is
+        // no proof the route did not run. Clearing it is the same argument the
+        // landed-save branch makes above, arriving from the other side — what
+        // this surface knows is "the current version is unknown", and the next
+        // save saying so (428, "this could not be checked") is truthful either
+        // way. The kept version buys a 412 instead, which declares the save was
+        // not applied and blames a change made somewhere else — a description
+        // of the owner's own save, handed back to them as an outsider's edit,
+        // on the strength of a version this surface has no business trusting.
+        // Neither can clobber; the tie is broken on which refusal tells the
+        // owner the truth.
         //
         // The draft and the payload's VALUES are left exactly as they are: this
         // surface has no re-read that does not throw away every unsaved edit,
-        // and re-seeding from a server that never answered is not a thing it
-        // could do anyway.
+        // and there is nothing to re-seed FROM on either branch — no answer at
+        // all on one, no readable payload on the other.
         setPayload((current) =>
           current ? { ...current, version: undefined } : current,
         );
