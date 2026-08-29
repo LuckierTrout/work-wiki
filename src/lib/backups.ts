@@ -11,6 +11,9 @@ export interface BackupFileEntry {
   sha256: string;
 }
 
+/** Why a backup stopped short of the whole tenant. */
+export type BackupTruncationReason = "file-count" | "total-bytes";
+
 export interface BackupManifest {
   version: 1;
   id: string;
@@ -19,6 +22,15 @@ export interface BackupManifest {
   createdAt: string;
   files: BackupFileEntry[];
   totalBytes: number;
+  /**
+   * Present, and always `true`, only when a limit stopped the copy (DW-215).
+   * ABSENT on a whole backup — so a manifest written before this field existed
+   * and a manifest of a complete tenant are the same shape, and every reader
+   * that treats "no flag" as "complete" stays correct.
+   */
+  truncated?: true;
+  /** Which limit stopped it. Only ever set beside `truncated`. */
+  truncationReason?: BackupTruncationReason;
   verifiedAt?: string;
   verificationStatus?: "passed" | "failed";
   verificationError?: string;
@@ -26,8 +38,25 @@ export interface BackupManifest {
 
 export type BackupSummary = Omit<BackupManifest, "files"> & { fileCount: number };
 
+/**
+ * The ceilings a backup copies within.
+ *
+ * Injectable for the same reason `isOwnerBackupDue`'s `intervalMs` is: both
+ * truncation paths must be reachable from a test that writes four small files
+ * rather than 10k files or 2 GB. Production never passes them.
+ */
+export interface BackupLimits {
+  maxFiles: number;
+  maxBytes: number;
+}
+
 const MAX_BACKUP_FILES = 10_000;
 const MAX_BACKUP_BYTES = 2 * 1024 * 1024 * 1024;
+
+export const DEFAULT_BACKUP_LIMITS: BackupLimits = {
+  maxFiles: MAX_BACKUP_FILES,
+  maxBytes: MAX_BACKUP_BYTES,
+};
 
 function ownerTenant(owner: string): string {
   const value = tenantForOwner(owner);
@@ -53,18 +82,41 @@ async function sha256(data: ArrayBuffer): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function walkFiles(prefix: string): Promise<string[]> {
+/**
+ * Every file under `prefix`, stopping at `maxFiles` (DW-215).
+ *
+ * It used to THROW there, which made one oversized silo — an artifact history
+ * that grew past the cap, say — take the owner's whole backup down with it: no
+ * manifest, no ledger line, nothing recovered. A partial backup is strictly
+ * better than none, so the walk now stops and SAYS it stopped, and the caller
+ * carries that fact into the manifest.
+ */
+async function walkFiles(
+  prefix: string,
+  maxFiles: number,
+): Promise<{ files: string[]; truncated: boolean }> {
   const files: string[] = [];
-  const entries = await getStorage().listFiles(prefix);
-  for (const entry of entries) {
-    const child = `${prefix}/${entry.name}`;
-    if (entry.isDirectory) files.push(...await walkFiles(child));
-    else files.push(child);
-    if (files.length > MAX_BACKUP_FILES) {
-      throw new Error(`Backup exceeds the ${MAX_BACKUP_FILES}-file safety limit`);
+  let truncated = false;
+
+  const visit = async (dir: string): Promise<void> => {
+    const entries = await getStorage().listFiles(dir);
+    for (const entry of entries) {
+      if (truncated) return;
+      const child = `${dir}/${entry.name}`;
+      if (entry.isDirectory) {
+        await visit(child);
+        continue;
+      }
+      if (files.length >= maxFiles) {
+        truncated = true;
+        return;
+      }
+      files.push(child);
     }
-  }
-  return files;
+  };
+
+  await visit(prefix);
+  return { files, truncated };
 }
 
 async function writeManifest(manifest: BackupManifest): Promise<void> {
@@ -74,24 +126,41 @@ async function writeManifest(manifest: BackupManifest): Promise<void> {
   );
 }
 
+/**
+ * Copy the owner's tenant into a fresh backup prefix, TRUNCATING at the limits
+ * rather than failing there (DW-215).
+ *
+ * A truncated backup is a real backup: it writes its manifest, records its
+ * succeeded ledger line, and verifies — `verifyOwnerBackup` walks
+ * `manifest.files`, which is exactly the set that was copied. What it does not
+ * do is pretend to be whole; `truncated` / `truncationReason` are how every
+ * reader downstream, including the owner's own health desk, learns otherwise.
+ */
 async function createOwnerBackupUnlocked(
   owner: string,
   now: Date = new Date(),
+  limits: BackupLimits = DEFAULT_BACKUP_LIMITS,
 ): Promise<BackupManifest> {
   const tenant = ownerTenant(owner);
   const id = `bak_${now.toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID()}`;
   const sourceRoot = `tenants/${tenant}`;
   const root = backupRoot(owner, id);
-  const files = await walkFiles(sourceRoot);
+  const walked = await walkFiles(sourceRoot, limits.maxFiles);
   const entries: BackupFileEntry[] = [];
   let totalBytes = 0;
+  let truncationReason: BackupTruncationReason | null = walked.truncated
+    ? "file-count"
+    : null;
 
-  for (const sourcePath of files) {
+  for (const sourcePath of walked.files) {
     const data = await getStorage().readAsset(sourcePath);
-    totalBytes += data.byteLength;
-    if (totalBytes > MAX_BACKUP_BYTES) {
-      throw new Error("Backup exceeds the 2 GB safety limit");
+    if (totalBytes + data.byteLength > limits.maxBytes) {
+      // The byte ceiling stops the copy EARLIER in the same list than the file
+      // ceiling did, so it is the truer answer to "what stopped this backup".
+      truncationReason = "total-bytes";
+      break;
     }
+    totalBytes += data.byteLength;
     const relative = sourcePath.slice(sourceRoot.length + 1);
     const destination = `${root}/files/${relative}`;
     await getStorage().writeAsset(destination, data);
@@ -111,14 +180,21 @@ async function createOwnerBackupUnlocked(
     createdAt: now.toISOString(),
     files: entries,
     totalBytes,
+    ...(truncationReason !== null && {
+      truncated: true as const,
+      truncationReason,
+    }),
   };
+  const partial = backupTruncationLabel(manifest);
   await writeManifest(manifest);
   await recordOperationSafe(owner, {
     kind: "backup",
     operation: "create",
     status: "succeeded",
     subjectId: id,
-    detail: `${entries.length} files; ${totalBytes} bytes`,
+    detail: `${entries.length} files; ${totalBytes} bytes${
+      partial === null ? "" : `; ${partial}`
+    }`,
   });
   return manifest;
 }
@@ -126,9 +202,10 @@ async function createOwnerBackupUnlocked(
 export async function createOwnerBackup(
   owner: string,
   now: Date = new Date(),
+  limits: BackupLimits = DEFAULT_BACKUP_LIMITS,
 ): Promise<BackupManifest> {
   return withFileLock(`owner-backup:${ownerTenant(owner)}`, () =>
-    createOwnerBackupUnlocked(owner, now));
+    createOwnerBackupUnlocked(owner, now, limits));
 }
 
 export async function getBackupManifest(owner: string, id: string): Promise<BackupManifest | null> {
@@ -215,6 +292,32 @@ export async function verifyOwnerBackup(
     await writeManifest(manifest);
   }
   return manifest;
+}
+
+/**
+ * The owner-facing sentence for a backup that stopped at a limit, or null when
+ * the backup is whole (DW-215).
+ *
+ * ONE source for this copy, beside {@link backupSizeLabel}, because three
+ * surfaces name the same condition — the manifest field, the operation ledger's
+ * detail, and the health desk's row — and they drifted the moment each spelled
+ * it for itself. An unrecognised or absent reason still reports PARTIAL: a
+ * backup that says it is truncated is truncated whether or not this build knows
+ * the word for why, and silently calling it whole would be the one wrong
+ * answer.
+ */
+export function backupTruncationLabel(backup: {
+  truncated?: true;
+  truncationReason?: BackupTruncationReason;
+}): string | null {
+  if (!backup.truncated) return null;
+  if (backup.truncationReason === "file-count") {
+    return "partial — stopped at the file-count limit";
+  }
+  if (backup.truncationReason === "total-bytes") {
+    return "partial — stopped at the total-bytes limit";
+  }
+  return "partial — stopped at a safety limit";
 }
 
 /** Human-readable size used by API/UI without exposing raw backup contents. */

@@ -1974,7 +1974,9 @@ source_spec: `spec-dw-59-per-wiki-artifact-revisions.md`
 location: src/lib/wiki-artifact-revisions.ts, src/lib/backups.ts:56-85
 severity: medium
 reason: Every `writeWikiArtifact` writes a full copy under `tenants/<t>/wikis/<id>/revisions/<file>/` with no retention policy (deliberate — page revisions have none either), and `listWikiArtifactRevisions` stats every revision on each GET with an unbounded `Promise.all`. `src/lib/backups.ts` walks all of `tenants/<t>` against `MAX_BACKUP_FILES = 10_000` / `MAX_BACKUP_BYTES = 2 GB` and throws "Backup exceeds the safety limit" rather than degrading. Page revisions spread across slugs; these pile into one directory per artifact.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-artifact-revision-retention
+resolution-undo: 84bfd98071839dd86be731ef630afcbc9934935a3bfa9f85476f39a9417a8835 2026-08-28 7374617475733a206f70656e
 decision: 2026-08-21 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 decision: 2026-08-20 Cap revisions and degrade backups — Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.
 
@@ -4807,4 +4809,28 @@ location: vitest.config.ts (dom project) / AGENTS.md "Test environments"
 source_spec: `spec-dw-433-hidden-attribute-css-specificity.md`
 severity: low
 reason: Every failure is `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Identical at `baseline_revision` 144767a4 and after this change (13 failed files / 229 failed tests both times, +3 passing from the new suite). On Node 22.16.0 — the version `.github/workflows/ci.yml` pins — the full suite is green: 337 files / 7731 passed, 1 skipped. Raw jsdom 30.0.1 with an http URL does provide `localStorage`, so the gap is in how the vitest jsdom environment exposes it under Node 26, not in jsdom itself. Not a repository defect and not caused by this change, but it makes local verification on a current Node look catastrophically broken, and `AGENTS.md` "Test environments" does not warn of it.
+status: open
+
+### DW-540: A truncated backup keeps whatever the storage walk happened to reach first, so which of the owner's data survives the cut is arbitrary rather than prioritised.
+origin: spec-deferred a560134e9889
+location: src/lib/backups.ts:94-120
+source_spec: `spec-dw-215-artifact-revision-retention.md`
+severity: medium
+reason: `walkFiles` recurses in raw `listFiles` order and the filesystem provider returns `fs.readdir` order unsorted (`src/lib/storage/filesystem.ts:315-327`), so a single oversized silo early in the walk can consume the whole file/byte budget and every later prefix — including `wiki/`, the owner's actual pages — is dropped, flagged only as "partial". DW-215's own framing ("so a large artifact history degrades") reads as: the oversized history is what should fall off first. The literal instruction was "truncate ... instead of throwing", which this satisfies, so an ordering policy (walk `wiki/` before `raw/`, or exclude `revisions/` from a truncating pass) is a separate decision, not this story's.
+status: open
+
+### DW-541: The retention cap deletes artifact revisions silently — no surface tells the owner the history they are looking at is the newest 50 rather than all of them.
+origin: spec-deferred 097ec847ef17
+location: src/components/workbench/PreviewColumn.tsx
+source_spec: `spec-dw-215-artifact-revision-retention.md`
+severity: medium
+reason: The backup half carries its truncation all the way out (manifest -> `BackupSummary` -> `/api/system/backups` -> the health desk row). The revision half carries nothing: `GET /api/workbench/artifact/revisions` returns the bounded list with no `limit` or `truncated` sibling, and the History panel (`src/components/workbench/PreviewColumn.tsx`, around the `revisions.map(...)` render) shows a complete-looking list. The same Workbench already has `FILES_TRUNCATED_COPY` and `PREVIEW_TRUNCATED_COPY` for exactly this shape. The spec's Block If froze `ArtifactRevision` and the response shape, but a sibling response field plus a panel note would not violate it.
+status: open
+
+### DW-542: The backup copy loop reads a file's whole contents before discovering it does not fit under the byte ceiling.
+origin: spec-deferred f22219934525
+location: src/lib/backups.ts:155-163
+source_spec: `spec-dw-215-artifact-revision-retention.md`
+severity: low
+reason: `createOwnerBackupUnlocked` calls `getStorage().readAsset(sourcePath)` and only then tests `totalBytes + data.byteLength > limits.maxBytes`, so at the production ceiling an oversized object is materialised in memory in full to copy zero bytes of it — on every backup run. Pre-existing (the throwing version read first too), and `StorageProvider` already exposes `stat(path)`, which could gate the read. Not caused by DW-215; surfaced by reviewing the same loop.
 status: open

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { Alert } from "@/components/Alert";
-import type { BackupSummary } from "@/lib/backups";
+import { backupTruncationLabel, type BackupSummary } from "@/lib/backups";
 import type { RetrievalEvalCase, RetrievalEvalRun } from "@/lib/retrieval-evals";
 import type { SystemHealthSnapshot } from "@/lib/system-health";
 
@@ -211,21 +211,24 @@ export function SystemHealthDesk() {
             <div><p className="fmark">recovery</p><h2 className="display" style={heading}>Verified backups</h2></div>
             <button className="btn primary" type="button" onClick={() => void createBackup()} disabled={busy !== null}>{busy === "backup" ? "Backing up…" : "Create + verify"}</button>
           </div>
-          <p style={bodyCopy}>Snapshots copy your owner silo byte-for-byte, then restore it into a disposable isolated path and compare checksums. This never overwrites live data.</p>
+          <p style={bodyCopy}>Snapshots copy your owner silo byte-for-byte, then restore it into a disposable isolated path and compare checksums. This never overwrites live data. A silo past the safety limits is copied as far as the limits allow and the snapshot is marked partial.</p>
           <div style={{ marginTop: 18 }}>
-            {backups.length === 0 ? <Empty>No backups yet.</Empty> : backups.slice(0, 6).map((backup) => (
+            {backups.length === 0 ? <Empty>No backups yet.</Empty> : backups.slice(0, 6).map((backup) => {
+              const partialLabel = backupTruncationLabel(backup);
+              return (
               <article key={backup.id} className="spread" style={rowStyle}>
                 <div style={{ minWidth: 0 }}>
                   <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                     <span className="receipt" style={{ ...micro, color: backup.verificationStatus === "passed" ? "var(--accent)" : backup.verificationStatus === "failed" ? "var(--rust)" : "var(--muted)" }}>{backup.verificationStatus ?? "unverified"}</span>
                     <strong style={{ fontSize: 13.5 }}>{compactDate(backup.createdAt)}</strong>
                   </div>
-                  <p className="receipt" style={{ ...micro, margin: "6px 0 0" }}>{backup.fileCount} files · {sizeLabel(backup.totalBytes)}</p>
+                  <p className="receipt" style={{ ...micro, margin: "6px 0 0" }}>{backup.fileCount} files · {sizeLabel(backup.totalBytes)}{partialLabel ? ` · ${partialLabel}` : ""}</p>
                   {backup.verificationError && <p style={{ color: "var(--rust)", fontSize: 12, margin: "6px 0 0" }}>{backup.verificationError}</p>}
                 </div>
                 <button className="btn ghost" type="button" onClick={() => void verifyBackup(backup.id)} disabled={busy !== null}>{busy === backup.id ? "Checking…" : "Verify"}</button>
               </article>
-            ))}
+              );
+            })}
           </div>
         </div>
 

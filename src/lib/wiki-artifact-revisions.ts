@@ -37,9 +37,30 @@
  * The SHAPE mirrors `revisions.ts` deliberately (monotonic timestamp stems, a
  * `.meta.json` sidecar for `author`/`reason`, a concurrent stat+meta listing,
  * ENOENT → null / [] with `logger.warn` on anything else), so the two histories
- * read the same way from a route and neither becomes the odd one out. What it
- * does NOT copy is retention: page revisions have no cap, no pruning and no
- * diffing, and neither does this.
+ * read the same way from a route and neither becomes the odd one out.
+ *
+ * RETENTION IS WHERE THE TWO DIVERGE (DW-215). Page revisions spread across one
+ * directory PER SLUG, so no single directory grows with a user's whole editing
+ * life. Artifact revisions do the opposite: every edit of the same `schema.md`
+ * lands in ONE directory, which an unbounded history turns into a directory the
+ * listing must read in full on every GET — and, worse, into enough files under
+ * `tenants/<t>` to push `backups.ts`'s walk past its own limits. So this module
+ * carries a cap that `revisions.ts` still does not need:
+ *
+ *   - {@link MAX_ARTIFACT_REVISIONS} is BOTH the retention cap and the default
+ *     listing bound, deliberately the same number: a history sitting at the cap
+ *     is shown whole, and only a backlog written before the cap existed is ever
+ *     elided from a listing.
+ *   - The prune runs at WRITE time, as a tail on {@link saveWikiArtifactRevision}
+ *     AFTER the revision `.md` has landed, and is FAIL-SOFT for exactly the
+ *     reason the sidecar write is: a snapshot that succeeded must never be
+ *     reported as failed because the housekeeping behind it did not. It takes no
+ *     lock of its own — every caller already holds `wikis:<tenant>`.
+ *   - The listing's bound is applied to the filename STEMS before any `stat`,
+ *     which is what makes the read cheap: the stem IS the timestamp, so the
+ *     newest N are knowable from `listFiles` alone and only those cost I/O.
+ *
+ * Still no diffing and no compaction: a revision is whole bytes or it is gone.
  *
  * Nothing in here takes a lock. Every writer already holds `wikis:<tenant>`
  * (`withFileLock` is not reentrant — see `src/lib/lock.ts`), and every reader is
@@ -128,9 +149,121 @@ function canonicalStem(stem: string): number | null {
   return timestamp;
 }
 
+/**
+ * The most recent canonical stems in a revision directory, newest first.
+ *
+ * The ORDER is knowable without any I/O — the stem IS the timestamp — which is
+ * the whole reason both the prune and the listing can bound their work here,
+ * before a single `stat` or read. Non-canonical stems ({@link canonicalStem})
+ * are dropped, so neither half ever names a file the readers would refuse.
+ */
+function sortedCanonicalStems(
+  entries: { name: string; isDirectory: boolean }[],
+): number[] {
+  return entries
+    .filter((entry) => !entry.isDirectory && entry.name.endsWith(".md"))
+    .map((entry) => canonicalStem(entry.name.slice(0, -3)))
+    .filter((timestamp): timestamp is number => timestamp !== null)
+    .sort((a, b) => b - a);
+}
+
 // ---------------------------------------------------------------------------
 // Core API
 // ---------------------------------------------------------------------------
+
+/**
+ * How many revisions of one artifact are kept, and how many a listing returns
+ * by default.
+ *
+ * ONE constant for both on purpose — see the retention paragraph in the module
+ * header. Raising it makes older revisions visible again only if they survived
+ * an earlier prune; it does not resurrect anything.
+ */
+export const MAX_ARTIFACT_REVISIONS = 50;
+
+/**
+ * A caller's `limit` as a count this module can `slice` with.
+ *
+ * `slice` treats a fractional bound loosely and `NaN` as ZERO — which would
+ * turn a mis-computed limit into a silently EMPTY history, the one failure mode
+ * a history must never have. Non-finite (`NaN`, either Infinity) falls back to
+ * the cap; everything else is floored to a whole count, never below zero.
+ */
+function boundedLimit(limit: number): number {
+  if (!Number.isFinite(limit)) return MAX_ARTIFACT_REVISIONS;
+  return Math.max(0, Math.floor(limit));
+}
+
+/**
+ * Delete every revision of `file` beyond the newest {@link MAX_ARTIFACT_REVISIONS},
+ * each `.md` together with its `.meta.json` sidecar.
+ *
+ * TWO ORDERING RULES, both there so a failed prune stays RETRYABLE:
+ *
+ *   1. THE SIDECAR GOES FIRST, and the `.md` only if the sidecar went. A stem is
+ *      discoverable ONLY through its `.md` — {@link sortedCanonicalStems} reads
+ *      nothing else — so removing the `.md` first and then failing on the
+ *      sidecar would strand that sidecar permanently: no later prune could ever
+ *      name it again. In this order a failure leaves the stem whole and the next
+ *      write sweeps it again.
+ *   2. EVERY DOOMED STEM IS ATTEMPTED, and the failures are thrown as one at the
+ *      end. Bailing on the first would let a single undeletable file block the
+ *      prune of every OLDER revision behind it — the directory would then grow
+ *      without bound, which is the exact failure this cap exists to prevent.
+ *
+ * A missing file is not a failure: `deleteFile` throws on one
+ * (provider-dependent), and a revision saved with neither author nor reason HAS
+ * no sidecar, so that absence is the thing being asked for. Anything else is —
+ * and the CALLER is what makes it fail-soft, the same division of labour the
+ * sidecar write uses.
+ *
+ * No lock: the only caller runs inside `wikis:<tenant>` already and
+ * `withFileLock` is not reentrant.
+ */
+async function pruneArtifactRevisions(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+): Promise<void> {
+  const storage = getStorage();
+  const entries = await storage.listFiles(
+    wikiArtifactRevisionsDir(owner, wikiId, file),
+  );
+
+  const deleteIfPresent = async (name: string): Promise<void> => {
+    try {
+      await storage.deleteFile(
+        wikiArtifactRevisionPath(owner, wikiId, file, name),
+      );
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+    }
+  };
+
+  const failed: number[] = [];
+  let firstError: unknown;
+
+  for (const timestamp of sortedCanonicalStems(entries).slice(
+    MAX_ARTIFACT_REVISIONS,
+  )) {
+    try {
+      await deleteIfPresent(`${timestamp}.meta.json`);
+      await deleteIfPresent(`${timestamp}.md`);
+    } catch (error) {
+      // This stem stays on disk, whole and still discoverable. Keep sweeping:
+      // the revisions behind it are older still and no less over the cap.
+      if (failed.length === 0) firstError = error;
+      failed.push(timestamp);
+    }
+  }
+
+  if (failed.length > 0) {
+    throw new Error(
+      `${failed.length} revision(s) beyond the cap could not be deleted (${failed.join(", ")})`,
+      { cause: firstError },
+    );
+  }
+}
 
 /**
  * Snapshot `content` as a revision of `file`.
@@ -153,6 +286,14 @@ function canonicalStem(stem: string): number | null {
  * The sidecar is written only when there is something to record, so an
  * unattributed revision costs one write rather than two and reads back as a
  * plain `{ timestamp, date, file, sizeBytes }`.
+ *
+ * THE PRUNE IS THE SAME BARGAIN, ONE STEP FURTHER OUT. It runs last, once the
+ * revision and its attribution are both on disk, and it warns rather than
+ * throws: an owner whose bytes are safely in the history must not be told the
+ * save failed because a file from fifty edits ago could not be removed. What a
+ * failed prune leaves behind is a directory over the cap by however many stems
+ * resisted deletion — every one of them still whole and still discoverable, so
+ * the next write attempts them all again.
  */
 export async function saveWikiArtifactRevision(
   owner: string,
@@ -189,23 +330,42 @@ export async function saveWikiArtifactRevision(
       );
     }
   }
+
+  try {
+    await pruneArtifactRevisions(owner, wikiId, file);
+  } catch (error) {
+    logger.warn(
+      "wiki-artifact-revisions",
+      `the revision of "${file}" at ${timestamp} in wiki "${wikiId}" was saved, but pruning the history back to ${MAX_ARTIFACT_REVISIONS} revisions failed — the directory holds more than the cap until the next write`,
+      error,
+    );
+  }
 }
 
 /**
- * Every revision of `file`, newest first. Empty when the artifact has never
- * been overwritten (or the Wiki is gone) — an absent directory is the normal
- * first-edit state, not an error.
+ * The newest `limit` revisions of `file`, newest first. Empty when the artifact
+ * has never been overwritten (or the Wiki is gone) — an absent directory is the
+ * normal first-edit state, not an error.
  *
- * The per-revision work (a `stat`, then the optional sidecar) runs for ALL
- * revisions in parallel, the same way `listRevisions` does it: the op COUNT is
- * unchanged, but the listing is ~2 round-trips DEEP rather than 2 per revision,
- * so a heavily-revised artifact does not cost latency proportional to its
- * history.
+ * The bound is applied to the STEMS, before any per-revision I/O, and that
+ * placement is the point: slicing the built array instead would still `stat`
+ * and sidecar-read every file on disk, so the read cost would still grow with
+ * the history. Because the stem is the timestamp, the newest `limit` can be
+ * chosen from `listFiles` alone.
+ *
+ * The per-revision work (a `stat`, then the optional sidecar) then runs for
+ * those in parallel, the same way `listRevisions` does it: the listing is ~2
+ * round-trips DEEP rather than 2 per revision.
+ *
+ * `limit` defaults to {@link MAX_ARTIFACT_REVISIONS}, the retention cap, so a
+ * history written under the cap is returned whole and only a pre-cap backlog is
+ * ever elided. Callers pass their own only to see further back.
  */
 export async function listWikiArtifactRevisions(
   owner: string,
   wikiId: string,
   file: WikiArtifactFile,
+  limit = MAX_ARTIFACT_REVISIONS,
 ): Promise<ArtifactRevision[]> {
   const storage = getStorage();
   const dir = wikiArtifactRevisionsDir(owner, wikiId, file);
@@ -224,17 +384,15 @@ export async function listWikiArtifactRevisions(
     return [];
   }
 
-  const built = await Promise.all(
-    entries.map(async (entry): Promise<ArtifactRevision | null> => {
-      // `.meta.json` also ends in `.json`, not `.md`, so the sidecars are
-      // skipped here and picked up beside their own `.md` below.
-      if (entry.isDirectory || !entry.name.endsWith(".md")) return null;
-      const timestamp = canonicalStem(entry.name.slice(0, -3));
-      if (timestamp === null) return null;
+  // `.meta.json` also ends in `.json`, not `.md`, so the sidecars are skipped
+  // here and picked up beside their own `.md` below.
+  const stems = sortedCanonicalStems(entries).slice(0, boundedLimit(limit));
 
+  const built = await Promise.all(
+    stems.map(async (timestamp): Promise<ArtifactRevision | null> => {
       try {
         const stat = await storage.stat(
-          wikiArtifactRevisionPath(owner, wikiId, file, entry.name),
+          wikiArtifactRevisionPath(owner, wikiId, file, `${timestamp}.md`),
         );
         const meta = await readWikiArtifactRevisionMeta(
           owner,
@@ -256,7 +414,7 @@ export async function listWikiArtifactRevisions(
         if (!isEnoent(error)) {
           logger.warn(
             "wiki-artifact-revisions",
-            `unexpected error stating revision file "${entry.name}":`,
+            `unexpected error stating revision file "${timestamp}.md":`,
             error,
           );
         }
@@ -265,9 +423,11 @@ export async function listWikiArtifactRevisions(
     }),
   );
 
-  return built
-    .filter((revision): revision is ArtifactRevision => revision !== null)
-    .sort((a, b) => b.timestamp - a.timestamp);
+  // Already newest-first: the stems were sorted before the work was bounded,
+  // and dropping nulls preserves that order.
+  return built.filter(
+    (revision): revision is ArtifactRevision => revision !== null,
+  );
 }
 
 /** One revision's content, or null when there is no such revision. */

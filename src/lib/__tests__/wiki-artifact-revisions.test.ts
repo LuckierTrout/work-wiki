@@ -36,6 +36,7 @@ import {
 import { _resetStorage, getStorage } from "../storage";
 import { readLog } from "../wiki-log";
 import {
+  MAX_ARTIFACT_REVISIONS,
   listWikiArtifactRevisions,
   readWikiArtifactRevision,
   readWikiArtifactRevisionMeta,
@@ -971,6 +972,319 @@ describe("per-Wiki artifact revisions", () => {
     expect(await readSchema(wiki)).toBe(FIRST_EDIT);
     expect(await readDataVersion()).toBe(before);
     expect(await readLog()).toBe(logBefore);
+  });
+
+  // -------------------------------------------------------------------------
+  // Retention and the bounded listing (DW-215)
+  // -------------------------------------------------------------------------
+  //
+  // Unlike page revisions, every edit of one artifact lands in ONE directory,
+  // so an unbounded history is both a listing that reads the whole directory on
+  // every GET and enough files under `tenants/<t>` to push the backup walk past
+  // its own limits. The backlogs below are written STRAIGHT TO DISK: what is
+  // under test is the cap, not fifty round-trips through `writeWikiArtifact`.
+
+  /**
+   * `count` canonical revisions on disk, oldest first.
+   *
+   * `sidecars` is a knob because the sidecar is OPTIONAL on a real revision —
+   * one saved with neither author nor reason has none — and the prune's ENOENT
+   * tolerance is the branch that exists for exactly that shape.
+   */
+  async function seedBacklog(
+    wiki: WikiRecord,
+    count: number,
+    { sidecars = true }: { sidecars?: boolean } = {},
+    base = 1_700_000_000_000,
+  ): Promise<number[]> {
+    const dir = path.join(tmpDir, wikiArtifactRevisionsDir(OWNER, wiki.id, "schema.md"));
+    await fs.mkdir(dir, { recursive: true });
+    const stems: number[] = [];
+    for (let index = 0; index < count; index += 1) {
+      // Well below `Date.now()`, so a real snapshot taken afterwards is always
+      // the newest stem in the directory.
+      const stem = base + index;
+      stems.push(stem);
+      await fs.writeFile(path.join(dir, `${stem}.md`), `backlog ${index}`, "utf-8");
+      if (sidecars) {
+        await fs.writeFile(
+          path.join(dir, `${stem}.meta.json`),
+          JSON.stringify({ author: OWNER }),
+          "utf-8",
+        );
+      }
+    }
+    return stems;
+  }
+
+  it("keeps FIFTY revisions — the number itself, not whatever the constant says", () => {
+    // Every other case here states its setup AND its expectation in terms of
+    // the constant, so all of them stay green at any value: dropping the cap to
+    // 3 would silently destroy 47 more revisions per artifact and no assertion
+    // would notice. This is the one place the value is pinned.
+    expect(MAX_ARTIFACT_REVISIONS).toBe(50);
+  });
+
+  async function revisionDirNames(wiki: WikiRecord): Promise<string[]> {
+    return fs.readdir(
+      path.join(tmpDir, wikiArtifactRevisionsDir(OWNER, wiki.id, "schema.md")),
+    );
+  }
+
+  it("prunes back to exactly the cap, taking each pruned revision's sidecar with it", async () => {
+    const wiki = await seed();
+    const seeded = await readSchema(wiki);
+    const backlog = await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS);
+
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+
+    const names = await revisionDirNames(wiki);
+    const kept = names.filter((name) => name.endsWith(".md"));
+    expect(kept).toHaveLength(MAX_ARTIFACT_REVISIONS);
+    // The one that fell off is the OLDEST, and its attribution went with it —
+    // an orphan `.meta.json` would be a sidecar for a revision nobody can read.
+    expect(names).not.toContain(`${backlog[0]}.md`);
+    expect(names).not.toContain(`${backlog[0]}.meta.json`);
+    for (const name of names.filter((entry) => entry.endsWith(".meta.json"))) {
+      expect(names).toContain(`${name.slice(0, -".meta.json".length)}.md`);
+    }
+
+    // The survivor set is the newest ones, and the newest of all is the
+    // snapshot this write just took.
+    const revisions = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
+    expect(revisions).toHaveLength(MAX_ARTIFACT_REVISIONS);
+    expect(revisions[0].timestamp).toBeGreaterThan(backlog[backlog.length - 1]);
+    expect(
+      await readWikiArtifactRevision(OWNER, wiki.id, "schema.md", revisions[0].timestamp),
+    ).toBe(seeded);
+  });
+
+  it("is FAIL-SOFT about pruning: a delete that throws leaves the new revision standing", async () => {
+    const wiki = await seed();
+    await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    vi.spyOn(getStorage(), "deleteFile").mockRejectedValue(new Error("delete is down"));
+
+    // A snapshot that LANDED is never reported as failed because the
+    // housekeeping behind it did not.
+    await expect(
+      writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT),
+    ).resolves.toBeUndefined();
+
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          call[0] === "wiki-artifact-revisions" && String(call[1]).includes("pruning"),
+      ),
+    ).toBe(true);
+    // The caller does NOT claim the snapshot was lost, because it was not.
+    expect(
+      warn.mock.calls.some(
+        (call) => call[0] === "wikis" && String(call[1]).includes("snapshotting"),
+      ),
+    ).toBe(false);
+
+    vi.restoreAllMocks();
+    expect(await readSchema(wiki)).toBe(FIRST_EDIT);
+    // One over the cap until the next write sweeps it — the only cost.
+    const names = await revisionDirNames(wiki);
+    expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(
+      MAX_ARTIFACT_REVISIONS + 1,
+    );
+  });
+
+  it("bounds a pre-cap backlog to the newest revisions, and stats only those", async () => {
+    const wiki = await seed();
+    const backlog = await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS + 10);
+    const storage = getStorage();
+    const realStat = storage.stat.bind(storage);
+    const statted: string[] = [];
+    vi.spyOn(storage, "stat").mockImplementation(async (target) => {
+      if (target.includes("/revisions/schema.md/")) statted.push(target);
+      return realStat(target);
+    });
+
+    const revisions = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
+
+    expect(revisions).toHaveLength(MAX_ARTIFACT_REVISIONS);
+    // Newest first, and the elided ones are the oldest.
+    const newest = backlog.slice(-MAX_ARTIFACT_REVISIONS).reverse();
+    expect(revisions.map((revision) => revision.timestamp)).toEqual(newest);
+    // The BOUND IS THE POINT: the read cost is the constant, not the history.
+    // Slicing the built array instead would have statted all sixty.
+    expect(statted).toHaveLength(MAX_ARTIFACT_REVISIONS);
+
+    vi.restoreAllMocks();
+    // And the route hands back the same bounded list in the shape it always had.
+    const res = await get("path=schema.md");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { revisions: ReadOneRevision[] };
+    expect(body.revisions).toHaveLength(MAX_ARTIFACT_REVISIONS);
+    expect(body.revisions[0].timestamp).toBe(newest[0]);
+    expect(Object.keys(body.revisions[0]).sort()).toEqual(
+      ["author", "date", "file", "sizeBytes", "timestamp"],
+    );
+  });
+
+  it("ignores non-canonical stems when pruning as well as when listing", async () => {
+    const wiki = await seed();
+    const backlog = await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS);
+    const dir = path.join(tmpDir, wikiArtifactRevisionsDir(OWNER, wiki.id, "schema.md"));
+    const junk = ["012.md", "1e12.md", "12.5.md", "notes.txt"];
+    for (const name of junk) await fs.writeFile(path.join(dir, name), "junk", "utf-8");
+
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+
+    const names = await revisionDirNames(wiki);
+    // Never listed, so never counted toward the cap — and never DELETED either:
+    // `canonicalStem` is the one gate, and a name it rejects is not this
+    // module's file to remove.
+    for (const name of junk) expect(names).toContain(name);
+    expect(names).not.toContain(`${backlog[0]}.md`);
+    const revisions = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md");
+    expect(revisions).toHaveLength(MAX_ARTIFACT_REVISIONS);
+    expect(revisions.every((revision) => revision.timestamp > 1_000_000_000_000)).toBe(true);
+  });
+
+  it("prunes NOTHING while the history is under the cap", async () => {
+    const wiki = await seed();
+    await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS - 2);
+    const deleted: string[] = [];
+    const storage = getStorage();
+    const realDelete = storage.deleteFile.bind(storage);
+    vi.spyOn(storage, "deleteFile").mockImplementation(async (target) => {
+      if (target.includes("/revisions/schema.md/")) deleted.push(target);
+      return realDelete(target);
+    });
+
+    // One more lands, taking the directory to cap − 1: still under, so an
+    // over-eager prune has nothing it is allowed to touch.
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+
+    expect(deleted).toEqual([]);
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md")).toHaveLength(
+      MAX_ARTIFACT_REVISIONS - 1,
+    );
+  });
+
+  it("prunes a revision that never had a sidecar, because a missing one is not a failure", async () => {
+    const wiki = await seed();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    // Unattributed revisions — the shape a snapshot saved with neither author
+    // nor reason has on disk. `deleteFile` throws on the absent `.meta.json`,
+    // and the prune must read that as "already gone", not as a fault.
+    const backlog = await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS, { sidecars: false });
+
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+
+    const names = await revisionDirNames(wiki);
+    expect(names).not.toContain(`${backlog[0]}.md`);
+    expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(
+      MAX_ARTIFACT_REVISIONS,
+    );
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          call[0] === "wiki-artifact-revisions" && String(call[1]).includes("pruning"),
+      ),
+    ).toBe(false);
+  });
+
+  it("sweeps PAST an undeletable revision instead of stopping at it", async () => {
+    const wiki = await seed();
+    const backlog = await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS + 3);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const storage = getStorage();
+    const realDelete = storage.deleteFile.bind(storage);
+    // The OLDEST stem is the first one the sweep reaches. Bailing there would
+    // leave the three behind it unpruned forever — the directory would grow
+    // without bound, which is the failure the cap exists to prevent.
+    vi.spyOn(storage, "deleteFile").mockImplementation(async (target) => {
+      if (target.includes(`/${backlog[0]}.`)) throw new Error("stuck file");
+      return realDelete(target);
+    });
+
+    await expect(
+      writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT),
+    ).resolves.toBeUndefined();
+
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          call[0] === "wiki-artifact-revisions" && String(call[1]).includes("pruning"),
+      ),
+    ).toBe(true);
+
+    vi.restoreAllMocks();
+    const names = await revisionDirNames(wiki);
+    // Everything else beyond the cap went; only the stuck one is over.
+    expect(names.filter((name) => name.endsWith(".md"))).toHaveLength(
+      MAX_ARTIFACT_REVISIONS + 1,
+    );
+    expect(names).toContain(`${backlog[0]}.md`);
+    expect(names).not.toContain(`${backlog[1]}.md`);
+    expect(names).not.toContain(`${backlog[2]}.md`);
+  });
+
+  it("never strands a sidecar: a failed sidecar delete leaves its `.md` in place", async () => {
+    const wiki = await seed();
+    const backlog = await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS);
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const storage = getStorage();
+    const realDelete = storage.deleteFile.bind(storage);
+    vi.spyOn(storage, "deleteFile").mockImplementation(async (target) => {
+      if (target.endsWith(`/${backlog[0]}.meta.json`)) throw new Error("stuck sidecar");
+      return realDelete(target);
+    });
+
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", FIRST_EDIT);
+
+    vi.restoreAllMocks();
+    const names = await revisionDirNames(wiki);
+    // BOTH still there. The stem is discoverable only through its `.md`, so
+    // deleting that first and failing on the sidecar would have stranded the
+    // sidecar permanently — no later prune could ever name it again.
+    expect(names).toContain(`${backlog[0]}.md`);
+    expect(names).toContain(`${backlog[0]}.meta.json`);
+
+    // And because the pair is intact, the NEXT write retries and finishes it.
+    await writeWikiArtifact(OWNER, wiki.id, "schema.md", SECOND_EDIT);
+    const after = await revisionDirNames(wiki);
+    expect(after).not.toContain(`${backlog[0]}.md`);
+    expect(after).not.toContain(`${backlog[0]}.meta.json`);
+    expect(after.filter((name) => name.endsWith(".md"))).toHaveLength(
+      MAX_ARTIFACT_REVISIONS,
+    );
+  });
+
+  it("honours an explicit limit, and refuses to read a bad one as an empty history", async () => {
+    const wiki = await seed();
+    const backlog = await seedBacklog(wiki, 8);
+    const newest = [...backlog].reverse();
+
+    const three = await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md", 3);
+    expect(three.map((revision) => revision.timestamp)).toEqual(newest.slice(0, 3));
+
+    // A limit larger than the history is simply the whole history.
+    expect(
+      await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md", 500),
+    ).toHaveLength(8);
+    // Zero is a real, if useless, answer; a fraction is floored.
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md", 0)).toHaveLength(0);
+    expect(
+      await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md", 2.9),
+    ).toHaveLength(2);
+    expect(
+      await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md", -4),
+    ).toHaveLength(0);
+    // NON-FINITE falls back to the cap. `slice` reads NaN as ZERO, which would
+    // report a mis-computed limit as "this artifact has no history" — the one
+    // answer a history must never give.
+    for (const bad of [Number.NaN, Infinity, -Infinity]) {
+      expect(
+        await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md", bad),
+      ).toHaveLength(8);
+    }
   });
 
   it("POST is 401 signed out and 403 for a non-owner", async () => {
