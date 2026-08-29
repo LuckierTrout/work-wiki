@@ -228,7 +228,9 @@ location: src/lib/sidecar.ts
 source_spec: `spec-1-3-nashsu-icon-rail-and-workbench-chrome.md`
 severity: medium
 reason: `src/lib/sidecar.ts` documents the fail-closed answer but not the CORS headers the sidecar must return for the deployed origin, Chrome's Private Network Access preflight for a public-to-local request, or Safari's mixed-content handling of a loopback URL. Under any of those the probe answers `down` permanently and Chat shows "Start the local sidecar on 127.0.0.1:19828 to use Chat." to an owner whose sidecar is already running. Epic 1 needs only the up/down signal, and Epic 3 owns the sidecar itself — the response contract belongs with whichever story first ships a real one.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw2-sidecar-cross-origin-contract
+resolution-undo: b49ba3f56af2150ffab199698c6a889efc8567811b6262de8984f8363c5207b7 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Allow a configured deployment origin — Add a configured allowed-origin list to sidecar/server.mjs alongside the loopback default, answer the Private Network Access preflight for it, document the full response contract (CORS headers, PNA, mixed-content) in src/lib/sidecar.ts, and pin that a non-loopback configured origin passes the probe while an unconfigured one still fails closed.
 
 ### DW-26: Switching away from Wiki unmounts `WikiWorkbench`, discarding an open Create Wiki dialog, a typed wiki name, and any error already shown.
@@ -5389,4 +5391,36 @@ location: src/lib/research-projects.ts:140
 source_spec: `spec-dw-442-research-create-drops-source-urls.md`
 severity: low
 reason: Since DW-442 the run's patch is the sole writer of `project.sourceUrls` (`research-runtime.ts:1559` -> `updateResearchProject`). The store tests cover only the `javascript:` protocol filter. A run whose provider returns more than 40 unique results silently stores 40, and the Studio's "Collect N URLs" then ingests 40 of them with nothing saying so. The cap predates this change; only its exposure is new.
+status: open
+
+### DW-604: No operator-facing surface documents WORKWIKI_SIDECAR_ALLOWED_ORIGINS, so an owner whose deployed page reports down has nowhere outside the source to learn the knob exists.
+origin: spec-deferred 709eca390daa
+location: .env.example
+source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
+severity: low
+reason: The env is described only in a JSDoc in sidecar/server.mjs and the module comment in src/lib/sidecar.ts. `.env.example` and DEPLOY.md carry no sidecar variables at all, so there is no existing convention this change skipped — but the whole point of DW-25 is explainability to the owner, and the two places it is explained are both source files.
+status: open
+
+### DW-605: LOOPBACK_ORIGIN_RE admits only 127.0.0.1 and localhost, so a dev server on IPv6 loopback (http://[::1]:3000) is refused with no configuration.
+origin: spec-deferred 95592f2fb71c
+location: sidecar/server.mjs:88
+source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
+severity: low
+reason: sidecar/server.mjs:88 is `^https?://(127\.0\.0\.1|localhost)(:\d+)?$`. Pre-existing since Epic 3 and deliberately untouched here (the intent forbids widening the regex); the new contract prose now states the limit explicitly rather than fixing it.
+status: open
+
+### DW-606: The `listen()` test harness is now duplicated in three suites, which will drift.
+origin: spec-deferred b50971939acf
+location: src/lib/__tests__/sidecar.test.ts
+source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
+severity: low
+reason: Near-verbatim copies live in src/lib/__tests__/sidecar.test.ts, src/lib/__tests__/workbench-epic8.test.ts and src/lib/__tests__/epic8-remediation.test.ts, `as never` casts included. AGENTS.md's test-infra conventions call for one shared helper per concern (the DW-117 precedent for `walkFiles`); extracting one is a separate change touching three suites.
+status: open
+
+### DW-607: An owner on an unconfigured deployed origin still sees "Start the local sidecar..." for a sidecar that is running — the product copy cannot distinguish "not running" from "running but unreachable from
+origin: spec-deferred d3589d54789c
+location: src/lib/workbench-modes.ts:81
+source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
+severity: medium
+reason: CHAT_SIDECAR_DOWN_COPY (src/lib/workbench-modes.ts:81) is unchanged and useSidecarStatus still collapses every failure into "down". This change makes that state configurable away and explicable to a reader of the source, but not to the owner in the product. The recorded 2026-08-28 decision names only sidecar/server.mjs, src/lib/sidecar.ts and the pins, so distinguishing the two states in copy is beyond it.
 status: open

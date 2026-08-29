@@ -5,9 +5,23 @@
  * loopback health endpoint may report `up`. A refused port, a 500, and a
  * process that accepts the connection and then wedges must all answer `down`,
  * and the wedged case must answer at all rather than leaving the rail stuck on
- * "unknown" forever. The fetch is injected so none of this touches a network.
+ * "unknown" forever. The probe suite injects its fetch, so none of THOSE tests
+ * touches a network.
+ *
+ * The DW-25 suite at the bottom is different on purpose: it binds a real
+ * sidecar on an ephemeral port and drives it with the global `fetch`, because
+ * the thing under test is response HEADERS on a cross-origin request and a
+ * stub would only re-state the assertion.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Server } from "node:http";
+
+import {
+  SIDECAR_ALLOWED_ORIGINS_ENV,
+  allowSidecarOrigin,
+  createSidecarServer,
+  parseSidecarAllowedOrigins,
+} from "../../../sidecar/server.mjs";
 import {
   SIDECAR_HEALTH_URL,
   SIDECAR_ORIGIN,
@@ -93,5 +107,414 @@ describe("probeSidecar", () => {
   it("budgets the wait rather than trusting the far side", () => {
     expect(SIDECAR_PROBE_TIMEOUT_MS).toBeGreaterThan(0);
     expect(SIDECAR_PROBE_TIMEOUT_MS).toBeLessThanOrEqual(5000);
+  });
+});
+
+/**
+ * DW-25 — the cross-origin contract a deployed HTTPS page has to satisfy.
+ *
+ * The probe suite above fails closed on a rejected fetch, which is right; what
+ * it cannot tell the owner is WHY a running sidecar is unreachable. These pin
+ * the door's half of the answer: loopback unchanged with nothing configured, a
+ * NAMED deployment origin admitted, everything else refused bare, and Chrome's
+ * Private Network Access preflight answered only when it is asked for and only
+ * for an origin already admitted.
+ */
+describe("sidecar cross-origin contract (DW-25)", () => {
+  const open: Server[] = [];
+  let savedEnv: string | undefined;
+
+  beforeEach(() => {
+    // A developer machine with this exported would otherwise make "refuses an
+    // unconfigured origin" pass or fail for a reason that is not the code.
+    savedEnv = process.env[SIDECAR_ALLOWED_ORIGINS_ENV];
+    delete process.env[SIDECAR_ALLOWED_ORIGINS_ENV];
+  });
+
+  afterEach(async () => {
+    if (savedEnv === undefined) delete process.env[SIDECAR_ALLOWED_ORIGINS_ENV];
+    else process.env[SIDECAR_ALLOWED_ORIGINS_ENV] = savedEnv;
+    await Promise.all(
+      open.splice(0).map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            // undici keeps sockets alive, and `close()` alone waits for every
+            // one of them — which is a hung afterEach, not a failing test.
+            server.closeAllConnections();
+            server.close(() => resolve());
+          }),
+      ),
+    );
+  });
+
+  async function listen(allowedOrigins?: string[]): Promise<string> {
+    return listenWith({}, allowedOrigins);
+  }
+
+  async function listenWith(
+    extra: Record<string, unknown>,
+    allowedOrigins?: string[],
+  ): Promise<string> {
+    const source = {
+      current: () => ({
+        enabled: true,
+        allowUnauthenticated: true,
+        token: null,
+        tokenSource: "none",
+        skillEnablement: {},
+      }),
+      refresh: async () => source.current(),
+    };
+    const server = createSidecarServer({
+      settingsSource: source,
+      kernel: { base: "", token: "" },
+      wikiRegistry: { current: () => [], currentId: () => null } as never,
+      ...extra,
+      // Absent entirely when the caller passes nothing, so the option's own
+      // default — the env read — is what runs.
+      ...(allowedOrigins === undefined ? {} : { allowedOrigins }),
+    }) as Server;
+    open.push(server);
+    await new Promise<void>((resolve, reject) => {
+      // Without this a taken port or a permissions refusal hangs the test out
+      // to the suite timeout instead of naming what went wrong.
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (typeof address !== "object" || address === null) {
+      throw new Error(`sidecar test server did not bind a port: ${String(address)}`);
+    }
+    return `http://127.0.0.1:${address.port}`;
+  }
+
+  it("admits loopback with nothing configured, exactly as before", async () => {
+    const base = await listen();
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "http://localhost:3000" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:3000",
+    );
+    expect(response.headers.get("vary")).toBe("Origin");
+    await response.json();
+  });
+
+  it("admits a request with no Origin header, echoes nothing, still varies", async () => {
+    const base = await listen();
+    const response = await fetch(`${base}/api/v1/health`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    // `Vary` on a response that echoed NOTHING is the half of the change a
+    // cache depends on, and the only assertion that observes it.
+    expect(response.headers.get("vary")).toBe("Origin");
+    await response.json();
+  });
+
+  it("admits a CONFIGURED deployment origin, so the probe can answer up", async () => {
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "https://app.example" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "https://app.example",
+    );
+    // Never `*`: the door is an allowlist that echoes, not an open door.
+    expect(response.headers.get("access-control-allow-origin")).not.toBe("*");
+    await response.json();
+  });
+
+  it("echoes the CANONICAL origin, not the header as it arrived", async () => {
+    // The match is on the normalized origin, so echoing the raw header would
+    // answer a request the browser then rejects as a mismatch — a CORS failure
+    // indistinguishable from a refusal.
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "HTTPS://APP.EXAMPLE" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "https://app.example",
+    );
+    await response.json();
+  });
+
+  it("reads the allowlist from the env when no option is passed", async () => {
+    // This default parameter is the ONLY path by which the env reaches the
+    // production door: `isMain` passes no `allowedOrigins`.
+    expect(SIDECAR_ALLOWED_ORIGINS_ENV).toBe("WORKWIKI_SIDECAR_ALLOWED_ORIGINS");
+    process.env[SIDECAR_ALLOWED_ORIGINS_ENV] = "https://env.example";
+    const base = await listen();
+    const admitted = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "https://env.example" },
+    });
+    expect(admitted.status).toBe(200);
+    expect(admitted.headers.get("access-control-allow-origin")).toBe(
+      "https://env.example",
+    );
+    await admitted.json();
+    const refused = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "https://other.example" },
+    });
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toEqual({ error: "origin_not_allowed" });
+  });
+
+  it("refuses the same origin when it is NOT configured", async () => {
+    const base = await listen();
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "https://app.example" },
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "origin_not_allowed" });
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("access-control-allow-private-network")).toBeNull();
+    // The refusal is origin-specific too: a shared cache must not replay it at
+    // an origin that would have been admitted.
+    expect(response.headers.get("vary")).toBe("Origin");
+  });
+
+  it("refuses a lookalike of a configured origin", async () => {
+    // A `startsWith`/`includes` allowlist lets this through; equality does not.
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "https://app.example.evil.test" },
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "origin_not_allowed" });
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("refuses the literal Origin: null a sandboxed frame sends", async () => {
+    // Sandboxed iframes, `file://` pages and some redirect chains send this.
+    // 403 is the right answer, and it must not soften into an allow.
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "null" },
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "origin_not_allowed" });
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("admits a configured origin to the door but NOT past the token gate", async () => {
+    // The gate sits ahead of every route, so an allowed origin reaches Chat,
+    // the workspace, Skills and the kernel proxy. The allowlist admits an
+    // origin; it does not authorize it.
+    const guarded = {
+      current: () => ({
+        enabled: true,
+        allowUnauthenticated: false,
+        token: "s3cret-loopback-token",
+        tokenSource: "env",
+        skillEnablement: {},
+      }),
+      refresh: async () => guarded.current(),
+    };
+    const base = await listenWith({ settingsSource: guarded }, ["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/skills`, {
+      headers: { origin: "https://app.example" },
+    });
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+    // Health stays public even behind the token gate.
+    const health = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "https://app.example" },
+    });
+    expect(health.status).toBe(200);
+    await health.json();
+  });
+
+  it("answers Chrome's PNA preflight for an allowed origin", async () => {
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.example",
+        "access-control-request-method": "GET",
+        "access-control-request-private-network": "true",
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-private-network")).toBe("true");
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "https://app.example",
+    );
+    expect(response.headers.get("access-control-allow-methods")).toContain("GET");
+    expect(response.headers.get("access-control-allow-headers")).toContain(
+      "Authorization",
+    );
+    // Preflight-only, and the answer varies by the PNA ask as well as by origin
+    // — otherwise a cached non-PNA 204 gets replayed for a PNA preflight.
+    expect(response.headers.get("access-control-max-age")).toBe("600");
+    expect(response.headers.get("vary")).toBe(
+      "Origin, Access-Control-Request-Private-Network",
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("reads the PNA ask leniently, since its spelling protects nothing", async () => {
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.example",
+        "access-control-request-method": "GET",
+        "access-control-request-private-network": "TRUE",
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-private-network")).toBe("true");
+  });
+
+  it("refuses the PNA preflight from an unconfigured origin, before CORS", async () => {
+    const base = await listen();
+    const response = await fetch(`${base}/api/v1/health`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.example",
+        "access-control-request-method": "GET",
+        "access-control-request-private-network": "true",
+      },
+    });
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({ error: "origin_not_allowed" });
+    expect(response.headers.get("access-control-allow-private-network")).toBeNull();
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("does not volunteer the PNA header when the preflight did not ask", async () => {
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.example",
+        "access-control-request-method": "GET",
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-private-network")).toBeNull();
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "https://app.example",
+    );
+  });
+
+  it("keeps Access-Control-Max-Age off a plain GET", async () => {
+    const base = await listen(["https://app.example"]);
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "https://app.example" },
+    });
+    expect(response.headers.get("access-control-max-age")).toBeNull();
+    await response.json();
+  });
+
+  /**
+   * The two halves joined: the intent's pin is at the PROBE, not the door.
+   *
+   * `probeSidecar` is the thing the rail calls, and inferring its answer from a
+   * status code leaves the one seam that matters — a real sidecar, a real
+   * cross-origin request, the probe's own verdict — unobserved.
+   */
+  function probeFrom(base: string, origin: string) {
+    return (input: string, init: RequestInit = {}) =>
+      // `cache` is dropped rather than forwarded: it is a browser directive and
+      // undici has no store to bypass. The `Origin` is what this test is about.
+      fetch(input.replace(SIDECAR_ORIGIN, base), {
+        method: init.method,
+        signal: init.signal,
+        headers: { origin },
+      });
+  }
+
+  it("answers up through probeSidecar from a CONFIGURED origin", async () => {
+    const base = await listen(["https://app.example"]);
+    await expect(
+      probeSidecar(probeFrom(base, "https://app.example")),
+    ).resolves.toBe("up");
+  });
+
+  it("answers down through probeSidecar from an unconfigured origin", async () => {
+    const base = await listen();
+    await expect(
+      probeSidecar(probeFrom(base, "https://app.example")),
+    ).resolves.toBe("down");
+  });
+});
+
+describe("parseSidecarAllowedOrigins", () => {
+  it("defaults to loopback-only for absent or garbage input", () => {
+    expect(parseSidecarAllowedOrigins(undefined)).toEqual([]);
+    expect(parseSidecarAllowedOrigins("")).toEqual([]);
+    expect(parseSidecarAllowedOrigins("   ")).toEqual([]);
+    expect(parseSidecarAllowedOrigins(",,,")).toEqual([]);
+    expect(parseSidecarAllowedOrigins(42 as never)).toEqual([]);
+    expect(parseSidecarAllowedOrigins("not a url at all")).toEqual([]);
+  });
+
+  it("drops the malformed entries and keeps the one real origin", () => {
+    // A bad env value must never stop the sidecar from binding, so every one of
+    // these is dropped rather than thrown on.
+    expect(
+      parseSidecarAllowedOrigins(
+        "*, https://a.example/path, ftp://x, HTTPS://B.Example:443/, , https://b.example",
+      ),
+    ).toEqual(["https://b.example"]);
+  });
+
+  it("refuses wildcards and suffix patterns outright", () => {
+    expect(parseSidecarAllowedOrigins("https://*.example")).toEqual([]);
+    expect(parseSidecarAllowedOrigins("*")).toEqual([]);
+  });
+
+  it("refuses credentials, queries and fragments", () => {
+    expect(parseSidecarAllowedOrigins("https://user:pw@a.example")).toEqual([]);
+    expect(parseSidecarAllowedOrigins("https://a.example?x=1")).toEqual([]);
+    expect(parseSidecarAllowedOrigins("https://a.example#f")).toEqual([]);
+  });
+
+  it("keeps an explicit non-default port and normalizes case", () => {
+    expect(parseSidecarAllowedOrigins("HTTP://App.Example:8443")).toEqual([
+      "http://app.example:8443",
+    ]);
+  });
+
+  it("dedupes entries that normalize to the same origin", () => {
+    expect(
+      parseSidecarAllowedOrigins("https://a.example, https://A.Example/, https://a.example:443"),
+    ).toEqual(["https://a.example"]);
+  });
+});
+
+describe("allowSidecarOrigin with a configured list", () => {
+  it("keeps the one-argument loopback contract intact", () => {
+    // The default arg is what keeps `workbench-epic3.test.ts` honest.
+    expect(allowSidecarOrigin(undefined)).toBe(true);
+    expect(allowSidecarOrigin("http://localhost:3000")).toBe(true);
+    expect(allowSidecarOrigin("http://127.0.0.1:19828")).toBe(true);
+    expect(allowSidecarOrigin("https://evil.example")).toBe(false);
+  });
+
+  it("admits a configured origin without widening the loopback regex", () => {
+    const allowed = parseSidecarAllowedOrigins("https://app.example");
+    expect(allowSidecarOrigin("https://app.example", allowed)).toBe(true);
+    expect(allowSidecarOrigin("https://APP.example", allowed)).toBe(true);
+    expect(allowSidecarOrigin("https://app.example.evil.test", allowed)).toBe(false);
+    expect(allowSidecarOrigin("https://evil.example", allowed)).toBe(false);
+    // Loopback still passes when a list is configured.
+    expect(allowSidecarOrigin("http://localhost:3000", allowed)).toBe(true);
+  });
+
+  it("does not trust an unparsed injected list", () => {
+    expect(allowSidecarOrigin("https://app.example", ["https://*.example"])).toBe(false);
+    expect(allowSidecarOrigin("https://app.example", ["*"])).toBe(false);
+    // The fast path is exact string equality; a raw entry still has to survive
+    // normalization before it can match.
+    expect(allowSidecarOrigin("https://app.example", ["HTTPS://APP.EXAMPLE/"])).toBe(true);
+  });
+
+  it("refuses the literal string null", () => {
+    expect(allowSidecarOrigin("null", ["https://app.example"])).toBe(false);
   });
 });

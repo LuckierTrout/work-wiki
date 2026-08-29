@@ -153,9 +153,123 @@ export function loadSidecarEnvFromFiles(rootDir) {
   }
 }
 
-export function allowSidecarOrigin(origin) {
+/**
+ * The env that names non-loopback origins allowed to reach this door.
+ *
+ * Comma-separated, e.g. `WORKWIKI_SIDECAR_ALLOWED_ORIGINS=https://app.example`.
+ * Absent or garbage means "loopback only", which is exactly what the sidecar
+ * did before this existed.
+ */
+export const SIDECAR_ALLOWED_ORIGINS_ENV = "WORKWIKI_SIDECAR_ALLOWED_ORIGINS";
+
+/** Chrome's Private Network Access preflight request/response header pair. */
+const PNA_REQUEST_HEADER = "access-control-request-private-network";
+const PNA_RESPONSE_HEADER = "Access-Control-Allow-Private-Network";
+
+/**
+ * How long a browser may cache the preflight answer.
+ *
+ * It is also a REVOCATION LAG: an origin dropped from the allowlist stays
+ * usable in an already-primed browser for this long. Ten minutes buys back the
+ * preflight on a polled route without making a removal feel permanent.
+ */
+const CORS_MAX_AGE_SECONDS = 600;
+
+/**
+ * Did this preflight ask for private-network access?
+ *
+ * Read leniently — first comma-separated segment, trimmed, lowercased — because
+ * a proxy that duplicates the header or a client that sends `TRUE` would
+ * otherwise get no `Access-Control-Allow-Private-Network` back and fail the
+ * request before any route runs. The header is a QUESTION, not a credential;
+ * being strict about its spelling protects nothing.
+ *
+ * @param {import("node:http").IncomingHttpHeaders} headers
+ */
+function requestsPrivateNetwork(headers) {
+  const raw = headers[PNA_REQUEST_HEADER];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== "string") return false;
+  return value.split(",")[0].trim().toLowerCase() === "true";
+}
+
+/**
+ * One entry, reduced to a bare `scheme://host[:port]` origin — or `null`.
+ *
+ * NORMALIZATION IS WHAT KEEPS THE ALLOWLIST AN ALLOWLIST. The comparison later
+ * is string equality between two normalized origins, never a `startsWith` or
+ * an `includes`, because `https://app.example.evil.test` passes both of those
+ * against `https://app.example`. An entry that carries a path, a query, a
+ * fragment, credentials, a non-http(s) scheme, or a `*` is not an origin and is
+ * dropped rather than repaired.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function normalizeOrigin(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  // `new URL("https://*.example")` parses, so the wildcard has to be refused
+  // explicitly: a suffix pattern is the one thing an allowlist must not accept.
+  if (!trimmed || trimmed.includes("*")) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.username || url.password || url.search || url.hash) return null;
+    if (url.pathname !== "/" && url.pathname !== "") return null;
+    return url.origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `WORKWIKI_SIDECAR_ALLOWED_ORIGINS` into normalized origins.
+ *
+ * Pure, and it NEVER THROWS: `parseWikiRoots` sets the convention, and the
+ * reason is the same one — this value is read on the path to `server.listen`,
+ * so a typo in `.env` that raised would stop the sidecar from binding at all
+ * and turn a misconfigured origin into no sidecar. Bad entries are dropped
+ * silently; the worst case is the loopback-only behaviour that predates it.
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+export function parseSidecarAllowedOrigins(value) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  const out = [];
+  for (const part of value.split(",")) {
+    const origin = normalizeOrigin(part);
+    if (origin && !out.includes(origin)) out.push(origin);
+  }
+  return out;
+}
+
+/**
+ * Loopback always; a configured origin only if it is a normalized member.
+ *
+ * `allowedOrigins` defaults to empty so the one-argument call sites — and a
+ * sidecar with nothing configured — behave exactly as they did before DW-25.
+ * `LOOPBACK_ORIGIN_RE` is untouched: a deployed page is admitted by being
+ * NAMED, never by resembling loopback.
+ *
+ * @param {string | undefined} origin
+ * @param {string[]} [allowedOrigins]
+ */
+export function allowSidecarOrigin(origin, allowedOrigins = []) {
   if (!origin) return true;
-  return LOOPBACK_ORIGIN_RE.test(origin);
+  if (LOOPBACK_ORIGIN_RE.test(origin)) return true;
+  if (!Array.isArray(allowedOrigins) || allowedOrigins.length === 0) return false;
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return false;
+  // An entry already string-equal to the normalized origin IS that origin, so
+  // the cheap compare runs first and `new URL()` is reached only for a list
+  // that skipped `parseSidecarAllowedOrigins` — an injected option. Health is
+  // polled, and re-parsing every entry on every request is a cost the door pays
+  // forever for a case production never hits.
+  return allowedOrigins.some(
+    (entry) => entry === normalized || normalizeOrigin(entry) === normalized,
+  );
 }
 
 /**
@@ -171,12 +285,20 @@ export function allowSidecarOrigin(origin) {
  * from the browser — a preflight that refused `Authorization` would make the
  * token unusable from the one client that is guaranteed to be on this machine.
  * `PATCH` joins the methods for the same reason: Review actions are patches.
+ *
+ * `Vary: Origin` is now UNCONDITIONAL, on this path AND on the 403 refusal, so
+ * a shared cache can never serve one origin's answer to another.
+ *
+ * What is echoed is the NORMALIZED origin, not the raw header. The match is on
+ * the normalized form, so echoing the raw one would admit `HTTPS://APP.EXAMPLE`
+ * and then answer with a string the browser does not accept as a match — a
+ * silent CORS failure that looks exactly like a refusal.
  */
-function cors(req, res) {
+function cors(req, res, allowedOrigins = []) {
   const origin = req.headers.origin;
-  if (origin && allowSidecarOrigin(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
+  res.setHeader("Vary", "Origin");
+  if (origin && allowSidecarOrigin(origin, allowedOrigins)) {
+    res.setHeader("Access-Control-Allow-Origin", normalizeOrigin(origin) || origin);
   }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS");
   res.setHeader(
@@ -341,17 +463,49 @@ export function createSidecarServer({
   approvals = createConversationApprovals(),
   wikiRegistry = [],
   chatSessionFactory = createChatTurnSession,
+  // Read HERE, at construction, and not at module load: `loadSidecarEnvFromFiles`
+  // runs after this module is imported, so a top-level read would always see the
+  // env as it was before `.env` / `.env.local` were applied.
+  allowedOrigins = parseSidecarAllowedOrigins(
+    process.env[SIDECAR_ALLOWED_ORIGINS_ENV],
+  ),
 } = {}) {
+  // Normalized ONCE, here, so the per-request compare is string equality even
+  // when the option was injected raw. Unusable entries fall out rather than
+  // being carried as strings nothing can ever match.
+  const admissibleOrigins = (Array.isArray(allowedOrigins) ? allowedOrigins : [])
+    .map((entry) => normalizeOrigin(entry))
+    .filter((entry) => entry !== null);
   return http.createServer(async (req, res) => {
     const origin = req.headers.origin;
-    if (origin && !allowSidecarOrigin(origin)) {
+    if (origin && !allowSidecarOrigin(origin, admissibleOrigins)) {
+      // Fail closed, and fail BARE: no `Access-Control-Allow-Origin`, no PNA
+      // header. The browser reads the missing header as a CORS failure, which
+      // is what makes the probe answer `down` instead of inventing an `up`.
+      // `Vary` still goes out, because this answer is origin-specific too and a
+      // shared cache must not replay a 403 at an origin that would be admitted.
+      res.setHeader("Vary", "Origin");
       sendJson(res, 403, { error: "origin_not_allowed" });
       return;
     }
-    cors(req, res);
+    cors(req, res, admissibleOrigins);
     const url = new URL(req.url || "/", `http://${SIDECAR_HOST}:${SIDECAR_PORT}`);
     if (req.method === "OPTIONS") {
-      res.writeHead(204);
+      // Chrome forces a public-to-private preflight for a request from a public
+      // page to 127.0.0.1 and fails it BEFORE any route runs unless this header
+      // comes back. It is answered only when asked for, and only for an origin
+      // already admitted above.
+      //
+      // The answer therefore varies by the PNA request header as well as by
+      // origin, and `Access-Control-Max-Age` is preflight-only — a max-age on
+      // every response would say nothing and a `Vary: Origin` alone would let a
+      // cached non-PNA 204 be replayed for a PNA preflight it does not answer.
+      if (origin && requestsPrivateNetwork(req.headers)) {
+        res.setHeader(PNA_RESPONSE_HEADER, "true");
+      }
+      res.setHeader("Vary", "Origin, Access-Control-Request-Private-Network");
+      res.setHeader("Access-Control-Max-Age", String(CORS_MAX_AGE_SECONDS));
+      res.writeHead(204, { "cache-control": "no-store" });
       res.end();
       return;
     }
@@ -453,6 +607,25 @@ const isMain =
 
 if (isMain) {
   loadSidecarEnvFromFiles(path.resolve(fileURLToPath(new URL("..", import.meta.url))));
+  // SAY WHICH ORIGINS SURVIVED, and name the ones that did not. A dropped entry
+  // is invisible otherwise, and its symptom — a browser refused at the door
+  // while the sidecar runs — is exactly the DW-25 bug this option exists to
+  // fix. The parse itself stays pure and silent; the reporting lives here,
+  // where there is a terminal to report to.
+  const configuredOrigins = process.env[SIDECAR_ALLOWED_ORIGINS_ENV] || "";
+  const effectiveOrigins = parseSidecarAllowedOrigins(configuredOrigins);
+  const droppedOrigins = configuredOrigins
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry && normalizeOrigin(entry) === null);
+  if (droppedOrigins.length > 0) {
+    process.stderr.write(
+      `work-wiki sidecar: ignoring ${droppedOrigins.length} unusable ` +
+        `${SIDECAR_ALLOWED_ORIGINS_ENV} entr${droppedOrigins.length === 1 ? "y" : "ies"} ` +
+        `— ${droppedOrigins.join(", ")}. An entry must be a bare ` +
+        `http(s)://host[:port] origin with no path and no wildcard.\n`,
+    );
+  }
   const settingsSource = createLoopbackSettingsSource();
   // The FIRST poll happens before the listener binds, so the door is never open
   // with a stale `null` behind it. A failure here is not fatal — `authorize`
@@ -492,7 +665,9 @@ if (isMain) {
   server.listen(SIDECAR_PORT, SIDECAR_HOST, () => {
     listenerStatus = "running";
     process.stdout.write(
-      `work-wiki sidecar listening on http://${SIDECAR_HOST}:${SIDECAR_PORT}\n`,
+      `work-wiki sidecar listening on http://${SIDECAR_HOST}:${SIDECAR_PORT} ` +
+        `(browser origins: loopback` +
+        `${effectiveOrigins.length > 0 ? `, ${effectiveOrigins.join(", ")}` : " only"})\n`,
     );
   });
   // Re-ask on an interval, so a Save in Settings lands within one poll and an

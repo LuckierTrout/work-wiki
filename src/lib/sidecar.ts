@@ -10,6 +10,66 @@
  *
  * Fail-closed is the whole point: anything that is not an affirmative 2xx —
  * a refused connection, a non-2xx, a hang — is `down`.
+ *
+ * THE CROSS-ORIGIN CONTRACT (DW-25). The probe is a cross-origin request from
+ * whatever page the Workbench is served on to `http://127.0.0.1:19828`, so
+ * several things must go right before a running sidecar can report `up`. When a
+ * deployed HTTPS page reports `down` while the sidecar is demonstrably running,
+ * it is almost always one of the three below. (Not always: the 1500 ms budget,
+ * the sidecar's load gate, a port conflict that made the process exit, a
+ * browser extension or corporate proxy, and a sandboxed embedding that sends
+ * `Origin: null` all produce the same `down`.)
+ *
+ * 1. ORIGIN NOT ALLOWED. `sidecar/server.mjs` admits `localhost` and
+ *    `127.0.0.1` on either scheme and any port with no configuration — but only
+ *    those two hostnames, so IPv6 loopback (`http://[::1]:3000`) is NOT
+ *    admitted and has to be named like any other origin. Every other origin
+ *    must be listed in `WORKWIKI_SIDECAR_ALLOWED_ORIGINS` (comma-separated,
+ *    e.g. `https://app.example`). An origin that is neither gets
+ *    `403 {"error":"origin_not_allowed"}` with no `Access-Control-Allow-Origin`
+ *    at all — the allowlist is exact-match on the normalized origin, never a
+ *    wildcard, a suffix, or `*`, so `https://app.example.evil.test` is refused
+ *    however much it resembles a configured entry, and so is the literal
+ *    `Origin: null` a sandboxed iframe or a `file://` page sends. A request
+ *    with NO `Origin` header at all — curl, other non-browser clients, and
+ *    cross-site `<img>`/`<script>` style GETs — is admitted and has nothing
+ *    echoed, which is unchanged from Epic 3. For an admitted origin the sidecar
+ *    echoes that origin back, NORMALIZED, in `Access-Control-Allow-Origin`
+ *    (never `*`), sends `Vary: Origin` on every answer including the 403, and
+ *    allows `GET, POST, PATCH, OPTIONS` with `Content-Type, Accept,
+ *    Authorization, x-llm-wiki-token`. There is no
+ *    `Access-Control-Allow-Credentials` and there are no cookies: the loopback
+ *    token travels in a header.
+ *
+ *    THE GATE SITS AHEAD OF EVERY ROUTE, not just health. A configured origin
+ *    can therefore reach Chat — which drives the local Agent and shell —
+ *    `/api/v1/workspace/file`, `/api/v1/skills` and the kernel proxy, with the
+ *    loopback token gate as the only remaining barrier. Two consequences worth
+ *    naming when choosing what to configure: a plaintext `http://` entry can be
+ *    forged by anyone on the path, who then inherits that whole surface; and
+ *    the preflight is cacheable for ten minutes, so an origin REMOVED from the
+ *    list stays usable in an already-primed browser for up to that long.
+ *
+ * 2. UNANSWERED PNA PREFLIGHT. Chrome treats `127.0.0.1` as a private network,
+ *    so a request from a public page is preceded by a Private Network Access
+ *    preflight — an `OPTIONS` carrying `Access-Control-Request-Private-Network:
+ *    true`. The sidecar answers `204` with `Access-Control-Allow-Private-Network:
+ *    true` for an admitted origin. Without that header Chrome fails the request
+ *    before the health route is ever reached, so the probe sees only a rejected
+ *    fetch. That header pair is the header-based design; Chrome has been moving
+ *    public-to-local requests behind a Local Network Access PERMISSION PROMPT
+ *    that no response header satisfies, so a correct answer here may still not
+ *    be sufficient on its own in a given Chrome version.
+ *
+ * 3. MIXED-CONTENT BLOCK. Safari blocks an `http://127.0.0.1` subresource from
+ *    an HTTPS page, and no response the sidecar sends can change that — the
+ *    request never leaves the browser. `down` is the HONEST answer there, not a
+ *    bug to work around: the sidecar binds `127.0.0.1:19828` over plain HTTP
+ *    and does not serve TLS or mint a certificate. (Chrome and Firefox both
+ *    exempt loopback from mixed-content blocking, because `127.0.0.1` is
+ *    "potentially trustworthy" per Secure Contexts — the carve-out is what
+ *    makes any of this possible.) Chrome, with the origin configured and the
+ *    PNA preflight answered, is the supported path for a deployed page.
  */
 
 export const SIDECAR_ORIGIN = "http://127.0.0.1:19828";
