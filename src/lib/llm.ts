@@ -561,6 +561,25 @@ export async function callVisionLLM(
  * `maxRetries` setting (passed through `CallSettings`) handles provider-level
  * retries internally for the underlying `doStream()` call.
  *
+ * **The single whole-stream deadline is FROZEN** (2026-08-21 decision, DW-64).
+ * One `abortSignal` covers the entire stream, and that is the shape that was
+ * chosen, not an oversight to be fixed here: a per-token deadline or a retry
+ * wrapper would both be the mid-stream reconnection the paragraph above rules
+ * out. What DW-64 changed is the SENTENCE, not the mechanism — when this
+ * deadline fires the AI SDK closes the stream with an `{ type: "abort" }` part
+ * rather than throwing, so a caller reading `textStream` sees a truncated
+ * half-answer that looks finished. The owner-facing copy and the abort
+ * predicates live in `src/lib/llm-deadline.ts`.
+ *
+ * `src/app/api/query/stream/route.ts` is the only caller that maps them TODAY —
+ * it reads `fullStream`, which is the only place the abort is visible — and it
+ * is NOT the only caller of this function. `synthesizeResearchBrief`
+ * (`src/lib/research-runtime.ts`) still iterates `stream.textStream`, so a
+ * fired deadline is swallowed there exactly as it used to be here and a
+ * truncated brief is committed as a finished wiki page. That is known, out of
+ * DW-64's scope, and deferred — a second caller to map, not a caller that is
+ * already safe.
+ *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
  */
 export async function callLLMStream(

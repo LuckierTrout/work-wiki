@@ -601,7 +601,9 @@ location: src/lib/llm.ts (callLLMStream, timeoutOption)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `callLLMStream` is not retry-wrapped, so its single `AbortSignal.timeout` measures total stream duration rather than time-to-first-response: a 30s deadline set to catch hangs would truncate every answer that takes longer than 30s to finish. Separately, `AbortSignal.timeout` raises a `TimeoutError` whose message matches none of `RETRYABLE_MESSAGES`, so it propagates verbatim — "The operation was aborted due to timeout" is exactly the transport vocabulary this repo's copy rules exclude. Both need Chat's streaming semantics (Epic 3) to decide what a deadline means for a stream and which sentence the owner should see.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-stream-deadline-owner-copy
+resolution-undo: 59fc6b9ad5d6f1a9b7ee48383f3c5cc98105b84ea1db1fef393b81e8186ae09c 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-21 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 decision: 2026-08-20 Keep deadline, fix the copy — Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.
 
@@ -4843,4 +4845,36 @@ location: src/lib/merge.ts (guidanceOwner resolution) and src/lib/ingest.ts:1760
 source_spec: `spec-dw-323-merge-door-workspace-guidance.md`
 severity: medium
 reason: `ownerToTenant` (src/lib/links.ts) lowercases and path-sanitizes but does not strip the `--` agent suffix, so `alice--yoyo` keys its own tenant. The same-owner guard 40 lines above the fold deliberately collapses that pair via `sameHumanOwner`/`humanOf` (src/lib/ingest.ts), so the two treat the same handle differently. The ingest door passes the raw handle too, so this is a codebase-wide convention question, not a merge-door bug: deciding it means deciding whether guidance is addressed by silo or by human, for every prompt site at once. Out of scope for DW-323, whose intent is the door asymmetry.
+status: open
+
+### DW-544: `synthesizeResearchBrief` still reads `textStream`, so a fired deadline commits a truncated research brief as a finished wiki page.
+origin: spec-deferred d3ff3aae961a
+location: src/lib/research-runtime.ts:1136
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+severity: medium
+reason: `src/lib/research-runtime.ts:1136-1157` is the only other caller of `callLLMStream`. It iterates `stream.textStream`, which drops the `{ type: "abort" }` part, so the `for await` ends NORMALLY and `receivedStreamContent` suppresses the `callLLM` fallback at :1153. `raw` is the partial text and flows through `runResearchProject` (:1613) into `commitResearchPage` (:1645). Neither existing test models a short close: research-runtime.test.ts:842 ends normally with full content, :858 throws. Out of scope by the intent, which names only the query stream route.
+status: open
+
+### DW-545: `/api/query` still returns `getErrorMessage(error)` verbatim, so a fired deadline reaches the owner as raw transport vocabulary there.
+origin: spec-deferred f674f51728cf
+location: src/app/api/query/route.ts:74
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+severity: medium
+reason: `src/app/api/query/route.ts:74-81`. It is also the streaming route's own fallback: `useStreamingQuery` (`src/hooks/useStreamingQuery.ts:129-155`) re-queries it on any non-2xx and PREFERS `fallbackData?.error` over the streaming route's sentence, so "The operation was aborted due to timeout" can still be what the owner reads after this change. Out of scope by the intent, which names only src/app/api/query/stream/route.ts.
+status: open
+
+### DW-546: `query-stream-route.test.ts`'s `callLLMStream` mock returns an async generator, so all three #413 filtering tests run through the route's 500 catch and prove nothing about a completing route.
+origin: spec-deferred 1fb55ed9ac95
+location: src/lib/__tests__/query-stream-route.test.ts:33
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+severity: medium
+reason: `src/lib/__tests__/query-stream-route.test.ts:33` mocks `callLLMStream: vi.fn(async function* () {})`. That value has neither `toTextStreamResponse` (before this change) nor `fullStream` (after), so `POST` throws a TypeError and answers 500. The tests pass only because they assert on `selectPagesForQuery` arguments and never read a status or body. Pre-existing — the pre-change route was equally undefined on that mock — and left untouched so this story's "existing assertions untouched" acceptance stayed honest.
+status: open
+
+### DW-547: The `QUERY_MAX_OUTPUT_TOKENS` cap truncates a streamed answer as silently as the deadline used to.
+origin: spec-deferred 714ac53dacf9
+location: src/app/api/query/stream/route.ts:253
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+severity: medium
+reason: `finishReason: "length"` arrives on the `finish` part and falls into the route's bookkeeping tail, so the body simply ends. Same owner-visible failure as DW-64 — a half answer that reads as a whole one — from a different cause, and the notice machinery this change adds is one branch away from covering it. Not the deadline, so outside an intent that names TimeoutError/AbortError only.
 status: open
