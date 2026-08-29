@@ -5,8 +5,16 @@
  * adding a parallel write path:
  *
  *  - {@link reconcilePage} LLM-folds the two bodies into one canonical page
- *    (escalating `disputed` on contradiction), exactly like accumulate-and-
- *    reconcile on re-ingest.
+ *    (escalating `disputed` on contradiction), like accumulate-and-reconcile on
+ *    re-ingest — and, since DW-323, carrying the same KINDS of workspace
+ *    guidance that door carries: the resolved owner's Workspace Purpose and
+ *    their Names & Terms dictionary now reach the reconcile prompt here too,
+ *    instead of the fold being the one prompt held to no workspace standard.
+ *    PRESENCE parity only. The two doors still differ on WHICH principal
+ *    supplies the standard: ingest passes the ACTING principal
+ *    (`options?.owner?.trim() || actor`, `ingest.ts`), while this door passes
+ *    the SURVIVOR's owner, because the merged prose lives on in the survivor's
+ *    workspace and not in the actor's.
  *  - sources / contributors / authors / aliases are UNIONed; `from`'s title AND
  *    slug are recorded as aliases of `into` so a later ingest under either name
  *    converges on the survivor. NOTE: the alias URL redirect that used to
@@ -40,6 +48,8 @@ import {
   type PageLifecycleLockHeld,
 } from "./lifecycle";
 import { escapeRegex } from "./links";
+import { createGuidanceCache } from "./guidance-cache";
+import { buildNamesTermsGuidance } from "./names-terms";
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
 import { sourceSha256 } from "./source-sha256";
@@ -436,7 +446,80 @@ async function mergePagesWhileSourceLocked({
       into.frontmatter.disputed === true || from.frontmatter.disputed === true;
     if (hasLLMKey()) {
       try {
-        const reconciled = await reconcilePage(into.body, from.body);
+        // Whose workspace standards govern the fold (DW-323). The merged prose
+        // is written to the SURVIVOR and lives on in ITS owner's wiki, so that
+        // owner's Workspace Purpose and Names & Terms dictionary are the ones
+        // with a claim on it — not the actor's, who under `bypassOwnerCheck`
+        // may be a service principal (`src/mcp.ts` passes `actor: "system"`) or
+        // another human whose conventions have no standing on a page they do
+        // not own. `actor` is the FALLBACK, not the default: it is the only
+        // principal in scope when the survivor's frontmatter names no owner,
+        // and it is already what the same-owner guard above compares against.
+        //
+        // BOTH sides go through `asString`. A blank/non-string frontmatter
+        // `owner` falls through to `actor`, and a blank `actor` falls through
+        // to `undefined` rather than becoming an empty principal — which
+        // `ownerToTenant` would silently collapse onto the DEFAULT tenant,
+        // handing the default silo's Purpose and dictionary to a fold that
+        // named no principal at all. Both absent ⇒ `undefined` ⇒ today's
+        // unguided prompt.
+        let guidanceOwner = asString(into.frontmatter.owner) ?? asString(actor);
+        // One handle for THIS merge only — never hoisted, never shared across
+        // merges — so a Purpose or dictionary edit saved between two merges is
+        // still picked up by the next one.
+        const guidance = createGuidanceCache();
+        if (guidanceOwner) {
+          try {
+            // Probe the dictionary BEFORE the fold, through the EXACT call the
+            // fold makes. Guidance is an ADDITION to a prompt: losing it must
+            // degrade the prompt, never the operation. `buildWorkspaceGuidance`
+            // honours that with its own `catch`; its dictionary sibling does
+            // not, and it can throw at EITHER of two layers:
+            //
+            //   - `listNamesTerms` → `readEntries` ENOENT-degrades to `[]` but
+            //     RETHROWS everything else — the `JSON.parse` SyntaxError from
+            //     a corrupt `names-terms.json`.
+            //   - `renderNamesTermsGuidance` then dereferences `entry.aliases`
+            //     on entries nothing filtered (`resolveSortedEntries` only
+            //     skips FREEZING a null/non-object element), so a file that
+            //     PARSES but holds a `null` or a field-less entry throws only
+            //     at the RENDER layer.
+            //
+            // Probing `listNamesTerms` alone would miss that second case, so
+            // this probes `buildNamesTermsGuidance` — read + sort + render,
+            // exactly what `reconcilePage` consumes.
+            //
+            // `reconcilePage` awaits both guidance halves in one `Promise.all`
+            // before it calls the model, so an unprobed rejection would land in
+            // the `catch` below, whose raw body concatenation is then written
+            // into `MergeOperationReceipt.mergedContent` — the merge's
+            // linearization point, replayed verbatim by any Retry and never
+            // re-folded, with `from` already deleted. A damaged dictionary
+            // would permanently ship an unfolded, double-titled survivor.
+            //
+            // On success this costs nothing: `listNamesTerms` memoizes the read
+            // under the shared handle, so `reconcilePage` reuses it instead of
+            // reading twice, and the second render is a pure function over
+            // those cached entries. On failure we drop the WHOLE owner, so the
+            // Purpose goes with the dictionary — a deliberately coarse degrade,
+            // since the only way to keep one without the other is to compose
+            // the prompt here and duplicate `reconcilePage`.
+            await buildNamesTermsGuidance(guidanceOwner, guidance.namesTerms);
+          } catch (err) {
+            logger.warn(
+              "merge",
+              `names & terms unreadable for "${guidanceOwner}"; folding "${fromSlug}"→"${intoSlug}" unguided`,
+              err,
+            );
+            guidanceOwner = undefined;
+          }
+        }
+        const reconciled = await reconcilePage(
+          into.body,
+          from.body,
+          guidanceOwner,
+          guidance,
+        );
         mergedBody = reconciled.body;
         if (reconciled.disputed) disputed = true;
       } catch (err) {

@@ -2940,7 +2940,9 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/lib/merge.ts:204
 severity: medium
 reason: `src/lib/merge.ts:204` calls `reconcilePage(into.body, from.body)` with no `owner`, so the guidance branch at ingest.ts:1168 is skipped entirely. The reconcile prompt is the same prompt in both cases, so the merged prose is held to a different standard depending on which door it came through. This change touched that signature (adding the cache parameter) without closing the asymmetry, which is out of DW-141's scope but worth a decision.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-merge-door-workspace-guidance
+resolution-undo: 00ead2cfce08d8e022d14e56c8fc27d6b9f223b9ab0a41fcbd16162498402a7a 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-21 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 decision: 2026-08-20 Guide the merge door — Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.
 
@@ -4833,4 +4835,12 @@ location: src/lib/backups.ts:155-163
 source_spec: `spec-dw-215-artifact-revision-retention.md`
 severity: low
 reason: `createOwnerBackupUnlocked` calls `getStorage().readAsset(sourcePath)` and only then tests `totalBytes + data.byteLength > limits.maxBytes`, so at the production ceiling an oversized object is materialised in memory in full to copy zero bytes of it — on every backup run. Pre-existing (the throwing version read first too), and `StorageProvider` already exposes `stat(path)`, which could gate the read. Not caused by DW-215; surfaced by reviewing the same loop.
+status: open
+
+### DW-543: An agent handle owning the survivor resolves guidance against the agent's own tenant silo rather than the human's, so an agent-owned page folds with no Workspace Purpose and no dictionary.
+origin: spec-deferred 005cb3050e8f
+location: src/lib/merge.ts (guidanceOwner resolution) and src/lib/ingest.ts:1760
+source_spec: `spec-dw-323-merge-door-workspace-guidance.md`
+severity: medium
+reason: `ownerToTenant` (src/lib/links.ts) lowercases and path-sanitizes but does not strip the `--` agent suffix, so `alice--yoyo` keys its own tenant. The same-owner guard 40 lines above the fold deliberately collapses that pair via `sameHumanOwner`/`humanOf` (src/lib/ingest.ts), so the two treat the same handle differently. The ingest door passes the raw handle too, so this is a codebase-wide convention question, not a merge-door bug: deciding it means deciding whether guidance is addressed by silo or by human, for every prompt site at once. Out of scope for DW-323, whose intent is the door asymmetry.
 status: open

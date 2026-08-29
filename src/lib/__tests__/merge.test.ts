@@ -1084,3 +1084,442 @@ describe("aliasRedirectForMissing (alias redirect safety)", () => {
     await expect(aliasRedirectForMissing("anything", null)).resolves.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The merge door carries workspace guidance into the fold (DW-323)
+// ---------------------------------------------------------------------------
+
+import { DEFAULT_TENANT } from "../links";
+import { _resetLocks } from "../lock";
+import { createNamesTerm } from "../names-terms";
+import { tenantForOwner } from "../wiki";
+import { wikiProfilePath } from "../wiki-paths";
+import { createWiki } from "../wikis";
+import { saveWorkspaceProfile } from "../workspace-profile";
+
+describe("mergePages guides the fold with the survivor owner's workspace standards", () => {
+  const SURVIVOR_OWNER = "alice";
+  const ABSORBED_OWNER = "bob";
+  /**
+   * The Purposes and the dictionary labels are deliberately DISJOINT
+   * vocabularies: no canonical term or alias asserted below occurs in any
+   * Purpose string (or in the base reconcile prompt), so a `toContain(term)`
+   * can only be satisfied by the WORKSPACE NAMES & TERMS block itself. The
+   * first pass of this work asserted a label that also appeared in the Purpose
+   * and so proved nothing about the dictionary.
+   */
+  const ALICE_PURPOSE = "Track the Beacon rollout and every migration decision.";
+  const BOB_PURPOSE = "Summarize quarterly revenue for the finance guild.";
+  const REVISED_PURPOSE = "Track the Beacon rollout, and the deprecations behind it.";
+  const DEFAULT_TENANT_PURPOSE = "Curate the shared seed encyclopedia.";
+  const DEFAULT_TENANT_TERM = "Echidna Registry";
+  const ALICE_TERM = "Quokka Platform";
+  const ALICE_ALIAS = "Bandicoot";
+  const BOB_TERM = "Narwhal Ledger";
+  const BOB_ALIAS = "Pangolin";
+  /** A stable slice of `RECONCILE_SYSTEM_PROMPT` — the prompt's own identity. */
+  const BASE_PROMPT_MARKER =
+    "You are a wiki editor maintaining a single canonical page about one concept.";
+  const SURVIVOR_SLUG = "agent-harness";
+  const ABSORBED_SLUG = "harness-ai-agents";
+  const SECOND_SURVIVOR_SLUG = "beacon-rollout";
+  const SECOND_ABSORBED_SLUG = "beacon-rollout-notes";
+  const ABSORBED_TITLE = "Harness (AI agents)";
+  const FOLDED_MARKER = "Folded body covering both sources.";
+  const DICTIONARY_PATH = (owner: string) =>
+    `tenants/${tenantForOwner(owner)}/names-terms.json`;
+
+  /** Structurally typed: all this block needs from the spy is tearing it down. */
+  let readSpy: { mockRestore: () => void } | null = null;
+
+  beforeEach(() => {
+    // The outer `beforeEach` already pointed DATA_DIR/WIKI_DIR/RAW_DIR at a
+    // fresh `tmpDir`, so the wiki registry, the profile and the dictionary are
+    // all real bytes under it. Only the lock registry needs clearing: it is
+    // module state that outlives the temp directory it was keyed against.
+    _resetLocks();
+  });
+
+  afterEach(() => {
+    // Restore ONLY the storage spy this block installs. The outer `afterEach`
+    // owns everything else it set up.
+    readSpy?.mockRestore();
+    readSpy = null;
+    _resetLocks();
+  });
+
+  /** Give `owner` an active Wiki with a Purpose and a one-entry dictionary. */
+  async function seedGuidance(
+    owner: string,
+    purpose: string,
+    canonical: string,
+    alias: string,
+  ): Promise<string> {
+    const wiki = await createWiki(owner, { name: `${owner} Ops`, scenario: "business" });
+    await saveWorkspaceProfile(owner, wiki.id, {
+      scenario: "custom",
+      purpose,
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+    await createNamesTerm(owner, { kind: "project", canonical, aliases: [alias] });
+    return wiki.id;
+  }
+
+  /**
+   * A page with NO `owner` in its frontmatter — and an ASSERTED premise. If the
+   * write path ever starts stamping an owner, the tests below that depend on an
+   * ownerless survivor must fail loudly rather than go green for the wrong
+   * reason (the `actor` fallback would then never be the branch under test).
+   */
+  async function seedOwnerlessPage(slug: string, title: string): Promise<void> {
+    const body = `# ${title}\n\nContent about ${title}.`;
+    await writeWikiPageWithSideEffects({
+      slug,
+      title,
+      content: serializeFrontmatter(
+        { created: "2026-01-01", updated: "2026-01-01" },
+        body,
+      ),
+      summary: title,
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    const written = await readWikiPageWithFrontmatter(slug, { fresh: true });
+    expect(written?.frontmatter.owner).toBeUndefined();
+  }
+
+  /** The reconcile system prompt — asserting en route that ONE fold happened. */
+  function reconcileSystemPrompt(): string {
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    return String(mockedCallLLM.mock.calls[0][0]);
+  }
+
+  /** Count `readFile` calls per path from here on (setup reads excluded). */
+  function countReads(): (relativePath: string) => number {
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    const seen: string[] = [];
+    readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        seen.push(target);
+        return readFile(target);
+      });
+    return (relativePath) => seen.filter((p) => p === relativePath).length;
+  }
+
+  async function seedMergePair(
+    survivorOwner: string | undefined,
+    absorbedOwner: string,
+  ): Promise<void> {
+    if (survivorOwner === undefined) {
+      await seedOwnerlessPage(SURVIVOR_SLUG, "Agent Harness");
+    } else {
+      await seedPage(SURVIVOR_SLUG, { title: "Agent Harness", owner: survivorOwner });
+    }
+    await seedPage(ABSORBED_SLUG, { title: ABSORBED_TITLE, owner: absorbedOwner });
+  }
+
+  async function survivorBody(): Promise<string> {
+    const page = await readWikiPageWithFrontmatter(SURVIVOR_SLUG, { fresh: true });
+    expect(page).not.toBeNull();
+    return page!.body;
+  }
+
+  it("puts the survivor owner's Workspace Purpose and dictionary in the reconcile prompt", async () => {
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain(BASE_PROMPT_MARKER);
+    expect(prompt).toContain("WORKSPACE PURPOSE");
+    expect(prompt).toContain(ALICE_PURPOSE);
+    expect(prompt).toContain("WORKSPACE NAMES & TERMS");
+    expect(prompt).toContain(ALICE_TERM);
+    expect(prompt).toContain(ALICE_ALIAS);
+  });
+
+  it("uses the SURVIVOR's owner, never the actor, on a cross-owner merge", async () => {
+    // The recorded decision: the merged prose is written to `into` and lives on
+    // in `into`'s owner's wiki, so alice's standards govern even though bob
+    // pressed the button and bob's page is the one being absorbed.
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedGuidance(ABSORBED_OWNER, BOB_PURPOSE, BOB_TERM, BOB_ALIAS);
+    await seedMergePair(SURVIVOR_OWNER, ABSORBED_OWNER);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: ABSORBED_OWNER,
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain(ALICE_PURPOSE);
+    expect(prompt).toContain(ALICE_TERM);
+    expect(prompt).toContain(ALICE_ALIAS);
+    expect(prompt).not.toContain(BOB_PURPOSE);
+    expect(prompt).not.toContain(BOB_TERM);
+    expect(prompt).not.toContain(BOB_ALIAS);
+  });
+
+  it("falls back to the acting principal when the survivor names no owner", async () => {
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedMergePair(undefined, SURVIVOR_OWNER);
+
+    // Ownerless survivor ⇒ `sameHumanOwner` refuses, so this needs the trusted
+    // door; the fallback under test is the guidance owner, not the guard.
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain(ALICE_PURPOSE);
+    expect(prompt).toContain(ALICE_TERM);
+  });
+
+  it("sends the bare reconcile prompt when neither the survivor nor the actor names an owner", async () => {
+    // Guidance EXISTS for alice — it simply must not be reachable from a merge
+    // that names no principal at all, so this cannot pass vacuously.
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedOwnerlessPage(SURVIVOR_SLUG, "Agent Harness");
+    await seedOwnerlessPage(ABSORBED_SLUG, ABSORBED_TITLE);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    // POSITIVE: this is the reconcile prompt, minus guidance — not "no prompt".
+    expect(prompt).toContain(BASE_PROMPT_MARKER);
+    expect(prompt).not.toContain("WORKSPACE PURPOSE");
+    expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
+    expect(prompt).not.toContain(ALICE_PURPOSE);
+    expect(prompt).not.toContain(ALICE_TERM);
+  });
+
+  /**
+   * Three ways a dictionary file breaks the fold — and they break it at TWO
+   * different layers, which is why the probe has to be `buildNamesTermsGuidance`
+   * (read + sort + render) and not `listNamesTerms` (read + sort) alone.
+   */
+  const CORRUPT_DICTIONARIES: ReadonlyArray<[label: string, bytes: string]> = [
+    // Layer 1: `readEntries` → `JSON.parse` throws a SyntaxError.
+    ["unparseable JSON", "{not json"],
+    // Layer 2: parses as an array, so `listNamesTerms` RESOLVES — `sort` never
+    // calls its comparator on a one-element array and `resolveSortedEntries`
+    // only skips FREEZING a null element. `renderNamesTermsGuidance` is where
+    // `entry.aliases` finally throws.
+    ["a null entry", "[null]"],
+    // Layer 2 again: a well-formed object missing `aliases`.
+    ["a field-less entry", '[{"kind":"project","canonical":"X"}]'],
+  ];
+
+  for (const [label, bytes] of CORRUPT_DICTIONARIES) {
+    it(`still folds — unguided — when the survivor owner's dictionary is ${label}`, async () => {
+      // The regression this story's first pass shipped. The dictionary guidance
+      // throws, `reconcilePage` resolves both guidance halves before calling the
+      // model, and merge's outer `catch` bakes the raw body concatenation into
+      // the DURABLE receipt — so a damaged dictionary would permanently ship an
+      // unfolded, double-titled survivor with `from` already deleted.
+      await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+      await getStorage().writeFile(DICTIONARY_PATH(SURVIVOR_OWNER), bytes);
+      await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
+
+      await mergePages({
+        from: ABSORBED_SLUG,
+        into: SURVIVOR_SLUG,
+        actor: SURVIVOR_OWNER,
+      });
+
+      const prompt = reconcileSystemPrompt();
+      const body = await survivorBody();
+      expect(body).toContain(FOLDED_MARKER);
+      // NOT the appended-bodies fallback.
+      expect(body).not.toContain(`Content about ${ABSORBED_TITLE}.`);
+      expect(prompt).toContain(BASE_PROMPT_MARKER);
+      expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
+      // The Purpose goes with the dictionary — the deliberately coarse degrade.
+      expect(prompt).not.toContain(ALICE_PURPOSE);
+    });
+  }
+
+  it("keeps the Purpose when the survivor owner simply has NO dictionary yet", async () => {
+    // The common production shape: a Workspace Purpose saved, no Names & Terms
+    // entry ever created. `readEntries` ENOENT-degrades to `[]`, so the probe
+    // must resolve and leave the owner alone — dropping guidance here would
+    // silently un-guide almost every real merge.
+    const wiki = await createWiki(SURVIVOR_OWNER, {
+      name: "Ops",
+      scenario: "business",
+    });
+    await saveWorkspaceProfile(SURVIVOR_OWNER, wiki.id, {
+      scenario: "custom",
+      purpose: ALICE_PURPOSE,
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+    await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(await survivorBody()).toContain(FOLDED_MARKER);
+    expect(prompt).toContain("WORKSPACE PURPOSE");
+    expect(prompt).toContain(ALICE_PURPOSE);
+    // An empty dictionary renders to "", so there is no block to carry.
+    expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
+  });
+
+  it("treats a whitespace-only actor as no principal, not as the default tenant", async () => {
+    // `asString` has to guard the FALLBACK too: a truthy-but-blank `actor`
+    // survives `?? actor` and reaches `ownerToTenant`, which trims it to "" and
+    // collapses it onto DEFAULT_TENANT — so the default silo's Purpose and
+    // dictionary would govern a fold that named no principal at all. The
+    // DEFAULT tenant is therefore given REAL guidance here: without the
+    // `asString`, that guidance is exactly what the prompt picks up.
+    await seedGuidance(
+      DEFAULT_TENANT,
+      DEFAULT_TENANT_PURPOSE,
+      DEFAULT_TENANT_TERM,
+      "Echidna",
+    );
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedOwnerlessPage(SURVIVOR_SLUG, "Agent Harness");
+    await seedOwnerlessPage(ABSORBED_SLUG, ABSORBED_TITLE);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: "   ",
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain(BASE_PROMPT_MARKER);
+    expect(prompt).not.toContain("WORKSPACE PURPOSE");
+    expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
+    expect(prompt).not.toContain(DEFAULT_TENANT_PURPOSE);
+    expect(prompt).not.toContain(DEFAULT_TENANT_TERM);
+  });
+
+  it("still folds — with the dictionary, without the Purpose — when the workspace profile is unreadable", async () => {
+    const wikiId = await seedGuidance(
+      SURVIVOR_OWNER,
+      ALICE_PURPOSE,
+      ALICE_TERM,
+      ALICE_ALIAS,
+    );
+    await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
+
+    const profilePath = wikiProfilePath(SURVIVOR_OWNER, wikiId);
+    const storage = getStorage();
+    const readFile = storage.readFile.bind(storage);
+    readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        if (target === profilePath) {
+          throw Object.assign(new Error("EACCES: permission denied"), {
+            code: "EACCES",
+          });
+        }
+        return readFile(target);
+      });
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(await survivorBody()).toContain(FOLDED_MARKER);
+    // `buildWorkspaceGuidance` fail-softs to "" on its own, so only the Purpose
+    // is lost; the dictionary still reaches the fold.
+    expect(prompt).not.toContain("WORKSPACE PURPOSE");
+    expect(prompt).toContain("WORKSPACE NAMES & TERMS");
+    expect(prompt).toContain(ALICE_TERM);
+  });
+
+  it("reads the survivor owner's dictionary exactly once for the whole merge", async () => {
+    // Proves the per-merge handle is not vacuous: the fail-soft probe and
+    // `reconcilePage`'s own `buildNamesTermsGuidance` share ONE read.
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
+
+    const reads = countReads();
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+    });
+
+    expect(reads(DICTIONARY_PATH(SURVIVOR_OWNER))).toBe(1);
+    expect(reconcileSystemPrompt()).toContain(ALICE_TERM);
+  });
+
+  it("picks up a Purpose saved BETWEEN two merges (the handle is per-merge)", async () => {
+    // The other half of the handle's contract: it is minted at the call site
+    // and dies with the merge. Hoisting it to module scope would make this
+    // second fold reuse the first merge's memo and prompt with a stale Purpose.
+    const wikiId = await seedGuidance(
+      SURVIVOR_OWNER,
+      ALICE_PURPOSE,
+      ALICE_TERM,
+      ALICE_ALIAS,
+    );
+    await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
+    await seedPage(SECOND_SURVIVOR_SLUG, { title: "Beacon Rollout", owner: SURVIVOR_OWNER });
+    await seedPage(SECOND_ABSORBED_SLUG, { title: "Beacon (rollout)", owner: SURVIVOR_OWNER });
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+    });
+    expect(String(mockedCallLLM.mock.calls[0][0])).toContain(ALICE_PURPOSE);
+
+    await saveWorkspaceProfile(SURVIVOR_OWNER, wikiId, {
+      scenario: "custom",
+      purpose: REVISED_PURPOSE,
+      keyQuestions: [],
+      inScope: [],
+      outOfScope: [],
+      outputLanguage: "English",
+      pageConventions: "",
+    });
+
+    await mergePages({
+      from: SECOND_ABSORBED_SLUG,
+      into: SECOND_SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+    });
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(2);
+    const secondPrompt = String(mockedCallLLM.mock.calls[1][0]);
+    expect(secondPrompt).toContain(REVISED_PURPOSE);
+    expect(secondPrompt).not.toContain(ALICE_PURPOSE);
+  });
+});
