@@ -355,43 +355,42 @@ export const SETTINGS_VECTOR_BINDING_NOTE = `${WORKERS_AI_LABEL} embeds through 
  * unset it FIRST, and then the select works again.
  *
  * What the sentence deliberately does NOT do is explain that the variable wins
- * over the box — {@link settingsEnvOverrideCopy} says exactly that, and it is
- * already the provider row's standing hint, so the two ride on the same control
- * and the owner would hear one fact twice. That is the same duplication the
- * `"model"` exception in {@link vectorSearchFieldIssue} exists to prevent.
+ * over the box — {@link settingsEnvProviderPinCopy} says exactly that, and it is
+ * already the provider row's hint whenever this note can appear at all (this
+ * wording is selected by an env-owned provider, which is the same state that
+ * pins the row), so the two ride on the same control and the owner would hear
+ * one fact twice. That is the same duplication the `"model"` exception in
+ * {@link vectorSearchFieldIssue} exists to prevent.
  */
 export const SETTINGS_VECTOR_BINDING_ENV_NOTE = `${WORKERS_AI_LABEL} embeds through the Cloudflare AI binding, which exists only on the Workers runtime — bind ai in wrangler.jsonc, or unset EMBEDDING_PROVIDER to choose another embedding provider.`;
 
 /**
- * The environment's overrides, said out loud.
+ * The environment's overrides of the FREE-TEXT boxes, said out loud.
  *
- * `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL` and `LLM_CUSTOM_BASE_URL` win at
- * runtime and a save cannot move them, so without these an owner reads an EMPTY
- * box beside a control that is somehow already satisfied, types a value into it,
- * saves successfully, and nothing changes. The FREE-TEXT boxes this rides on —
- * `model` and `customBaseUrl` — are not disabled, because their stored value is
- * still what applies if the variable is ever unset and typing it now is a
- * useful thing to do; so for them the sentence has to carry the whole
- * explanation on its own.
+ * `EMBEDDING_MODEL` and `LLM_CUSTOM_BASE_URL` win at runtime and a save cannot
+ * move them, so without these an owner reads an EMPTY box beside a control that
+ * is somehow already satisfied, types a value into it, saves successfully, and
+ * nothing changes. Neither box is disabled, because its stored value is still
+ * what applies if the variable is ever unset and typing it now is a useful
+ * thing to do — which is exactly what the second half of this sentence
+ * promises, and why the sentence can carry the whole explanation on its own.
  *
- * The `provider` kind is where that stops being true, and it is a boundary
- * rather than a retraction: the embedding PROVIDER select is `aria-disabled`
- * under its pin (DW-398). Editing it is not "store a value that waits its turn"
- * — `settingsDraftAfterEmbeddingProvider` also blanks the stored embedding
- * endpoint and key, and the save then deletes them, so under an
- * `EMBEDDING_PROVIDER` pin an edit that cannot change which vendor embeds can
- * still destroy the credential that vendor is using. The sentence stays that
- * row's hint either way: pinned or not, it is still the only thing that says
- * the variable wins.
+ * `EMBEDDING_PROVIDER` is deliberately NOT one of these kinds (DW-507). Its row
+ * is a SELECT that the pin makes `aria-disabled` (DW-398), and the promise
+ * "what you save here applies only once that variable is unset" is one that row
+ * cannot keep: the pin refuses the save, and so does `PUT /api/settings`
+ * (DW-510). {@link settingsEnvProviderPinCopy} is that row's sentence instead —
+ * same first half, an honest second half — and
+ * {@link settingsEnvProviderInvalidCopy} covers the value this map could never
+ * have described at all.
  *
- * ONE sentence for all three (DW-71). The endpoint's story is the embedding
- * model's story with a different variable name: `getCustomBaseUrl()` takes
+ * ONE sentence for both (DW-71). The endpoint's story is the embedding model's
+ * story with a different variable name: `getCustomBaseUrl()` takes
  * `LLM_CUSTOM_BASE_URL` ahead of the store exactly as the embedding resolvers
  * take `EMBEDDING_MODEL`, and the Custom base URL box shows the STORE. A second
  * wording for the same fact would be two sentences to keep in step.
  */
 const ENV_OVERRIDE_VARIABLES = {
-  provider: "EMBEDDING_PROVIDER",
   model: "EMBEDDING_MODEL",
   customBaseUrl: "LLM_CUSTOM_BASE_URL",
 } as const;
@@ -402,6 +401,70 @@ export function settingsEnvOverrideCopy(
 ): string {
   const variable = ENV_OVERRIDE_VARIABLES[kind];
   return `The environment sets ${variable}=${value}, and that wins at runtime. What you save here applies only once that variable is unset.`;
+}
+
+/** The one variable name the three sentences below are all about. */
+const EMBEDDING_PROVIDER_ENV = "EMBEDDING_PROVIDER";
+
+/**
+ * The PINNED embedding provider row's hint (DW-507).
+ *
+ * It shares its first half with {@link settingsEnvOverrideCopy} — one wording
+ * for "the environment set this and it wins at runtime" across every row that
+ * has to say it — and then tells the truth the shared second half cannot: this
+ * box is FIXED, not queued. Under the pin the select refuses the change
+ * (DW-398), and since DW-510 so does `PUT /api/settings`, so promising that
+ * what you save here applies later is promising a save that will not happen.
+ *
+ * It still says the variable wins, which is what
+ * {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} and the `"model"` exception in
+ * {@link vectorSearchFieldIssue} both lean on to avoid saying it a second time.
+ */
+export function settingsEnvProviderPinCopy(value: string): string {
+  return `The environment sets ${EMBEDDING_PROVIDER_ENV}=${value}, and that wins at runtime. This box is fixed until that variable is unset.`;
+}
+
+/**
+ * `EMBEDDING_PROVIDER` names something that cannot embed (DW-508).
+ *
+ * `resolveEmbeddingProvider` refuses an unsupported override outright and
+ * `envEmbeddingProvider()` filters it to `null`, so before this sentence the
+ * owner's only signal was a server log: the row read as if no variable were set
+ * at all while nothing embedded. The sentence QUOTES the rejected value —
+ * a typo is invisible otherwise — and points at the environment, which is the
+ * only place it can be fixed.
+ *
+ * It describes WITHOUT pinning: the select stays editable on junk, per DW-398's
+ * boundary, because an unsupported value names no vendor whose credential a
+ * move could sabotage and the store is precisely what applies again the moment
+ * the variable is corrected.
+ */
+export function settingsEnvProviderInvalidCopy(value: string): string {
+  return `${EMBEDDING_PROVIDER_ENV} is set to unsupported value “${value}”. Nothing will embed until the environment is corrected.`;
+}
+
+/**
+ * `PUT /api/settings` refuses to MOVE the embedding provider under the pin
+ * (DW-510).
+ *
+ * The select's pin is browser-side only, so a direct PUT, a stale tab or a CLI
+ * still reached the `embeddingProviderChanged` clear that deletes the stored
+ * embedding key and endpoint — the credential belonging to the very vendor the
+ * environment forces, destroyed by a request that could not change which vendor
+ * embeds. The route closes that bypass with this sentence.
+ *
+ * It names the VARIABLE **and its VALUE**, the same shape every other env
+ * sentence on this surface takes. The motivating case for the refusal is a
+ * STALE TAB: that owner's screen was rendered before the variable was set, so
+ * the row beside their select still reads
+ * {@link SETTINGS_VECTOR_PROVIDER_COPY} and this sentence is the ONLY place
+ * they learn the deployment is pinned — and "some variable is set" is not
+ * something they can act on, while "it is set to `workers-ai`" tells them both
+ * what is embedding and what unsetting would give back. A CLI caller is in the
+ * same position and has no row at all.
+ */
+export function settingsEnvProviderPinRefusalCopy(value: string): string {
+  return `The environment sets ${EMBEDDING_PROVIDER_ENV}=${value}, and that wins at runtime. The embedding provider cannot be changed until that variable is unset.`;
 }
 
 /**
@@ -420,8 +483,8 @@ export function settingsEnvOverrideCopy(
  * and as `EffectiveSettings.ollamaBaseUrlIssue` (the full ladder). One wording
  * for the log and for both screens is what stops the server operator's line and
  * the owner's line from drifting into two different explanations of one fact —
- * the same reason {@link settingsEnvOverrideCopy} is one function for three
- * variables.
+ * the same reason {@link settingsEnvOverrideCopy} is one function for both of
+ * the free-text variables it covers.
  *
  * It lives HERE, not in `config.ts`, because two of the three readers are
  * client components: this module is client-safe by its own header comment and
@@ -1016,6 +1079,19 @@ export interface WorkbenchSettingsPayload {
    * callers" claim exists to rule out. No value here is a secret.
    */
   envEmbeddingProvider: EmbeddingProvider | null;
+  /**
+   * `EMBEDDING_PROVIDER` is SET but names nothing that can embed (DW-508).
+   *
+   * The field above is filtered through `isEmbeddingProvider`, so an
+   * unsupported value arrives there as `null` — indistinguishable, on the
+   * surface, from no variable at all, while `resolveEmbeddingProvider` refuses
+   * it and nothing embeds. This carries the rejected string so the row can say
+   * so; it is the exact mirror of {@link envResearchProviderInvalid}, optional
+   * for the same reason, and it never PINS the select (DW-398's boundary: an
+   * unsupported value names no vendor, so there is no credential a move could
+   * sabotage and the store is what applies once the variable is corrected).
+   */
+  envEmbeddingProviderInvalid?: string | null;
   envEmbeddingModel: string | null;
   /**
    * `LLM_CUSTOM_BASE_URL`, when the deployment sets it (DW-71).
@@ -1259,6 +1335,11 @@ export function isWorkbenchSettingsPayload(
     (payload.envResearchProvider === null ||
       isResearchProviderId(payload.envResearchProvider)) &&
     nullableString("envEmbeddingProvider") &&
+    // OPTIONAL, exactly as `envResearchProviderInvalid` above is: it was added
+    // after the payload shipped, and a required check would make every fixture
+    // and every older cached body invalid.
+    (payload.envEmbeddingProviderInvalid === undefined ||
+      nullableString("envEmbeddingProviderInvalid")) &&
     nullableString("envEmbeddingModel") &&
     nullableString("envCustomBaseUrl") &&
     // REQUIRED, on the same argument `hasWorkersAiBinding` is required on
@@ -1770,7 +1851,11 @@ function vectorControlOrigin(
  * `copy` is the leg's sentence plus the leg's NOTE, which names what owns the
  * problem and rides on the owning control — except for `"model"`, whose row
  * already carries {@link settingsEnvOverrideCopy} about the very same variable
- * and would only repeat it.
+ * and would only repeat it. The provider row's own env sentences
+ * ({@link settingsEnvProviderPinCopy}, {@link settingsEnvProviderInvalidCopy})
+ * are the same shape of fact for `EMBEDDING_PROVIDER`, which is why
+ * {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} does not restate "wins at runtime"
+ * either.
  *
  * `invalid` is true only when the CONTROL'S OWN value is the wrong one — an
  * origin of `"stored"`. An env-owned value is described without being marked,

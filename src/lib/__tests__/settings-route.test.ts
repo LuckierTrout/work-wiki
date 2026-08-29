@@ -55,6 +55,7 @@ import { getWorkersAiBinding } from "@/lib/embeddings";
 import type { Ai } from "@/lib/storage/cloudflare-types";
 import {
   SETTINGS_INVALID_URL_COPY,
+  settingsEnvProviderPinRefusalCopy,
   vectorSearchInactiveCopy,
 } from "@/lib/workbench-settings";
 
@@ -1250,6 +1251,148 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
     expect(response.status).toBe(200);
     // Byte-identical: the endpoint and the credential reach the store untouched.
     expect(mockedSave).toHaveBeenCalledWith({ ...OPENAI_STORE }, STORED_ETAG);
+  });
+
+  // -------------------------------------------------------------------------
+  // The env pin, server-side (DW-510)
+  // -------------------------------------------------------------------------
+  //
+  // `SettingsCanvas` disables the provider select under a supported
+  // `EMBEDDING_PROVIDER`, but that pin is browser-side only: a direct PUT, a tab
+  // opened before the variable was set, or a CLI still reached the clear above
+  // and deleted the credential belonging to the vendor the environment forces.
+
+  it("REFUSES a flat move of the provider under a supported EMBEDDING_PROVIDER", async () => {
+    vi.stubEnv("EMBEDDING_PROVIDER", "workers-ai");
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: "google" }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+    });
+    // Refused BEFORE `saveConfig`, so the store is byte-identical — the
+    // endpoint and the key the env-selected vendor reads are both intact.
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES the same move through the WORKBENCH writer", async () => {
+    // The other writer of the field. Covering only the flat branch would leave
+    // the bypass open on the path every Workbench save takes.
+    vi.stubEnv("EMBEDDING_PROVIDER", "workers-ai");
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({ workbench: { embeddingProvider: "google" } }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+    });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("lets an UNRELATED edit land while the pin is on", async () => {
+    // The cost the pin must not have. `settingsSaveBody` sends
+    // `embeddingProvider` on EVERY save, so a PRESENCE test here would refuse
+    // every timeout change and every loopback toggle on a pinned deployment.
+    // The predicate is a MOVE — the same one both writers clear on.
+    vi.stubEnv("EMBEDDING_PROVIDER", "workers-ai");
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({
+        workbench: {
+          embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small",
+          llmTimeoutSeconds: 30,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith(
+      { ...OPENAI_STORE, llmTimeoutSeconds: 30 },
+      STORED_ETAG,
+    );
+  });
+
+  it("stays OPEN under a JUNK EMBEDDING_PROVIDER", async () => {
+    // The route pins on the FILTERED value the select pins on, so it refuses
+    // exactly the moves the select refuses and no others. An unsupported value
+    // names no vendor, so there is no credential a move could sabotage, and the
+    // store is what applies the moment the variable is corrected (DW-398).
+    vi.stubEnv("EMBEDDING_PROVIDER", "deepseek");
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: "google" }));
+
+    expect(response.status).toBe(200);
+    // …and the existing clear-on-switch behaviour is unchanged.
+    expect(mockedSave).toHaveBeenCalledWith({
+      embeddingProvider: "google",
+      embeddingModel: "text-embedding-3-small",
+    }, STORED_ETAG);
+  });
+
+  it("REFUSES a move to NULL — a delete is a move, and it clears the same pair", async () => {
+    // `embeddingProviderChanged` normalises `null`, `""` and `"   "` to
+    // "nothing selected", which is a real move away from a named vendor: the
+    // clear below fires for it exactly as it does for another vendor's id, and
+    // the endpoint and key go with it. A pin that only caught vendor-to-vendor
+    // moves would leave the whole credential one `{"embeddingProvider": null}`
+    // away from deletion.
+    vi.stubEnv("EMBEDDING_PROVIDER", "workers-ai");
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: null }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+    });
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
+  it("stays OPEN under a JUNK variable through the WORKBENCH writer too", async () => {
+    // The junk boundary has to hold on BOTH writers, or the surface and the API
+    // disagree about the same deployment: the select is editable on junk, and
+    // the save that select produces travels through `workbench`.
+    vi.stubEnv("EMBEDDING_PROVIDER", "deepseek");
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({ workbench: { embeddingProvider: "google" } }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      embeddingProvider: "google",
+      embeddingModel: "text-embedding-3-small",
+    }, STORED_ETAG);
+  });
+
+  it("stays OPEN with no EMBEDDING_PROVIDER at all", async () => {
+    // The unpinned deployment, unchanged — the state every other case in this
+    // describe runs under, asserted once against the pin.
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ embeddingProvider: "google" }));
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith({
+      embeddingProvider: "google",
+      embeddingModel: "text-embedding-3-small",
+    }, STORED_ETAG);
   });
 
   it("REFUSES a flat switch while the vector switch is stored ON", async () => {

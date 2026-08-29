@@ -113,6 +113,8 @@ import {
   settingsDraftFromPayload,
   settingsEnvKeyCopy,
   settingsEnvOverrideCopy,
+  settingsEnvProviderInvalidCopy,
+  settingsEnvProviderPinCopy,
   settingsModelSubstitutedCopy,
   settingsSaveBody,
   vectorSearchFieldIssue,
@@ -828,6 +830,28 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
         // the moment the variable is corrected. Pinning there would lock the
         // owner out of the only field that will matter next.
         const envPinned = stored.envEmbeddingProvider !== null;
+        // …and the value that pinning refused, which the row now SAYS (DW-508).
+        // Before this the junk case produced no owner-visible signal anywhere:
+        // the payload's filtered field read `null`, so the row rendered exactly
+        // as it does with no variable set, while `resolveEmbeddingProvider`
+        // refused the override and nothing embedded. `researchProviderRow`'s
+        // hint is the three-way precedent — invalid, then pinned, then the
+        // standing sentence — and the only difference here is that the invalid
+        // arm DESCRIBES without pinning, per the paragraph above.
+        //
+        // GUARDED ON THE PIN, not read bare. The two fields are exclusive as
+        // `getWorkbenchSettings` builds them — the invalid string is exactly
+        // what the `isEmbeddingProvider` filter threw away, so it is non-null
+        // only where the filtered field is `null` — but this is a WIRE type,
+        // and a payload carrying both would otherwise announce "Nothing will
+        // embed" beside a select the line above has just disabled: the one
+        // combination that is both wrong and unactionable. Where they disagree
+        // the PIN wins, because the pin is what the controls below are already
+        // rendering.
+        const envInvalid =
+          stored.envEmbeddingProvider === null
+            ? stored.envEmbeddingProviderInvalid ?? null
+            : null;
         return (
           <>
             <p className="wb-set-row">
@@ -894,9 +918,11 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                     down. The complaint carries the leg's NOTE, because on this
                     control the note names exactly what the control can do. */}
                 {[
-                  stored.envEmbeddingProvider
-                    ? settingsEnvOverrideCopy("provider", stored.envEmbeddingProvider)
-                    : SETTINGS_VECTOR_PROVIDER_COPY,
+                  envInvalid
+                    ? settingsEnvProviderInvalidCopy(envInvalid)
+                    : stored.envEmbeddingProvider
+                      ? settingsEnvProviderPinCopy(stored.envEmbeddingProvider)
+                      : SETTINGS_VECTOR_PROVIDER_COPY,
                   vectorProviderIssue?.copy ?? null,
                 ]
                   .filter((part): part is string => part !== null)

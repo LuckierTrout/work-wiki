@@ -126,6 +126,9 @@ import {
   settingsDraftAfterEmbeddingProvider,
   settingsDraftFromPayload,
   settingsEnvOverrideCopy,
+  settingsEnvProviderInvalidCopy,
+  settingsEnvProviderPinCopy,
+  settingsEnvProviderPinRefusalCopy,
   settingsCategory,
   settingsPointer,
   settingsSaveBody,
@@ -884,14 +887,13 @@ describe("canEnableVectorSearch", () => {
     expect(SETTINGS_VECTOR_BINDING_ENV_NOTE).not.toContain(
       "or choose another embedding provider",
     );
-    // It also does not restate `settingsEnvOverrideCopy`, which already says the
-    // variable wins over the box and is ALREADY the provider row's standing
-    // hint — the two ride on the same control, so a second telling is the same
-    // duplication the `"model"` exception in `vectorSearchFieldIssue` avoids.
+    // It also does not restate `settingsEnvProviderPinCopy`, which already says
+    // the variable wins over the box and is the provider row's hint in exactly
+    // the state that selects this note — the two ride on the same control, so a
+    // second telling is the same duplication the `"model"` exception in
+    // `vectorSearchFieldIssue` avoids.
     expect(SETTINGS_VECTOR_BINDING_ENV_NOTE).not.toContain("wins at runtime");
-    expect(settingsEnvOverrideCopy("provider", "workers-ai")).toContain(
-      "wins at runtime",
-    );
+    expect(settingsEnvProviderPinCopy("workers-ai")).toContain("wins at runtime");
     // …and the stored half is untouched, where that advice IS actionable.
     expect(missingCopy({ ...legs, providerOrigin: "stored" })).toBe(
       `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
@@ -2523,13 +2525,68 @@ describe("the client and the route read the same vector rule", () => {
   });
 
   it("names LLM_CUSTOM_BASE_URL in the ONE override sentence", () => {
-    // One wording for one fact across all three variables — a second would be
-    // two sentences to keep in step.
+    // One wording for one fact across both FREE-TEXT variables — a second would
+    // be two sentences to keep in step.
     const copy = settingsEnvOverrideCopy("customBaseUrl", "https://env.example/v1");
     expect(copy).toContain("LLM_CUSTOM_BASE_URL=https://env.example/v1");
     expect(copy).toContain("wins at runtime");
     expect(settingsEnvOverrideCopy("model", "m")).toContain("EMBEDDING_MODEL=m");
-    expect(settingsEnvOverrideCopy("provider", "p")).toContain("EMBEDDING_PROVIDER=p");
+    // …and the promise that makes it one sentence for both: the value typed in
+    // an editable box is stored and waits its turn.
+    expect(copy).toContain("applies only once that variable is unset");
+  });
+
+  it("gives the PINNED provider row its own sentence, without the queued promise (DW-507)", () => {
+    // The provider row is a SELECT the pin disables (DW-398) and a save the
+    // route refuses (DW-510), so "what you save here applies only once that
+    // variable is unset" is a promise it cannot keep. Same first half — one
+    // wording for "the environment set this and it wins" — honest second half.
+    const pin = settingsEnvProviderPinCopy("workers-ai");
+    expect(pin).toContain("EMBEDDING_PROVIDER=workers-ai");
+    expect(pin).toContain("wins at runtime");
+    expect(pin).not.toContain("What you save here");
+    expect(pin).toContain("fixed until that variable is unset");
+    // The ROUTE's refusal is the same family and names the same two things
+    // (DW-510). Its reader is a stale tab or a CLI, with no row beside them
+    // quoting the value — so "some variable is set" would be unactionable, and
+    // the VALUE is what tells them what is embedding instead.
+    const refusal = settingsEnvProviderPinRefusalCopy("workers-ai");
+    expect(refusal).toContain("EMBEDDING_PROVIDER=workers-ai");
+    expect(refusal).toContain("wins at runtime");
+    expect(refusal).toContain("until that variable is unset");
+  });
+
+  it("says an unsupported EMBEDDING_PROVIDER out loud (DW-508)", () => {
+    // `envEmbeddingProvider()` filters junk to `null`, so without this sentence
+    // the row reads exactly as it does with no variable set while nothing
+    // embeds. The rejected value is QUOTED, and the remedy names the
+    // environment rather than this box.
+    const invalid = settingsEnvProviderInvalidCopy("deepseek");
+    expect(invalid).toContain("EMBEDDING_PROVIDER");
+    expect(invalid).toContain("deepseek");
+    expect(invalid).toContain("Nothing will embed until the environment is corrected");
+    // NOT the pin's wording: a junk variable leaves this box editable, so it
+    // must not claim the box is fixed.
+    expect(invalid).not.toContain("fixed until");
+  });
+
+  it("accepts the optional `envEmbeddingProviderInvalid`, exactly as the research twin", () => {
+    // OPTIONAL on both sides: it was added after the payload shipped, so an
+    // older body that omits it is still a payload — the same rule
+    // `envResearchProviderInvalid` already follows, which is what keeps every
+    // existing fixture valid.
+    const set = { ...emptyPayload(), envEmbeddingProviderInvalid: "deepseek" };
+    expect(isWorkbenchSettingsPayload(set)).toBe(true);
+    const { envEmbeddingProviderInvalid: _omitted, ...without } = set;
+    expect(isWorkbenchSettingsPayload(without)).toBe(true);
+    expect(
+      isWorkbenchSettingsPayload({ ...emptyPayload(), envEmbeddingProviderInvalid: null }),
+    ).toBe(true);
+    // …but a WRONG shape is still refused: the row renders this string, and a
+    // number would reach the sentence as `[object Object]`-grade nonsense.
+    expect(
+      isWorkbenchSettingsPayload({ ...emptyPayload(), envEmbeddingProviderInvalid: 42 }),
+    ).toBe(false);
   });
 
   it("refuses a payload with no `envCustomBaseUrl` at all", () => {

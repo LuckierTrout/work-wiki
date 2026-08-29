@@ -15,6 +15,8 @@ import {
   SETTINGS_VECTOR_HINT_COPY,
   SETTINGS_VECTOR_PROVIDER_COPY,
   settingsEnvOverrideCopy,
+  settingsEnvProviderInvalidCopy,
+  settingsEnvProviderPinCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
 import {
@@ -555,7 +557,7 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
     );
     expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
     const announced = announcedFor(providerSelect());
-    expect(announced).toContain(settingsEnvOverrideCopy("provider", "workers-ai"));
+    expect(announced).toContain(settingsEnvProviderPinCopy("workers-ai"));
     expect(announced).toContain(BINDING_REFUSAL);
     expect(announced).toContain(SETTINGS_VECTOR_BINDING_ENV_NOTE);
     expect(announced).toContain(
@@ -587,7 +589,7 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
     // …while its description names the provider the gate is actually reading,
     // and the leg that provider is missing.
     const announced = announcedFor(providerSelect());
-    expect(announced).toContain(settingsEnvOverrideCopy("provider", "workers-ai"));
+    expect(announced).toContain(settingsEnvProviderPinCopy("workers-ai"));
     expect(announced).toContain(BINDING_REFUSAL);
     expect(announced).toContain(SETTINGS_VECTOR_BINDING_ENV_NOTE);
     // The checkbox agrees — one rule, and the env provider is what both halves
@@ -694,7 +696,7 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
     expect(providerSelect().value).toBe("openai");
     // …and the hint still says WHICH provider the environment forces.
     expect(announcedFor(providerSelect())).toContain(
-      settingsEnvOverrideCopy("provider", "google"),
+      settingsEnvProviderPinCopy("google"),
     );
 
     fireEvent.change(providerSelect(), { target: { value: "workers-ai" } });
@@ -711,6 +713,72 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
       SETTINGS_KEY_STORED_COPY,
     );
     expectNoSaveAttempted();
+  });
+
+  it("DESCRIBES a junk EMBEDDING_PROVIDER without pinning the select (DW-508)", async () => {
+    // The state that used to produce NO owner-visible signal at all: the
+    // payload's filtered `envEmbeddingProvider` is `null` for an unsupported
+    // value, so the row rendered exactly as it does with no variable set —
+    // while `resolveEmbeddingProvider` refused the override and nothing
+    // embedded. The invalid sentence is the whole signal.
+    await mount(
+      payload({
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "https://embed.example",
+        hasEmbeddingApiKey: true,
+        envEmbeddingProvider: null,
+        envEmbeddingProviderInvalid: "deepseek",
+        hasWorkersAiBinding: false,
+      }),
+    );
+    const announced = announcedFor(providerSelect());
+    // The rejected value is QUOTED — a typo is invisible otherwise — and the
+    // remedy points at the environment, the only place it can be fixed.
+    expect(announced).toContain(settingsEnvProviderInvalidCopy("deepseek"));
+    expect(announced).toContain("deepseek");
+    // NOT the pinned sentence, and not the standing one: exactly one of the
+    // three arms renders.
+    expect(announced).not.toContain(settingsEnvProviderPinCopy("deepseek"));
+    expect(announced).not.toContain(SETTINGS_VECTOR_PROVIDER_COPY);
+    // Editable and unmarked. The store is what applies the moment the variable
+    // is corrected, so pinning here would lock the owner out of the only field
+    // that will matter next (DW-398's boundary), and `aria-invalid` would blame
+    // a select holding a perfectly good value.
+    expect(providerSelect().getAttribute("aria-disabled")).toBeNull();
+    expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
+    expect(providerSelect().value).toBe("openai");
+
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+
+    await waitFor(() => expect(providerSelect().value).toBe("google"));
+  });
+
+  it("lets the PIN win over an invalid value if a payload ever carries both", async () => {
+    // `getWorkbenchSettings` cannot mint this pair — the invalid string is
+    // precisely what the `isEmbeddingProvider` filter threw away, so it is
+    // non-null only where the filtered field is `null`. But the payload is a
+    // WIRE type, and the unguarded read announced "Nothing will embed until the
+    // environment is corrected" beside a select the pin had just disabled: an
+    // instruction about a control the owner cannot touch, which is the one
+    // combination worth ruling out in code rather than in a comment.
+    await mount(
+      payload({
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: "https://embed.example",
+        hasEmbeddingApiKey: true,
+        envEmbeddingProvider: "google",
+        envEmbeddingProviderInvalid: "deepseek",
+        hasWorkersAiBinding: false,
+      }),
+    );
+    const announced = announcedFor(providerSelect());
+    // The PIN's sentence, because the pin is what the controls are rendering.
+    expect(announced).toContain(settingsEnvProviderPinCopy("google"));
+    expect(announced).not.toContain(settingsEnvProviderInvalidCopy("deepseek"));
+    expect(announced).not.toContain("deepseek");
+    expect(providerSelect().getAttribute("aria-disabled")).toBe("true");
   });
 
   it("leaves an UNPINNED select editable, still applying the three-field rule", async () => {

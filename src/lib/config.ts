@@ -1268,7 +1268,22 @@ export function getIngestModelSettings(): StructuredKnowledgeModelSettings {
 export interface VectorSearchSettings {
   /** The EFFECTIVE switch: the stored flag intersected with the predicate. */
   enabled: boolean;
-  /** The explicit embedding provider the gate was read against. */
+  /**
+   * The explicit embedding provider the gate was read against — WHICH MAY BE A
+   * VALUE THE GATE REFUSED (DW-509).
+   *
+   * Since the ladder above became `resolveEmbeddingProvider`'s own, a junk
+   * `EMBEDDING_PROVIDER=deepseek` is reported here verbatim rather than being
+   * filtered away and replaced by the stored selection. That is the point: the
+   * alternative shadowed the misconfiguration behind a provider the runtime
+   * never used, so this object claimed `openai` with every leg met while
+   * nothing embedded. Reported unshadowed, the value names what actually has to
+   * be fixed, and `enabled` below is `false` beside it.
+   *
+   * So a consumer must not treat this as an {@link EmbeddingProvider} id
+   * without checking: `enabled` is the field that answers "is anything
+   * embedding", and it is the only one every caller in the tree reads.
+   */
   provider: string | null;
   baseUrl: string | null;
   model: string | null;
@@ -1286,7 +1301,21 @@ export interface VectorSearchSettings {
  */
 export function getVectorSearchSettings(): VectorSearchSettings {
   const cfg = loadConfigSync();
-  const envProvider = envEmbeddingProvider();
+  // THE RAW value, not the `isEmbeddingProvider`-filtered one (DW-509).
+  //
+  // This is the ladder `resolveEmbeddingProvider` reads, line for line:
+  // `nonEmpty(process.env.EMBEDDING_PROVIDER) ?? nonEmpty(cfg.embeddingProvider)`,
+  // with the refusal made once, at the gate. Filtered, a junk
+  // `EMBEDDING_PROVIDER=deepseek` fell THROUGH to the stored provider here — so
+  // this function reported `provider: "openai"` with every leg met and
+  // `enabled: true`, while the embed path resolved `null` and nothing embedded.
+  // The switch read as satisfied on a provider that never runs.
+  //
+  // No new branch is needed to refuse it: `vectorSearchMissingLegs`' first leg
+  // is already `!v.provider || !isEmbeddingProvider(v.provider)`, so the junk
+  // value fails the gate, and the reported `provider` stays the value the gate
+  // was actually read against rather than a shadowed one.
+  const envProvider = nonEmpty(process.env.EMBEDDING_PROVIDER);
   const provider = envProvider ?? nonEmpty(cfg.embeddingProvider);
   const envModel = nonEmpty(process.env.EMBEDDING_MODEL);
   const inputs: VectorSearchInputs = {
@@ -1689,6 +1718,11 @@ export function getWorkbenchSettings(
   const firecrawl = getFirecrawlSettings();
   const research = getResearchSettings();
   const envProvider = envEmbeddingProvider();
+  // The RAW variable beside the filtered one, so "set to junk" and "not set"
+  // stop being the same payload (DW-508). Read exactly as `getResearchSettings`
+  // reads its own pair: raw first, filtered second, and the invalid string is
+  // whatever the raw read kept that the filter threw away.
+  const envProviderRaw = nonEmpty(process.env.EMBEDDING_PROVIDER);
   // Resolved from the `cfg` already read above, through the ONE helper
   // `getEffectiveSettings` uses (DW-312/DW-313) — so the two Settings surfaces
   // cannot answer "is the model I set being substituted?" differently.
@@ -1730,6 +1764,11 @@ export function getWorkbenchSettings(
     // editable fields so the browser can feed the vector predicate exactly what
     // the route feeds it.
     envEmbeddingProvider: envProvider,
+    // …and the value the filter refused, which the row describes WITHOUT
+    // pinning on: the select stays editable on junk, because the store is what
+    // applies the moment the variable is corrected (DW-398's boundary).
+    envEmbeddingProviderInvalid:
+      envProviderRaw !== null && envProvider === null ? envProviderRaw : null,
     envEmbeddingModel: nonEmpty(process.env.EMBEDDING_MODEL),
     // The THIRD variable that wins over a box on this surface (DW-71), served
     // for the same reason as the two above and read through the same `nonEmpty`

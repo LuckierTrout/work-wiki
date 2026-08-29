@@ -4555,7 +4555,9 @@ source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
 location: src/lib/workbench-settings.ts:373 (settingsEnvOverrideCopy)
 severity: medium
 reason: `settingsEnvOverrideCopy` is one sentence for three env-owned fields, and the two others (`model`, `customBaseUrl`) stay editable, so the sentence is true for them. `researchProviderRow` solves this with a dedicated pinned sentence ("RESEARCH_PROVIDER is set to X and wins over this box."). The recorded DW-398 decision names "the existing env-override hint copy", so a pinned variant is a new copy decision rather than something this pass could take.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-embedding-provider-env-pin
+resolution-undo: a5eabdf2ca61356e0076d774a6f82c9650d82e7cc792e80ee23143ab6f1544b3 2026-08-29 7374617475733a206f70656e
 
 ### DW-508: An unsupported EMBEDDING_PROVIDER has no owner-visible signal on the embeddings surface at all — no pin, no invalid-value sentence, only the standing hint.
 origin: spec-deferred 187f1b705e53
@@ -4563,7 +4565,9 @@ source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
 location: src/components/workbench/SettingsCanvas.tsx:830 (embedding provider row)
 severity: medium
 reason: `researchProviderRow` reads `stored.envResearchProviderInvalid` and says "RESEARCH_PROVIDER is set to unsupported value X. No Deep Research run will start until the environment is corrected." There is no `envEmbeddingProviderInvalid` counterpart: `envEmbeddingProvider()` filters junk to `null`, so with `EMBEDDING_PROVIDER=deepseek` the select shows the stored value, is editable, and the hint is the generic SETTINGS_VECTOR_PROVIDER_COPY, while the resolver refuses the value and embeds nothing. Adding the signal needs a new payload field threaded through GET/PUT — this spec's Block If.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-embedding-provider-env-pin
+resolution-undo: a5eabdf2ca61356e0076d774a6f82c9650d82e7cc792e80ee23143ab6f1544b3 2026-08-29 7374617475733a206f70656e
 
 ### DW-509: The runtime resolver and the vector gate disagree about a junk EMBEDDING_PROVIDER — the resolver refuses outright, the gate falls back to the stored provider.
 origin: spec-deferred 920819acd68d
@@ -4571,7 +4575,9 @@ source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
 location: src/lib/config.ts:1289 (getVectorSearchSettings)
 severity: medium
 reason: `resolveEmbeddingProvider` returns null for an unsupported override, while `getVectorSearchSettings` (src/lib/config.ts:1289-1290) reads through `envEmbeddingProvider()`, gets null, and falls back to `nonEmpty(cfg.embeddingProvider)`. So the gate can report the switch satisfied on the stored provider while nothing embeds. Pre-existing and untouched here — DW-333 aligned the two on BLANK, not on junk, and aligning them on junk moves which value the gate reports.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-embedding-provider-env-pin
+resolution-undo: a5eabdf2ca61356e0076d774a6f82c9650d82e7cc792e80ee23143ab6f1544b3 2026-08-29 7374617475733a206f70656e
 
 ### DW-510: DW-398's pin is browser-side only — PUT /api/settings still accepts an embeddingProvider patch under an env pin and still deletes the stored key and endpoint.
 origin: spec-deferred c65a495caed9
@@ -4579,7 +4585,9 @@ source_spec: `spec-dw-333-398-401-embedding-provider-resolution.md`
 location: src/app/api/settings/route.ts (embeddingProvider patch branch)
 severity: medium
 reason: `applyWorkbenchSettings` clears `embeddingApiKey`/`embeddingBaseUrl` through `embeddingProviderChanged` regardless of `EMBEDDING_PROVIDER`, so a direct PUT, a stale tab, or a CLI reaches the destruction the select now refuses. This matches the repo's existing convention — the `researchProvider` pin is UI-only too — and the recorded decision names the select specifically, so a route-level refusal is a separate decision.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-embedding-provider-env-pin
+resolution-undo: a5eabdf2ca61356e0076d774a6f82c9650d82e7cc792e80ee23143ab6f1544b3 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Refuse at the route — Refuse an embeddingProvider patch at PUT /api/settings while EMBEDDING_PROVIDER is set, so the stored key and endpoint cannot be destroyed by a caller that bypasses the select, and pin the refusal alongside the existing pin tests.
 
 ### DW-511: The DW-373 rail rows pin a state the rail control itself cannot produce: with a Create Wiki dialog open, a real user can reach Settings through neither opener.
@@ -4911,4 +4919,20 @@ location: src/cli.ts:703
 source_spec: `spec-dw-502-cli-status-config-load.md`
 severity: low
 reason: There is no `require.main`/`import.meta` guard — `main().catch(...)` runs at `src/cli.ts:703`. Under vitest, argv parses to `help`, so importing the module prints the whole HELP block into the run's stdout (visible in `cli.test.ts` and `cli-status-config-load.test.ts` output today). The catch arm ends in `process.exit(1)`, so an argv that parsed to any other command would abort the worker mid-collection. Pre-existing; DW-502 added a second static importer of the module rather than creating the hazard.
+status: open
+
+### DW-552: DW-509 aligned only the RUNTIME gate on a junk EMBEDDING_PROVIDER, so the route's and the browser's halves of canEnableVectorSearch now disagree with it for that state.
+origin: spec-deferred dd238fd4fbbe
+location: src/lib/workbench-settings.ts:2411 (mergedVectorInputs) and :2935 (draftVectorInputs)
+source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
+severity: medium
+reason: `getVectorSearchSettings` now reads the raw variable and refuses `deepseek` (`enabled: false`), but `mergedVectorInputs` (src/lib/workbench-settings.ts:2411) and `draftVectorInputs` (:2935) still read the FILTERED `envEmbeddingProvider`, which is `null` for junk, and fall through to the stored provider. Verified end-to-end by the review: with `EMBEDDING_PROVIDER=deepseek` and a complete stored OpenAI configuration, the Workbench switch reads as satisfiable, `PUT /api/settings` answers 200 and stores `vectorSearchEnabled: true`, while `getVectorSearchSettings()` answers `{provider: "deepseek", enabled: false}`. The repo's own comments (src/app/api/settings/route.ts:546, src/lib/workbench-settings.ts:2199) and an existing test (workbench-settings.test.ts:2601) assert all three feeders answer identically. Not a functional regression — the backfill that 200 enqueues failed before this change too, on a different sentence — but the three feeders no longer agree, and the new `envEmbeddingProv
+status: open
+
+### DW-553: A stale tab refused by the new route pin has no way forward: the draft keeps the blanked endpoint and key, so every retry re-sends the same move and gets the same 400.
+origin: spec-deferred 77772d2be117
+location: src/components/workbench/SettingsCanvas.tsx:341 (save result handling)
+source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
+severity: medium
+reason: `SettingsCanvas`'s save keeps the draft on any non-ok result (SettingsCanvas.tsx:341-343), and the draft that produced the refusal already had `embeddingBaseUrl` and `embeddingApiKey` blanked by `settingsDraftAfterEmbeddingProvider`. The owner of a tab opened before `EMBEDDING_PROVIDER` was set can only escape by reverting the select by hand or reloading, and the refusal sentence names neither. The same keep-the-draft behaviour applies to every other 400 on this surface, so re-seeding the draft from the answered payload for this refusal specifically — or saying "reload" in the copy — is a surface decision this bundle did not carry.
 status: open

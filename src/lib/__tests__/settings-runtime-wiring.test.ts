@@ -978,6 +978,87 @@ describe("the stored embedding credential and endpoint are read", () => {
     expect(payload.embeddingProvider).toBe("openai");
     const inputs = draftVectorInputs(settingsDraftFromPayload(payload), payload);
     expect(inputs.providerOrigin).toBe("stored");
+    // …but NOT as "no variable at all" any more (DW-508): the rejected string
+    // rides beside the filtered field, which is the only owner-visible signal
+    // that the deployment set something the resolver refuses.
+    expect(payload.envEmbeddingProviderInvalid).toBe("deepseek");
+  });
+
+  it("reports no invalid value when EMBEDDING_PROVIDER is unset, blank or supported (DW-508)", async () => {
+    // The three states that must NOT produce a sentence. `nonEmpty` is the same
+    // trim-and-null `resolveEmbeddingProvider` reads the variable through, so a
+    // whitespace-only variable is "unset" here exactly as it is there — and a
+    // supported one is a SELECTION, described by the pinned sentence instead.
+    await store({ embeddingProvider: "openai" });
+
+    delete process.env.EMBEDDING_PROVIDER;
+    expect(getWorkbenchSettings(false).envEmbeddingProviderInvalid).toBeNull();
+
+    process.env.EMBEDDING_PROVIDER = "   ";
+    expect(getWorkbenchSettings(false).envEmbeddingProviderInvalid).toBeNull();
+
+    process.env.EMBEDDING_PROVIDER = "google";
+    const pinned = getWorkbenchSettings(false);
+    expect(pinned.envEmbeddingProviderInvalid).toBeNull();
+    expect(pinned.envEmbeddingProvider).toBe("google");
+  });
+
+  it("REFUSES a junk EMBEDDING_PROVIDER at the runtime gate, as the resolver does (DW-509)", async () => {
+    // `getVectorSearchSettings` used to read the FILTERED env value, so junk
+    // fell through to the stored provider: every leg met, `enabled: true`, and
+    // a switch reporting itself satisfied on a provider `resolveEmbeddingProvider`
+    // returns `null` for. Nothing embedded, and nothing said so.
+    //
+    // The ladder now matches the resolver's line for line — raw env, then store
+    // — and `vectorSearchMissingLegs`' first leg makes the refusal.
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingApiKey: "sk-o",
+      embeddingModel: "text-embedding-3-small",
+    });
+
+    const settings = getVectorSearchSettings();
+    // The value the gate was actually read against, not a shadowed one: the
+    // reported provider is what the resolver saw and refused.
+    expect(settings.provider).toBe("deepseek");
+    expect(settings.enabled).toBe(false);
+    // …and the resolver agrees, which is the whole point of the alignment:
+    // `getEmbeddingModelName` returns `null` exactly when
+    // `resolveEmbeddingProvider` refuses, so nothing embeds.
+    expect(getEmbeddingModelName()).toBeNull();
+    expect(getEmbeddingModel()).toBeNull();
+    // The DECLARED shape is untouched — the gate-only inputs must not leak.
+    expect(Object.keys(settings).sort()).toEqual([
+      "baseUrl",
+      "enabled",
+      "hasKey",
+      "model",
+      "provider",
+    ]);
+  });
+
+  it("treats a BLANK EMBEDDING_PROVIDER as unset at the runtime gate", async () => {
+    // The half the raw read must not change: `nonEmpty` still trims, so a
+    // whitespace-only variable does not shadow a perfectly good stored
+    // selection — the store wins and the origin says so (DW-333).
+    process.env.EMBEDDING_PROVIDER = "   ";
+    await store({
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingApiKey: "sk-o",
+      embeddingBaseUrl: "https://o/v1",
+      embeddingModel: "text-embedding-3-small",
+    });
+
+    const settings = getVectorSearchSettings();
+    expect(settings.provider).toBe("openai");
+    expect(settings.enabled).toBe(true);
+    // The origin follows the same raw read, so it still reports the store.
+    const payload = getWorkbenchSettings(false);
+    const inputs = draftVectorInputs(settingsDraftFromPayload(payload), payload);
+    expect(inputs.providerOrigin).toBe("stored");
   });
 
   it("reports the provider ORIGIN from config.ts too, without leaking it (DW-281)", async () => {

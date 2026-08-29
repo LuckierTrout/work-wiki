@@ -17,6 +17,7 @@ import {
   embeddingProviderChanged,
   flatMovableVectorLegs,
   isAbsoluteHttpUrl,
+  settingsEnvProviderPinRefusalCopy,
   validateWorkbenchSettingsPatch,
 } from "@/lib/workbench-settings";
 /**
@@ -331,6 +332,68 @@ export async function PUT(request: Request) {
       );
     }
 
+    // THE ENV PIN, SERVER-SIDE (DW-510).
+    //
+    // `SettingsCanvas` disables the embedding provider select under a supported
+    // `EMBEDDING_PROVIDER` (DW-398), but that pin lives in the browser: a direct
+    // PUT, a tab opened before the variable was set, or a CLI still reached the
+    // `embeddingProviderChanged` clear below and deleted the stored embedding
+    // key and endpoint — the credential belonging to the very vendor the
+    // environment forces, destroyed by a request that could not change which
+    // vendor embeds. This closes that bypass.
+    //
+    // A MOVE, never PRESENCE: `settingsSaveBody` sends `embeddingProvider` on
+    // EVERY save, so a presence test would refuse every unrelated edit — a
+    // timeout, the loopback switch — on a pinned deployment. The predicate is
+    // `embeddingProviderChanged`, the same one both writers below clear on, so
+    // the requests this refuses are exactly the requests that would have
+    // cleared, and no others.
+    //
+    // BOTH WRITERS: the flat field and `workbench.embeddingProvider`. Measured
+    // against `existing` and answered BEFORE `updated` is touched, so a refused
+    // request leaves the store byte-identical.
+    //
+    // The pin reads the FILTERED value the select pins on — a junk variable
+    // arrives as `null` here, so the route stays open exactly where the select
+    // stays editable (DW-398's boundary: an unsupported value names no vendor,
+    // so there is no credential a move could sabotage, and the store is what
+    // applies the moment the variable is corrected).
+    //
+    // ONE construction of the pre-request store view, reused by every reader
+    // that asks about `existing` — this pin, the gate's BASELINE argument, and
+    // the backfill's "was the switch off before?" question. All three want the
+    // same object; building it three times only invites the three to drift.
+    // The `updated` and `merged` views stay their own calls: those are
+    // deliberately computed at the point their input exists.
+    const storedBefore = workbenchSettingsStored(existing, hasWorkersAiBinding);
+    if (storedBefore.envEmbeddingProvider !== null) {
+      const patch =
+        typeof body.workbench === "object" && body.workbench !== null
+          ? (body.workbench as { embeddingProvider?: unknown })
+          : null;
+      const storedProvider = existing.embeddingProvider ?? null;
+      // Only `workbench.embeddingProvider` can still be malformed here: the flat
+      // `body.embeddingProvider` was type-checked into a 400 by the validation
+      // block above, so a non-string, non-null value never reaches this line
+      // through that half. The `workbench` half is unvalidated until
+      // `validateWorkbenchSettingsPatch` runs below, and it is left to that —
+      // the pin answers about MOVES, not about shapes, and refusing a malformed
+      // patch in this sentence would point the caller at a variable that is not
+      // their problem.
+      const moves = [body.embeddingProvider, patch?.embeddingProvider].some(
+        (value) =>
+          value !== undefined &&
+          (value === null || typeof value === "string") &&
+          embeddingProviderChanged(storedProvider, value ?? null),
+      );
+      if (moves) {
+        return Response.json(
+          { error: settingsEnvProviderPinRefusalCopy(storedBefore.envEmbeddingProvider) },
+          { status: 400 },
+        );
+      }
+    }
+
     const updated: AppConfig = { ...existing };
 
     if (body.provider !== undefined) {
@@ -479,14 +542,15 @@ export async function PUT(request: Request) {
     // the post-legacy-merge object: an `embeddingModel` set by the flat field in
     // this same request counts toward the gate.
     //
-    // …which is precisely why the THIRD argument is `existing` rather than
-    // `updated` (DW-219). The gate now re-runs only when the request MOVES
-    // something the rule reads, and that question has to be asked against what
-    // the store held BEFORE this request. Handed `updated` for both, a flat
-    // `embeddingModel` would already be baked into the "before" picture, compare
-    // equal to itself, and skip the gate — silently undoing the promise the
-    // paragraph above makes. `updated` stays the MERGE TARGET; `existing` is the
-    // BASELINE the move is measured from.
+    // …which is precisely why the THIRD argument is `storedBefore` — the view of
+    // `existing` hoisted above — rather than `updated` (DW-219). The gate now
+    // re-runs only when the request MOVES something the rule reads, and that
+    // question has to be asked against what the store held BEFORE this request.
+    // Handed `updated` for both, a flat `embeddingModel` would already be baked
+    // into the "before" picture, compare equal to itself, and skip the gate —
+    // silently undoing the promise the paragraph above makes. `updated` stays
+    // the MERGE TARGET; `storedBefore` is the BASELINE the move is measured
+    // from.
     //
     // ONE rule, BOTH branches (DW-217). The gate used to live inside
     // `if (body.workbench !== undefined)`, so a flat-only body could move
@@ -536,7 +600,7 @@ export async function PUT(request: Request) {
     const validation = validateWorkbenchSettingsPatch(
       hasWorkbenchKey ? body.workbench : {},
       workbenchSettingsStored(updated, hasWorkersAiBinding),
-      workbenchSettingsStored(existing, hasWorkersAiBinding),
+      storedBefore,
       hasWorkbenchKey ? undefined : flatMovableVectorLegs(body),
     );
     if (!validation.ok) {
@@ -578,7 +642,7 @@ export async function PUT(request: Request) {
     }
     const version = save.version;
 
-    const wasOff = workbenchSettingsStored(existing, hasWorkersAiBinding).vectorSearchEnabled !== true;
+    const wasOff = storedBefore.vectorSearchEnabled !== true;
     const nowOn = workbenchSettingsStored(merged, hasWorkersAiBinding).vectorSearchEnabled === true;
     if (wasOff && nowOn) {
       const { enqueueEmbeddingBackfill } = await import("@/lib/ingest-embed");

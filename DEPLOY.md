@@ -120,9 +120,29 @@ caller sends `embeddingProvider`. The exception is a save that **breaks a
 configuration that previously worked** — that one refuses over any unmet leg,
 actionable from that page or not. With vector search off none of it applies: a
 flat save is not gated at all, so a provider sent to the flat `/api/settings`
-route is still stored silently on a deployment with no binding. And nothing
-gates `EMBEDDING_PROVIDER` or the config file itself — the rule only ever runs
-on an API save.
+route on a deployment with no binding is stored without the *vector rule*
+having anything to say about it.
+
+One thing does stop it, though, and it is a separate rule from the gate above.
+While `EMBEDDING_PROVIDER` names a **supported** provider, the route refuses to
+**move** the stored embedding provider at all — through the flat field and
+through `workbench` alike — because moving it deletes the stored embedding key
+and endpoint belonging to the very vendor the variable forces, and no save can
+change which vendor embeds while the variable is set. The Settings select is
+already disabled for that reason; the route closes the same door against a
+direct `PUT`, a tab left open from before the variable was set, and a CLI:
+
+> The environment sets EMBEDDING_PROVIDER=workers-ai, and that wins at runtime.
+> The embedding provider cannot be changed until that variable is unset.
+
+It fires on a **move**, never on presence — every Settings save re-sends the
+provider it is already storing, so an unrelated edit (a timeout, the API door)
+still lands untouched on a pinned deployment — and a refused request writes
+nothing at all, so the key and the endpoint survive it. A **junk**
+`EMBEDDING_PROVIDER` does not pin anything: it names no vendor, so there is no
+credential a move could sabotage, and the store is exactly what applies once the
+variable is corrected. The config file itself is still ungoverned either way —
+every rule here only ever runs on an API save.
 
 Those are not safe answers by themselves, though: `openai` and `google` are
 dropped just as silently when the matching key is missing (`OPENAI_API_KEY` /
@@ -141,6 +161,20 @@ than falling through to auto-detection, and says so once on the `embeddings` tag
 (valid: openai, google, ollama, workers-ai); embeddings are disabled.
 Fix the override or unset it to auto-detect.
 ```
+
+That log line is no longer the only place it shows. The Workbench embeddings row
+says the same thing where the owner is actually looking — beside the provider
+select, in place of the sentence that would otherwise describe the box:
+
+> EMBEDDING_PROVIDER is set to unsupported value “deepseek”. Nothing will embed
+> until the environment is corrected.
+
+The select stays **editable** under it, unlike the pinned case above: an
+unsupported value names no vendor to protect, and the stored selection is what
+applies the moment the variable is fixed. The vector switch agrees rather than
+reporting itself satisfied — with a junk variable set, nothing embeds and the
+runtime reads the switch as off, so a chat that would have used vector search
+falls back to keyword retrieval and says so.
 
 The same unservable value can also arrive from the **store**, because Settings
 saves an embedding provider of its own and the variable is only the first of the
