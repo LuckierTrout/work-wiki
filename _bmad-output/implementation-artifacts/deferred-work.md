@@ -2378,7 +2378,9 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/components/RecentIngests.tsx:487
 severity: medium
 reason: DW-86's verbatim reason names "the six converted use client components"; the bundle intent's prose named only four (ArticleView, VaultExplorer, ChatWorkspace, KnowledgeStudio) and this story covered those four. `src/components/RecentIngests.tsx:487,568`, `src/components/ActionInbox.tsx:387` and `src/components/BulkDocumentImport.tsx:532` call `hrefForSlug(...)` from the same conversion, and no `*.test.ts`/`*.test.tsx` under `src/` references any of the three. The harness they would need now exists, so this is a remaining gap rather than a constraint.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-component-anchor-and-flake-coverage
+resolution-undo: 261fa7215a7e4dd35377c63e571ad76627ca6311fcd9a185accfc2e771e3504d 2026-08-29 7374617475733a206f70656e
 
 ### DW-260: NavHeader conveys the active route only through inline fontWeight, with no aria-current, so the current page is announced to assistive tech not at all.
 origin: spec-deferred 22cbe3585ae4
@@ -2963,7 +2965,9 @@ source_spec: `spec-dw-141-workspace-guidance-request-caching.md`
 location: src/components/__tests__/workspace-purpose-settings.test.tsx:837
 severity: medium
 reason: Observed failing once during full-suite verification for this story (the badge still read "not configured" when the 1s `waitFor` expired), then passing on re-run and passing 42/42 in isolation. It is entirely fetchMock-driven, touches nothing in this change, and predates it (introduced with DW-136/142/301). It races the mount fetch against the `returnToTab()` recheck.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-component-anchor-and-flake-coverage
+resolution-undo: 261fa7215a7e4dd35377c63e571ad76627ca6311fcd9a185accfc2e771e3504d 2026-08-29 7374617475733a206f70656e
 
 ### DW-326: DW-304's URL rule is write-time only: a value stored before this change, or one supplied through OLLAMA_BASE_URL, still reaches the provider SDK unvalidated.
 origin: spec-deferred b7a9d467256f
@@ -5263,4 +5267,36 @@ location: src/lib/__tests__/brand-copy.test.ts (AGENTS.md yopedia parity test)
 source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
 severity: medium
 reason: `brand-copy.test.ts`'s "AGENTS.md's yopedia prose and IDENTIFIER_ALLOWLIST agree in both directions" asserts only that each allowlist PATTERN matches at least one backticked spelling in the frozen-identifier section. Both enumerated families are one pattern each, so a fifth `X_YOPEDIA_HEADERS` member — or a fifteenth `YOPEDIA_HYPHEN_IDENTIFIERS` member — satisfies direction 2 on the strength of a sibling and is never forced into the prose. The minimality sweep forces a member to exist in the shipped TREE, not in AGENTS.md. Pre-existing since DW-352 created the first enumerated family; DW-473 extends it to a second. A per-member parity assertion would close it for both at once.
+status: open
+
+### DW-590: Three more call sites from the same 308-shim conversion -- IngestSuccess, BatchItemRow (via BatchIngestForm) and useGlobalSearch's router.push -- are still unpinned, so reverting any of them to slugPa
+origin: spec-deferred 6c8f87fdc7ed
+location: src/components/IngestSuccess.tsx:20
+source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
+severity: medium
+reason: This story's intent enumerated three components (RecentIngests, ActionInbox, BulkDocumentImport) and those are now pinned. `src/components/IngestSuccess.tsx:20,35` (rendered by `src/app/ingest/page.tsx:71`), `src/components/BatchItemRow.tsx:43` (fed `hrefForSlug` as a prop from `src/components/BatchIngestForm.tsx:319`) and `src/hooks/useGlobalSearch.ts:197` (`router.push(hrefForSlug(slug))`, consumed by `GlobalSearch.tsx`) come from the same sweep, and no `*.test.ts`/`*.test.tsx` under `src/` references any of the three. Demonstrated during review: all four sites were reverted to a `/u/yopedia/${slug}` answer at once and `pnpm test` was byte-identical to the unmutated tree -- 13 failed / 331 passed files, 233 failed / 7728 passed tests -- not one extra failure. `IngestSuccess` and `BatchItemRow` take plain props and drop straight into `owner-scoped-anchors.test.tsx`; `useGlobalSearch` is a navigation, so it fits that file's existing `nav.router.push` mock instead of an href assertion.
+status: open
+
+### DW-591: On Node 26 the runtime's own localStorage global shadows jsdom's, so `window.localStorage` is undefined in the dom project and 13 workbench suites (233 tests) fail before any assertion.
+origin: spec-deferred 06d79b086f45
+location: vitest.setup.dom.ts
+source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
+severity: medium
+reason: Reproduced at the baseline revision with both of this story's files stashed: `pnpm exec vitest run --project dom` gives 13 failed files / 233 failed tests, every one `TypeError: Cannot read properties of undefined (reading 'clear')` (248 occurrences) or `(reading 'remove')` (18) from a `window.localStorage.clear()` in a suite's own setup -- e.g. `src/components/workbench/__tests__/icon-rail.test.tsx:62`, `activity-dock.test.tsx:27`, `workbench-split-wiring.test.tsx:97`. Node here is v26.8.1 and the run prints `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided`. Pre-existing and unrelated to this change (the failing set is identical before and after it), but it means `pnpm test` cannot be green on a Node 26 machine, and the repo's own convention says a capability jsdom lacks belongs in `vitest.setup.dom.ts` behind `@/test/dom-helpers` rather than in each suite.
+status: open
+
+### DW-592: DW-325 closed the flake class for one case; ~14 structurally identical `returnToTab()` + `waitFor` cases in the same describe keep the same millisecond-budget exposure.
+origin: spec-deferred bdd55ed0cf5a
+location: src/components/__tests__/workspace-purpose-settings.test.tsx:796
+source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
+severity: low
+reason: `src/components/__tests__/workspace-purpose-settings.test.tsx` still contains ~83 `waitFor(` calls, and the describe at `:796` holds roughly fourteen cases with the same `render -> waitFor(fieldset enabled) -> returnToTab() -> waitFor(badge/status)` shape -- including `await waitFor(() => expect(badge()).toBe("no wiki"))` at `:1008`, which is the literal assertion whose expiry produced the observed red. This story's intent named one case and its spec forbade widening, so the scoping is deliberate; the exposure is simply still there, and `settleUntil` now exists in the file as the clock-free replacement.
+status: open
+
+### DW-593: ActionInbox never reads `ActionItem.sourceMissing`, so a to-do whose cited Source was cascade-deleted still renders a live `source · <slug>` link into a page that is gone.
+origin: spec-deferred 0ee77ef63189
+location: src/components/ActionInbox.tsx:387
+source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
+severity: low
+reason: `src/lib/action-items.ts:26` declares `sourceMissing` with the comment "The cited Source was cascade-deleted. The todo itself is kept." `grep -c sourceMissing src/components/ActionInbox.tsx` is 0, and the chip at `:387` is gated only on `item.sourceSlug`. Pre-existing production behaviour, surfaced because this story gave the component its first test of any kind; pinning or fixing it is a separate change.
 status: open

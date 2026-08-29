@@ -99,6 +99,36 @@ async function settle(): Promise<void> {
   });
 }
 
+/**
+ * Wait for a POSITIVE transition without a wall clock: settle, check, repeat,
+ * up to a fixed number of TURNS.
+ *
+ * {@link settle} on its own is the right tool for the negative claims above and
+ * the wrong one for "this state arrived": it gives the transition a margin of
+ * exactly ONE macrotask turn, so a `load` that grows two more async hops reds
+ * the case even though nothing about the behaviour changed. That is a brittle
+ * red traded for a flaky one. A `waitFor` budget is the other direction — it
+ * tolerates the extra hops, but its bound is MILLISECONDS, so a loaded CI
+ * machine can spend the whole budget on scheduling and fail a case that is
+ * behaving correctly (DW-325).
+ *
+ * Turns are what a round trip actually costs here, so turns are what this
+ * bounds. Nothing in it reads a clock, and the LAST turn's error is the one
+ * that propagates — a genuine regression still reports the assertion that
+ * failed, not a timeout.
+ */
+async function settleUntil(check: () => void, turns = 10): Promise<void> {
+  for (let turn = 1; turn <= turns; turn += 1) {
+    await settle();
+    try {
+      check();
+      return;
+    } catch (error) {
+      if (turn === turns) throw error;
+    }
+  }
+}
+
 beforeEach(() => {
   stubGet({ profile: PROFILE, readOnly: false, wiki: WIKI, version: VERSION });
 });
@@ -1014,9 +1044,28 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     expect(purposeField().readOnly).toBe(false);
   });
 
+  /**
+   * BOUNDED BY EVENT-LOOP TURNS, not by a wall clock (DW-325).
+   *
+   * This case was observed failing once under full-suite load — the first
+   * `waitFor` expiring on RTL's default 1s budget with the badge still reading
+   * "not configured" — and passing in isolation. Nothing about the component
+   * was wrong; the machine was simply busy, and a budget denominated in
+   * milliseconds is a claim about the SCHEDULER rather than about this form.
+   *
+   * So both waits below go through {@link settleUntil}: they finish as soon as
+   * the state arrives and give up after a fixed number of turns, with no clock
+   * anywhere in the loop. That tolerates a `load` that grows another await —
+   * which a single bare `settle()` would not — while staying immune to load.
+   * The claims are unchanged; only the waiting is.
+   */
   it("adopts a recheck that answers no wiki at all", async () => {
     render(<WorkspacePurposeSettings />);
-    await waitFor(() => expect(formFieldset().disabled).toBe(false));
+    // The mount load LANDED, rather than merely having been given time to: the
+    // fieldset is re-enabled only once `loading` clears, and the recheck below
+    // stands down while it is still set — so waiting for it here is what makes
+    // the rest of the case about the recheck.
+    await settleUntil(() => expect(formFieldset().disabled).toBe(false));
 
     fetchMock.mockResolvedValueOnce(
       answer({
@@ -1028,11 +1077,12 @@ describe("the form re-reads the active wiki when the tab comes back (DW-136)", (
     );
     returnToTab();
 
-    await waitFor(() => expect(badge()).toBe("no wiki"));
-    await waitFor(() =>
-      expect(screen.getByRole("status").textContent).toContain(
-        "The active wiki is gone, so there is nothing to edit here now.",
-      ),
+    await settleUntil(() => expect(badge()).toBe("no wiki"));
+    // Everything past the transition is read off the SAME render, so it is
+    // asserted directly — a second wait here would only be able to hide a
+    // half-adopted answer.
+    expect(screen.getByRole("status").textContent).toContain(
+      "The active wiki is gone, so there is nothing to edit here now.",
     );
     // Refused, but readable and reachable — the same contract as a mount that
     // answered no wiki.
