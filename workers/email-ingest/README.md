@@ -25,7 +25,12 @@ reports the four losses separately, because each asks the sender for a different
 fix: parts in an unsupported format, documents over the 10 MB per-document
 ceiling, documents left behind once the 20 MB total attachment budget was spent,
 and documents left behind because the message went over that ten-document
-limit. The owner can route accepted mail to an owned vault and/or
+limit. A part a sending client marked `Content-Disposition: inline` — a
+signature logo, an embedded preview — is treated as decoration rather than as a
+file the sender attached: it is excluded from eligibility, so it is never
+forwarded even when it is itself a supported format, consumes neither an
+attachment slot nor budget bytes, and appears in no loss count and no recorded
+name. The owner can route accepted mail to an owned vault and/or
 agent in Settings. Original documents and supported embedded figures are
 preserved in R2 after synthesis.
 

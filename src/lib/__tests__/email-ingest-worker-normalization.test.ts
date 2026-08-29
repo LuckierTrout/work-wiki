@@ -291,13 +291,16 @@ describe("email-ingest attachment content normalization", () => {
 });
 
 /**
- * The per-document ceiling's INLINE exclusion (DW-253 x DW-359).
+ * The per-document ceiling's INLINE exclusion (DW-253 x DW-359 x DW-446).
  *
- * `oversizedCount` is `countable(oversizedAttachments)` and `replyLossNames`
- * filters inline parts out again, but no fixture in the sibling suite carries an
- * inline part that is also oversized -- so deleting either filter left the whole
- * repo green while a sender's signature logo, oversized or not, was reported
- * back to them as a file they had to shrink.
+ * An inline part no longer reaches the ceiling partition at all: DW-446 drops it
+ * one step earlier, at eligibility, so `oversizedAttachments` cannot contain one
+ * and `oversizedCount` is a plain `.length`. What these cases still pin is that
+ * the earlier filter really does cover the oversized shape. No fixture in the
+ * sibling suite carries an inline part that is ALSO over the ceiling, so
+ * deriving `eligibleAttachments` from `parsed.attachments` again would leave the
+ * whole repo green while a sender's signature banner, oversized or not, was
+ * reported back to them as a file they had to shrink -- and named in the reply.
  *
  * It lives HERE, against the mocked parser, for cost: a 10 MiB `Uint8Array` is
  * one allocation, whereas the same part written into a real MIME fixture is
@@ -309,8 +312,10 @@ describe("email-ingest oversized inline parts", () => {
 
   it("does not report an oversized INLINE part as a dropped attachment", async () => {
     const { form, reply } = await forwardedRun([
-      // Inline, eligible by extension, and over the ceiling: excluded from the
-      // forward by the ceiling and from every reported loss by `countable`.
+      // Inline, a supported format by extension, and over the ceiling. The
+      // eligibility filter drops it before the ceiling partition ever sees it,
+      // so ONE filter now keeps it out of both the forward and every reported
+      // loss, where two used to.
       {
         filename: "banner.pdf",
         mimeType: "application/pdf",
@@ -340,8 +345,8 @@ describe("email-ingest oversized inline parts", () => {
   it("still names an oversized ATTACHMENT part alongside an oversized inline one", async () => {
     // The discriminating half. The case above passes if the ceiling filter runs
     // at all, whatever the inline handling; this one has BOTH kinds oversized,
-    // so a missing `countable`/`!inlineAttachment` reports two losses and names
-    // the logo.
+    // so an eligibility filter that let inline parts through reports two losses
+    // and names the banner.
     const { form, reply } = await forwardedRun([
       {
         filename: "banner.pdf",

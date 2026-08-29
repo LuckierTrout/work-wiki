@@ -4052,7 +4052,9 @@ source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
 location: workers/email-ingest/index.ts (selection loop and loss counts)
 severity: medium
 reason: DW-359 moved inline parts out of `unsupportedCount`, `overCapCount` and `overBudgetCount` but deliberately left eligibility alone, so the selection loop in `workers/email-ingest/index.ts` still spends `MAX_EMAIL_ATTACHMENTS` slots and `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` on them. A message with three inline logos and nine real PDFs can therefore be told "2 supported attachments were not queued because this email exceeds the 10-attachment limit" while the sender attached nine files. The converse is pinned by "reports over-budget, over-cap and unsupported losses in one scrubbed acknowledgement": an eligible inline `.md` past the cap is reported nowhere. Fixing it means deciding whether inline parts should be forwarded at all, which DW-359 explicitly did not ask for.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-email-inline-part-eligibility
+resolution-undo: ac9ad29685934186b979a6658e3dfa457129a22e708f46200863174ccbf96506 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Exclude inline parts entirely — Filter inline parts out of eligibleAttachments before the selection loop so they never consume an attachment slot or aggregate-budget bytes and are never forwarded, and pin that a message of inline logos plus real files reports counts matching what the sender actually attached.
 
 ### DW-447: Raising the raw cap widens the band in which the Worker forwards a single attachment above the route's per-document ceiling, and the route answers that with a 400 that loses the body and every sibling
@@ -5039,4 +5041,28 @@ location: src/app/api/lint/fix/route.ts:32 vs src/lib/mcp-http.ts:509
 source_spec: `spec-dw-395-455-456-457-mcp-rest-door-parity.md`
 severity: medium
 reason: `LINT_FIX_REQUEST` (src/app/api/lint/fix/route.ts:29-34) declares `targetSlug`; `src/mcp.ts`'s registered schema and `src/lib/mcp-http.ts`'s `inputSchema` both declare `target`, and `handleFixLintIssue` forwards `args.target` into `fixLintIssue`'s `targetSlug` parameter. Pre-existing and untouched by DW-455/DW-457, but it now means the two doors' new "Invalid request field `...`" messages name different fields for the same value. `src/app/api/lint/workbench-fix/route.ts:27-32` already accepts BOTH names, which is the precedent for an alias.
+status: open
+
+### DW-565: A supported document a sending client labels `Content-Disposition: inline` is now dropped with no acknowledgement line at all, and some mainstream clients label genuinely-attached files inline.
+origin: spec-deferred 8d6dcf5ac9ae
+location: workers/email-ingest/index.ts (eligibleAttachments, and the acknowledgement's loss lines)
+source_spec: `spec-dw-446-email-inline-part-eligibility.md`
+severity: medium
+reason: DW-446's recorded 2026-08-28 decision is "never forwarded", and this change implements it: an inline part leaves eligibility, so it is not forwarded, not named in `attachmentName`, and contributes to none of the four loss terms. A message whose only part is an inline `.md` is therefore answered with "work-wiki found no email text to ingest." — a document arrived and no sentence in the reply mentions it. Apple Mail and Outlook are reported to mark PDFs and images rendered in the message body as inline, so the false-positive population is not empty. Two readings were raised by review and both were rejected by the recorded decision rather than by evidence: forward-but-count (make the accounting honest instead of eligibility narrower), and drop-but-report (one "not queued" line naming inline documents). Revisiting means re-opening a decision a human already made, which is why it is deferred rather than patched.
+status: open
+
+### DW-566: DW-450's recorded decision to widen `inlineAttachment` to trust `contentId` becomes a data-loss change once it lands on top of DW-446, not the cosmetic reply-line fix it was filed as.
+origin: spec-deferred 7dff0e55af2e
+location: workers/email-ingest/index.ts (inlineAttachment)
+source_spec: `spec-dw-446-email-inline-part-eligibility.md`
+severity: medium
+reason: `inlineAttachment` reads `disposition` and nothing else, and DW-450 carries a 2026-08-28 decision to treat a part with a `Content-ID` and no `Content-Disposition` as inline. Under DW-359 that predicate governed only which parts were COUNTED, so widening it could at worst suppress a reply sentence. After DW-446 the same predicate governs whether a part is forwarded at all, so widening it silently discards every supported document a client tags with a Content-ID. Neither entry records the interaction, and whichever lands second inherits a blast radius its own reason never described.
+status: open
+
+### DW-567: No real-MIME fixture omits `Content-Disposition` entirely, so the `null`-disposition branch — whose stakes this change raised — has only mocked coverage.
+origin: spec-deferred 2ad4fdb0a5d9
+location: src/lib/__tests__/email-ingest-worker.test.ts (multipartEmail)
+source_spec: `spec-dw-446-email-inline-part-eligibility.md`
+severity: low
+reason: `inlineAttachment`'s doc treats a `null` disposition as a deliberate decision: an unlabelled part is likelier to be a real attachment than a decoration, and "guessing wrong there would silently drop a file the sender really did send". After DW-446 that sentence is literal rather than figurative. `multipartEmail` in `src/lib/__tests__/email-ingest-worker.test.ts` always emits a `Content-Disposition` header — the `disposition` option replaces the derived line, it cannot remove it — so the real-parser suite cannot express a headerless part, and the only coverage is incidental, from mocked fixtures that leave the field undefined.
 status: open

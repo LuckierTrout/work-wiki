@@ -359,9 +359,13 @@ export function supportedAttachment(filename: string | null, mimeType: string): 
  * a decoration, and guessing wrong there would silently drop a file the sender
  * really did send from the count.
  *
- * This changes ACCOUNTING, not eligibility. An inline part that is itself a
- * supported document is still forwarded and still counted as queued — only the
- * denominator moves.
+ * This is an ELIGIBILITY filter, not merely an accounting one (DW-446). An
+ * inline part is removed before the allowlist runs, so it can never spend a
+ * `MAX_EMAIL_ATTACHMENTS` slot or a byte of the aggregate budget, and is never
+ * forwarded — not even when it is itself a supported document. Forwarding it
+ * while excluding it from every reported loss is how a sender who attached nine
+ * files was told they had exceeded a ten-attachment limit: the slot was spent,
+ * and the sentence explaining where it went was suppressed.
  */
 function inlineAttachment(attachment: { disposition: "attachment" | "inline" | null }): boolean {
   return attachment.disposition === "inline";
@@ -438,19 +442,17 @@ function replyAttachmentName(filename: string | null): string {
  * name every one of them at up to 200 characters each. The COUNT the sentence
  * opens with stays the true total; only the naming is truncated.
  *
- * Inline parts are filtered out for the same reason they are excluded from every
- * reported loss: a signature logo is not a file the sender chose to attach
- * (DW-359).
+ * Every list that reaches here is inline-free by construction: inline parts are
+ * dropped at eligibility, upstream of the sizing partition and the selection
+ * loop (DW-446), so nothing this function is handed can contain one and no
+ * re-filtering is kept here as decoration.
  */
 function replyLossNames(
-  attachments: readonly {
-    filename: string | null;
-    disposition: "attachment" | "inline" | null;
-  }[],
+  attachments: readonly { filename: string | null }[],
 ): string {
-  const names = attachments
-    .filter((attachment) => !inlineAttachment(attachment))
-    .map((attachment) => replyAttachmentName(attachment.filename));
+  const names = attachments.map((attachment) =>
+    replyAttachmentName(attachment.filename),
+  );
   const named = names.slice(0, MAX_EMAIL_ATTACHMENT_NAMES_RECORDED);
   const unnamed = names.length - named.length;
   return `${named.join(", ")}${
@@ -584,14 +586,24 @@ export default {
     //
     // ...and from the COUNTABLE parts of it: inline parts are decorations the
     // sender never chose to attach, so they are excluded from every loss the
-    // acknowledgement reports and from the recorded name list, while remaining
-    // fully eligible to be forwarded (DW-359).
+    // acknowledgement reports and from the recorded name list (DW-359).
     const countableAttachments = parsed.attachments.filter(
       (attachment) => !inlineAttachment(attachment),
     );
-    const countable = (attachments: readonly { disposition: "attachment" | "inline" | null }[]) =>
-      attachments.filter((attachment) => !inlineAttachment(attachment)).length;
-    const eligibleAttachments = parsed.attachments.filter((attachment) =>
+    // Eligibility is derived from the COUNTABLE list, not from
+    // `parsed.attachments`: excluding an inline part is now about what may be
+    // FORWARDED, not only about what is counted (DW-446). Filtering here —
+    // ahead of sizing, the per-document partition and the selection loop — is
+    // what stops an inline part from spending a `MAX_EMAIL_ATTACHMENTS` slot or
+    // a byte of `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` that a real attachment then
+    // loses. Charging the sender for a part they never attached is bad; doing it
+    // while the loss accounting below hides the charge is worse — they were
+    // told they had exceeded a ten-attachment limit having attached nine files.
+    //
+    // Everything downstream — `sizedAttachments`, the oversized partition and
+    // the selection loop's outputs — is inline-free by construction, so the
+    // loss counts below are plain `.length` reads.
+    const eligibleAttachments = countableAttachments.filter((attachment) =>
       supportedAttachment(attachment.filename, attachment.mimeType),
     );
     // Sizes, measured ONCE for every eligible part and reused by both bounds
@@ -656,16 +668,16 @@ export default {
       aggregateBytes += size;
       supportedAttachments.push(attachment);
     }
-    const unsupportedCount = countableAttachments.length - countable(eligibleAttachments);
-    const oversizedCount = countable(oversizedAttachments);
-    const overBudgetCount = countable(overBudgetAttachments);
+    const unsupportedCount = countableAttachments.length - eligibleAttachments.length;
+    const oversizedCount = oversizedAttachments.length;
+    const overBudgetCount = overBudgetAttachments.length;
     // The residue, so the four terms stay disjoint: an oversized part never
     // entered the selection loop, so it must be subtracted here or it would be
     // re-reported as an over-cap casualty — telling the sender to send fewer
     // files, which would not have helped.
     const overCapCount =
-      countable(eligibleAttachments) -
-      countable(supportedAttachments) -
+      eligibleAttachments.length -
+      supportedAttachments.length -
       oversizedCount -
       overBudgetCount;
     const skippedAttachmentCount =

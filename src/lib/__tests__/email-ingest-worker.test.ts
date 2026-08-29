@@ -50,7 +50,10 @@ import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-
  *
  * 7. Inline MIME parts — a signature logo is not an attachment the sender
  *    chose to send, and reporting one back as "skipped" is a lie about their
- *    own message (DW-359).
+ *    own message (DW-359). They are excluded from ELIGIBILITY rather than from
+ *    the accounting alone (DW-446), so an inline part of a supported format
+ *    spends no attachment slot and no aggregate-budget bytes, and is never
+ *    forwarded.
  *
  * 8. The post-decode aggregate byte budget — the bound on what the forwarding
  *    loop actually copies into `FormData`, which the widened raw cap makes
@@ -1004,11 +1007,17 @@ describe("email-ingest body with only unsupported attachments", () => {
 });
 
 /**
- * Inline MIME parts (DW-359). `postal-mime` surfaces a signature logo, an
- * embedded screenshot and a `cid:`-referenced graphic in `parsed.attachments`
+ * Inline MIME parts (DW-359, DW-446). `postal-mime` surfaces a signature logo,
+ * an embedded screenshot and a `cid:`-referenced graphic in `parsed.attachments`
  * exactly like a real attachment, so the loss accounting reported a sender's own
  * branded email footer back to them as an "unsupported attachment ... recorded
  * but skipped" — a sentence about a file they never attached and cannot remove.
+ *
+ * DW-359 excluded them from the ACCOUNTING only, which left an inline part of a
+ * SUPPORTED format still eligible: it spent a `MAX_EMAIL_ATTACHMENTS` slot and
+ * aggregate-budget bytes while being excluded from every sentence that could
+ * explain where they went. DW-446 moves the exclusion up to eligibility, so an
+ * inline part costs the sender nothing at all — the cases below pin both halves.
  *
  * Built from real fixtures rather than a mocked parser: whether a
  * `Content-Disposition: inline` header actually reaches the Worker as
@@ -1078,10 +1087,16 @@ describe("email-ingest inline parts", () => {
     expect(text).not.toContain("Markdown, TXT, HTML");
   });
 
-  it("still forwards an inline part that is itself a supported document", async () => {
-    // Inline changes ACCOUNTING, not eligibility. A `.md` file a client marked
-    // inline is still a document the sender meant to send, and dropping it would
-    // trade one silent lie for a worse one.
+  it("does not forward an inline part that is itself a supported document", async () => {
+    // The case DW-446 reverses. This used to be forwarded on the theory that a
+    // `.md` a client marked inline is still a document the sender meant to send
+    // -- but the same part was then excluded from every loss sentence, so it
+    // spent a slot and budget bytes that no reply could account for. Excluding
+    // it entirely is the only reading under which the counts the sender is shown
+    // describe the message the sender actually sent.
+    //
+    // Nothing forwardable and no body, so this exits before the forward and
+    // `forwardedForm` -- which asserts a forward happened -- cannot be used.
     const raw = multipartEmail(
       [
         {
@@ -1092,18 +1107,214 @@ describe("email-ingest inline parts", () => {
       ],
       { subject: "Inline notes", messageId: "message-inline-supported", body: "" },
     );
-    const { form, reply } = await forwardedForm(raw, "Inline notes", "inline-notes");
-
-    expect(form.getAll("attachments")).toHaveLength(1);
-    expect((form.getAll("attachments")[0] as File).name).toBe("notes.md");
-    expect(new Uint8Array(await (form.getAll("attachments")[0] as File).arrayBuffer())).toEqual(
-      partBytes(0),
+    const msg = message(raw, "Inline notes");
+    const bindings = env(Response.json({ ok: true, slug: "inline-notes" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
     );
-    expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
-    // Forwarded but not named: it is not a loss, and it is not something the
-    // sender listed either.
+
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    const text = msg.reply.mock.calls[0][0].text;
+    // Not forwarded, not named, and not reported as a loss either: the sender
+    // is told their message was empty, which it was. Nothing countable failed
+    // the allowlist here, so `unsupportedCount` is zero and the branch keyed on
+    // it stays the plain no-text sentence rather than the supported-formats
+    // list, which would tell them to convert a file already in a supported
+    // format.
+    expect(text).toBe("work-wiki found no email text to ingest.");
+    expect(text).not.toContain("recorded but skipped");
+    expect(text).not.toContain("queued for ingestion");
+    expect(text).not.toContain("Markdown, TXT, HTML");
+  });
+
+  it("spends no attachment slot on inline parts of a supported format", async () => {
+    // The defect DW-446 is about, in the shape that is actually reachable: the
+    // ledger's "three inline logos and nine real PDFs" cannot reproduce it,
+    // because `image/png` is not in the allowlist and a logo was never eligible.
+    // An inline `.md` preview IS eligible, so three of them ate three of the ten
+    // slots -- and the two PDFs pushed past the cap were reported as an
+    // "attachment limit" the sender never came close to reaching with nine files.
+    const INLINE_LOGOS = 2;
+    const INLINE_PREVIEWS = 3;
+    const REAL_PDFS = MAX_EMAIL_ATTACHMENTS - 1;
+    // The premise: inline parts plus real ones exceed the cap, the real ones
+    // alone do not. Both halves have to hold or the case proves nothing.
+    expect(REAL_PDFS).toBeLessThan(MAX_EMAIL_ATTACHMENTS);
+    expect(INLINE_PREVIEWS + REAL_PDFS).toBeGreaterThan(MAX_EMAIL_ATTACHMENTS);
+    // ...and more than one real PDF, so the PLURAL in the queued sentence
+    // asserted below is sound rather than incidentally right.
+    expect(REAL_PDFS).toBeGreaterThan(1);
+
+    const raw = multipartEmail(
+      [
+        // Order is load-bearing. The selection loop consumes parts in SOURCE
+        // order, so the inline parts have to come FIRST: listed last they would
+        // fall past the cap on their own and every real PDF would survive even
+        // against the pre-DW-446 code, leaving this case passing on the defect
+        // it exists to pin.
+        //
+        // The logos are the ledger's own literal shape -- inline decoration
+        // beside real files -- pinned positively here rather than only by the
+        // DW-359 case above. They never spent a slot even before the fix
+        // (`image/png` is not in the allowlist, so a logo was never eligible),
+        // which is exactly why they cannot carry this case alone.
+        ...Array.from({ length: INLINE_LOGOS }, (_unused, index) => ({
+          filename: `logo-${index + 1}.png`,
+          mime: "image/png",
+          disposition: `Content-Disposition: inline; filename="logo-${index + 1}.png"`,
+        })),
+        ...Array.from({ length: INLINE_PREVIEWS }, (_unused, index) => ({
+          filename: `preview-${index + 1}.md`,
+          mime: "text/markdown",
+          disposition: `Content-Disposition: inline; filename="preview-${index + 1}.md"`,
+        })),
+        ...Array.from({ length: REAL_PDFS }, (_unused, index) => ({
+          filename: `real-${index + 1}.pdf`,
+          mime: "application/pdf",
+        })),
+      ],
+      { subject: "Nine files", messageId: "message-inline-slots", body: "Nine files attached." },
+    );
+    const { form, reply } = await forwardedForm(raw, "Nine files", "nine-files");
+
+    // Every real PDF travels. Under the old ordering the last two lost their
+    // slots to the previews.
+    expect((form.getAll("attachments") as File[]).map((part) => part.name)).toEqual(
+      Array.from({ length: REAL_PDFS }, (_unused, index) => `real-${index + 1}.pdf`),
+    );
+    expect(form.getAll("attachmentName")).toEqual(
+      Array.from({ length: REAL_PDFS }, (_unused, index) => `real-${index + 1}.pdf`),
+    );
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+
+    expect(reply.text).toContain(
+      `${REAL_PDFS} supported attachments were queued for ingestion.`,
+    );
+    // The exact lie this entry exists to remove.
+    expect(reply.text).not.toContain("attachment limit");
+    expect(reply.text).not.toContain("recorded but skipped");
+    // Every count and name the sender sees describes the nine files they
+    // actually attached -- no decoration of either kind appears anywhere.
+    expect(reply.text).not.toContain("logo-1.png");
+    expect(reply.text).not.toContain("preview-1.md");
+  });
+
+  it("spends no aggregate budget on an inline part of a supported format", async () => {
+    // The second charge an inline part used to levy. Sized so the inline part
+    // alone is the difference between both real PDFs fitting and the second one
+    // being refused: if inline bytes are still charged, `real-2.pdf` is dropped
+    // and the sender is told they exceeded a budget their own two files are
+    // comfortably inside.
+    //
+    // A real MIME fixture, against the cost convention recorded in
+    // `email-ingest-worker-normalization.test.ts` (`describe("email-ingest
+    // oversized inline parts")`): a mocked 10 MiB part is one allocation, this
+    // is ~28 MB of base64 on every run. That convention is about parts whose
+    // disposition is incidental to the case. Here the disposition IS the case --
+    // whether a `Content-Disposition: inline` header survives PostalMime as
+    // `disposition === "inline"` is a fact about the parser, and a mock that
+    // sets the field directly would assert the Worker's half of the contract
+    // while assuming the half that fails.
+    const INLINE_BYTES = MAX_EMAIL_DOCUMENT_BYTES;
+    // The `+ 1` is the smallest per-part bump that puts the trio over the
+    // budget: without it the three parts land EXACTLY on it, and the gate is
+    // `>`, so even the pre-fix code would have forwarded both real PDFs and this
+    // case would prove nothing. Both real parts carry the bump, so the total
+    // sits two bytes over -- the least an equal-sized pair can overshoot by.
+    const REAL_BYTES = Math.floor(
+      (MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES - INLINE_BYTES) / 2 + 1,
+    );
+    // The premise, computed rather than assumed.
+    expect(REAL_BYTES).toBeGreaterThan(0);
+    expect(REAL_BYTES).toBeLessThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
+    expect(2 * REAL_BYTES).toBeLessThanOrEqual(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    expect(INLINE_BYTES + 2 * REAL_BYTES).toBeGreaterThan(
+      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
+    );
+
+    const raw = multipartEmail(
+      [
+        // Order is load-bearing, as in the slot case above: the selection loop
+        // spends the budget in SOURCE order, so the inline part has to be
+        // charged FIRST for its bytes to be what pushes `real-2.pdf` out.
+        // Listed last it would itself be the part refused for the budget under
+        // the old code, and both real PDFs would travel either way.
+        {
+          filename: "preview.pdf",
+          mime: "application/pdf",
+          bytes: INLINE_BYTES,
+          disposition: 'Content-Disposition: inline; filename="preview.pdf"',
+        },
+        { filename: "real-1.pdf", mime: "application/pdf", bytes: REAL_BYTES },
+        { filename: "real-2.pdf", mime: "application/pdf", bytes: REAL_BYTES },
+      ],
+      { subject: "Two files", messageId: "message-inline-budget", body: "Two files attached." },
+    );
+    // The fixture clears the raw gate, so the eligibility filter is the only
+    // thing that decided anything here. Without this a change to either byte
+    // constant could slide the message over `MAX_RAW_EMAIL_BYTES` and silently
+    // turn this into a DW-358 door test that never reaches the filter at all.
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+    const { form, reply } = await forwardedForm(raw, "Two files", "two-files");
+
+    const parts = form.getAll("attachments") as File[];
+    expect(parts.map((part) => part.name)).toEqual(["real-1.pdf", "real-2.pdf"]);
+    // The inline bytes were never copied into `FormData` -- not merely absent
+    // from the name list. What travels is the two real files and nothing else.
+    const forwardedBytes = (
+      await Promise.all(parts.map((part) => part.arrayBuffer()))
+    ).reduce((total, buffer) => total + buffer.byteLength, 0);
+    expect(forwardedBytes).toBe(2 * REAL_BYTES);
+
+    expect(form.getAll("attachmentName")).toEqual(["real-1.pdf", "real-2.pdf"]);
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+    expect(reply.text).toContain("2 supported attachments were queued for ingestion.");
+    expect(reply.text).not.toContain("total attachment budget");
+    expect(reply.text).not.toContain("larger than");
+  });
+
+  it("ingests the body of a message whose only part is an inline document", async () => {
+    // The reachable middle shape, and the one likeliest to arrive as a bug
+    // report. The cases above cover the two ends -- an inline document with no
+    // body at all, and inline parts beside real files -- and this is neither: a
+    // body that ingests perfectly well, with one inline `.md` alongside it. It
+    // was unasserted in EITHER direction, so both "the body was dropped with the
+    // part" and "the part was forwarded anyway" would have shipped green.
+    //
+    // The forward must happen, because there is text to ingest, and it must
+    // carry no attachment and no attachment sentence of any kind.
+    const raw = multipartEmail(
+      [
+        {
+          filename: "preview.md",
+          mime: "text/markdown",
+          disposition: 'Content-Disposition: inline; filename="preview.md"',
+        },
+      ],
+      {
+        subject: "Body and a preview",
+        messageId: "message-inline-with-body",
+        body: "The decision is recorded in this body.",
+      },
+    );
+    const { form, reply } = await forwardedForm(raw, "Body and a preview", "body-and-a-preview");
+
+    expect(form.get("content")).toBe("The decision is recorded in this body.");
+    expect(form.getAll("attachments")).toHaveLength(0);
     expect(form.getAll("attachmentName")).toEqual([]);
     expect(form.get("skippedAttachmentCount")).toBe("0");
+
+    // Not one attachment sentence, of any kind: the sender attached nothing, so
+    // there is nothing to report queued and nothing to report lost. All four
+    // loss terms are named so a regression cannot pass by picking a different
+    // one of them.
+    expect(reply.text).not.toContain("queued for ingestion");
+    expect(reply.text).not.toContain("recorded but skipped");
+    expect(reply.text).not.toContain("attachment limit");
+    expect(reply.text).not.toContain("larger than");
+    expect(reply.text).not.toContain("total attachment budget");
+    expect(reply.text).not.toContain("preview.md");
   });
 });
 
@@ -1378,16 +1589,17 @@ describe("email-ingest aggregate decoded budget", () => {
 
   /**
    * Every loss at once (and the name scrubbing). `overCapCount` is computed as
-   * `countable(eligible) - countable(supported) - overBudgetCount`, three terms
-   * no other case drives together: the over-budget fixtures above leave
-   * `overCapCount` at zero and the over-cap fixtures elsewhere leave
+   * `eligible.length - supported.length - oversizedCount - overBudgetCount`,
+   * four terms no other case drives together: the over-budget fixtures above
+   * leave `overCapCount` at zero and the over-cap fixtures elsewhere leave
    * `overBudgetCount` at zero, so a sign error or a dropped term would pass on
    * both.
    *
    * The inline parts are load-bearing here rather than decorative: one is
-   * ineligible (a signature logo) and one is an ELIGIBLE `.md` sitting past the
-   * count cap, so replacing `countable(eligible)` with `eligible.length` reports
-   * four over-cap losses instead of three.
+   * ineligible (a signature logo) and one is a SUPPORTED-format `.md` sitting
+   * past the count cap. Deriving `eligibleAttachments` from `parsed.attachments`
+   * rather than from the countable list puts that `.md` back into the selection
+   * arithmetic and reports four over-cap losses instead of three (DW-446).
    *
    * It is also where `replyAttachmentName` is pinned. A MIME `filename` is
    * attacker-controlled text and this is the first place this Worker
@@ -1466,8 +1678,9 @@ describe("email-ingest aggregate decoded budget", () => {
           filename: `extra-${index + 1}.pdf`,
           mime: "application/pdf",
         })),
-        // Inline AND eligible AND past the cap: countable only if the inline
-        // filter is missing from the over-cap arithmetic.
+        // Inline AND a supported format AND past the cap: eligible, and so
+        // countable as an over-cap loss, only if the inline filter is missing
+        // from `eligibleAttachments`.
         {
           filename: "notes.md",
           mime: "text/markdown",
@@ -1487,6 +1700,13 @@ describe("email-ingest aggregate decoded budget", () => {
     expect(form.get("skippedAttachmentCount")).toBe(String(1 + 2 + OVER_CAP_EXTRAS));
     expect(form.getAll("attachmentName")).not.toContain("logo.png");
     expect(form.getAll("attachmentName")).not.toContain("notes.md");
+    // ...and neither name reaches the REPLY either. Deleting `replyLossNames`'
+    // own inline filter (DW-446) left that guarantee resting on a construction
+    // argument -- every list handed to it is inline-free because eligibility
+    // filtered first -- with nothing observing it. These two lines are the
+    // observation, on the one fixture that carries both kinds of inline part.
+    expect(reply.text).not.toContain("logo.png");
+    expect(reply.text).not.toContain("notes.md");
 
     // All three loss sentences together, each with its own plural form and its
     // own reason -- an over-budget file is not an over-cap casualty and is not
