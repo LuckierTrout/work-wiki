@@ -4042,7 +4042,9 @@ decision: 2026-08-26 Egress allowlist — Leave the guard synchronous and place 
 origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
 location: src/components/workbench/ChatCanvas.tsx
 reason: Split out of epic-8-retro-architecture-follow-on so that run could cover only the `sidecar/server.mjs` provider and the Chat transport. The ChatCanvas pending-turn and session-transport extraction is independent of the sidecar change and can land and merge on its own.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-chat-canvas-transport-extract
+resolution-undo: 15ccf449508fbd8379a414a463000c49908da298a2d9e5fa1070dde78ed5d402 2026-08-29 7374617475733a206f70656e
 
 ### DW-445: Extract the API/MCP category from the generic Settings pair.
 origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
@@ -5189,4 +5191,52 @@ location: src/components/workbench/__tests__/wiki-canvas-persistence.test.tsx (t
 source_spec: `spec-dw-511-rail-reachability-under-dialogs.md`
 severity: medium
 reason: `describe("an open Create Wiki dialog survives a mode switch (DW-26)")` opens the dialog with `openCreateWith(...)` and then drives a rail control while the backdrop is live: `fireEvent.click(rail("Chat"))` at ~l.178, ~l.198 and ~l.230, and `clickRail("Chat")` / `clickRail("Wiki")` at ~l.274 and ~l.279. `CreateWikiDialog`'s root is the same `fixed inset-0 z-[120] ... bg-black/40` overlay, and `.wb-rail` carries no `z-index`, so in a browser those clicks land on the backdrop — whose `onMouseDown` CANCELS the dialog, meaning the mode switch never happens and the draft the block exists to preserve is discarded. The cases pass only because jsdom does no hit-testing. PRE-EXISTING: this file was not touched by DW-511, which fixed the Settings suite only. The fix shape is the one DW-511 used — seed the reachable route before the dialog opens, then traverse — plus the executable backdrop pin the Settings suite now carries.
+status: open
+
+### DW-582: The SSE event regex is unanchored, so a block with no `event:` line whose data payload contains the text `event: done` is read as a done frame.
+origin: spec-deferred 3260fb33b7ec
+location: src/lib/chat-session-transport.ts:48
+source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
+severity: low
+reason: `EVENT_RE = /event:\s*(\w+)/` is matched against the whole block rather than a line start, so `readSidecarSseBlock` returns `{event:"done"}` for `data: {"delta":"see event: done for details","content":"FAKE"}`. Moved verbatim from `ChatCanvas.tsx` at `ab263b98`, so it predates DW-444; the extraction is what made it reachable from a test. `/^event:\s*(\w+)/m` would close it. Low today because the sidecar's `formatSse` always writes the `event:` line first.
+status: open
+
+### DW-583: A malformed `data:` payload throws a raw SyntaxError that kills a turn the owner is already reading.
+origin: spec-deferred aaaf8e503d3f
+location: src/lib/chat-session-transport.ts:63-71
+source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
+severity: low
+reason: `readSidecarSseBlock` calls `JSON.parse` with no guard, and the throw escapes `consumeSidecarStream`, so `turnFailureCopy` shows the parser's own sentence. Pre-existing: identical code in `applySseBlock` at `ab263b98`. Returning `null` for an unparseable payload would match the module's stated "an unknown block must not kill an answer" rule.
+status: open
+
+### DW-584: The stream reader is never released or cancelled when a turn throws, so an `error` or `cancelled` frame leaves the response body locked and undrained.
+origin: spec-deferred db7f98cf4216
+location: src/lib/chat-session-transport.ts:113-133
+source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
+severity: low
+reason: `consumeSidecarStream` has no `try/finally` around the read loop; after an `error` frame `body.locked` stays true and `cancel()` is never called. Pre-existing shape from `ab263b98`. A `finally { reader.cancel().catch(() => {}) }` would close it. Bounded impact: the door is a local loopback connection.
+status: open
+
+### DW-585: `frame.citations ?? turn.fallbackCitations` never fires, because the sidecar sends `citations: []` rather than omitting the field.
+origin: spec-deferred 8e4217424fcf
+location: src/lib/chat-pending-turn.ts:139
+source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
+severity: low
+reason: `??` only substitutes on null/undefined. `sidecar/agent.mjs` and `sidecar/chat-transport.mjs` emit `citations: []` on the settle paths, so `OpenTurn.fallbackCitations` is effectively dead and such an answer is reduced to the coverage sentence. Moved verbatim from `ab263b98`, so the behaviour is unchanged by DW-444; deciding whether the assemble's citations should stand in for an empty array is a Chat-behaviour question, not a refactor one.
+status: open
+
+### DW-586: Nothing asserts that pressing Stop, or unmounting, actually aborts an in-flight turn.
+origin: spec-deferred 4f9a3c88807a
+location: src/components/workbench/ChatCanvas.tsx:278
+source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
+severity: low
+reason: `stopTurn()` and the unmount effect abort `abortRef`, and `driveTurn` forwards `controller.signal` to `runSidecarTurn`; the transport suite only checks that whatever signal it is handed is forwarded. No mounted test presses Stop. The gap predates DW-444, but the abort hop now crosses a module boundary, so it is worth a mounted assertion.
+status: open
+
+### DW-587: ChatCanvas is still 1,247 lines: conversation CRUD, persistence, the assemble call, the Skill scan, attachments, regenerate and save-to-wiki remain inline beside the JSX.
+origin: spec-deferred 176bde474e77
+location: src/components/workbench/ChatCanvas.tsx
+source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
+severity: low
+reason: DW-444 named exactly two subjects and both are out, but the retro finding that opened this thread was about file size. A further decomposition pass (the conversation store, and the composer's non-render concerns) is the natural next follow-on to `epic-8-retro-architecture-follow-on`.
 status: open

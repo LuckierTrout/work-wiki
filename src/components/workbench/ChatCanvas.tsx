@@ -8,7 +8,6 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { sanitizeCitedAnswer } from "@/lib/chat-citations";
 import { ChatBody } from "./ChatBody";
 import {
   CHAT_HISTORY_DEPTH_DEFAULT,
@@ -18,12 +17,21 @@ import {
   type ChatCitation,
   type ChatExportMessage,
 } from "@/lib/chat-contract";
-import { SIDECAR_SSE_EVENTS, sidecarChatUrl } from "@/lib/sidecar";
 import { loopbackFetch } from "@/lib/loopback-client";
+import {
+  runSidecarTurn,
+  type SidecarTurnHandlers,
+} from "@/lib/chat-session-transport";
+import {
+  chatTurnRequest,
+  resumeRequest,
+  settleTurn,
+  turnFailureCopy,
+  type OpenTurn,
+} from "@/lib/chat-pending-turn";
 import { send } from "@/lib/workbench-request";
 import {
   CHAT_COMPOSER_PLACEHOLDER,
-  CHAT_COVERAGE_MISSING_COPY,
   CHAT_MODEL_MISSING_COPY,
   CHAT_SIDECAR_UP_COPY,
   CHAT_VECTOR_FALLBACK_COPY,
@@ -49,11 +57,7 @@ import {
   SHELL_DENY_LABEL,
   SKILL_CLEARED_COPY,
   SKILL_SCAN_URL,
-  chatDoorRefusalCopy,
   formIsSubmittable,
-  initialFormValues,
-  isChatPending,
-  isChatToolRow,
   matchSkills,
   mergeToolRow,
   outputChipLabel,
@@ -112,32 +116,6 @@ interface AssembleResponse {
     configured: boolean;
     baseUrl?: string;
   };
-}
-
-/** The `done` frame, as the sidecar sends it. `pending` holds an open question. */
-interface SidecarDone {
-  content?: string;
-  thinking?: string;
-  citations?: ChatCitation[];
-  toolCalls?: ChatToolCall[];
-  outputs?: ChatOutput[];
-  pending?: unknown;
-}
-
-/**
- * Everything a resume needs to finish the turn it belongs to.
- *
- * HELD IN A REF rather than in state: it is not rendered, and a resume that read
- * a stale render's copy of the request body would re-send the previous turn's
- * question. It is cleared the moment the turn is written down.
- */
-interface OpenTurn {
-  conversationId: string;
-  userText: string;
-  replaceLastTurn: boolean;
-  request: Record<string, unknown>;
-  fallbackCitations: ChatCitation[];
-  coverageMessage: string | null;
 }
 
 function thinkingLines(text: string): string[] {
@@ -496,28 +474,12 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         clearOptimistic();
         return false;
       }
-      // THE AGENT TURN, not the Epic 3 one-shot. `tools: true` is what makes the
-      // sidecar run the loop, and the pre-assembled context still rides along —
-      // the Agent starts from what one retrieval already found and searches for
-      // whatever that missed, rather than starting cold.
-      //
-      // `coverage: true` even when the assemble said otherwise: with tools on,
-      // "one retrieval found nothing" is the reason to look, not the answer. The
-      // sidecar's own guard says the same thing from the other side.
-      const request = {
-        stream: true,
-        tools: true,
+      const request = chatTurnRequest({
         query: trimmed,
-        coverage: true,
-        system: assembled.systemPrompt,
-        context: assembled.numberedBodies,
-        indexSlice: assembled.indexSlice,
-        messages: assembled.historySlice,
-        citations: assembled.citations,
-        skill: selectedSkill ?? null,
         conversationId,
-        model: { model: assembled.chatModel.model },
-      };
+        assembled,
+        skill: selectedSkill ?? null,
+      });
       turnRef.current = {
         conversationId,
         userText: trimmed,
@@ -526,7 +488,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
         fallbackCitations: assembled.citations,
         coverageMessage: assembled.coverageMessage,
       };
-      return await runSidecarTurn(request);
+      return await driveTurn(request);
     } catch (cause) {
       clearOptimistic();
       if ((cause as Error).name === "AbortError") return false;
@@ -541,146 +503,50 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     }
   }
 
-  /**
-   * The door's refusal, in words that name the fix.
-   *
-   * `disabled` and `unauthorized` are the two failures an owner can actually do
-   * something about, and both are about the API + MCP pane rather than about
-   * Chat. Every other cause keeps its own message.
-   */
-  function turnFailureCopy(cause: unknown): string {
-    const message = cause instanceof Error ? cause.message : "Chat failed.";
-    return chatDoorRefusalCopy(message) ?? message;
+  /** Where a streaming turn's pieces land: the live answer, and the live rows. */
+  function turnHandlers(): SidecarTurnHandlers {
+    return {
+      onDelta: (delta) => setStreamText((current) => current + delta),
+      onThinking: (thinking) => setStreamThinking(thinking),
+      // Merged by id so a tool's announce and its outcome are one row.
+      onToolRow: (row) => setLiveRows((current) => mergeToolRow(current, row)),
+    };
   }
 
   /**
-   * POST one turn (or one resume) to the sidecar and consume its SSE.
+   * Run one turn (or one resume) on the sidecar and do what the outcome implies.
    *
-   * ONE FUNCTION FOR BOTH because the wire shape is the same: a resume is the
-   * same body with a `resume` field, and the events it produces are the same five.
-   * Two readers would be two places for the `pending` handling to drift.
+   * The wire is `runSidecarTurn` and the decision is `settleTurn`; what is left
+   * here is the part that is genuinely the component's — the abort controller,
+   * the ref-held open turn, and the state writes.
    */
-  async function runSidecarTurn(
-    request: Record<string, unknown>,
-  ): Promise<boolean> {
-    const turn = turnRef.current;
-    if (!turn) return false;
+  async function driveTurn(request: Record<string, unknown>): Promise<boolean> {
+    if (!turnRef.current) return false;
     const controller = new AbortController();
     abortRef.current = controller;
-    const sidecarRes = await loopbackFetch(sidecarChatUrl(wikiId), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
+    const frame = await runSidecarTurn({
+      wikiId,
+      request,
       signal: controller.signal,
-      body: JSON.stringify(request),
+      handlers: turnHandlers(),
     });
-    if (!sidecarRes.ok || !sidecarRes.body) {
-      const failed = (await sidecarRes.json().catch(() => ({}))) as { error?: string };
-      throw new Error(failed.error || "Sidecar chat failed.");
-    }
-    const reader = sidecarRes.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const doneBox: { current: SidecarDone | null } = { current: null };
-    const applySseBlock = (block: string) => {
-      const eventMatch = /event:\s*(\w+)/.exec(block);
-      const dataMatch = /data:\s*({[\s\S]*})/.exec(block);
-      const event = eventMatch?.[1];
-      if (!event || !SIDECAR_SSE_EVENTS.includes(event as (typeof SIDECAR_SSE_EVENTS)[number])) {
-        return;
-      }
-      const data = dataMatch ? (JSON.parse(dataMatch[1]) as Record<string, unknown>) : {};
-      if (event === "agent") {
-        if (typeof data.delta === "string" && data.delta) {
-          setStreamText((current) => current + data.delta);
-        }
-        if (typeof data.thinking === "string" && data.thinking) {
-          setStreamThinking(data.thinking);
-        }
-        // A TOOL ROW ON `agent`, not on a sixth event name (the five are locked).
-        // Merged by id so the announce and the outcome are one row.
-        if (isChatToolRow(data.toolRow)) {
-          const row = data.toolRow;
-          setLiveRows((current) => mergeToolRow(current, row));
-        }
-      } else if (event === "done") {
-        doneBox.current = data as SidecarDone;
-      } else if (event === "error") {
-        throw new Error(typeof data.message === "string" ? data.message : "Chat failed.");
-      } else if (event === "cancelled") {
-        throw new DOMException("cancelled", "AbortError");
-      }
-    };
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        buffer += decoder.decode();
-        if (buffer.trim()) applySseBlock(buffer);
-        break;
-      }
-      buffer += decoder.decode(value, { stream: true });
-      const blocks = buffer.split("\n\n");
-      buffer = blocks.pop() ?? "";
-      for (const block of blocks) applySseBlock(block);
-    }
-    if (!doneBox.current) {
-      throw new Error("Chat ended before a complete answer.");
-    }
-    return settleTurn(doneBox.current);
-  }
-
-  /**
-   * What to do with a `done` frame: hold the turn open, or write it down.
-   *
-   * A `pending` frame is NOT the end of the turn. Nothing is persisted, the rows
-   * stay on screen, and the surface draws the form or the approval — because the
-   * answer the owner is about to give is part of this turn, and a half-turn
-   * written into the conversation would read as an answer the Agent never gave.
-   */
-  async function settleTurn(frame: SidecarDone): Promise<boolean> {
     const turn = turnRef.current;
     if (!turn) return false;
-    if (isChatPending(frame.pending)) {
-      setPending(frame.pending);
-      if (frame.pending.kind === "skill_form") {
-        setFormValues(initialFormValues(frame.pending.fields));
-      }
+    const outcome = settleTurn(turn, frame);
+    if (outcome.kind === "pending") {
+      setPending(outcome.pending);
+      if (outcome.formValues) setFormValues(outcome.formValues);
       return true;
     }
-    const sanitized = sanitizeCitedAnswer(
-      frame.content ?? "",
-      frame.citations ?? turn.fallbackCitations,
-    );
-    // AN EMPTY ANSWER WITH NO TOOL CALLS is the coverage-missing case the assemble
-    // predicted, and the assemble's own sentence is the better one to show.
-    const content =
-      sanitized.content ||
-      turn.coverageMessage ||
-      CHAT_COVERAGE_MISSING_COPY;
     // THE SIDECAR TURN IS OVER. Drop the pause before persist so a store
     // failure cannot put Approve/Deny back over a command that already ran or
     // was already denied.
     setLiveRows([]);
     setPending(null);
     turnRef.current = null;
-    await persistFrames(
-      turn.conversationId,
-      [
-        { id: "u", role: "user", content: turn.userText },
-        {
-          id: "a",
-          role: "assistant",
-          content,
-          citations: sanitized.citations,
-          thinking: frame.thinking,
-          toolCalls: Array.isArray(frame.toolCalls) ? frame.toolCalls : [],
-          outputs: Array.isArray(frame.outputs) ? frame.outputs : [],
-        },
-      ],
-      { replaceLastTurn: turn.replaceLastTurn },
-    );
+    await persistFrames(turn.conversationId, outcome.frames, {
+      replaceLastTurn: outcome.replaceLastTurn,
+    });
     return true;
   }
 
@@ -703,14 +569,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     setStreamText("");
     setStreamThinking("");
     try {
-      await runSidecarTurn({
-        ...turn.request,
-        resume: {
-          capabilityId: current.capabilityId,
-          approved,
-          ...(current.kind === "skill_form" ? { answers: formValues } : {}),
-        },
-      });
+      await driveTurn(resumeRequest(turn, current, approved, formValues));
     } catch (cause) {
       if ((cause as Error).name !== "AbortError") {
         setError(turnFailureCopy(cause));

@@ -282,7 +282,14 @@ describe("Workbench Chat does not use Worker query or ChatWorkspace", () => {
     expect(chat).not.toContain("ChatWorkspace");
     expect(mode).not.toContain("ChatWorkspace");
     expect(shell).not.toContain("ChatWorkspace");
-    expect(chat).toContain("sidecarChatUrl");
+    // The door moved to `chat-session-transport.ts` (DW-444). The pin follows
+    // it, and stays doubled so neither half can drift alone: the transport
+    // still owns the URL, and Chat still reaches the sidecar through it rather
+    // than growing a second door.
+    const transport = await readRel("src/lib/chat-session-transport.ts");
+    expect(transport).toContain("sidecarChatUrl");
+    expect(chat).toContain("@/lib/chat-session-transport");
+    expect(chat).not.toContain("sidecarChatUrl");
     expect(chat).toContain("CHAT_COMPOSER_PLACEHOLDER");
     expect(chat).toContain("send<{");
     expect(chat).not.toContain("await response.json()");
