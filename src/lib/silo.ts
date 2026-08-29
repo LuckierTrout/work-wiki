@@ -103,6 +103,14 @@ export async function syncSiloForPage(
   // sync that assumed one address would silently stop mirroring for it. Each
   // copy is skipped when its source is absent, so a slug written after the move
   // costs one missing-file check rather than a second write.
+  //
+  // Neither address covers Workbench Intake's per-slug HASHED tree
+  // `raw/sources/<slug>/<rawId>.<ext>`, mirrored below (DW-435). DW-435 scopes
+  // to that tree alone. The legacy hashed root `raw/<slug>/<rawId>.md` is a
+  // REAL source location — `readRawSourceById` falls back to it and
+  // `listRawSourceSnapshots` enumerates it — and is deliberately left
+  // unmirrored here, not assumed absent. Widening the mirror to it is a
+  // separate decision with its own migration cost, not a line in this one.
   if (
     await copyText(
       rawSourceRelPath(`${slug}.md`),
@@ -112,6 +120,46 @@ export async function syncSiloForPage(
     n++;
   if (await copyText(rawRelPath(`${slug}.md`), tenantRawRelPath(tenant, `${slug}.md`)))
     n++;
+
+  // Hashed Intake arrivals: raw/sources/<slug>/<rawId>.<ext>.
+  //
+  // The mirrored-name Set is a COST BOUND, not a concurrency guarantee: it
+  // keeps a re-sync from re-copying keys that never change, the same bound the
+  // revision and asset loops below carry for the Workers subrequest budget.
+  // It is NOT the create-only door `mirrorSourceToSilo`/`storeRawSourceBytes`
+  // use (`writeFileIfAbsent`/`writeAssetIfAbsent`) — `copyAsset` ends in an
+  // unconditional `writeAsset`, so the check-then-write window is open here.
+  // That is safe precisely because the names are content-addressed: a racing
+  // mirror writes byte-identical bytes to the key it already occupies.
+  //
+  // `copyAsset`, not `copyText`: `saveRawSourceBytes` publishes PDFs/DOCX/JPEGs
+  // into the same namespace as the extracted `.md`, and a UTF-8 round-trip
+  // would mangle them.
+  //
+  // The FLAT side is listed FIRST so a slug with only the flat layout pays one
+  // missing-directory listing and stops, never a second (silo-side) listing.
+  const hashedEntries = await listSafe(rawSourceRelPath(slug));
+  if (hashedEntries.length > 0) {
+    const mirroredHashed = new Set(
+      (await listSafe(tenantRawSourceRelPath(tenant, slug))).map((f) => f.name),
+    );
+    for (const f of hashedEntries) {
+      // Folder-import trees can nest (`raw/sources/<dir>/<sub>/<file>`); skip
+      // subdirectories at this level exactly as the assets loop does. Dotfiles
+      // are skipped for the reason `listRawSources` and
+      // `listRawSourceSnapshots` skip them: `.DS_Store` and friends are not
+      // Sources, and mirroring one would make it Workbench-visible in Files.
+      if (f.isDirectory || f.name.startsWith(".") || mirroredHashed.has(f.name))
+        continue;
+      if (
+        await copyAsset(
+          rawSourceRelPath(`${slug}/${f.name}`),
+          tenantRawSourceRelPath(tenant, `${slug}/${f.name}`),
+        )
+      )
+        n++;
+    }
+  }
 
   // Revision history + assets are IMMUTABLE (append-only, never rewritten), so
   // copy only the ones not already mirrored. This bounds a per-write sync to the
@@ -175,6 +223,10 @@ export async function removeSiloForPage(
     deleteSafe(`tenants/${tenant}/discuss/${slug}.json`),
     deleteDirSafe(tenantWikiRelPath(tenant, `.revisions/${slug}`)),
     deleteDirSafe(tenantRawRelPath(tenant, `${RAW_ASSETS_DIR}/${slug}`)),
+    // Hashed Intake arrivals mirrored by syncSiloForPage (DW-435) — without
+    // this a deleted page leaves Sources in the silo for reverse-orphan
+    // cleanup to trip over.
+    deleteDirSafe(tenantRawSourceRelPath(tenant, slug)),
   ]);
 }
 

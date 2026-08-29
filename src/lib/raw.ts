@@ -682,8 +682,13 @@ export async function readRawSource(
 
 /**
  * Remove stored Source bytes at `raw/sources/<rest>` and the owner's silo copy.
- * Used by cascade delete for hashed `raw/sources/<slug>/<id>.md` keys that
- * {@link removeSiloForPage} does not know about.
+ *
+ * Used by cascade delete to drop ONE source's hashed key
+ * (`raw/sources/<slug>/<id>.md`) while the page it belongs to lives on.
+ * {@link removeSiloForPage} covers the other case: when the whole page goes it
+ * clears the entire per-page hashed silo directory in one `deleteDirectory`
+ * (DW-435). The two are not redundant — this one is per-source and also
+ * deletes the FLAT bytes; that one is per-page and silo-only.
  */
 export async function deleteRawSourceBytes(
   rest: string,

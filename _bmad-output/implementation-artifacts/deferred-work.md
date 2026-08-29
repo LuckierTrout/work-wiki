@@ -3986,7 +3986,9 @@ status: open
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
 location: src/lib/silo.ts:106
 reason: `syncSiloForPage` / `removeSiloForPage` address a single flat `raw/sources/<slug>.md` path, so hashed Intake arrivals written under `raw/sources/<slug>/<rawId>.md` are neither mirrored into the silo nor removed with the page. Intake mirrors hashed keys at write time via `{ owner }`, but ingest callers still omit `owner`. Deferred because the cascade delete this depends on is Story 2.10.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw2-silo-hashed-intake-paths
+resolution-undo: b93b423a86d58364e5a339d9d48dc71e3a0c74a67af6165b596a23ee8af952c6 2026-08-29 7374617475733a206f70656e
 
 ### DW-436: An identical re-arrival still creates an Ingest job even though the Source bytes are not rewritten.
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
@@ -5423,4 +5425,36 @@ location: src/lib/workbench-modes.ts:81
 source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
 severity: medium
 reason: CHAT_SIDECAR_DOWN_COPY (src/lib/workbench-modes.ts:81) is unchanged and useSidecarStatus still collapses every failure into "down". This change makes that state configurable away and explicable to a reader of the source, but not to the owner in the product. The recorded 2026-08-28 decision names only sidecar/server.mjs, src/lib/sidecar.ts and the pins, so distinguishing the two states in copy is beyond it.
+status: open
+
+### DW-608: `reconcileSilos`' forward pass gates on the wiki md, so a page whose silo copy is already current never re-syncs its Sources — flat or hashed.
+origin: spec-deferred 89c8fd2fb206
+location: src/lib/silo.ts:263
+source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
+severity: medium
+reason: src/lib/silo.ts:263-281 calls syncSiloForPage only when the silo `tenants/<t>/wiki/<slug>.md` is missing or its bytes differ from flat; otherwise the page counts as `alreadyCurrent`. lifecycle.ts writes silo and flat from the identical `op.content`, so a live page always lands on `alreadyCurrent`. A Source added after the page md was mirrored is therefore never repaired by reconcile. This predates DW-435 and applies identically to the flat `raw/sources/<slug>.md` mirror; widening the gate means listing raw sources for every page on every reconcile, which is its own subrequest-budget decision.
+status: open
+
+### DW-609: A normal page delete never routes through `removeSiloForPage`, so silo raw artifacts (flat source, hashed tree, discuss, assets) leak on deletion.
+origin: spec-deferred 3f311ceb04e9
+location: src/lib/lifecycle.ts:618
+source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
+severity: medium
+reason: lifecycle.ts:618-638 deletes the silo wiki md, the flat wiki md and both revision layouts directly; lifecycle.ts:932-936 records that the syncSiloForPage/removeSiloForPage mirror was deliberately retired from that path. removeSiloForPage's only production caller is the reverse-orphan pass (src/lib/silo.ts:311), which discovers ghosts by scanning `tenants/<t>/wiki/*.md` — a hard-deleted page's silo md is already gone, so its slug never appears. Pre-existing and identical for the assets directory and the discuss thread; DW-435's new deleteDirSafe inherits the shape rather than introducing it.
+status: open
+
+### DW-610: The legacy hashed root `raw/<slug>/<rawId>.md` is still never mirrored into any silo, so pre-move hashed arrivals stay invisible in Files.
+origin: spec-deferred c6af80f1ec65
+location: src/lib/silo.ts:121
+source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
+severity: low
+reason: `readRawSourceById` falls back to `rawRelPath(<slug>/<rawId>.md)` and `listRawSourceSnapshots` enumerates `rawRelPath("")` as a second root, so workspaces written before Sources moved under `raw/sources/` demonstrably hold hashed bytes only there. The flat legacy `raw/<slug>.md` IS mirrored two lines above for exactly that reason. DW-435's intent names only `raw/sources/<slug>/<rawId>.md`, so the widening is out of scope here.
+status: open
+
+### DW-611: `raw/sources/<name>/` is shared by page slugs and folder-import roots; nested import content is never mirrored but IS recursively deleted.
+origin: spec-deferred 44d9476a0211
+location: src/lib/silo.ts:223
+source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
+severity: low
+reason: `saveRawSourceTree` (src/lib/raw.ts:459) writes `raw/sources/<dir>/<file>` at any depth with every segment validateSlug'd, so a folder-import root can collide with a page slug. The new sync loop copies top-level files only, while `deleteDirSafe` is recursive on both providers (filesystem.ts fs.rm recursive; r2.ts prefix sweep). A page slugged the same as an import root therefore mirrors that import's top-level files into its silo and deletes the whole import tree with the page. The namespace ambiguity predates DW-435; this change exercises it.
 status: open
