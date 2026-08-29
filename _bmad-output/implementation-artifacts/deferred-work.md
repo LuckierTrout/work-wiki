@@ -4186,7 +4186,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: src/lib/__tests__/retired-surfaces.test.ts:216
 severity: medium
 reason: `canvasSpan()`/`canvasFallback()` in src/lib/__tests__/retired-surfaces.test.ts stop the opening tag at the first `>`. An inline arrow prop (`onClick={(e) => handleClick(e)}`) would end the match at the `=>`, so `canvasFallback()` would return attribute text concatenated with the real fallback and the fallback/copy assertions would silently measure props instead of markup — a false pass, not a failure. No canvas prop is an arrow today, so the pin holds as written. Inherited verbatim from f342e2f1; a brace/quote-aware scan would fix it.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-test-pin-hardening
+resolution-undo: d2ceccf34b82290c82fc411e41049bc02d8bbd0be47cc5f524d0e7fecac6df5c 2026-08-29 7374617475733a206f70656e
 
 ### DW-461: The DW-131 escape hatch is pinned only by regex over the page's source text; no test renders the page and asserts a reachable link.
 origin: spec-deferred 45addfb1aca0
@@ -4194,7 +4196,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: src/lib/__tests__/retired-surfaces.test.ts:192
 severity: medium
 reason: All nine DW-131 assertions `fs.readFile` the `.tsx` and regex it. A reviewer demonstrated that adding `aria-hidden="true" tabIndex={-1}` to the visible `<Link>` keeps all 56 tests green while pruning the only reachable alternative from the accessibility tree — the exact defect DW-131 exists to prevent. `vitest.config.ts` already defines a jsdom `dom` project over `src/**/__tests__/**/*.test.tsx` carrying mounted a11y suites (e.g. single-main-landmark-mounted.test.tsx), so a `getByRole("link", { name: /Knowledge tree/ })` check is available.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-test-pin-hardening
+resolution-undo: d2ceccf34b82290c82fc411e41049bc02d8bbd0be47cc5f524d0e7fecac6df5c 2026-08-29 7374617475733a206f70656e
 
 ### DW-462: Nothing pins the Knowledge *tab* itself, only the route the escape hatch points at.
 origin: spec-deferred 7ef8dc4c1588
@@ -4202,7 +4206,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: src/lib/__tests__/retired-surfaces.test.ts:255
 severity: medium
 reason: The new pins reference `RETIRED_SURFACES`, `src/app/page.tsx` and the mode param; none references `TREE_TABS`, `DEFAULT_TREE_TAB`, `TreePanel` or `buildKnowledgeTree`. Removing or renaming the Knowledge tab, or changing `DEFAULT_TREE_TAB`, leaves every assertion passing while the copy's promise of "a text list of this wiki's pages" stops being kept. DW-131's decision said to pin the new target "so it cannot rot into another retired route" — the route is pinned, the tree is not.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-test-pin-hardening
+resolution-undo: d2ceccf34b82290c82fc411e41049bc02d8bbd0be47cc5f524d0e7fecac6df5c 2026-08-29 7374617475733a206f70656e
 
 ### DW-463: The graph canvas is keyboard-focusable and click-activated with no keyboard activation path.
 origin: spec-deferred fe831dd7f6d5
@@ -4292,7 +4298,9 @@ source_spec: `spec-dw-351-356-brand-copy-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts (IDENTIFIER_ALLOWLIST, X-Yopedia- entry)
 severity: medium
 reason: /X-Yopedia-(?:[A-Za-z-]+|\*)/g strips any run of letters and hyphens after the prefix, so strayYopedia("See X-Yopedia-Style-Guide for the docs") reports zero and that display prose passes the scan. The sibling family was narrowed to a closed enumeration with a minimality test; this one was left as a shape. Pre-existing -- the bundle intent named only /yopedia-[a-z-]+/g.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-test-pin-hardening
+resolution-undo: d2ceccf34b82290c82fc411e41049bc02d8bbd0be47cc5f524d0e7fecac6df5c 2026-08-29 7374617475733a206f70656e
 
 ### DW-474: Minimality is enforced for YOPEDIA_HYPHEN_IDENTIFIERS only; every other yopedia waiver and all of WORKWIKI_IDENTIFIER_ALLOWLIST can outlive what it waived.
 origin: spec-deferred 1f50b75afdfc
@@ -5239,4 +5247,20 @@ location: src/components/workbench/ChatCanvas.tsx
 source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: DW-444 named exactly two subjects and both are out, but the retro finding that opened this thread was about file size. A further decomposition pass (the conversation store, and the composer's non-render concerns) is the natural next follow-on to `epic-8-retro-architecture-follow-on`.
+status: open
+
+### DW-588: The whole vitest `dom` project is broken on Node 26: `window.localStorage` is undefined, so 13 files / 233 mounted tests fail before asserting anything.
+origin: spec-deferred cf14d367093b
+location: vitest.setup.dom.ts (and every mounted suite that reads window.localStorage)
+source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
+severity: high
+reason: `pnpm test` fails 233 tests across 13 dom-project files with `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Node prints `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided` — Node 26.8.1 ships its own `globalThis.localStorage` getter, which shadows the one vitest's jsdom environment would otherwise expose (jsdom 30.0.1 supplies it correctly when constructed directly). Confirmed pre-existing: stashing this whole change and re-running `src/components/workbench/__tests__/workbench-split-wiring.test.tsx` reproduces the identical 29/29 failure on baseline a34c4fee. Counts are identical with and without this bundle's new suite. The fix is a repo-level decision (pin Node, or shim Storage in `vitest.setup.dom.ts`), not something a test-pin bundle should make.
+status: open
+
+### DW-589: The DW-356 AGENTS.md parity test is per-PATTERN, so a member added to or dropped from a multi-member enumeration never has to be documented.
+origin: spec-deferred 250f5205735c
+location: src/lib/__tests__/brand-copy.test.ts (AGENTS.md yopedia parity test)
+source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
+severity: medium
+reason: `brand-copy.test.ts`'s "AGENTS.md's yopedia prose and IDENTIFIER_ALLOWLIST agree in both directions" asserts only that each allowlist PATTERN matches at least one backticked spelling in the frozen-identifier section. Both enumerated families are one pattern each, so a fifth `X_YOPEDIA_HEADERS` member — or a fifteenth `YOPEDIA_HYPHEN_IDENTIFIERS` member — satisfies direction 2 on the strength of a sibling and is never forced into the prose. The minimality sweep forces a member to exist in the shipped TREE, not in AGENTS.md. Pre-existing since DW-352 created the first enumerated family; DW-473 extends it to a second. A per-member parity assertion would close it for both at once.
 status: open

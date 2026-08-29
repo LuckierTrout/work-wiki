@@ -59,6 +59,26 @@ const SRC = path.resolve(__dirname, "../..");
 const ROOT = path.resolve(SRC, "..");
 
 /**
+ * Regex-literal characters in an enumerated identifier, escaped.
+ *
+ * ONE helper for BOTH enumerations below, which are documented as mirrors of
+ * each other and have to stay buildable the same way. The hyphen family used to
+ * inline a `.`-only escape in two places — correct for the names it holds today
+ * (`sandbox.internal`) and silently wrong for the first member anyone adds that
+ * carries a `+`, a `(` or a `*`, which is exactly what the wire-header family's
+ * literal `*` member is.
+ *
+ * That last case fails LOUDLY rather than subtly, and it is worth knowing which:
+ * an unescaped `*` makes the alternation `(?:…|*)`, which `new RegExp` rejects
+ * as "Nothing to repeat" — the file does not load, and no assertion in it runs.
+ * A member carrying `.` is the quiet one: it would still build, and would match
+ * any character where the name means a dot.
+ */
+function escapeIdentifier(name: string): string {
+  return name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * The lowercase-hyphen `yopedia-` family, name by name: the task queue and its
  * DLQ, the three Worker scripts, the R2 bucket, the Vectorize index, the three
  * temp-log basenames `scripts/setup-cloudflare.sh` derives from them, the
@@ -123,9 +143,9 @@ const YOPEDIA_HYPHEN_IDENTIFIERS = [
 const YOPEDIA_HYPHEN_BOUNDS = ["(?<![A-Za-z0-9_-])yopedia-", "(?![A-Za-z0-9_-])"] as const;
 
 const YOPEDIA_HYPHEN_PATTERN = new RegExp(
-  `${YOPEDIA_HYPHEN_BOUNDS[0]}(?:${YOPEDIA_HYPHEN_IDENTIFIERS.map((name) =>
-    name.replace(/\./g, "\\."),
-  ).join("|")})${YOPEDIA_HYPHEN_BOUNDS[1]}`,
+  `${YOPEDIA_HYPHEN_BOUNDS[0]}(?:${YOPEDIA_HYPHEN_IDENTIFIERS.map(escapeIdentifier).join(
+    "|",
+  )})${YOPEDIA_HYPHEN_BOUNDS[1]}`,
   "g",
 );
 
@@ -148,8 +168,87 @@ const YOPEDIA_HYPHEN_MEMBER_PATTERNS = YOPEDIA_HYPHEN_IDENTIFIERS.map(
     [
       name,
       new RegExp(
-        `${YOPEDIA_HYPHEN_BOUNDS[0]}${name.replace(/\./g, "\\.")}${YOPEDIA_HYPHEN_BOUNDS[1]}`,
+        `${YOPEDIA_HYPHEN_BOUNDS[0]}${escapeIdentifier(name)}${YOPEDIA_HYPHEN_BOUNDS[1]}`,
       ),
+    ] as const,
+);
+
+/**
+ * The `X-Yopedia-` wire-header family, header by header: the retry-accounting
+ * header the queue producer and `/api/tasks/run` spell independently, the
+ * declared-size header the sandbox client sends and the sandbox Worker reads,
+ * the outbox's HMAC header, and the literal `X-Yopedia-*` wildcard the code
+ * comments and AGENTS.md use to talk about the family as a whole.
+ *
+ * Enumerated, not shaped — DW-473, and the same defect DW-352 fixed one family
+ * over. The `X-Yopedia-(?:[A-Za-z-]+|\*)` this replaced stripped ANY run of
+ * letters and hyphens after the prefix, so `strayYopedia("See
+ * X-Yopedia-Style-Guide for the docs")` reported zero and that sentence passed
+ * the scan as if it were a wire header.
+ *
+ * The literal `*` is a member of the enumeration rather than a wildcard branch
+ * of it: it is the spelling shipped files actually write when they mean "the
+ * family", and waiving it as a NAME keeps the alternation closed.
+ *
+ * ALTERNATION ORDER IS NOT LOAD-BEARING HERE, unlike in the sibling family's
+ * comment, and saying so is the point: the trailing `(?![A-Za-z0-9_-])`
+ * lookahead makes the engine backtrack out of a short alternative that leaves a
+ * name character behind, so a member prefixing another cannot truncate a
+ * boundary whatever the order. The list is kept longest-first only to mirror
+ * `YOPEDIA_HYPHEN_IDENTIFIERS`, and no maintainer needs to preserve it.
+ *
+ * Hoisted out of the allowlist for the same reason its sibling is: a header
+ * retired from the wire whose name stayed here would be a permanent licence to
+ * write that word as display prose, and the minimality sweep below fails when a
+ * member stops occurring in the shipped tree.
+ *
+ * THE EVIDENCE FOR TWO OF THESE FOUR IS THIN, which is why the sweep is touchy
+ * and worth stating before someone is surprised by it. `Signature` occurs on
+ * exactly ONE shipped line (`src/lib/integration-outbox.ts`), and `*` occurs
+ * only inside two code COMMENTS (`src/lib/brand.ts`,
+ * `workers/task-consumer/index.ts`) — nothing executes it anywhere. So an
+ * ordinary comment reflow that rewraps either of those sentences, or a refactor
+ * that folds the outbox's header block away, fails the minimality test. That is
+ * the sweep working: at that moment the name really has stopped being written
+ * in the shipped tree, and the question of whether it should still be waived is
+ * a real one.
+ */
+const X_YOPEDIA_HEADERS = ["Queue-Attempt", "Payload-Bytes", "Signature", "*"] as const;
+
+/**
+ * Both boundaries block `A-Z`, `a-z`, `0-9`, `_` and `-`, the same classes and
+ * for the same reason as {@link YOPEDIA_HYPHEN_BOUNDS}: with only the frozen
+ * spelling's own characters guarded, `X-Yopedia-SignatureV2` and
+ * `X-Yopedia-Queue-Attempts` would lose their prefix and the residue would
+ * carry no brand word left to count — half-stripped into silence. The leading
+ * boundary is the same point from the other side: `not-X-Yopedia-Signature` is
+ * not this deployment's header.
+ *
+ * A trailing `.` stays allowed, exactly as it does for the hyphen family, so a
+ * header named at the end of a sentence still reads as frozen. `*` is allowed
+ * there too, and both are real residuals rather than oversights: `X-Yopedia-*.`
+ * and `X-Yopedia-**` are waived on the strength of the member before the
+ * punctuation. Stated plainly so nobody reads more safety here than there is.
+ */
+const X_YOPEDIA_BOUNDS = ["(?<![A-Za-z0-9_-])X-Yopedia-", "(?![A-Za-z0-9_-])"] as const;
+
+const X_YOPEDIA_PATTERN = new RegExp(
+  `${X_YOPEDIA_BOUNDS[0]}(?:${X_YOPEDIA_HEADERS.map(escapeIdentifier).join("|")})${X_YOPEDIA_BOUNDS[1]}`,
+  "g",
+);
+
+/**
+ * The same enumeration one member at a time, sharing the boundaries above so
+ * the evidence sweep below tests exactly what the waiver waives — the
+ * {@link YOPEDIA_HYPHEN_MEMBER_PATTERNS} rationale, including the missing `g`
+ * flag: these are only ever used with `.test()`, which resumes from `lastIndex`
+ * on a global regex.
+ */
+const X_YOPEDIA_MEMBER_PATTERNS = X_YOPEDIA_HEADERS.map(
+  (name) =>
+    [
+      name,
+      new RegExp(`${X_YOPEDIA_BOUNDS[0]}${escapeIdentifier(name)}${X_YOPEDIA_BOUNDS[1]}`),
     ] as const,
 );
 
@@ -158,7 +257,7 @@ const IDENTIFIER_ALLOWLIST = [
   // All-caps is always an identifier: env vars, secrets, and Worker bindings.
   // Display copy is never shouted, so this can't mask a real offender.
   /\bYOPEDIA[A-Z0-9_]*\b/g,
-  /X-Yopedia-(?:[A-Za-z-]+|\*)/g, // wire-protocol headers
+  X_YOPEDIA_PATTERN, // the enumerated wire-header family — see above
   /`yopedia`/g, // the identifier named in a doc comment
   /\/u\/yopedia\b/g, // DEFAULT_TENANT in a URL path (inlined in the workers)
   /yopedia (?:email-ingest|task-consumer) ok/g, // Worker health-check bodies
@@ -830,6 +929,16 @@ describe("no stale brand strings in rendered copy", () => {
     for (const frozen of [
       "YOPEDIA_API_TOKEN=... # secret name read by the worker",
       'headers.set("X-Yopedia-Queue-Attempt", String(attempt));',
+      // The wire-header family, header by header — the enumeration replaced a
+      // shape (DW-473), so every header actually on the wire has to be named
+      // here or the narrowing silently strands a runtime identifier.
+      '"X-Yopedia-Payload-Bytes": String(new TextEncoder().encode(payload).byteLength),',
+      'request.headers.get("X-Yopedia-Payload-Bytes")',
+      '{ "X-Yopedia-Signature": `sha256=${signature}` }',
+      // The literal wildcard, which is a MEMBER of the enumeration rather than
+      // a branch of a shape: it is how src/lib/brand.ts and the task consumer
+      // spell "the family" in their own comments.
+      "AD-7: `X-Yopedia-*` headers are runtime identifiers, never renamed.",
       "the `yopedia` tenant is the identifier, not the brand",
       "GET /u/yopedia/pages returns the tenant index",
       'return new Response("yopedia email-ingest ok");',
@@ -900,6 +1009,28 @@ describe("no stale brand strings in rendered copy", () => {
       "yopedia-r2b is not the R2 log",
       "yopedia-monitoring is not the User-Agent",
       "yopedia-testing is not the tmpdir prefix",
+      // The regression guard for the enumerated wire-header family: the
+      // `X-Yopedia-(?:[A-Za-z-]+|\*)` shape it replaced stripped any run of
+      // letters and hyphens after the prefix, so this display prose reported
+      // zero strays (DW-473).
+      "See X-Yopedia-Style-Guide for the docs",
+      // One near-miss per enumerated header, each differing from the frozen
+      // spelling only where the alternation or its boundaries pin it.
+      "X-Yopedia-Queue-Attempts is not the header",
+      "X-Yopedia-Payload-Byte is not the header",
+      "X-Yopedia-SignatureV2 is not the header",
+      "X-Yopedia-Signature_v2 is not the header", // underscore
+      "not-X-Yopedia-Signature is not the header", // leading hyphen attachment
+      // The wildcard member's own near-misses. It is the one member that goes
+      // through `escapeIdentifier`, so an escape that stopped working would
+      // turn `*` into a quantifier here and waive far more than the literal.
+      "X-Yopedia-*V2 is not the family", // trailing boundary, past the `*`
+      "the X-Yopedia- prefix on its own is not a header", // the bare prefix
+      // The family prefix with no header name after it. The alternation is over
+      // NAMES, so naming the family in prose is prose — a waiver keyed to the
+      // prefix alone (which is what the shape this replaced effectively was)
+      // would wave through every sentence that mentions it.
+      "The X-Yopedia protocol is documented elsewhere",
       // One per class the WIDENED boundaries block. Under a lowercase-only
       // guard each of these lost its frozen prefix and the residue carried no
       // brand word left to count, so the scan passed on display prose.
@@ -953,6 +1084,44 @@ describe("no stale brand strings in rendered copy", () => {
       `YOPEDIA_HYPHEN_IDENTIFIERS waives ${unused.join(", ")}, which no scanned file outside ` +
         `${FREEZE_PROSE} spells any more — drop the name so the word stops being waived, or fix ` +
         `the spelling if the resource was renamed.`,
+    ).toEqual([]);
+  });
+
+  it("keeps every waived X-Yopedia- wire header earning its place", async () => {
+    // The wire-header mirror of the sweep above, and the other half of DW-473:
+    // narrowing the shape to an enumeration only helps while the enumeration
+    // stays minimal. A header dropped from the wire whose name stayed in
+    // `X_YOPEDIA_HEADERS` is a standing licence to write that word as display
+    // prose — the shape's failure mode, re-created one name at a time.
+    //
+    // Same two self-certification exclusions, for the same reasons: `walk()`
+    // skips `__tests__`, so the frozen-case table above cannot keep a dead
+    // header alive, and `FREEZE_PROSE` is skipped here, so neither can the
+    // AGENTS.md bullet the DW-356 parity test forces to enumerate them.
+    const seen = new Set<string>();
+    let sawFreezeProse = false;
+    const { read } = await scanBrandSources((text, relative) => {
+      if (relative === FREEZE_PROSE) {
+        sawFreezeProse = true;
+        return null;
+      }
+      for (const [name, pattern] of X_YOPEDIA_MEMBER_PATTERNS) {
+        if (pattern.test(text)) seen.add(name);
+      }
+      return null;
+    });
+    expectUnionCorpus(read);
+    expect(
+      sawFreezeProse,
+      `${FREEZE_PROSE} is excluded from this sweep's evidence but no source list reads it — ` +
+        "fix the path, or the exclusion is a no-op and the enumeration certifies itself again",
+    ).toBe(true);
+    const unused = X_YOPEDIA_HEADERS.filter((name) => !seen.has(name));
+    expect(
+      unused,
+      `X_YOPEDIA_HEADERS waives ${unused.join(", ")}, which no scanned file outside ` +
+        `${FREEZE_PROSE} spells any more — drop the header so the word stops being waived, or ` +
+        `fix the spelling if it was renamed.`,
     ).toEqual([]);
   });
 

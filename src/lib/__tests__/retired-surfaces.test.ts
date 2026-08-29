@@ -9,6 +9,15 @@ import {
   WORKBENCH_MODE_PARAM,
   readModeFromSearch,
 } from "../workbench-url";
+// The Knowledge TAB the escape hatch's copy promises, imported so the promise
+// is pinned against the thing itself rather than against the route alone
+// (DW-462).
+import {
+  DEFAULT_TREE_TAB,
+  TREE_TABS,
+  buildKnowledgeTree,
+} from "../workbench-tree";
+import type { IndexEntry } from "../types";
 import { syncCommonsForPage, getCommonsIndex, upsertCommonsEntry } from "../commons";
 import { canSetPrivate } from "../authz";
 import { dispatchMcp } from "../mcp-http";
@@ -212,7 +221,75 @@ describe("the graph canvas's text-list alternative is a live route", () => {
   const LINK_TO_CONSTANT = /<(?:a|Link)\s[^>]*href=\{KNOWLEDGE_TREE_HREF\}/;
 
   /**
-   * The whole `<canvas>…</canvas>` element, once there is exactly one.
+   * The `<canvas>` opening tag, found by SCANNING rather than by pattern.
+   *
+   * `/<canvas\b[^>]*>/` — what this replaced — stops at the first `>` after
+   * `<canvas`, and a `>` is ordinary inside a JSX opening tag: an inline arrow
+   * handler (`onClick={(e) => handleClick(e)}`) carries one, and so does any
+   * attribute string that spells a comparison (`aria-label="a > b"`).
+   *
+   * The defect that pattern carries is LATENT, not live. Today's canvas
+   * (`src/app/wiki/graph/page.tsx`) passes `onClick={handleClick}` — a bare
+   * reference, no arrow — and no attribute of it contains a `>`, so the old
+   * pattern happens to find the right boundary. It is one ordinary prop away
+   * from not doing so: inline the handler, or write a `>` into the label, and
+   * the tag "ends" mid-attribute. `canvasFallback()` would then return
+   * ` handleClick(e)} …>` plus the children, and the assertions built on it
+   * would go on passing while measuring a string the element never renders
+   * (DW-460). Which is why the boundary is scanned rather than matched: the
+   * guarantee should not depend on the page keeping its props shaped a
+   * particular way.
+   *
+   * So the end of the tag is decided the way a parser decides it — a `>` counts
+   * only at brace depth 0 and outside a string. `markup()` has already removed
+   * `{/* … *\/}` and `//` comments, so props and attribute strings are the
+   * whole of what this has to survive.
+   *
+   * Returns the tag's bounds plus whether it self-closes; `end` is `-1` when no
+   * `>` closes it at all — an unterminated tag, or a scan that has lost sync
+   * with the source's own nesting (see the `depth < 0` bail below).
+   */
+  function canvasOpeningTag(src: string, start: number) {
+    let depth = 0;
+    let quote: string | null = null;
+    for (let i = start + "<canvas".length; i < src.length; i += 1) {
+      const ch = src[i];
+      if (quote !== null) {
+        // A backslash escape belongs to the string, so the character after it
+        // can never be read as the closing quote.
+        if (ch === "\\") i += 1;
+        else if (ch === quote) quote = null;
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === "`") {
+        quote = ch;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        // A `}` with no `{` before it means the scan is no longer tracking the
+        // source's own nesting, and every `>` after this point would be judged
+        // at the wrong depth. Worse, a later `{` brings the count back to zero,
+        // at which point a `>` sitting inside an attribute would be ACCEPTED as
+        // the end of the tag. Stopping is the only honest answer: the boundary
+        // is unknown, not found — and "unknown" is the same `-1` an
+        // unterminated tag reports, which the callers already refuse.
+        if (depth < 0) break;
+      } else if (ch === ">" && depth === 0) {
+        return {
+          start,
+          end: i + 1,
+          selfClosing: /\/\s*$/.test(src.slice(start, i)),
+        };
+      }
+    }
+    return { start, end: -1, selfClosing: false };
+  }
+
+  /**
+   * The one `<canvas>` opening tag on the page, with the count assertion that
+   * makes "the one" true.
    *
    * Counted by OPENING tag rather than by matched span, for two reasons a span
    * count misses: a self-closing `<canvas />` has no fallback child at all and
@@ -222,27 +299,62 @@ describe("the graph canvas's text-list alternative is a live route", () => {
    * canvas would ship with no accessible alternative and no failing test —
    * which is the shape of the DW-131 bug itself.
    */
-  function canvasSpan(src: string): string {
+  function canvasTag(src: string) {
     expect(
       (src.match(/<canvas\b/g) ?? []).length,
       "the graph page renders exactly one <canvas>",
     ).toBe(1);
-    const span = /<canvas\b[^>]*>[\s\S]*?<\/canvas>/.exec(src);
+    return canvasOpeningTag(src, src.search(/<canvas\b/));
+  }
+
+  /**
+   * The whole `<canvas>…</canvas>` element, once there is exactly one.
+   *
+   * A self-closing tag, an unterminated one, and one with no `</canvas>` after
+   * it are the same failure from the reader's side — no fallback child — so
+   * they share the message.
+   */
+  function canvasSpan(src: string): string {
+    const tag = canvasTag(src);
+    const close = tag.end === -1 ? -1 : src.indexOf("</canvas>", tag.end);
+    const span =
+      tag.end === -1 || tag.selfClosing || close === -1
+        ? null
+        : src.slice(tag.start, close + "</canvas>".length);
     expect(
       span,
       "the <canvas> must carry a fallback child, not be self-closing",
     ).not.toBeNull();
-    return span![0];
+    return span!;
   }
 
   /** The `<canvas>` fallback child — what a client that cannot render it shows. */
   function canvasFallback(src: string): string {
-    return /<canvas\b[^>]*>([\s\S]*?)<\/canvas>/.exec(canvasSpan(src))![1];
+    // Sliced from the SCANNED tag end, so a `>` inside a prop cannot move the
+    // boundary into the attribute list.
+    const span = canvasSpan(src);
+    const tag = canvasOpeningTag(span, 0);
+    return span.slice(tag.end, span.length - "</canvas>".length);
   }
 
-  /** The `<canvas>`'s own `aria-label`. */
+  /**
+   * The `<canvas>`'s own `aria-label`.
+   *
+   * Read out of the OPENING TAG alone, not out of the whole span: an
+   * `aria-label` on a descendant of the fallback child is somebody else's
+   * label, and with the old truncated tag the search ran over the children too.
+   */
   function canvasAriaLabel(src: string): string {
-    const label = /aria-label=\s*"([^"]*)"/.exec(canvasSpan(src));
+    const tag = canvasTag(src);
+    // `end === -1` must be refused BEFORE the slice: `src.slice(start, -1)` is
+    // the rest of the file bar one character, so an unterminated opening tag
+    // would quietly hand back some LATER element's `aria-label` as the
+    // canvas's — the shape of the bug this whole section exists to catch.
+    expect(
+      tag.end,
+      "the <canvas> opening tag has no `>` that ends it — nothing here can be read from it",
+    ).toBeGreaterThan(-1);
+    const label = /aria-label=\s*"([^"]*)"/.exec(src.slice(tag.start, tag.end));
     expect(label, "the <canvas> still carries an aria-label").not.toBeNull();
     return label![1];
   }
@@ -349,6 +461,274 @@ describe("the graph canvas's text-list alternative is a live route", () => {
     // The exact wording the retired target shipped under, so a revert reads as
     // a failure rather than as prose someone is free to restore.
     expect(copy.toLowerCase()).not.toContain("wiki index");
+  });
+
+  // -------------------------------------------------------------------------
+  // The opening-tag scanner's own evidence (DW-460)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Four of the nine assertions above measure from this boundary — the two
+   * canvas-fallback ones, the `aria-label` one and the retired-route copy scan
+   * — and so does the tab-label coupling further down. None of them can be
+   * better than the boundary is, and that boundary used to be `[^>]*`.
+   *
+   * WHICH CASES BELOW ARE NEW EVIDENCE, precisely: the arrow-prop and the
+   * quoted-`>` cases are, and so are the escaped-quote, template-literal,
+   * stray-`}` and both `aria-label`-scope cases — every one of them passes the
+   * old pattern while measuring the wrong text, or fails it outright. The
+   * self-closing, unterminated-tag, missing-`</canvas>` and two-canvas cases
+   * are NOT new evidence: the regex this replaced refused those three the same
+   * way, and they are written down here to carry the pre-existing guarantee
+   * forward unchanged rather than to demonstrate a fix.
+   */
+  describe("the <canvas> opening-tag scanner", () => {
+    it("ends the tag past an arrow prop, not at the `>` inside it", () => {
+      const src = `<canvas onClick={(e) => handleClick(e)} aria-label="graph">child</canvas>`;
+      // The old `[^>]*` stopped at the `=>`, so the "fallback" came back as
+      // ` handleClick(e)} aria-label="graph">child` — attribute text presented
+      // as the element's accessible alternative.
+      expect(canvasFallback(src)).toBe("child");
+      expect(canvasAriaLabel(src)).toBe("graph");
+    });
+
+    it("ends the tag past a `>` inside a quoted attribute", () => {
+      const src = `<canvas aria-label="a > b">child</canvas>`;
+      expect(canvasFallback(src)).toBe("child");
+      expect(canvasAriaLabel(src)).toBe("a > b");
+    });
+
+    it("refuses a self-closing canvas, which has no fallback child at all", () => {
+      expect(() => canvasSpan(`<canvas ref={r} />`)).toThrow(
+        /must carry a fallback child, not be self-closing/,
+      );
+      // Same verdict when the self-closing tag also carries a `>`-bearing prop,
+      // which is the form the old pattern truncated.
+      expect(() => canvasSpan(`<canvas onClick={(e) => f(e)} />`)).toThrow(
+        /must carry a fallback child, not be self-closing/,
+      );
+      // The flag itself, and not only the absent `</canvas>` that follows from
+      // it: a scanner reading `<canvas … />` as an ordinary opening tag would
+      // go looking for children this element cannot have, and would find the
+      // next element's.
+      expect(canvasOpeningTag(`<canvas ref={r} />`, 0).selfClosing).toBe(true);
+      expect(canvasOpeningTag(`<canvas ref={r}>x</canvas>`, 0).selfClosing).toBe(false);
+    });
+
+    it("refuses an opening tag nothing closes", () => {
+      expect(() => canvasSpan(`<canvas aria-label="unterminated`)).toThrow(
+        /must carry a fallback child, not be self-closing/,
+      );
+    });
+
+    it("refuses a second canvas", () => {
+      const src = `<canvas ref={a}>one</canvas><canvas ref={b}>two</canvas>`;
+      expect(() => canvasSpan(src)).toThrow(/renders exactly one <canvas>/);
+    });
+
+    it("ends the tag past a `>` inside a SINGLE-quoted attribute", () => {
+      // The `'` branch of the string state. JSX takes either quote, and an
+      // attribute written with the other one would otherwise be scanned as if
+      // it carried no string at all.
+      const src = `<canvas data-hint='a > b' aria-label="graph">child</canvas>`;
+      expect(canvasFallback(src)).toBe("child");
+      expect(canvasAriaLabel(src)).toBe("graph");
+    });
+
+    it("ends the tag past a template-literal prop, quotes and all", () => {
+      // The backtick branch. A template is the one attribute form that can
+      // legitimately contain a LONE quote character — an apostrophe in prose —
+      // and without backtick state that `\'` opens a string the scanner then
+      // hunts a closing quote for through the rest of the file, swallowing the
+      // tag boundary and every attribute after it.
+      const src = "<canvas title={`what\'s > next`} aria-label=\"graph\">child</canvas>";
+      expect(canvasFallback(src)).toBe("child");
+      expect(canvasAriaLabel(src)).toBe("graph");
+    });
+
+    it("keeps a template's own `${…}` braces out of the depth count", () => {
+      // The other half of the backtick branch: an interpolation's braces are
+      // inside the string, so they must not move the depth counter that decides
+      // where the tag ends — and the `>` in the interpolated expression must
+      // not end it either.
+      const src =
+        "<canvas title={`a ${x > 1 ? \"y\" : \"n\"}`} aria-label=\"graph\">child</canvas>";
+      expect(canvasFallback(src)).toBe("child");
+      expect(canvasAriaLabel(src)).toBe("graph");
+    });
+
+    it("keeps a backslash-escaped quote inside the string it belongs to", () => {
+      // Without the escape branch the escaped quote reads as the string's END,
+      // the scanner leaves string state one character early, and the rest of
+      // the attribute is scanned as markup — here that loses the tag boundary
+      // altogether and the element stops having a fallback at all.
+      const src = `<canvas aria-label={"a \\" > b"}>child</canvas>`;
+      expect(canvasFallback(src)).toBe("child");
+    });
+
+    it("bails when a stray `}` puts the scan out of step", () => {
+      // Depth below zero means the count no longer describes the source. A
+      // later `{` returns it to zero, and without the bail the very next `>` —
+      // wherever it sits — is accepted as the end of the tag.
+      const src = `<canvas } {>child</canvas>`;
+      expect(canvasOpeningTag(src, 0).end).toBe(-1);
+      expect(() => canvasSpan(src)).toThrow(
+        /must carry a fallback child, not be self-closing/,
+      );
+    });
+
+    it("refuses a canvas whose closing tag never arrives", () => {
+      // A DIFFERENT branch from the unterminated-opening-tag case above: here
+      // the opening tag is complete, and it is `</canvas>` that is missing, so
+      // there is no end to bound a fallback child with.
+      const src = `<canvas ref={r}>child`;
+      expect(canvasOpeningTag(src, 0).end).toBeGreaterThan(0);
+      expect(() => canvasSpan(src)).toThrow(
+        /must carry a fallback child, not be self-closing/,
+      );
+    });
+
+    it("reads the aria-label off the TAG, never off a descendant", () => {
+      // The rule that makes `canvasAriaLabel` worth having, and the one a
+      // span-wide search silently gives up. With the search run over the whole
+      // element, deleting the canvas's own `aria-label` and moving the identical
+      // string onto the fallback `<a>` leaves every assertion in this section
+      // green — a `<canvas role="img">` with no accessible name at all, which
+      // is DW-131 restored in full.
+      expect(() =>
+        canvasAriaLabel(`<canvas ref={r}><a aria-label="Knowledge tree">x</a></canvas>`),
+      ).toThrow(/still carries an aria-label/);
+    });
+
+    it("refuses to read an aria-label off an unterminated tag", () => {
+      // The guard in `canvasAriaLabel`, which has to fire BEFORE the slice:
+      // `src.slice(start, -1)` is the rest of the file bar one character, so
+      // without it the canvas's accessible name is read off whatever element
+      // happens to come next — a label the canvas does not carry, reported as
+      // the canvas's own.
+      const src = `<canvas title='unterminated><p aria-label="stolen">x</p>`;
+      expect(canvasOpeningTag(src, 0).end).toBe(-1);
+      expect(() => canvasAriaLabel(src)).toThrow(
+        /opening tag has no `>` that ends it/,
+      );
+    });
+
+    it("returns the tag's own aria-label when a descendant has one too", () => {
+      // The other half of the same rule, stated so nobody has to guess which
+      // label wins: the element's accessible name is the one on the element.
+      const src = `<canvas aria-label="canvas own"><a aria-label="link's own">x</a></canvas>`;
+      expect(canvasAriaLabel(src)).toBe("canvas own");
+      // And both are still visible to the whole-file reader, which is what the
+      // retired-route copy scan uses — the narrowing is to THIS helper only.
+      expect(ariaLabels(src)).toEqual(["canvas own", "link's own"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The Knowledge TAB the escape hatch promises (DW-462)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The route is pinned above; the tree it promises was not. `TREE_TABS`,
+   * `DEFAULT_TREE_TAB`, `TreePanel` and `buildKnowledgeTree` were unreferenced
+   * from this file, so renaming the Knowledge tab — or removing it — left the
+   * graph page's "a text list of this wiki's pages" unkept with every
+   * assertion here green.
+   */
+  describe("the Knowledge tree that href promises still exists", () => {
+    const TREE_PANEL = path.resolve(
+      __dirname,
+      "..",
+      "..",
+      "components",
+      "workbench",
+      "TreePanel.tsx",
+    );
+
+    it("lands a first-time reader on a real tree tab", () => {
+      // The href guarantees the SURFACE, not the tab: `workbench-url.ts` keeps
+      // the tree tab in browser-local state, so which tab someone following
+      // this link lands on is `DEFAULT_TREE_TAB` and nothing else. A tab param
+      // appearing in the href would mean that is no longer the tab to pin.
+      const search = KNOWLEDGE_TREE_HREF.slice(KNOWLEDGE_TREE_HREF.indexOf("?"));
+      expect(
+        [...new URLSearchParams(search).keys()],
+        "KNOWLEDGE_TREE_HREF carries a param besides the mode — the landing tab is no longer DEFAULT_TREE_TAB alone",
+      ).toEqual([WORKBENCH_MODE_PARAM]);
+      expect(
+        TREE_TABS.map((tab) => tab.id),
+        `DEFAULT_TREE_TAB ("${DEFAULT_TREE_TAB}") names no TREE_TABS member — the link lands on a tablist with nothing selected`,
+      ).toContain(DEFAULT_TREE_TAB);
+    });
+
+    it("names that tab's own label in the copy the canvas points at", async () => {
+      // THE COUPLING, and what makes this pin non-redundant with
+      // `workbench-tree.test.ts`: the label is READ out of `TREE_TABS` rather
+      // than written here a second time, so renaming the tab, or moving
+      // `DEFAULT_TREE_TAB` to `files`, fails HERE — at the escape hatch that
+      // promises it — and not only in a tree suite that has no opinion about
+      // the promise this page makes.
+      const landing = TREE_TABS.find((tab) => tab.id === DEFAULT_TREE_TAB);
+      expect(landing, "DEFAULT_TREE_TAB is not a TREE_TABS member").toBeDefined();
+      const named = `${landing!.label} tree`;
+
+      const src = await graphSource();
+      const where = `the graph page's copy must name the "${named}" the link lands on`;
+      expect(canvasAriaLabel(src), where).toContain(named);
+      expect(canvasFallback(src), where).toContain(named);
+      expect(src.replace(canvasSpan(src), ""), where).toContain(named);
+    });
+
+    it("builds a text list of this wiki's pages, by title", () => {
+      // The copy's literal promise. `buildKnowledgeTree` is the pure function
+      // behind the tab, so the claim can be executed rather than asserted:
+      // pages in, titled rows out.
+      //
+      // The fixture arrives in NONE of the orders the output uses, and the
+      // result is compared as it comes back — sorting it here would discard
+      // exactly the ordering this test's name claims. Three rules are pinned at
+      // once: the untyped catch-all LEADS (its label, "Pages", collates after
+      // both typed labels, so a plain label sort would put it last), typed
+      // groups follow by label, and pages inside a group are in title order.
+      const entries: IndexEntry[] = [
+        { slug: "zeta", title: "Zeta", summary: "", type: "note" },
+        { slug: "delta", title: "Delta", summary: "" },
+        { slug: "acme", title: "Acme", summary: "", type: "brief" },
+        { slug: "alpha", title: "Alpha", summary: "" },
+        // Agent-scoped pages are not this wiki's pages and are dropped, which
+        // is the one exclusion the promise has to survive.
+        { slug: "yoyo", title: "Yoyo", summary: "", type: "agent-identity" },
+      ];
+      expect(
+        buildKnowledgeTree(entries).map((group) => [
+          group.label,
+          group.pages.map((page) => page.title),
+        ]),
+      ).toEqual([
+        ["Pages", ["Alpha", "Delta"]],
+        ["Brief", ["Acme"]],
+        ["Note", ["Zeta"]],
+      ]);
+    });
+
+    it("renders those tabs in the left column's tablist", async () => {
+      // A source pin rather than a mount: this file's suite is the `node`
+      // project, which mounts nothing. It answers the half `TREE_TABS` alone
+      // cannot — that the constant is what the tablist actually maps, so a
+      // panel that hard-codes its own buttons stops satisfying the promise.
+      const panel = markup(await fs.readFile(TREE_PANEL, "utf8"));
+      expect(panel).toMatch(/from\s+["']@\/lib\/workbench-tree["']/);
+      // Bound to the tablist element's OWN children — `[^>]*>` cannot cross out
+      // of the opening tag, and `\s*` cannot cross an intervening element. An
+      // unbounded `[\s\S]*?` would be satisfied by a `TREE_TABS.map(` anywhere
+      // later in the module, so a panel that hand-spells its tab buttons and
+      // maps the constant somewhere else entirely would still pass — which is
+      // the one failure this assertion exists to catch.
+      expect(
+        panel,
+        "TreePanel's tablist no longer maps TREE_TABS directly — the tabs the link lands on are whatever the panel spells by hand",
+      ).toMatch(/role="tablist"[^>]*>\s*\{TREE_TABS\.map\(/);
+    });
   });
 });
 

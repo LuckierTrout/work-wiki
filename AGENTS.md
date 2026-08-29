@@ -129,9 +129,12 @@ This section is deliberately outside the `bmad:context` markers: that block is
 replaced on refresh, and this list must survive the refresh.
 
 - The rebrand is display-only: runtime identifiers stay `yopedia`. Renaming any of them orphans production data — new work uses work-wiki in copy, `yopedia` in identifiers.
-- The frozen spellings, one worked example per waiver, with the call site each was read from. Eleven of the twelve waivers are here; the twelfth, the lowercase-hyphen family, is enumerated in the bullet after this one:
+- The frozen spellings, with the call site each was read from — one worked example per waiver, except the wire headers, which are a closed enumeration and so are spelled out member by member. Eleven of the twelve waivers are here; the twelfth, the lowercase-hyphen family, is enumerated in the bullet after this one:
   - `YOPEDIA_API_TOKEN` — the all-caps env, secret and Worker-binding family (`YOPEDIA_*`), including the `YOPEDIA_E2E` names playwright.config.ts sets and the `YOPEDIA_WEBHOOK_SIGNING_SECRET` line .env.example documents. All-caps is never display copy, which is why this waiver can be a shape.
-  - `X-Yopedia-Queue-Attempt` — the retry-accounting header the producer and the consumer spell independently (workers/task-consumer/index.ts, src/app/api/tasks/run/route.ts). The whole `X-Yopedia-*` wire-header family is frozen with it. This is the one entry in this list a test checks on both sides.
+  - `X-Yopedia-Queue-Attempt` — the retry-accounting header the producer and the consumer spell independently (workers/task-consumer/index.ts, src/app/api/tasks/run/route.ts). This is the one entry in this list a test checks on both sides.
+  - `X-Yopedia-Payload-Bytes` — the declared payload size src/lib/sandbox-service.ts sends and workers/sandbox-runner/src/index.ts checks.
+  - `X-Yopedia-Signature` — the integration outbox's HMAC header (src/lib/integration-outbox.ts).
+  - `X-Yopedia-*` — the family itself, as src/lib/brand.ts and workers/task-consumer/index.ts write it in their comments. The wire-header family is a CLOSED enumeration, not every header spelled with that prefix: a new one must be added to it or the brand scan reads it as display prose.
   - `"yopedia"` — the string literal behind `DEFAULT_TENANT` (src/lib/links.ts), `BASE_AGENT_OWNER` (src/lib/agents.ts), `AUTOMATION_ACTORS`, and the MCP `serverInfo.name`.
   - `yopedia` — the same identifier named as itself inside a doc comment or a sentence like this one. It is waived only in its backticked form, which is why this section can discuss it at all without failing the brand scan, and why writing the bare word as display prose is still a slip.
   - `/u/yopedia` — that same tenant inlined into a URL path inside the Workers, which do not import src/lib and so cannot derive it.
