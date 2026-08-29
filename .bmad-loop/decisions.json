@@ -1,13 +1,4 @@
 {
-  "DW-113": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Give the DOM setup a configurable `getBoundingClientRect`/`offsetWidth` harness so a test can declare a shell width, replace the FIDELITY LIMIT note with the new contract, and add mounted cases for the width-derived shell decisions including the resize listener.",
-    "key": "1",
-    "label": "Stub configurable rects",
-    "resolution": ""
-  },
   "DW-116": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -35,15 +26,6 @@
     "label": "Drop the contributors step",
     "resolution": ""
   },
-  "DW-131": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Retarget the graph canvas's aria-label and fallback text at the Workbench's Knowledge tree (the live text-based list of the active Wiki's pages), updating the copy to name that surface and linking to it, and pin the new target so it cannot rot into another retired route.",
-    "key": "1",
-    "label": "Point at the Workbench Knowledge tree",
-    "resolution": ""
-  },
   "DW-134": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -51,42 +33,6 @@
     "intent": "Move `rebuildDerivedIndexes()` and `purgeStaleJobs()` behind the `!dry` branch so a dry run performs no writes at all, and add a test asserting no storage write occurs when `dry=1`.",
     "key": "1",
     "label": "Make dry actually dry",
-    "resolution": ""
-  },
-  "DW-152": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Give KnowledgeStudio's .studio-main wrapper a named `<section>` (or role=\"region\" with aria-label) matching the shape VaultExplorer already uses, restoring region navigability between the two rails, and update the landmark scan and mounted tests to expect it. Record in the spec record that the frozen \"do not add landmarks\" clause was deliberately renegotiated for this one wrapper.",
-    "key": "1",
-    "label": "Name the KnowledgeStudio region",
-    "resolution": ""
-  },
-  "DW-159": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add an `isOwnerHandle(principal.handle)` gate to `POST /api/wikis` so a non-owner cannot create a Wiki no surface will honour, answering the same 403 shape the artifact route already uses, and pin it with a route test alongside the existing sign-in and read-only cases.",
-    "key": "1",
-    "label": "Gate creation on ownership",
-    "resolution": ""
-  },
-  "DW-167": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Represent the open Settings surface in the URL alongside `?mode=` (a `settings=1` param or a `mode=settings` value), accept it on load through the same ordering as the mode restore, and make Back close Settings before it leaves the app \u2014 reusing `src/lib/workbench-url.ts` rather than adding a second convention.",
-    "key": "1",
-    "label": "Give Settings a URL",
-    "resolution": ""
-  },
-  "DW-170": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Update DW-17's reason to cite the current epics.md text (or state that the FR-76 file contract is its sole basis), and leave the three frozen story records as historical quotations with a note that the AC text later changed.",
-    "key": "1",
-    "label": "Re-anchor DW-17 only",
     "resolution": ""
   },
   "DW-172": {
@@ -134,24 +80,6 @@
     "label": "Add a browser project",
     "resolution": ""
   },
-  "DW-196": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "keep-open",
-    "intent": "",
-    "key": "3",
-    "label": "Decide with the Epic 2 ingest writer",
-    "resolution": ""
-  },
-  "DW-202": {
-    "answered_at": "2026-08-19",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "When two leaves collide on the same wikiLeafSlug, list only the canonical `<slug>.md` row and drop the variant-cased sibling from the Files tab, so every visible row reads and writes the same object; add a test seeding both names on a case-sensitive store.",
-    "key": "1",
-    "label": "List only the canonical file",
-    "resolution": ""
-  },
   "DW-205": {
     "answered_at": "2026-08-19",
     "bundle_name": "",
@@ -159,15 +87,6 @@
     "intent": "Raise .wb-canvas-pad and .wb-preview-body left padding to at least the hit-strip width so the strip covers only gutter, never text, keeping the 24px target that satisfies SC 2.5.8; pin the relationship between the padding and --wb-split-hit so they cannot drift.",
     "key": "1",
     "label": "Widen the content padding to match",
-    "resolution": ""
-  },
-  "DW-215": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add a retention cap with pruning in saveWikiArtifactRevision plus a bounded listing, and make the backup walk truncate-with-a-flag at MAX_BACKUP_FILES/MAX_BACKUP_BYTES instead of throwing.",
-    "key": "1",
-    "label": "Cap revisions and degrade backups",
     "resolution": ""
   },
   "DW-233": {
@@ -188,15 +107,6 @@
     "label": "Allow a configured deployment origin",
     "resolution": ""
   },
-  "DW-253": {
-    "answered_at": "2026-08-20",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Change the route to skip an attachment over `MAX_DOCUMENT_SIZE` rather than 400 the request, ingest the body and the remaining attachments, and name the dropped file in the acknowledgement alongside the existing skipped-attachment sentence. Add a per-attachment size pre-filter in the Worker so an oversized part is never forwarded, and add the missing end-to-end case for an email whose attachments are all unsupported but which carries a body.",
-    "key": "1",
-    "label": "Drop the oversized attachment",
-    "resolution": ""
-  },
   "DW-287": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -215,15 +125,6 @@
     "label": "Batch the loop paths",
     "resolution": ""
   },
-  "DW-323": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Resolve the accountable owner from into.frontmatter.owner (falling back to the acting principal) and pass it plus a fresh createWorkspaceGuidanceCache() into reconcilePage from merge.ts, with a test pinning which owner's guidance a cross-owner merge uses.",
-    "key": "1",
-    "label": "Guide the merge door",
-    "resolution": ""
-  },
   "DW-330": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -231,15 +132,6 @@
     "intent": "Have validateWorkbenchSettingsPatch select the refusal frame from the request's vectorSearchEnabled while still deciding refusal from the stored flag, so client and route agree; pin the previously contradictory composition.",
     "key": "1",
     "label": "Frame from the request",
-    "resolution": ""
-  },
-  "DW-332": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Delete only the drift:<active model> key from warnedMisconfigurations on a successful read where kept.length > 0, leaving every other member of the Never clause intact, and cover rebuild-then-re-drift in the embeddings warning suite.",
-    "key": "1",
-    "label": "Re-arm drift only",
     "resolution": ""
   },
   "DW-337": {
@@ -260,51 +152,6 @@
     "label": "Scan and allowlist",
     "resolution": ""
   },
-  "DW-358": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Derive MAX_RAW_EMAIL_BYTES from the worst-case transfer encoding (a quoted-printable expansion factor rather than base64's ~1.37), re-pin the parity test, and record the new derivation beside the constant.",
-    "key": "1",
-    "label": "Widen for worst-case encoding",
-    "resolution": ""
-  },
-  "DW-362": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Derive MAX_RAW_EMAIL_BYTES from a stated aggregate budget (up to MAX_EMAIL_ATTACHMENTS documents, or an explicit total) so the advertised attachment count is actually reachable, re-pin the parity test, and add a multi-document aggregate case.",
-    "key": "1",
-    "label": "Derive an aggregate budget",
-    "resolution": ""
-  },
-  "DW-390": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Delete listThreads, createThread, getThread, addComment, resolveThread and hasOpenThread from src/lib/talk.ts along with their now-orphaned tests, leaving deleteDiscussions, getDiscussRelPrefix and getDiscussionStatsForSlugs (and therefore browse's count and the discuss-stats/contributor indexes) exactly as they are.",
-    "key": "1",
-    "label": "Retire the dead writers only",
-    "resolution": ""
-  },
-  "DW-392": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Include isSignedIn in canRevert so signed-out viewers are never offered Revert, matching ArticleActions, and record the frozen-block renegotiation in the spec.",
-    "key": "1",
-    "label": "Add the signed-in term",
-    "resolution": ""
-  },
-  "DW-393": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Return per-entry outcomes from the bulk delete instead of an all-or-nothing 404, applying the same shape to the ingestIds preflight so the two stay in parity, and surface the partial result in the client.",
-    "key": "1",
-    "label": "Per-entry results",
-    "resolution": ""
-  },
   "DW-396": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -312,51 +159,6 @@
     "intent": "Type enqueueTask's ingest payload as Omit<IngestOptions,\"guidanceCache\"> so the compiler refuses a serialized handle, leaving the call signature of ingestUrl unchanged.",
     "key": "1",
     "label": "Type the queue payload",
-    "resolution": ""
-  },
-  "DW-398": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Disable the embedding-provider select in SettingsCanvas.tsx:580-586 whenever `EMBEDDING_PROVIDER` is set, with the existing env-override hint copy, so the newly reachable consequence disappears without touching the frozen clear rule.",
-    "key": "1",
-    "label": "Disable the select under an env pin",
-    "resolution": ""
-  },
-  "DW-40": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Give `resolveRoot` a per-root arm so `raw/` resolves strictly inside the owner's silo and never falls back to the shared flat root, while `wiki/` keeps the fallback for pre-migration workspaces. Update src/lib/workbench-files.ts and its tests, and record in src/lib/silo.ts that the flat tree is now wiki-only.",
-    "key": "1",
-    "label": "Drop the fallback for raw/ only",
-    "resolution": ""
-  },
-  "DW-401": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Keep the explicit selection authoritative but emit a warn-once from `resolveEmbeddingProvider` naming the SDK localhost default as the endpoint actually in effect, so the substitution is audible. Smallest change, no behaviour change.",
-    "key": "1",
-    "label": "Warn once, keep selecting",
-    "resolution": ""
-  },
-  "DW-404": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.",
-    "key": "1",
-    "label": "Require a whole-window match",
-    "resolution": ""
-  },
-  "DW-405": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Gate re-arm on `kept.some((m) => m.metadata.model === currentModel)` so only positive proof of a rebuilt vector re-arms, leaving `modelMatches` permissive for results.",
-    "key": "1",
-    "label": "Require a positive labelled match",
     "resolution": ""
   },
   "DW-422": {
@@ -368,33 +170,6 @@
     "label": "Pause while withdrawn",
     "resolution": ""
   },
-  "DW-427": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Introduce an 'applied but unreadable' verdict for a 2xx whose body cannot be parsed, have SettingsCanvas clear the held version on it so the next save re-seeds rather than 412s, and pin it at both the client return value and the canvas seam.",
-    "key": "1",
-    "label": "Third verdict",
-    "resolution": ""
-  },
-  "DW-428": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Track in WikiEditor that the PUT leg landed and prefix the PATCH failure accordingly \u2014 \"Your text was saved; the metadata change was not \u2014 <served error>\" \u2014 leaving all server copy and the frozen sentences untouched.",
-    "key": "1",
-    "label": "Per-leg client reporting",
-    "resolution": ""
-  },
-  "DW-429": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock, as `renameWiki` does, rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6.",
-    "key": "1",
-    "label": "Bump at the kernel tail",
-    "resolution": ""
-  },
   "DW-432": {
     "answered_at": "2026-08-22",
     "bundle_name": "",
@@ -402,24 +177,6 @@
     "intent": "For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.",
     "key": "1",
     "label": "Bounded per-page read fallback",
-    "resolution": ""
-  },
-  "DW-433": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Flip DW-415 back to status: open with a note that the bundle keyed to it resolved DW-411 instead, so its globals.css [hidden] specificity work re-enters the next sweep.",
-    "key": "1",
-    "label": "Reopen DW-415",
-    "resolution": ""
-  },
-  "DW-437": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Point the CLI listing and the lint check at listRawSourceSnapshots so hashed arrivals are counted, leaving listRawSources and its documented browse contract unchanged.",
-    "key": "1",
-    "label": "Move the callers",
     "resolution": ""
   },
   "DW-441": {
@@ -431,15 +188,6 @@
     "label": "Sniff, then refuse",
     "resolution": ""
   },
-  "DW-442": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Remove sourceUrls from ResearchProjectInput, the create route and the Knowledge Studio form, so nothing collects a value the runtime discards.",
-    "key": "1",
-    "label": "Drop the field",
-    "resolution": ""
-  },
   "DW-443": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -447,15 +195,6 @@
     "intent": "Make validateUrlSafety async, add a Node implementation that resolves DNS and pins the resolved address through to connect time, and a Workers implementation that relies on an egress proxy or allowlist; document which protection each target actually has.",
     "key": "1",
     "label": "Per-runtime guard",
-    "resolution": ""
-  },
-  "DW-446": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Filter inline parts out of eligibleAttachments before the selection loop so they never consume an attachment slot or aggregate-budget bytes and are never forwarded, and pin that a message of inline logos plus real files reports counts matching what the sender actually attached.",
-    "key": "1",
-    "label": "Exclude inline parts entirely",
     "resolution": ""
   },
   "DW-449": {
@@ -474,24 +213,6 @@
     "intent": "Widen inlineAttachment to treat a part carrying a contentId that the HTML body references as inline even when disposition is absent, leaving a bare null disposition with no contentId as a real attachment, and pin both shapes with fixtures.",
     "key": "1",
     "label": "Trust Content-ID too",
-    "resolution": ""
-  },
-  "DW-455": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.",
-    "key": "1",
-    "label": "Budget the body inside the cap",
-    "resolution": ""
-  },
-  "DW-457": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Record the verified Cloudflare Email Routing inbound ceiling as a named constant in workers/email-ingest/index.ts with its source in workers/email-ingest/README.md, clamp `MAX_RAW_EMAIL_BYTES` with `Math.min` against it, and update the sender-visible figure and the allowlist-parity test. Requires the human to supply the number.",
-    "key": "1",
-    "label": "Supply and clamp to the real bound",
     "resolution": ""
   },
   "DW-477": {
@@ -530,15 +251,6 @@
     "label": "Write to the object that was read",
     "resolution": ""
   },
-  "DW-510": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Refuse an embeddingProvider patch at PUT /api/settings while EMBEDDING_PROVIDER is set, so the stored key and endpoint cannot be destroyed by a caller that bypasses the select, and pin the refusal alongside the existing pin tests.",
-    "key": "1",
-    "label": "Refuse at the route",
-    "resolution": ""
-  },
   "DW-512": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -575,15 +287,6 @@
     "label": "Wait for DW-14",
     "resolution": ""
   },
-  "DW-64": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Leave the whole-stream deadline as the frozen decision has it and only map TimeoutError/AbortError to an owner-facing sentence in src/app/api/query/stream/route.ts, with a test pinning it.",
-    "key": "2",
-    "label": "Keep deadline, fix the copy",
-    "resolution": ""
-  },
   "DW-67": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -593,15 +296,6 @@
     "label": "Freeze the form while saving",
     "resolution": ""
   },
-  "DW-69": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Drop the stored embedding key and its has* flag whenever the embedding provider changes, so a switch never reuses another vendor's secret; no stored shape change, and the owner re-enters the key for the new vendor.",
-    "key": "2",
-    "label": "Clear the key on switch",
-    "resolution": ""
-  },
   "DW-70": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -609,15 +303,6 @@
     "intent": "Make _createEmbeddingModel read embeddingBaseUrl for ollama, redefining ollamaBaseUrl as the chat endpoint only, and document and pin the split so the two settings stop overlapping.",
     "key": "2",
     "label": "Route ollama through it",
-    "resolution": ""
-  },
-  "DW-72": {
-    "answered_at": "2026-08-21",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Clear the stored embeddingBaseUrl whenever the embedding provider changes, so an endpoint typed for one vendor is never sent to another; no stored shape change.",
-    "key": "2",
-    "label": "Clear the base URL on switch",
     "resolution": ""
   }
 }
