@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 import { writeWikiPage, updateIndex, ensureDirectories, readLog } from "../wiki";
 import type { IndexEntry } from "../types";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import { _resetLocks } from "../lock";
 import { createWiki } from "../wikis";
 import { loadPageConventions } from "../schema";
@@ -39,7 +39,11 @@ import {
   MAX_COVERAGE_CHECKS,
   checkBrokenLinks,
 } from "../lint";
-import { saveRawSource } from "../raw";
+import {
+  saveRawSource,
+  saveRawSourceFor,
+  listRawSourceSnapshots,
+} from "../raw";
 import { serializeFrontmatter } from "../frontmatter";
 
 let tmpDir: string;
@@ -1309,6 +1313,153 @@ describe("checkIncompleteCoverage", () => {
     const issues = await checkIncompleteCoverage(["complete-page"]);
 
     expect(issues).toHaveLength(0);
+  });
+
+  it("makes a page whose only raw is a hashed snapshot a candidate (DW-437)", async () => {
+    // `listRawSources` is non-recursive BY CONTRACT, so a page whose Source
+    // arrived through Workbench Intake — `raw/sources/<slug>/<id>.md` — was
+    // never even considered for coverage. The caller unions the snapshot
+    // listing and falls back to `readRawSourceById`, so the snapshot's content
+    // is what actually reaches the comparison.
+    mockedHasLLMKey.mockReturnValue(true);
+
+    await writeWikiPage(
+      "hashed-only",
+      "# Hashed Only\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      { slug: "hashed-only", title: "Hashed Only", summary: "Intake arrival" },
+    ]);
+    await saveRawSourceFor(
+      "hashed-only",
+      "abc123",
+      "# Hashed Only\n\nSnapshot-only detail: 91% of runs converged.",
+    );
+
+    mockedCallLLM.mockResolvedValueOnce(
+      '[{"gap": "Snapshot-only detail (91% of runs converged) missing", "importance": "high"}]',
+    );
+
+    const issues = await checkIncompleteCoverage(["hashed-only"]);
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("incomplete-coverage");
+    expect(issues[0].slug).toBe("hashed-only");
+    // The comparison saw the SNAPSHOT bytes, not an empty/flat stand-in.
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    expect(mockedCallLLM.mock.calls[0][1]).toContain("91% of runs converged");
+  });
+
+  it("still checks a hashed-only page when the FLAT listing fails (DW-437)", async () => {
+    // The mirror of the case above. Before the change the flat listing throwing
+    // was `return []` — the whole check abandoned — so nothing noticed if that
+    // branch came back. `listRawSources` stats every flat entry it lists, so a
+    // file that vanishes between the listing and the stat is what breaks it;
+    // the decoy exists purely to give that walk something to stat.
+    mockedHasLLMKey.mockReturnValue(true);
+
+    await writeWikiPage(
+      "flat-listing-broken",
+      "# Flat Listing Broken\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      {
+        slug: "flat-listing-broken",
+        title: "Flat Listing Broken",
+        summary: "Intake arrival",
+      },
+    ]);
+    await saveRawSourceFor(
+      "flat-listing-broken",
+      "abc123",
+      "# Flat Listing Broken\n\nSnapshot-only detail: 77% of shards drifted.",
+    );
+    await saveRawSource("decoy-flat", "a flat source for the walk to stat");
+
+    const storage = getStorage();
+    const realStat = storage.stat.bind(storage);
+    const stat = vi
+      .spyOn(storage, "stat")
+      .mockImplementation(async (rel: string) =>
+        rel.includes("decoy-flat")
+          ? Promise.reject(new Error("stat failed"))
+          : realStat(rel),
+      );
+
+    mockedCallLLM.mockResolvedValueOnce(
+      '[{"gap": "Snapshot-only detail (77% of shards drifted) missing", "importance": "high"}]',
+    );
+
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    try {
+      issues = await checkIncompleteCoverage(["flat-listing-broken"]);
+    } finally {
+      stat.mockRestore();
+    }
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].slug).toBe("flat-listing-broken");
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    expect(mockedCallLLM.mock.calls[0][1]).toContain("77% of shards drifted");
+  });
+
+  it("still drives the check from the flat listing when the snapshot walk fails (DW-437)", async () => {
+    // The two listings are unioned in SEPARATE try/catch blocks on purpose. A
+    // snapshot walk that throws — an unreadable `raw/sources/<slug>/` subtree —
+    // must not blank the whole check and lose the flat Sources that are right
+    // there; before the union there was one listing and one `return []`.
+    mockedHasLLMKey.mockReturnValue(true);
+
+    await writeWikiPage(
+      "flat-only",
+      "# Flat Only\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      { slug: "flat-only", title: "Flat Only", summary: "Flat arrival" },
+    ]);
+    await saveRawSource(
+      "flat-only",
+      "# Flat Only\n\nFlat-only detail: 77% of runs converged.",
+    );
+    // A hashed sibling, so the snapshot walk has a subtree to descend into —
+    // and therefore a place to fail. Without one the walk lists the two shared
+    // roots and returns cleanly, and this test would prove nothing.
+    await saveRawSourceFor("hashed-sibling", "abc123", "# Sibling\n");
+
+    // Fail EXACTLY the one prefix only the snapshot walk reads. The two roots
+    // both listings share (`raw` and `raw/sources`) keep answering, so this is
+    // the snapshot walk failing and nothing else.
+    const storage = getStorage();
+    const listFiles = storage.listFiles.bind(storage);
+    const spy = vi
+      .spyOn(storage, "listFiles")
+      .mockImplementation(async (prefix: string) => {
+        if (prefix === "raw/sources/hashed-sibling") {
+          throw new Error("snapshot walk failed");
+        }
+        return listFiles(prefix);
+      });
+
+    mockedCallLLM.mockResolvedValueOnce(
+      '[{"gap": "Flat-only detail (77% of runs converged) missing", "importance": "high"}]',
+    );
+
+    let issues;
+    try {
+      // The premise, pinned: under this spy the snapshot listing really does
+      // throw, so the assertions below are about recovery, not a walk that
+      // quietly succeeded.
+      await expect(listRawSourceSnapshots()).rejects.toThrow(
+        /snapshot walk failed/,
+      );
+      issues = await checkIncompleteCoverage(["flat-only"]);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].slug).toBe("flat-only");
+    expect(mockedCallLLM.mock.calls[0][1]).toContain("77% of runs converged");
   });
 
   // 30 pages, each costing a page write plus a raw-source write, plus the index

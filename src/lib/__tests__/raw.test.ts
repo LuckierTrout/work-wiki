@@ -5,11 +5,14 @@ import path from "path";
 import {
   saveRawSource,
   saveRawSourceFor,
+  saveRawSourceBytes,
   saveRawSourceTree,
   listRawSources,
   listRawSourceSnapshots,
   readRawSource,
   readRawSourceById,
+  readRawSourceBytes,
+  rawSourceRelPath,
   tenantRawSourceRelPath,
 } from "../raw";
 import { ensureDirectories, tenantForOwner } from "../wiki";
@@ -336,25 +339,140 @@ describe("per-source raw snapshots", () => {
     );
   });
 
-  it("refuses the write when existence cannot be confirmed (FR-2)", async () => {
+  it("refuses the write when the create-only publication cannot complete (FR-2)", async () => {
     // Fail-open used to treat a thrown exists-check as "absent" and write
-    // anyway, which rewrote an occupied key. A flaky HEAD must not mutate
-    // immutable bytes — the arrival fails and the owner can retry.
+    // anyway, which rewrote an occupied key. The check-then-write pair is gone
+    // (DW-438) — the store is now ONE create-only call — but the invariant is
+    // the same: a provider that cannot complete it must fail visibly rather
+    // than degrade to an overwrite of immutable bytes. The owner can retry.
     await ensureDirectories();
     await saveRawSourceFor("occupied", "abc123", "first arrival");
-    const spy = vi.spyOn(getStorage(), "fileExists").mockRejectedValue(
-      new Error("head failed"),
+    const spy = vi.spyOn(getStorage(), "writeFileIfAbsent").mockRejectedValue(
+      new Error("create failed"),
     );
     try {
       await expect(
         saveRawSourceFor("occupied", "abc123", "mutant"),
-      ).rejects.toThrow(/head failed/);
+      ).rejects.toThrow(/create failed/);
     } finally {
       spy.mockRestore();
     }
     expect((await readRawSourceById("occupied", "abc123")).content).toBe(
       "first arrival",
     );
+  });
+
+  it("lets exactly one of two concurrent stores of a new key win (DW-438)", async () => {
+    // The old `alreadyStored(rel)` + `writeFile(rel, …)` pair left a window in
+    // which both arrivals read "absent" and the LATER write replaced the
+    // earlier one's bytes — a mutation of an immutable Source (FR-2). One
+    // create-only provider call closes it.
+    await ensureDirectories();
+    const storage = getStorage();
+    const rel = rawSourceRelPath("race/abc123.md");
+    const original = storage.writeFileIfAbsent.bind(storage);
+    let creates = 0;
+    let winnerContent: string | null = null;
+    const spy = vi
+      .spyOn(storage, "writeFileIfAbsent")
+      .mockImplementation(async (target: string, content: string) => {
+        const created = await original(target, content);
+        if (target === rel && created) {
+          creates++;
+          winnerContent = content;
+        }
+        return created;
+      });
+    try {
+      await Promise.all([
+        saveRawSourceFor("race", "abc123", "first arrival"),
+        saveRawSourceFor("race", "abc123", "second arrival"),
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(creates).toBe(1);
+    expect((await readRawSourceById("race", "abc123")).content).toBe(
+      winnerContent,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// saveRawSourceBytes (Story 7.7)
+// ---------------------------------------------------------------------------
+
+describe("saveRawSourceBytes", () => {
+  it("lets exactly one of two concurrent stores of a new key win (DW-438)", async () => {
+    await ensureDirectories();
+    const payloads = [
+      new Uint8Array([1, 2, 3]),
+      new Uint8Array([0xff, 0xfe, 0xfd, 0xfc]),
+    ];
+    const results = await Promise.all(
+      payloads.map((bytes) =>
+        saveRawSourceBytes("race", "beef01", "bin", bytes.buffer as ArrayBuffer),
+      ),
+    );
+
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    const winner = results.findIndex((r) => r.created);
+    expect(new Uint8Array(await readRawSourceBytes(results[winner].rel))).toEqual(
+      payloads[winner],
+    );
+  });
+
+  it("refuses the write when the create-only publication cannot complete (FR-2)", async () => {
+    // The binary half of the same invariant the string store pins above: the
+    // asset store is now ONE create-only call, and a provider that cannot
+    // complete it must fail visibly rather than degrade to an overwrite of
+    // immutable bytes.
+    await ensureDirectories();
+    const first = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const stored = await saveRawSourceBytes(
+      "occupied-bin",
+      "abc123",
+      "bin",
+      first.buffer as ArrayBuffer,
+    );
+    const spy = vi.spyOn(getStorage(), "writeAssetIfAbsent").mockRejectedValue(
+      new Error("create failed"),
+    );
+    try {
+      await expect(
+        saveRawSourceBytes(
+          "occupied-bin",
+          "abc123",
+          "bin",
+          new Uint8Array([0, 0, 0]).buffer as ArrayBuffer,
+        ),
+      ).rejects.toThrow(/create failed/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(new Uint8Array(await readRawSourceBytes(stored.rel))).toEqual(first);
+  });
+
+  it("leaves an occupied binary key exactly as it is (FR-2)", async () => {
+    await ensureDirectories();
+    const first = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const stored = await saveRawSourceBytes(
+      "immutable-bin",
+      "cafe02",
+      "bin",
+      first.buffer as ArrayBuffer,
+    );
+    expect(stored.created).toBe(true);
+
+    const second = await saveRawSourceBytes(
+      "immutable-bin",
+      "cafe02",
+      "bin",
+      new Uint8Array([0, 0, 0]).buffer as ArrayBuffer,
+    );
+    expect(second.created).toBe(false);
+    expect(new Uint8Array(await readRawSourceBytes(stored.rel))).toEqual(first);
   });
 });
 
@@ -448,6 +566,42 @@ describe("intake writes (owner option)", () => {
 
     await saveRawSourceFor("repaired", "ee33ff", "bytes", { owner: OWNER });
     expect(await fs.readFile(siloAbs("repaired/ee33ff.md"), "utf-8")).toBe("bytes");
+  });
+
+  it("repairs the mirror from the STORED bytes, bumping exactly once", async () => {
+    // A tree key can be re-offered with DIFFERENT text (FR-40 path identity),
+    // so the declined branch has to be said with two different bodies: the flat
+    // key keeps the first arrival (FR-2), and the silo receives what is STORED
+    // rather than the request body — copying the new body across would show
+    // Files a Source the flat key does not hold.
+    //
+    // The bump is COUNTED at the provider rather than read off the counter:
+    // `DATA_DIR` is a temp root shared by the whole run, so the difference of
+    // two reads is not this call's bump alone.
+    await saveRawSourceTree("papers/reoffered.md", "first arrival");
+    await expect(fs.stat(siloAbs("papers/reoffered.md"))).rejects.toThrow();
+
+    const bumps = vi.spyOn(getStorage(), "incrementIndex");
+    let second: { path: string; created: boolean };
+    let dataVersionBumps: number;
+    try {
+      second = await saveRawSourceTree("papers/reoffered.md", "second arrival", {
+        owner: OWNER,
+      });
+    } finally {
+      // Counted BEFORE the restore: `mockRestore()` clears the record.
+      dataVersionBumps = bumps.mock.calls.filter(
+        ([key]) => key === "data-version",
+      ).length;
+      bumps.mockRestore();
+    }
+
+    expect(second.created).toBe(false);
+    expect(await fs.readFile(second.path, "utf-8")).toBe("first arrival");
+    expect(await fs.readFile(siloAbs("papers/reoffered.md"), "utf-8")).toBe(
+      "first arrival",
+    );
+    expect(dataVersionBumps).toBe(1);
   });
 
   it("bumps dataVersion on a new write and not on a declined one", async () => {

@@ -99,18 +99,43 @@ export interface SaveRawSourceOptions {
 }
 
 /**
- * Does this key already hold bytes?
+ * Publish `rel` create-only, naming the key if the provider refuses.
  *
- * A store that cannot answer must not write. Treating a failed check as
- * "absent" used to degrade to the old overwrite behaviour; under FR-2 that is
- * the worse failure — a flaky HEAD on an occupied key would mutate immutable
- * bytes. The arrival fails visibly and the owner can retry.
+ * A store that cannot complete must not fall back to an overwrite. The old
+ * `fileExists`-then-write pair treated a failed check as "absent" and wrote
+ * anyway; under FR-2 that is the worse failure, because a flaky answer on an
+ * OCCUPIED key would mutate immutable bytes. The create-only door removes the
+ * window entirely, and a rejection still fails visibly — the arrival fails, the
+ * key is named in the log, and the owner can retry.
+ *
+ * THE COST THIS ACCEPTS: a create-only door ships the whole body before the
+ * precondition can reject it. The filesystem provider writes and fsyncs a
+ * complete tmp file before `fs.link` answers EEXIST, and R2 PUTs the object
+ * before `etagDoesNotMatch: "*"` rejects it, so a re-drop of the same large PDF
+ * now pays a full write where the old `fileExists` short-circuited. Accepted:
+ * the race it closes mutates bytes the product promises never change.
  */
-async function alreadyStored(rel: string): Promise<boolean> {
+async function publishSourceFirstWrite(
+  rel: string,
+  content: string,
+): Promise<boolean> {
   try {
-    return await getStorage().fileExists(rel);
+    return await getStorage().writeFileIfAbsent(rel, content);
   } catch (err) {
-    logger.warn("raw", `existence check failed for "${rel}"; refusing write`, err);
+    logger.warn("raw", `create-only write failed for "${rel}"; refusing to overwrite`, err);
+    throw err;
+  }
+}
+
+/** The binary twin of {@link publishSourceFirstWrite}; same contract and cost. */
+async function publishSourceBytesFirstWrite(
+  rel: string,
+  bytes: ArrayBuffer,
+): Promise<boolean> {
+  try {
+    return await getStorage().writeAssetIfAbsent(rel, bytes);
+  } catch (err) {
+    logger.warn("raw", `create-only write failed for "${rel}"; refusing to overwrite`, err);
     throw err;
   }
 }
@@ -129,10 +154,11 @@ async function mirrorSourceToSilo(
   if (!owner) return false;
   try {
     const rel = tenantRawSourceRelPath(tenantForOwner(owner), rest);
-    // Immutable in the silo too: a re-arrival must not rewrite what is there.
-    if (await alreadyStored(rel)) return false;
-    await getStorage().writeFile(rel, content);
-    return true;
+    // Immutable in the silo too: a re-arrival must not rewrite what is there,
+    // and the create-only door decides that in ONE operation — a separate
+    // existence check would leave a window where two mirrors of the same key
+    // both saw "absent" and the loser's write replaced the winner's bytes.
+    return await getStorage().writeFileIfAbsent(rel, content);
   } catch (err) {
     logger.warn("raw", `silo mirror failed for raw source "${rest}"`, err);
     return false;
@@ -154,6 +180,14 @@ async function mirrorSourceToSilo(
  * reload. A skipped write that only repairs a missing silo copy also bumps —
  * the Files tree just gained a key the watcher would otherwise never see. A
  * skipped write that changed nothing bumps nothing.
+ *
+ * "Does it exist?" and "write it" are ONE provider call (`writeFileIfAbsent`),
+ * never a check followed by a write. The pair left a window in which two
+ * concurrent arrivals on the same absent key both read "absent" and the later
+ * write replaced the earlier one's bytes — precisely the mutation FR-2
+ * forbids. A provider that cannot complete the create-only call THROWS and the
+ * arrival fails visibly, which is deliberate: degrading to an overwrite on a
+ * flaky provider is the worse failure, and the owner can retry.
  */
 async function storeRawSource(
   rest: string,
@@ -162,11 +196,13 @@ async function storeRawSource(
 ): Promise<boolean> {
   await ensureDirectories();
   const rel = rawSourceRelPath(rest);
-  if (await alreadyStored(rel)) {
-    // Still repair the mirror: the flat bytes exist, and a silo that never
-    // received them would leave the Source invisible forever. The first write
-    // already bumped; without a second bump here the watcher is forward-only
-    // and Files stays empty after a fail-then-repair.
+  const created = await publishSourceFirstWrite(rel, content);
+  if (!created) {
+    // Occupied (FR-2): leave the bytes. Still repair the mirror — the flat
+    // bytes exist, and a silo that never received them would leave the Source
+    // invisible forever. The first write already bumped; without a second bump
+    // here the watcher is forward-only and Files stays empty after a
+    // fail-then-repair.
     //
     // Mirror the STORED bytes, not the request body. A tree key can be
     // re-offered with different text (FR-40 path identity); copying the new
@@ -181,7 +217,6 @@ async function storeRawSource(
     if (repaired) await bumpDataVersion();
     return false;
   }
-  await getStorage().writeFile(rel, content);
   await mirrorSourceToSilo(rest, content, options?.owner);
   await bumpDataVersion();
   return true;
@@ -193,9 +228,11 @@ async function storeRawSource(
  * A PDF, a DOCX or a JPEG is not text and must not be round-tripped through a
  * UTF-8 string on the way to storage — `writeFile` would mangle every byte that
  * is not valid UTF-8, and the sidecar would then be handed a corrupt document
- * to parse. `writeAsset` is the provider's binary door, and this keeps the rest
- * of the arrival contract identical: first-write-only, silo mirror, one
- * `dataVersion` bump.
+ * to parse. `writeAssetIfAbsent` is the provider's create-only binary door, and
+ * this keeps the rest of the arrival contract identical: first-write-only, silo
+ * mirror, one `dataVersion` bump — with the existence decision and the
+ * publication fused into one operation for the reason {@link storeRawSource}
+ * documents.
  *
  * THE SILO MIRROR IS NOT OPTIONAL HERE, despite an earlier comment on this
  * function claiming "Files resolves binaries through the flat key". It does
@@ -212,15 +249,16 @@ async function storeRawSourceBytes(
 ): Promise<boolean> {
   await ensureDirectories();
   const rel = rawSourceRelPath(rest);
-  if (await alreadyStored(rel)) {
-    // Repair a missing mirror even when the flat bytes are already there, for
-    // the reason {@link storeRawSource} documents: the watcher is
-    // forward-only, so a mirror that failed once would otherwise never land.
+  const created = await publishSourceBytesFirstWrite(rel, bytes);
+  if (!created) {
+    // Occupied (FR-2): leave the bytes. Repair a missing mirror even when the
+    // flat bytes are already there, for the reason {@link storeRawSource}
+    // documents: the watcher is forward-only, so a mirror that failed once
+    // would otherwise never land.
     const repaired = await mirrorSourceBytesToSilo(rest, bytes, options?.owner);
     if (repaired) await bumpDataVersion();
     return false;
   }
-  await getStorage().writeAsset(rel, bytes);
   await mirrorSourceBytesToSilo(rest, bytes, options?.owner);
   await bumpDataVersion();
   return true;
@@ -228,7 +266,8 @@ async function storeRawSourceBytes(
 
 /**
  * The binary twin of {@link mirrorSourceToSilo} — same fail-soft contract, and
- * `writeAsset` rather than `writeFile` because a PNG is not a UTF-8 string.
+ * `writeAssetIfAbsent` rather than `writeFileIfAbsent` because a PNG is not a
+ * UTF-8 string.
  *
  * The bytes are mirrored from the CALLER's buffer rather than re-read from the
  * flat key: this writer is first-write-only over a content-addressed name, so
@@ -242,9 +281,8 @@ async function mirrorSourceBytesToSilo(
   if (!owner) return false;
   try {
     const rel = tenantRawSourceRelPath(tenantForOwner(owner), rest);
-    if (await alreadyStored(rel)) return false;
-    await getStorage().writeAsset(rel, bytes);
-    return true;
+    // Create-only, for the same reason {@link mirrorSourceToSilo} is.
+    return await getStorage().writeAssetIfAbsent(rel, bytes);
   } catch (err) {
     logger.warn("raw", `silo mirror failed for raw source bytes "${rest}"`, err);
     return false;
@@ -339,11 +377,15 @@ export interface RawSourceSnapshot {
 }
 
 /**
- * Retrieve-only walk of hashed `raw/sources/<slug>/<hex>.md` snapshots.
+ * Recursive walk of hashed `raw/sources/<slug>/<hex>.md` snapshots.
  *
- * {@link listRawSources} stays non-recursive — that is the browse contract.
- * Chat/Search Phase 1 uses this so Epic 2 identity copies are candidates
- * without appearing as extra rows in the Sources list.
+ * {@link listRawSources} stays non-recursive — that is the browse contract,
+ * and the Workbench Sources surface built on it is unchanged: snapshots never
+ * appear as extra rows THERE. Every caller that needs the hashed arrivals too
+ * unions this listing in itself: Chat/Search retrieval (`wiki-retrieve.ts`),
+ * the CLI's `list --raw` / `status`, and the `incomplete-coverage` lint check
+ * (DW-437). A caller that unions must also decide what to do about the slug
+ * `ingest()` writes BOTH ways — see `listRawSourceRows` in `src/cli.ts`.
  */
 export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
   const roots: Array<{ prefix: string; pathPrefix: string }> = [
@@ -411,8 +453,8 @@ export async function saveRawSourceFor(
  *
  * Same helper as {@link saveRawSourceFor}: no overwrite, optional `{ owner }`
  * silo mirror, `dataVersion` bump. Folder identity is the relative path
- * (FR-40); a re-import of the same tree hits `alreadyStored` and must not
- * rewrite.
+ * (FR-40); a re-import of the same tree lands on an occupied key and must
+ * not rewrite.
  */
 export async function saveRawSourceTree(
   relativePath: string,

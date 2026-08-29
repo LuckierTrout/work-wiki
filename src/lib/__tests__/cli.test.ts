@@ -326,6 +326,11 @@ vi.mock("../wiki", () => ({
 
 vi.mock("../raw", () => ({
   listRawSources: vi.fn(),
+  // `list --raw` and `status` union the flat listing with the hashed
+  // `raw/sources/<slug>/<id>.md` snapshots (DW-437). The export has to exist
+  // here or every listing case dies on `listRawSourceSnapshots is not a
+  // function` rather than on an assertion.
+  listRawSourceSnapshots: vi.fn(),
 }));
 
 vi.mock("../config", () => ({
@@ -417,12 +422,18 @@ describe("CLI command execution", () => {
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let exitSpy: MockInstance<(code?: number) => never>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     exitSpy = vi
       .spyOn(process, "exit")
       .mockImplementation((() => { throw new Error("process.exit"); }) as unknown as () => never);
+    // Empty by default so the cases that only care about one of the two raw
+    // listings keep saying exactly what they mean; `mockResolvedValueOnce`
+    // still takes precedence per case.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValue([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -465,6 +476,121 @@ describe("CLI command execution", () => {
 
     expect(logSpy).toHaveBeenCalledWith("source-a\tsource-a.md");
     expect(logSpy).toHaveBeenCalledWith("source-b\tsource-b.md");
+  });
+
+  it("runList(true) prints hashed snapshots when there is no flat source", async () => {
+    // A workspace built entirely through Workbench Intake has NOTHING at the
+    // flat `raw/sources/<id>.md` level — every Source is a hashed
+    // `raw/sources/<slug>/<id>.md` arrival. Before DW-437 that printed nothing
+    // at all, because `listRawSources` is non-recursive by contract.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy).toHaveBeenCalledWith("alpha\tabc123.md");
+  });
+
+  it("runList(true) prints flat sources and snapshots together, sorted by slug", async () => {
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    const calls = logSpy.mock.calls.map((c) => c[0]);
+    expect(calls).toEqual(["alpha\tabc123.md", "note\tnote.md"]);
+  });
+
+  it("runList(true) prints ONE row for a slug ingest wrote both ways", async () => {
+    // `ingest()` writes BOTH keys for the same slug — the flat blob
+    // (`src/lib/ingest.ts:1953`) and the per-source snapshot
+    // (`src/lib/ingest.ts:2012`) — so a plain concatenation would print every
+    // normally-ingested page twice and roughly double the `status` count. The
+    // snapshot is the per-source view of the same page, so it wins and the flat
+    // row is dropped.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["alpha\tabc123.md"]);
+  });
+
+  it("runList(true) prints one row per snapshot for a multi-source page", async () => {
+    // Dropping the flat row must not collapse the page to a single row: a page
+    // built from three sources has three raws, and the per-source view is the
+    // whole reason the snapshots are listed at all.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "aaa111", path: "raw/sources/alpha/aaa111.md" },
+      { slug: "alpha", rawId: "bbb222", path: "raw/sources/alpha/bbb222.md" },
+      { slug: "alpha", rawId: "ccc333", path: "raw/sources/alpha/ccc333.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual([
+      "alpha\taaa111.md",
+      "alpha\tbbb222.md",
+      "alpha\tccc333.md",
+    ]);
+  });
+
+  it("runList(true) still prints snapshots when the flat listing throws", async () => {
+    // Each listing gets its own try/catch, as `wiki-retrieve.ts` does: one
+    // failing root must not blank the other — and the operator is TOLD, because
+    // a silently halved listing reads exactly like a small workspace.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy).toHaveBeenCalledWith("alpha\tabc123.md");
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "listing failed",
+    );
+  });
+
+  it("runList(true) still prints flat sources when the snapshot walk throws", async () => {
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockRejectedValueOnce(
+      new Error("snapshot walk failed"),
+    );
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["note\tnote.md"]);
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "snapshot walk failed",
+    );
   });
 
   it("runStatus() prints page count, source count, and provider info", async () => {
@@ -512,6 +638,55 @@ describe("CLI command execution", () => {
     expect(output).toContain("Raw sources:\t1");
     expect(output).toContain("LLM provider:\tanthropic");
     expect(output).toContain("Embeddings:\tavailable");
+  });
+
+  it("runStatus() counts hashed snapshots alongside flat sources", async () => {
+    // 1 flat + 2 hashed = 3. A count taken from `listRawSources` alone reports
+    // 0 Sources for an Intake-only workspace (DW-437).
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      { slug: "beta", rawId: "def456", path: "raw/sources/beta/def456.md" },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("Raw sources:\t3");
+  });
+
+  it("runStatus() still prints a count when a raw listing throws", async () => {
+    // The four rows are a parsed shape, so a failing listing must not remove
+    // one — the count degrades to what the surviving listing can see, and the
+    // reason goes to stderr where it cannot be mistaken for a data row.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
+    expect(output).toContain("Raw sources:\t1");
+    expect(errorSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
+      "listing failed",
+    );
   });
 
   it("runStatus() prints NO extra line when the resolver refused nothing", async () => {

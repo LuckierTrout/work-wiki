@@ -394,7 +394,23 @@ export class FilesystemStorageProvider implements StorageProvider {
     };
   }
 
-  async writeFileIfAbsent(filePath: string, content: string): Promise<boolean> {
+  /**
+   * The one create-only publication both `*IfAbsent` methods run on.
+   *
+   * `writeSyncedNewFile` already takes `string | Buffer`, so the string and
+   * binary doors differ in nothing but the payload — and the parts that must
+   * NOT drift are exactly the parts that are easy to copy wrong: the EEXIST
+   * branch that answers `false` instead of replacing bytes, the rethrow of
+   * every other error, and the tmp cleanup in `finally`.
+   *
+   * Hard-linking a complete, fsynced tmp inode is what makes the create
+   * exclusive without a second read: the name either appears whole or the link
+   * fails, so two concurrent creators cannot both win.
+   */
+  private async createOnlyWrite(
+    filePath: string,
+    content: string | Buffer,
+  ): Promise<boolean> {
     const abs = this.resolve(filePath);
     return withFilesystemPublicationLock(this.basePath, abs, async () => {
       await this.ensureParent(abs);
@@ -421,6 +437,28 @@ export class FilesystemStorageProvider implements StorageProvider {
         }
       }
     });
+  }
+
+  /**
+   * Create `filePath` only when nothing holds that name, per the
+   * `StorageProvider` contract: `true` for the creator, `false` when the path
+   * exists, and the existing bytes never touched either way.
+   */
+  async writeFileIfAbsent(filePath: string, content: string): Promise<boolean> {
+    return this.createOnlyWrite(filePath, content);
+  }
+
+  /**
+   * The binary twin of {@link writeFileIfAbsent} — same shape, same guarantee,
+   * `Buffer.from(data)` instead of a UTF-8 string because a PDF is not text.
+   *
+   * The payload is the ONLY difference, which is why both delegate to
+   * {@link createOnlyWrite}: the exclusivity comes from `fs.link` publishing a
+   * complete inode under a name that cannot be taken twice, which is what
+   * removes the check-then-write window a separate `fileExists` left.
+   */
+  async writeAssetIfAbsent(filePath: string, data: ArrayBuffer): Promise<boolean> {
+    return this.createOnlyWrite(filePath, Buffer.from(data));
   }
 
   async writeFileIfMatch(

@@ -538,6 +538,41 @@ describe("R2StorageProvider", () => {
     });
   });
 
+  describe("writeAssetIfAbsent", () => {
+    it("allows exactly one concurrent creator and preserves that winner", async () => {
+      const values = [
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([9, 9, 9, 9]),
+      ];
+      const results = await Promise.all(
+        values.map((value) =>
+          provider.writeAssetIfAbsent("create.bin", value.buffer as ArrayBuffer),
+        ),
+      );
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(new Uint8Array(await provider.readAsset("create.bin"))).toEqual(
+        values[winner],
+      );
+    });
+
+    it("does not replace a pre-existing object", async () => {
+      const original = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await provider.writeAsset("create.bin", original.buffer as ArrayBuffer);
+
+      await expect(
+        provider.writeAssetIfAbsent(
+          "create.bin",
+          new Uint8Array([0, 0]).buffer as ArrayBuffer,
+        ),
+      ).resolves.toBe(false);
+      expect(new Uint8Array(await provider.readAsset("create.bin"))).toEqual(
+        original,
+      );
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Derived indexes (KV)
   // -------------------------------------------------------------------------

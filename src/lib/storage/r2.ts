@@ -229,6 +229,22 @@ export class R2StorageProvider implements StorageProvider {
     return result !== null;
   }
 
+  /**
+   * The binary twin of {@link writeFileIfAbsent}: the same native create-only
+   * conditional put, handed the `ArrayBuffer` instead of a string.
+   *
+   * `etagDoesNotMatch: "*"` is R2's "only if nothing is there" — one round
+   * trip that both tests and publishes, so concurrent creators cannot both
+   * win. A HEAD-then-`put` pair would reintroduce exactly the race this
+   * exists to close.
+   */
+  async writeAssetIfAbsent(path: string, data: ArrayBuffer): Promise<boolean> {
+    const result = await this.bucket.put(path, data, {
+      onlyIf: { etagDoesNotMatch: "*" },
+    });
+    return result !== null;
+  }
+
   async writeFileIfMatch(
     path: string,
     content: string,

@@ -3987,7 +3987,9 @@ resolution: already resolved: src/app/api/workbench/intake/route.ts:400 resolves
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
 location: src/lib/raw.ts
 reason: `listRawSources` enumerates only the flat top level of `raw/sources/`, so any hashed arrival stored one directory deeper is invisible to every CLI and lint listing built on it. Deferred because the spec accepted the recursive Files walk as the observed surface for this story, leaving the listing helper unchanged.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-raw-source-listing-and-store-safety
+resolution-undo: f70d4b195f464d4688dec5b40f14604450c2e6decd6f6fbe9e31200977b4a25c 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Move the callers — Point the CLI listing and the lint check at listRawSourceSnapshots so hashed arrivals are counted, leaving listRawSources and its documented browse contract unchanged.
 decision: 2026-08-26 Move the callers — Point the CLI listing and the lint check at listRawSourceSnapshots so hashed arrivals are counted, leaving listRawSources and its documented browse contract unchanged.
 
@@ -3995,7 +3997,9 @@ decision: 2026-08-26 Move the callers — Point the CLI listing and the lint che
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
 location: src/lib/raw.ts:116
 reason: The store path checks existence and then writes as two separate steps with no create-only compare-and-swap between them, so two concurrent stores of a key that does not yet exist can both pass the check and the later write wins. Deferred because the storage layer offers no exclusive-create primitive today.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-raw-source-listing-and-store-safety
+resolution-undo: f70d4b195f464d4688dec5b40f14604450c2e6decd6f6fbe9e31200977b4a25c 2026-08-29 7374617475733a206f70656e
 
 ### DW-439: The client's 15s send deadline wraps a server URL fetch that already uses the same 15s budget, so a slow but valid fetch surfaces as an unconfirmed write.
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
@@ -5065,4 +5069,60 @@ location: src/lib/__tests__/email-ingest-worker.test.ts (multipartEmail)
 source_spec: `spec-dw-446-email-inline-part-eligibility.md`
 severity: low
 reason: `inlineAttachment`'s doc treats a `null` disposition as a deliberate decision: an unlabelled part is likelier to be a real attachment than a decoration, and "guessing wrong there would silently drop a file the sender really did send". After DW-446 that sentence is literal rather than figurative. `multipartEmail` in `src/lib/__tests__/email-ingest-worker.test.ts` always emits a `Content-Disposition` header — the `disposition` option replaces the derived line, it cannot remove it — so the real-parser suite cannot express a headerless part, and the only coverage is incidental, from mocked fixtures that leave the field undefined.
+status: open
+
+### DW-568: `listRawSourceSnapshots` emits bogus `{slug: "sources"}` rows for any flat Source whose filename stem is all hexadecimal.
+origin: spec-deferred 1cde32eceb16
+location: src/lib/raw.ts:348
+source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
+severity: low
+reason: The walk's second root is `raw/`, whose child directory `sources` passes `validateSlug`, so the flat files inside it are read as that directory's snapshots. `RAW_ID_RE` is `/^[a-f0-9]+$/` with no length bound, so `raw/sources/cafe.md` yields `{slug: "sources", rawId: "cafe"}`. Pre-existing — `wiki-retrieve.ts` already builds a duplicate retrieval document from it; this change surfaces it as a bogus CLI row too.
+status: open
+
+### DW-569: Binary Sources are still absent from every listing, so a PDF-only workspace keeps reporting zero Sources.
+origin: spec-deferred 943ed05871fa
+location: src/lib/raw.ts:369
+source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
+severity: medium
+reason: `listRawSourceSnapshots` skips any child not ending in `.md`, and `listRawSources` is non-recursive, so bytes stored by `saveRawSourceBytes` at `raw/sources/<slug>/<id>.<ext>` appear in neither. The DW-437 decision named `listRawSourceSnapshots` as the listing to move the callers onto, so closing this needs a separate decision about what the listing's unit is.
+status: open
+
+### DW-570: `storeRawSource`'s silo repair falls back to mirroring the REQUEST body when re-reading the stored bytes fails, which its own comment forbids.
+origin: spec-deferred bcbe0252414f
+location: src/lib/raw.ts:199
+source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
+severity: low
+reason: `stored` is initialised to `content` and only replaced on a successful `readFile`; the surrounding comment says copying a re-offered body "would show Files a Source the flat key does not hold". Pre-existing — the branch predates this change and no test pins it.
+status: open
+
+### DW-571: `checkIncompleteCoverage` compares only the first readable snapshot, and a page that also has a flat blob never has its snapshots compared at all.
+origin: spec-deferred ec2d5d5cf4b9
+location: src/lib/lint-checks.ts:1040
+source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
+severity: medium
+reason: The fallback breaks on the first snapshot that opens, and `readRawSource` is tried first, so a page assembled from several hashed Sources is judged against one of them chosen by directory-listing order. The DW-437 decision is about candidacy and counting; which bytes reach the LLM is a separate question this change did not settle.
+status: open
+
+### DW-572: Other content-addressed binary writers still publish through the overwrite door, so FR-2 exclusivity holds only for the `raw.ts` path.
+origin: spec-deferred 47e89b1d5d12
+location: src/lib/document-sources.ts:156
+source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
+severity: medium
+reason: `document-sources.ts` writes `raw/originals/<tenant>/<slug>/<digest>-<file>` and extracted assets, and `fetch.ts` writes page images, all through `writeAsset`. `writeAssetIfAbsent` now exists on the provider interface, so migrating them is cheap — but it is outside DW-438, whose location is `src/lib/raw.ts:116`.
+status: open
+
+### DW-573: Both create-only filesystem writes depend on `fs.link`, which some filesystems do not support.
+origin: spec-deferred a988edfb1e14
+location: src/lib/storage/filesystem.ts:397
+source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
+severity: low
+reason: `createOnlyWrite` publishes by hard-linking a complete tmp inode and treats only `EEXIST` as "occupied"; on exFAT or a FUSE/network mount without hard links the call would fail with `EPERM`/`ENOSYS` and every Source arrival would throw where the old rename-based `writeAsset` succeeded. Pre-existing for `writeFileIfAbsent`, which has shipped on this mechanism since DW-272.
+status: open
+
+### DW-574: The create-only door has no fault-identity coverage on either provider.
+origin: spec-deferred 1ef653883586
+location: src/lib/__tests__/storage-fs-fault-identity.test.ts
+source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
+severity: low
+reason: `storage-fs-fault-identity.test.ts` pins that a failed publication leaves no scratch file and propagates the original error for `atomicWrite`; nothing does the same for `createOnlyWrite` (a non-`EEXIST` `fs.link` failure, tmp cleanup on a throwing publish) or for a rejecting R2 `put`.
 status: open

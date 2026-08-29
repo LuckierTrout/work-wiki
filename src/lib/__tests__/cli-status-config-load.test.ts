@@ -36,6 +36,10 @@ vi.mock("../wiki", () => ({
 
 vi.mock("../raw", () => ({
   listRawSources: vi.fn(async () => []),
+  // `status` counts the flat listing UNION the hashed snapshots (DW-437), so
+  // both exports have to exist here or every row assertion below dies on the
+  // missing mock rather than on the config-load ordering it is about.
+  listRawSourceSnapshots: vi.fn(async () => []),
 }));
 
 // Every variable that can decide one of the FOUR ROWS `status` prints, plus the

@@ -6,8 +6,10 @@
  * categories:
  *
  *  1. Text files   — readFile, writeFile, deleteFile, listFiles, appendFile
- *  2. Assets       — writeAsset, readAsset (binary data like downloaded images)
- *  3. Concurrency  — readFileWithEtag, writeFileIfMatch (optimistic locking)
+ *  2. Assets       — writeAsset, writeAssetIfAbsent, readAsset (binary data
+ *                    like downloaded images and immutable Source bytes)
+ *  3. Concurrency  — readFileWithEtag, writeFileIfMatch (optimistic locking),
+ *                    writeFileIfAbsent / writeAssetIfAbsent (create-only)
  *  4. Indexes      — getIndex, putIndex, incrementIndex (derived JSON blobs: config, history, counters)
  *  5. Embeddings   — upsertEmbedding, queryEmbeddings (vector search)
  *
@@ -19,13 +21,23 @@
  *   R2 key prefix, KV namespace, etc.).
  *
  * - Every WHOLE-FILE write must be atomic from the caller's perspective —
- *   partial writes should never be visible. That covers `writeFile`,
- *   `writeAsset`, `writeFileIfMatch`, `putIndex` and `upsertEmbedding`, and it
- *   deliberately excludes `appendFile`. The filesystem provider uses
- *   write-to-tmp + rename; R2 uses single-object PUT. See the `writeFile`
- *   docblock below for exactly what that guarantee does and does not cover —
- *   the other four carry the same one, and `storage-fs.test.ts` pins it for all
- *   five, so a new provider that satisfied only `writeFile` would fail them.
+ *   partial writes should never be visible. That covers the five REPLACING
+ *   writes — `writeFile`, `writeAsset`, `writeFileIfMatch`, `putIndex` and
+ *   `upsertEmbedding` — and it deliberately excludes `appendFile`. The
+ *   filesystem provider uses write-to-tmp + rename; R2 uses single-object PUT.
+ *   See the `writeFile` docblock below for exactly what that guarantee does and
+ *   does not cover — the other four carry the same one, and `storage-fs.test.ts`
+ *   pins it for all five by inode, so a new provider that satisfied only
+ *   `writeFile` would fail them.
+ *
+ * - The two CREATE-ONLY writes, `writeFileIfAbsent` and `writeAssetIfAbsent`,
+ *   carry the same never-partial guarantee through a different publication:
+ *   they must never replace an existing object, so the filesystem provider
+ *   fsyncs a complete tmp file and publishes it with `fs.link` (EEXIST answers
+ *   `false` instead of overwriting) rather than `rename`, and R2 uses a
+ *   conditional PUT (`etagDoesNotMatch: "*"`). Their own suites in
+ *   `storage-fs.test.ts` / `storage-r2.test.ts` pin the part that matters most:
+ *   of two concurrent creators exactly one wins, whole.
  *
  * - `listFiles` returns **file names only** (not full paths), filtered by a
  *   prefix directory. This matches the `readdir()` usage across the codebase.
@@ -265,6 +277,23 @@ export interface StorageProvider {
    * both win. Returns `true` for the creator and `false` when the path exists.
    */
   writeFileIfAbsent(path: string, content: string): Promise<boolean>;
+
+  /**
+   * The binary twin of `writeFileIfAbsent`, with the identical create-only
+   * contract: the existence check and the publication are ONE provider
+   * operation, so two concurrent creators of the same absent key cannot both
+   * win, and an occupied key is left byte-for-byte as it is.
+   *
+   * `writeAsset` would round-trip through the provider's overwrite door; this
+   * is the door immutable binary arrivals (`raw/sources/<slug>/<id>.<ext>`,
+   * FR-2) go through, where a check-then-write pair leaves a window in which
+   * the later write mutates bytes that are supposed to be frozen.
+   *
+   * Returns `true` for the creator and `false` when the path exists. A
+   * provider that cannot complete the call THROWS rather than degrading to an
+   * overwrite: the arrival fails visibly and the owner can retry.
+   */
+  writeAssetIfAbsent(path: string, data: ArrayBuffer): Promise<boolean>;
 
   /**
    * Write a file only if the current version matches the given etag.

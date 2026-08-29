@@ -271,6 +271,73 @@ describe("FilesystemStorageProvider", () => {
     });
   });
 
+  describe("writeAssetIfAbsent", () => {
+    it("allows exactly one concurrent creator and publishes one whole value", async () => {
+      // The reason this primitive exists: immutable Source bytes (FR-2) are
+      // stored with ONE call, so two arrivals on the same absent key cannot
+      // both see "absent" and let the loser's bytes land last.
+      const values = [
+        new Uint8Array([1, 2, 3]),
+        new Uint8Array([9, 9, 9, 9]),
+      ];
+      const results = await Promise.all(
+        values.map((value) =>
+          provider.writeAssetIfAbsent("create.bin", value.buffer as ArrayBuffer),
+        ),
+      );
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results.findIndex(Boolean);
+      expect(
+        new Uint8Array(await provider.readAsset("create.bin")),
+      ).toEqual(values[winner]);
+      expect(
+        (await fs.readdir(tmpDir)).filter((name) => /^\.tmp-.*\.tmp$/.test(name)),
+      ).toEqual([]);
+    });
+
+    it("does not replace an asset that already exists", async () => {
+      const original = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      await provider.writeAsset("create.bin", original.buffer as ArrayBuffer);
+
+      await expect(
+        provider.writeAssetIfAbsent(
+          "create.bin",
+          new Uint8Array([0, 0]).buffer as ArrayBuffer,
+        ),
+      ).resolves.toBe(false);
+
+      expect(new Uint8Array(await provider.readAsset("create.bin"))).toEqual(
+        original,
+      );
+      expect(
+        (await fs.readdir(tmpDir)).filter((name) => /^\.tmp-.*\.tmp$/.test(name)),
+      ).toEqual([]);
+    });
+
+    it("round-trips bytes that are not valid UTF-8", async () => {
+      // The whole point of the binary door: a lone 0xFF through the string
+      // writer comes back as U+FFFD.
+      const bytes = new Uint8Array([0xff, 0x00, 0x80, 0xfe]);
+      await expect(
+        provider.writeAssetIfAbsent("raw.bin", bytes.buffer as ArrayBuffer),
+      ).resolves.toBe(true);
+      expect(new Uint8Array(await provider.readAsset("raw.bin"))).toEqual(bytes);
+    });
+
+    it("creates parent directories for a nested key", async () => {
+      const bytes = new Uint8Array([7, 7, 7]);
+      await expect(
+        provider.writeAssetIfAbsent(
+          "nested/deep/asset.bin",
+          bytes.buffer as ArrayBuffer,
+        ),
+      ).resolves.toBe(true);
+      expect(
+        new Uint8Array(await provider.readAsset("nested/deep/asset.bin")),
+      ).toEqual(bytes);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Derived indexes
   // -------------------------------------------------------------------------

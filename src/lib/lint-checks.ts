@@ -8,7 +8,12 @@ import type { LintIssue } from "./types";
 import { logger } from "./logger";
 import { findDuplicateEntities } from "./alias-index";
 import { parseSources } from "./sources";
-import { listRawSources, readRawSource } from "./raw";
+import {
+  listRawSources,
+  listRawSourceSnapshots,
+  readRawSource,
+  readRawSourceById,
+} from "./raw";
 import { getPageIndex } from "./page-index";
 import { disputedClearGuidance } from "./lint-types";
 
@@ -963,15 +968,40 @@ export async function checkIncompleteCoverage(
     ];
   }
 
-  // Find which disk slugs have corresponding raw sources
-  let rawSources: { slug: string }[];
+  // Find which disk slugs have corresponding raw sources.
+  //
+  // BOTH listings, because `listRawSources` is non-recursive by contract: a
+  // page whose only Source is a hashed `raw/sources/<slug>/<id>.md` Intake
+  // arrival was never a coverage candidate at all (DW-437). The helper's browse
+  // contract does not move; the caller unions, exactly as `wiki-retrieve.ts`
+  // does. Each listing gets its own try/catch so one failing root does not
+  // silently blank the whole check.
+  const rawSlugsOnDisk = new Set<string>();
   try {
-    rawSources = await listRawSources();
-  } catch {
-    return [];
+    for (const source of await listRawSources()) {
+      rawSlugsOnDisk.add(source.slug);
+    }
+  } catch (error) {
+    // Snapshots below can still drive the check, but say so: a broken Source
+    // listing and an empty one produce the same silent `[]` otherwise.
+    logger.warn("lint", "flat raw source listing failed for coverage", error);
   }
-
-  const rawSlugsOnDisk = new Set(rawSources.map((r) => r.slug));
+  // The snapshot ids per slug, so a slug that only exists in the hashed tree
+  // has something for `readRawSource` to fall back to. Adding a slug the reader
+  // cannot open would just `continue` below and change nothing observable.
+  const snapshotIdsBySlug = new Map<string, string[]>();
+  try {
+    for (const snapshot of await listRawSourceSnapshots()) {
+      rawSlugsOnDisk.add(snapshot.slug);
+      const ids = snapshotIdsBySlug.get(snapshot.slug);
+      if (ids) ids.push(snapshot.rawId);
+      else snapshotIdsBySlug.set(snapshot.slug, [snapshot.rawId]);
+    }
+  } catch (error) {
+    // The flat listing still drives the check — same reason as above for
+    // logging rather than swallowing outright.
+    logger.warn("lint", "raw snapshot listing failed for coverage", error);
+  }
   const slugsWithRaw = diskSlugs.filter((s) => rawSlugsOnDisk.has(s));
 
   if (slugsWithRaw.length === 0) {
@@ -994,13 +1024,24 @@ export async function checkIncompleteCoverage(
     const wikiPage = await readWikiPage(slug);
     if (!wikiPage) continue;
 
-    let rawContent: string;
+    // Flat Source first, then the hashed snapshots for this slug. A slug that
+    // only arrived through Intake has no `raw/sources/<slug>.md` to read, and
+    // without this fallback it would be counted as a candidate and then
+    // silently skipped — a candidate that never reaches the comparison.
+    let rawContent: string | null = null;
     try {
-      const raw = await readRawSource(slug);
-      rawContent = raw.content;
+      rawContent = (await readRawSource(slug)).content;
     } catch {
-      continue; // Raw source unreadable, skip
+      for (const rawId of snapshotIdsBySlug.get(slug) ?? []) {
+        try {
+          rawContent = (await readRawSourceById(slug, rawId)).content;
+          break;
+        } catch {
+          // Unreadable snapshot — try the next one, then skip the slug.
+        }
+      }
     }
+    if (rawContent === null) continue; // Raw source unreadable, skip
 
     const rawSnippet = rawContent.slice(0, MAX_RAW_CHARS);
     const wikiSnippet = wikiPage.content.slice(0, MAX_WIKI_CHARS);

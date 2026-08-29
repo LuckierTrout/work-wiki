@@ -1305,8 +1305,20 @@ describe("the bump lives at the exact write-owner tails", () => {
     const bytesBody = source.slice(bytesAt, bytesClose);
     const bytesSkip = bytesBody.indexOf("return false;");
     expect(bytesSkip).toBeGreaterThan(-1);
+    // Anchored on the CREATE-ONLY publication. Since DW-438 the store is one
+    // `publishSourceBytesFirstWrite` call rather than `alreadyStored` +
+    // `writeAsset`, so the old `writeAsset(rel, bytes)` anchor no longer occurs
+    // in the source and `indexOf` answered -1 — which every placement assertion
+    // here then passed against vacuously. The `toBeGreaterThan(-1)` guard makes
+    // the next rename fail loudly instead. The publication now sits BEFORE the
+    // `return false;` skip (it is what DECIDES the skip), which is why nothing
+    // compares those two: what is pinned is that the unconditional bump trails
+    // the write and that the skip's own bump is conditional.
+    expect(
+      bytesBody.indexOf("publishSourceBytesFirstWrite(rel, bytes)"),
+    ).toBeGreaterThan(-1);
     expect(bytesBody.lastIndexOf("await bumpDataVersion();")).toBeGreaterThan(
-      bytesBody.indexOf("writeAsset(rel, bytes)"),
+      bytesBody.indexOf("publishSourceBytesFirstWrite(rel, bytes)"),
     );
     // …and the repair bump is CONDITIONAL, so the common re-arrival — bytes
     // present, mirror already there — still wakes nobody.
@@ -1320,9 +1332,10 @@ describe("the bump lives at the exact write-owner tails", () => {
     const body = source.slice(at, close);
 
     const skip = body.indexOf("return false;");
-    const write = body.indexOf("writeFile(rel, content)");
+    const write = body.indexOf("publishSourceFirstWrite(rel, content)");
     const writeBump = body.lastIndexOf("await bumpDataVersion();");
     expect(skip).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(-1);
     expect(writeBump).toBeGreaterThan(write);
     expect(writeBump).toBeGreaterThan(skip);
   });

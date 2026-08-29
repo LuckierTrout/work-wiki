@@ -537,10 +537,61 @@ export async function runLint(fix: boolean): Promise<void> {
   }
 }
 
+/**
+ * Every Source row the CLI shows: the flat `raw/sources/<id>.md` listing and
+ * the hashed `raw/sources/<slug>/<id>.md` snapshots, with the flat row DROPPED
+ * for any slug that has snapshots.
+ *
+ * `listRawSources` is non-recursive BY CONTRACT — that is the browse contract
+ * its docblock states, and the Workbench Sources surface built on it does not
+ * move. The caller unions instead, the same way `wiki-retrieve.ts` already
+ * does; without it a workspace whose Sources all arrived through hashed Intake
+ * reports an empty `list --raw` and a `Raw sources:\t0` status (DW-437).
+ *
+ * WHY THE FLAT ROW IS DROPPED when snapshots exist: a plain concatenation
+ * double-counts every normally-ingested page. `ingest()` writes BOTH keys for
+ * the same slug — the flat blob at `src/lib/ingest.ts:1953`
+ * (`saveRawSource(slug, content)`) and the per-source snapshot at
+ * `src/lib/ingest.ts:2012` (`saveRawSourceFor(slug, rawId, content)`) — so the
+ * two listings describe one page twice. The snapshots are the per-source view
+ * of that page and the flat blob is the legacy single-blob view of the same
+ * bytes, so the snapshots win: a page with three distinct sources still counts
+ * three, and a slug with no snapshot at all keeps its flat row.
+ *
+ * Each listing gets its OWN try/catch: one root failing must not blank the
+ * other, which is the whole reason the union is worth more than either half.
+ */
+async function listRawSourceRows(): Promise<
+  Array<{ slug: string; filename: string }>
+> {
+  const { listRawSources, listRawSourceSnapshots } = await import("./lib/raw");
+  const flat: Array<{ slug: string; filename: string }> = [];
+  const hashed: Array<{ slug: string; filename: string }> = [];
+  const slugsWithSnapshots = new Set<string>();
+  try {
+    for (const source of await listRawSources()) {
+      flat.push({ slug: source.slug, filename: source.filename });
+    }
+  } catch (error) {
+    console.error(`Warning: could not list raw sources: ${String(error)}`);
+  }
+  try {
+    for (const snapshot of await listRawSourceSnapshots()) {
+      slugsWithSnapshots.add(snapshot.slug);
+      hashed.push({ slug: snapshot.slug, filename: `${snapshot.rawId}.md` });
+    }
+  } catch (error) {
+    console.error(`Warning: could not list raw snapshots: ${String(error)}`);
+  }
+  return [
+    ...flat.filter((row) => !slugsWithSnapshots.has(row.slug)),
+    ...hashed,
+  ];
+}
+
 export async function runList(raw: boolean): Promise<void> {
   if (raw) {
-    const { listRawSources } = await import("./lib/raw");
-    const sources = await listRawSources();
+    const sources = await listRawSourceRows();
     const sorted = sources.sort((a, b) => a.slug.localeCompare(b.slug));
     for (const s of sorted) {
       console.log(`${s.slug}\t${s.filename}`);
@@ -557,11 +608,12 @@ export async function runList(raw: boolean): Promise<void> {
 
 export async function runStatus(): Promise<void> {
   const { listWikiPages } = await import("./lib/wiki");
-  const { listRawSources } = await import("./lib/raw");
   const { getEffectiveSettings, loadConfig } = await import("./lib/config");
 
   const pages = await listWikiPages();
-  const sources = await listRawSources();
+  // Same union as `list --raw`: a count that omitted hashed snapshots would
+  // report 0 Sources for a workspace built entirely through Intake (DW-437).
+  const sources = await listRawSourceRows();
 
   // WHY the store is loaded before it is read (DW-502).
   //
