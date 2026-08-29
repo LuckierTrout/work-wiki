@@ -64,12 +64,37 @@ import { logger } from "./logger";
  *
  *   - `drift:<active model>` (DW-332). Drift is cleared by `rebuildVectorStore`
  *     with no restart involved — and `searchByVector` already computes the
- *     signal that a rebuild has landed (`kept.length > 0`, in the same branch
- *     chain that decides whether to warn), so it re-arms that key there through
- *     `rearmWarningAbout`. Without it, a corpus that drifts, is rebuilt, and
- *     drifts again under the SAME active model would be silent for the rest of
- *     the process. The signal is narrower than "the corpus is healthy", which
- *     the branch itself records.
+ *     closest signal a per-QUERY door has that a rebuild has landed: a
+ *     WHOLE-WINDOW model match — `matches.length > 0 && kept.length ===
+ *     matches.length`, in the same branch chain that decides whether to warn —
+ *     so it re-arms that key there through `rearmWarningAbout`. Without it, a
+ *     corpus that drifts, is rebuilt, and drifts again under the SAME active
+ *     model would be silent for the rest of the process.
+ *
+ *     This is the CANONICAL statement of the gate; the re-arm branch points
+ *     here rather than restating it. The gate read `kept.length > 0`
+ *     (2026-08-21) until it was narrowed on 2026-08-22 (DW-404):
+ *     `rebuildVectorStore` upserts page by page with no bulk swap, so a
+ *     half-finished rebuild leaves stale and current vectors in the same
+ *     window, and ONE kept match among them re-armed the key on the very
+ *     condition the re-arm exists to detect the END of. What the narrowing buys
+ *     is exactly this and only this: a window the filter demonstrably DROPPED
+ *     something from stops counting as evidence a rebuild landed.
+ *
+ *     The signal is still narrower than "the corpus is healthy", and three
+ *     gaps are LIVE, not hypothetical. `queryEmbeddings` sorts and slices to
+ *     topK BEFORE the filter, so a window too small to SEE the stale vectors is
+ *     a whole-window match and re-arms anyway — DW-404's own reproduction uses
+ *     `topK: 1` and still oscillates under this gate exactly as it did under
+ *     the old one, so the narrowing does not close that reproduction. An
+ *     unlabelled legacy vector counts as a match, because `modelMatches` must
+ *     keep those for RESULTS (DW-405, open), so a window carried by one matches
+ *     wholly. And the narrowing costs something in the OTHER direction:
+ *     `rebuildVectorStore` never DELETES, and it skips pages with empty content
+ *     or a failed embed, so a stale ORPHAN vector — a deleted, renamed, or
+ *     emptied page — leaves every window that contains it permanently mixed;
+ *     past that point this key can never re-arm for that model again, and a
+ *     second genuine drift ships silent for the rest of the process.
  *   - `ollama-endpoint:sdk-default` (DW-401). The endpoint ladder's STORE leg
  *     (`cfg.ollamaBaseUrl`) is moved by a save, so an owner who reads the line
  *     and fixes the endpoint changes the answer without restarting anything —
@@ -921,12 +946,18 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  * would be silent until something re-armed it. The model that embedded and the
  * model the filter compares against have to come from the same read.
  *
- * The key does re-arm, on exactly one signal: a read that KEEPS at least one
- * match under the active model (DW-332) — the signal that a rebuild has landed,
- * which is what makes rebuild-then-re-drift under the same model audible a
- * second time. That delete is subject to this same one-snapshot rule, and for a
- * sharper reason than the warn: it must use the SAME `currentModel` the filter
- * compared against, never a second `getEmbeddingModelName()` read, because a
+ * The key does re-arm, on exactly one signal: a read whose window was NON-EMPTY
+ * and from which the model filter dropped NOTHING (DW-332, narrowed on
+ * 2026-08-22 by DW-404 from "keeps at least one match"). That is the closest a
+ * per-query door gets to "a rebuild has landed", and it is what makes
+ * rebuild-then-re-drift under the same model audible a second time. It is not
+ * corpus proof and does not claim to be — topK slicing runs BEFORE the filter,
+ * an unlabelled legacy vector counts as a match (DW-405), and one stale orphan
+ * can wedge the key shut for good; the residue is spelled out once, on
+ * `warnedMisconfigurations`. That delete is subject to this same one-snapshot
+ * rule, and for a sharper reason than the warn: it must use the SAME
+ * `currentModel` the filter compared against, never a second
+ * `getEmbeddingModelName()` read, because a
  * re-derived name straddling the expiry would re-arm a DIFFERENT identity than
  * the one this read said anything about — un-burning some other model's key on
  * evidence that has nothing to do with it.
@@ -961,14 +992,23 @@ export async function searchByVector(
     // re-armed the warning for every distinct number of hits and defeated the
     // throttle. An active model that CHANGES and still drifts is a new identity
     // and speaks again.
-    if (kept.length > 0) {
-      // Re-arm (DW-332; rationale on `warnedMisconfigurations`). A kept match
-      // establishes only that THIS read was answerable under the active model,
-      // not that the whole corpus is: `modelMatches` keeps unlabelled legacy
-      // vectors, and `queryEmbeddings` slices to topK BEFORE this filter. An
-      // early re-arm costs a repeated line; a missing one loses the next outage.
+    if (matches.length > 0 && kept.length === matches.length) {
+      // Re-arm (DW-332; DW-404 narrowed this gate on 2026-08-22 from
+      // `kept.length > 0`). A WHOLE-WINDOW match: a non-empty window the model
+      // filter dropped NOTHING from. The non-empty half is not optional —
+      // `kept.length === matches.length` is vacuously true of an EMPTY window,
+      // which would re-arm on no evidence at all.
+      //
+      // The trade this makes, and the residue it does NOT close, are stated
+      // once on `warnedMisconfigurations` rather than restated here. In short:
+      // a window the filter dropped something from stops being taken as proof a
+      // rebuild landed, bought at the price that a corpus which never fully
+      // re-tags — one stale orphan is enough — never re-arms at all.
       rearmWarningAbout(`drift:${currentModel}`);
-    } else if (matches.length > 0) {
+    } else if (kept.length === 0 && matches.length > 0) {
+      // Spelled out rather than left as a bare `else`: since the narrowing the
+      // two branches are no longer complementary, and a MIXED window — which
+      // legitimately returned results — has to fall through both of them.
       warnOnceAbout(
         `drift:${currentModel}`,
         "searchByVector: the model filter dropped every match " +

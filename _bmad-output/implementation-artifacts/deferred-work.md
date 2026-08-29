@@ -3694,7 +3694,9 @@ source_spec: `spec-dw-332-embedding-drift-warning-rearm.md`
 location: src/lib/embeddings.ts (searchByVector re-arm branch)
 severity: medium
 reason: `queryEmbeddings` sorts and slices to `topK` BEFORE `searchByVector` applies the model filter (src/lib/storage/filesystem.ts queryEmbeddings; contract in src/lib/storage/types.ts). With one stale-tagged and one current-tagged vector and `topK: 1`, eight alternating queries emitted FOUR drift lines instead of one. This is not contrived: `rebuildVectorStore` upserts page by page with no bulk swap, so the store is mixed for the whole duration of the very operation the re-arm exists to detect, and it deliberately leaves stale orphans behind. The tighter gate (`kept.length === matches.length`, or a rebuild-completion epoch) was NOT applied because the recorded 2026-08-21 decision names `kept.length > 0` as the trigger verbatim; narrowing it is a decision this run does not hold.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-decision-dw-404
+resolution-undo: cfdacb7a3e8651e3640c76ae0343b42562c70a697c585e930278655cae3b750b 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
 decision: 2026-08-22 Require a whole-window match — Change the re-arm gate to `kept.length === matches.length` so re-arming requires every vector in the window to match the active model, and record the narrowed trigger against the 2026-08-21 decision. Also answers DW-405.
 
@@ -5335,4 +5337,36 @@ location: src/components/workbench/__tests__/ (13 files); vitest.setup.dom.ts
 source_spec: `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md`
 severity: medium
 reason: 233 tests across 13 files die with "TypeError: Cannot read properties of undefined (reading 'clear')". Reproduced on a stashed tree at 34f1863d, so it is not a branch regression. Root cause confirmed by probe: Node 26.8.1's built-in `localStorage` global shadows jsdom's own and is `undefined` unless the process is started with `--localstorage-file` ("ExperimentalWarning: localStorage is not available because --localstorage-file was not provided"). Every other dom suite passes. Needs a repo-wide decision (pin Node, pass the flag, or shim the global in vitest.setup.dom.ts), so it was not fixed inside this bundle.
+status: open
+
+### DW-598: DW-404's own recorded reproduction (topK 1, one stale-tagged and one current-tagged vector, alternating queries) still emits four drift lines under the narrowed whole-window gate, so the entry's named
+origin: spec-deferred 13bb0e02d8ee
+location: src/lib/embeddings.ts (searchByVector re-arm branch)
+source_spec: `spec-dw-404-drift-rearm-whole-window.md`
+severity: medium
+reason: `queryEmbeddings` sorts and slices to topK BEFORE `searchByVector` applies the model filter, so with `topK: 1` the window holds a single match; when that match is the current-tagged vector the window matches wholly and re-arms exactly as `kept.length > 0` did. Reproduced independently by two reviewers against the patched code: four lines before, four lines after. Closing it needs a corpus-level signal (the rebuild-completion epoch the ledger names as the alternative fix), which the 2026-08-22 decision did not authorize and this spec forbids.
+status: open
+
+### DW-599: After the narrowing, one stale ORPHAN vector wedges `drift:<model>` shut permanently, so a second genuine drift ships silent on any store that has ever deleted, renamed, or emptied a page.
+origin: spec-deferred 238c046ea45c
+location: src/lib/embeddings.ts (warnedMisconfigurations drift bullet; rebuildVectorStore)
+source_spec: `spec-dw-404-drift-rearm-whole-window.md`
+severity: medium
+reason: `rebuildVectorStore` never deletes (its own docblock says so) and `continue`s past pages with empty content or a failed embed, so a COMPLETED rebuild can still leave stale-tagged vectors behind. Every window containing one is mixed forever, and a mixed window no longer re-arms. Verified by probe: two vectors, a completed rebuild re-tagging only the live one, then a genuine re-drift under the same active model produced ONE warning where the DW-332 pins assert two. Documented in prose on `warnedMisconfigurations` by this change, but not mitigated and not pinned by any test — mitigating it would need the rebuild to delete, or persisted rebuild state, both Block-If conditions here.
+status: open
+
+### DW-600: `spec-dw-404-405-406-embedding-drift-rearm-gate.md` is still `status: in-review` though it was never implemented, and now prescribes a predicate that contradicts the 2026-08-22 human decision.
+origin: spec-deferred 3019a8e56821
+location: _bmad-output/implementation-artifacts/spec-dw-404-405-406-embedding-drift-rearm-gate.md
+source_spec: `spec-dw-404-drift-rearm-whole-window.md`
+severity: medium
+reason: That spec reconciles DW-404 and DW-405 into `matches.every((m) => m.metadata.model === model)` and also rewrites `relatedByVector` (DW-406). HEAD before this run still had `kept.length > 0`, so none of it ever landed. A later run routing on its `in-review` status would re-derive the strict-label gate and silently close DW-405, which the human decision deliberately left open, and would pull DW-406 in with it. It needs to be withdrawn or re-scoped by whoever owns the ledger.
+status: open
+
+### DW-601: No test discriminates the permissive whole-window gate from the strict-label variant, so the DW-405 decision point rests on one code line with zero coverage in either direction.
+origin: spec-deferred 0e302255352d
+location: src/lib/__tests__/embeddings.test.ts (describe("searchByVector") drift suite)
+source_spec: `spec-dw-404-drift-rearm-whole-window.md`
+severity: low
+reason: Mutating the gate to `matches.every((m) => m.metadata?.model === currentModel)` leaves all 173 tests in `embeddings.test.ts` passing. This is deliberate — the intent forbids pinning the unlabelled-legacy case either way while DW-405 is open — but it means whichever way DW-405 is eventually decided, the change will be unguarded until that entry adds its own pin.
 status: open
