@@ -165,6 +165,20 @@ export default function GraphPage() {
             lens-scoped (`?scope=` — mine, a vault, or another owner), so the
             two sets are not the same one and promising the graph's contents
             would be a promise the tree does not keep.
+
+            The canvas below is deliberately NOT a tab stop (DW-463). It used to
+            carry `tabIndex={0}`, which put a keyboard-only reader on a focus
+            stop where Enter and Space did nothing: its only handlers are
+            pointer ones, and `handleClick` hit-tests `e.clientX/clientY`
+            against node positions, so there is no keyboard-owned selected node
+            for a key press to activate. It is a `role="img"` picture, which
+            is not required to be operable, and the keyboard-reachable text
+            alternative it already advertises is the visible Knowledge tree link
+            above — with the caveat recorded a paragraph up: the tree lists this
+            wiki's pages, not this lens-scoped graph's contents, so it stands in
+            for the picture without being an exact substitute for it. If a
+            genuine keyboard activation path is ever added here, the pin to
+            update is in `__tests__/graph-escape-hatch-mounted.test.tsx`.
           */}
           <p className="text-sm text-foreground/60 mb-4">
             Click a node to open the page. Or open the{" "}
@@ -183,7 +197,6 @@ export default function GraphPage() {
               style={{ height: 560, backgroundColor: canvasBg }}
               role="img"
               aria-label="Wiki page relationship graph. Open the Workbench Knowledge tree for a text list of this wiki's pages."
-              tabIndex={0}
             >
               Wiki relationship graph — open the{" "}
               <a href={KNOWLEDGE_TREE_HREF}>Workbench Knowledge tree</a> for a

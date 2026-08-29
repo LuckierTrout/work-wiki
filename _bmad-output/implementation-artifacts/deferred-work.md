@@ -4220,7 +4220,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: src/app/wiki/graph/page.tsx:186
 severity: medium
 reason: src/app/wiki/graph/page.tsx:186 sets `tabIndex={0}` on a canvas that has `onClick`/`onMouseMove`/`onMouseLeave` and no `onKeyDown`. A keyboard-only user gets a focus stop that does nothing on Enter or Space. Pre-existing and untouched by this pass, which fixed the screen-reader escape hatch on the same element.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-graph-canvas-keyboard-activation
+resolution-undo: 32586a7c4c5492e415950355d85f9578133b9cb67663ae831ca00f641416c26b 2026-08-29 7374617475733a206f70656e
 
 ### DW-464: `KNOWLEDGE_TREE_HREF` carries no lens scope, while the graph it is an alternative to is scoped by `?scope=`.
 origin: spec-deferred 438c15df14ac
@@ -5299,4 +5301,28 @@ location: src/components/ActionInbox.tsx:387
 source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
 severity: low
 reason: `src/lib/action-items.ts:26` declares `sourceMissing` with the comment "The cited Source was cascade-deleted. The todo itself is kept." `grep -c sourceMissing src/components/ActionInbox.tsx` is 0, and the chip at `:387` is gated only on `item.sourceSlug`. Pre-existing production behaviour, surfaced because this story gave the component its first test of any kind; pinning or fixing it is a separate change.
+status: open
+
+### DW-594: The graph canvas's fallback `<a href={KNOWLEDGE_TREE_HREF}>` child is itself focusable, so a keyboard reader can still land on a focus stop inside the canvas that renders nothing on screen.
+origin: spec-deferred f1185431fee3
+location: src/app/wiki/graph/page.tsx:201
+source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
+severity: medium
+reason: Verified in this repo's jsdom: the fallback anchor reports `tabIndex === 0` and becomes `document.activeElement` after `.focus()`. Browsers likewise include focusable canvas fallback content in the sequential focus order — that is what `CanvasRenderingContext2D.drawFocusIfNeeded` exists for. `role="img"` prunes the subtree from the ACCESSIBILITY tree, which is a different thing from the focus order. Pre-existing (the fallback child predates DW-463) and out of DW-463's scope, which named the canvas element itself; the DW-463 pin is deliberately narrowed to the element and says so.
+status: open
+
+### DW-595: Graph nodes remain unreachable by keyboard: DW-463 was resolved by removing the inert focus stop, so the intent's other branch — a keyboard-owned node cursor plus onKeyDown reaching the same handler t
+origin: spec-deferred a4bc6951fdb6
+location: src/app/wiki/graph/page.tsx:186
+source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
+severity: medium
+reason: `handleClick` (src/hooks/useGraphSimulation.ts:272-291) hit-tests `e.clientX/clientY` against node positions, and `hoveredRef` is written only by `handleMouseMove`, so there is no keyboard-addressable node. Opening a wiki page from the graph is therefore pointer-only. The text alternative (the Workbench Knowledge tree) covers it for WCAG purposes but is not an exact substitute — the graph is `?scope=` lens-scoped and the tree is not, as the page's own block comment records. The only trace of the unbuilt branch today is a code comment and a test failure message.
+status: open
+
+### DW-596: Nothing pins that the graph canvas's click activation path stays wired, so dropping `onClick` would leave the canvas fully inert with every accessibility test still green.
+origin: spec-deferred 4ffcbecbb9b6
+location: src/app/wiki/graph/__tests__/graph-escape-hatch-mounted.test.tsx
+source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
+severity: low
+reason: `graph-escape-hatch-mounted.test.tsx` stubs `useGraphSimulation`, and its `handleClick` is a fresh `vi.fn()` per render that no test dispatches a click at; no other suite mounts this page or exercises the hook. "Pointer is the remaining activation path" is the premise the DW-463 removal rests on, asserted in three comments and observed nowhere. A hoisted spy plus `fireEvent.click(theCanvas())` would make it a fact.
 status: open

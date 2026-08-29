@@ -6,7 +6,19 @@ import { DEFAULT_TREE_TAB, TREE_TABS } from "@/lib/workbench-tree";
 import type { UseGraphSimulationReturn } from "@/hooks/useGraphSimulation";
 
 /**
- * The graph canvas's accessible escape hatch, MOUNTED (DW-461).
+ * MOUNTED facts about the graph canvas. Two of them, both about the same
+ * element, because they need the same scaffolding — the Clerk / router /
+ * simulation stubs below are what get this page to render at all, and a second
+ * file holding a second copy of them is two stubs that drift apart.
+ *
+ *   1. The canvas's accessible escape hatch is REACHABLE (DW-461).
+ *   2. The canvas ELEMENT itself takes no keyboard focus (DW-463).
+ *
+ * They are the two halves of one claim: the picture is not operable, so the
+ * text alternative beside it has to be.
+ *
+ * ---------------------------------------------------------------------------
+ * 1. The escape hatch (DW-461)
  *
  * `src/lib/__tests__/retired-surfaces.test.ts` pins the same escape hatch by
  * reading `page.tsx` as TEXT — assertions about the presence and the wording of
@@ -38,6 +50,34 @@ import type { UseGraphSimulationReturn } from "@/hooks/useGraphSimulation";
  *
  * `getByRole` already honours `aria-hidden`, so the pruning case needs no extra
  * read; `tabIndex` is a separate fact and gets its own.
+ *
+ * ---------------------------------------------------------------------------
+ * 2. The canvas element is not a focus stop (DW-463)
+ *
+ * The canvas once carried `tabIndex={0}` beside nothing but pointer handlers,
+ * so a keyboard-only reader landed on a focus stop where Enter and Space did
+ * nothing. The fix was to remove the focus stop, not to invent a keyboard node
+ * cursor — see the block comment above the canvas in `page.tsx`.
+ *
+ * That pin is a MOUNTED read rather than a source scan for the same reason the
+ * hatch's is: whether an element is a focus stop is a property of the rendered
+ * DOM, and a source scan for a `tabIndex` prop would have to re-implement
+ * `retired-surfaces.test.ts`'s brace-depth JSX tag scanner to find the canvas's
+ * own opening tag — the duplication DW-460 already recorded.
+ *
+ * SCOPE: the canvas ELEMENT, not its subtree. The fallback
+ * `<a href={KNOWLEDGE_TREE_HREF}>` child is itself focusable — in this jsdom it
+ * reports `tabIndex === 0` and takes focus, and browsers likewise include
+ * focusable canvas fallback content in the sequential focus order. So the claim
+ * below is about the element, not about everything inside it. Whether that
+ * fallback child should be reachable is a SEPARATE, pre-existing question: it
+ * predates DW-463, it is deferred rather than fixed here, and nothing below
+ * asserts anything about it.
+ *
+ * In particular, the DW-461 paragraph above — "`role=\"img\"` prunes the
+ * canvas's descendants" — is about what an assistive-technology tree EXPOSES.
+ * Pruning from the accessibility tree is not removal from the focus order, so
+ * that sentence must not be read as covering the fallback child's focusability.
  */
 
 // A signed-out reader is the smallest state that renders the graph at all: the
@@ -143,6 +183,32 @@ function theReachableLink(): HTMLElement {
   return reachable[0];
 }
 
+/**
+ * The page's one `<canvas>`, or a failure that says which way it is gone.
+ *
+ * Hoisted rather than fetched inline, because BOTH describes below reason about
+ * "the canvas" as a single element — the escape hatch's `.closest("canvas")`
+ * filter and the focus pins alike — and one helper means one diagnostic when it
+ * is missing.
+ *
+ * The COUNT is asserted rather than assumed: `document.querySelector("canvas")`
+ * silently returns the first of however many there are, so a second canvas
+ * appearing would leave every read below describing whichever rendered first
+ * while still passing. `retired-surfaces.test.ts` pins the single canvas at the
+ * SOURCE surface; this is the same fact at the rendered one.
+ */
+function theCanvas(): HTMLCanvasElement {
+  const canvases = document.querySelectorAll("canvas");
+  expect(
+    canvases.length,
+    "expected exactly one <canvas> on the graph page: none means the mocked useGraphSimulation " +
+      "has drifted off the loading:false / empty:false / fetchError:null branch (the only one " +
+      "that renders it); more than one means every read in this file is about whichever " +
+      "rendered first",
+  ).toBe(1);
+  return canvases[0];
+}
+
 describe("the graph page's Knowledge tree escape hatch is reachable", () => {
   it("names a real tree tab, so the query below can find anything at all", () => {
     // The premise of `TREE_LINK_NAME`. Asserted rather than assumed, because a
@@ -159,10 +225,9 @@ describe("the graph page's Knowledge tree escape hatch is reachable", () => {
     // page, `.closest("canvas")` would be vacuously null for every link and the
     // "outside the canvas" assertion would stop distinguishing anything.
     render(<GraphPage />);
-    const canvas = document.querySelector("canvas");
-    expect(canvas, "the graph page renders no <canvas> at all").not.toBeNull();
-    expect(canvas!.getAttribute("role")).toBe("img");
-    expect(canvas!.querySelector(`a[href="${KNOWLEDGE_TREE_HREF}"]`)).not.toBeNull();
+    const canvas = theCanvas();
+    expect(canvas.getAttribute("role")).toBe("img");
+    expect(canvas.querySelector(`a[href="${KNOWLEDGE_TREE_HREF}"]`)).not.toBeNull();
   });
 
   it("keeps the filter load-bearing: the query itself returns both links", () => {
@@ -203,5 +268,90 @@ describe("the graph page's Knowledge tree escape hatch is reachable", () => {
       theReachableLink().tabIndex,
       "the Knowledge tree link is out of the keyboard order (tabIndex < 0)",
     ).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("the graph canvas element is not a keyboard focus stop (DW-463)", () => {
+  /**
+   * Why this reads twice.
+   *
+   * The BEHAVIOURAL read is the fact itself: whether the element takes focus,
+   * which is what a keyboard reader actually experiences. The MARKUP read is
+   * what a reviewer greps for and what a diff shows — `tabIndex={0}` coming
+   * back is a one-line change, and a failure that names the attribute is the
+   * one that explains it fastest.
+   *
+   * They are not redundant. Each sees something the other cannot: the markup
+   * read cannot see focusability that no `tabindex` spells (a `contenteditable`
+   * canvas reports `tabIndex === -1` and carries no attribute, yet takes focus
+   * in this jsdom), and the behavioural read cannot say WHICH prop put the
+   * element back in reach.
+   */
+  const WHY_NO_TAB_STOP =
+    "the graph <canvas> element takes keyboard focus again. A focus stop here is inert: the " +
+    "canvas has pointer handlers only, and handleClick hit-tests clientX/clientY against node " +
+    "positions, so no key press has a selected node to activate — which is exactly what put a " +
+    "keyboard-only reader on an Enter/Space no-op in DW-463. If you are adding a REAL keyboard " +
+    "activation path here — a node cursor the keyboard owns, plus onKeyDown reaching the same " +
+    "handler the click does — this pin is the thing to update; until then the canvas advertises " +
+    "the visible Knowledge tree link outside it, pinned above, as its text alternative.";
+
+  it("takes no focus when focus is pushed onto it", () => {
+    // jsdom's `focus()` honours focusability, so a plain `<canvas>` stays
+    // unfocused here while a `tabIndex={0}` one becomes `activeElement`.
+    //
+    // This is deliberately STRICTER than "not in the sequential tab order":
+    // `focus()` succeeds on a `tabIndex={-1}` element too, so an explicit
+    // negative tabindex — not a tab stop, but programmatically focusable for no
+    // reason this page has — would fail here while passing the markup read
+    // below. If you land on exactly that split, it is the signal to come read
+    // this block and decide deliberately, not a bug in either assertion.
+    render(<GraphPage />);
+    const canvas = theCanvas();
+    canvas.focus();
+    expect(document.activeElement, WHY_NO_TAB_STOP).not.toBe(canvas);
+  });
+
+  it("spells no focus stop in its markup either", () => {
+    // Absent OR negative: both mean "not a tab stop", and the defect was the
+    // positive one. Asserting `hasAttribute === false` alone would fail a
+    // deliberate `tabIndex={-1}` while reporting it as a return to the keyboard
+    // order, which is the wrong diagnosis.
+    render(<GraphPage />);
+    const attr = theCanvas().getAttribute("tabindex");
+    expect(
+      attr === null || Number(attr) < 0,
+      `${WHY_NO_TAB_STOP} (tabindex=${JSON.stringify(attr)})`,
+    ).toBe(true);
+  });
+
+  it("keeps the picture semantics that make the missing focus stop correct", () => {
+    // Not operable is only defensible while the element is a PICTURE with a
+    // text alternative. If the canvas ever stops being `role="img"` — becomes a
+    // `role="application"`, say — "no focus stop" stops being the right answer
+    // and this file should be revisited rather than trusted.
+    render(<GraphPage />);
+    const canvas = theCanvas();
+    expect(
+      canvas.getAttribute("role"),
+      "the canvas is no longer role=\"img\", so \"a picture need not be operable\" no longer " +
+        "justifies it having no focus stop (DW-463)",
+    ).toBe("img");
+
+    // Read once and null-checked before matching: `toMatch` on a `null` fails
+    // as a matcher TYPE error ("received value must be a string"), which would
+    // report a REMOVED label as a broken test rather than as the missing text
+    // alternative it is.
+    const label = canvas.getAttribute("aria-label");
+    expect(
+      label,
+      "the canvas has no aria-label at all — it is an unlabelled role=img, so the text " +
+        "alternative that justifies it having no focus stop is gone (DW-463)",
+    ).not.toBeNull();
+    expect(
+      label ?? "",
+      "the canvas's aria-label no longer names the Knowledge tree, so it no longer points a " +
+        "screen-reader user at the alternative standing in for the absent focus stop (DW-463)",
+    ).toMatch(TREE_LINK_NAME);
   });
 });
