@@ -448,3 +448,280 @@ describe("ProviderForm points the picker at the notes beside it", () => {
     expect(picker().getAttribute("aria-invalid")).toBeNull();
   });
 });
+
+describe("ProviderForm tells the truth about a BLANK selection (DW-505)", () => {
+  /**
+   * `— Select provider —` is a REAL state, not a first-paint artefact.
+   *
+   * `useSettings.ts:232-235` seeds `provider` from the payload only when
+   * `providerSource === "config"`, so an `env`- or `default`-sourced deployment
+   * paints the blank option with a stored provider behind it. The credential
+   * line used to read that STORED provider's key state — and, since DW-420
+   * pointed the picker at the line, the picker announced it too — while the
+   * control visibly showed no selection. Whether the sentence matches the
+   * control is not something a source scan can check, so these cases are made
+   * against the rendered DOM.
+   */
+  const BLANK_COPY = "Select a provider to check its server credential";
+
+  function credentialLine(): HTMLElement | null {
+    return document.getElementById("providerCredentialStatus");
+  }
+
+  function picker(): HTMLElement {
+    return document.getElementById("provider")!;
+  }
+
+  it("says the selection is absent rather than naming a credentialed store", () => {
+    // THE DW-505 defect, exactly: a stored `openai` WITH a key behind a blank
+    // pick used to announce "✓ API key configured on server" — a claim about a
+    // provider the control is not showing.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "",
+          settings: settings({ provider: "openai", hasApiKey: true }),
+        })}
+      />,
+    );
+
+    expect((picker() as HTMLSelectElement).value).toBe("");
+    expect(credentialLine()!.textContent).toBe(BLANK_COPY);
+    expect(document.body.textContent).not.toContain("✓ API key configured on server");
+    // The line still renders and the picker still points at it: the gate is
+    // `settings !== null`, and DW-505 changes the SENTENCE, never when the node
+    // or its id exist.
+    expect(picker().getAttribute("aria-describedby")).toBe("providerCredentialStatus");
+  });
+
+  it("says the same thing over an UNCREDENTIALED store, rather than warning", () => {
+    // The "⚠ No API key" branch is a complaint about a selection. With no
+    // selection there is nothing to complain about, and the warning would send
+    // the owner to the server environment over a provider they have not picked.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "",
+          settings: settings({ provider: "openai", hasApiKey: false }),
+        })}
+      />,
+    );
+
+    expect(credentialLine()!.textContent).toBe(BLANK_COPY);
+    expect(document.body.textContent).not.toContain("⚠ No API key");
+  });
+
+  it("says the same thing when NOTHING is stored — `null === null` must not warn", () => {
+    // THE MUTATION THIS CATCHES. Deriving the branches from a value that is
+    // `null` for the blank pick makes the second branch's `settings.provider
+    // === selectedProvider` true for an empty store, so without the blank
+    // branch standing FIRST a never-configured deployment reads "⚠ No API key
+    // — set via server environment variables" beside a picker showing nothing.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "",
+          settings: settings({ provider: null, hasApiKey: false }),
+        })}
+      />,
+    );
+
+    expect(credentialLine()!.textContent).toBe(BLANK_COPY);
+    expect(document.body.textContent).not.toContain("⚠ No API key");
+    // DESCRIBES, does not mark: an untouched picker is not a rejected input.
+    expect(picker().getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("leaves the NOTES on the stored-provider fallback while the line drops it", () => {
+    // The boundary DW-505 draws. `effectiveProvider` keeps the fallback for the
+    // Custom/Ollama blocks — a deployment already storing `custom` needs the
+    // pointer on first paint (`ProviderForm.tsx:110-113`) — and only the
+    // credential line, which is a statement about the SELECTION, reads the
+    // picker's own value.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "",
+          settings: settings({ provider: "custom", hasApiKey: true }),
+        })}
+      />,
+    );
+
+    // The note is on screen and still announced with the control.
+    const note = document.getElementById("providerCustomEndpoint");
+    expect(note).not.toBeNull();
+    expect(note!.textContent).toContain(SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY);
+    expect(picker().getAttribute("aria-describedby")).toBe(
+      "providerCredentialStatus providerCustomEndpoint",
+    );
+    // …and the line beside it still says the selection is absent.
+    expect(credentialLine()!.textContent).toBe(BLANK_COPY);
+  });
+
+  it("keeps the Ollama block on the fallback too, blank pick or not", () => {
+    // The same exception, said for the other reader of `effectiveProvider`: a
+    // stored `ollama` still renders its endpoint field before the owner has
+    // touched the select.
+    render(
+      <ProviderForm
+        {...props({ provider: "", settings: settings({ provider: "ollama" }) })}
+      />,
+    );
+
+    expect(screen.getByLabelText(/Ollama Base URL/)).toBeTruthy();
+    expect(credentialLine()!.textContent).toBe(BLANK_COPY);
+  });
+
+  it("reads the three existing branches off the picker once a provider IS selected", () => {
+    // The other half of the boundary: a real selection must announce exactly
+    // what it announced before this change.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "openai",
+          settings: settings({ provider: "openai", hasApiKey: true }),
+        })}
+      />,
+    );
+    expect(credentialLine()!.textContent).toBe("✓ API key configured on server");
+    cleanup();
+
+    render(
+      <ProviderForm
+        {...props({
+          provider: "openai",
+          settings: settings({ provider: "openai", hasApiKey: false }),
+        })}
+      />,
+    );
+    expect(credentialLine()!.textContent).toBe(
+      "⚠ No API key — set via server environment variables",
+    );
+    cleanup();
+
+    render(
+      <ProviderForm
+        {...props({
+          provider: "openai",
+          settings: settings({ provider: "anthropic", hasApiKey: true }),
+        })}
+      />,
+    );
+    expect(credentialLine()!.textContent).toBe(
+      "Save this selection to check its server credential",
+    );
+  });
+});
+
+describe("ProviderForm announces the model box's default-model hint (DW-506)", () => {
+  /**
+   * The hint COMPOSES with the read-only sentence rather than being replaced by
+   * it (DW-506).
+   *
+   * The input's attribute used to be `readOnly ? describedBy : undefined` — a
+   * choice, so the hint never composed and on a writable deployment was never
+   * announced at all, the same harm class as DW-400/DW-419/DW-420. The hint
+   * `<p>` renders on both branches of the env/editable ternary, so its id is
+   * unconditional.
+   */
+  const HINT_COPY = "Leave empty to use the default model for the selected provider.";
+
+  function hint(): HTMLElement | null {
+    return document.getElementById("providerModelHint");
+  }
+
+  it("names the hint alone on a writable deployment", () => {
+    render(
+      <ProviderForm
+        {...props({ settings: settings({ modelSource: "config", model: "llama3.1" }) })}
+      />,
+    );
+
+    const input = screen.getByLabelText(/^Model/) as HTMLInputElement;
+    expect(input.getAttribute("aria-describedby")).toBe("providerModelHint");
+    // The id RESOLVES, and to the node carrying the sentence — an attribute
+    // pointing at nothing announces nothing.
+    expect(hint()!.textContent).toBe(HINT_COPY);
+    expect(input.readOnly).toBe(false);
+  });
+
+  it("COMPOSES with the read-only sentence, which stays FIRST", () => {
+    // Both apply at once on a read-only deployment, and each answers a
+    // different question — why the box refuses edits, and what an empty box
+    // would do. `describedBy` leads, matching the picker and the Ollama input
+    // so one page announces its refusal in one position.
+    render(
+      <ProviderForm
+        {...props({
+          readOnly: true,
+          describedBy: "readOnlyNote",
+          settings: settings({ modelSource: "config", model: "llama3.1" }),
+        })}
+      />,
+    );
+
+    const input = screen.getByLabelText(/^Model/) as HTMLInputElement;
+    expect(input.getAttribute("aria-describedby")).toBe("readOnlyNote providerModelHint");
+    // The id this component owns resolves; `readOnlyNote` is the PAGE's node.
+    expect(hint()).not.toBeNull();
+    expect(input.readOnly).toBe(true);
+  });
+
+  it("leaves the ENV-LOCKED box unattributed, with the hint still in the document", () => {
+    // The locked branch is a plain non-focusable `<div>` with no role, and
+    // assistive tech does not expose a description on one — so it carries no
+    // `aria-describedby` to pretend otherwise, exactly as
+    // `EmbeddingSettings`'s locked branch does not. Reading order carries the
+    // hint here, and the `<p>` and its id are outside the ternary, so both are
+    // still there.
+    render(
+      <ProviderForm
+        {...props({
+          model: "",
+          settings: settings({ modelSource: "env", model: "gpt-4o" }),
+        })}
+      />,
+    );
+
+    expect(document.getElementById("model")).toBeNull();
+    const box = screen.getByText("gpt-4o");
+    expect(box.getAttribute("aria-describedby")).toBeNull();
+    expect(hint()!.textContent).toBe(HINT_COPY);
+  });
+
+  it("resolves every id the model box announces, on both deployments", () => {
+    // The page-level invariant, said where the composition is built — and said
+    // over the two deployments that produce DIFFERENT lists. The read-only
+    // iteration hands `describedBy` down as the page does, without which both
+    // iterations would emit the same single id and the second would prove
+    // nothing its name claims.
+    for (const [readOnly, expected] of [
+      [false, ["providerModelHint"]],
+      [true, ["readOnlyNote", "providerModelHint"]],
+    ] as const) {
+      render(
+        <ProviderForm
+          {...props({
+            readOnly,
+            describedBy: readOnly ? "readOnlyNote" : undefined,
+            settings: settings({ modelSource: "config", model: "llama3.1" }),
+          })}
+        />,
+      );
+      const ids = (
+        (screen.getByLabelText(/^Model/) as HTMLInputElement).getAttribute(
+          "aria-describedby",
+        ) ?? ""
+      )
+        .split(" ")
+        .filter(Boolean);
+      expect(ids, String(readOnly)).toEqual(expected);
+      // Only the ids this component MINTS are walked: `readOnlyNote` is the
+      // PAGE's node and is not rendered here.
+      for (const id of ids.filter((i) => i !== "readOnlyNote")) {
+        expect(document.getElementById(id), id).not.toBeNull();
+      }
+      cleanup();
+    }
+  });
+});

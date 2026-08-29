@@ -251,7 +251,11 @@ describe("/settings surfaces the STORED vector state (DW-327)", () => {
     await waitFor(() => expect(vectorNotice()).not.toBeNull());
 
     const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
-    expect(input.getAttribute("aria-describedby")).toBe("embeddingVectorNotice");
+    // The notice composes with the box's own default-model hint (DW-506) — two
+    // sentences about the same control, neither replacing the other.
+    expect(input.getAttribute("aria-describedby")).toBe(
+      "embeddingVectorNotice embeddingModelHint",
+    );
     expect(input.getAttribute("aria-invalid")).toBeNull();
     expect(
       (screen.getByRole("button", { name: "Save Settings" }) as HTMLButtonElement)
@@ -321,7 +325,11 @@ describe("/settings surfaces the STORED vector state (DW-327)", () => {
     // `querySelector("[aria-describedby]")` would be a claim about other
     // controls' descriptions, which is not what this case is about.
     const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
-    expect(input.getAttribute("aria-describedby")).toBeNull();
+    // The box names its default-model hint and NOTHING else — the vector
+    // notice's absence is the claim, so it is made against that id rather than
+    // against the attribute being empty (DW-506 gave the box a standing
+    // description).
+    expect(input.getAttribute("aria-describedby")).toBe("embeddingModelHint");
     expect(
       document.querySelector('[aria-describedby~="embeddingVectorNotice"]'),
     ).toBeNull();
@@ -605,5 +613,69 @@ describe("/settings associates each Custom note with its own picker (DW-400)", (
     // The extraction picker has neither node, so it stays undescribed — the
     // ids are per-panel, not per-page.
     expect(extractionPicker().hasAttribute("aria-describedby")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A blank picker over a stored provider, on the real page (DW-505)
+// ---------------------------------------------------------------------------
+
+/**
+ * The claim that only exists once the payload, the hook and the form are wired.
+ *
+ * DW-505's defect is not a property of `ProviderForm` in isolation — it is a
+ * property of the CHAIN. `useSettings.ts:232-235` seeds the form's `provider`
+ * from the payload only when `providerSource === "config"`, so an `env`-sourced
+ * deployment leaves the picker on `— Select provider —` with a stored provider
+ * behind it, and the credential line then announced THAT provider's key state
+ * (and, since DW-420, the picker announced it too) beside a control showing no
+ * selection.
+ *
+ * A component mount cannot pin this: it hands `provider: ""` in by hand, which
+ * assumes the very thing the hook is what establishes. Every other page fixture
+ * in this suite seeds `providerSource: "config"`, so the picker is never blank
+ * anywhere else here either. `/settings` is the only place the served payload
+ * reaches the blank option and the sentence beside it at the same time.
+ */
+describe("/settings tells the truth about a BLANK picker (DW-505)", () => {
+  /**
+   * The literal DW-505 deployment: `LLM_PROVIDER=openai` with a key on the
+   * server. `hasApiKey: true` is load-bearing — it is the branch that used to
+   * win, so it is the one whose absence proves the fix.
+   */
+  const ENV_SOURCED = {
+    provider: "openai",
+    providerSource: "env",
+    hasApiKey: true,
+  } as const;
+
+  function picker(): HTMLSelectElement {
+    return document.getElementById("provider") as HTMLSelectElement;
+  }
+
+  it("says the selection is absent rather than naming the stored provider's key", async () => {
+    stubFetch(body(ENV_SOURCED));
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(picker()).not.toBeNull());
+    await waitFor(() =>
+      expect(document.getElementById("providerCredentialStatus")).not.toBeNull(),
+    );
+
+    // The blank option really is what rendered — the premise the whole case
+    // rests on, read off the mounted page rather than assumed.
+    expect(picker().value).toBe("");
+
+    // THE assertion. What the owner hears is about the control in front of
+    // them, not about a provider the environment set behind it.
+    expect(document.getElementById("providerCredentialStatus")!.textContent).toBe(
+      "Select a provider to check its server credential",
+    );
+    expect(document.body.textContent).not.toContain("✓ API key configured on server");
+
+    // The line still renders and the picker still points at it: DW-505 changed
+    // the SENTENCE, never when the node or its id exist.
+    expect(picker().getAttribute("aria-describedby")).toBe("providerCredentialStatus");
+    expectEveryDescribedIdResolves();
   });
 });

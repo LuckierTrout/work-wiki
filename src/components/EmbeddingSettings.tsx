@@ -112,6 +112,28 @@ const OVERRIDE_NOTE_ID = "embeddingModelOverride";
  */
 const VECTOR_NOTICE_ID = "embeddingVectorNotice";
 
+/**
+ * The id the default-model hint is announced under (DW-506).
+ *
+ * The sentence below the field — "Leave empty to use the embedding provider
+ * default.", or the Workers AI dimensions note on the locked branch — sat
+ * beside the input with nothing tying the two together, which is the gap
+ * `SettingsCanvas.tsx:561,614` states the convention against: a hint merely
+ * adjacent to a control is invisible to a screen reader, so the owner heard the
+ * label and never what an empty box would do.
+ *
+ * UNCONDITIONAL, unlike the two notes above: that `<p>` renders on both
+ * branches of the env/editable ternary, so the id is always in the document and
+ * the "never name an absent element" rule is satisfied by construction rather
+ * than by a gate. It joins `notes` between {@link VECTOR_NOTICE_ID} and the
+ * page's read-only id, which is DOM reading order for the three nodes this
+ * component owns.
+ *
+ * DESCRIBES, does not mark, like the other two: an empty box is the documented
+ * way to ask for the provider default, not an error.
+ */
+const MODEL_HINT_ID = "embeddingModelHint";
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -167,6 +189,13 @@ export function EmbeddingSettings({
     [
       showOverrideNote ? OVERRIDE_NOTE_ID : null,
       showVectorNotice ? VECTOR_NOTICE_ID : null,
+      // Unconditional, and in DOM reading order between the vector notice and
+      // the page's read-only id — the hint `<p>` renders below both notes and
+      // above nothing this component points at. `readOnlyNoteId` keeps the
+      // position it already held rather than being pulled to the front: it is
+      // the PAGE's node, sitting above this whole section, and the three ids
+      // this component owns are what this list orders.
+      MODEL_HINT_ID,
       readOnlyNoteId,
     ]
       .filter((id): id is string => id !== null)
@@ -247,7 +276,12 @@ export function EmbeddingSettings({
           {vectorNotice}
         </p>
       )}
-      <p className="mt-1 text-xs text-foreground/40">
+      {/*
+        OUTSIDE the env/editable ternary above, so its id is unconditional —
+        whichever sentence the branch selects, the node named by
+        {@link MODEL_HINT_ID} is in the document.
+      */}
+      <p id={MODEL_HINT_ID} className="mt-1 text-xs text-foreground/40">
         {modelSource === "env" && effectiveModel === "@cf/baai/bge-m3"
           ? "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index."
           : "Leave empty to use the embedding provider default."}

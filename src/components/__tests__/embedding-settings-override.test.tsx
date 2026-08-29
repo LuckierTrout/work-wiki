@@ -45,6 +45,33 @@ function overrideNote(): HTMLElement | null {
   return document.getElementById("embeddingModelOverride");
 }
 
+/**
+ * No node in this component carries a DANGLING `aria-describedby` (DW-506).
+ *
+ * The component-level twin of the parity suite's
+ * `expectEveryDescribedIdResolves()`, kept as its own helper because the cases
+ * below no longer cover it by accident. They used to assert
+ * `document.querySelector("[aria-describedby]")` is null — a net that happened
+ * to prove "nothing dangles" only because nothing described anything at all.
+ * The model box now carries a standing description, so each of those nets is
+ * narrowed to the one id its case is actually about, and this walks what the
+ * net used to: every id every control names resolves to a node in the document,
+ * and a control carrying the attribute names at least one — `""` is an
+ * attribute pointing at nothing, which is worse than no attribute.
+ */
+function expectNoDanglingDescribedIds(): void {
+  for (const control of Array.from(document.querySelectorAll("[aria-describedby]"))) {
+    const ids = (control.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter(Boolean);
+    expect(ids.length, control.id || control.tagName).toBeGreaterThan(0);
+    for (const id of ids) {
+      expect(document.getElementById(id), `${control.id || control.tagName} -> ${id}`)
+        .not.toBeNull();
+    }
+  }
+}
+
 afterEach(() => {
   cleanup();
 });
@@ -102,7 +129,11 @@ describe("EmbeddingSettings — the model that actually embeds", () => {
     const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
     expect(input.value).toBe("@cf/baai/bge-m3");
     // Described, not marked invalid: a mismatch is a sentence, not a rejection.
-    expect(input.getAttribute("aria-describedby")).toBe("embeddingModelOverride");
+    // The default-model hint is announced alongside it (DW-506) — it describes
+    // the same box and is on screen whichever branch rendered.
+    expect(input.getAttribute("aria-describedby")).toBe(
+      "embeddingModelOverride embeddingModelHint",
+    );
     expect(input.getAttribute("aria-invalid")).toBeNull();
 
     expect(overrideNote()?.textContent).toContain("nomic-embed-text");
@@ -128,8 +159,15 @@ describe("EmbeddingSettings — the model that actually embeds", () => {
 
     expect(overrideNote()).toBeNull();
     expect(document.body.textContent).not.toContain("Not in effect");
-    // …and nothing points at the note that was not rendered.
-    expect(document.querySelector("[aria-describedby]")).toBeNull();
+    // …and nothing points at the note that was not rendered. Scoped to that id
+    // rather than to "nothing describes anything": the box legitimately names
+    // its default-model hint (DW-506), which is not this case's claim.
+    expect(
+      document.querySelector('[aria-describedby~="embeddingModelOverride"]'),
+    ).toBeNull();
+    // …and the invariant the page-wide net used to cover, kept as its own
+    // claim rather than as a side effect of nothing describing anything.
+    expectNoDanglingDescribedIds();
   });
 
   it("renders no note at all when nothing is being substituted", () => {
@@ -151,7 +189,12 @@ describe("EmbeddingSettings — the model that actually embeds", () => {
 
       expect(overrideNote()).toBeNull();
       expect(document.body.textContent).not.toContain("Not in effect");
-      expect(document.querySelector("[aria-describedby]")).toBeNull();
+      // Scoped to the override id, for the reason the case above states: the
+      // model box still names its own default-model hint (DW-506).
+      expect(
+        document.querySelector('[aria-describedby~="embeddingModelOverride"]'),
+      ).toBeNull();
+      expectNoDanglingDescribedIds();
       cleanup();
     }
   });
@@ -184,7 +227,12 @@ describe("EmbeddingSettings — the override note and the vector notice together
     const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
     const ids = (input.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
 
-    expect(ids).toEqual(["embeddingModelOverride", "embeddingVectorNotice"]);
+    // In DOM reading order, the hint last of the three this component owns.
+    expect(ids).toEqual([
+      "embeddingModelOverride",
+      "embeddingVectorNotice",
+      "embeddingModelHint",
+    ]);
     // Every announced id RESOLVES — an `aria-describedby` naming an element
     // that is not in the document announces nothing at all.
     for (const id of ids) {
@@ -206,7 +254,7 @@ describe("EmbeddingSettings — the override note and the vector notice together
       (screen.getByLabelText(/Embedding Model/) as HTMLInputElement).getAttribute(
         "aria-describedby",
       ),
-    ).toBe("embeddingModelOverride");
+    ).toBe("embeddingModelOverride embeddingModelHint");
     expect(vectorNotice()).toBeNull();
     cleanup();
 
@@ -215,7 +263,7 @@ describe("EmbeddingSettings — the override note and the vector notice together
       (screen.getByLabelText(/Embedding Model/) as HTMLInputElement).getAttribute(
         "aria-describedby",
       ),
-    ).toBe("embeddingVectorNotice");
+    ).toBe("embeddingVectorNotice embeddingModelHint");
     expect(overrideNote()).toBeNull();
   });
 
@@ -231,8 +279,121 @@ describe("EmbeddingSettings — the override note and the vector notice together
         />,
       );
       expect(vectorNotice()).toBeNull();
-      expect(document.querySelector("[aria-describedby]")).toBeNull();
+      // No DANGLING pointer at the notice that did not render. Scoped to its
+      // own id: the box still names its default-model hint (DW-506), and a
+      // page-wide net would be a claim about that instead.
+      expect(
+        document.querySelector('[aria-describedby~="embeddingVectorNotice"]'),
+      ).toBeNull();
+      expectNoDanglingDescribedIds();
       cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The default-model hint is ANNOUNCED, not merely placed beside the box (DW-506)
+// ---------------------------------------------------------------------------
+
+describe("EmbeddingSettings — the default-model hint", () => {
+  /** The hint, or null when the component rendered none. */
+  function hint(): HTMLElement | null {
+    return document.getElementById("embeddingModelHint");
+  }
+
+  const DEFAULT_COPY = "Leave empty to use the embedding provider default.";
+  const WORKERS_AI_COPY =
+    "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.";
+
+  it("is announced whenever the editable input renders, and resolves", () => {
+    // The commonest shape of all: no substitution, no vector notice, writable.
+    // The sentence used to sit beside this box with nothing tying the two
+    // together — the gap `SettingsCanvas.tsx`'s rows state the convention
+    // against — so the owner heard the label and never what an empty box does.
+    render(<EmbeddingSettings {...props({ modelSource: "config" })} />);
+
+    const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
+    expect(input.getAttribute("aria-describedby")).toBe("embeddingModelHint");
+    expect(hint()!.textContent).toBe(DEFAULT_COPY);
+    // DESCRIBES, does not mark: an empty box is how the provider default is
+    // asked for, not an error.
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+  });
+
+  it("COMPOSES with the page's read-only sentence rather than being replaced by it", () => {
+    // The read-only id keeps the position it already held — last — and the
+    // three ids this component owns are what the list orders.
+    render(
+      <EmbeddingSettings
+        {...props({
+          modelSource: "config",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+        })}
+      />,
+    );
+
+    const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
+    expect(input.getAttribute("aria-describedby")).toBe(
+      "embeddingModelHint readOnlyNote",
+    );
+    // The id this component owns resolves; `readOnlyNote` is the PAGE's node.
+    expect(hint()).not.toBeNull();
+    expect(input.readOnly).toBe(true);
+  });
+
+  it("names all FOUR ids when every condition holds at once", () => {
+    // The full composition, which no other case reaches: a read-only
+    // deployment that is ALSO substituting a model and reporting an inactive
+    // switch. Each id answers a different question, so none may displace
+    // another — and the order is the three this component owns in DOM reading
+    // order, with the page's node in the position it already held.
+    render(
+      <EmbeddingSettings
+        {...props({
+          modelSource: "config",
+          embeddingModel: "@cf/baai/bge-m3",
+          effectiveModel: "@cf/baai/bge-m3",
+          modelInEffect: "nomic-embed-text",
+          overridden: true,
+          vectorNotice:
+            "Vector search is switched on, but it needs an endpoint and an API key before it can run.",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+        })}
+      />,
+    );
+
+    const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
+    const ids = (input.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+    expect(ids).toEqual([
+      "embeddingModelOverride",
+      "embeddingVectorNotice",
+      "embeddingModelHint",
+      "readOnlyNote",
+    ]);
+    // The three this component MINTS resolve; `readOnlyNote` is the PAGE's node
+    // and is not rendered here.
+    for (const id of ids.filter((i) => i !== "readOnlyNote")) {
+      expect(document.getElementById(id)).not.toBeNull();
+    }
+  });
+
+  it("carries whichever sentence the branch selects, and keeps its id on the locked one", () => {
+    // The `<p>` is OUTSIDE the env/editable ternary, so the id is
+    // unconditional — that is what makes "never names an absent element" true
+    // by construction rather than by a gate. The locked `<div>` still carries
+    // no `aria-describedby`: assistive tech does not expose a description on a
+    // plain non-focusable div, so reading order is what carries it there.
+    render(
+      <EmbeddingSettings
+        {...props({ modelSource: "env", effectiveModel: "@cf/baai/bge-m3" })}
+      />,
+    );
+
+    expect(screen.queryByLabelText(/Embedding Model/)).toBeNull();
+    const box = screen.getByText("@cf/baai/bge-m3");
+    expect(box.getAttribute("aria-describedby")).toBeNull();
+    expect(hint()!.textContent).toBe(WORKERS_AI_COPY);
   });
 });

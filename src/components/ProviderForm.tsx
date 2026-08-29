@@ -112,8 +112,34 @@ export function ProviderForm({
    * on first paint, before the owner has touched the select.
    */
   const showCustom = effectiveProvider === "custom";
+  /**
+   * The PICKER's own value, and the deliberate exception to `:110-113` (DW-505).
+   *
+   * Every other reader above reads `effectiveProvider`, and the `showCustom`
+   * argument three lines up is why: a deployment already STORING a provider
+   * needs the notes on first paint, before the owner has touched the select.
+   * That argument is about a control the owner has NOT moved — the notes point
+   * at configuration that exists whether or not the select has been touched.
+   *
+   * The credential line is the one thing on this form that is a statement
+   * ABOUT THE SELECTION, so the fallback inverts there: `useSettings.ts:232-235`
+   * seeds `provider` from the payload only when `providerSource === "config"`,
+   * so an `env`- or `default`-sourced deployment paints `— Select provider —`
+   * with a stored provider behind it — and `effectiveProvider` then made the
+   * line announce THAT provider's key state (and, since DW-420 pointed the
+   * picker's `aria-describedby` at it, made the picker announce it too) while
+   * the control visibly showed no selection at all. Nothing is withheld by not
+   * naming the stored provider here: `page.tsx:137-160` already states the
+   * effective provider and its readiness above this form.
+   *
+   * `null` for the blank option, so the four branches below are chosen off a
+   * value that means what the owner can see.
+   */
+  const selectedProvider = provider || null;
   const selectedProviderHasKey =
-    settings?.provider === effectiveProvider && settings.hasApiKey;
+    selectedProvider !== null &&
+    settings?.provider === selectedProvider &&
+    settings.hasApiKey;
   /**
    * ONE condition, read by both the credential-status line and the
    * `aria-describedby` that points at it (DW-420).
@@ -203,6 +229,41 @@ export function ProviderForm({
       .filter((id): id is string => Boolean(id))
       .join(" ") || undefined;
 
+  /**
+   * The MODEL box's descriptions, composed the same way (DW-506).
+   *
+   * "Leave empty to use the default model for the selected provider." sat
+   * beside this input with nothing tying the two together, and the input's
+   * attribute was `readOnly ? describedBy : undefined` — a CHOICE, so the hint
+   * never composed and, on a writable deployment, was never announced at all.
+   * The same harm class as DW-400/DW-419/DW-420, and the same fix:
+   * `SettingsCanvas.tsx:561,614` states the convention that a hint merely
+   * adjacent to a control is invisible to a screen reader.
+   *
+   * The hint `<p>` renders on BOTH branches of the env/editable ternary below —
+   * it is outside it — so its id is unconditional, unlike the picker's
+   * conditional notes. `describedBy` stays FIRST, matching the picker
+   * (DW-400/DW-419) and the endpoint input (DW-402): every control THIS FORM
+   * renders announces the page's read-only sentence in the same position.
+   *
+   * Scoped to this form deliberately. `EmbeddingSettings`' `notes` puts the
+   * page's read-only id LAST, so on a read-only `/settings` the two model boxes
+   * announce that one banner sentence in opposite positions. That is a
+   * pre-existing inconsistency and this change does not move it: reordering
+   * either composition would be a change to a control's announced description
+   * that neither DW-505 nor DW-506 asks for.
+   *
+   * `|| undefined` is kept even though `modelHintId` is unconditional today: it
+   * is the invariant all four compositions in this file and `EmbeddingSettings`
+   * state, and one of them differing for a reason that is true only now is the
+   * drift these comments argue against.
+   */
+  const modelHintId = "providerModelHint";
+  const modelDescribedBy =
+    [readOnly ? describedBy : undefined, modelHintId]
+      .filter((id): id is string => Boolean(id))
+      .join(" ") || undefined;
+
   return (
     <>
       {/* Provider */}
@@ -245,11 +306,26 @@ export function ProviderForm({
         */}
         {showCredentialStatus && (
           <p id={credentialStatusId} className="mt-2 text-xs text-foreground/40">
-            {selectedProviderHasKey
-              ? "✓ API key configured on server"
-              : settings.provider === effectiveProvider
-                ? "⚠ No API key — set via server environment variables"
-                : "Save this selection to check its server credential"}
+            {/*
+              THE BLANK BRANCH IS FIRST (DW-505). It is a state of the control,
+              not of the store, so it is decided before any of the three
+              provider branches gets to speak — and `settings.provider === null`
+              would otherwise fall straight through to "⚠ No API key" on a
+              deployment that has simply never stored one.
+
+              A SENTENCE rather than a hidden line: hiding it would change WHEN
+              this node renders, which is the one thing `showCredentialStatus`
+              above exists to keep as a single condition shared with
+              `credentialStatusId`, and the id would drop out of a composition
+              the page-level suites assert.
+            */}
+            {selectedProvider === null
+              ? "Select a provider to check its server credential"
+              : selectedProviderHasKey
+                ? "✓ API key configured on server"
+                : settings.provider === selectedProvider
+                  ? "⚠ No API key — set via server environment variables"
+                  : "Save this selection to check its server credential"}
           </p>
         )}
       </div>
@@ -264,6 +340,12 @@ export function ProviderForm({
           {settings && <SourceBadge source={settings.modelSource} />}
         </label>
         {settings?.modelSource === "env" ? (
+          // NO `aria-describedby` here, deliberately — the same reasoning
+          // `EmbeddingSettings.tsx`'s locked branch spells out: this is a plain
+          // non-focusable `<div>` with no role, and assistive tech does not
+          // expose a description on one, so the attribute would be decoration.
+          // Reading order is what carries the hint on this branch; the editable
+          // branch below takes the attribute because an `<input>` IS exposed.
           <div className="mt-1.5 rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono">
             {settings.model}
           </div>
@@ -276,7 +358,7 @@ export function ProviderForm({
             // `readOnly`, not `disabled`: the stored model stays selectable,
             // copyable and in the tab order, which is the whole point.
             readOnly={readOnly}
-            aria-describedby={readOnly ? describedBy : undefined}
+            aria-describedby={modelDescribedBy}
             placeholder={
               effectiveProvider
                 ? DEFAULT_MODELS[effectiveProvider] ?? "Enter model name"
@@ -285,7 +367,13 @@ export function ProviderForm({
             className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
           />
         )}
-        <p className="mt-1 text-xs text-foreground/40">
+        {/*
+          OUTSIDE the ternary above, so the id is unconditional — the hint is
+          true of both spellings of this control, and the id lives in the const
+          the composition reads so the attribute and the node can never name
+          different strings.
+        */}
+        <p id={modelHintId} className="mt-1 text-xs text-foreground/40">
           Leave empty to use the default model for the selected provider.
         </p>
       </div>

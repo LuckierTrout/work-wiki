@@ -379,13 +379,37 @@ describe("/settings is unchanged on a writable deployment — the control case",
       expect(control.hasAttribute("aria-disabled"), label(control)).toBe(false);
     }
 
-    // Nothing REFUSES, so nothing describes a refusal. The provider picker is
-    // split out below rather than dropped: it now legitimately describes its
-    // credential state (DW-420), which is not a refusal and must not be
-    // mistaken for one by a suite that pins refusal.
-    for (const control of controls.filter((c) => c.id !== "provider")) {
+    // Nothing REFUSES, so nothing describes a refusal. Three controls are split
+    // out rather than dropped: the picker describes its credential state
+    // (DW-420) and the two model boxes describe their default-model hints
+    // (DW-506). None of those is a refusal, and a suite that pins refusal must
+    // not mistake them for one — so they assert what they DO say instead.
+    const DESCRIBES_SOMETHING = new Set(["provider", "model", "embeddingModel"]);
+    for (const control of controls.filter((c) => !DESCRIBES_SOMETHING.has(c.id))) {
       expect(control.getAttribute("aria-describedby"), label(control)).toBeNull();
     }
+    // Every id those three name resolves, and none of the nodes is the
+    // read-only banner — which this deployment does not render at all. That is
+    // the suite's actual claim about them: no refusal is being announced.
+    for (const control of controls.filter((c) => DESCRIBES_SOMETHING.has(c.id))) {
+      const ids = (control.getAttribute("aria-describedby") ?? "")
+        .split(" ")
+        .filter(Boolean);
+      expect(ids.length, label(control)).toBeGreaterThan(0);
+      for (const id of ids) {
+        const node = document.getElementById(id);
+        expect(node, `${label(control)} -> ${id}`).not.toBeNull();
+        expect(node!.textContent, `${label(control)} -> ${id}`).not.toContain(
+          "Read-only mode",
+        );
+      }
+    }
+    // The model boxes name EXACTLY their hints on a writable deployment: the
+    // read-only sentence is the only other thing that composes into either.
+    expect(field("model").getAttribute("aria-describedby")).toBe("providerModelHint");
+    expect(field("embeddingModel").getAttribute("aria-describedby")).toBe(
+      "embeddingModelHint",
+    );
 
     // The picker names EXACTLY its credential line — not the read-only
     // sentence, which this deployment does not render at all.

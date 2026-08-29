@@ -4543,7 +4543,9 @@ source_spec: `spec-dw-419-420-provider-picker-a11y-associations.md`
 location: src/components/ProviderForm.tsx:96
 severity: medium
 reason: `ProviderForm.tsx:96` derives `effectiveProvider = provider || settings?.provider || null`, so clearing the select to `""` falls back to the stored provider. The credential line — and now, through `aria-describedby`, the picker itself — keeps reporting that provider's key state while the control visibly shows no selection. Pre-existing: the fallback and the line's copy both predate this change, which only made the sentence audible. Deliberate for the notes (the file's :110-113 comment argues a deployment already STORING `custom` needs the pointer on first paint), but never reasoned about for the credential line, and no test covers the blank-option state.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-provider-form-a11y-and-blank-state
+resolution-undo: 3e2d5baff6802c382679716007ee154ee8811511d2a1859edf259f294a8ab014 2026-08-29 7374617475733a206f70656e
 
 ### DW-506: The model input's "Leave empty to use the default model" hint is the same unassociated-sibling shape, four lines from the two this story fixed.
 origin: spec-deferred cef642ce43c1
@@ -4551,7 +4553,9 @@ source_spec: `spec-dw-419-420-provider-picker-a11y-associations.md`
 location: src/components/ProviderForm.tsx:288
 severity: medium
 reason: `ProviderForm.tsx:288-290` renders that sentence directly under `#model` with no `id`, and the input's `aria-describedby` is still `readOnly ? describedBy : undefined` — it never composes. It is the same harm class as DW-400/DW-419/DW-420: a hint beside a control is invisible to a screen reader, which is the convention `SettingsCanvas.tsx:346-362` states. `EmbeddingSettings.tsx:213` has the identical shape. Out of scope here on the intent's own authority — the bundle names only the two picker-adjacent nodes — and the spec's Never clause repeats that.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-provider-form-a11y-and-blank-state
+resolution-undo: 3e2d5baff6802c382679716007ee154ee8811511d2a1859edf259f294a8ab014 2026-08-29 7374617475733a206f70656e
 
 ### DW-507: Under an EMBEDDING_PROVIDER pin the provider row's hint still ends "What you save here applies only once that variable is unset", which promises a save the pin now refuses.
 origin: spec-deferred 9522d426da47
@@ -4979,4 +4983,36 @@ location: src/lib/workbench-settings.ts:3087-3120
 source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
 severity: low
 reason: The Design Notes enumerate exactly three verdicts, and `saveWorkbenchSettings` cannot currently construct the fourth — but the type permits it, no test pins that the two are never both true, and a future construction site could produce it silently. A single discriminated `verdict: "refused" | "unconfirmed" | "unreadable"` would make it unconstructible; changing the shape now would touch every call site and every assertion.
+status: open
+
+### DW-559: Both model hints instruct the owner to empty a box that the env-locked branch renders as a non-editable div.
+origin: spec-deferred 244ab0dbc5d6
+location: src/components/ProviderForm.tsx:368 and src/components/EmbeddingSettings.tsx:284
+source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
+severity: medium
+reason: `ProviderForm.tsx` renders "Leave empty to use the default model for the selected provider." below the model control on BOTH branches of the env/editable ternary, and `EmbeddingSettings.tsx`'s hint only swaps copy for `modelSource === "env" && effectiveModel === "@cf/baai/bge-m3"` — any other env-pinned embedding model falls through to "Leave empty to use the embedding provider default.". On an `LLM_MODEL`/`EMBEDDING_MODEL` deployment there is no input to empty, so the sentence is advice the control refuses. Pre-existing: the copy and its placement both predate this change, which only gave the node an id. Not fixed here because the intent scopes this bundle to ASSOCIATING the existing sentences, not to rewording them.
+status: open
+
+### DW-560: The page's one read-only sentence is announced in opposite positions on the two model boxes of the same `/settings` page.
+origin: spec-deferred 5dbca5767630
+location: src/components/EmbeddingSettings.tsx:190-200
+source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
+severity: medium
+reason: `ProviderForm`'s compositions put `describedBy` FIRST (DW-400/DW-402/ DW-419), while `EmbeddingSettings`' `notes` array puts `readOnlyNoteId` LAST. On a read-only deployment `#model` announces `readOnlyNote providerModelHint` and `#embeddingModel` announces `… embeddingModelHint readOnlyNote` — the same banner sentence, in two places. The divergence predates this change (the DW-402/DW-419 comments already claimed a page-wide ordering rule the embedding box never followed); this change only adds one more id after the banner there. The docstring at `ProviderForm.tsx:236` now scopes its claim and names the exception rather than asserting an invariant the page does not hold. Fixing it means moving `readOnlyNoteId` to the front of `EmbeddingSettings`' list, which is a change to a pre-existing ordering this bundle's Always clause forbade.
+status: open
+
+### DW-561: On a blank pick the model placeholder still names the STORED provider's default model while the credential line beside it says nothing is selected.
+origin: spec-deferred ba44856607a4
+location: src/components/ProviderForm.tsx:355
+source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
+severity: medium
+reason: `ProviderForm.tsx:355-359` keeps `DEFAULT_MODELS[effectiveProvider]`, so a blank picker over a stored `openai` shows placeholder `gpt-4o` one line below "Select a provider to check its server credential". Two statements about the same control now disagree, which is the DW-505 harm shape applied to a different node. Out of scope on the intent's own authority — it says to keep the stored-provider fallback for everything but the credential line — so the disagreement is a consequence this bundle was told to accept, not a deviation from it.
+status: open
+
+### DW-562: The env-locked model boxes have no accessible NAME — their `<label htmlFor>` points at an id no element carries.
+origin: spec-deferred 0af3363949ae
+location: src/components/ProviderForm.tsx:332 and src/components/EmbeddingSettings.tsx:210
+source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
+severity: medium
+reason: `ProviderForm.tsx` always renders `<label htmlFor="model">` and `EmbeddingSettings.tsx` always renders `<label htmlFor="embeddingModel">`, but on the `modelSource === "env"` branch the control is a plain `<div>` with no id, so both labels dangle and the locked value is announced with no name at all. Both files spend paragraphs arguing why a DESCRIPTION on a non-focusable div would be decoration; the missing NAME is a separate and larger gap and is argued nowhere. Pre-existing on both branches and untouched by this change.
 status: open
