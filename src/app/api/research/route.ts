@@ -96,7 +96,20 @@ export async function POST(request: Request) {
     ) {
       return NextResponse.json({ error: "title and question are required" }, { status: 400 });
     }
-    for (const field of ["queries", "sourceUrls", "pageSlugs"] as const) {
+    // DW-442. Creation no longer takes seed URLs: the first automated run
+    // overwrites `project.sourceUrls` with the provider's own results, so a
+    // supplied list was stored and then discarded. Refused rather than ignored
+    // — a 400 is the one answer that cannot be mistaken for the old behaviour,
+    // where the caller got a 201 and a project that dropped their seeds. The
+    // field's PRESENCE is what is refused, `[]` included, because an empty list
+    // is still a caller who believes the field does something.
+    if (body.sourceUrls !== undefined) {
+      return NextResponse.json(
+        { error: "sourceUrls is no longer accepted — an automated run collects its own sources." },
+        { status: 400 },
+      );
+    }
+    for (const field of ["queries", "pageSlugs"] as const) {
       if (body[field] !== undefined && (!Array.isArray(body[field]) || body[field].some((value) => typeof value !== "string"))) {
         return NextResponse.json({ error: `${field} must be a list of strings` }, { status: 400 });
       }
@@ -116,7 +129,6 @@ export async function POST(request: Request) {
       title: body.title,
       question: body.question,
       queries: body.queries as string[] | undefined,
-      sourceUrls: body.sourceUrls as string[] | undefined,
       pageSlugs: body.pageSlugs as string[] | undefined,
       // `wikiId` is the name the Workbench rail uses for the same thing, and
       // Graph/Review/mode-direct all read it from there. Accepting both spellings

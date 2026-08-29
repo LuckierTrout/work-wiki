@@ -85,18 +85,19 @@ afterEach(async () => {
 });
 
 describe("research projects", () => {
-  it("persists a source plan and synthesis per owner", async () => {
+  it("persists a brief with an empty source list, and its synthesis, per owner", async () => {
     const project = await createResearchProject("alice", {
       title: "Launch research",
       question: "What evidence supports the launch date?",
       queries: ["launch evidence", "launch evidence", "schedule risk"],
-      sourceUrls: ["https://example.com/brief", "javascript:alert(1)"],
       vaultId: "alice--launch",
     });
     expect(project).toMatchObject({
       status: "draft",
       queries: ["launch evidence", "schedule risk"],
-      sourceUrls: ["https://example.com/brief"],
+      // DW-442: creation takes no seed URLs, and the stored field still exists
+      // as the empty `string[]` the registry guard requires.
+      sourceUrls: [],
     });
     expect(await listResearchProjects("bob")).toEqual([]);
 
@@ -108,6 +109,66 @@ describe("research projects", () => {
       status: "complete",
       synthesis: "The launch date is supported by the approved brief.",
     });
+  });
+
+  /**
+   * DW-442. Creation stopped accepting `sourceUrls`, but the RUN still writes
+   * it — `research-runtime` patches `{ results, sourceUrls }` when a provider
+   * answers. These two rows are the whole remaining write path.
+   */
+  it("lands a run's collected source URLs through the patch", async () => {
+    const project = await createResearchProject("alice", {
+      title: "Launch research",
+      question: "What evidence supports the launch date?",
+    });
+    expect(project.sourceUrls).toEqual([]);
+
+    const updated = await updateResearchProject("alice", project.id, {
+      // The `javascript:` entry pins that `cleanUrls` is still reached on this
+      // path: the http/https filter moved, it did not go away.
+      sourceUrls: ["https://example.com/found", "javascript:alert(1)"],
+    });
+
+    expect(updated?.sourceUrls).toEqual(["https://example.com/found"]);
+  });
+
+  it("lands a title and collected URLs patched together", async () => {
+    // The `title`/`question` branch of `mutateProject` runs `cleanInput`, whose
+    // result is `Object.assign`ed onto the live project. While that helper
+    // still returned a `sourceUrls` key, a patch carrying BOTH dropped the URLs
+    // on the floor — so the URL line now runs after both branches.
+    const project = await createResearchProject("alice", {
+      title: "Launch research",
+      question: "What evidence supports the launch date?",
+    });
+
+    const updated = await updateResearchProject("alice", project.id, {
+      title: "Launch research (revised)",
+      sourceUrls: ["https://example.com/found"],
+    });
+
+    expect(updated).toMatchObject({
+      title: "Launch research (revised)",
+      sourceUrls: ["https://example.com/found"],
+    });
+  });
+
+  it("keeps collected URLs when a title-only edit follows the run", async () => {
+    // The other half: `cleanInput` must not return the key at all. Returning
+    // `[]` from it would wipe the run's collected URLs on any title edit.
+    const project = await createResearchProject("alice", {
+      title: "Launch research",
+      question: "What evidence supports the launch date?",
+    });
+    await updateResearchProject("alice", project.id, {
+      sourceUrls: ["https://example.com/found"],
+    });
+
+    const updated = await updateResearchProject("alice", project.id, {
+      title: "Launch research (revised)",
+    });
+
+    expect(updated?.sourceUrls).toEqual(["https://example.com/found"]);
   });
 
   it("deletes only from the owning workspace", async () => {

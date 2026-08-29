@@ -4036,7 +4036,9 @@ decision: 2026-08-26 Sniff, then refuse — When Content-Type is absent, sniff t
 origin: migrated from legacy ledger ("Deferred from: code review of spec-6-1-through-6-5-deep-research.md (2026-08-24)"), 2026-08-26
 location: src/lib/research-runtime.ts:682
 reason: Research creation still honours a caller-supplied `sourceUrls` list, but any automated run overwrites it with the provider's own results, so the field is accepted and then silently discarded. Deferred because the behaviour predates Epic 6's Workbench flow and belongs to the out-of-scope Knowledge Studio research desk.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-decision-dw-442
+resolution-undo: 92d359a3936d4daee6e56d3792bac58f226453fcacde09bb56c9e52e9a464593 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Drop the field — Remove sourceUrls from ResearchProjectInput, the create route and the Knowledge Studio form, so nothing collects a value the runtime discards.
 decision: 2026-08-26 Honour as seeds — Treat manual sourceUrls as seeds: merge them with provider results rather than overwriting at research-runtime.ts:1549, and label them as such in the form.
 
@@ -5379,4 +5381,12 @@ location: src/lib/embeddings.ts:1015 (searchByVector re-arm/warn branch chain)
 source_spec: `spec-dw-405-drift-rearm-labelled-proof.md`
 severity: low
 reason: The gate, the `warnOnceAbout` burn and the `rearmWarningAbout` delete all run after `await getStorage().queryEmbeddings(...)`, and nothing carries a sequence number across that await. A healthy read that resolves late therefore re-arms on evidence gathered before another query burnt the key, and the next drifted read emits a second line — the repetition DW-310's throttle exists to prevent. Pre-existing and independent of the gate's shape: it holds identically under DW-332's `kept.length > 0`, DW-404's whole-window gate and this one, so this change neither causes nor worsens it. Not reproduced by a test: it needs a specific interleave of concurrent in-flight queries, unlike DW-404's and DW-405's reproductions, which are deterministic on sequential reads. Cost when it does happen is one extra breadcrumb line, and a guard would mean threading a burn sequence number through the door.
+status: open
+
+### DW-603: `cleanUrls`' 40-item and 2000-character caps and its dedupe are untested on what is now the only write path for a project's source URLs.
+origin: spec-deferred 57ce341dfb77
+location: src/lib/research-projects.ts:140
+source_spec: `spec-dw-442-research-create-drops-source-urls.md`
+severity: low
+reason: Since DW-442 the run's patch is the sole writer of `project.sourceUrls` (`research-runtime.ts:1559` -> `updateResearchProject`). The store tests cover only the `javascript:` protocol filter. A run whose provider returns more than 40 unique results silently stores 40, and the Studio's "Collect N URLs" then ingests 40 of them with nothing saying so. The cap predates this change; only its exposure is new.
 status: open

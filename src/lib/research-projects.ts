@@ -103,11 +103,19 @@ export interface ResearchCompletion {
   writeAuthorizedAt?: string;
 }
 
+/**
+ * What a CALLER may state about a brief.
+ *
+ * DW-442: no `sourceUrls`. The stored {@link ResearchProject.sourceUrls} is the
+ * RUN's output — the first automated run overwrites it with the provider's own
+ * results — so a seed list supplied at creation was collected, stored, then
+ * silently discarded. The field now reaches the store only through
+ * `updateResearchProject`'s patch, whose one writer is the run.
+ */
 export interface ResearchProjectInput {
   title: string;
   question: string;
   queries?: readonly string[];
-  sourceUrls?: readonly string[];
   pageSlugs?: readonly string[];
   vaultId?: string | null;
 }
@@ -158,11 +166,13 @@ function cleanInput(input: ResearchProjectInput) {
   // to string-match: `POST /api/research` classifies by type alone.
   if (!title) throw new ClientInputError("Research title is required");
   if (!question) throw new ClientInputError("Research question is required");
+  // NO `sourceUrls` KEY, not even an empty one: `mutateProject` `Object.assign`s
+  // this result onto a LIVE project, so returning `[]` here would wipe a run's
+  // collected URLs on any title edit.
   return {
     title,
     question,
     queries: cleanList(input.queries, 16, 500),
-    sourceUrls: cleanUrls(input.sourceUrls),
     pageSlugs: cleanList(input.pageSlugs, 50, 240),
     ...(input.vaultId?.trim() ? { vaultId: input.vaultId.trim().slice(0, 240) } : {}),
   };
@@ -441,6 +451,12 @@ export async function createResearchProject(
     const project: ResearchProject = {
       id: crypto.randomUUID(),
       ...cleaned,
+      // AFTER the spread, so the empty list is authoritative in code rather
+      // than by convention: `cleanInput` no longer returns this key (DW-442),
+      // and if it ever did again, the create must still win. The row's SHAPE is
+      // unchanged — the `isResearchProject` guard still requires `string[]` —
+      // only the value, which is now always empty because only the run fills it.
+      sourceUrls: [],
       status: "draft",
       createdAt: now,
       updatedAt: now,
@@ -454,6 +470,12 @@ export async function updateResearchProject(
   owner: string,
   id: string,
   patch: Partial<ResearchProjectInput> & {
+    /**
+     * The run's own output, not a caller's seed list (DW-442). It lives here
+     * rather than on {@link ResearchProjectInput} because the ONE writer is
+     * `research-runtime`'s `updateResearchAttempt({ results, sourceUrls })`.
+     */
+    sourceUrls?: readonly string[];
     status?: ResearchProjectStatus;
     synthesis?: string | null;
     provider?: ResearchProject["provider"] | null;
@@ -524,20 +546,23 @@ async function mutateProject(
         title: patch.title ?? project.title,
         question: patch.question ?? project.question,
         queries: patch.queries ?? project.queries,
-        sourceUrls: patch.sourceUrls ?? project.sourceUrls,
         pageSlugs: patch.pageSlugs ?? project.pageSlugs,
         vaultId: patch.vaultId === undefined ? project.vaultId : patch.vaultId,
       });
       Object.assign(project, cleaned);
     } else {
       if (patch.queries !== undefined) project.queries = cleanList(patch.queries, 16, 500);
-      if (patch.sourceUrls !== undefined) project.sourceUrls = cleanUrls(patch.sourceUrls);
       if (patch.pageSlugs !== undefined) project.pageSlugs = cleanList(patch.pageSlugs, 50, 240);
       if (patch.vaultId !== undefined) {
         if (patch.vaultId?.trim()) project.vaultId = patch.vaultId.trim().slice(0, 240);
         else delete project.vaultId;
       }
     }
+    // AFTER both branches, not inside the `else`: the run patches its collected
+    // URLs alongside `results`, and a patch that also carries `title` must still
+    // land them (DW-442). `cleanInput` no longer returns the key, so the
+    // `Object.assign` above cannot clobber what this line writes.
+    if (patch.sourceUrls !== undefined) project.sourceUrls = cleanUrls(patch.sourceUrls);
     if (patch.status !== undefined) {
       if (!STATUSES.has(patch.status)) throw new ClientInputError("Invalid research status");
       project.status = patch.status;

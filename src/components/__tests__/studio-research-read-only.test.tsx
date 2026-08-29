@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   KnowledgeStudio,
+  RESEARCH_COLLECT_EMPTY_COPY,
   RESEARCH_COLLECT_READ_ONLY_COPY,
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
@@ -70,7 +71,7 @@ let confirmMock: ReturnType<typeof vi.fn>;
  */
 function stubFetch(
   readOnly: boolean | undefined,
-  overrides: { insights?: unknown[] } = {},
+  overrides: { insights?: unknown[]; projects?: unknown[] } = {},
 ) {
   const routes: Record<string, unknown> = {
     "/api/wiki/routes": {},
@@ -82,7 +83,7 @@ function stubFetch(
       insights: overrides.insights ?? [INSIGHT],
     },
     "/api/research": {
-      projects: [PROJECT],
+      projects: overrides.projects ?? [PROJECT],
       availableProviders: ["tavily"],
       ...(readOnly === undefined ? {} : { readOnly }),
     },
@@ -344,5 +345,82 @@ describe("the Research desk is unchanged on a writable deployment", () => {
 
     expect(screen.queryByText(RESEARCH_MUTATE_READ_ONLY_COPY)).toBeNull();
     expect(button("Delete").hasAttribute("aria-disabled")).toBe(false);
+  });
+});
+
+
+/**
+ * DW-442 — the create form stopped collecting seed source URLs.
+ *
+ * WRITABLE throughout: both sentences below are about a deployment that stores
+ * fine, so a read-only stub would pass them for the wrong reason — every
+ * control refuses there anyway.
+ *
+ * The field used to be typed, POSTed, stored, and then overwritten by the first
+ * automated run. The route now 400s the key, so a form that still sent it would
+ * fail every create; these rows pin the client half, where nothing 400s and a
+ * regression is therefore silent.
+ */
+describe("the Research desk no longer collects seed source URLs (DW-442)", () => {
+  /** A brief before any run has collected anything — the empty-list case. */
+  const UNCOLLECTED = { ...PROJECT, id: "rp-3", sourceUrls: [], status: "draft" };
+
+  it("renders no Source URLs field and POSTs a body with no sourceUrls key", async () => {
+    stubFetch(false);
+    await openResearchDesk();
+
+    // Neither the label nor a control under it — the whole `<label>` is gone,
+    // so querying only the accessible name could pass against a stray caption.
+    expect(screen.queryByLabelText(/Source URLs/i)).toBeNull();
+    expect(screen.queryByText(/Source URLs/i)).toBeNull();
+    expect(screen.queryByPlaceholderText("https://example.com/report")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Brief title"), {
+      target: { value: "Vendor landscape" },
+    });
+    fireEvent.change(screen.getByLabelText("Research question"), {
+      target: { value: "Which vendors matter?" },
+    });
+    fireEvent.change(screen.getByLabelText(/Search prompts/), {
+      target: { value: "vendors\npricing" },
+    });
+    fireEvent.submit(button("Create research brief").closest("form")!);
+
+    await waitFor(() => expect(writeCalls().length).toBeGreaterThan(0));
+    const [url, init] = writeCalls()[0] as [unknown, RequestInit];
+    expect(String(url)).toBe("/api/research");
+    expect(init.method).toBe("POST");
+
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    // The KEY, not its value: a form that sent `sourceUrls: []` would still be
+    // 400d by the route, and an assertion on contents alone would miss it.
+    expect(Object.keys(body).sort()).toEqual(["queries", "question", "title"]);
+    expect("sourceUrls" in body).toBe(false);
+    expect(body).toEqual({
+      title: "Vendor landscape",
+      question: "Which vendors matter?",
+      queries: ["vendors", "pricing"],
+    });
+  });
+
+  it("names the RUN when Collect has nothing to collect, and requests nothing", async () => {
+    // The nudge used to read "Add at least one source URL to this brief before
+    // collecting." — advice pointing at a field that no longer exists. Nothing
+    // but a run can fill this list now, so that is what it has to say.
+    stubFetch(false, { projects: [UNCOLLECTED] });
+    await openResearchDesk();
+
+    const collect = button(/Collect 0 URLs/);
+    // Writable, so this is NOT the read-only refusal: the button is live and
+    // the sentence arrives only once it is pressed.
+    expect(collect.hasAttribute("aria-disabled")).toBe(false);
+    expect(screen.queryByText(RESEARCH_COLLECT_EMPTY_COPY)).toBeNull();
+
+    fireEvent.click(collect);
+
+    await screen.findByText(RESEARCH_COLLECT_EMPTY_COPY);
+    expect(screen.queryByText(/Add at least one source URL/i)).toBeNull();
+    // No ingest was attempted for a brief with nothing to ingest.
+    expect(writeCalls()).toEqual([]);
   });
 });

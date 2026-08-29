@@ -126,6 +126,21 @@ export const RESEARCH_MUTATE_READ_ONLY_COPY =
 export const RESEARCH_COLLECT_READ_ONLY_COPY =
   "Sources cannot be ingested while this deployment is read-only.";
 
+/**
+ * Collect with nothing to collect (DW-442).
+ *
+ * NOT a read-only sentence — it is the other refusal Collect can meet, on a
+ * deployment that writes fine. Exported beside those three for the same reason
+ * they are: the test names the sentence by importing it rather than retyping
+ * it, so a reworded nudge cannot leave a test passing against the old copy.
+ *
+ * It names the RUN because since DW-442 nothing else can fill `sourceUrls` —
+ * the create form no longer takes seed URLs, so "add a source URL" would send
+ * the owner looking for a field that is gone.
+ */
+export const RESEARCH_COLLECT_EMPTY_COPY =
+  "Run the research on this brief first — its automated run collects the sources to ingest.";
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const body = (await response.json().catch(() => ({}))) as T & { error?: string };
@@ -714,7 +729,6 @@ function ResearchPanel({
   const [title, setTitle] = useState("");
   const [question, setQuestion] = useState("");
   const [queries, setQueries] = useState("");
-  const [sourceUrls, setSourceUrls] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const { slugTenants } = useSlugTenants();
   /**
@@ -756,10 +770,10 @@ function ResearchPanel({
       const data = await requestJson<{ project: ResearchProject }>("/api/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, question, queries: parseLines(queries), sourceUrls: parseLines(sourceUrls) }),
+        body: JSON.stringify({ title, question, queries: parseLines(queries) }),
       });
       setProjects((current) => [data.project, ...current]);
-      setTitle(""); setQuestion(""); setQueries(""); setSourceUrls("");
+      setTitle(""); setQuestion(""); setQueries("");
       setFeedback({ ok: true, message: "Research brief saved." });
     } catch (error) {
       setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t create the research brief." });
@@ -769,12 +783,12 @@ function ResearchPanel({
   }
 
   async function collect(project: ResearchProject) {
-    // BEFORE the "add a source URL" nudge: on a read-only deployment the
-    // shortfall is not the brief's, and telling the owner to fix a URL list
-    // would send them to do work the deployment will refuse anyway.
+    // BEFORE the empty-list nudge: on a read-only deployment the shortfall is
+    // not the brief's, and telling the owner to go run the research would send
+    // them to do work the deployment will refuse anyway.
     if (readOnly) return;
     if (project.sourceUrls.length === 0) {
-      setFeedback({ ok: false, message: "Add at least one source URL to this brief before collecting." });
+      setFeedback({ ok: false, message: RESEARCH_COLLECT_EMPTY_COPY });
       return;
     }
     setBusy(`collect:${project.id}`);
@@ -851,10 +865,10 @@ function ResearchPanel({
       <section className="studio-intro">
         <p className="studio-kicker">Directed research</p>
         <h3>Plan the question, collect the corpus, then synthesize with citations.</h3>
-        <p>Research briefs persist independently from chat, so the question, source plan, scope, and final synthesis stay together.</p>
+        <p>Research briefs persist independently from chat, so the question, search prompts, scope, and final synthesis stay together.</p>
         <div className="studio-action-row">
           <small>The automated provider is selected in Workbench Settings{providers.length > 0 ? ` (${providers.join(", ")} configured)` : ""}.</small>
-          {providers.length === 0 ? <small>No web-research provider is configured. Manual URL collection still works.</small> : null}
+          {providers.length === 0 ? <small>No web-research provider is configured, so a run has nothing to collect with. Select one in Workbench Settings before running a brief.</small> : null}
         </div>
       </section>
       <form className="studio-form-grid" onSubmit={createProject}>
@@ -864,7 +878,9 @@ function ResearchPanel({
         <label><span>Brief title</span><input className="studio-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Vendor landscape" required readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
         <label className="wide"><span>Research question</span><textarea className="studio-input" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="What decision should this research inform?" required readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
         <label><span>Search prompts · one per line</span><textarea className="studio-input" rows={4} value={queries} onChange={(event) => setQueries(event.target.value)} placeholder="Key competitors\nPricing signals" required readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
-        <label><span>Source URLs · one per line</span><textarea className="studio-input" rows={4} value={sourceUrls} onChange={(event) => setSourceUrls(event.target.value)} placeholder="https://example.com/report" readOnly={readOnly} aria-describedby={readOnly ? createNoteId : undefined} /></label>
+        {/* NO Source URLs field (DW-442): the run collects its own sources and
+            overwrites `project.sourceUrls`, so a seed list typed here was
+            stored and then discarded. `POST /api/research` now 400s the key. */}
         <div className="wide studio-form-submit"><button className="btn primary" disabled={!readOnly && busy === "create"} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? createNoteId : undefined}>{busy === "create" ? "Saving…" : "Create research brief"}</button></div>
       </form>
       {/* Identified so the form above can point at it — the CREATE door's
@@ -881,7 +897,7 @@ function ResearchPanel({
               eyebrow: `Research · ${project.status}`,
               title: project.title,
               body: project.question,
-              signals: [`${project.sourceUrls.length} planned sources`, `${project.pageSlugs.length} linked pages`, project.vaultId ? "vault scoped" : "all owner knowledge"],
+              signals: [`${project.sourceUrls.length} collected URLs`, `${project.pageSlugs.length} linked pages`, project.vaultId ? "vault scoped" : "all owner knowledge"],
             })}>
               <div><StatusPill>{project.status}</StatusPill><small>Updated {shortDate(project.updatedAt)}</small></div>
               <h3>{project.title}</h3><p>{project.question}</p>

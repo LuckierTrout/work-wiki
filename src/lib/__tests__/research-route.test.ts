@@ -208,6 +208,62 @@ describe("POST /api/research failure classification", () => {
     expect(mockedCreate).not.toHaveBeenCalled();
   });
 
+  /**
+   * DW-442. `sourceUrls` used to be collected by the form, validated here and
+   * stored — and then overwritten by the first automated run. Refusing is what
+   * makes the removal legible: ignoring the field would leave a caller with the
+   * same 201 and the same silently discarded seeds.
+   */
+  const SOURCE_URLS_REFUSAL =
+    "sourceUrls is no longer accepted — an automated run collects its own sources.";
+
+  it.each([
+    ["a seed list", ["https://example.com/report"]],
+    // Presence is what is refused, not contents: an empty list is still a
+    // caller who believes the field does something.
+    ["an empty list", []],
+  ])("400s a create carrying %s of sourceUrls", async (_label, sourceUrls) => {
+    const response = await POST(request({ ...BODY, sourceUrls }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: SOURCE_URLS_REFUSAL });
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("201s the same body without the field, and forwards no sourceUrls KEY", async () => {
+    // The control case: the refusal is about the KEY, not about the rest of the
+    // brief, and nothing downstream is handed a seed list any more.
+    mockedCreate.mockResolvedValue({ id: "p1" } as Awaited<
+      ReturnType<typeof createResearchProject>
+    >);
+
+    const response = await POST(request(BODY));
+
+    expect(response.status).toBe(201);
+    // ON THE KEY, not on its value. `body.sourceUrls` is `undefined` on this
+    // path, so restoring the deleted `sourceUrls: body.sourceUrls as …` line
+    // would forward `{ sourceUrls: undefined }` — which an
+    // `expect.not.objectContaining({ sourceUrls: expect.anything() })` accepts,
+    // because `expect.anything()` does not match `undefined`. Reading the keys
+    // is what makes this row able to fail on that regression.
+    const input = mockedCreate.mock.calls[0][1];
+    expect(Object.keys(input)).not.toContain("sourceUrls");
+    expect("sourceUrls" in input).toBe(false);
+  });
+
+  it("still 403s a body carrying sourceUrls on a read-only deployment", async () => {
+    // Ordering: read-only wins over the body check, the same way it already
+    // wins over the body PARSE. A caller on a deployment that stores nothing
+    // learns that first.
+    process.env.YOPEDIA_READONLY = "1";
+
+    const response = await POST(request({ ...BODY, sourceUrls: ["https://example.com/report"] }));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.researchCreate });
+    expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
   it("reconciles interrupted runs on the panel's read", async () => {
     // SM-3: the poll is where a queued project whose wake-up was lost gets
     // re-dispatched and an abandoned `collecting` one gets failed visibly.
