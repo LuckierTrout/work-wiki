@@ -4624,7 +4624,9 @@ source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
 location: src/components/workbench/__tests__/settings-canvas-persistence.test.tsx (the rail-only block)
 severity: medium
 reason: `CreateWikiDialog.tsx:109` and `ConfirmDialog.tsx:67` both render the dialog root as `fixed inset-0 z-[120] ... bg-black/40` — a full-viewport overlay above `.wb-rail`, which carries no z-index of its own — so a pointer click aimed at the rail's Settings control lands on the backdrop. `useDialogA11y` traps Tab inside the dialog, so the control is unreachable by keyboard too. `fireEvent.click(rail(...))` succeeds only because jsdom does no hit-testing. This is the same class of defect DW-426 named, reached through the pointer surface instead of the keyboard one, and it is PRE-EXISTING: those rows drove the rail control before this change as well. DW-167 does now create a reachable path to the state (Settings entry -> mode pick -> open the dialog -> Back), so the preservation the rows check is still real; what is stale is the block's claim that the rail control is how a user gets there.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-rail-reachability-under-dialogs
+resolution-undo: 2b14b7b7e64af745bcdb3bfa6488baee3e4f65c663e39178471fb84326e90b65 2026-08-29 7374617475733a206f70656e
 
 ### DW-512: Back from a deep-linked `?settings=1` still leaves the app holding the unsaved Settings draft, because the mount seed adds no entry.
 origin: spec-deferred 0b5ecd6edb91
@@ -5179,4 +5181,12 @@ location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:167
 source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
 severity: low
 reason: `v1-contract.ts` supplies `unknown_action` / `not_found` / `wiki_not_found`, and the route's other 4xx bodies use them, so an agent switch-casing on `error` gets a token — except this branch, which passes the store's prose through `getErrorMessage`. Nothing in the repo pins a v1 4xx vocabulary and the door's 403 already emits a sentence, so this is an inconsistency in the façade's error contract rather than a broken one. Worth one focused pass over v1 error bodies.
+status: open
+
+### DW-581: The DW-26 mode-switch block clicks rail controls with a Create Wiki dialog open, the same unreachable pointer path DW-511 removed from the Settings suite.
+origin: spec-deferred f315fb6d2101
+location: src/components/workbench/__tests__/wiki-canvas-persistence.test.tsx (the DW-26 block)
+source_spec: `spec-dw-511-rail-reachability-under-dialogs.md`
+severity: medium
+reason: `describe("an open Create Wiki dialog survives a mode switch (DW-26)")` opens the dialog with `openCreateWith(...)` and then drives a rail control while the backdrop is live: `fireEvent.click(rail("Chat"))` at ~l.178, ~l.198 and ~l.230, and `clickRail("Chat")` / `clickRail("Wiki")` at ~l.274 and ~l.279. `CreateWikiDialog`'s root is the same `fixed inset-0 z-[120] ... bg-black/40` overlay, and `.wb-rail` carries no `z-index`, so in a browser those clicks land on the backdrop — whose `onMouseDown` CANCELS the dialog, meaning the mode switch never happens and the draft the block exists to preserve is discarded. The cases pass only because jsdom does no hit-testing. PRE-EXISTING: this file was not touched by DW-511, which fixed the Settings suite only. The fix shape is the one DW-511 used — seed the reachable route before the dialog opens, then traverse — plus the executable backdrop pin the Settings suite now carries.
 status: open

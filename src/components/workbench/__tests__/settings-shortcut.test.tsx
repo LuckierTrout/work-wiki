@@ -32,8 +32,12 @@ import { CANVAS_ID } from "@/components/workbench/ModeCanvas";
  * Settings unmounted the Wiki subtree — dialog and draft included — whichever
  * control opened it; the shell now keeps that canvas mounted behind `hidden`.
  * The preservation is the RENDER's, identical for the key and the rail control,
- * and it is driven from `settings-canvas-persistence.test.tsx` — through both
- * controls — rather than restated here, where the subject is the keystroke.
+ * and it is driven from `settings-canvas-persistence.test.tsx` rather than
+ * restated here, where the subject is the keystroke: through BOTH controls in
+ * that file's parameterised block, and — for the half that holds an open
+ * `aria-modal` dialog, the "dialog and draft" clause above — by BACK, because
+ * with a backdrop over the rail and a Tab trap armed, NEITHER control is
+ * reachable to open it with (DW-426, DW-511).
  * DW-26's mode-switch half lives in `wiki-canvas-persistence.test.tsx`.
  *
  * `keyboard-shortcuts.test.ts` executes the matcher and can see that `g s`

@@ -49,11 +49,14 @@ import type { WikiRecord } from "@/lib/wikis";
  * just gone `display: none` was dropped on `<body>` with the whole shell to Tab
  * back through. It lands on the Settings section now, from both openers.
  *
- * WHICH OPENER A CASE CAN USE IS ITSELF A CONTRACT (DW-426). `g s` is refused
- * anywhere inside an `aria-modal` dialog, so a case that opens one first is
- * reachable through the RAIL CONTROL ALONE — those live in their own block
- * below, and the parameterised block keeps only the cases both controls can
- * genuinely reach. See {@link OPENERS} and {@link press}.
+ * WHICH OPENER A CASE CAN USE IS ITSELF A CONTRACT (DW-426, DW-511). With an
+ * `aria-modal` dialog open, NEITHER in-shell control is available: `g s` is
+ * refused anywhere inside such a dialog, and the dialog's `fixed inset-0
+ * z-[120]` backdrop covers the rail, which carries no `z-index` of its own. So
+ * a case that opens one first reaches Settings by BACK — browser chrome, which
+ * no modal covers or traps — and those live in their own block below, while the
+ * parameterised block keeps only the cases both in-shell controls can genuinely
+ * reach. See {@link OPENERS}, {@link press} and {@link openFromHistory}.
  *
  * COVERAGE LIMIT, inherited from `wiki-canvas-persistence.test.tsx`: jsdom has
  * no layout engine and applies no user-agent stylesheet, so `hidden` here is an
@@ -234,7 +237,16 @@ function clickRail(label: string): HTMLButtonElement {
  * the keyboard on `<body>` and press this. A press dispatched from here anyway
  * pins a path that cannot be taken, and the fix it defends could be reverted
  * without the suite noticing. Every case that holds an open modal therefore
- * drives the RAIL control instead; see {@link OPENERS}.
+ * reaches Settings by BACK instead — the rail is no more available than `g s`
+ * is while a backdrop is on screen (DW-511); see {@link openFromHistory}.
+ *
+ * ONE CASE DOES PRESS IT WITH A DIALOG MOUNTED, on purpose: the last lines of
+ * "a global shortcut does not fire from inside a modal (DW-413)" fire `g s` from
+ * `document.body` while the Create Wiki dialog is still open, and expect it to
+ * WORK. That is the positive control for the suppression itself — it proves the
+ * refusal is about where the press CAME FROM and not about a dialog merely being
+ * open — so it is asserting the dispatcher's rule rather than pinning an owner's
+ * path, and the carve-out is the point of the case.
  */
 async function press(...keys: string[]) {
   for (const key of keys) {
@@ -251,13 +263,18 @@ async function press(...keys: string[]) {
  * SHELL's render and not either control's doing — a fix wired into one path only
  * would pass a suite that drove the other.
  *
- * WHAT IS NOT PARAMETERISED, and why (DW-426): a case that opens an
- * `aria-modal` dialog first cannot use `g s` at all. `isInModalDialog` stops the
- * dispatcher for any press inside such a dialog, and the dialog holds focus and
- * traps Tab — so there is no keystroke a browser keyboard user could reach the
- * surface with while one is open. Those cases live in their own rail-only block
- * below, with the same assertions; parameterising them meant firing `g s` at
- * `document.body` and pinning a path the product deliberately refuses.
+ * WHAT IS NOT PARAMETERISED, and why (DW-426, DW-511): a case that opens an
+ * `aria-modal` dialog first can drive NEITHER of these. `isInModalDialog` stops
+ * the dispatcher for any press inside such a dialog, and the dialog holds focus
+ * and traps Tab — so there is no keystroke a browser keyboard user could reach
+ * the surface with while one is open. The rail is no better off: the dialog's
+ * root is `fixed inset-0 z-[120]` over the whole viewport and `.wb-rail`
+ * declares no `z-index` at desktop widths, so a pointer aimed at the Settings
+ * control lands on the backdrop. Those cases live in their own block below,
+ * with the same assertions, and reach the surface by BACK; parameterising them
+ * meant firing `g s` at `document.body` — and, until DW-511, clicking a rail
+ * control no pointer could hit — pinning paths the product deliberately
+ * refuses. See {@link openFromHistory}.
  *
  * CLOSING is the rail control in both — see {@link closeSettings} for why that
  * one control is the closer these cases drive.
@@ -302,16 +319,92 @@ async function closeSettings() {
 }
 
 /**
- * Open Settings with the rail control — the ONLY opener a case holding an open
- * modal dialog can drive (DW-426).
+ * Leave ONE Settings entry in the session history, behind the current one — the
+ * entry {@link openFromHistory} traverses back onto.
  *
- * Spelled as its own helper rather than reusing `OPENERS[0].open`, so the
- * rail-only block reads as a deliberate choice rather than as a row that lost
- * its parameter.
+ * Two rail presses. `Workbench`'s `toggleSettings` pushes on BOTH edges, so the
+ * first press opens Settings and pushes `?mode=wiki&settings=1` and the second
+ * closes it and pushes `?mode=wiki` again: the RENDER ends exactly where it
+ * started — mode canvas on screen, nothing withdrawn, `SettingsCanvas`
+ * unmounted — with a Settings entry one step back.
+ *
+ * TWO SIDE EFFECTS IT DOES LEAVE, neither of which any case here reads. The
+ * visit mounts and unmounts `SettingsCanvas`, which spends one extra
+ * `fetchMock` call on the settings payload — no case asserts a call count, and
+ * `openCreateWithRefusedName` routes its answer by URL rather than queueing a
+ * one-shot, so nothing is consumed out from under it. And the second press
+ * leaves the keyboard on the rail's Settings control rather than on `<body>`:
+ * harmless because every dialog opener in this file (`openCreateWith`, and the
+ * Preview's own row and confirm clicks) focuses its own control before clicking
+ * it, so `useDialogA11y` still records the opener a real activation would.
+ *
+ * IT MUST RUN BEFORE ANY DIALOG IS OPENED, and that ordering is the whole
+ * reason this is a second helper rather than one call. The rail is reachable
+ * only while no dialog backdrop is on screen: once `CreateWikiDialog` or
+ * `ConfirmDialog` mounts, its `fixed inset-0 z-[120] … bg-black/40` root covers
+ * the whole viewport — the rail declares no `z-index` of its own — and
+ * `useDialogA11y` traps Tab inside the dialog, so neither a pointer nor a
+ * keyboard could reach these two presses. Seeding first is the one ordering in
+ * which every press this file makes is a press a real owner could make.
  */
-async function openFromRail() {
+async function seedSettingsEntry() {
+  // The ordering, CHECKED rather than documented (DW-511). jsdom does no
+  // hit-testing, so a future call placed after `openCreateWith(...)` would click
+  // straight through a live overlay and report green — which is the exact defect
+  // this entry was filed against. A comment cannot stop that; this can.
+  expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull();
+
+  // The href to come back to, read rather than restated, so this helper stays
+  // usable from any mode rather than hard-coding Wiki's.
+  const before = window.location.search;
+  const depth = window.history.length;
+
   clickRail(SETTINGS_LABEL);
   await act(async () => {});
+  expect(settingsShowing()).toBe(true);
+  // THE ENTRY, not just the surface. `pushSurface` swallows `SecurityError` and
+  // writes nothing when the href is unchanged, and jsdom's session history
+  // outlives `cleanup()` — `beforeEach` only rewrites the CURRENT entry — so a
+  // silently unseeded run would send `openFromHistory` back onto a PREVIOUS
+  // TEST's entry, which in this file usually is a `settings=1` one. It would
+  // then show Settings and report green having proved nothing.
+  expect(new URLSearchParams(window.location.search).get("settings")).toBe("1");
+
+  clickRail(SETTINGS_LABEL);
+  await act(async () => {});
+  expect(settingsShowing()).toBe(false);
+  // Back on the pre-seed href, with the flag deleted rather than set to a falsy
+  // spelling (`surfaceHref` removes the param; `readSettingsFromSearch` accepts
+  // only `settings=1`).
+  expect(new URLSearchParams(window.location.search).get("settings")).toBeNull();
+  expect(window.location.search).toBe(before);
+  // …and both presses really PUSHED. Two distinct hrefs could still be one
+  // entry if either write were replaced or dropped, and the depth is the only
+  // thing that can tell that apart from a seeded stack.
+  expect(window.history.length).toBe(depth + 2);
+  expect(router.push).not.toHaveBeenCalled();
+}
+
+/**
+ * Reach Settings by BACK — the opener that stays available with a modal dialog
+ * open (DW-511).
+ *
+ * It is browser chrome, and a modal covers and traps only the page: the
+ * backdrop that hides the rail from the pointer and the Tab trap that holds the
+ * keyboard both stop at the document, so Back is still there. The traversal
+ * lands on the entry {@link seedSettingsEntry} left behind, and `Workbench`'s
+ * `popstate` listener re-applies `settings=true` and — because the flag MOVED —
+ * bumps `canvasFocusNonce`, sending the keyboard to `#wb-canvas` (DW-167,
+ * DW-423). Same surface, same withdrawal, same focus landing either in-shell
+ * control produces, by the one route this state leaves open.
+ */
+async function openFromHistory() {
+  await traverse(() => window.history.back());
+  // The ENTRY it landed on carries the flag — not merely "Settings is showing",
+  // which a stale entry left by an earlier test in this file would also produce.
+  // This is the far half of the seed's own history assertions.
+  expect(new URLSearchParams(window.location.search).get("settings")).toBe("1");
+  expect(settingsShowing()).toBe(true);
   expect(router.push).not.toHaveBeenCalled();
 }
 
@@ -706,80 +799,114 @@ describe.each(OPENERS)(
       expect(canvas.getAttribute("aria-labelledby")).toBe("wiki-workbench-heading");
       expect(screen.getAllByRole("heading", { name: "Wiki" })).toHaveLength(1);
     });
+
+    it("brings the canvas back at the offset it was scrolled to (DW-416)", async () => {
+      // `.wb-canvas` is the mode canvas's SCROLL CONTAINER (`overflow: auto` in
+      // `globals.css`) and `display: none` DISCARDS a scroll box — so the visit
+      // that costs nothing still dropped the owner at the top of a long canvas.
+      // The section survives the visit mounted, which is exactly why the offset
+      // can live in a ref: nothing has to cross a reload, and no new localStorage
+      // key is invented for it.
+      //
+      // PARAMETERISED, unlike the cases below it used to sit among (DW-511): it
+      // opens no dialog, so nothing covers the rail and nothing refuses `g s` —
+      // both openers are genuinely available to it, and the offset is the
+      // shell's memory rather than either control's doing.
+      await renderShell();
+      const canvas = modeCanvas();
+      expect(canvas).not.toBeNull();
+      const section = canvas as HTMLElement;
+      section.scrollTop = 300;
+      await act(async () => {
+        section.dispatchEvent(new Event("scroll"));
+      });
+
+      await open();
+      expect(settingsShowing()).toBe(true);
+      expect(section.hasAttribute("hidden")).toBe(true);
+      // Standing in for the browser's own `scrollTop = 0` on a `display: none`
+      // box, exactly as the tree cases in `workbench-split-wiring.test.tsx` do:
+      // jsdom has no layout engine, so nothing resets it here on its own.
+      section.scrollTop = 0;
+
+      await closeSettings();
+
+      // The SAME node — withdrawn, not rebuilt — back where the owner left it.
+      expect(modeCanvas()).toBe(section);
+      expect(section.hasAttribute("hidden")).toBe(false);
+      expect(section.scrollTop).toBe(300);
+      // In a REF, not in storage: DW-416's scope is the visit, not FR-8's
+      // cross-session restore, so the round trip invents no key for the canvas.
+      expect(
+        Object.keys(window.localStorage).filter((key) => key.includes("canvas")),
+      ).toEqual([]);
+
+      // …and the memory keeps tracking: a scroll after the visit REPLACES it,
+      // rather than the first offset latching for the rest of the session.
+      section.scrollTop = 80;
+      await act(async () => {
+        section.dispatchEvent(new Event("scroll"));
+      });
+      await open();
+      section.scrollTop = 0;
+      await closeSettings();
+      expect(section.scrollTop).toBe(80);
+    });
   },
 );
 
 /**
- * The same preservation, driven from the RAIL CONTROL ONLY (DW-426).
+ * The same preservation, reached by BACK — the one opener a held modal leaves
+ * available (DW-373, DW-511).
  *
- * Every case here has an `aria-modal` dialog open when Settings is reached —
- * the Create Wiki dialog, or the Preview editor's confirm — and that is exactly
- * the state in which `g s` is unreachable: `isInModalDialog` refuses the press,
- * and the dialog holds focus and traps Tab so the owner cannot move the keyboard
- * out to `document.body` to make it reachable. The block immediately below pins
- * that refusal as the product's intent.
+ * Every case here has an `aria-modal` dialog open when Settings is reached: the
+ * Create Wiki dialog, or the Preview editor's confirm. That state refuses BOTH
+ * in-shell controls, for two independent reasons.
  *
- * They were parameterised over both openers until this entry, which meant the
- * `g s` row fired the sequence at `document.body` with a modal open — reporting
- * green on a path a browser keyboard user has no way to take. The DW-373 /
- * DW-412 / DW-414 coverage they carry is unchanged and is not weakened by
- * dropping the second opener: what those cases are about is the SHELL's render,
- * which the parameterised block above still exercises through both controls.
+ * THE KEYBOARD HALF (DW-426). `isInModalDialog` suppresses every global
+ * shortcut fired inside `[role="dialog"][aria-modal="true"]`, and
+ * `useDialogA11y` puts focus in the dialog and traps Tab there — so there is no
+ * place a keyboard owner can stand from which `g s` would be read. The block
+ * "a global shortcut does not fire from inside a modal (DW-413)" pins that.
+ *
+ * THE POINTER HALF (DW-511). `CreateWikiDialog` and `ConfirmDialog` render
+ * their roots as `fixed inset-0 z-[120] … bg-black/40` — a full-viewport
+ * backdrop over the entire shell. `.wb-rail` declares NO `z-index` at desktop
+ * widths and `z-index: 40` in the narrow block, and `.wb-shell` is
+ * `position: relative` with no `z-index`, so it opens no stacking context that
+ * could rescue the rail: a pointer aimed at the rail's Settings control lands
+ * on the backdrop. These cases clicked it anyway until this entry and passed
+ * only because jsdom does no hit-testing — the exact pointer twin of the `g s`
+ * path DW-426 retired. The block "the rail is not an opener while a dialog
+ * backdrop is on screen (DW-511)" pins that one executably, so the correction
+ * cannot rot back into prose.
+ *
+ * SO THE OPENER IS BROWSER CHROME, which a modal neither covers nor traps.
+ * {@link seedSettingsEntry} leaves a Settings entry one step back BEFORE any
+ * dialog is opened — while the rail is still reachable — and
+ * {@link openFromHistory} traverses Back onto it. The entry exists because
+ * DW-167 gave the surface an address; the traversal reproduces the same
+ * withdrawal and the same focus landing either in-shell control produces.
+ *
+ * THE RAIL IS STILL THE CLOSER, and that press really is reachable: by then
+ * Settings is showing and the canvas (or the Preview column) holding the dialog
+ * is `hidden`, which `globals.css` backs with `display: none !important` — so
+ * the backdrop paints nothing, the scroll lock is released and the Tab trap is
+ * stood down. Nothing is over the rail at that moment, which is why these cases
+ * close with {@link closeSettings}.
+ *
+ * The DW-373 / DW-412 / DW-414 coverage they carry is unchanged — this is how
+ * the state is REACHED, not what is checked — and is not weakened by dropping
+ * the in-shell openers: what those cases are about is the SHELL's render, which
+ * the parameterised block above still exercises through both controls.
  */
-describe("a dialog-holding canvas survives Settings, opened from the rail (DW-373)", () => {
-  it("brings the canvas back at the offset it was scrolled to (DW-416)", async () => {
-    // `.wb-canvas` is the mode canvas's SCROLL CONTAINER (`overflow: auto` in
-    // `globals.css`) and `display: none` DISCARDS a scroll box — so the visit
-    // that costs nothing still dropped the owner at the top of a long canvas.
-    // The section survives the visit mounted, which is exactly why the offset
-    // can live in a ref: nothing has to cross a reload, and no new localStorage
-    // key is invented for it.
-    await renderShell();
-    const canvas = modeCanvas();
-    expect(canvas).not.toBeNull();
-    const section = canvas as HTMLElement;
-    section.scrollTop = 300;
-    await act(async () => {
-      section.dispatchEvent(new Event("scroll"));
-    });
-
-    await openFromRail();
-    expect(settingsShowing()).toBe(true);
-    expect(section.hasAttribute("hidden")).toBe(true);
-    // Standing in for the browser's own `scrollTop = 0` on a `display: none`
-    // box, exactly as the tree cases in `workbench-split-wiring.test.tsx` do:
-    // jsdom has no layout engine, so nothing resets it here on its own.
-    section.scrollTop = 0;
-
-    await closeSettings();
-
-    // The SAME node — withdrawn, not rebuilt — back where the owner left it.
-    expect(modeCanvas()).toBe(section);
-    expect(section.hasAttribute("hidden")).toBe(false);
-    expect(section.scrollTop).toBe(300);
-    // In a REF, not in storage: DW-416's scope is the visit, not FR-8's
-    // cross-session restore, so the round trip invents no key for the canvas.
-    expect(
-      Object.keys(window.localStorage).filter((key) => key.includes("canvas")),
-    ).toEqual([]);
-
-    // …and the memory keeps tracking: a scroll after the visit REPLACES it,
-    // rather than the first offset latching for the rest of the session.
-    section.scrollTop = 80;
-    await act(async () => {
-      section.dispatchEvent(new Event("scroll"));
-    });
-    await openFromRail();
-    section.scrollTop = 0;
-    await closeSettings();
-    expect(section.scrollTop).toBe(80);
-  });
-
+describe("a dialog-holding canvas survives Settings, reached by BACK (DW-373)", () => {
   it("keeps the typed name and the shown error across Settings and back", async () => {
     await renderShell();
+    await seedSettingsEntry();
     await openCreateWithRefusedName("Quarterly review");
 
-    await openFromRail();
+    await openFromHistory();
     expect(settingsShowing()).toBe(true);
     await closeSettings();
     expect(settingsShowing()).toBe(false);
@@ -795,9 +922,10 @@ describe("a dialog-holding canvas survives Settings, opened from the rail (DW-37
 
   it("is HIDDEN rather than unmounted while Settings is showing", async () => {
     await renderShell();
+    await seedSettingsEntry();
     await openCreateWithRefusedName("Quarterly review");
 
-    await openFromRail();
+    await openFromHistory();
 
     // Out of the accessibility tree: testing-library's default queries respect
     // `hidden`, so a dialog behind it is unreachable by role and by label —
@@ -834,12 +962,13 @@ describe("a dialog-holding canvas survives Settings, opened from the rail (DW-37
 
   it("holds neither the body scroll lock nor the Tab trap while hidden", async () => {
     await renderShell();
+    await seedSettingsEntry();
     openCreateWith("Quarterly review");
     // The lock is real while the dialog is on screen — a positive control, so
     // the negative below cannot pass because the lock was never taken.
     expect(document.body.style.overflow).toBe("hidden");
 
-    await openFromRail();
+    await openFromHistory();
 
     // `hidden` removes the pixels and the a11y tree entry, and NOTHING the
     // dialog did to the document: the scroll lock and the capture-phase Tab
@@ -890,6 +1019,7 @@ describe("a dialog-holding canvas survives Settings, opened from the rail (DW-37
     // publishes `visible={false}` through `SurfaceVisibilityProvider` for
     // exactly this, the way the mode canvas already does.
     await renderShell(TREE_DATA);
+    await seedSettingsEntry();
     fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
@@ -897,7 +1027,7 @@ describe("a dialog-holding canvas survives Settings, opened from the rail (DW-37
     // was never taken at all.
     expect(document.body.style.overflow).toBe("hidden");
 
-    await openFromRail();
+    await openFromHistory();
 
     expect(document.body.style.overflow).toBe("");
     // Stood down, NOT closed: `ConfirmDialog` renders nothing when `open` goes
@@ -923,11 +1053,12 @@ describe("a dialog-holding canvas survives Settings, opened from the rail (DW-37
     // jsdom it really does move focus into content nobody can reach, which is
     // what makes the refusal observable at all.
     const view = await renderShell({ ...DATA, wikis: [WIKI] });
+    await seedSettingsEntry();
     openCreateWith("Quarterly review");
     const canvas = modeCanvas();
     expect(canvas?.contains(nameFieldNode())).toBe(true);
 
-    await openFromRail();
+    await openFromHistory();
     const landed = document.activeElement;
     expect(landed).toBe(document.getElementById(CANVAS_ID));
 
@@ -980,6 +1111,7 @@ describe("a dialog-holding canvas survives Settings, opened from the rail (DW-37
     // a keyboard user who can neither operate the canvas they are on nor Tab off
     // it. The dialog wins: it is the thing claiming the page is inert.
     await renderShell();
+    await seedSettingsEntry();
     const opener = openCreateWith("Quarterly review");
     const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
     expect(document.activeElement).toBe(dialog);
@@ -987,10 +1119,13 @@ describe("a dialog-holding canvas survives Settings, opened from the rail (DW-37
     // Into Settings, where the move DOES happen — the dialog is withdrawn under
     // the hidden canvas, so it is holding nothing. This is the positive control
     // that stops the guard from being "never move focus at all".
-    await openFromRail();
+    await openFromHistory();
     expect(settingsShowing()).toBe(true);
     expect(document.activeElement).toBe(document.getElementById(CANVAS_ID));
 
+    // Out again the same way, which is what this case is named for: the second
+    // Back lands on the mount-seeded `?mode=wiki` entry, closing Settings and
+    // un-hiding the canvas in one commit.
     await traverse(() => window.history.back());
 
     // The surface really did close — otherwise there is nothing to compete for.
@@ -1038,6 +1173,214 @@ describe("a global shortcut does not fire from inside a modal (DW-413)", () => {
     // dialog being open: the same sequence at the document still works.
     await press("g", "s");
     expect(settingsShowing()).toBe(true);
+  });
+});
+
+/**
+ * The pointer twin of the block above (DW-511).
+ *
+ * `g s` being refused inside a modal is asserted; the rail being unreachable
+ * there was only ever PROSE, and prose is what let six cases open Settings with
+ * `fireEvent.click(rail(SETTINGS_LABEL))` over a live backdrop for as long as
+ * they did — green because jsdom does no hit-testing, and describing a path no
+ * owner has.
+ *
+ * COVERAGE LIMIT, and it is the file header's own: jsdom has no layout engine
+ * and no hit-testing, so nothing here can observe the stacking directly — no
+ * assertion in this repo can watch a click land on the backdrop instead of on
+ * the rail. What IS pinned is the two facts the unreachability is composed of,
+ * either of which a restyle could remove without another test noticing:
+ *
+ *   1. every dialog root is a FULL-VIEWPORT backdrop at a stated level —
+ *      `fixed inset-0 z-[120]`, read from the components' own class lists, for
+ *      `CreateWikiDialog` AND `ConfirmDialog`, the two that hold the cases
+ *      above — and the rail is not inside it; and
+ *   2. every rule in `globals.css` whose selector names the rail family sits
+ *      BELOW that level, `.wb-rail-item` (the control the old rows actually
+ *      clicked) included, with `.wb-shell` opening no stacking context that
+ *      could lift them from outside those rules.
+ *
+ * Plus one piece of behaviour jsdom CAN give: the overlay's own `onMouseDown`
+ * cancels the dialog, so a pointer press on it is observably intercepted by the
+ * backdrop rather than passing through to whatever is underneath.
+ *
+ * AND THE SUITE NOW FORBIDS LIFTING THE RAIL, deliberately. The last loop below
+ * fails the moment any rail rule reaches the backdrop's level — which is one of
+ * the two remedies DW-511 itself offered and the codebase declined. Lifting the
+ * rail would make it pointer-operable while `aria-modal="true"` and
+ * `useDialogA11y`'s Tab trap still declare the page inert: the same
+ * pointer/keyboard asymmetry this entry exists to remove, inverted. A future
+ * author who wants that has to change those contracts too, not just the
+ * stylesheet — and this case is where they will be told so.
+ */
+describe("the rail is not an opener while a dialog backdrop is on screen (DW-511)", () => {
+  /**
+   * The overlay a dialog renders itself inside, and the two things that make it
+   * cover the rail: it is fixed to the whole viewport, and the rail is not in
+   * it. Returns the level it claims, read from the class rather than restated,
+   * so the stylesheet comparison stays honest if the overlay is ever
+   * re-levelled.
+   */
+  function backdropLevelOver(dialog: HTMLElement): number {
+    // The dialog node's PARENT — both components render the backdrop and centre
+    // the panel inside it.
+    const overlay = dialog.parentElement as HTMLElement;
+    expect(overlay.classList.contains("fixed")).toBe(true);
+    expect(overlay.classList.contains("inset-0")).toBe(true);
+
+    // The rail is on screen and NOT inside the overlay: nothing about the
+    // backdrop leaves a hole for the control the old rows were clicking.
+    const railControl = rail(SETTINGS_LABEL);
+    expect(railControl.isConnected).toBe(true);
+    expect(overlay.contains(railControl)).toBe(false);
+    expect(overlay.querySelector(".wb-rail")).toBeNull();
+
+    const level = Number(/(?:^|\s)z-\[(\d+)\]/.exec(overlay.className)?.[1]);
+    // A level that will not parse is a failure here, not a skipped comparison:
+    // everything below is stated relative to this number.
+    expect(Number.isFinite(level)).toBe(true);
+    return level;
+  }
+
+  /**
+   * Every DECLARATION block in the stylesheet, as `{ selector, body }`.
+   *
+   * `[^{}]*` on both halves is what makes this read only the innermost blocks:
+   * an `@media` wrapper's body holds a `{`, so it never matches, and the rules
+   * nested inside it do — which is exactly what is wanted, since the narrow
+   * rail rule lives in one. Comments are stripped first so a brace inside prose
+   * cannot split a rule.
+   */
+  function declarationBlocks(css: string): { selector: string; body: string }[] {
+    const stripped = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    return Array.from(stripped.matchAll(/([^{}]*)\{([^{}]*)\}/g), (match) => ({
+      selector: match[1].trim(),
+      body: match[2],
+    }));
+  }
+
+  /**
+   * Does a selector name this class? Word-bounded, so `.wb-rail` does not match
+   * `.wb-rail-item` — and, unlike a `\.wb-rail\s*\{` scan, this reads the whole
+   * SELECTOR rather than requiring the class to be the last thing before the
+   * brace. `.wb-rail:hover`, `.wb-rail[data-x]`, `.wb-shell > .wb-rail` and a
+   * grouped `.wb-rail, .x { … }` all count, which is the point: any of them
+   * could carry the level that undoes this.
+   */
+  function names(selector: string, className: string): boolean {
+    return new RegExp(`\\.${className}(?![\\w-])`).test(selector);
+  }
+
+  async function stylesheet(): Promise<string> {
+    return readFile(path.resolve(__dirname, "../../../app/globals.css"), "utf8");
+  }
+
+  it("covers the rail with the Create Wiki dialog's overlay, and intercepts the pointer", async () => {
+    await renderShell();
+    openCreateWith("Quarterly review");
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+
+    expect(backdropLevelOver(dialog)).toBeGreaterThan(0);
+
+    // The one piece of BEHAVIOURAL evidence jsdom can give that the backdrop is
+    // what a pointer aimed past the panel lands on: the overlay's own
+    // `onMouseDown` fires only when the press targets the overlay ITSELF, and
+    // it cancels the dialog. A press that had reached the rail underneath would
+    // have left this dialog open.
+    const overlay = dialog.parentElement as HTMLElement;
+    fireEvent.mouseDown(overlay);
+    await act(async () => {});
+    expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
+    expect(settingsShowing()).toBe(false);
+  });
+
+  it("covers the rail with the Preview confirm's overlay too (ConfirmDialog)", async () => {
+    // The OTHER backdrop, and not a hypothetical one: "stands the Preview's
+    // open confirm down while the column is withdrawn" is held by this
+    // component, so a restyle of `ConfirmDialog` alone would make that case's
+    // opener reachable again while every Create Wiki assertion stayed green.
+    await renderShell(TREE_DATA);
+    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_EDIT_COPY }));
+    const confirm = screen.getByRole("dialog");
+    expect(
+      screen.getByRole("button", { name: PREVIEW_EDIT_CONFIRM_LABEL }),
+    ).toBeTruthy();
+
+    expect(backdropLevelOver(confirm)).toBeGreaterThan(0);
+  });
+
+  it("keeps every .wb-rail and .wb-rail-item rule below the backdrop's level", async () => {
+    await renderShell();
+    openCreateWith("Quarterly review");
+    const backdropZ = backdropLevelOver(
+      screen.getByRole("dialog", { name: "Create Wiki" }),
+    );
+
+    const css = await stylesheet();
+    const blocks = declarationBlocks(css);
+    // The whole rail FAMILY, not just the two class names: `.wb-rail-item--active`
+    // could carry a level of its own, and a control lifted by a modifier is
+    // exactly as reachable as one lifted by its base rule.
+    const railFamily = blocks.filter((rule) => /\.wb-rail[\w-]*/.test(rule.selector));
+
+    // Picked by CONTENT, never by ordinal — the family holds a dozen rules and
+    // an insertion anywhere above would silently re-point a positional index.
+    const railRules = railFamily.filter((rule) => names(rule.selector, "wb-rail"));
+    const base = railRules.find((rule) => /grid-column:\s*1;/.test(rule.body));
+    expect(base).toBeDefined();
+    expect(base?.body).not.toMatch(/z-index/);
+    const narrow = railRules.find((rule) => /position:\s*fixed;/.test(rule.body));
+    expect(narrow).toBeDefined();
+    expect(narrow?.body).toMatch(/z-index:\s*40;/);
+
+    // The CONTROL the old rows were clicking, which is a `.wb-rail-item` and
+    // not the rail itself: give this one a level above the backdrop and it
+    // outranks the overlay while every `.wb-rail` assertion above still passes.
+    const itemRules = railFamily.filter((rule) => names(rule.selector, "wb-rail-item"));
+    const item = itemRules.find((rule) => /position:\s*relative;/.test(rule.body));
+    expect(item).toBeDefined();
+    expect(item?.body).not.toMatch(/z-index/);
+
+    // `.wb-shell` opens no stacking context either, so nothing OUTSIDE these
+    // rules can lift them as a group. Only the two properties that would do it
+    // by themselves are checked: `transform`, `filter` and `contain` also
+    // create one, but this is the shell's shared base rule and any of the three
+    // could arrive for an unrelated reason — a pin that broke on those would be
+    // asserting layout policy rather than this entry's contract.
+    const shellBase = blocks
+      .filter((rule) => rule.selector === ".wb-shell")
+      .find((rule) => /position:\s*relative;/.test(rule.body));
+    expect(shellBase).toBeDefined();
+    expect(shellBase?.body).not.toMatch(/z-index/);
+    expect(shellBase?.body).not.toMatch(/isolation/);
+
+    // THE ASSERTION THIS BLOCK EXISTS FOR. Every `z-index` any rail-family rule
+    // declares — `matchAll`, because a fallback followed by an override would
+    // otherwise be judged on the losing declaration — is below the backdrop.
+    let declared = 0;
+    for (const rule of railFamily) {
+      for (const [, raw] of rule.body.matchAll(/z-index:\s*([^;}]+)/g)) {
+        declared += 1;
+        const level = Number(raw.trim());
+        if (!Number.isFinite(level)) {
+          // Loud, not skipped: a `var(…)` or `calc(…)` level cannot be compared
+          // here, and silently passing over it would leave the rail lifted with
+          // this case still green.
+          throw new Error(
+            `\`${rule.selector}\` declares \`z-index: ${raw.trim()}\`, which this ` +
+              `scan cannot compare against the backdrop's ${backdropZ}. Resolve it ` +
+              `by hand — an unreadable level is not a level below the backdrop.`,
+          );
+        }
+        expect(level).toBeLessThan(backdropZ);
+      }
+    }
+    // Not vacuous: the narrow block's 40 is a real declaration, so a scan that
+    // matched nothing at all would be a broken extraction rather than a clean
+    // stylesheet.
+    expect(declared).toBeGreaterThan(0);
   });
 });
 
