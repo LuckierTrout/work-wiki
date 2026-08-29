@@ -2699,10 +2699,22 @@ body:has(.wb-shell) {
    accident — and the accessibility tree and tab-order removals that the whole
    fix rests on go with the pixels.
 
+   `!important` is what actually delivers that promise (DW-415), not the
+   selector's specificity. Naming the attribute only buys (0,2,0), and this
+   stylesheet already writes `display` at (0,3,0) a few rules up
+   (`.wb-shell[data-collapsed="true"] .wb-left`), so one shell-scoped
+   `display` aimed at this wrapper would out-rank a plain withdrawal and put
+   the hidden subtree back on screen. An important author declaration loses to
+   no normal author declaration at any specificity, so the floor holds without
+   an escalating arms race — and it only ever fires while the element carries
+   `hidden`, which is exactly the state in which nothing should show it. The
+   cascade, not just the text, is pinned in
+   `workbench/__tests__/hidden-withdrawal-cascade.test.tsx`.
+
    Deliberately outside every media query: the subtree is hidden at all three
    widths whenever another mode is showing. */
 .wb-canvas-mode[hidden] {
-  display: none;
+  display: none !important;
 }
 /* And the canvas SECTION goes the same way while Settings is open (DW-373).
    Settings used to be rendered INSTEAD of the mode canvas, which unmounted the
@@ -2715,12 +2727,16 @@ body:has(.wb-shell) {
    silently beat the UA sheet's `hidden` default and put the withdrawn canvas
    back on screen underneath Settings.
 
+   And the same `!important` floor, for the same reason (DW-415): the floor,
+   not the attribute's specificity, is what puts the withdrawal beyond every
+   normal author declaration. Argued in full at the rule above.
+
    Deliberately outside every media query, and NOT merged into the rule above:
    the `@media` block further down re-points `.wb-canvas` to `grid-column: 1`,
    so a withdrawal stated inside a width query would hold at some widths and
    not others. */
 .wb-canvas[hidden] {
-  display: none;
+  display: none !important;
 }
 /* …and so does the docked Preview while Settings is showing (DW-412). Opening
    Settings used to gate the column off with `previewOpen && …`, which unmounted
@@ -2733,6 +2749,10 @@ body:has(.wb-shell) {
    declares `display: flex`, which beats the user-agent sheet's `hidden` default
    outright — without this rule the withdrawn column simply stays on screen.
 
+   And the same `!important` floor (DW-415): a shell-scoped `display` out-ranks
+   this selector on specificity, so the floor rather than the specificity is
+   what keeps the column withdrawn against every normal author declaration.
+
    Deliberately outside every media query. The stacking block further down
    re-points `.wb-preview` to `grid-column: 1`, so a withdrawal stated inside a
    width query would hold at some widths and not others — and wherever it
@@ -2741,7 +2761,7 @@ body:has(.wb-shell) {
    counts the responsive blocks by that exact text, and a mention in prose would
    be indistinguishable from a third block.) */
 .wb-preview[hidden] {
-  display: none;
+  display: none !important;
 }
 /* …and so does the tree panel, for the disclosure state it owns. The SIBLING of
    the rule above — same bundle, same mechanism, a different column — and NOT
@@ -2753,12 +2773,16 @@ body:has(.wb-shell) {
 
    Same reason for the attribute: the `.wb-tree-panel` block below declares
    `display: flex` so it can be the left column's growing flex child, and that
-   author declaration beats the `hidden` default. Outside every media query,
-   because the panel is withdrawn at all three widths whenever Settings has the
-   column — including below 900px, where the stylesheet force-shows a collapsed
-   column and would otherwise put the tree back beside the settings nav. */
+   author declaration beats the `hidden` default. And the same `!important`
+   floor (DW-415): the floor, not this selector's specificity, is what holds
+   against every normal author declaration.
+
+   Outside every media query, because the panel is withdrawn at all three
+   widths whenever Settings has the column — including below 900px, where the
+   stylesheet force-shows a collapsed column and would otherwise put the tree
+   back beside the settings nav. */
 .wb-tree-panel[hidden] {
-  display: none;
+  display: none !important;
 }
 .wb-surface-title {
   margin: 0 0 var(--wb-space-3);

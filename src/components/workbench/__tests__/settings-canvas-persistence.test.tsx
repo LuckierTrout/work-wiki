@@ -1052,11 +1052,19 @@ describe("the stylesheet backs the attribute (DW-373)", () => {
     // that block would put the withdrawn canvas back under Settings. So the rule
     // is stated in `globals.css`, with the attribute in its selector, and read
     // here from the real file rather than restated.
+    //
+    // `!important` is the half that holds the withdrawal against every normal
+    // author declaration (DW-415) — the floor, not the selector's specificity,
+    // as the rule's own comment argues. Asserted here so a restyle cannot
+    // quietly drop it; that it wins the live cascade is
+    // `hidden-withdrawal-cascade.test.tsx`.
     const css = await readFile(
       path.resolve(__dirname, "../../../app/globals.css"),
       "utf8",
     );
-    expect(css).toMatch(/\.wb-canvas\[hidden\] \{\s*display: none;\s*\}/);
+    expect(css).toMatch(
+      /\.wb-canvas\[hidden\] \{\s*display: none !important;\s*\}/,
+    );
 
     // Outside every media query. The `@media` block further down re-points
     // `.wb-canvas` to `grid-column: 1`, so a withdrawal stated inside a width
@@ -1077,14 +1085,16 @@ describe("the stylesheet backs the attribute (DW-373)", () => {
     // user-agent sheet's `hidden` default outright. Without a rule naming the
     // attribute, each withdrawn column would simply stay on screen: the Preview
     // in an implicit fourth grid track beside Settings, the tree above the
-    // settings nav. So the same read-back the canvas gets, for the same reason.
+    // settings nav. So the same read-back the canvas gets, for the same reason —
+    // including the `!important` floor (DW-415), which is what keeps either
+    // column withdrawn against every normal author declaration.
     const css = await readFile(
       path.resolve(__dirname, "../../../app/globals.css"),
       "utf8",
     );
     for (const selector of [".wb-preview[hidden]", ".wb-tree-panel[hidden]"]) {
       const rule = new RegExp(
-        `${selector.replace(/[.[\]]/g, "\\$&")} \\{\\s*display: none;\\s*\\}`,
+        `${selector.replace(/[.[\]]/g, "\\$&")} \\{\\s*display: none !important;\\s*\\}`,
       );
       expect(css).toMatch(rule);
 

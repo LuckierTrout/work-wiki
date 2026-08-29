@@ -331,11 +331,19 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
     // grid where such a rule is one restyle away. So the rule is stated in
     // `globals.css`, with the attribute in its selector, and read here from the
     // real file rather than restated.
+    //
+    // `!important` is required, not incidental (DW-415): the floor, not the
+    // selector's specificity, is what holds the withdrawal against every normal
+    // author declaration — argued in full at the rule itself. Asserted here so
+    // a later restyle cannot quietly drop it; that it WINS the cascade, rather
+    // than merely appearing in the file, is `hidden-withdrawal-cascade.test.tsx`.
     const css = await readFile(
       path.resolve(__dirname, "../../../app/globals.css"),
       "utf8",
     );
-    expect(css).toMatch(/\.wb-canvas-mode\[hidden\] \{\s*display: none;\s*\}/);
+    expect(css).toMatch(
+      /\.wb-canvas-mode\[hidden\] \{\s*display: none !important;\s*\}/,
+    );
     // Outside every media query: the subtree is withdrawn at all three widths.
     // A rule wrapped in `@media (min-width: …)` would put the hidden canvas —
     // dialog, draft and all — back on screen wherever the wrapper missed.

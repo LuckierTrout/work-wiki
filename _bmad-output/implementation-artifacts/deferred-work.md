@@ -3944,7 +3944,9 @@ source_spec: `spec-dw-411-pnpm-workspace-root.md`
 location: _bmad-output/implementation-artifacts/deferred-work.md (DW-411, DW-415)
 severity: medium
 reason: `.bmad-loop/runs/20260820-220331-0f16/bundles/c3-pnpm-workspace-root/intent.md` carries `dw_ids: DW-415` and pastes DW-415 verbatim (a CSS specificity issue at src/app/globals.css:2690-2710), while its `## Intent` section is a near-verbatim restatement of DW-411 (`pnpm vitest` / `pnpm lint` abort; location `package.json / pnpm-workspace.yaml`). This story implemented the Intent, so DW-411 is what is resolved. Recording DW-415 as resolved would close a still-real cascade hazard that nothing in this change touches — `src/app/globals.css` was not modified.
-status: open
+status: done 2026-08-28
+resolution: resolved by sweep bundle dw-hidden-attribute-css-specificity
+resolution-undo: 0246f6f8e779adb192b20a5b5d4e65bf176f3a9f988d26736265065d89b48fc6 2026-08-28 7374617475733a206f70656e
 decision: 2026-08-28 Reopen DW-415 — Flip DW-415 back to status: open with a note that the bundle keyed to it resolved DW-411 instead, so its globals.css [hidden] specificity work re-enters the next sweep.
 decision: 2026-08-26 Reopen DW-415 — Flip DW-415 back to status: open with a note that the bundle keyed to it resolved DW-411 instead, so its globals.css [hidden] specificity work re-enters the next sweep.
 
@@ -4789,4 +4791,20 @@ location: src/app/api/v1/projects/[wikiId]/sources/rescan/route.ts:82
 source_spec: `spec-dw-491-493-494-workbench-raw-path-gate-parity.md`
 severity: medium
 reason: DW-493's new case calls `rescanSources` directly and does pin the forward at src/lib/source-rescan.ts:126 (verified: replacing it with `new Set()` fails exactly that case and nothing else). What remains untested is the route that a real caller hits: `POST /api/v1/projects/[wikiId]/sources/rescan` derives the gate with `v1SlugGate(caller.principal)` and spreads it into the call (route.ts:82-88). Nothing asserts that derivation yields a NON-EMPTY `hiddenSlugs` for a hidden page, or how it composes with the route's own `!path.startsWith("raw/sources/")` -> 403 scope check — because `src/lib/__tests__/epic8-v1-routes.test.ts:54` mocks `@/lib/source-rescan` wholesale, so no test in the suite drives the real function through the POST door. Pre-existing: that mock and that wiring predate this change.
+status: open
+
+### DW-538: The eight `.wb-canvas-pad` mode panes are withdrawn with the same `hidden` mechanism but have no backing CSS rule at all, so their withdrawal rests on the user-agent default alone.
+origin: spec-deferred cdc2936054f0
+location: src/app/globals.css:2686 / src/components/workbench/ModeCanvas.tsx:185
+source_spec: `spec-dw-433-hidden-attribute-css-specificity.md`
+severity: medium
+reason: `src/components/workbench/ModeCanvas.tsx` sets `hidden={mode !== "…" || hidden}` on eight `.wb-canvas-pad` divs (lines 185, 206, 218, 233, 249, 263, 280, 299). `.wb-canvas-pad` at `src/app/globals.css:2686` declares only `padding` — there is no `.wb-canvas-pad[hidden]` rule. The UA sheet's `[hidden] { display: none }` loses to ANY author `display` declaration, which is a strictly weaker position than the (0,2,0) one DW-415 judged insufficient for the four sibling surfaces. Not caused by this change and not named by DW-415, whose scope is the specificity of withdrawal rules that already exist; adding a fifth rule is separate work. The new scan `every [hidden] withdrawal in the stylesheet carries the floor` would enforce the floor on such a rule the moment one is written, but cannot require that it exist.
+status: open
+
+### DW-539: On Node 26 the vitest dom project cannot run at all — `window.localStorage` is undefined, so 229 tests across 13 files die in `beforeEach`.
+origin: spec-deferred f743cf8764f7
+location: vitest.config.ts (dom project) / AGENTS.md "Test environments"
+source_spec: `spec-dw-433-hidden-attribute-css-specificity.md`
+severity: low
+reason: Every failure is `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Identical at `baseline_revision` 144767a4 and after this change (13 failed files / 229 failed tests both times, +3 passing from the new suite). On Node 22.16.0 — the version `.github/workflows/ci.yml` pins — the full suite is green: 337 files / 7731 passed, 1 skipped. Raw jsdom 30.0.1 with an http URL does provide `localStorage`, so the gap is in how the vitest jsdom environment exposes it under Node 26, not in jsdom itself. Not a repository defect and not caused by this change, but it makes local verification on a current Node look catastrophically broken, and `AGENTS.md` "Test environments" does not warn of it.
 status: open
