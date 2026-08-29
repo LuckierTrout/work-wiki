@@ -487,7 +487,8 @@ export const MCP_TOOLS: ToolDef[] = [
   {
     name: "fix_lint_issue",
     description:
-      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. " +
+      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, plus optional slug/target/message: " +
+      "`slug` is required by every type EXCEPT missing-concept-page, which reads `message` alone. " +
       "Accepts ONLY the auto-fixable issue types listed on `type` — the remaining check types need human judgement, " +
       "and for those the issue's own `suggestion` field from lint_wiki carries the action to take.",
     inputSchema: schema(
@@ -502,11 +503,18 @@ export const MCP_TOOLS: ToolDef[] = [
           // agent, not a gate (DW-348).
           enum: [...AUTO_FIXABLE_CHECK_TYPES],
         },
-        slug: str("Slug of the affected page"),
+        slug: str(
+          "Slug of the affected page. Required by every type EXCEPT " +
+            "missing-concept-page, which reads `message` alone.",
+        ),
         target: str("Target slug for cross-ref, contradiction, and broken-link fixes"),
         message: str("Message context for contradiction or missing-concept-page fixes"),
       },
-      ["type", "slug"],
+      // `slug` is NOT required (DW-457): `missing-concept-page` reads `message`
+      // alone, and every slug-requiring type answers "Missing required field:
+      // slug" for the `""` an absent one converts to — the same trade
+      // `LINT_FIX_REQUEST` makes at the REST door.
+      ["type"],
     ),
     write: true,
     run: async (a, p) => {
@@ -516,14 +524,46 @@ export const MCP_TOOLS: ToolDef[] = [
       // sentence comes from `@/lib/lint-fix` so a recognized-but-not-fixable
       // type gets its own explanation here, word for word as the HTTP route
       // answers it, rather than a bare "unsupported".
-      const refusal = autoFixRefusal(
-        a.type,
-        typeof a.slug === "string" ? a.slug : "",
-      );
+      //
+      // The three STRING fields need the same treatment (DW-455). `tools/call`
+      // hands `params.arguments` straight to this `run` with no validation, so
+      // a spread-and-cast let a non-string `slug` through as itself: an object
+      // slug reached `fixOrphanPage` and came back a 404 naming
+      // `[object Object]`. This mirrors `LINT_FIX_REQUEST`'s three optional
+      // string fields exactly, and names the field that is wrong.
+      //
+      // ABSENT means absent — `null` is a value, and a REFUSED one: zod's
+      // `.optional()` accepts a missing key and `undefined`, but answers
+      // "expected string, received null" for an explicit `null`. Treating
+      // `null` as "unset" here would make `{"type":"orphan-page","slug":null}`
+      // a 400 at the REST door and a silent success at this one, which is the
+      // exact divergence this bundle exists to close.
+      const optionalString = (field: string): string | undefined => {
+        if (!(field in a) || a[field] === undefined) return undefined;
+        const v = a[field];
+        if (typeof v !== "string") {
+          throw new Error(`Invalid request field \`${field}\`: expected string`);
+        }
+        return v;
+      };
+
+      const slug = optionalString("slug");
+      const target = optionalString("target");
+      const message = optionalString("message");
+
+      const refusal = autoFixRefusal(a.type, slug ?? "");
       if (refusal) throw new Error(refusal);
 
+      // Explicit fields rather than a spread: every one of them has now been
+      // gated — the three strings just above, and `type` by `autoFixRefusal`,
+      // which answers `AUTO_FIX_UNSUPPORTED` for anything that is not a string
+      // naming a real handler. So the cast below records a narrowing the gate
+      // already proved, instead of asserting one nothing checked.
       return handleFixLintIssue({
-        ...(a as { type: string; slug: string; target?: string; message?: string }),
+        type: a.type as string,
+        slug,
+        target,
+        message,
         author: p!.handle,
       });
     },

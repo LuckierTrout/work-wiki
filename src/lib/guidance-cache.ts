@@ -25,10 +25,12 @@
  * scope a value the caller creates keeps "how stale may this be?" answerable by
  * reading the caller.
  *
- * Scope today: `ingest()` mints one per DOCUMENT when its caller supplies none,
- * and `POST /api/ingest/batch` supplies one per HTTP REQUEST — one batch is one
- * user action, so an edit landing mid-batch is deliberately invisible to the
- * rest of that batch.
+ * Scope today: `ingest()` mints one per DOCUMENT when its caller supplies none;
+ * `POST /api/ingest/batch` supplies one per HTTP REQUEST for the URLs it runs
+ * inline; and `handleBatchIngest` in `mcp.ts` — the `batch_ingest_urls` tool
+ * both MCP transports share — supplies one per CALL. In both batch cases the
+ * scope is one user/agent action, so an edit landing mid-batch is deliberately
+ * invisible to the rest of that batch.
  */
 
 import {

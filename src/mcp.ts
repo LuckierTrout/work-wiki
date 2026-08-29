@@ -71,6 +71,7 @@ import { extractSummary, ingest, ingestUrl, ingestImage, ingestPdf, ingestXMenti
 import { query, saveAnswerToWiki, type QueryFormat } from "./lib/query";
 import { listQueries, type QueryHistoryEntry } from "./lib/query-history";
 import { isUrl } from "./lib/fetch";
+import { createGuidanceCache } from "./lib/guidance-cache";
 import { MAX_BATCH_URLS } from "./lib/constants";
 import { getErrorMessage } from "./lib/errors";
 import { patchMetadata, type PatchMetadataResult } from "./lib/patch-metadata";
@@ -529,12 +530,24 @@ export async function handleBatchIngest(args: {
   let succeeded = 0;
   let failed = 0;
 
+  // ONE guidance memo for the whole batch (DW-395), matching what
+  // `POST /api/ingest/batch` already does for its inline fallback. Without it
+  // each URL re-resolves the active Wiki's Workspace Purpose and re-reads the
+  // Names & Terms dictionary from scratch, N times inside ONE agent action.
+  // The scope is exactly that action: one batch is one consistent set of
+  // guidance, with a Purpose or dictionary edit landing mid-batch deliberately
+  // invisible to the rest of it. The handle lives only as long as this call —
+  // it is caller-owned and per-operation, never module-level (see
+  // `guidance-cache.ts`), so the next call mints its own.
+  const guidanceCache = createGuidanceCache();
+
   for (const url of urls) {
     try {
       const result: IngestResult = await ingestUrl(url, {
         ...(tags && tags.length > 0 ? { tags } : {}),
         ...(owner ? { owner, author: owner } : {}),
         ...(triggeredBy ? { triggeredBy } : {}),
+        guidanceCache,
       });
       results.push({ url, slug: result.primarySlug });
       succeeded++;
@@ -1207,14 +1220,25 @@ export async function handleLintWiki(args: {
   });
 }
 
+/**
+ * `slug` is OPTIONAL, and an absent one reaches `fixLintIssue` as `""` — the
+ * same `slug ?? ""` conversion `POST /api/lint/fix` does (DW-457).
+ *
+ * `missing-concept-page` reads `message` ALONE; its handler never looks at a
+ * slug. Requiring one here made the only slug-less fix type unreachable over
+ * both MCP transports unless the agent invented a dummy value. Every type that
+ * DOES need a slug still answers "Missing required field: slug" for the empty
+ * string, which names both the field and the fact that this type needs it —
+ * strictly better than a schema's "expected string, received undefined".
+ */
 export async function handleFixLintIssue(args: {
   type: string;
-  slug: string;
+  slug?: string | undefined;
   target?: string | undefined;
   message?: string | undefined;
   author?: string | undefined;
 }): Promise<FixResult> {
-  return fixLintIssue(args.type, args.slug, args.target, args.message, args.author);
+  return fixLintIssue(args.type, args.slug ?? "", args.target, args.message, args.author);
 }
 
 // ---------------------------------------------------------------------------
@@ -2467,7 +2491,8 @@ export function createMcpServer(): McpServer {
   // fix_lint_issue — Auto-fix a lint issue
   server.registerTool("fix_lint_issue", {
     description:
-      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, slug, and optional target/message. " +
+      "Auto-fix a lint issue found by lint_wiki. Takes the issue type, plus optional slug/target/message: " +
+      "`slug` is required by every type EXCEPT missing-concept-page, which reads `message` alone. " +
       "Accepts ONLY the auto-fixable issue types listed on `type` — the remaining check types need human judgement, " +
       "and for those the issue's own `suggestion` field from lint_wiki carries the action to take.",
     inputSchema: {
@@ -2496,7 +2521,17 @@ export function createMcpServer(): McpServer {
         .describe(
           `Lint issue type. Valid: ${AUTO_FIXABLE_CHECK_TYPES.join(", ")}`,
         ),
-      slug: z.string().describe("Slug of the affected page"),
+      // OPTIONAL (DW-457): `missing-concept-page` reads `message` alone, so a
+      // required slug made the one slug-less fix type unreachable here. Every
+      // other type still needs one, and answers for its own absence — see
+      // `handleFixLintIssue`.
+      slug: z
+        .string()
+        .optional()
+        .describe(
+          "Slug of the affected page. Required by every type EXCEPT " +
+            "missing-concept-page, which reads `message` alone.",
+        ),
       target: z
         .string()
         .optional()
@@ -2514,6 +2549,15 @@ export function createMcpServer(): McpServer {
     },
   }, async (args) => {
     try {
+      // No `author`: the stdio transport is unauthenticated and deployment-
+      // trusted — every handler here runs with a `null` principal (see
+      // `handleSearchWiki`) — so there is no resolved actor to attribute the
+      // fix to, and `fixLintIssue`'s `"lint-fix"` default is the HONEST answer
+      // here — not the omission it would be at the two doors that DO resolve a
+      // principal (`mcp-http.ts` and `POST /api/lint/fix`, DW-456).
+      // `"lint-fix"` is an `AUTOMATION_ACTORS` member (`agent-handle.ts`), so
+      // `normalizeActor` folds it into the agent rather than scattering a
+      // one-off system handle through the contributor list.
       const result = await handleFixLintIssue(args);
       return {
         content: [

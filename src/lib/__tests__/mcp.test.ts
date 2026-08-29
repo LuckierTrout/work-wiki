@@ -2840,6 +2840,42 @@ describe("fix_lint_issue", () => {
     expect(result.success).toBe(true);
     expect(result.slug).toBe("source-page");
   });
+
+  /**
+   * `missing-concept-page` with no slug at all (DW-457).
+   *
+   * It is the one auto-fixable type whose handler reads `message` ALONE —
+   * `FIX_HANDLERS["missing-concept-page"]` never destructures `slug`, and the
+   * concept name (hence the slug it writes) comes out of the message. So the
+   * handler's `slug` is optional, and an absent one reaches `fixLintIssue` as
+   * `""`, exactly as `POST /api/lint/fix` converts it.
+   */
+  it("creates the stub page for a slug-less missing-concept-page", async () => {
+    await writeIndex([]);
+
+    const result = await handleFixLintIssue({
+      type: "missing-concept-page",
+      message:
+        'Concept "Vector Search" is mentioned in ingest, retrieval but has no dedicated page. Both describe it at length.',
+    });
+
+    expect(result.success).toBe(true);
+    // The slug is DERIVED from the message's concept name — proof that no
+    // caller-supplied slug was needed, or used.
+    expect(result.slug).toBe("vector-search");
+    const page = await readWikiPageWithFrontmatter("vector-search");
+    expect(page).not.toBeNull();
+    expect(page!.title).toBe("Vector Search");
+  });
+
+  it("lets a slug-requiring type answer for its own missing slug", async () => {
+    // The other half of the optional-`slug` trade. `""` reaches the handler and
+    // its own message names the field AND the fact that this type needs it —
+    // more than a rejection over an absent property could say.
+    await expect(handleFixLintIssue({ type: "orphan-page" })).rejects.toThrow(
+      "Missing required field: slug",
+    );
+  });
 });
 
 /**
@@ -2867,6 +2903,22 @@ describe("fix_lint_issue — the stdio door", () => {
     const shape = entry.inputSchema.shape ?? entry.inputSchema;
 
     expect([...shape.type.options]).toEqual([...AUTO_FIXABLE_CHECK_TYPES]);
+  });
+
+  it("marks slug optional in the registered input schema", () => {
+    // DW-457. `missing-concept-page` reads `message` alone, so a REQUIRED slug
+    // made the one slug-less fix type uncallable here — the SDK would refuse
+    // the arguments before the handler could ever see them. Asked as "does the
+    // field accept an absent value", which is the property that matters,
+    // rather than by naming a zod wrapper class.
+    const server = createMcpServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (server as any)._registeredTools.fix_lint_issue;
+    const shape = entry.inputSchema.shape ?? entry.inputSchema;
+
+    expect(shape.slug.safeParse(undefined).success).toBe(true);
+    // Still a STRING when present — optional widened the presence, not the type.
+    expect(shape.slug.safeParse(7).success).toBe(false);
   });
 
   describe("over a real client transport", () => {
@@ -2932,6 +2984,51 @@ describe("fix_lint_issue — the stdio door", () => {
       expect((result.content as { text: string }[])[0].text).toContain(
         "Page not found: absent-from-this-wiki",
       );
+    });
+
+    it("accepts a slug-less missing-concept-page past the schema", async () => {
+      // The DW-457 claim on this transport: the SDK's validation is what used
+      // to stop this call, and a schema error names `slug` without ever
+      // entering the callback. The message is deliberately UNPARSEABLE, so
+      // `fixMissingConceptPage` refuses at its OWN regex — an error only
+      // reachable from inside the handler, which is what makes it the proof
+      // that the request got past the schema.
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "missing-concept-page", message: "no concept sentence here" },
+      });
+
+      expect(result.isError).toBe(true);
+      const text = (result.content as { text: string }[])[0].text;
+      expect(text).toContain("Could not parse concept name");
+    });
+
+    it("lets a slug-requiring type answer for its own missing slug", async () => {
+      // The cost of the widening, and why it is worth paying: `orphan-page`
+      // with no slug now reaches the handler as `""` and gets a message naming
+      // the field and its own requirement, instead of the SDK's report about
+      // an absent property.
+      const result = await client.callTool({
+        name: "fix_lint_issue",
+        arguments: { type: "orphan-page" },
+      });
+
+      expect(result.isError).toBe(true);
+      expect((result.content as { text: string }[])[0].text).toContain(
+        "Missing required field: slug",
+      );
+    });
+
+    it("advertises slug as optional to a connected client", async () => {
+      // What the agent reads before composing the call. A `required` list still
+      // naming `slug` would keep the type unreachable in practice.
+      const { tools } = await client.listTools();
+      const tool = tools.find((t) => t.name === "fix_lint_issue")!;
+
+      expect(tool.inputSchema.required ?? []).not.toContain("slug");
+      expect(tool.inputSchema.required ?? []).toContain("type");
+      // Still ADVERTISED — optional is not absent; every other type needs it.
+      expect(tool.inputSchema.properties).toHaveProperty("slug");
     });
 
     it("advertises the fixable list to a connected client", async () => {

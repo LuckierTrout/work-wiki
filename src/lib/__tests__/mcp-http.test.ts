@@ -739,6 +739,30 @@ describe("dispatchMcp — fix_lint_issue", () => {
     expect(r.content[0].text).toMatch(/authentication required/i);
   });
 
+  // Every gate row below drives the tool the same way: one `tools/call` as an
+  // authenticated principal, read back as the error text it answered with. The
+  // shared `mockClear` keeps "was the dispatcher reached?" answerable per row —
+  // that question is the point of most of them.
+  const call = (args: Record<string, unknown>) =>
+    dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: { name: "fix_lint_issue", arguments: args },
+      },
+      ALICE,
+    );
+
+  const errorText = (res: Awaited<ReturnType<typeof dispatchMcp>>) => {
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+    expect(r.isError).toBe(true);
+    return r.content[0].text;
+  };
+
+  beforeEach(() => {
+    spiedFixLintIssue.mockClear();
+  });
+
   /**
    * The `type` gate this transport has to carry itself (DW-348).
    *
@@ -749,26 +773,6 @@ describe("dispatchMcp — fix_lint_issue", () => {
    * lives in the tool's own `run`, so these rows are its only observer.
    */
   describe("the type gate", () => {
-    const call = (args: Record<string, unknown>) =>
-      dispatchMcp(
-        {
-          id: 1,
-          method: "tools/call",
-          params: { name: "fix_lint_issue", arguments: args },
-        },
-        ALICE,
-      );
-
-    const errorText = (res: Awaited<ReturnType<typeof dispatchMcp>>) => {
-      const r = res!.result as { isError?: boolean; content: { text: string }[] };
-      expect(r.isError).toBe(true);
-      return r.content[0].text;
-    };
-
-    beforeEach(() => {
-      spiedFixLintIssue.mockClear();
-    });
-
     it("refuses a recognized-but-not-fixable type, with its own explanation", async () => {
       // Refused at the door, but NOT with a bare "unsupported": the type is a
       // real check type whose refusal was written for a human, and dropping
@@ -840,6 +844,154 @@ describe("dispatchMcp — fix_lint_issue", () => {
       // And the prose must not still promise what the schema now refuses.
       expect(tool.description).not.toContain("Not all issue types are auto-fixable");
       expect(tool.description).toContain("suggestion");
+    });
+  });
+
+  /**
+   * The three STRING fields, gated the same way `type` is (DW-455).
+   *
+   * `dispatchMcp` validates nothing — `params.arguments` reaches `tool.run` as
+   * whatever JSON arrived — and this tool used to spread that object straight
+   * into `handleFixLintIssue` behind a cast. A non-string `slug` therefore
+   * travelled all the way to `fixOrphanPage` and came back a 404 naming
+   * `[object Object]`: an error about a page the caller never asked for,
+   * useless for correcting the call. The gate must name the FIELD instead, and
+   * the dispatcher must never be reached — the spy is what proves the second
+   * half, since a refusal alone cannot tell "stopped at the door" from
+   * "dispatched and failed".
+   */
+  describe("the string-field gate", () => {
+    it.each([
+      ["an object slug", { type: "orphan-page", slug: { x: 1 } }, "slug"],
+      ["a numeric slug", { type: "orphan-page", slug: 7 }, "slug"],
+      ["an array slug", { type: "orphan-page", slug: ["p"] }, "slug"],
+      [
+        "a numeric target",
+        { type: "missing-crossref", slug: "p", target: 7 },
+        "target",
+      ],
+      [
+        "an object message",
+        { type: "contradiction", slug: "p", target: "q", message: { a: 1 } },
+        "message",
+      ],
+    ])("refuses %s, naming the field", async (_label, args, field) => {
+      const text = errorText(await call(args));
+
+      expect(text).toContain(`\`${field}\``);
+      expect(text).not.toContain("[object Object]");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("checks the fields BEFORE the type gate speaks for them", async () => {
+      // Order matters for the message the agent reads: with a bad `slug` the
+      // `type` gate would interpolate garbage into the copy-pasteable clear
+      // path it exists to hand over ("PATCH /api/wiki/[object Object] …").
+      // Naming the malformed field first is the only answer that can be acted
+      // on.
+      const text = errorText(await call({ type: "disputed-page", slug: { x: 1 } }));
+
+      expect(text).toContain("`slug`");
+      expect(text).not.toContain("[object Object]");
+    });
+
+    it("lets an ABSENT field through — optional means optional", async () => {
+      // The control for the gate's shape: it refuses PRESENT-but-wrong, not
+      // MISSING. `orphan-page` takes no target or message, so omitting them
+      // must reach the dispatcher as `undefined` rather than trip the gate.
+      const text = errorText(
+        await call({ type: "orphan-page", slug: "absent-page" }),
+      );
+
+      expect(text).toContain("Page not found: absent-page");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "orphan-page",
+        "absent-page",
+        undefined,
+        undefined,
+        ALICE.handle,
+      );
+    });
+
+    it("refuses an explicit null — absent is not the same as null", async () => {
+      // The parity that makes this gate worth having. `LINT_FIX_REQUEST`'s
+      // `z.string().optional()` accepts a MISSING key and `undefined`, but
+      // answers "expected string, received null" for an explicit `null` —
+      // verified against the installed zod. Reading `null` as "unset" here
+      // would make the same body a 400 at `POST /api/lint/fix` and a silent
+      // success over MCP, which is the door divergence this bundle closes.
+      const text = errorText(await call({ type: "orphan-page", slug: null }));
+
+      expect(text).toContain("`slug`");
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * `missing-concept-page` without a slug (DW-457).
+   *
+   * It is the one auto-fixable type whose handler reads `message` ALONE —
+   * `FIX_HANDLERS["missing-concept-page"]` never destructures `slug`. While
+   * `slug` sat in this tool's `required` list the type was unreachable over
+   * this transport unless the agent invented a dummy slug for a fix that would
+   * ignore it. The REST door already accepts the slug-less body; these rows are
+   * the parity.
+   */
+  describe("a slug-less missing-concept-page", () => {
+    it("reaches the dispatcher with an empty slug", async () => {
+      // The message is deliberately UNPARSEABLE, so `fixMissingConceptPage`
+      // refuses at its own regex rather than writing a stub into this suite's
+      // wiki. The claim under test is that the request GOT there, which the
+      // spy's recorded arguments establish on their own — including the `""`
+      // an absent slug converts to, the same conversion `POST /api/lint/fix`
+      // does.
+      const text = errorText(
+        await call({
+          type: "missing-concept-page",
+          message: "no concept sentence here",
+        }),
+      );
+
+      expect(text).toContain("Could not parse concept name");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "missing-concept-page",
+        "",
+        undefined,
+        "no concept sentence here",
+        ALICE.handle,
+      );
+    });
+
+    it("still lets a slug-requiring type answer for its own missing slug", async () => {
+      // The other half of the trade. An optional `slug` means `orphan-page`
+      // with none reaches the handler as `""`, and "Missing required field:
+      // slug" names both the field and the fact that this type needs it —
+      // strictly more than a schema error over an absent property could say.
+      const text = errorText(await call({ type: "orphan-page" }));
+
+      expect(text).toContain("Missing required field: slug");
+      expect(spiedFixLintIssue).toHaveBeenCalledWith(
+        "orphan-page",
+        "",
+        undefined,
+        undefined,
+        ALICE.handle,
+      );
+    });
+
+    it("advertises slug as optional", async () => {
+      // What the agent reads before composing the call. A `required` list still
+      // naming `slug` would keep the type unreachable in practice even though
+      // the door now accepts it.
+      const res = await dispatchMcp({ id: 1, method: "tools/list" }, ALICE);
+      const tools = (res!.result as { tools: { name: string; inputSchema: unknown }[] })
+        .tools;
+      const schema = tools.find((t) => t.name === "fix_lint_issue")!
+        .inputSchema as { required?: string[]; properties: Record<string, unknown> };
+
+      expect(schema.required).toEqual(["type"]);
+      // Still ADVERTISED — optional is not absent; every other type needs it.
+      expect(schema.properties).toHaveProperty("slug");
     });
   });
 });

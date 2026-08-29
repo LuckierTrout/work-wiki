@@ -213,6 +213,7 @@ describe("POST /api/lint/fix — body validation", () => {
       "",
       undefined,
       "no concept sentence here",
+      "LuckierTrout",
     );
     expect(res.status).toBe(400);
     expect(String(((await res.json()) as { error?: string }).error)).toContain(
@@ -233,6 +234,7 @@ describe("POST /api/lint/fix — body validation", () => {
       "",
       undefined,
       undefined,
+      "LuckierTrout",
     );
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error?: string }).error).toBe(
@@ -251,8 +253,35 @@ describe("POST /api/lint/fix — body validation", () => {
       "some-page",
       undefined,
       undefined,
+      "LuckierTrout",
     );
     expect(res.status).toBe(404);
+  });
+
+  it("attributes the fix to the resolved principal, not the `lint-fix` default", async () => {
+    // DW-456. `fixLintIssue`'s fifth parameter defaults to `"lint-fix"`, and
+    // this door used to pass four arguments — so every fix an owner made
+    // through the REST surface landed in the page's revision history and the
+    // activity trail under a robot name, losing the only actor the request
+    // actually identified. The owner gate three statements above resolved them;
+    // the author reaching the dispatcher must be that handle.
+    //
+    // A DIFFERENT handle from the suite default, so the assertion cannot pass
+    // on a coincidence with some hard-coded string.
+    mockedPrincipal.mockResolvedValue({ id: "user_2", handle: "SomeOtherOwner" });
+
+    await postFix({ type: "orphan-page", slug: "some-page" });
+
+    expect(spiedFixLintIssue).toHaveBeenCalledWith(
+      "orphan-page",
+      "some-page",
+      undefined,
+      undefined,
+      "SomeOtherOwner",
+    );
+    // Named explicitly, because the whole defect was that this argument was
+    // absent and the parameter's own default filled it in.
+    expect(spiedFixLintIssue.mock.lastCall?.[4]).not.toBe("lint-fix");
   });
 });
 

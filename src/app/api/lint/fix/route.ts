@@ -149,7 +149,19 @@ export async function POST(req: NextRequest) {
     }
 
     const { type, slug, targetSlug, message } = parsed.data;
-    const result = await fixLintIssue(type, slug ?? "", targetSlug, message);
+    // The resolved owner is the author (DW-456). Without it every fix made
+    // through this door was attributed to `fixLintIssue`'s `"lint-fix"`
+    // default, which loses the real actor in the page's revision history and
+    // the activity trail — the owner gate above already knows who this is.
+    const result = await fixLintIssue(
+      type,
+      slug ?? "",
+      targetSlug,
+      message,
+      // Non-null: `isOwnerHandle` is false for a null/undefined handle, so the
+      // 403 above has already returned for every principal-less request.
+      principal!.handle,
+    );
     return NextResponse.json(result);
   } catch (error) {
     // Mid-request flag flip. Ordered above the two error-class branches: a

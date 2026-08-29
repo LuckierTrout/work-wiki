@@ -3602,7 +3602,9 @@ source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
 location: src/mcp.ts:528
 severity: medium
 reason: `handleIngestBatch` (src/mcp.ts:526-532) calls `ingestUrl(url, {...})` sequentially inside a `for` loop, so every URL of one agent action resolves the Workspace Purpose and re-reads the dictionary from scratch. The remedy is now one line — add `guidanceCache: createGuidanceCache()` to that options literal — but DW-324 names `src/app/api/ingest/batch/route.ts` specifically and this spec's scope was held to the HTTP door, so the MCP door was deliberately not touched.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-mcp-rest-door-parity
+resolution-undo: e61b6550811aed7194f363080d6b27679d0d79c5aa1900b253385cd30754f0d9 2026-08-29 7374617475733a206f70656e
 
 ### DW-396: `IngestOptions` now carries a live, non-serializable object guarded only by the convention that queue task payloads are hand-written literals.
 origin: spec-deferred f8d8c4c6caab
@@ -4128,7 +4130,9 @@ source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.m
 location: src/lib/mcp-http.ts:525
 severity: medium
 reason: `src/lib/mcp-http.ts`'s `run` calls `autoFixRefusal` on `type`, then does `...(a as { type: string; slug: string; target?: string; message?: string })`. `dispatchMcp` does not validate `tools/call` arguments, so a non-string `slug` reaches `handleFixLintIssue` and surfaces as a 404 naming `[object Object]`. The REST door type-checks all four fields via `LINT_FIX_REQUEST`. Pre-existing (the cast predates this change) and outside DW-348, whose title scopes the defect to `type`.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-mcp-rest-door-parity
+resolution-undo: e61b6550811aed7194f363080d6b27679d0d79c5aa1900b253385cd30754f0d9 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Budget the body inside the cap — Hold `MAX_RAW_EMAIL_BYTES` constant and pay for the worst-case encoded body out of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` (index.ts:74), so the envelope is honest without widening the cap. Update the derivation comment and the allowlist-parity test.
 
 ### DW-456: `POST /api/lint/fix` never passes the owner's handle as `author`, so every REST lint fix is attributed to the default `"lint-fix"` while both MCP doors pass the real principal.
@@ -4137,7 +4141,9 @@ source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.m
 location: src/app/api/lint/fix/route.ts:156
 severity: medium
 reason: The route resolves `principal` for its owner gate, then calls `fixLintIssue(type, slug ?? "", targetSlug, message)` with no fifth argument; `fixLintIssue`'s `author` parameter defaults to `"lint-fix"`. `src/lib/mcp-http.ts` and `src/mcp.ts` both pass `p!.handle`. Pre-existing — the pre-change line omitted it too — but the line was rewritten by this change and the principal is in scope three statements above.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-mcp-rest-door-parity
+resolution-undo: e61b6550811aed7194f363080d6b27679d0d79c5aa1900b253385cd30754f0d9 2026-08-29 7374617475733a206f70656e
 
 ### DW-457: `missing-concept-page` is effectively unreachable over both MCP transports: `slug` is required in both schemas though the type reads `message` alone.
 origin: spec-deferred fa89864ceffa
@@ -4145,7 +4151,9 @@ source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.m
 location: src/mcp.ts:2501
 severity: medium
 reason: The route JSDoc this change wrote states the type "Reads `message` ALONE — no `slug`, no `targetSlug`", and `LINT_FIX_REQUEST` makes `slug` optional for exactly that reason. But `src/mcp.ts` declares `slug: z.string()` (required) and `src/lib/mcp-http.ts` lists `["type", "slug"]` as required, so an agent must invent a dummy slug. No test on either transport exercises this type. Pre-existing; surfaced by the JSDoc making the asymmetry explicit.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-mcp-rest-door-parity
+resolution-undo: e61b6550811aed7194f363080d6b27679d0d79c5aa1900b253385cd30754f0d9 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Supply and clamp to the real bound — Record the verified Cloudflare Email Routing inbound ceiling as a named constant in workers/email-ingest/index.ts with its source in workers/email-ingest/README.md, clamp `MAX_RAW_EMAIL_BYTES` with `Math.min` against it, and update the sender-visible figure and the allowlist-parity test. Requires the human to supply the number.
 
 ### DW-458: `autoFixRefusal(type, "")` renders `PATCH /api/wiki/` with an empty slug segment, contradicting the copy-pasteability rationale the change states for gating at the doors.
@@ -5015,4 +5023,20 @@ location: src/components/ProviderForm.tsx:332 and src/components/EmbeddingSettin
 source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
 severity: medium
 reason: `ProviderForm.tsx` always renders `<label htmlFor="model">` and `EmbeddingSettings.tsx` always renders `<label htmlFor="embeddingModel">`, but on the `modelSource === "env"` branch the control is a plain `<div>` with no id, so both labels dangle and the locked value is announced with no name at all. Both files spend paragraphs arguing why a DESCRIPTION on a non-focusable div would be decoration; the missing NAME is a separate and larger gap and is argued nowhere. Pre-existing on both branches and untouched by this change.
+status: open
+
+### DW-563: Every other `ToolDef.run` in `MCP_TOOLS` still spreads-and-casts `tools/call` arguments with no runtime check, because `dispatchMcp` validates nothing generically -- DW-455 closed this for `fix_lint_i
+origin: spec-deferred ee1aa179380d
+location: src/lib/mcp-http.ts (dispatchMcp + every ToolDef.run)
+source_spec: `spec-dw-395-455-456-457-mcp-rest-door-parity.md`
+severity: medium
+reason: `dispatchMcp` hands `params.arguments` to `tool.run` unvalidated, and roughly nine sibling handlers do `a as Parameters<typeof handler>[0]` (src/lib/mcp-http.ts lines ~370, 466, 576, 577, 629, 644, 667, 691, 704, 721). Concrete: `batch_ingest_urls` with `urls: "https://x"` reaches `handleBatchIngest`, where a string's `.length` and index access make it look array-like and it reports `Malformed URLs at indices 0, 1, 2...`; `urls: undefined` throws. The stdio door catches both at `z.array(z.string())`. Every `ToolDef` already declares a JSON Schema with a `required` list, so `dispatchMcp` could validate generically once. DW-455's title scopes it to `fix_lint_issue`, so the rest was left alone.
+status: open
+
+### DW-564: The REST lint-fix door names the field `targetSlug` while both MCP doors name it `target`, so an agent's request body is not portable between the two surfaces the bundle set out to bring to one contra
+origin: spec-deferred 8a6272c94a12
+location: src/app/api/lint/fix/route.ts:32 vs src/lib/mcp-http.ts:509
+source_spec: `spec-dw-395-455-456-457-mcp-rest-door-parity.md`
+severity: medium
+reason: `LINT_FIX_REQUEST` (src/app/api/lint/fix/route.ts:29-34) declares `targetSlug`; `src/mcp.ts`'s registered schema and `src/lib/mcp-http.ts`'s `inputSchema` both declare `target`, and `handleFixLintIssue` forwards `args.target` into `fixLintIssue`'s `targetSlug` parameter. Pre-existing and untouched by DW-455/DW-457, but it now means the two doors' new "Invalid request field `...`" messages name different fields for the same value. `src/app/api/lint/workbench-fix/route.ts:27-32` already accepts BOTH names, which is the precedent for an alias.
 status: open
