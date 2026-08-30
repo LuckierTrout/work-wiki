@@ -5071,6 +5071,7 @@ severity: medium
 reason: `ProviderForm.tsx:355-359` keeps `DEFAULT_MODELS[effectiveProvider]`, so a blank picker over a stored `openai` shows placeholder `gpt-4o` one line below "Select a provider to check its server credential". Two statements about the same control now disagree, which is the DW-505 harm shape applied to a different node. Out of scope on the intent's own authority — it says to keep the stored-provider fallback for everything but the credential line — so the disagreement is a consequence this bundle was told to accept, not a deviation from it.
 status: open
 decision: 2026-08-29 Blank the placeholder on a blank pick — Extend the blank-pick rule from the credential line to the model placeholder, so a blank provider selection shows no model default rather than the stored provider's. Keep the stored-provider fallback everywhere the pick is not blank. Pin that the credential line and the model placeholder make the same statement for every pick state.
+decision: 2026-08-29 Blank the placeholder on a blank pick — Extend the blank-pick rule from the credential line to the model placeholder, so a blank provider selection shows no model default rather than the stored provider's. Keep the stored-provider fallback everywhere the pick is not blank. Pin that the credential line and the model placeholder make the same statement for every pick state.
 
 ### DW-562: The env-locked model boxes have no accessible NAME — their `<label htmlFor>` points at an id no element carries.
 origin: spec-deferred 0af3363949ae
