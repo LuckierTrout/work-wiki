@@ -246,12 +246,17 @@ export function ProviderForm({
    * (DW-400/DW-419) and the endpoint input (DW-402): every control THIS FORM
    * renders announces the page's read-only sentence in the same position.
    *
-   * Scoped to this form deliberately. `EmbeddingSettings`' `notes` puts the
-   * page's read-only id LAST, so on a read-only `/settings` the two model boxes
-   * announce that one banner sentence in opposite positions. That is a
-   * pre-existing inconsistency and this change does not move it: reordering
-   * either composition would be a change to a control's announced description
-   * that neither DW-505 nor DW-506 asks for.
+   * PAGE-WIDE, not merely form-wide (DW-560). `EmbeddingSettings`' `notes` used
+   * to put the page's read-only id LAST, so one banner sentence occupied two
+   * positions on one page: announced first here and last there. It now leads
+   * that list too, so every control on a read-only `/settings` that CARRIES a
+   * description names the banner at index 0. Said of the controls that carry
+   * one, not of every control the page hands `describedBy` to: on an env-pinned
+   * deployment either model box may render its locked spelling, which takes no
+   * `aria-describedby` at all, and a claim about position says nothing there.
+   * `settings-page-read-only-controls.test.tsx` mounts the page read-only over
+   * `config` sources — every field editable, every description present — and
+   * pins the position across the whole list.
    *
    * `|| undefined` is kept even though `modelHintId` is unconditional today: it
    * is the invariant all four compositions in this file and `EmbeddingSettings`
@@ -340,15 +345,57 @@ export function ProviderForm({
           {settings && <SourceBadge source={settings.modelSource} />}
         </label>
         {settings?.modelSource === "env" ? (
-          // NO `aria-describedby` here, deliberately — the same reasoning
-          // `EmbeddingSettings.tsx`'s locked branch spells out: this is a plain
-          // non-focusable `<div>` with no role, and assistive tech does not
-          // expose a description on one, so the attribute would be decoration.
-          // Reading order is what carries the hint on this branch; the editable
-          // branch below takes the attribute because an `<input>` IS exposed.
-          <div className="mt-1.5 rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono">
+          // AN `<output>`, not a `<div>` (DW-562). The `<label htmlFor="model">`
+          // above named nothing at all while this branch rendered a bare div:
+          // HTML `for` associates only with LABELABLE elements — `button`,
+          // `input`, `meter`, `output`, `progress`, `select`, `textarea` — and a
+          // `<div>` is not one, so the locked box was announced with no
+          // accessible name. `<output>` is on that list, so the label this
+          // component already renders names this box natively, the same way it
+          // names the editable branch's `<input>`. One label node, one name,
+          // both spellings of the control.
+          //
+          // The ELEMENT is what had to change; no attribute piled onto the
+          // `<div>` would have done it. `id="model"` alone associates with
+          // nothing: a browser refuses a `label[for]` aimed at a non-labelable
+          // element, and so does Testing Library, which throws "the element
+          // associated with this label (<div />) is non-labellable" rather than
+          // resolving it. The two agree — there was never a green test to be had
+          // over a browser that announced nothing.
+          //
+          // `aria-live="off"` is the one attribute that is not free: `<output>`'s
+          // implicit role is `status`, which is a LIVE REGION, and this box
+          // re-renders whenever `/api/settings` answers. The role itself STAYS —
+          // it is what assistive tech exposes this box as, and what the
+          // accessible name is computed for — and only the live-region behaviour
+          // is silenced, so the box is a named value read where it sits rather
+          // than an announcement on every answer.
+          //
+          // No EXPLICIT `role`, and no `tabIndex`. A widget role on an element
+          // that cannot take focus is a control assistive tech offers and then
+          // cannot operate, and making the box focusable would change
+          // `/settings`' keyboard order — a behaviour change nothing here asks
+          // for.
+          //
+          // Still NO `aria-describedby`. That is the DESCRIPTION, a separate
+          // question from the name DW-562 is about; the hint below is carried by
+          // reading order on this branch, and the editable branch takes the
+          // attribute because a form control announces its description with the
+          // control rather than only when the reader reaches it.
+          //
+          // `block w-full` restores what the `<div>` had for free — `<output>`
+          // is inline by default — so the box looks identical.
+          //
+          // The `Ollama Base URL` block below still renders a bare `<div>` on
+          // its own env branch: the same defect on a different control, outside
+          // DW-562, and not a rule this page follows everywhere yet.
+          <output
+            id="model"
+            aria-live="off"
+            className="mt-1.5 block w-full rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono"
+          >
             {settings.model}
-          </div>
+          </output>
         ) : (
           <input
             id="model"
@@ -376,8 +423,8 @@ export function ProviderForm({
         {/*
           …and the SENTENCE branches with the control (DW-559). "Leave empty to
           use the default model" is advice the locked branch above cannot take:
-          there is no box to empty, the `<div>` accepts no keystroke, and a save
-          would not move what pinned the value anyway. So the env branch says
+          there is no box to empty, the `<output>` accepts no keystroke, and a
+          save would not move what pinned the value anyway. So the env branch says
           what pinned it instead, in the shape every other env row on this
           surface uses — `settingsEnvOverrideCopy` /
           `settingsEnvProviderPinCopy`'s "the environment sets X, and that wins

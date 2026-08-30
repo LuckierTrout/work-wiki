@@ -126,9 +126,10 @@ const VECTOR_NOTICE_ID = "embeddingVectorNotice";
  * UNCONDITIONAL, unlike the two notes above: that `<p>` renders on both
  * branches of the env/editable ternary, so the id is always in the document and
  * the "never name an absent element" rule is satisfied by construction rather
- * than by a gate. It joins `notes` between {@link VECTOR_NOTICE_ID} and the
- * page's read-only id, which is DOM reading order for the three nodes this
- * component owns.
+ * than by a gate. It joins `notes` LAST of the three ids this component owns —
+ * after {@link OVERRIDE_NOTE_ID} and {@link VECTOR_NOTICE_ID}, which is DOM
+ * reading order for those three nodes — with the page's read-only id ahead of
+ * all of them (DW-560), because the banner renders above this whole section.
  *
  * DESCRIBES, does not mark, like the other two: an empty box is the documented
  * way to ask for the provider default, not an error.
@@ -188,16 +189,20 @@ export function EmbeddingSettings({
   const rebuildReadOnlyNoteId = useId();
   const notes =
     [
+      // FIRST, and it is the PAGE's node (DW-560). The read-only banner renders
+      // above this whole section, so leading the list IS its DOM reading-order
+      // position — the same rule the three ids below are ordered by. It used to
+      // trail them, while `ProviderForm`'s model box led with it, so one
+      // sentence on one page was announced in two different positions depending
+      // on which model box the owner reached. `ProviderFormProps.describedBy`'s
+      // composition is the order this was moved onto, not the other way round.
+      readOnlyNoteId,
       showOverrideNote ? OVERRIDE_NOTE_ID : null,
       showVectorNotice ? VECTOR_NOTICE_ID : null,
-      // Unconditional, and in DOM reading order between the vector notice and
-      // the page's read-only id — the hint `<p>` renders below both notes and
-      // above nothing this component points at. `readOnlyNoteId` keeps the
-      // position it already held rather than being pulled to the front: it is
-      // the PAGE's node, sitting above this whole section, and the three ids
-      // this component owns are what this list orders.
+      // Unconditional, and LAST of the three ids this component owns — the hint
+      // `<p>` renders below both notes and above nothing this component points
+      // at.
       MODEL_HINT_ID,
-      readOnlyNoteId,
     ]
       .filter((id): id is string => id !== null)
       .join(" ") || undefined;
@@ -211,17 +216,41 @@ export function EmbeddingSettings({
         <span className="font-normal text-foreground/40">(optional)</span>
       </label>
       {modelSource === "env" ? (
-        // NO `aria-describedby` here, deliberately. This branch is a plain
-        // non-focusable `<div>` with no role, and assistive tech does not
-        // expose a description on one — the attribute would be decoration. What
-        // actually carries the note on this branch is reading order: it follows
-        // the box immediately. The editable branch below keeps the attribute
-        // because an `<input>` IS exposed, and a description on a form control
-        // is announced with the control rather than only when the user reaches
-        // it in the reading order.
-        <div className="mt-1.5 rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono">
+        // AN `<output>`, not a `<div>` — one shape for the page's two locked
+        // model boxes (DW-562); `ProviderForm.tsx`'s twin branch spells the
+        // reasoning out in full. The short version: `<output>` is one of HTML's
+        // labelable elements, so the `<label htmlFor="embeddingModel">` above
+        // names this box natively, exactly as it names the editable branch's
+        // `<input>`. A bare `<div>` could not be named by that label at all —
+        // `for` associates only with a labelable element, and a browser and
+        // Testing Library both REFUSE the association rather than one of them
+        // going along with it — so this box was announced with no accessible
+        // name, and the ELEMENT is what had to change.
+        //
+        // `aria-live="off"` because `<output>`'s implicit role is `status`,
+        // which is a LIVE REGION, and this box re-renders whenever
+        // `/api/settings` answers. The role STAYS — it is what the box is
+        // exposed as, and what its accessible name is computed for — and only
+        // the live-region behaviour is silenced. No EXPLICIT `role` and no
+        // `tabIndex`: a widget role on an unfocusable element is a control
+        // assistive tech cannot operate, and making the box focusable would
+        // change `/settings`' keyboard order.
+        //
+        // Still NO `aria-describedby`, which is the DESCRIPTION rather than the
+        // name: the note lands immediately after this box in reading order,
+        // which is what carries it here, and the editable branch below keeps the
+        // attribute because a description on a form control is announced with
+        // the control rather than only when the reader reaches it.
+        //
+        // `block w-full` restores what the `<div>` had for free — `<output>` is
+        // inline by default.
+        <output
+          id="embeddingModel"
+          aria-live="off"
+          className="mt-1.5 block w-full rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono"
+        >
           {effectiveModel}
-        </div>
+        </output>
       ) : (
         <input
           id="embeddingModel"
@@ -284,8 +313,8 @@ export function EmbeddingSettings({
       */}
       <p id={MODEL_HINT_ID} className="mt-1 text-xs text-foreground/40">
         {modelSource === "env"
-          ? // The locked branch has no box to empty (DW-559): it is a plain
-            // `<div>`, it takes no keystroke, and a save would not move what
+          ? // The locked branch has no box to empty (DW-559): it is an
+            // `<output>`, it takes no keystroke, and a save would not move what
             // pinned the value — so "Leave empty to use the embedding provider
             // default." was advice the control refuses. The pin is what is
             // true, said in the shape every other env row on this surface uses

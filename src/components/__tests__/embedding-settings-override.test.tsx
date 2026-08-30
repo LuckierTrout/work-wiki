@@ -102,10 +102,11 @@ describe("EmbeddingSettings — the model that actually embeds", () => {
     const box = screen.getByText("text-embedding-3-small");
     expect(box).toBeTruthy();
 
-    // The locked box is a plain non-focusable `<div>` with no role, and
-    // assistive tech does not expose a description on one — so it carries no
-    // `aria-describedby` to pretend otherwise. The note lands immediately after
-    // it in reading order, which is what actually carries it here.
+    // The locked box carries no `aria-describedby`. DW-562 gave it a NAME —
+    // it is an `<output>` the `<label htmlFor="embeddingModel">` associates
+    // with — and left the DESCRIPTION alone, which is a separate question
+    // nothing has asked. The note lands immediately after it in reading order,
+    // which is what actually carries it here.
     expect(box.getAttribute("aria-describedby")).toBeNull();
     expect(box.nextElementSibling).toBe(note);
   });
@@ -331,9 +332,11 @@ describe("EmbeddingSettings — the default-model hint", () => {
     expect(input.getAttribute("aria-invalid")).toBeNull();
   });
 
-  it("COMPOSES with the page's read-only sentence rather than being replaced by it", () => {
-    // The read-only id keeps the position it already held — last — and the
-    // three ids this component owns are what the list orders.
+  it("COMPOSES with the page's read-only sentence, which leads the list", () => {
+    // The page's read-only id is FIRST (DW-560). It used to trail the three ids
+    // this component owns while `ProviderForm`'s model box led with it, so one
+    // banner sentence occupied two positions on one page. The banner renders
+    // above this whole section, so leading is its DOM reading-order position.
     render(
       <EmbeddingSettings
         {...props({
@@ -346,7 +349,7 @@ describe("EmbeddingSettings — the default-model hint", () => {
 
     const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
     expect(input.getAttribute("aria-describedby")).toBe(
-      "embeddingModelHint readOnlyNote",
+      "readOnlyNote embeddingModelHint",
     );
     // The id this component owns resolves; `readOnlyNote` is the PAGE's node.
     expect(hint()).not.toBeNull();
@@ -357,8 +360,10 @@ describe("EmbeddingSettings — the default-model hint", () => {
     // The full composition, which no other case reaches: a read-only
     // deployment that is ALSO substituting a model and reporting an inactive
     // switch. Each id answers a different question, so none may displace
-    // another — and the order is the three this component owns in DOM reading
-    // order, with the page's node in the position it already held.
+    // another — and the order is the page's node FIRST (DW-560: the banner
+    // renders above this whole section, and every control on `/settings` now
+    // names it at index 0), then the three this component owns in DOM reading
+    // order.
     render(
       <EmbeddingSettings
         {...props({
@@ -378,10 +383,10 @@ describe("EmbeddingSettings — the default-model hint", () => {
     const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
     const ids = (input.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
     expect(ids).toEqual([
+      "readOnlyNote",
       "embeddingModelOverride",
       "embeddingVectorNotice",
       "embeddingModelHint",
-      "readOnlyNote",
     ]);
     // The three this component MINTS resolve; `readOnlyNote` is the PAGE's node
     // and is not rendered here.
@@ -393,17 +398,21 @@ describe("EmbeddingSettings — the default-model hint", () => {
   it("carries whichever sentence the branch selects, and keeps its id on the locked one", () => {
     // The `<p>` is OUTSIDE the env/editable ternary, so the id is
     // unconditional — that is what makes "never names an absent element" true
-    // by construction rather than by a gate. The locked `<div>` still carries
-    // no `aria-describedby`: assistive tech does not expose a description on a
-    // plain non-focusable div, so reading order is what carries it there.
+    // by construction rather than by a gate. The locked box still carries no
+    // `aria-describedby`: DW-562 gave it a NAME, not a description, and reading
+    // order is what carries the hint there.
     render(
       <EmbeddingSettings
         {...props({ modelSource: "env", effectiveModel: "@cf/baai/bge-m3" })}
       />,
     );
 
-    expect(screen.queryByLabelText(/Embedding Model/)).toBeNull();
+    // No EDITABLE box — the locked branch is what rendered. Said as the tag
+    // rather than as `queryByLabelText(…) === null`, which used to mean "no
+    // editable box" only because the locked one had no name at all (DW-562).
     const box = screen.getByText("@cf/baai/bge-m3");
+    expect(box.tagName).toBe("OUTPUT");
+    expect(document.querySelector("input#embeddingModel")).toBeNull();
     expect(box.getAttribute("aria-describedby")).toBeNull();
     // The dimensions sentence COMPOSES with the pin rather than replacing it
     // (DW-559): the pin says why the box is locked, the dimensions sentence says
@@ -424,7 +433,12 @@ describe("EmbeddingSettings — the default-model hint", () => {
       />,
     );
 
-    expect(screen.queryByLabelText(/Embedding Model/)).toBeNull();
+    // The locked branch rendered, not the editable one — asserted on the tag,
+    // for the reason the case above states.
+    const lockedBox = document.getElementById("embeddingModel");
+    expect(lockedBox).not.toBeNull();
+    expect(lockedBox!.tagName).toBe("OUTPUT");
+    expect(document.querySelector("input#embeddingModel")).toBeNull();
     expect(hint()!.textContent).toBe(ENV_PIN_COPY);
     expect(hint()!.textContent).not.toContain("Leave empty");
     expect(hint()!.textContent).not.toContain("Vectorize");
@@ -448,6 +462,105 @@ describe("EmbeddingSettings — the default-model hint", () => {
       const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
       expect(input.getAttribute("aria-describedby")).toBe("embeddingModelHint");
       expect(hint()!.textContent, source).toBe(DEFAULT_COPY);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ENV-LOCKED box has an accessible name at all (DW-562)
+// ---------------------------------------------------------------------------
+
+describe("EmbeddingSettings — the locked box's accessible name", () => {
+  /** The label the two branches share, or null when none was rendered. */
+  function modelLabel(): HTMLElement | null {
+    return document.querySelector("label[for='embeddingModel']");
+  }
+
+  it("names the locked box from the label the editable branch also uses", () => {
+    // The defect: this branch rendered a bare `<div>` while the
+    // `<label htmlFor="embeddingModel">` above went on naming an id no element
+    // in the document carried, so the locked box was announced with NO
+    // accessible name. It is an `<output>` now — one of HTML's labelable
+    // elements — so the association is one a BROWSER makes.
+    //
+    // The ELEMENT is what had to change. `for` associates only with a labelable
+    // element, and moving the id onto the `<div>` would have bought nothing in
+    // either place: Testing Library refuses the association exactly as a browser
+    // does, throwing "the element associated with this label (<div />) is
+    // non-labellable" rather than resolving it. The two agree, so these queries
+    // are evidence about what is announced and not merely about a heuristic.
+    render(
+      <EmbeddingSettings
+        {...props({ modelSource: "env", effectiveModel: "text-embedding-3-small" })}
+      />,
+    );
+
+    const box = document.getElementById("embeddingModel");
+    expect(box).not.toBeNull();
+    expect(box!.tagName).toBe("OUTPUT");
+    expect(document.querySelector("input#embeddingModel")).toBeNull();
+    expect(box!.textContent).toBe("text-embedding-3-small");
+
+    // Pinned against the label's OWN text rather than a loose pattern a partial
+    // name would also satisfy — the label carries "(optional)" too, and a name
+    // missing it is a different name. `getByRole(…, { name })` is the query
+    // that goes through the accessible-name computation; `status` is
+    // `<output>`'s implicit role.
+    const label = modelLabel();
+    expect(label).not.toBeNull();
+    const name = label!.textContent!;
+    expect(name).toBe("Embedding Model (optional)");
+    expect(screen.getByRole("status", { name })).toBe(box);
+    expect(screen.getByLabelText(name)).toBe(box);
+
+    // NOT bought with focusability: no `tabIndex`, so `/settings`' keyboard
+    // order is exactly what it was.
+    expect(box!.hasAttribute("tabindex")).toBe(false);
+    expect((box as HTMLElement).tabIndex).toBe(-1);
+    // No EXPLICIT role. The implicit `status` the query above resolves through
+    // is the one this box should have; what is absent is an authored widget
+    // role, which on an unfocusable element would be a control assistive tech
+    // offers and then cannot operate.
+    expect(box!.hasAttribute("role")).toBe(false);
+    // …and the LIVE REGION that implicit role brings is silenced. The role
+    // stays; only the announcing does not, which matters because this box
+    // re-renders whenever `/api/settings` answers.
+    expect(box!.getAttribute("aria-live")).toBe("off");
+    // Still no DESCRIPTION. DW-562 is about the missing NAME.
+    expect(box!.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("leaves the EDITABLE branch untouched by the locked branch's shape", () => {
+    // Nothing the locked branch gained may leak onto the branch that renders a
+    // real control: same id, same label association, same composition, and no
+    // `aria-live`.
+    for (const source of ["config", "default", "none"] as const) {
+      cleanup();
+      render(
+        <EmbeddingSettings
+          {...props({
+            modelSource: source,
+            embeddingModel: "nomic-embed-text",
+            readOnly: true,
+            describedBy: "readOnlyNote",
+          })}
+        />,
+      );
+
+      const box = document.getElementById("embeddingModel");
+      // Guarded before every `!` below, and labelled with `source`, so a
+      // regression fails as this claim on the named iteration rather than as a
+      // bare `TypeError`.
+      expect(box, source).not.toBeNull();
+      const label = modelLabel();
+      expect(label, source).not.toBeNull();
+      expect(box!.tagName, source).toBe("INPUT");
+      expect((box as HTMLInputElement).value, source).toBe("nomic-embed-text");
+      expect(screen.getByLabelText(label!.textContent!), source).toBe(box);
+      expect(box!.hasAttribute("aria-live"), source).toBe(false);
+      expect(box!.getAttribute("aria-describedby"), source).toBe(
+        "readOnlyNote embeddingModelHint",
+      );
     }
   });
 });

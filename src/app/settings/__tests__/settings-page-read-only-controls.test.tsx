@@ -61,8 +61,11 @@ const VERSION = "w1:1a-1111111122222222";
  * `GET /api/settings` with stored values in every field this page renders.
  *
  * `ollama` so the base-URL input renders at all, and every `*Source` is
- * `config` so each field takes its EDITABLE branch — the locked `env` branch is
- * a plain `<div>` and would make the "still readable" assertions vacuous.
+ * `config` so each field takes its EDITABLE branch — the locked `env` branch
+ * renders a read-only `<output>` with no value to edit, which would make the
+ * "still readable and still in the tab order" assertions vacuous. Nothing in
+ * this file renders a locked box at all, so no case here may claim anything
+ * about one.
  */
 function body(overrides: Record<string, unknown> = {}) {
   return {
@@ -205,6 +208,52 @@ describe("/settings refuses per control, not by disabling the form (DW-299)", ()
         ),
       ).toBe(true);
     }
+  });
+
+  it("names that one sentence at index 0 on every one of them (DW-560)", async () => {
+    // MEMBERSHIP is the case above; this is POSITION, over the same list.
+    // `EmbeddingSettings` used to put the page's read-only id LAST while every
+    // other control on this page put it FIRST — one sentence, one page, two
+    // positions in the announced description depending on which box the owner
+    // reached. The banner renders above the whole form, so index 0 is its DOM
+    // reading-order position and the divergence had no defence.
+    render(<SettingsPage />);
+    await waitFor(() =>
+      expect((field("provider") as HTMLSelectElement).value).toBe("ollama"),
+    );
+
+    const refused: HTMLElement[] = [
+      field("provider"),
+      field("model"),
+      field("ollamaBaseUrl"),
+      field("structuredKnowledgeProvider"),
+      field("structuredKnowledgeModel"),
+      field("embeddingModel"),
+      screen.getByRole("button", { name: "Save Settings" }),
+    ];
+    // The same list, and the same deliberate exclusion: **Rebuild Vector
+    // Index** stands in front of a different door and names that door's own
+    // sentence (DW-387), never the banner.
+
+    const leading = new Set<string>();
+    for (const control of refused) {
+      const label = control.id || control.textContent || "";
+      const described = control.getAttribute("aria-describedby");
+      // Asserted PRESENT before it is split, so a control that stopped
+      // describing anything at all fails as this claim rather than as a bare
+      // `TypeError` from dereferencing null.
+      expect(described, label).toBeTruthy();
+      const ids = described!.split(" ").filter(Boolean);
+      expect(ids.length, label).toBeGreaterThan(0);
+      const first = document.getElementById(ids[0]);
+      expect(first, `${label} -> ${ids[0]}`).not.toBeNull();
+      expect(first!.textContent, label).toContain("Read-only mode");
+      leading.add(ids[0]);
+    }
+    // …and it is ONE id, not seven that each happen to lead with some
+    // banner-looking node: the page mints a single `useId()` and hands the same
+    // string to every one of these.
+    expect(leading.size).toBe(1);
   });
 
   it("states the sentence PUT /api/settings actually answers (DW-387)", async () => {

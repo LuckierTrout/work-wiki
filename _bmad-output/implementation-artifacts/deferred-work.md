@@ -4223,7 +4223,9 @@ location: src/components/EmbeddingSettings.tsx:190-200
 source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
 severity: medium
 reason: `ProviderForm`'s compositions put `describedBy` FIRST (DW-400/DW-402/ DW-419), while `EmbeddingSettings`' `notes` array puts `readOnlyNoteId` LAST. On a read-only deployment `#model` announces `readOnlyNote providerModelHint` and `#embeddingModel` announces `… embeddingModelHint readOnlyNote` — the same banner sentence, in two places. The divergence predates this change (the DW-402/DW-419 comments already claimed a page-wide ordering rule the embedding box never followed); this change only adds one more id after the banner there. The docstring at `ProviderForm.tsx:236` now scopes its claim and names the exception rather than asserting an invariant the page does not hold. Fixing it means moving `readOnlyNoteId` to the front of `EmbeddingSettings`' list, which is a change to a pre-existing ordering this bundle's Always clause forbade.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-env-locked-model-box-a11y
+resolution-undo: 2da0f761c09c8f4d644476d18e47381a0defd84f8c642938b538355d9b71d9b2 2026-08-29 7374617475733a206f70656e
 
 ### DW-561: On a blank pick the model placeholder still names the STORED provider's default model while the credential line beside it says nothing is selected.
 origin: spec-deferred ba44856607a4
@@ -4241,7 +4243,9 @@ location: src/components/ProviderForm.tsx:332 and src/components/EmbeddingSettin
 source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
 severity: medium
 reason: `ProviderForm.tsx` always renders `<label htmlFor="model">` and `EmbeddingSettings.tsx` always renders `<label htmlFor="embeddingModel">`, but on the `modelSource === "env"` branch the control is a plain `<div>` with no id, so both labels dangle and the locked value is announced with no name at all. Both files spend paragraphs arguing why a DESCRIPTION on a non-focusable div would be decoration; the missing NAME is a separate and larger gap and is argued nowhere. Pre-existing on both branches and untouched by this change.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-env-locked-model-box-a11y
+resolution-undo: 2da0f761c09c8f4d644476d18e47381a0defd84f8c642938b538355d9b71d9b2 2026-08-29 7374617475733a206f70656e
 
 ### DW-563: Every other `ToolDef.run` in `MCP_TOOLS` still spreads-and-casts `tools/call` arguments with no runtime check, because `dispatchMcp` validates nothing generically -- DW-455 closed this for `fix_lint_i
 origin: spec-deferred ee1aa179380d
@@ -4694,4 +4698,12 @@ location: src/components/EmbeddingSettings.tsx:303
 source_spec: `spec-dw-66-559-env-locked-credential-affordances.md`
 severity: low
 reason: `EmbeddingSettings.tsx`'s hint appends the sentence on `effectiveModel === "@cf/baai/bge-m3"` with no provider term, and the component is never handed the embedding provider. Pre-existing: the same name-only condition selected the same sentence before this change, which only added the pin sentence in front of it. Reaching the state needs `EMBEDDING_MODEL` pinned to the Workers AI model while `embeddingProvider` is something else, where the resolver substitutes and the override note already fires — so the dimensions claim is the one sentence still wrong.
+status: open
+
+### DW-617: The env-locked `Ollama Base URL` box has the same nameless-locked-box defect DW-562 just fixed on the two model boxes, and no mounted test renders that branch at all.
+origin: spec-deferred d980917f3388
+location: src/components/ProviderForm.tsx — the `Ollama Base URL` env branch
+source_spec: `spec-dw-560-562-env-locked-model-box-a11y.md`
+severity: medium
+reason: `ProviderForm.tsx` renders `<label htmlFor="ollamaBaseUrl">` unconditionally, while the `settings?.ollamaBaseUrlSource === "env"` branch renders a bare `<div>` with no id — so on an `OLLAMA_BASE_URL`-pinned deployment the label names an id nothing carries and the value is announced with no accessible name, exactly the state removed from `#model` and `#embeddingModel`. Excluded by this bundle's intent, which names only the model boxes. Nothing would catch it drifting further: a repo-wide search for `ollamaBaseUrlSource: "env"` matches only `src/lib/__tests__/config.test.ts` (a server-side resolver test that renders nothing), and every mounted suite uses `config` sources for that field. The fix is the same one-line element swap plus a twin of the accessible-name case.
 status: open

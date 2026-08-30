@@ -629,8 +629,8 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
    * What the LOCKED branch says instead (DW-559).
    *
    * `HINT_COPY` is advice the env branch cannot take: there is no box to empty,
-   * the `<div>` accepts no keystroke, and a save would not move what pinned the
-   * value. The closed SET of variables is named rather than one of them, because
+   * the `<output>` accepts no keystroke, and a save would not move what pinned
+   * the value. The closed SET of variables is named rather than one of them, because
    * `getEffectiveSettings` reports `modelSource: "env"` for `LLM_MODEL` and, on
    * an Ollama provider with nothing stored, for `OLLAMA_MODEL` — and the browser
    * is handed only the source.
@@ -680,13 +680,19 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
     expect(input.readOnly).toBe(true);
   });
 
-  it("leaves the ENV-LOCKED box unattributed, with the hint still in the document", () => {
-    // The locked branch is a plain non-focusable `<div>` with no role, and
-    // assistive tech does not expose a description on one — so it carries no
-    // `aria-describedby` to pretend otherwise, exactly as
-    // `EmbeddingSettings`'s locked branch does not. Reading order carries the
-    // hint here, and the `<p>` and its id are outside the ternary, so both are
-    // still there.
+  it("NAMES the ENV-LOCKED box from its own label, and still describes nothing", () => {
+    // DW-562. This branch rendered a bare `<div>` while the
+    // `<label htmlFor="model">` above went on naming an id no element in the
+    // document carried — so the locked box was announced with NO accessible
+    // name at all. It is an `<output>` now, one of HTML's labelable elements,
+    // so the label associates with it the way a BROWSER does.
+    //
+    // The ELEMENT is what had to change: `for` associates only with a labelable
+    // element, and putting `id="model"` on the `<div>` would have bought
+    // nothing here either — Testing Library refuses the association just as a
+    // browser does, throwing "the element associated with this label (<div />)
+    // is non-labellable" rather than resolving it. The two agree, so these
+    // queries are evidence about the browser and not merely about a heuristic.
     render(
       <ProviderForm
         {...props({
@@ -696,14 +702,77 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
       />,
     );
 
-    expect(document.getElementById("model")).toBeNull();
-    const box = screen.getByText("gpt-4o");
-    expect(box.getAttribute("aria-describedby")).toBeNull();
+    const box = document.getElementById("model");
+    expect(box).not.toBeNull();
+    // The VALUE box, not a surviving input — this branch renders no editable
+    // control at all, so the id can only be the locked one's.
+    expect(box!.tagName).toBe("OUTPUT");
+    expect(document.querySelector("input#model")).toBeNull();
+    expect(box!.textContent).toBe("gpt-4o");
+
+    // The NAME, pinned against the label's OWN text rather than a pattern a
+    // partial name would also satisfy. `getByRole(…, { name })` is what goes
+    // through the accessible-name computation; the label carries a
+    // `SourceBadge`, so the whole of "Modelfrom environment" is the name and
+    // anything less would be a different one. `status` is `<output>`'s implicit
+    // role.
+    const label = document.querySelector("label[for='model']");
+    expect(label).not.toBeNull();
+    const name = label!.textContent!;
+    // Pinned EXACTLY, not with a pattern a partial name would also satisfy:
+    // `SourceBadge` renders "from environment" inside the label with no
+    // separating space, and a name missing it is a different name.
+    expect(name).toBe("Modelfrom environment");
+    expect(screen.getByRole("status", { name })).toBe(box);
+    expect(screen.getByLabelText(name)).toBe(box);
+
+    // NOT bought with focusability. `<output>` is named by its label without a
+    // `tabIndex`, so `/settings`' keyboard order is exactly what it was.
+    expect(box!.hasAttribute("tabindex")).toBe(false);
+    expect((box as HTMLElement).tabIndex).toBe(-1);
+    // No EXPLICIT role — the implicit `status` the query above resolves through
+    // is exactly what should be here, and a widget role on an unfocusable
+    // element would be a control assistive tech offers and cannot operate.
+    expect(box!.hasAttribute("role")).toBe(false);
+    // The live region that implicit role brings is SILENCED. Without this the
+    // box re-announces itself every time `/api/settings` answers, and deleting
+    // `aria-live="off"` leaves the rest of this suite green.
+    expect(box!.getAttribute("aria-live")).toBe("off");
+
+    // And still no DESCRIPTION: DW-562 is about the missing NAME, and what a
+    // locked box announces as a description is a separate question nothing has
+    // asked. Reading order carries the hint here, and the `<p>` and its id are
+    // outside the ternary, so both are still there.
+    expect(box!.getAttribute("aria-describedby")).toBeNull();
     // The SENTENCE branches with the control (DW-559). It used to read "Leave
-    // empty to use the default model for the selected provider." beside a
-    // non-editable `<div>` — a hint pointing at an affordance the box refuses.
+    // empty to use the default model for the selected provider." beside a box
+    // that accepts no keystroke — a hint pointing at an affordance it refuses.
     expect(hint()!.textContent).toBe(ENV_HINT_COPY);
     expect(hint()!.textContent).not.toContain("Leave empty");
+  });
+
+  it("leaves the EDITABLE branch's box untouched by the locked one's shape", () => {
+    // The other half of DW-562: nothing the locked branch gained may leak onto
+    // the branch that renders a real control. The `<input>` keeps its id, its
+    // label association and its exact composition, and gains no `aria-live`.
+    render(
+      <ProviderForm
+        {...props({
+          readOnly: true,
+          describedBy: "readOnlyNote",
+          settings: settings({ modelSource: "config", model: "llama3.1" }),
+        })}
+      />,
+    );
+
+    const box = document.getElementById("model");
+    expect(box).not.toBeNull();
+    expect(box!.tagName).toBe("INPUT");
+    const label = document.querySelector("label[for='model']");
+    expect(label).not.toBeNull();
+    expect(screen.getByLabelText(label!.textContent!)).toBe(box);
+    expect(box!.hasAttribute("aria-live")).toBe(false);
+    expect(box!.getAttribute("aria-describedby")).toBe("readOnlyNote providerModelHint");
   });
 
   it("keeps the editable branch's advice unchanged on every non-env source", () => {

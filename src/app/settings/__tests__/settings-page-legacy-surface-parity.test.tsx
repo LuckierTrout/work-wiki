@@ -271,8 +271,8 @@ describe("/settings surfaces the STORED vector state (DW-327)", () => {
     // branch (`modelSource !== "env" && …`) left the whole suite green — while
     // deleting the sentence from exactly the deployments it most targets. An
     // `EMBEDDING_MODEL`/`EMBEDDING_PROVIDER` deployment renders the model as a
-    // locked, non-focusable div, and its switch is just as able to be on and
-    // inactive.
+    // locked, non-focusable `<output>`, and its switch is just as able to be on
+    // and inactive.
     const envInactive = workbench({
       vectorSearchEnabled: true,
       // The environment owns both, so neither is editable from anywhere.
@@ -294,9 +294,17 @@ describe("/settings surfaces the STORED vector state (DW-327)", () => {
     expect(vectorNotice()!.textContent).toBe(
       vectorSearchInactiveCopy(storedVectorInputs(envInactive), "flat"),
     );
-    // The locked branch really is what rendered — there is no editable box.
-    expect(screen.queryByLabelText(/Embedding Model/)).toBeNull();
-    expect(document.getElementById("embeddingModel")).toBeNull();
+    // The locked branch really is what rendered — an `<output>`, with no
+    // editable box anywhere. Both of these answers changed with DW-562: the
+    // label used to name an id no element carried, so `getElementById` was null
+    // and `queryByLabelText` found nothing — which is exactly the box being
+    // announced with no accessible name. The id is on the locked box now, and
+    // the label resolves to it.
+    const box = document.getElementById("embeddingModel");
+    expect(box).not.toBeNull();
+    expect(box!.tagName).toBe("OUTPUT");
+    expect(document.querySelector("input#embeddingModel")).toBeNull();
+    expect(screen.getByLabelText(/Embedding Model/)).toBe(box);
     // The env-owned legs are still the endpoint and the key, named as ever.
     expect(vectorNotice()!.textContent).toContain(
       "it needs an endpoint and an API key before it can run",
