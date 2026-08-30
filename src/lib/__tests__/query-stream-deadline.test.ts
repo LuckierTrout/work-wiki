@@ -64,7 +64,7 @@ import { getPrincipal } from "@/lib/auth";
 import { getLlmTimeoutMs } from "@/lib/config";
 import { callLLMStream } from "@/lib/llm";
 import { logger } from "@/lib/logger";
-import { LLM_DEADLINE_COPY } from "@/lib/llm-deadline";
+import { LLM_DEADLINE_COPY, LLM_LENGTH_CAP_COPY } from "@/lib/llm-deadline";
 import { SETTINGS_LABEL, settingsPointer } from "@/lib/workbench-settings";
 import { POST } from "@/app/api/query/stream/route";
 
@@ -130,6 +130,30 @@ function abortError(name: "TimeoutError" | "AbortError"): Error {
   const error = new Error("The operation was aborted due to timeout");
   error.name = name;
   return error;
+}
+
+/**
+ * The OPERATOR log lines the route emits beside each notice.
+ *
+ * Restated here rather than imported, because the route cannot export them:
+ * Next 15 type-checks route exports and this repo's `route.ts` files export
+ * only their HTTP handlers. Restating is safe in a way it would NOT be for the
+ * owner-facing sentences — these are log strings for an operator, not copy in
+ * an answer body, so there is no Settings pointer to drift and no second home
+ * for the wording. What these pin is that the two endings are DISTINGUISHABLE:
+ * a cap truncation logging "LLM deadline reached" would send an operator to
+ * raise a timeout that never fired.
+ */
+const DEADLINE_LOG =
+  "LLM deadline reached; the answer was cut short and the owner told";
+const LENGTH_CAP_LOG =
+  "Output token cap reached; the answer was cut short and the owner told";
+
+/** The `(scope, message)` pair of the single `logger.warn` a run emitted. */
+function warnedOnce(): [string, string] {
+  expect(logger.warn).toHaveBeenCalledTimes(1);
+  const [scope, message] = vi.mocked(logger.warn).mock.calls[0];
+  return [scope as string, message as string];
 }
 
 function makeRequest(body: unknown): NextRequest {
@@ -209,8 +233,10 @@ describe("POST /api/query/stream — the deadline sentence (DW-64)", () => {
     for (const word of ["aborted", "signal", "TimeoutError", "AbortError"]) {
       expect(answer).not.toContain(word);
     }
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(logger.warn).mock.calls[0][0]).toBe("query");
+    // The DEADLINE log line, not the cap's — the two endings have to be
+    // distinguishable in an operator's log, or a cap truncation reads as a
+    // timeout to raise.
+    expect(warnedOnce()).toEqual(["query", DEADLINE_LOG]);
   });
 
   it("emits the notice alone when the deadline fires before any token", async () => {
@@ -347,6 +373,134 @@ describe("POST /api/query/stream — the deadline sentence (DW-64)", () => {
     // value, not a reason, and the SDK ignores the argument either way.
     expect(returned.mock.calls[0]).toEqual([]);
     expect(logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("LLM_LENGTH_CAP_COPY", () => {
+  it("points at no Settings destination, because there is no control behind it", () => {
+    // `QUERY_MAX_OUTPUT_TOKENS` is a source constant — nothing on the Settings
+    // surface writes it — so a pointer here would send the owner looking for a
+    // field that does not exist. Composed rather than typed even to ASSERT its
+    // absence, so this stays true through a category rename.
+    expect(LLM_LENGTH_CAP_COPY).not.toContain(
+      settingsPointer("llm-models", SETTINGS_LABEL),
+    );
+    expect(LLM_LENGTH_CAP_COPY).not.toContain(SETTINGS_LABEL);
+  });
+
+  it("carries no transport or SDK vocabulary", () => {
+    // The owner never sees `finishReason`, and "tokens" is the model's unit,
+    // not a length they can reason about.
+    for (const word of [
+      "finishReason",
+      "token",
+      "maxOutputTokens",
+      "aborted",
+      "signal",
+    ]) {
+      expect(LLM_LENGTH_CAP_COPY).not.toContain(word);
+    }
+  });
+
+  it("is not the deadline sentence wearing a different name", () => {
+    expect(LLM_LENGTH_CAP_COPY).not.toBe(LLM_DEADLINE_COPY);
+  });
+
+  it("is never the operator's log line, which the owner must not read", () => {
+    // The route pairs each sentence with its log inside one descriptor rather
+    // than taking two bare `string`s, so a transposition cannot put either of
+    // these into the answer body. These assertions are the behavioural half.
+    for (const copy of [LLM_LENGTH_CAP_COPY, LLM_DEADLINE_COPY]) {
+      expect(copy).not.toBe(DEADLINE_LOG);
+      expect(copy).not.toBe(LENGTH_CAP_LOG);
+    }
+  });
+});
+
+describe("POST /api/query/stream — the output cap sentence (DW-547)", () => {
+  it("appends the cap notice after a blank line when the answer hits the cap", async () => {
+    fakeResult([
+      { type: "start" },
+      delta("As far as this w"),
+      { type: "finish", finishReason: "length" },
+    ]);
+
+    const res = await ask();
+
+    // Still an ordinary 200 text stream — the cap is a truthful ending, not a
+    // failure the client has to handle differently.
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(res.headers.get("X-Wiki-Sources")).toBe(
+      encodeURIComponent(JSON.stringify(["concept-a"])),
+    );
+    expect(await res.text()).toBe(
+      `As far as this w\n\n${LLM_LENGTH_CAP_COPY}`,
+    );
+    // The CAP log line, and specifically not the deadline's: nothing about a
+    // limit the owner set, because no deadline fired here.
+    expect(warnedOnce()).toEqual(["query", LENGTH_CAP_LOG]);
+    expect(warnedOnce()[1]).not.toBe(DEADLINE_LOG);
+  });
+
+  it("emits the cap notice alone when the cap is hit before any token", async () => {
+    fakeResult([{ type: "finish", finishReason: "length" }]);
+
+    const res = await ask();
+
+    // Same blank-line rule as the deadline notice: nothing to separate it from.
+    expect(await res.text()).toBe(LLM_LENGTH_CAP_COPY);
+  });
+
+  it("still emits the cap notice with NO deadline configured", async () => {
+    // The gate on the deadline sentences does not apply here. The cap is passed
+    // on every call this route makes, so a `length` finish is always ours —
+    // there is no state in which it belongs to someone else.
+    mockedTimeout.mockReturnValue(null);
+    fakeResult([delta("Half"), { type: "finish", finishReason: "length" }]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe(`Half\n\n${LLM_LENGTH_CAP_COPY}`);
+    expect(warnedOnce()).toEqual(["query", LENGTH_CAP_LOG]);
+  });
+
+  it("says nothing when the model stopped on its own", async () => {
+    fakeResult([delta("A whole answer"), { type: "finish", finishReason: "stop" }]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe("A whole answer");
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each(["tool-calls", "content-filter", "other"] as const)(
+    "says nothing about the cap for finishReason %s",
+    async (reason) => {
+      // Only `length` is the cap. The rest are other endings entirely, and
+      // claiming a maximum length for them would be a false sentence.
+      fakeResult([delta("Answer"), { type: "finish", finishReason: reason }]);
+
+      const res = await ask();
+
+      expect(await res.text()).toBe("Answer");
+      expect(logger.warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it("prefers the deadline sentence when an abort arrives before the finish part", async () => {
+    // Both can be true of one run. The deadline is what actually stopped it;
+    // the cap notice would name a limit that never bound.
+    fakeResult([
+      delta("Half"),
+      { type: "abort" },
+      { type: "finish", finishReason: "length" },
+    ]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe(`Half\n\n${LLM_DEADLINE_COPY}`);
+    expect(warnedOnce()).toEqual(["query", DEADLINE_LOG]);
   });
 });
 

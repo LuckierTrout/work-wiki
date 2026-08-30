@@ -1,4 +1,10 @@
 import { callLLM, callLLMStream, hasLLMKey } from "./llm";
+import {
+  LLM_DEADLINE_RESEARCH_COPY,
+  LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+  isLlmDeadlineAbort,
+  llmDeadlineConfigured,
+} from "./llm-deadline";
 import { logger } from "./logger";
 import {
   acquireResearchSlot,
@@ -1147,6 +1153,52 @@ async function wikilinkCandidates(owner: string): Promise<string[]> {
   }
 }
 
+/**
+ * The words for a synthesis stream that ended before the model was finished
+ * (DW-544).
+ *
+ * Only the SENTENCE turns on whether a deadline was configured; the OUTCOME
+ * does not. See {@link synthesizeResearchBrief} for why research fails closed
+ * either way.
+ */
+function streamCutShortMessage(): string {
+  return llmDeadlineConfigured()
+    ? LLM_DEADLINE_RESEARCH_COPY
+    : LLM_RESEARCH_STREAM_CUT_SHORT_COPY;
+}
+
+/**
+ * Stream the brief, and FAIL the run if the stream ended early (DW-544).
+ *
+ * Reads `fullStream`, not `textStream`. `textStream` enqueues `text-delta`
+ * parts and silently drops everything else — including the `{ type: "abort" }`
+ * part `ai@6` emits when the owner's deadline fires, and the `error` part that
+ * can carry the same `TimeoutError`. With those dropped the `for await` ended
+ * NORMALLY, so a half-written brief flowed on into `commitResearchPage` and was
+ * published as a finished wiki page. `fullStream` is the only place those parts
+ * are visible; this is the same read `/api/query/stream` does, for the same
+ * reason.
+ *
+ * FAILS CLOSED on any abort, and this asymmetry with that route is deliberate.
+ * The route gates its abort branch on `llmDeadlineConfigured()` because falling
+ * through there means silence, which is exactly what it did before DW-64.
+ * Research cannot fall back that way: its pre-DW-544 behaviour on an abort is
+ * to COMMIT the truncated brief, the very failure being fixed. So the run dies
+ * on a cut stream whatever the field says, and only the words depend on it.
+ *
+ * The message is a CONSTANT, not `error.message`. `runResearchProject`'s catch
+ * stores whatever is thrown here as the project's owner-visible `error`, so an
+ * SDK string ("The operation was aborted due to timeout") would be transport
+ * vocabulary rendered in the research panel.
+ *
+ * CANCELLATION STILL OUTRANKS IT. `requireResearchActive` runs before the throw
+ * as well as on every text part, so a run the owner cancelled at the moment its
+ * stream aborted ends `cancelled`, not `failed` under a deadline sentence.
+ *
+ * Everything else is unchanged: token-by-token streaming, the 400 ms thinking
+ * flush, the per-text-part cancellation check `textStream` used to get, and the
+ * `callLLM` fallback for a stream that died before emitting anything.
+ */
 async function synthesizeResearchBrief(
   owner: string,
   id: string,
@@ -1159,10 +1211,35 @@ async function synthesizeResearchBrief(
     const stream = await callLLMStream(system, user, { maxOutputTokens: 7_000 });
     let raw = "";
     let lastFlush = 0;
-    for await (const chunk of stream.textStream) {
+    for await (const part of stream.fullStream) {
+      if (
+        part.type === "abort" ||
+        (part.type === "error" && isLlmDeadlineAbort(part.error))
+      ) {
+        // CANCELLATION FIRST. Under `textStream` this check was the first thing
+        // every chunk hit, so a run the owner cancelled at the same moment its
+        // stream aborted took the cancel path. Throwing the cut-short error
+        // ahead of it would relabel that run `failed` with a deadline sentence
+        // — telling an owner who pressed Cancel that their timeout is too low.
+        // `ResearchCancelledError` is rethrown untouched by the catch below.
+        await requireResearchActive(owner, id, attemptId);
+        throw new Error(streamCutShortMessage());
+      }
+      // A non-deadline `error` part goes on being ignored exactly as it was
+      // when `textStream` dropped it — those are warning-shaped, and a brief
+      // that completes after one still commits. Every other part (`start`,
+      // `finish`, step and text markers) is bookkeeping.
+      //
+      // A `finish`/`length` cap is deliberately NOT fatal here, and that is a
+      // KNOWN GAP rather than a claim of safety: `length` means this brief was
+      // CUT at the 7,000-token budget above, and it still commits. DW-544's
+      // intent scopes research to the abort and deadline-`error` parts only,
+      // and widening it to the cap would change which briefs reach the wiki.
+      // Recorded as deferred; DW-547 covers the same ending on the query route.
+      if (part.type !== "text-delta") continue;
       await requireResearchActive(owner, id, attemptId);
-      if (chunk.length > 0) receivedStreamContent = true;
-      raw += chunk;
+      if (part.text.length > 0) receivedStreamContent = true;
+      raw += part.text;
       const now = Date.now();
       if (now - lastFlush < 400) continue;
       lastFlush = now;
@@ -1181,9 +1258,28 @@ async function synthesizeResearchBrief(
     return raw || await stream.text;
   } catch (error) {
     if (error instanceof ResearchCancelledError) throw error;
+    // A stream that produced text and then died is NOT retried — including the
+    // abort thrown above, which is why a mid-synthesis deadline reaches the
+    // owner as the sentence rather than buying a second synthesis.
     if (receivedStreamContent) throw error;
     await requireResearchActive(owner, id, attemptId);
-    return callLLM(system, user, { maxOutputTokens: 7_000 });
+    try {
+      return await callLLM(system, user, { maxOutputTokens: 7_000 });
+    } catch (fallbackError) {
+      // The fallback runs under the same `llmTimeoutOption()`, so the deadline
+      // can fire again here — and the owner must read the same words for it.
+      //
+      // UNGATED, mirroring the loop branch above: `isLlmDeadlineAbort`, not
+      // `isOwnLlmDeadline`. With no deadline configured the SDK's rejection
+      // ("The operation was aborted due to timeout") would otherwise be stored
+      // as `project.error` and rendered in the research panel, which is the
+      // transport vocabulary this change exists to keep out. The run fails
+      // either way; only the words turn on whether a deadline was set.
+      if (isLlmDeadlineAbort(fallbackError)) {
+        throw new Error(streamCutShortMessage());
+      }
+      throw fallbackError;
+    }
   }
 }
 

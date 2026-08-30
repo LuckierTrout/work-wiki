@@ -3,7 +3,8 @@ import { createTextStreamResponse } from "ai";
 import { hasLLMKey, callLLMStream } from "@/lib/llm";
 import {
   LLM_DEADLINE_COPY,
-  isLlmDeadlineAbort,
+  LLM_LENGTH_CAP_COPY,
+  isOwnLlmDeadline,
   llmDeadlineConfigured,
 } from "@/lib/llm-deadline";
 import { QUERY_MAX_OUTPUT_TOKENS } from "@/lib/constants";
@@ -21,23 +22,28 @@ import { logger } from "@/lib/logger";
 import { expandQueryWithNamesTerms } from "@/lib/names-terms";
 
 /**
- * ONE rule for every abort shape this route maps: an abort is the OWNER'S
- * DEADLINE only if the owner set a deadline (DW-64).
+ * The two reasons this route can close an answer early, each as ONE object
+ * pairing the owner's sentence with the operator's log line.
  *
- * `llmTimeoutOption()` installs no signal at all when the field is blank —
- * the default, and the state of every owner who never filled it in — so an
- * abort arriving with none configured came from somewhere this route did not
- * set up, and `LLM_DEADLINE_COPY` would name a limit to raise and a field to
- * clear that do not exist. Where this is false, every branch below falls back
- * to exactly its pre-DW-64 behaviour: rethrow, or the error's own words.
+ * A DESCRIPTOR rather than two `string` parameters on `closeWithNotice`,
+ * because two adjacent bare strings are the same type: transposing them
+ * type-checks cleanly and would enqueue the operator's log line into the
+ * owner's answer body while logging the notice. Binding the pair here means a
+ * call site names WHICH ending happened and cannot pick a mismatched half —
+ * a cap truncation can no longer log "LLM deadline reached" and send an
+ * operator to raise a timeout that never fired.
  *
- * Module scope, not inside `POST`, so the `catch` and the stream reader are
- * demonstrably asking the same question. Not exported — Next 15 type-checks
- * route exports, and this file's export surface stays the `POST` handler alone.
+ * Not exported — Next 15 type-checks route exports, and this file's export
+ * surface stays the `POST` handler alone.
  */
-function ownDeadline(cause: unknown): boolean {
-  return llmDeadlineConfigured() && isLlmDeadlineAbort(cause);
-}
+const DEADLINE_NOTICE = {
+  copy: LLM_DEADLINE_COPY,
+  log: "LLM deadline reached; the answer was cut short and the owner told",
+} as const;
+const LENGTH_CAP_NOTICE = {
+  copy: LLM_LENGTH_CAP_COPY,
+  log: "Output token cap reached; the answer was cut short and the owner told",
+} as const;
 
 export async function POST(request: NextRequest) {
   try {
@@ -191,12 +197,22 @@ export async function POST(request: NextRequest) {
     // A blank line separates the notice from the answer it interrupts — but
     // only when there IS an answer. A deadline that fires before the first
     // token would otherwise open the body with two empty lines.
-    const closeWithNotice = (controller: ReadableStreamDefaultController<string>) => {
-      logger.warn(
-        "query",
-        "LLM deadline reached; the answer was cut short and the owner told",
-      );
-      controller.enqueue(emitted ? `\n\n${LLM_DEADLINE_COPY}` : LLM_DEADLINE_COPY);
+    //
+    // The notice is a PARAMETER, not this function's own constant (DW-547).
+    // Two different things can now end an answer early — the owner's deadline
+    // and this repo's output cap — and they are two different sentences with
+    // two different logs, but exactly one closing shape: same blank-line rule,
+    // same graceful `close()` so the body stays a 200 the client can read.
+    //
+    // ONE descriptor argument, never a `(copy, log)` pair — see the notice
+    // constants above for why two bare strings here would be a transposition
+    // waiting to happen.
+    const closeWithNotice = (
+      controller: ReadableStreamDefaultController<string>,
+      notice: { readonly copy: string; readonly log: string },
+    ) => {
+      logger.warn("query", notice.log);
+      controller.enqueue(emitted ? `\n\n${notice.copy}` : notice.copy);
       controller.close();
     };
 
@@ -218,8 +234,8 @@ export async function POST(request: NextRequest) {
             // `controller.error` instead of the `abort` part below. Same fact,
             // same sentence. Anything else is NOT ours — it errors the stream
             // exactly as it does today.
-            if (ownDeadline(streamError)) {
-              closeWithNotice(controller);
+            if (isOwnLlmDeadline(streamError)) {
+              closeWithNotice(controller, DEADLINE_NOTICE);
               return;
             }
             throw streamError;
@@ -245,14 +261,32 @@ export async function POST(request: NextRequest) {
           }
           if (
             (part.type === "abort" && llmDeadlineConfigured()) ||
-            (part.type === "error" && ownDeadline(part.error))
+            (part.type === "error" && isOwnLlmDeadline(part.error))
           ) {
-            closeWithNotice(controller);
+            closeWithNotice(controller, DEADLINE_NOTICE);
             return;
           }
-          // Everything else is bookkeeping (`start`, `finish`, step markers,
-          // and the non-deadline `error` part, which goes on being dropped
-          // exactly as it is today — that is DW-64's neighbour, not DW-64).
+          // DW-547. The other way an answer ends early, and until now the
+          // silent one: `finishReason: "length"` means the model stopped
+          // because it reached `maxOutputTokens`, which is
+          // `QUERY_MAX_OUTPUT_TOKENS` on every call this route makes. That part
+          // fell into the bookkeeping tail below and the body simply ended —
+          // the same half answer looking like a whole one that DW-64 fixed for
+          // the deadline.
+          //
+          // UNGATED, unlike the abort branch above. The abort branch asks
+          // `llmDeadlineConfigured()` because an abort with no deadline set is
+          // someone else's; the cap is passed on every single call, so a
+          // `length` finish is always this repo's own and there is no state in
+          // which it is not.
+          if (part.type === "finish" && part.finishReason === "length") {
+            closeWithNotice(controller, LENGTH_CAP_NOTICE);
+            return;
+          }
+          // Everything else is bookkeeping (`start`, a `finish` for any other
+          // reason, step markers, and the non-deadline `error` part, which goes
+          // on being dropped exactly as it is today — that is DW-64's
+          // neighbour, not DW-64).
         }
       },
       async cancel() {
@@ -293,7 +327,7 @@ export async function POST(request: NextRequest) {
         //
         // 500 and not 504: this is the route's own verdict about a limit the
         // OWNER set, not a gateway's verdict about us.
-        error: ownDeadline(error)
+        error: isOwnLlmDeadline(error)
           ? LLM_DEADLINE_COPY
           : getErrorMessage(error),
       },

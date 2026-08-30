@@ -2,7 +2,16 @@ import { getLlmTimeoutMs } from "./config";
 import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
 
 /**
- * The owner-facing half of the LLM deadline (DW-64).
+ * Why a streamed answer stopped early — every sentence, and every predicate
+ * that licenses one (DW-64, DW-544, DW-545, DW-547).
+ *
+ * The deadline was the first reason and named the file; it is no longer the
+ * only one. A streamed answer can also end because the model ran into
+ * `QUERY_MAX_OUTPUT_TOKENS`, or because the stream was cut with no deadline
+ * configured at all. All three share one failure — a half answer that reads as
+ * a whole one — so they share one home, and callers import the sentence rather
+ * than each keeping a copy of it. The FILENAME stays: `./llm` and DW-64's spec
+ * both name it, and renaming it would buy nothing this docblock does not say.
  *
  * A SEPARATE, dependency-light module rather than another export on `llm.ts`,
  * for two reasons that both have to hold at once:
@@ -15,6 +24,19 @@ import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
  *     `callLLMStream` with a fake stream) while importing the REAL constant.
  *     Living on `llm.ts` would put the sentence behind that mock, and the test
  *     would then be asserting a restated literal against itself.
+ *
+ * Every sentence below states the answer is INCOMPLETE, because the failure
+ * this module closes is a half answer that reads as a whole one — and none of
+ * them carries transport vocabulary. The SDK's own words for a fired deadline
+ * ("The operation was aborted due to timeout") name a signal, not anything the
+ * owner set or can act on.
+ *
+ * The Settings pointer is the dividing line. A sentence gets one only when it
+ * names a control the owner actually has: the LLM timeout, which they filled in
+ * and can raise or clear. {@link LLM_LENGTH_CAP_COPY} and
+ * {@link LLM_RESEARCH_STREAM_CUT_SHORT_COPY} get none, because there is no field behind
+ * either of them — the output cap is a source constant, and a stream cut with
+ * no deadline configured was cut by something this repo did not install.
  *
  * The deadline's MECHANISM is deliberately not here and is not changing — see
  * the frozen-decision note on `callLLMStream` in `./llm`.
@@ -51,6 +73,76 @@ export const LLM_DEADLINE_COPY =
   `This answer is incomplete: it hit the LLM timeout set in ` +
   `${settingsPointer("llm-models", SETTINGS_LABEL)}. Raise that limit, or ` +
   `clear it for no deadline, then ask again.`;
+
+/**
+ * The same deadline, read by the owner of a Deep Research run (DW-544).
+ *
+ * A SECOND sentence rather than {@link LLM_DEADLINE_COPY} reused, because the
+ * two describe different outcomes. A query's half answer is still on screen —
+ * "ask again" is a second question. A research run that hits the deadline
+ * during synthesis writes NOTHING: the run fails closed rather than committing
+ * a truncated brief as a finished wiki page, so the sentence has to say the
+ * wiki is untouched, or the owner goes looking for a page that is not there.
+ *
+ * Same composed pointer and same gate as {@link LLM_DEADLINE_COPY}: shown only
+ * where {@link llmDeadlineConfigured} is true, since every clause names a field
+ * the owner filled in.
+ */
+export const LLM_DEADLINE_RESEARCH_COPY =
+  `This research run is incomplete: it hit the LLM timeout set in ` +
+  `${settingsPointer("llm-models", SETTINGS_LABEL)}. Nothing was written to ` +
+  `the wiki. Raise that limit, or clear it for no deadline, then run the ` +
+  `research again.`;
+
+/**
+ * A RESEARCH synthesis stream that ended early with NO deadline configured
+ * (DW-544).
+ *
+ * RESEARCH-SCOPED, and named for it. The text says "this research run" and
+ * "nothing was written to the wiki", both of which would be false on either
+ * query route: a query writes nothing ever, so telling its owner the wiki is
+ * untouched names a reassurance about a risk that was never on the table. A
+ * general "a stream ended early" sentence for the query surfaces does not exist
+ * yet, and if one is ever needed it is a new constant beside this one, not this
+ * one reused.
+ *
+ * The counterpart to {@link LLM_DEADLINE_RESEARCH_COPY} on the far side of
+ * {@link llmDeadlineConfigured}. Research fails closed on a cut stream either
+ * way — committing half a brief is the bug being fixed, and the field being
+ * blank does not make a truncated page truthful — so only the WORDS change
+ * here, not the outcome.
+ *
+ * NO Settings pointer, deliberately. With the field blank, `llmTimeoutOption()`
+ * installed no signal at all, so whatever cut this stream is not a limit the
+ * owner set; sending them to raise it, or to clear a field that is already
+ * blank, is the dead end {@link llmDeadlineConfigured} exists to close.
+ */
+export const LLM_RESEARCH_STREAM_CUT_SHORT_COPY =
+  `This research run is incomplete: the model's response stopped before it ` +
+  `was finished. Nothing was written to the wiki. Run the research again.`;
+
+/**
+ * The answer ran into this repo's own output cap (DW-547).
+ *
+ * `finishReason: "length"` on the `finish` part means the model stopped because
+ * it reached `maxOutputTokens`, which `/api/query/stream` passes as
+ * `QUERY_MAX_OUTPUT_TOKENS` on every call. Before DW-547 that part fell into
+ * the route's bookkeeping tail and the body simply ended — the same silent half
+ * answer the deadline used to produce, from a different cause.
+ *
+ * UNGATED, unlike the deadline sentences: the cap is passed on every call, so a
+ * `length` finish is always this repo's own and there is no state in which it
+ * could belong to someone else.
+ *
+ * NO Settings pointer, and none may be added. `QUERY_MAX_OUTPUT_TOKENS` is a
+ * source constant (`./constants`); nothing on the Settings surface writes it,
+ * so pointing the owner at Settings would send them looking for a control that
+ * is not there. What they CAN do is ask something narrower, which is what this
+ * says instead.
+ */
+export const LLM_LENGTH_CAP_COPY =
+  `This answer is incomplete: it reached the maximum length a single answer ` +
+  `can be. Ask again for a narrower part of the question to see the rest.`;
 
 /**
  * Is there a deadline for an abort to BE?
@@ -102,4 +194,41 @@ export function isLlmDeadlineAbort(cause: unknown): boolean {
     cause instanceof Error &&
     (cause.name === "TimeoutError" || cause.name === "AbortError")
   );
+}
+
+/**
+ * MAY THIS CALLER SAY "deadline"? — the gate for callers whose fallback is
+ * silence or the error's own words (DW-64).
+ *
+ * Both halves at once: {@link isLlmDeadlineAbort} answers "what shape", and
+ * {@link llmDeadlineConfigured} answers "could it have been ours".
+ * `llmTimeoutOption()` installs no signal at all when the field is blank — the
+ * default, and the state of every owner who never filled it in — so an abort
+ * arriving with none configured came from somewhere this repo did not set up,
+ * and {@link LLM_DEADLINE_COPY} would name a limit to raise and a field to
+ * clear that do not exist. Where this is false, the caller falls back to
+ * exactly its pre-DW-64 behaviour: rethrow, or the error's own words.
+ *
+ * NOT the universal rule for every abort in this repo, and `research-runtime.ts`
+ * is the exception on purpose. Its fallback on an abort is neither silence nor
+ * an error message: it is COMMITTING the truncated brief as a finished wiki
+ * page, which is the failure DW-544 closed. So research asks the ungated
+ * {@link isLlmDeadlineAbort} to decide whether to FAIL, and asks
+ * {@link llmDeadlineConfigured} separately to pick between
+ * {@link LLM_DEADLINE_RESEARCH_COPY} and
+ * {@link LLM_RESEARCH_STREAM_CUT_SHORT_COPY} — the gate chooses its WORDS, never
+ * its outcome. Use this composed predicate only where a false answer can safely
+ * mean "carry on as before".
+ *
+ * HERE, not in a route (DW-545). `/api/query/stream` owned this predicate at
+ * module scope so its `catch` and its stream reader were demonstrably asking
+ * the same question; `/api/query` now has to ask it too — and it is the route
+ * `useStreamingQuery` PREFERS the message from, so the two answering
+ * differently would mean the stream route's sentence being overwritten by
+ * transport words from its neighbour. A `route.ts` cannot export the shared
+ * copy either: Next 15 type-checks route exports, and no `route.ts` in this
+ * repo exports anything but its HTTP handlers.
+ */
+export function isOwnLlmDeadline(cause: unknown): boolean {
+  return llmDeadlineConfigured() && isLlmDeadlineAbort(cause);
 }

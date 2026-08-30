@@ -4133,7 +4133,9 @@ location: src/lib/research-runtime.ts:1136
 source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
 severity: medium
 reason: `src/lib/research-runtime.ts:1136-1157` is the only other caller of `callLLMStream`. It iterates `stream.textStream`, which drops the `{ type: "abort" }` part, so the `for await` ends NORMALLY and `receivedStreamContent` suppresses the `callLLM` fallback at :1153. `raw` is the partial text and flows through `runResearchProject` (:1613) into `commitResearchPage` (:1645). Neither existing test models a short close: research-runtime.test.ts:842 ends normally with full content, :858 throws. Out of scope by the intent, which names only the query stream route.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-truncated-answer-honesty
+resolution-undo: ed6948179efc323971f746c3008e9ecc1fc40dcf2a83002ec2f1f340c86d00de 2026-08-30 7374617475733a206f70656e
 
 ### DW-545: `/api/query` still returns `getErrorMessage(error)` verbatim, so a fired deadline reaches the owner as raw transport vocabulary there.
 origin: spec-deferred f674f51728cf
@@ -4141,7 +4143,9 @@ location: src/app/api/query/route.ts:74
 source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
 severity: medium
 reason: `src/app/api/query/route.ts:74-81`. It is also the streaming route's own fallback: `useStreamingQuery` (`src/hooks/useStreamingQuery.ts:129-155`) re-queries it on any non-2xx and PREFERS `fallbackData?.error` over the streaming route's sentence, so "The operation was aborted due to timeout" can still be what the owner reads after this change. Out of scope by the intent, which names only src/app/api/query/stream/route.ts.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-truncated-answer-honesty
+resolution-undo: ed6948179efc323971f746c3008e9ecc1fc40dcf2a83002ec2f1f340c86d00de 2026-08-30 7374617475733a206f70656e
 
 ### DW-546: `query-stream-route.test.ts`'s `callLLMStream` mock returns an async generator, so all three #413 filtering tests run through the route's 500 catch and prove nothing about a completing route.
 origin: spec-deferred 1fb55ed9ac95
@@ -4157,7 +4161,9 @@ location: src/app/api/query/stream/route.ts:253
 source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
 severity: medium
 reason: `finishReason: "length"` arrives on the `finish` part and falls into the route's bookkeeping tail, so the body simply ends. Same owner-visible failure as DW-64 — a half answer that reads as a whole one — from a different cause, and the notice machinery this change adds is one branch away from covering it. Not the deadline, so outside an intent that names TimeoutError/AbortError only.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-truncated-answer-honesty
+resolution-undo: ed6948179efc323971f746c3008e9ecc1fc40dcf2a83002ec2f1f340c86d00de 2026-08-30 7374617475733a206f70656e
 
 ### DW-548: `hasLLMKey()` reads `loadConfigSync()` for the two store-only providers, so a cold CLI or MCP process tells an owner who saved Ollama or Custom that no API key is configured.
 origin: spec-deferred 3903ad16168b
@@ -5130,4 +5136,44 @@ location: src/lib/research-projects.ts:649
 source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
 severity: low
 reason: `mutateResearchProject` (src/lib/research-projects.ts:649) collapses `RESEARCH_WRITE_REFUSED` to `null`, which is what keeps the ~30 `research-runtime`/`research-completion` call sites unedited. So at the surface DW-527's intent named — "the fail-soft research-runtime callers can distinguish" — a refusal is still indistinguishable from a lost CAS race; only a direct caller of `applyResearchProjectMutation` can tell them apart, via `isResearchWriteRefused`. Closing that would mean editing the call sites one at a time, which is the larger change the ledger entry itself set aside.
+status: open
+
+### DW-662: `/api/query` still returns a cap-truncated answer as a finished one — the silent truncation DW-547 closed for the streaming route only.
+origin: spec-deferred a75695c8b05a
+location: src/lib/query.ts:349
+source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
+severity: medium
+reason: `src/lib/query.ts:349` passes the same `QUERY_MAX_OUTPUT_TOKENS` to `callLLM`, and `callLLM` (`src/lib/llm.ts`) destructures only `{ text }` from `generateText`, discarding `finishReason` entirely. So a capped answer on this route simply ends, looking whole. Not a dead path: `useStreamingQuery` sends `slides` and `html` here ALWAYS (`src/hooks/useStreamingQuery.ts:105-119`) and falls back to it on any non-2xx from the stream route. Closing it needs `callLLM` to surface `finishReason`, which this intent's third sentence scopes to `src/app/api/query/stream/route.ts` and the spec's Never list forbids.
+status: open
+
+### DW-663: A research brief truncated by its own 7,000-token output cap is still committed as a finished wiki page.
+origin: spec-deferred cc24ba54e0bb
+location: src/lib/research-runtime.ts:1239
+source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
+severity: medium
+reason: `synthesizeResearchBrief` (`src/lib/research-runtime.ts:1239`) ignores the `finish` part, so `finishReason: "length"` — which means the brief was CUT at the budget `callLLMStream` was given, not that it fit — falls through and `raw` commits. Same owner-visible failure as DW-544 (half a brief published as a whole one) from the cap rather than the deadline. Left as it was because the intent scopes research to "an abort or deadline error part"; the code comment and the covering test now say so explicitly instead of claiming the brief finished under its budget.
+status: open
+
+### DW-664: A non-deadline `error` part that ENDS the synthesis stream still commits a truncated research brief.
+origin: spec-deferred 57cdfe8e1b86
+location: src/lib/research-runtime.ts:1217
+source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
+severity: medium
+reason: `src/lib/research-runtime.ts:1217` fails only on an `error` part `isLlmDeadlineAbort` accepts; every other one is skipped as "warning-shaped". `ai@6` closes the source after an `error` part (the same SDK fact DW-64 relied on for its iterator argument), so an error part that terminates the stream ends the `for await` normally and the partial `raw` flows into `commitResearchPage`. The new suite only models an `error` part followed by more deltas and a `finish`. Pre-existing — `textStream` dropped those parts too — and outside an intent naming abort and deadline error parts only.
+status: open
+
+### DW-665: The research run's other `callLLM` calls still put SDK transport vocabulary in the owner-visible `project.error`.
+origin: spec-deferred 4e4bfd7b67f0
+location: src/lib/research-runtime.ts:1335
+source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
+severity: medium
+reason: Evidence condensation (`src/lib/research-runtime.ts:1335`) and hierarchical reduction (`:1397`) run under the same `llmTimeoutOption()`, and `retryWithBackoff` rethrows the original error unwrapped, so a fired deadline there reaches `runResearchProject`'s catch as "The operation was aborted due to timeout" and `src/components/workbench/ResearchCanvas.tsx:374` renders it verbatim. Only the synthesis stream and its fallback were in DW-544's scope, so the "no transport vocabulary in the research panel" property is true of the synthesis, not of the run.
+status: open
+
+### DW-666: The stream route still closes silently for a `finish` whose reason is `content-filter`, `error` or `other`.
+origin: spec-deferred f8c182c122de
+location: src/app/api/query/stream/route.ts:282
+source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
+severity: low
+reason: `src/app/api/query/stream/route.ts:282` branches on `length` alone; every other non-`stop` reason falls into the bookkeeping tail and the body just ends — a half answer reading as a whole one, which is DW-547's own failure from a third cause. `content-filter` is the concrete one: the model stopped, the owner is told nothing. The intent names `finishReason === "length"`, and the covering tests deliberately pin the other reasons as emitting nothing.
 status: open

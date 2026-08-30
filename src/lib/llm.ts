@@ -608,14 +608,14 @@ export async function callVisionLLM(
  * half-answer that looks finished. The owner-facing copy and the abort
  * predicates live in `src/lib/llm-deadline.ts`.
  *
- * `src/app/api/query/stream/route.ts` is the only caller that maps them TODAY —
- * it reads `fullStream`, which is the only place the abort is visible — and it
- * is NOT the only caller of this function. `synthesizeResearchBrief`
- * (`src/lib/research-runtime.ts`) still iterates `stream.textStream`, so a
- * fired deadline is swallowed there exactly as it used to be here and a
- * truncated brief is committed as a finished wiki page. That is known, out of
- * DW-64's scope, and deferred — a second caller to map, not a caller that is
- * already safe.
+ * BOTH callers map them now (DW-544). `src/app/api/query/stream/route.ts` and
+ * `synthesizeResearchBrief` (`src/lib/research-runtime.ts`) each read
+ * `fullStream`, which is the only place the abort is visible, so neither one
+ * can end an answer early in silence. What they DO about it differs, and
+ * deliberately: the route closes the body with a notice, while research fails
+ * the run outright rather than committing a truncated brief as a finished wiki
+ * page. Any future caller of this function has the same obligation — reading
+ * `textStream` swallows the abort, and a half answer then reads as a whole one.
  *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
  */

@@ -57,6 +57,14 @@ vi.mock("../tasks", async (importOriginal) => {
   return { ...actual, enqueueTask: vi.fn(async () => true) };
 });
 vi.mock("../schema", () => ({ loadPageConventions: vi.fn(async () => "") }));
+// Only the deadline READING is faked (DW-544). `importOriginal` keeps the rest
+// of `config` real — the store and the lease reach through this module too —
+// and the default is `null`, this repo's default and the state every row in
+// this suite ran under before DW-544.
+vi.mock("../config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../config")>()),
+  getLlmTimeoutMs: vi.fn(() => null),
+}));
 vi.mock("../vault", () => ({ addToVault: vi.fn() }));
 // The REAL `../wiki` with one function swapped: `research-projects` resolves its
 // storage path through `tenantForOwner`/`validateTenant` from this same module,
@@ -70,7 +78,13 @@ vi.mock("../wiki", async (importOriginal) => {
 import { createIngestJobIfAbsent } from "../ingest-jobs";
 import { drainResearchOutbox, loadResearchOutbox, saveResearchOutbox } from "../research-completion";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
+import { getLlmTimeoutMs } from "../config";
 import { callLLM, callLLMStream } from "../llm";
+import {
+  LLM_DEADLINE_RESEARCH_COPY,
+  LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+} from "../llm-deadline";
+import { SETTINGS_LABEL, settingsPointer } from "../workbench-settings";
 import { _resetLocks } from "../lock";
 import { logger } from "../logger";
 import * as projectsModule from "../research-projects";
@@ -123,6 +137,7 @@ const mockedExtract = vi.mocked(extractResearchSourceText);
 const mockedResolve = vi.mocked(resolveResearchProvider);
 const mockedLLM = vi.mocked(callLLM);
 const mockedStream = vi.mocked(callLLMStream);
+const mockedTimeout = vi.mocked(getLlmTimeoutMs);
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
 const mockedSaveRaw = vi.mocked(saveRawSourceFor);
 const mockedIngestJob = vi.mocked(createIngestJobIfAbsent);
@@ -145,6 +160,44 @@ function entry(title: string, extra?: Partial<IndexEntry>): IndexEntry {
 let tmpDir: string;
 let originalDataDir: string | undefined;
 
+/** A `text-delta` part, minus the fields the synthesis loop never reads. */
+const delta = (text: string) => ({ type: "text-delta", id: "t0", text });
+
+/**
+ * Stand in for `StreamTextResult`, exposing the `fullStream` the synthesis loop
+ * reads (DW-544) and the `text` it falls back to. `fullStream`, not
+ * `textStream`: the abort and `error` parts a cut stream ends on exist only
+ * there — `textStream` drops them, which is the bug DW-544 closed.
+ */
+function fakeStream(
+  parts: (Record<string, unknown> | (() => unknown))[],
+  text = "",
+) {
+  mockedStream.mockResolvedValue({
+    fullStream: (async function* () {
+      for (const part of parts) {
+        // A FUNCTION entry is an event mid-stream rather than a part: it either
+        // throws (a provider that died) or runs a side effect (the owner
+        // pressing Cancel) at a precise point between two parts.
+        if (typeof part === "function") await part();
+        else yield part;
+      }
+    })(),
+    text: Promise.resolve(text),
+  } as unknown as Awaited<ReturnType<typeof callLLMStream>>);
+}
+
+/** A brief that satisfies the citation gate, so a commit is the only variable. */
+const GOOD_BRIEF =
+  "# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief).";
+
+/** An abort of exactly the flavour `AbortSignal.timeout()` produces. */
+function abortError(name: "TimeoutError" | "AbortError"): Error {
+  const error = new Error("The operation was aborted due to timeout");
+  error.name = name;
+  return error;
+}
+
 /** A project ready to run, with one query. */
 async function project(extra?: Record<string, unknown>) {
   return createResearchProject("alice", {
@@ -165,6 +218,8 @@ beforeEach(async () => {
   mockedResolve.mockReturnValue("tavily");
   mockedEnqueue.mockResolvedValue(true);
   mockedStream.mockRejectedValue(new Error("stream unavailable in unit tests"));
+  // No deadline configured unless a row says otherwise.
+  mockedTimeout.mockReturnValue(null);
   mockedWritePage.mockImplementation(async ({ slug, idempotency }) => {
     const result = { slug, updatedSlugs: [] };
     if (idempotency) {
@@ -868,13 +923,15 @@ describe("deep research — thinking is the model's, progress is the kernel's", 
   });
 
   it("persists thinking while the synthesis stream is still open", async () => {
-    mockedStream.mockResolvedValue({
-      textStream: (async function* () {
-        yield "<thinking>step one\n";
-        yield "step two</thinking>\n# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief).";
-      })(),
-      text: Promise.resolve("<thinking>step one\nstep two</thinking>\n# Launch evidence\n\nA brief [from the source](https://example.com/launch/brief)."),
-    } as unknown as Awaited<ReturnType<typeof callLLMStream>>);
+    fakeStream(
+      [
+        { type: "start" },
+        delta("<thinking>step one\n"),
+        delta(`step two</thinking>\n${GOOD_BRIEF}`),
+        { type: "finish", finishReason: "stop" },
+      ],
+      `<thinking>step one\nstep two</thinking>\n${GOOD_BRIEF}`,
+    );
     const created = await project();
 
     const finished = await runResearchProject("alice", created.id);
@@ -885,13 +942,15 @@ describe("deep research — thinking is the model's, progress is the kernel's", 
   });
 
   it("does not buy a second synthesis after a partial stream fails", async () => {
-    mockedStream.mockResolvedValue({
-      textStream: (async function* () {
-        yield "# Partial";
-        throw new Error("stream disconnected");
-      })(),
-      text: Promise.resolve("# Partial"),
-    } as unknown as Awaited<ReturnType<typeof callLLMStream>>);
+    fakeStream(
+      [
+        delta("# Partial"),
+        () => {
+          throw new Error("stream disconnected");
+        },
+      ],
+      "# Partial",
+    );
     const created = await project();
 
     await expect(runResearchProject("alice", created.id)).rejects.toThrow(/stream disconnected/i);
@@ -2050,4 +2109,241 @@ describe("research slugs", () => {
   it("falls back to the project id when the title slugifies to nothing", () => {
     expect(researchPageSlug({ title: "!!!", id: "0123456789abcdef" })).toMatch(/^research-untitled-[0-9a-f]{8}$/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// DW-544. A synthesis stream that ends early must FAIL the run, not commit half
+// a brief as a finished wiki page.
+//
+// The pre-DW-544 shape was silence: `textStream` drops the `{ type: "abort" }`
+// part `ai@6` emits when the owner's deadline fires, so the `for await` ended
+// NORMALLY and whatever text had arrived flowed on into the page write.
+//
+// FAILS CLOSED whatever the deadline field says, unlike `/api/query/stream`,
+// which stays silent with no deadline configured. That route's fallback is
+// silence — what it did before DW-64. Research's fallback is a truncated page,
+// which is the bug. So only the WORDS turn on the field here.
+// ---------------------------------------------------------------------------
+describe("deep research — a synthesis stream that stopped early (DW-544)", () => {
+  it("fails the run and writes nothing when the deadline aborts mid-synthesis", async () => {
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([delta("# Half a brie"), { type: "abort", reason: "timeout" }]);
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_DEADLINE_RESEARCH_COPY,
+    );
+
+    // The whole point: nothing reached the wiki, and no second synthesis was
+    // bought to paper over the first.
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.includes("evidence-first private research brief"),
+    )).toHaveLength(0);
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    // The IMPORTED constant, not `error.message` from the SDK — this string is
+    // rendered in the research panel.
+    expect(failed?.error).toBe(LLM_DEADLINE_RESEARCH_COPY);
+    for (const word of ["aborted", "signal", "TimeoutError", "AbortError"]) {
+      expect(failed?.error).not.toContain(word);
+    }
+  });
+
+  it.each(["TimeoutError", "AbortError"] as const)(
+    "treats a deadline carried by an `error` part the same way (%s)",
+    async (name) => {
+      mockedTimeout.mockReturnValue(30_000);
+      fakeStream([
+        delta("# Half a brie"),
+        { type: "error", error: abortError(name) },
+      ]);
+      const created = await project();
+
+      await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+        LLM_DEADLINE_RESEARCH_COPY,
+      );
+
+      expect(mockedWritePage).not.toHaveBeenCalled();
+      expect((await getResearchProject("alice", created.id))?.error).toBe(
+        LLM_DEADLINE_RESEARCH_COPY,
+      );
+    },
+  );
+
+  it("fails with the no-deadline words when nothing was configured", async () => {
+    // `mockedTimeout` is already `null` — the default. The run still dies; only
+    // the sentence changes, and it names no limit and no Settings destination,
+    // because there is no field behind a stream this repo did not cut.
+    fakeStream([delta("# Half a brie"), { type: "abort" }]);
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+    );
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+    expect(failed?.error).not.toContain(SETTINGS_LABEL);
+  });
+
+  it("reports a run cancelled at the moment its stream aborts as CANCELLED", async () => {
+    // Both are true at once, and the owner's own action wins. Under `textStream`
+    // the cancellation check was the first thing every chunk hit; DW-544 must
+    // not relabel a cancelled run `failed` and tell someone who pressed Cancel
+    // that their LLM timeout is too low.
+    mockedTimeout.mockReturnValue(30_000);
+    const created = await project();
+    fakeStream([
+      delta("# Half a brie"),
+      async () => {
+        await cancelResearchProject("alice", created.id);
+      },
+      { type: "abort", reason: "timeout" },
+    ]);
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("cancelled");
+    expect(finished.error).not.toBe(LLM_DEADLINE_RESEARCH_COPY);
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(finished.progress?.message).toBe("Cancelled.");
+  });
+
+  it("still ignores a NON-deadline `error` part and commits the brief", async () => {
+    // Warning-shaped parts were dropped when `textStream` did the reading, and
+    // a brief that completes after one has always committed. DW-544 owns the
+    // abort and the deadline, and nothing else.
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([
+      delta("# Launch evidence\n\nA brief "),
+      { type: "error", error: new Error("a warning-shaped part") },
+      delta("[from the source](https://example.com/launch/brief)."),
+      { type: "finish", finishReason: "stop" },
+    ]);
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("complete");
+    expect(mockedWritePage).toHaveBeenCalled();
+    expect(mockedWritePage.mock.calls[0][0].content).toContain(
+      "# Launch evidence",
+    );
+  });
+
+  it("still commits a brief its own output cap CUT, which is a known gap", async () => {
+    // `finish`/`length` means this brief was cut at the 7,000-token budget the
+    // synthesis call passes — not that it fit under it. It commits anyway, and
+    // that is deliberate rather than safe: DW-544's intent scopes research to
+    // the abort and deadline-`error` parts, so widening it to the cap would
+    // change which briefs reach the wiki. Pinned here so the gap is visible and
+    // deferred, not silently assumed closed. (DW-547 closes the same ending on
+    // the query route, where the answer is not written anywhere.)
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([
+      delta(GOOD_BRIEF),
+      { type: "finish", finishReason: "length" },
+    ]);
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("complete");
+    expect(mockedWritePage).toHaveBeenCalled();
+  });
+
+  it("still falls back to one non-streamed call when the abort beats the first token", async () => {
+    // `receivedStreamContent` is false, so this is the pre-existing fallback
+    // for a stream that died before saying anything — not a retry of a
+    // truncated answer.
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([{ type: "abort" }]);
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("complete");
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.includes("evidence-first private research brief"),
+    )).toHaveLength(1);
+    expect(mockedWritePage).toHaveBeenCalled();
+  });
+
+  it("keeps the SDK's words out of the panel when that fallback aborts with no deadline set", async () => {
+    // `mockedTimeout` is already `null`. Before this branch was ungated, the
+    // rejection's own text — "The operation was aborted due to timeout" — was
+    // stored as `project.error` and rendered in the research panel. The run
+    // fails either way; only the sentence turns on the field.
+    fakeStream([{ type: "abort" }]);
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.includes("evidence-first private research brief")) {
+        throw abortError("TimeoutError");
+      }
+      return "evidence";
+    });
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+    );
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+    for (const word of ["aborted", "signal", "TimeoutError", "AbortError"]) {
+      expect(failed?.error).not.toContain(word);
+    }
+  });
+
+  it("reports a deadline on that fallback call in the same words", async () => {
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([{ type: "abort" }]);
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.includes("evidence-first private research brief")) {
+        throw abortError("TimeoutError");
+      }
+      return "evidence";
+    });
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_DEADLINE_RESEARCH_COPY,
+    );
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect((await getResearchProject("alice", created.id))?.error).toBe(
+      LLM_DEADLINE_RESEARCH_COPY,
+    );
+  });
+});
+
+describe("the research sentences (DW-544)", () => {
+  it("composes the Settings destination rather than spelling it out", () => {
+    // DW-369: renaming the `llm-models` category must move this sentence with
+    // it rather than orphan it. Composed even to ASSERT, never typed.
+    expect(LLM_DEADLINE_RESEARCH_COPY).toContain(
+      settingsPointer("llm-models", SETTINGS_LABEL),
+    );
+  });
+
+  it("points the no-deadline sentence at no control at all", () => {
+    expect(LLM_RESEARCH_STREAM_CUT_SHORT_COPY).not.toContain(
+      settingsPointer("llm-models", SETTINGS_LABEL),
+    );
+    expect(LLM_RESEARCH_STREAM_CUT_SHORT_COPY).not.toContain(SETTINGS_LABEL);
+  });
+
+  it.each([LLM_DEADLINE_RESEARCH_COPY, LLM_RESEARCH_STREAM_CUT_SHORT_COPY])(
+    "carries no transport vocabulary and says nothing was written (%#)",
+    (copy) => {
+      for (const word of ["aborted", "signal", "TimeoutError", "AbortError"]) {
+        expect(copy).not.toContain(word);
+      }
+      expect(copy).toContain("Nothing was written");
+    },
+  );
 });
