@@ -4153,7 +4153,9 @@ location: src/lib/__tests__/query-stream-route.test.ts:33
 source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
 severity: medium
 reason: `src/lib/__tests__/query-stream-route.test.ts:33` mocks `callLLMStream: vi.fn(async function* () {})`. That value has neither `toTextStreamResponse` (before this change) nor `fullStream` (after), so `POST` throws a TypeError and answers 500. The tests pass only because they assert on `selectPagesForQuery` arguments and never read a status or body. Pre-existing — the pre-change route was equally undefined on that mock — and left untouched so this story's "existing assertions untouched" acceptance stayed honest.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-query-stream-test-fidelity
+resolution-undo: 86011a6e06f073ca67735f2f1c7b8c3c0f00c2e9679b85f77684c5156ce44759 2026-08-30 7374617475733a206f70656e
 
 ### DW-547: The `QUERY_MAX_OUTPUT_TOKENS` cap truncates a streamed answer as silently as the deadline used to.
 origin: spec-deferred 714ac53dacf9
@@ -5176,4 +5178,44 @@ location: src/app/api/query/stream/route.ts:282
 source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
 severity: low
 reason: `src/app/api/query/stream/route.ts:282` branches on `length` alone; every other non-`stop` reason falls into the bookkeeping tail and the body just ends — a half answer reading as a whole one, which is DW-547's own failure from a third cause. `content-filter` is the concrete one: the model stopped, the owner is told nothing. The intent names `finishReason === "length"`, and the covering tests deliberately pin the other reasons as emitting nothing.
+status: open
+
+### DW-667: The `@/lib/wiki` mock stubs `isArtifactType` as `t === "html"`, but the real predicate also matches `"slides"`, so the artifact-exclusion test cannot see a route that stopped filtering slides.
+origin: spec-deferred b08856857e56
+location: src/lib/__tests__/query-stream-route.test.ts:27
+source_spec: `spec-dw-546-query-stream-test-fidelity.md`
+severity: low
+reason: `src/lib/page-types.ts:32-34` is `type === "html" || type === "slides"`. The test factory at `src/lib/__tests__/query-stream-route.test.ts:27` returns true for `"html"` only, and the fixture at the artifact test carries no `slides` page. Pre-existing (that mock line is untouched by DW-546).
+status: open
+
+### DW-668: The 401 test's comment claims "no page selection, no LLM stream" but only `selectPagesForQuery` is asserted; nothing pins that `callLLMStream` stayed uncalled, on either the 401 or the 400 path.
+origin: spec-deferred 45bfa2c22e06
+location: src/lib/__tests__/query-stream-route.test.ts:186
+source_spec: `spec-dw-546-query-stream-test-fidelity.md`
+severity: low
+reason: The claim holds only transitively — the route reaches `callLLMStream` (route.ts:174) strictly after `selectPagesForQuery` (route.ts:156). `mockedStream` is now in scope in the test file but is never asserted. Confirmed independently by two review layers. Left alone because the intent covers only the three filtering cases.
+status: open
+
+### DW-669: `hasLLMKey` is mocked synchronously (`vi.fn(() => true)`) while production is `async` — the same species of mock-shape drift DW-546 just fixed one line below it, in the same factory.
+origin: spec-deferred 204e0da86d06
+location: src/lib/__tests__/query-stream-route.test.ts:31
+source_spec: `spec-dw-546-query-stream-test-fidelity.md`
+severity: low
+reason: `src/lib/llm.ts:248` is `export async function hasLLMKey(): Promise<boolean>`. The mock passes only because `await true` works. This repo already treats that gate's promise-ness as load-bearing (DW-548 / `llm-key-cold-config.test.ts`). Pre-existing; the mock line is untouched by DW-546.
+status: open
+
+### DW-670: No test covers an unscoped query whose readable pages are ALL agent-scoped — the `#413` filter empties `entries` and the route answers a user-visible "The wiki is empty" 400.
+origin: spec-deferred 4ff35f3d03d1
+location: src/lib/__tests__/query-stream-route.test.ts:155
+source_spec: `spec-dw-546-query-stream-test-fidelity.md`
+severity: low
+reason: route.ts:124-139 — the filter runs, then the empty-entries branch returns 400. That outcome is produced entirely by the filter this file exists to test, and only the non-streaming path covers it (`query.test.ts:726`). Pre-existing gap.
+status: open
+
+### DW-671: The `format: "html"` test's title promises "(and accepts format:html)" but nothing asserts the format reached `buildQuerySystemPrompt`; a route that coerced every request to `"prose"` would still pass
+origin: spec-deferred d8e5399a588a
+location: src/lib/__tests__/query-stream-route.test.ts:155
+source_spec: `spec-dw-546-query-stream-test-fidelity.md`
+severity: low
+reason: `buildQuerySystemPrompt` is mocked and observable (test file line 45), and the route passes `queryFormat` to it at route.ts:165-171. The test asserts only a 200 and the filtered entry list. Pre-existing naming/coverage mismatch.
 status: open

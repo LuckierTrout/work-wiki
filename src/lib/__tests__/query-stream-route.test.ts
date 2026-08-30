@@ -5,6 +5,13 @@ import { NextRequest } from "next/server";
 // #413: the streaming query route must apply the SAME agent-scoped filter the
 // non-streaming query() does — unscoped queries answer from the public commons
 // only, never from agent-identity/knowledge/social pages.
+//
+// DW-546: the three filtering cases ALSO pin that the route streams a
+// completing 200 with a body. The filter and `selectPagesForQuery` both run
+// before `callLLMStream`, so the argument assertions held even while a broken
+// `callLLMStream` double made every one of those calls 500 into the handler's
+// catch — nothing here could see it. The status/body assertions are what make
+// a non-completing route visible. They are not noise; do not strip them.
 // ---------------------------------------------------------------------------
 
 vi.mock("@/lib/logger", () => ({
@@ -29,8 +36,14 @@ vi.mock("@/lib/wiki", () => ({
 
 vi.mock("@/lib/llm", () => ({
   hasLLMKey: vi.fn(() => true),
-  // Empty stream so the route completes without a real LLM.
-  callLLMStream: vi.fn(async function* () {}),
+  // Bare mock; `scriptStream()` below resolves it to a fake `StreamTextResult`.
+  // The SHAPE is load-bearing: `callLLMStream` is async and returns
+  // `streamText()`'s result object, and the route reads
+  // `result.fullStream[Symbol.asyncIterator]()`. An async generator (what this
+  // used to be) has no `fullStream`, so the route threw a TypeError into its
+  // catch and answered 500 on every one of these tests — which is why they now
+  // assert a status and a body, not just the `selectPagesForQuery` arguments.
+  callLLMStream: vi.fn(),
 }));
 
 vi.mock("@/lib/query", () => ({
@@ -47,12 +60,58 @@ import { listReadableWikiPages } from "@/lib/wiki";
 import { resolveScopeSlugs } from "@/lib/search";
 import { selectPagesForQuery } from "@/lib/query";
 import { getPrincipal } from "@/lib/auth";
+import { callLLMStream } from "@/lib/llm";
 import { POST } from "@/app/api/query/stream/route";
 
 const mockedList = vi.mocked(listReadableWikiPages);
 const mockedScope = vi.mocked(resolveScopeSlugs);
 const mockedSelect = vi.mocked(selectPagesForQuery);
 const mockedGetPrincipal = vi.mocked(getPrincipal);
+const mockedStream = vi.mocked(callLLMStream);
+
+/** The whole answer these tests expect back out of the route's body. */
+const ANSWER = "A is a concept.";
+
+/**
+ * Resolve `callLLMStream` to a stand-in for `StreamTextResult` carrying only
+ * what the route touches: a `fullStream`.
+ *
+ * The script carries the bookkeeping parts a real `fullStream` has around its
+ * text — a `start`, which the route's `pull` must LOOP past rather than return
+ * on (see route.ts's comment on that loop), and a closing `finish`. The finish
+ * reason is `"stop"` and must stay that way: `"length"` is the DW-547 output
+ * cap, which would append a notice to the body and break the body assertions.
+ *
+ * `text` is here because a real result has it — the route never awaits it, so
+ * nothing should assert on it.
+ *
+ * `[Symbol.asyncIterator]` builds a FRESH iterator on every call, so a second
+ * `POST` within one test reads the script from the top instead of finding it
+ * exhausted and answering an empty body.
+ */
+function scriptStream(text = ANSWER) {
+  const parts = [
+    { type: "start" },
+    { type: "text-delta", id: "t0", text },
+    { type: "finish", finishReason: "stop" },
+  ];
+  const makeIterator = () => {
+    let index = 0;
+    return {
+      async next() {
+        return index < parts.length
+          ? { done: false as const, value: parts[index++] }
+          : { done: true as const, value: undefined };
+      },
+    };
+  };
+  mockedStream.mockResolvedValue({
+    fullStream: { [Symbol.asyncIterator]: () => makeIterator() },
+    text: Promise.resolve(text),
+    // Narrower than `StreamTextResult` on purpose — the cast says so rather
+    // than widening the route's own types to accommodate a test double.
+  } as unknown as Awaited<ReturnType<typeof callLLMStream>>);
+}
 
 const ENTRIES = [
   { slug: "concept-a", title: "A", summary: "", type: undefined },
@@ -75,11 +134,20 @@ beforeEach(() => {
   // Default: a signed-in user (the middleware guarantees a session for POST).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mockedGetPrincipal.mockResolvedValue({ id: "u", handle: "u" } as any);
+  // Every case gets a stream that runs to completion by default.
+  scriptStream();
 });
 
 describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
   it("excludes agent-scoped pages from an UNSCOPED query", async () => {
-    await POST(makeRequest({ question: "what is A?" }));
+    const res = await POST(makeRequest({ question: "what is A?" }));
+
+    // The route filters and selects BEFORE it calls the LLM, so the argument
+    // assertions below were reached even under the old broken double. What
+    // they could not see is the 500 the route then fell into — these two lines
+    // are what pin that it reaches a 200 with a body (DW-546).
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(ANSWER);
 
     expect(mockedSelect).toHaveBeenCalledTimes(1);
     const passedEntries = mockedSelect.mock.calls[0][1] as Array<{ type?: string }>;
@@ -93,7 +161,12 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
   it("keeps agent-scoped pages when an agent: scope is provided", async () => {
     mockedScope.mockResolvedValue({ scopeSlugs: ["yoyo-identity", "yoyo-notes"] });
 
-    await POST(makeRequest({ question: "what is yoyo?", scope: "agent:yoyo" }));
+    const res = await POST(
+      makeRequest({ question: "what is yoyo?", scope: "agent:yoyo" }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(ANSWER);
 
     expect(mockedSelect).toHaveBeenCalledTimes(1);
     const passedEntries = mockedSelect.mock.calls[0][1] as Array<{ type?: string }>;
@@ -108,7 +181,10 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
       { slug: "saved-chart", title: "Chart", summary: "", type: "html" },
     ] as unknown as Awaited<ReturnType<typeof listReadableWikiPages>>);
 
-    await POST(makeRequest({ question: "?", format: "html" }));
+    const res = await POST(makeRequest({ question: "?", format: "html" }));
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(ANSWER);
 
     expect(mockedSelect).toHaveBeenCalledTimes(1);
     const passedEntries = mockedSelect.mock.calls[0][1] as Array<{ type?: string }>;
