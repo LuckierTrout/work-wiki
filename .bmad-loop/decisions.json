@@ -305,6 +305,15 @@
     "label": "Guidance is addressed by human owner",
     "resolution": ""
   },
+  "DW-554": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a distinct copy constant for the `unreadable` verdict saying the outcome is unknown and what to do about it (reload to see what landed), matching the vocabulary the unconfirmed-write sentences already use elsewhere in the Workbench. Route `SettingsCanvas` onto it for that branch only, leave `SETTINGS_SAVE_FAILED_COPY` for real failures, and extend the existing `it.each` to assert each verdict's sentence.",
+    "key": "1",
+    "label": "Add a third sentence for the unknown outcome",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
