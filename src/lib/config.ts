@@ -6,6 +6,7 @@ import { VALID_PROVIDERS, DEFAULT_MODELS, isEmbeddingProvider } from "./provider
 import type { EmbeddingProvider, ProviderValue } from "./providers";
 import { logger } from "./logger";
 import { getDataDir } from "./paths";
+import { sourceSha256 } from "./source-sha256";
 import { getStorage } from "./storage";
 import { LOOPBACK_TOKEN_ENV, type LoopbackTokenSource } from "./v1-contract";
 import {
@@ -355,8 +356,80 @@ function configRelPath(): string {
  * token. The orphan `.llm-wiki-config.version` is simply never read again — no
  * sweep, because deleting files an owner did not ask about is not this module's
  * business, and an unread file costs nothing.
+ *
+ * THE TOKEN IS BOUND TO THE BYTES IT WAS STAMPED FOR (DW-372), by
+ * {@link CONFIG_DIGEST_KEY} beside it. On its own this key is a plain field, so
+ * anything that round-trips the object verbatim — a pre-DW-272 build's save, a
+ * hand edit, a restore — carried the stamp forward over content it never
+ * stamped, and the guard went on believing a store state that had moved. The
+ * digest makes the read REFUSE such a stamp; see {@link UNSTAMPED_CONFIG_VERSION}.
  */
 const CONFIG_VERSION_KEY = "__settingsVersion";
+
+/**
+ * The RESERVED key the token's BINDING to the config bytes is stored under
+ * (DW-372) — a SHA-256 of the canonical serialization of the config with both
+ * reserved keys removed.
+ *
+ * WHY A SECOND KEY AND NOT A CONTENT-DERIVED TOKEN. AD-23 forbids serving any
+ * function of `firecrawlApiKey`, `customApiKey` or `embeddingApiKey`, and a
+ * version computed over this store is exactly that. So the two jobs are split:
+ * what is SERVED stays the opaque random `s1:` token {@link newConfigVersion}
+ * makes, and what BINDS it to the bytes is this digest, which is stored beside
+ * it and never crosses the response boundary. A version *computed over* the
+ * store cannot be served; one merely *checked against* it never leaves the
+ * server.
+ *
+ * WHY A SECOND KEY AND NOT A SECOND FILE. Same reason as
+ * {@link CONFIG_VERSION_KEY}: one object, one round-trip, no pair for a backend
+ * to get wrong.
+ *
+ * CANONICAL, so key order alone is not a change: `.llm-wiki-config.json` is
+ * hand-editable and an editor that re-serialized it must not be reported as an
+ * edit nobody made. {@link canonicalConfigJson} sorts every object's keys.
+ *
+ * Stripped exactly as the token is — on the way out of
+ * {@link readStoredConfig} and off whatever a caller hands {@link saveConfig} —
+ * so no consumer, backup or cache ever sees it.
+ */
+const CONFIG_DIGEST_KEY = "__settingsDigest";
+
+/**
+ * The config, serialized so that key ORDER is not content.
+ *
+ * Every plain object is re-emitted with its keys sorted, recursively (the
+ * replacer runs again over the object it returns). Arrays keep their order,
+ * because in an array order IS content.
+ */
+function canonicalConfigJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.keys(v as Record<string, unknown>)
+            .sort()
+            .map((k) => [k, (v as Record<string, unknown>)[k]]),
+        )
+      : v,
+  );
+}
+
+/**
+ * The digest stored under {@link CONFIG_DIGEST_KEY} for a config object.
+ *
+ * SHA-256 through {@link sourceSha256} — the house helper, already the digest
+ * every stored Source is identified by. Reused rather than re-rolled: a second
+ * `crypto.subtle` + hex loop in this file would be a copy that can only drift
+ * from it. `source-sha256.ts` imports NOTHING, so there is no cycle back into
+ * this module, and the helper is available identically in node, the browser and
+ * the Worker with no new dependency.
+ *
+ * The caller passes the config with BOTH reserved keys already removed: the
+ * digest cannot be a function of itself, and the token must be free to rotate
+ * without moving it.
+ */
+async function configDigest(config: AppConfig): Promise<string> {
+  return sourceSha256(canonicalConfigJson(config));
+}
 
 export function getConfigPath(): string {
   return `${getDataDir()}/.llm-wiki-config.json`;
@@ -395,6 +468,16 @@ export function getEmbeddingModelOverride(): string | undefined {
  * value came from: the same bad string in the environment and in the store are
  * two different things to fix, and an owner who only ever hears about one of
  * them cannot fix the other.
+ *
+ * IT ALSO KEYS THE SETTINGS STAMP (DW-372), for the same reason and not by
+ * coincidence. A token frozen over moved bytes is standing state too: it holds
+ * on every cache-miss read of {@link readStoredConfig} until someone saves
+ * settings once, and every store written before that change holds a real token
+ * with no digest beside it — so an install that has not saved yet would repeat
+ * the line on every read forever. The key there is the stored token AND the
+ * stored digest, by the same rule: a different frozen pair is a different fact
+ * and still gets said. The name is now narrower than what the Set holds; it is
+ * left alone rather than churned across the endpoint call sites it also serves.
  */
 const warnedEndpoints = new Set<string>();
 
@@ -609,19 +692,62 @@ export const CONFIG_UNREADABLE_COPY =
  * stamps a real token every time, so the second surface through is checked
  * against a real one.
  *
- * THE LARGER RESIDUAL, WHICH IS NOT LIMITED TO UNSTAMPED STORES. The stamp
- * tracks SAVES, not bytes, so a hand edit of `.llm-wiki-config.json` leaves the
- * version standing — on a stamped store just as much as on an unstamped one —
- * and a draft seeded before that edit saves straight over it. The
- * content-derived version this replaced DID move for a hand edit and refused
- * that save. Losing that is the price paid to get `firecrawlApiKey`,
- * `customApiKey` and `embeddingApiKey` out of the value served on a boundary
- * AD-23 says no secret material crosses: a version computed over the store is a
- * function of everything in it, and there is no version that is both derived
- * from the bytes and independent of the secrets among them. The guard is
- * defined over writes THROUGH THE API, which is what it was always able to
- * check; editing the file underneath a running app was never a supported way to
- * change settings. It is not closed; it is bounded and written down.
+ * THE OTHER WAY A STORE READS AS UNSTAMPED: ITS BYTES MOVED UNDER ITS STAMP
+ * (DW-372). The token is stored beside a digest of the config it was stamped
+ * for ({@link CONFIG_DIGEST_KEY}), and {@link readStoredConfig} honours the
+ * token only while that digest still matches what it recomputes. So anything
+ * that changed the config without going through {@link saveConfig} — a
+ * pre-DW-272 build's save that round-tripped the reserved key verbatim, a hand
+ * edit, a partial restore — reads as unstamped rather than as the frozen token
+ * it used to keep serving. That errs the safe way: a draft holding the old
+ * token is refused 412 instead of landing over content the guard never saw, and
+ * the next save re-stamps, so it SELF-HEALS. A key re-order is not such a
+ * change — the digest is canonical over sorted keys, so an editor that
+ * re-serialized the file is not reported as an edit nobody made.
+ *
+ * AND IT WIDENS THE RESIDUAL DIRECTLY ABOVE, WHICH IS THE PRICE. Reading a
+ * moved store as unstamped does not only refuse the stale draft — it puts the
+ * store into the state this constant names, where BOTH surfaces hold this one
+ * sentinel, both match, and neither save is refused. So detecting the event also
+ * switches the cross-surface guard OFF until the next save re-stamps. That state
+ * used to be rare (a first-ever save, a restored backup); it is now entered by
+ * every hand edit, every rollback-era save, and ONCE by every already-deployed
+ * store the moment this change ships, since none of them carry a digest yet.
+ * The trade is deliberate: one save's worth of no-guard, against a stale draft
+ * landing silently over content nothing checked. Refusing outright was the other
+ * option and it strands an owner with no path through from any surface they can
+ * see, which is the whole reason this sentinel exists.
+ *
+ * THE INTERMEDIATE BUILD. A build from after DW-272 but before this change
+ * strips only {@link CONFIG_VERSION_KEY}, so on a rollback to one of those
+ * {@link CONFIG_DIGEST_KEY} survives into the `AppConfig` handed to consumers
+ * and is written back as an ordinary field — visible in a backup, and spread
+ * wherever the config is. That is the whole cost, and it is cosmetic.
+ *
+ * Rolling FORWARD needs no migration, because the surviving key still means
+ * exactly what it meant: the digest of the settings as of the last save THIS
+ * build made. If the intermediate build changed anything, it no longer matches
+ * what this one recomputes, so the store reads unstamped and the next save
+ * strips the key and re-stamps the pair — the DW-372 answer, self-healing. If it
+ * changed nothing, the digest still describes the bytes and the token it stamped
+ * is honoured, which is also the right answer. Either way the key stops being an
+ * ordinary field the moment this build saves.
+ *
+ * WHAT THIS COSTS AND WHY IT IS NOT THE AD-23 LEAK. The digest is a function of
+ * every byte in the store, `firecrawlApiKey`, `customApiKey` and
+ * `embeddingApiKey` included — which is precisely why it is STORED and never
+ * SERVED. The version that crosses the boundary is still the opaque random
+ * `s1:` token, derived from nothing in the config; the digest only decides
+ * whether that token is still true. A content-derived version had to be served
+ * to work at all, and that is the difference.
+ *
+ * THE RESIDUAL THAT REMAINS. A hand edit that restores the config to exactly
+ * the bytes a standing token was stamped for is indistinguishable from no edit,
+ * and a hand edit that rewrites the config AND its digest together forges a
+ * stamp the read accepts. Both require an actor with write access to the store,
+ * which is the owner. The guard is defined over writes THROUGH THE API; editing
+ * the file underneath a running app was never a supported way to change
+ * settings.
  *
  * `s1:` names the scheme, the same way `w1:` does in `write-precondition.ts`,
  * so a token from a future scheme can never be mistaken for a match.
@@ -705,6 +831,20 @@ function isPlainConfigObject(value: unknown): value is AppConfig {
  * sentinel is the recoverable answer — the next save stamps a real one, so a
  * corrupted stamp SELF-HEALS — and it is logged, because a token nothing in this
  * module could have written means something else is writing that file.
+ *
+ * AND SO IS A REAL TOKEN WHOSE BYTES MOVED (DW-372). A well-formed stamp is
+ * honoured only while {@link CONFIG_DIGEST_KEY} still matches the digest
+ * recomputed over the stripped config, so a store changed by anything other
+ * than {@link saveConfig} answers the sentinel instead of a token that is no
+ * longer true of it. Recoverable the same way — the next save re-stamps — and
+ * warn-logged for the same reason.
+ *
+ * WHAT THE CHECK COSTS, ACCURATELY. A STAMPED store — which is the common case,
+ * every install that has saved settings once — pays one SHA-256 over the whole
+ * config on every read that misses the 5 s cache. An UNSTAMPED one pays nothing,
+ * because there is no token to bind and the recompute is skipped. That is a hash
+ * of a few kilobytes against a storage round-trip this function has already
+ * made, so it is stated here rather than sold as free.
  */
 async function readStoredConfig(): Promise<
   | { status: "ok"; config: AppConfig; version: string; etag: string | null }
@@ -736,15 +876,73 @@ async function readStoredConfig(): Promise<
     return { status: "unreadable", error: err };
   }
   const stored = (parsed as Record<string, unknown>)[CONFIG_VERSION_KEY];
+  const storedDigest = (parsed as Record<string, unknown>)[CONFIG_DIGEST_KEY];
+  // BOTH reserved keys come off before anything else looks at the object: the
+  // digest is computed over the settings alone, and that is also the shape every
+  // consumer and the cache below are owed.
+  const config = { ...(parsed as Record<string, unknown>) };
+  delete config[CONFIG_VERSION_KEY];
+  delete config[CONFIG_DIGEST_KEY];
+  // THE CACHE IS PRIMED HERE, BEFORE ANY `await` — the ordering is load-bearing.
+  //
+  // The digest recompute below is asynchronous, and anything between this
+  // function's last read and its cache write is a window a concurrent
+  // `saveConfig` can land in. `saveConfig` primes the cache with what it just
+  // wrote; if this read primed AFTER awaiting, it would resume holding the
+  // PRE-save object and overwrite that with stale settings for the whole 5 s
+  // TTL — `loadConfigSync()` answering the values the owner had just replaced,
+  // which is exactly the staleness priming exists to prevent. Priming from the
+  // bytes this read actually parsed, synchronously, keeps the window at zero.
+  //
+  // The version decision below touches nothing the cache holds, so nothing is
+  // lost by settling it afterwards.
+  _configCache = { data: config as AppConfig, ts: Date.now() };
   let version = UNSTAMPED_CONFIG_VERSION;
   if (typeof stored === "string" && isStoredConfigVersion(stored)) {
-    version = stored;
+    if (stored === UNSTAMPED_CONFIG_VERSION) {
+      // The sentinel is not a stamp, so there is nothing for a digest to bind —
+      // and no digest to recompute.
+      version = UNSTAMPED_CONFIG_VERSION;
+    } else {
+      // THE RECOMPUTE CANNOT BE ALLOWED TO REJECT. `loadConfig` promises its ~50
+      // callers `{}` for a store it could not read and a config for one it
+      // could; a throw escaping from here would be neither — it would reject the
+      // promise and break that contract for a reason that has nothing to do with
+      // the store's readability. A digest that could not be computed leaves the
+      // store UNSTAMPED, which is the recoverable degradation (the next save
+      // re-stamps, and a stale draft is refused rather than allowed through).
+      // `unreadable` would be the wrong answer too: the settings parsed fine and
+      // every consumer that only wants defaults should still get them.
+      let recomputed: string | null = null;
+      try {
+        recomputed = await configDigest(config as AppConfig);
+      } catch (err) {
+        warnOnceAbout(
+          `settings-digest-failed:${stored}`,
+          `could not verify the settings version stamp; treating as unstamped: ${String(err)}`,
+        );
+      }
+      if (typeof storedDigest === "string" && storedDigest === recomputed) {
+        version = stored;
+      } else if (recomputed !== null) {
+        // DW-372: the token is well-formed but is not true of these bytes — a
+        // pre-DW-272 build round-tripped it, or the file was edited underneath
+        // it. The sentinel is the recoverable answer; the next save re-stamps.
+        //
+        // WARN-ONCE, because this is standing STATE and not an event: it holds
+        // on every cache-miss read until someone saves settings, and every store
+        // that predates this change holds a real token with no digest beside it,
+        // so an unpatched install would otherwise repeat the line forever. Keyed
+        // on the pair actually found, so a DIFFERENT frozen stamp still speaks.
+        warnOnceAbout(
+          `settings-stamp-stale:${stored}:${String(storedDigest)}`,
+          "config changed underneath its version stamp; treating as unstamped",
+        );
+      }
+    }
   } else if (stored !== undefined) {
     logger.warn("config", "config does not hold a usable version token; treating as unstamped");
   }
-  const config = { ...(parsed as Record<string, unknown>) };
-  delete config[CONFIG_VERSION_KEY];
-  _configCache = { data: config as AppConfig, ts: Date.now() };
   return { status: "ok", config: config as AppConfig, version, etag };
 }
 
@@ -885,17 +1083,27 @@ export async function saveConfig(
   ifMatch?: string | null,
 ): Promise<ConfigSave> {
   const version = newConfigVersion();
-  // The reserved key is THIS function's to write, so strip whatever the caller
-  // handed in before anything reads the object. `readStoredConfig` already
-  // strips it, so no ordinary caller carries one — but a `PUT` body naming the
-  // key reaches the merge, and without this the cache below would be primed with
-  // a key a re-read removes, which is the sync/async disagreement stripping
-  // exists to prevent. Stripping here also means a body cannot forge a token or
-  // unstamp the store: whatever it says, the value written is the fresh one.
+  // BOTH reserved keys are THIS function's to write, so strip whatever the
+  // caller handed in before anything reads the object. `readStoredConfig`
+  // already strips them, so no ordinary caller carries one — but a `PUT` body
+  // naming either key reaches the merge, and without this the cache below would
+  // be primed with a key a re-read removes, which is the sync/async
+  // disagreement stripping exists to prevent. Stripping here also means a body
+  // cannot forge a token, forge a binding, or unstamp the store: whatever it
+  // says, the pair written is the freshly computed one.
   const stored = { ...config };
   delete (stored as Record<string, unknown>)[CONFIG_VERSION_KEY];
+  delete (stored as Record<string, unknown>)[CONFIG_DIGEST_KEY];
+  // The digest BINDS the token to these bytes (DW-372), so it is computed over
+  // the stripped object — the same shape `readStoredConfig` recomputes over —
+  // and stored beside the token, never served.
+  const digest = await configDigest(stored);
   const body =
-    JSON.stringify({ ...stored, [CONFIG_VERSION_KEY]: version }, null, 2) + "\n";
+    JSON.stringify(
+      { ...stored, [CONFIG_VERSION_KEY]: version, [CONFIG_DIGEST_KEY]: digest },
+      null,
+      2,
+    ) + "\n";
   const storage = getStorage();
   // EXPLICITLY a non-empty string, not truthiness. `undefined`, `null` and `""`
   // all mean the same thing here — "no version to compare against, write

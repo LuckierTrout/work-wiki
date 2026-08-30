@@ -2385,7 +2385,9 @@ source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
 location: src/app/api/settings/route.ts:321-395
 severity: low
 reason: `model`, `ollamaBaseUrl`, `embeddingModel` and now `structuredKnowledgeModel` all read `typeof x === "string" ? x.trim() : ""` and then treat `trimmed.length === 0` as DELETE. Each comment says the ternary "must never be what turns a malformed body into a delete", but `""` is exactly the delete arm — the only thing preventing it is the non-string 400 above the merge. Unreachable today and identical across all four, so fixing one alone would break the uniformity DW-305 was about; the fix is to make all four fall back to leaving the field untouched.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-route-write-semantics
+resolution-undo: 4a50281ffc8d83c599d317b0d37a2175e3c5f2ea1ce9fc6453047ba752f9814f 2026-08-30 7374617475733a206f70656e
 
 ### DW-329: Every refusal the legacy flat `/settings` path can now produce ends "Turn it off, or supply what is missing." — naming a switch that page does not render.
 
@@ -2709,7 +2711,9 @@ source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
 location: src/lib/config.ts (CONFIG_VERSION_KEY)
 severity: low
 reason: The retired scheme's `readStoredConfig` returned the parsed object verbatim and `saveConfig` wrote whatever it was handed, so an older build round-trips the reserved key untouched while stamping its sibling file. The new build then keeps reading the same frozen token out of the object. The guard degrades to always-matching rather than losing data, and this fork deploys manually via wrangler with no rolling releases, so the window is a deliberate rollback. Namespacing the key per scheme, or refusing a token whose config predates the scheme, would close it.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-route-write-semantics
+resolution-undo: 4a50281ffc8d83c599d317b0d37a2175e3c5f2ea1ce9fc6453047ba752f9814f 2026-08-30 7374617475733a206f70656e
 
 ### DW-373: Opening the in-shell Settings surface still unmounts the whole mode canvas, so the Wiki subtree DW-26 keeps mounted across mode switches is destroyed — dialog, typed name and error — whenever Settings
 
@@ -4756,4 +4760,12 @@ location: src/app/api/status/route.ts:6-8
 source_spec: `spec-dw-548-549-551-cli-config-warm-and-status.md`
 severity: low
 reason: `src/app/api/status/route.ts:7` awaits `loadConfig()`, which flattens `readStoredConfig`'s `unreadable` answer to `{}` (`src/lib/config.ts:813`). The served `ProviderInfo` therefore reports `configured: false` for a config that exists but could not be parsed, exactly as `yopedia status` used to. `readConfig()` keeps the distinction and is the same single round-trip. DW-549's intent named `yopedia status` only, so the web route was out of scope for this bundle.
+status: open
+
+### DW-623: `applyWorkbenchSettings`'s `setText` still resolves a non-string to `""` and then reads `""` as the delete, so the two halves of the settings body now answer differently about the same stored key.
+origin: spec-deferred fa5b85674318
+location: src/lib/config.ts (applyWorkbenchSettings -> setText)
+source_spec: `spec-dw-328-372-settings-route-write-semantics.md`
+severity: low
+reason: DW-328 named only the route's four flat text fields, and the spec's Never list kept `setText` out on the grounds that its parameter is typed `string | null | undefined` and `validateWorkbenchSettingsPatch` runs above it, so the arm is unreachable by construction. That is still true. What changed is the symmetry: a flat `embeddingModel` carrying a non-string now leaves the stored key untouched, while `workbench.embeddingModel` carrying one would delete it. `config.ts` already imports from `workbench-settings.ts`, so `flatTextFieldAction` is importable there and the collapse is available.
 status: open

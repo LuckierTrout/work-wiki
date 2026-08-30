@@ -290,15 +290,32 @@ describe("/api/settings", () => {
     // never carries the key through, flat or under `workbench`. The other half —
     // `saveConfig` stripping one that somehow arrived, and stamping its own — is
     // pinned in `config.test.ts`, where `saveConfig` is the real one.
+    //
+    // `__settingsDigest` is the SECOND key of the pair (DW-372) and is reached
+    // for the same way: a body that could plant a digest could bind a token of
+    // its choosing to bytes of its choosing. Same two defences, same test.
     const { PUT } = await import("@/app/api/settings/route");
 
     for (const body of [
       { model: "gpt-4o", __settingsVersion: "s1:dddddddddddddddddddddddddddddddd" },
       { model: "gpt-4o", __settingsVersion: null },
+      { model: "gpt-4o", __settingsDigest: "d".repeat(64) },
+      { model: "gpt-4o", __settingsDigest: null },
+      {
+        model: "gpt-4o",
+        __settingsVersion: "s1:dddddddddddddddddddddddddddddddd",
+        __settingsDigest: "d".repeat(64),
+      },
       {
         workbench: {
           chatModel: "gpt-4o",
           __settingsVersion: "s1:dddddddddddddddddddddddddddddddd",
+        },
+      },
+      {
+        workbench: {
+          chatModel: "gpt-4o",
+          __settingsDigest: "d".repeat(64),
         },
       },
     ]) {
@@ -306,11 +323,12 @@ describe("/api/settings", () => {
       const response = await PUT(request(body));
       expect(response.status).toBe(200);
 
-      // The merged object handed to `saveConfig` carries no reserved key: the
-      // flat branch writes only the fields it names, and the `workbench` patch
-      // is applied field by field rather than spread.
+      // The merged object handed to `saveConfig` carries neither reserved key:
+      // the flat branches write only the fields they name, and the `workbench`
+      // patch is applied field by field rather than spread.
       const [merged] = mockedSave.mock.calls[0] as [Record<string, unknown>, unknown];
       expect(merged).not.toHaveProperty("__settingsVersion");
+      expect(merged).not.toHaveProperty("__settingsDigest");
 
       // …and the version served back is the one the STORE stamped, never the
       // one the body asked for.
@@ -977,6 +995,195 @@ describe("PUT /api/settings — structuredKnowledgeModel normalization (DW-305)"
       });
       expect(mockedSave).not.toHaveBeenCalled();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// All four flat text fields decide the SAME way (DW-328)
+// ---------------------------------------------------------------------------
+
+/**
+ * The four flat text fields the route now merges through ONE applier.
+ *
+ * `blankIsRefused` is the only thing that differs between them, and it is a
+ * property of each field's own DOOR rather than of the merge: `model` and
+ * `structuredKnowledgeModel` are checked non-empty above the merge, so `""` and
+ * whitespace never reach it; `ollamaBaseUrl` and `embeddingModel` are checked
+ * for TYPE only, so a blank reaches the applier and clears the key. The applier
+ * itself asks the same question for all four.
+ */
+const FLAT_TEXT_FIELDS = [
+  {
+    key: "model",
+    held: "gpt-4o",
+    padded: "  gpt-4o-mini  ",
+    trimmed: "gpt-4o-mini",
+    typeError: "Model must be a non-empty string",
+    blankIsRefused: true,
+  },
+  {
+    key: "structuredKnowledgeModel",
+    held: "gpt-4o",
+    padded: "  gpt-4o-mini  ",
+    trimmed: "gpt-4o-mini",
+    typeError: "Structured Knowledge model must be a non-empty string",
+    blankIsRefused: true,
+  },
+  {
+    key: "ollamaBaseUrl",
+    held: "http://h:11434/api",
+    padded: "  http://x:1  ",
+    trimmed: "http://x:1",
+    typeError: "ollamaBaseUrl must be a string",
+    blankIsRefused: false,
+  },
+  {
+    key: "embeddingModel",
+    held: "text-embedding-3-small",
+    padded: "  text-embedding-3-large  ",
+    trimmed: "text-embedding-3-large",
+    typeError: "embeddingModel must be a string",
+    blankIsRefused: false,
+  },
+] as const;
+
+describe("PUT /api/settings — the four flat text fields are uniform (DW-328)", () => {
+  /**
+   * NOTE ON WHAT THIS FILE CAN SEE. `readConfig`/`saveConfig` are mocked here,
+   * so the observable half is the DOOR: which bodies are refused, and what
+   * object a landed save is handed. The applier's non-string arm — which now
+   * LEAVES THE STORED FIELD ALONE rather than resolving to `""` and deleting it —
+   * is unreachable behind these 400s by construction, which is exactly why it is
+   * defence in depth. What is pinned here is the door it sits behind, and the
+   * four fields still answering identically.
+   */
+  for (const field of FLAT_TEXT_FIELDS) {
+    it(`REFUSES a non-string \`${field.key}\` without touching the store`, async () => {
+      mockedRead.mockResolvedValue({
+        status: "ok",
+        config: { [field.key]: field.held },
+        version: STORED_VERSION,
+        etag: STORED_ETAG,
+      });
+      const { PUT } = await import("@/app/api/settings/route");
+
+      for (const value of [42, true, {}, [], 0, false]) {
+        mockedSave.mockClear();
+        const response = await PUT(request({ [field.key]: value }));
+
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: field.typeError });
+        // NOTHING was written, so the stored field is byte-identical. This is
+        // the guarantee DW-328 is about: the old fallback would have deleted it.
+        expect(mockedSave).not.toHaveBeenCalled();
+      }
+    });
+
+    it(`STORES a padded \`${field.key}\` trimmed`, async () => {
+      mockedRead.mockResolvedValue({
+        status: "ok",
+        config: { [field.key]: field.held },
+        version: STORED_VERSION,
+        etag: STORED_ETAG,
+      });
+      const { PUT } = await import("@/app/api/settings/route");
+
+      const response = await PUT(request({ [field.key]: field.padded }));
+
+      expect(response.status).toBe(200);
+      expect(mockedSave).toHaveBeenCalledWith(
+        { [field.key]: field.trimmed },
+        STORED_ETAG,
+      );
+    });
+
+    it(`CLEARS \`${field.key}\` on null`, async () => {
+      mockedRead.mockResolvedValue({
+        status: "ok",
+        config: { [field.key]: field.held },
+        version: STORED_VERSION,
+        etag: STORED_ETAG,
+      });
+      const { PUT } = await import("@/app/api/settings/route");
+
+      const response = await PUT(request({ [field.key]: null }));
+
+      expect(response.status).toBe(200);
+      expect(mockedSave).toHaveBeenCalledWith({}, STORED_ETAG);
+    });
+
+    it(`answers \`""\` and whitespace for \`${field.key}\` the way its DOOR does`, async () => {
+      mockedRead.mockResolvedValue({
+        status: "ok",
+        config: { [field.key]: field.held },
+        version: STORED_VERSION,
+        etag: STORED_ETAG,
+      });
+      const { PUT } = await import("@/app/api/settings/route");
+
+      for (const value of ["", "   ", "\t\n "]) {
+        mockedSave.mockClear();
+        const response = await PUT(request({ [field.key]: value }));
+
+        if (field.blankIsRefused) {
+          // Refused ABOVE the merge — never stored, and never a silent delete.
+          expect(response.status).toBe(400);
+          expect(await response.json()).toEqual({ error: field.typeError });
+          expect(mockedSave).not.toHaveBeenCalled();
+        } else {
+          // Reaches the applier, where a blank is a CLEAR — the same decision
+          // `null` gets, which is what "uniform" means.
+          expect(response.status).toBe(200);
+          expect(mockedSave).toHaveBeenCalledWith({}, STORED_ETAG);
+        }
+      }
+    });
+
+    it(`leaves \`${field.key}\` alone when the body omits it`, async () => {
+      mockedRead.mockResolvedValue({
+        status: "ok",
+        config: { [field.key]: field.held },
+        version: STORED_VERSION,
+        etag: STORED_ETAG,
+      });
+      const { PUT } = await import("@/app/api/settings/route");
+
+      const response = await PUT(request({ provider: "openai" }));
+
+      expect(response.status).toBe(200);
+      expect(mockedSave).toHaveBeenCalledWith(
+        { [field.key]: field.held, provider: "openai" },
+        STORED_ETAG,
+      );
+    });
+  }
+
+  it("keeps the merge ORDER: the four apply before the embeddingProvider clear", async () => {
+    // The applier calls sit where the four branches did, so a body carrying both
+    // an embedding model and a provider MOVE still clears the old vendor's
+    // credential and keeps the model this request named (DW-69/DW-72).
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: {
+        embeddingProvider: "openai",
+        embeddingApiKey: "sk-old",
+        embeddingBaseUrl: "https://old.example",
+        embeddingModel: "text-embedding-3-small",
+      },
+      version: STORED_VERSION,
+      etag: STORED_ETAG,
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(
+      request({ embeddingModel: "  text-embedding-004 ", embeddingProvider: "google" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockedSave).toHaveBeenCalledWith(
+      { embeddingProvider: "google", embeddingModel: "text-embedding-004" },
+      STORED_ETAG,
+    );
   });
 });
 

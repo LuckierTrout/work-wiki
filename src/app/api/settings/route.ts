@@ -16,6 +16,7 @@ import {
   SETTINGS_INVALID_URL_COPY,
   embeddingProviderChanged,
   flatMovableVectorLegs,
+  flatTextFieldAction,
   isAbsoluteHttpUrl,
   settingsEnvProviderPinRefusalCopy,
   validateWorkbenchSettingsPatch,
@@ -90,9 +91,16 @@ export async function GET() {
   // `.llm-wiki-config.json`; nothing else in that file contributes to it. That
   // is what keeps the sentence below true: this response carries no secret
   // material and no function of any, where a content-derived version was a value
-  // computed over `firecrawlApiKey`, `customApiKey` and `embeddingApiKey`. It
-  // also means a hand-edited config re-serialized in another key order is not a
-  // conflict with itself — nothing about the bytes is read at all.
+  // computed over `firecrawlApiKey`, `customApiKey` and `embeddingApiKey`.
+  //
+  // NOTHING ABOUT THE BYTES IS SERVED — which is not the same as nothing about
+  // them being read (DW-372). `saveConfig` also stores a DIGEST of the config
+  // under a second reserved key, and `readConfig` honours the stamp only while
+  // that digest still matches what it recomputes, so a store changed by anything
+  // other than a save answers the sentinel rather than a token that is no longer
+  // true of it. The digest is canonical over sorted keys, so a hand-edited config
+  // re-serialized in another key order is still not a conflict with itself. What
+  // CROSSES this boundary is unchanged: the opaque `s1:` token, never the digest.
   //
   // `read.etag` is deliberately NOT here and never is: R2's etag IS a hash of
   // those bytes, secrets included, so it stays an internal input to the
@@ -137,6 +145,43 @@ async function inboundEmail(): Promise<{ enabled: boolean; address: string }> {
   } catch {
     return { enabled: false, address: "" };
   }
+}
+
+/** The flat text fields of `AppConfig` this route merges through one applier. */
+type FlatTextKey =
+  | "model"
+  | "structuredKnowledgeModel"
+  | "ollamaBaseUrl"
+  | "embeddingModel";
+
+/**
+ * ONE decision, for all four flat text fields (DW-305/DW-328).
+ *
+ * `model`, `structuredKnowledgeModel`, `ollamaBaseUrl` and `embeddingModel` are
+ * the same kind of value — an optional trimmed string a blank body clears — and
+ * four hand-written branches asking it four times is four chances to drift.
+ * They are uniform here BY CONSTRUCTION rather than by four comments promising
+ * they are.
+ *
+ * The DECISION is {@link flatTextFieldAction}, in `workbench-settings.ts`; this
+ * is only the mutation that carries it out on a typed key. The split is what
+ * makes the decision testable: a Next `route.ts` may export nothing but its HTTP
+ * verbs, and the arm that matters most — a non-string leaving the stored field
+ * UNTOUCHED (DW-328) — is defence in depth behind each field's 400, so no
+ * request can reach it. The rule is executed directly by the node suite instead.
+ */
+function applyFlatTextField(
+  updated: AppConfig,
+  key: FlatTextKey,
+  value: unknown,
+): void {
+  const action = flatTextFieldAction(value);
+  if (action === "ignore") return;
+  if (action === "delete") {
+    delete updated[key];
+    return;
+  }
+  updated[key] = action.store;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,20 +449,13 @@ export async function PUT(request: Request) {
       }
     }
 
-    if (body.model !== undefined) {
-      // TRIMMED, like every neighbouring text field (DW-275). `getEffectiveProvider`
-      // and the LLM call sites read `cfg.model` back LITERALLY, so a padded id
-      // stored here is one the provider never recognises. The whitespace-only
-      // case cannot reach this branch — the non-empty check above already
-      // answered 400 — but the shape stays `embeddingModel`'s so the delete is
-      // decided identically wherever it does become reachable.
-      const trimmed = typeof body.model === "string" ? body.model.trim() : "";
-      if (body.model === null || trimmed.length === 0) {
-        delete updated.model;
-      } else {
-        updated.model = trimmed;
-      }
-    }
+    // TRIMMED, like every neighbouring text field (DW-275). `getEffectiveProvider`
+    // and the LLM call sites read `cfg.model` back LITERALLY, so a padded id
+    // stored here is one the provider never recognises. The whitespace-only case
+    // cannot reach the applier's clear arm — the non-empty check above already
+    // answered 400 — but the decision is `embeddingModel`'s own, so it stays
+    // identical wherever it does become reachable.
+    applyFlatTextField(updated, "model", body.model);
 
     if (body.structuredKnowledgeProvider !== undefined) {
       if (body.structuredKnowledgeProvider === null) {
@@ -427,64 +465,32 @@ export async function PUT(request: Request) {
       }
     }
 
-    if (body.structuredKnowledgeModel !== undefined) {
-      // The delete decided on `trimmed`, like `model`, `ollamaBaseUrl` and
-      // `embeddingModel` (DW-305). The literal `=== ""` arm this replaces was
-      // the one field out of four that asked a different question — and an
-      // unreachable one at that, since the non-empty check above already answers
-      // 400 for `""` and for whitespace. Uniform now, so the day the check above
-      // changes shape this branch does not become the odd behaviour out.
-      //
-      // The `typeof` ternary is belt-and-braces: a non-string was refused above
-      // and must never be what turns a malformed body into a delete.
-      const trimmed =
-        typeof body.structuredKnowledgeModel === "string"
-          ? body.structuredKnowledgeModel.trim()
-          : "";
-      if (body.structuredKnowledgeModel === null || trimmed.length === 0) {
-        delete updated.structuredKnowledgeModel;
-      } else {
-        updated.structuredKnowledgeModel = trimmed;
-      }
-    }
+    // The delete decided on the TRIMMED value, like `model`, `ollamaBaseUrl` and
+    // `embeddingModel` (DW-305). The literal `=== ""` arm this field once had was
+    // the one out of four that asked a different question — and an unreachable
+    // one at that, since the non-empty check above already answers 400 for `""`
+    // and for whitespace. Uniform now by construction, so the day the check above
+    // changes shape this field cannot become the odd behaviour out.
+    applyFlatTextField(
+      updated,
+      "structuredKnowledgeModel",
+      body.structuredKnowledgeModel,
+    );
 
-    if (body.ollamaBaseUrl !== undefined) {
-      // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` trims the other
-      // endpoints (DW-275). The reader trims too since DW-326, so a padded value
-      // no longer reaches `fetch` verbatim — but the store should not hold one
-      // either: a stored `" http://x "` and a stored `"http://x"` are the same
-      // endpoint, and only one of them is what the owner typed. Whitespace-only
-      // deletes the key, matching what `""` and `null` already do — the type
-      // check above refused a non-string, so the `typeof` ternary is
-      // belt-and-braces and must never be what turns a malformed body into a
-      // delete.
-      const trimmed =
-        typeof body.ollamaBaseUrl === "string" ? body.ollamaBaseUrl.trim() : "";
-      if (body.ollamaBaseUrl === null || trimmed.length === 0) {
-        delete updated.ollamaBaseUrl;
-      } else {
-        updated.ollamaBaseUrl = trimmed;
-      }
-    }
+    // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` trims the other
+    // endpoints (DW-275). The reader trims too since DW-326, so a padded value no
+    // longer reaches `fetch` verbatim — but the store should not hold one either:
+    // a stored `" http://x "` and a stored `"http://x"` are the same endpoint,
+    // and only one of them is what the owner typed. Whitespace-only deletes the
+    // key, matching what `""` and `null` already do.
+    applyFlatTextField(updated, "ollamaBaseUrl", body.ollamaBaseUrl);
 
-    if (body.embeddingModel !== undefined) {
-      // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` already trims
-      // for the Workbench path (DW-221). This is the last writer that could
-      // still store a padded id — one the vector gate accepts (it reads the
-      // value trimmed) and the embed resolver then drops for the provider
-      // default. Whitespace-only deletes the key rather than storing blanks.
-      //
-      // A non-string was refused with 400 above, so the `typeof` ternary is
-      // belt-and-braces: it must never be the thing that turns a malformed body
-      // into a delete.
-      const trimmed =
-        typeof body.embeddingModel === "string" ? body.embeddingModel.trim() : "";
-      if (body.embeddingModel === null || trimmed.length === 0) {
-        delete updated.embeddingModel;
-      } else {
-        updated.embeddingModel = trimmed;
-      }
-    }
+    // TRIMMED, exactly as `applyWorkbenchSettings`'s `setText` already trims for
+    // the Workbench path (DW-221). This is the last writer that could still store
+    // a padded id — one the vector gate accepts (it reads the value trimmed) and
+    // the embed resolver then drops for the provider default. Whitespace-only
+    // deletes the key rather than storing blanks.
+    applyFlatTextField(updated, "embeddingModel", body.embeddingModel);
 
     if (body.embeddingProvider !== undefined) {
       // CLEAR ON SWITCH, through the SHARED predicate (DW-69/DW-72). This flat

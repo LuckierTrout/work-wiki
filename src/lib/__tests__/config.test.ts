@@ -185,9 +185,46 @@ const LEGACY_VERSION_FILE = ".llm-wiki-config.version";
 /** The reserved key the token now rides under, INSIDE the config object. */
 const VERSION_KEY = "__settingsVersion";
 
-/** Read the stored object as it is on disk, token key and all. */
+/**
+ * The reserved key BINDING the token to the bytes it was stamped for (DW-372).
+ *
+ * Never recomputed here — the algorithm is `config.ts`'s and a second copy of it
+ * in the suite would only ever agree with itself. The cases below either match
+ * its SHAPE, or carry the digest the store already holds forward by hand.
+ */
+const DIGEST_KEY = "__settingsDigest";
+
+/** What a stored digest looks like: SHA-256, lowercase hex. */
+const A_DIGEST = expect.stringMatching(/^[0-9a-f]{64}$/) as unknown as string;
+
+/** Read the stored object as it is on disk, both reserved keys and all. */
 async function readRawStore(): Promise<Record<string, unknown>> {
   return JSON.parse(await fs.readFile(path.join(tmpDir, CONFIG_FILE), "utf-8"));
+}
+
+/**
+ * The digest the store currently holds, for a hand edit that carries it forward.
+ *
+ * CHECKED before it is handed back. Unchecked, a regression that stopped writing
+ * the digest would return `undefined`, every "carries the digest forward" case
+ * below would hand-write `undefined`, and the store would read unstamped — which
+ * is what several of those cases assert ANYWAY, for a completely different
+ * reason. The assertion here is what keeps them from agreeing with a bug.
+ */
+async function heldDigest(): Promise<string> {
+  const digest = (await readRawStore())[DIGEST_KEY];
+  expect(digest).toMatch(/^[0-9a-f]{64}$/);
+  return digest as string;
+}
+
+/** Write the config object BY HAND, behind the API, exactly as given. */
+async function handWriteStore(object: Record<string, unknown>): Promise<void> {
+  await fs.writeFile(
+    path.join(tmpDir, CONFIG_FILE),
+    JSON.stringify(object, null, 2) + "\n",
+    "utf-8",
+  );
+  _resetConfigCache();
 }
 
 /** `saveConfig`'s token, for a save the test expects to land. */
@@ -273,6 +310,7 @@ describe("readConfig", () => {
       provider: "openai",
       firecrawlApiKey: "fc-one",
       [VERSION_KEY]: healed,
+      [DIGEST_KEY]: A_DIGEST,
     });
     _resetConfigCache();
     expect(await readConfig()).toMatchObject({ status: "ok", version: healed });
@@ -379,26 +417,160 @@ describe("the settings precondition token", () => {
   });
 
   it("is derived from NOTHING in the config", async () => {
-    // Two stores differing only in a stored API key can hold the same token —
-    // which is only possible because no field contributes to it. A
-    // content-derived version could not do this, and that is the AD-23 leak.
-    const stamped = await stamp({ firecrawlApiKey: "fc-one" });
-    await fs.writeFile(
-      path.join(tmpDir, CONFIG_FILE),
-      JSON.stringify({ firecrawlApiKey: "fc-two", [VERSION_KEY]: stamped }, null, 2) + "\n",
-      "utf-8",
-    );
-    _resetConfigCache();
-    expect(await readConfig()).toMatchObject({
-      status: "ok",
-      config: { firecrawlApiKey: "fc-two" },
-      version: stamped,
-    });
+    // THE INVARIANT AD-23 ACTUALLY ASKS FOR: no stored value appears in, or can
+    // be recovered from, the token — because no field feeds `newConfigVersion`.
+    // A content-derived version could not say this, and that is the leak.
+    //
+    // This test used to prove it by hand-writing a DIFFERENT secret under a
+    // standing token and asserting the token stood. That demonstration is gone
+    // (DW-372): the token is now bound to the bytes, so changed content under a
+    // standing stamp reads as unstamped — see the DW-372 cases below. What it
+    // was pinning survives without it.
+    const first = await stamp({ firecrawlApiKey: "fc-one" });
+    expect(first).not.toContain("fc-one");
+    expect(first).toMatch(/^s1:[0-9a-f]{32}$/);
 
-    // …and no stored value appears anywhere in a token.
-    expect(stamped).not.toContain("fc-one");
+    // Two stores differing ONLY in a stored API key produce tokens with no
+    // relationship to either key — the same store re-saved produces a different
+    // one, and a different secret produces nothing predictable from it.
+    const read = await readConfig();
+    const second = await stamp(
+      { firecrawlApiKey: "fc-two" },
+      read.status === "ok" ? read.etag : null,
+    );
+    expect(second).not.toContain("fc-two");
+    expect(second).not.toBe(first);
+
     expect(newConfigVersion()).not.toBe(newConfigVersion());
     expect(newConfigVersion().startsWith("s1:")).toBe(true);
+  });
+
+  it("HONOURS a stored token for a store re-serialized in another key order", async () => {
+    // The benign hand edit (DW-372). `.llm-wiki-config.json` is hand-editable,
+    // and an editor that re-serialized it changed nothing an owner would call a
+    // change — so the digest is canonical over SORTED keys and the token stands.
+    const stamped = await stamp({ provider: "openai", model: "gpt-4o" });
+    const digest = await heldDigest();
+
+    await handWriteStore({
+      model: "gpt-4o",
+      provider: "openai",
+      [DIGEST_KEY]: digest,
+      [VERSION_KEY]: stamped,
+    });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "openai", model: "gpt-4o" },
+      version: stamped,
+    });
+  });
+
+  it("sorts NESTED objects too, not just the top level", async () => {
+    // The canonical serializer is RECURSIVE, and nothing else in this suite can
+    // see that: every other hand-edit case re-orders top-level keys only, so a
+    // top-level-only sort would leave them all green. `skillEnablement` is the
+    // one nested map a real store holds (`Record<string, boolean>`), so this is
+    // the shape an editor actually re-serializes.
+    const stamped = await stamp({
+      provider: "openai",
+      skillEnablement: { alpha: true, beta: false },
+    });
+    const digest = await heldDigest();
+
+    await handWriteStore({
+      skillEnablement: { beta: false, alpha: true },
+      provider: "openai",
+      [VERSION_KEY]: stamped,
+      [DIGEST_KEY]: digest,
+    });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "openai", skillEnablement: { alpha: true, beta: false } },
+      version: stamped,
+    });
+  });
+
+  it("REFUSES a stored token whose config changed underneath it (DW-372)", async () => {
+    // The rollback shape: a pre-DW-272 build round-trips `__settingsVersion`
+    // verbatim, so a save through it moved the bytes and left the stamp frozen —
+    // and a draft seeded before that save still matched and landed over it. A
+    // hand edit is the same shape. The digest no longer matches, so the read
+    // answers the sentinel rather than a token that is not true of these bytes.
+    const stamped = await stamp({ provider: "openai", model: "gpt-4o" });
+    const digest = await heldDigest();
+
+    await handWriteStore({
+      provider: "anthropic",
+      model: "claude",
+      [VERSION_KEY]: stamped,
+      [DIGEST_KEY]: digest,
+    });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      config: { provider: "anthropic", model: "claude" },
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+
+    // A stamp with NO digest beside it — every store the rollback build itself
+    // wrote — is the same answer, for the same reason.
+    await handWriteStore({ provider: "anthropic", [VERSION_KEY]: stamped });
+    expect(await readConfig()).toMatchObject({
+      status: "ok",
+      version: UNSTAMPED_CONFIG_VERSION,
+    });
+
+    // …and it is RECOVERABLE: the next save re-stamps, and the read after it
+    // honours the fresh token.
+    const read = await readConfig();
+    const healed = await stamp(
+      { provider: "anthropic" },
+      read.status === "ok" ? read.etag : null,
+    );
+    expect(healed).not.toBe(stamped);
+    _resetConfigCache();
+    expect(await readConfig()).toMatchObject({ status: "ok", version: healed });
+  });
+
+  it("WARNS ONCE that a store went unstamped underneath its token (DW-372)", async () => {
+    // The read degrades silently as far as any caller can tell — `loadConfig`
+    // answers the same config either way — so this line is the operator's only
+    // signal that the guard is off until the next save. It has to be emitted,
+    // and it has to be emitted ONCE: the state is standing, not an event, and it
+    // holds on every cache-miss read until someone saves. Every store that
+    // predates this change is in exactly that state, so a per-read line would
+    // repeat forever on an install that has not saved yet.
+    const stamped = await stamp({ provider: "openai", model: "gpt-4o" });
+    const digest = await heldDigest();
+    await handWriteStore({
+      provider: "anthropic",
+      model: "claude",
+      [VERSION_KEY]: stamped,
+      [DIGEST_KEY]: digest,
+    });
+
+    // Spied around the READS only — `saveConfig`/`handWriteStore` above are set-up,
+    // not the thing being measured. Directly rather than through `withWarnSpy`,
+    // which is synchronous by design and cannot wrap an awaited read.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      expect(await readConfig()).toMatchObject({
+        status: "ok",
+        version: UNSTAMPED_CONFIG_VERSION,
+      });
+      _resetConfigCache();
+      await readConfig();
+      _resetConfigCache();
+      await readConfig();
+
+      const lines = warn.mock.calls
+        .filter((call) => call[0] === "config")
+        .map((call) => String(call[1]));
+      expect(lines).toEqual([
+        "config changed underneath its version stamp; treating as unstamped",
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("lives INSIDE the config object, and is STRIPPED on the way out", async () => {
@@ -410,6 +582,9 @@ describe("the settings precondition token", () => {
     expect(await readRawStore()).toEqual({
       provider: "openai",
       [VERSION_KEY]: stamped,
+      // Its BINDING rides in the same object for the same reason (DW-372), and
+      // is stripped by the same door.
+      [DIGEST_KEY]: A_DIGEST,
     });
     expect(stamped).toMatch(/^s1:[0-9a-f]{32}$/);
 
@@ -452,27 +627,40 @@ describe("the settings precondition token", () => {
     const read = await readConfig();
     expect(read).toMatchObject({ status: "ok", etag: null });
     const version = await stamp({ provider: "openai" }, read.status === "ok" ? read.etag : null);
-    expect(await readRawStore()).toEqual({ provider: "openai", [VERSION_KEY]: version });
-  });
-
-  it("STRIPS a reserved key the caller handed in, from the store AND the cache", async () => {
-    // `readStoredConfig` strips it, so no ordinary caller carries one — but a
-    // `PUT` body naming the key reaches the merge. Whatever it says, the token
-    // written is the fresh one, and the cache is primed with the same object a
-    // re-read produces rather than one carrying a key that re-read removes.
-    const version = await stamp({
-      provider: "openai",
-      [VERSION_KEY]: "s1:cccccccccccccccccccccccccccccccc",
-    } as AppConfig);
-
-    expect(version).not.toBe("s1:cccccccccccccccccccccccccccccccc");
     expect(await readRawStore()).toEqual({
       provider: "openai",
       [VERSION_KEY]: version,
+      [DIGEST_KEY]: A_DIGEST,
     });
+  });
+
+  it("STRIPS BOTH reserved keys the caller handed in, from the store AND the cache", async () => {
+    // `readStoredConfig` strips them, so no ordinary caller carries one — but a
+    // `PUT` body naming either key reaches the merge. Whatever it says, the pair
+    // written is the freshly computed one, and the cache is primed with the same
+    // object a re-read produces rather than one carrying keys a re-read removes.
+    //
+    // The digest half matters as much as the token half (DW-372): a body that
+    // could plant a digest could bind a token of its choosing to bytes of its
+    // choosing, which is the guard's own state.
+    const version = await stamp({
+      provider: "openai",
+      [VERSION_KEY]: "s1:cccccccccccccccccccccccccccccccc",
+      [DIGEST_KEY]: "c".repeat(64),
+    } as AppConfig);
+
+    expect(version).not.toBe("s1:cccccccccccccccccccccccccccccccc");
+    const raw = await readRawStore();
+    expect(raw).toEqual({
+      provider: "openai",
+      [VERSION_KEY]: version,
+      [DIGEST_KEY]: A_DIGEST,
+    });
+    expect(raw[DIGEST_KEY]).not.toBe("c".repeat(64));
     expect(loadConfigSync()).toEqual({ provider: "openai" });
     _resetConfigCache();
     expect(await loadConfig()).toEqual({ provider: "openai" });
+    // …and the freshly written pair is self-consistent, so the token is honoured.
     expect(await readConfig()).toMatchObject({ status: "ok", version });
   });
 
@@ -482,9 +670,10 @@ describe("the settings precondition token", () => {
     // immediately after the owner selected one.
     await saveConfig({ provider: "openai", model: "gpt-4o" });
     expect(loadConfigSync()).toMatchObject({ provider: "openai", model: "gpt-4o" });
-    // …and NOT with the reserved key, so a sync reader sees the same shape an
+    // …and NOT with either reserved key, so a sync reader sees the same shape an
     // async one does.
     expect(loadConfigSync()).not.toHaveProperty(VERSION_KEY);
+    expect(loadConfigSync()).not.toHaveProperty(DIGEST_KEY);
   });
 });
 

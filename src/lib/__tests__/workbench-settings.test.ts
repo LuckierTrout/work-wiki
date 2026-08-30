@@ -84,6 +84,7 @@ import {
 } from "../providers";
 import {
   WRITE_CONFLICT_COPY,
+  WRITE_CONFLICT_STATUS,
   WRITE_PRECONDITION_REQUIRED_COPY,
   formatIfMatch,
   objectVersion,
@@ -119,6 +120,7 @@ import {
   embeddingProviderChanged,
   fetchWorkbenchSettings,
   flatMovableVectorLegs,
+  flatTextFieldAction,
   isWorkbenchSettingsPayload,
   saveWorkbenchSettings,
   settingsAnnouncement,
@@ -226,6 +228,32 @@ async function store(config: AppConfig): Promise<void> {
  * the one each of those tests is about.
  */
 const VERSION_KEY = "__settingsVersion";
+
+/**
+ * The reserved key BINDING the token to the bytes it was stamped for (DW-372).
+ *
+ * Spelled here so the hand-edit cases can carry the store's own digest forward:
+ * a hand edit that drops it, like one that drops the token, leaves an UNSTAMPED
+ * store — a different case again. Never recomputed here; {@link heldDigest}
+ * reads what the store already holds.
+ */
+const DIGEST_KEY = "__settingsDigest";
+
+/**
+ * The digest the store currently holds on disk — read BEFORE a hand edit.
+ *
+ * CHECKED before it is handed back. Unchecked, a regression that stopped writing
+ * the digest would return `undefined`, the "carries the digest forward" cases
+ * would hand-write `undefined`, and the store would read unstamped — which is
+ * what some of those cases assert anyway, for an entirely different reason.
+ */
+async function heldDigest(): Promise<string> {
+  const raw = JSON.parse(
+    await fs.readFile(path.join(tmpDir, ".llm-wiki-config.json"), "utf-8"),
+  ) as Record<string, unknown>;
+  expect(raw[DIGEST_KEY]).toMatch(/^[0-9a-f]{64}$/);
+  return raw[DIGEST_KEY] as string;
+}
 
 /** Write the config object BY HAND, behind the API, exactly as given. */
 async function handWrite(object: Record<string, unknown>): Promise<void> {
@@ -1894,6 +1922,82 @@ describe("validateWorkbenchSettingsPatch", () => {
 });
 
 // ---------------------------------------------------------------------------
+// What a flat text field of a settings PUT body means (DW-305/DW-328)
+// ---------------------------------------------------------------------------
+
+describe("flatTextFieldAction", () => {
+  it("ignores an ABSENT field", () => {
+    // Not in the body is not a request about the field: `PUT` is a patch here,
+    // and a save from `/settings` carries nothing the Workbench pane owns.
+    expect(flatTextFieldAction(undefined)).toBe("ignore");
+  });
+
+  it("CLEARS on `null` and on every blank string", () => {
+    // The three blank forms an owner can produce — cleared box, spaces, an
+    // explicit `null` from an API caller — all mean the same thing: drop the key
+    // rather than store a blank the readers would have to special-case.
+    for (const blank of [null, "", "   ", "\t", "\n  \t"]) {
+      expect(flatTextFieldAction(blank)).toBe("delete");
+    }
+  });
+
+  it("STORES a string TRIMMED", () => {
+    // Every reader compares the stored value literally, so a padded id is one
+    // nothing recognises — and `" http://x "` and `"http://x"` are the same
+    // endpoint, only one of which is what the owner typed.
+    expect(flatTextFieldAction("gpt-4o")).toEqual({ store: "gpt-4o" });
+    expect(flatTextFieldAction("  gpt-4o  ")).toEqual({ store: "gpt-4o" });
+    expect(flatTextFieldAction("\n http://x:11434 \t")).toEqual({
+      store: "http://x:11434",
+    });
+  });
+
+  it("LEAVES THE FIELD ALONE for a non-string, rather than deleting it (DW-328)", () => {
+    // THE ARM NO REQUEST CAN REACH, and the reason this decision is a function
+    // in a client-safe module rather than a branch inside `route.ts`: each of
+    // the four fields answers 400 for a non-string well above the merge, so the
+    // only way to execute this is to call it.
+    //
+    // It used to resolve every one of these to `""` and then read `""` as the
+    // CLEAR — so the belt-and-braces fallback pointed AT erasing a field the
+    // client never asked to clear. `ignore` is the inert answer: a body the door
+    // should have refused now changes nothing.
+    for (const malformed of [
+      42,
+      0,
+      true,
+      false,
+      {},
+      [],
+      ["gpt-4o"],
+      { toString: () => "gpt-4o" },
+      Number.NaN,
+    ]) {
+      expect(flatTextFieldAction(malformed)).toBe("ignore");
+    }
+  });
+
+  it("answers with EXACTLY THREE shapes, so a caller cannot forget an arm", () => {
+    // `ignore` and `delete` are the two string literals; anything else is the
+    // store instruction carrying the value. A fourth shape would be a fourth
+    // branch every call site would have to grow.
+    for (const value of [undefined, null, "", "  ", "x", 42, {}, []]) {
+      const action = flatTextFieldAction(value);
+      const shape =
+        action === "ignore" || action === "delete" ? action : "store";
+      expect(["ignore", "delete", "store"]).toContain(shape);
+      if (shape === "store") {
+        expect(typeof (action as { store: string }).store).toBe("string");
+        expect((action as { store: string }).store.trim()).toBe(
+          (action as { store: string }).store,
+        );
+        expect((action as { store: string }).store.length).toBeGreaterThan(0);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Scoping the vector refusal to legs the requesting surface can move (DW-303)
 // ---------------------------------------------------------------------------
 
@@ -3552,68 +3656,111 @@ describe("GET /api/settings", () => {
     }
     expect(firstText).not.toContain(objectVersion({ provider: "openai", ...secrets }));
 
-    // Hand-stamp a second store with the SAME token but different keys: the
-    // served version is identical, which is only possible because no field
-    // contributes to it.
+    // A save that changed NOTHING still rotates the served version, and a save
+    // that changed only a SECRET serves a version bearing no trace of it. A
+    // content-derived version could do neither — it moved only when content
+    // moved, and it moved BECAUSE the secret did. That is the whole difference.
     const held = await storedVersion();
-    await handWrite({
-      provider: "openai",
+    await store({ provider: "openai", ...secrets });
+    expect(await storedVersion()).not.toBe(held);
+
+    const swapped = {
       firecrawlApiKey: "fc-secret-two",
       customApiKey: "sk-custom-two",
       embeddingApiKey: "sk-embed-two",
-      [VERSION_KEY]: held,
-    });
+    };
+    await store({ provider: "openai", ...swapped });
     const second = (await (await GET()).json()) as { version: string };
-    expect(second.version).toBe(held);
+    expect(second.version).toMatch(/^s1:[0-9a-f]{32}$/);
+    const secondText = JSON.stringify(second);
+    for (const secret of Object.values(swapped)) {
+      expect(secondText).not.toContain(secret);
+    }
+    expect(secondText).not.toContain(objectVersion({ provider: "openai", ...swapped }));
   });
 
-  it("is BLIND to any config change that did not go through `saveConfig`", async () => {
-    // The real property of the stamp scheme, stated as it is rather than as the
-    // narrower claim the derived version used to make. The version tracks
-    // SAVES, not bytes, so anything that edits `.llm-wiki-config.json` behind
-    // the API is invisible to the guard.
+  it("honours the stamp only while the BYTES it was stamped for are still there", async () => {
+    // What the stamp promises, end to end at `GET` (DW-372). The token is
+    // rotated by SAVES, but it is BOUND to the config it was stamped over, so a
+    // change that did not go through `saveConfig` is not invisible to the guard —
+    // it reads as unstamped.
     //
     // The BENIGN case is a key re-order: `.llm-wiki-config.json` is
     // hand-editable, and a text editor that re-serialized it must not be
-    // reported as a change nobody made. Under the stamp that is structural
-    // rather than earned by sorting keys.
+    // reported as a change nobody made. The digest is canonical over sorted
+    // keys, so the token stands — the same answer the scheme always gave here,
+    // now earned rather than structural.
     await store({ provider: "openai", model: "gpt-4o" });
     const { GET } = await import("@/app/api/settings/route");
     const first = (await (await GET()).json()) as { version: string };
+    const digest = await heldDigest();
 
-    await handWrite({ model: "gpt-4o", provider: "openai", [VERSION_KEY]: first.version });
-    expect(((await (await GET()).json()) as { version: string }).version).toBe(
-      first.version,
-    );
-
-    // The RESIDUAL is the same fact with different bytes: a hand edit that
-    // actually CHANGES a value also leaves the version standing, so a draft
-    // seeded before it saves straight over it. The derived version moved here
-    // and this one does not — that is the cost paid to get the three API keys
-    // off the boundary (AD-23), and it is recorded rather than closed. See
-    // `UNSTAMPED_CONFIG_VERSION` in `config.ts`.
     await handWrite({
-      provider: "anthropic",
-      model: "claude",
+      model: "gpt-4o",
+      provider: "openai",
+      [DIGEST_KEY]: digest,
       [VERSION_KEY]: first.version,
     });
     expect(((await (await GET()).json()) as { version: string }).version).toBe(
       first.version,
     );
 
-    // A hand edit that DROPS the token is the one this scheme does see, and it
-    // errs the safe way: the store reads as unstamped, so a draft holding a real
-    // token is refused rather than allowed to land over it.
-    await handWrite({ provider: "anthropic", model: "claude" });
+    // A hand edit that actually CHANGES a value is the case that moved. It used
+    // to leave the version standing — so a draft seeded before it saved straight
+    // over it — and that is exactly the rollback shape DW-372 names: a
+    // pre-DW-272 build round-trips the token verbatim while the bytes move. The
+    // stored digest no longer matches, so the store now reads as UNSTAMPED and
+    // the stale draft is refused instead.
+    await handWrite({
+      provider: "anthropic",
+      model: "claude",
+      [VERSION_KEY]: first.version,
+      [DIGEST_KEY]: digest,
+    });
     expect(((await (await GET()).json()) as { version: string }).version).toBe(
       UNSTAMPED_CONFIG_VERSION,
     );
 
-    // …and it moves on every save THROUGH the API, which is the whole set of
-    // writes the guard is defined over.
+    // A hand edit that DROPS the token — and one that drops only the digest,
+    // which is every store a pre-DW-272 build wrote — errs the same safe way.
+    await handWrite({ provider: "anthropic", model: "claude" });
+    expect(((await (await GET()).json()) as { version: string }).version).toBe(
+      UNSTAMPED_CONFIG_VERSION,
+    );
+    await handWrite({
+      provider: "anthropic",
+      model: "claude",
+      [VERSION_KEY]: first.version,
+    });
+    expect(((await (await GET()).json()) as { version: string }).version).toBe(
+      UNSTAMPED_CONFIG_VERSION,
+    );
+
+    // …and it is RECOVERABLE: the next save through the API re-stamps, and the
+    // read after it honours the fresh token.
     await store({ provider: "anthropic", model: "gpt-4o" });
     const last = (await (await GET()).json()) as { version: string };
+    expect(last.version).toMatch(/^s1:[0-9a-f]{32}$/);
     expect(last.version).not.toBe(first.version);
+    expect(last.version).not.toBe(UNSTAMPED_CONFIG_VERSION);
+  });
+
+  it("serves NO digest, and no function of the stored bytes, on the boundary", async () => {
+    // The digest exists to be CHECKED, never SERVED (AD-23 / DW-372). It is a
+    // function of every byte in the store, `firecrawlApiKey` included, so if it
+    // ever crossed this boundary it would be the very leak the opaque stamp was
+    // introduced to stop.
+    await store({ provider: "openai", firecrawlApiKey: "fc-secret" });
+    const { GET } = await import("@/app/api/settings/route");
+    const text = await (await GET()).text();
+
+    expect(text).not.toContain(await heldDigest());
+    expect(text).not.toContain(DIGEST_KEY);
+    expect(text).not.toContain(VERSION_KEY);
+    expect(text).not.toContain("fc-secret");
+    expect(((await (await GET()).json()) as { version: string }).version).toMatch(
+      /^s1:[0-9a-f]{32}$/,
+    );
   });
 
   it("serves the sentinel for a config carrying no embedded token", async () => {
@@ -4236,35 +4383,59 @@ describe("PUT /api/settings", () => {
     await store({ provider: "openai", model: "gpt-4o" });
     const { GET, PUT } = await import("@/app/api/settings/route");
     const seeded = ((await (await GET()).json()) as { version: string }).version;
-    await handWrite({ model: "gpt-4o", provider: "openai", [VERSION_KEY]: seeded });
+    // The digest is carried forward with the token, which is what a text editor
+    // rewriting the file does — it re-serializes the whole object, both reserved
+    // keys included. And it still matches, because the digest is canonical over
+    // sorted keys and nothing but the order moved.
+    const digest = await heldDigest();
+    await handWrite({
+      model: "gpt-4o",
+      provider: "openai",
+      [DIGEST_KEY]: digest,
+      [VERSION_KEY]: seeded,
+    });
 
     const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, seeded));
 
     expect(response.status).toBe(200);
   });
 
-  it("LANDS over a hand edit it never saw — the residual, pinned", async () => {
-    // The same blindness as the row above, with the sign flipped: the guard is
-    // defined over saves, so a hand edit between the seed and the save is not a
-    // conflict it can see, and the stale draft wins. Pinned so the trade is a
-    // recorded behaviour rather than a surprise — the derived version refused
-    // this, and refusing it is what cost the boundary its secret discipline.
+  it("REFUSES a save over a hand edit that CHANGED a value (DW-372)", async () => {
+    // The sign flipped on the row above, and the behaviour DW-372 bought. The
+    // guard is still defined over saves, but the token is bound to the bytes it
+    // was stamped for — so a hand edit between the seed and the save unstamps
+    // the store, and the stale draft is refused rather than landing over content
+    // no one checked. The derived version refused this too; the difference is
+    // that the value on the boundary is still an opaque token (AD-23).
     await store({ provider: "openai" });
     const { GET, PUT } = await import("@/app/api/settings/route");
     const seeded = ((await (await GET()).json()) as { version: string }).version;
+    const digest = await heldDigest();
 
-    // The token is PRESERVED, which is what a text editor rewriting the file
-    // does. Dropping it would leave an unstamped store, and the draft below
-    // would be refused — a different case, pinned in the GET suite above.
-    await handWrite({ provider: "anthropic", [VERSION_KEY]: seeded });
+    // Both reserved keys PRESERVED — the rollback shape, where a build that
+    // knows nothing of either key round-trips them verbatim while the config
+    // moves underneath.
+    await handWrite({
+      provider: "anthropic",
+      [VERSION_KEY]: seeded,
+      [DIGEST_KEY]: digest,
+    });
 
     const response = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, seeded));
 
-    expect(response.status).toBe(200);
-    // The hand edit survives only because it is in the merge BASE this request
-    // read — nothing about it was checked, and a save that had touched
-    // `provider` would have overwritten it silently.
+    expect(response.status).toBe(WRITE_CONFLICT_STATUS);
+    // A refused save writes NOTHING: the hand edit stands exactly as made.
+    expect(await stored()).toEqual({ provider: "anthropic" });
+
+    // …and the owner has a way through: a draft re-seeded from `GET` holds the
+    // sentinel, which is what the unstamped store now serves, so the next save
+    // lands and re-stamps.
+    const reseeded = ((await (await GET()).json()) as { version: string }).version;
+    expect(reseeded).toBe(UNSTAMPED_CONFIG_VERSION);
+    const retry = await PUT(await put({ workbench: { chatModel: "gpt-4o" } }, reseeded));
+    expect(retry.status).toBe(200);
     expect(await stored()).toEqual({ provider: "anthropic", chatModel: "gpt-4o" });
+    expect(await storedVersion()).toMatch(/^s1:[0-9a-f]{32}$/);
   });
 
   it("leaves NOTHING behind when the one write fails, so the next save lands", async () => {

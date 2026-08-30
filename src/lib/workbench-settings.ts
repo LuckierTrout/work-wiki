@@ -1839,6 +1839,47 @@ const VECTOR_LEG_CONTROL = {
 } satisfies Record<VectorSearchLegField, VectorSearchControl>;
 
 /**
+ * What one FLAT TEXT FIELD of a settings `PUT` body means for the store
+ * (DW-305/DW-328).
+ *
+ * `model`, `structuredKnowledgeModel`, `ollamaBaseUrl` and `embeddingModel` are
+ * the same kind of value — an optional trimmed string a blank body clears — and
+ * the route asks this question about all four. It is ONE function rather than
+ * four branches because four hand-written copies are four chances to drift, and
+ * DW-305 was about exactly that drift.
+ *
+ * It lives HERE rather than in `route.ts` for the reason this module's header
+ * gives: a Next `route.ts` may export nothing but its HTTP verbs, so a decision
+ * typed into it can only ever be reached through a request — and the arm that
+ * matters most is the one no request can reach.
+ *
+ * - `undefined` — the field is not in the body: `ignore`, nothing happens to it.
+ * - `null`, `""`, whitespace-only — `delete`, a CLEAR.
+ * - any other string — `{ store }`, TRIMMED. Every reader (`getEffectiveProvider`,
+ *   the LLM call sites, the embed resolver, `getOllamaBaseUrl`) compares the
+ *   stored value literally, so a padded id is one nothing recognises.
+ * - ANY OTHER TYPE — `ignore`: the stored field is LEFT EXACTLY AS IT WAS.
+ *
+ * That last arm is the one DW-328 changed. Each field's type check answers 400
+ * for a non-string well above the merge, so nothing malformed reaches here; this
+ * is defence in depth BEHIND those doors, never a replacement for them. But the
+ * shape it used to have — `typeof x === "string" ? x.trim() : ""` and then
+ * `"" → delete` — pointed the fallback AT erasing a field the client never asked
+ * to clear, which is the worst possible reading of a body nobody meant. Leaving
+ * the field untouched is the only inert answer: a request the door should have
+ * refused now changes nothing rather than deleting something.
+ */
+export type FlatTextFieldAction = "ignore" | "delete" | { store: string };
+
+export function flatTextFieldAction(value: unknown): FlatTextFieldAction {
+  if (value === undefined) return "ignore";
+  if (value === null) return "delete";
+  if (typeof value !== "string") return "ignore";
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? "delete" : { store: trimmed };
+}
+
+/**
  * Which vector legs a LEGACY FLAT body could have moved — the legs a refusal
  * aimed at that surface is allowed to name (DW-303).
  *
