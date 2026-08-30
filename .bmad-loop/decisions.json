@@ -278,6 +278,15 @@
     "label": "Implement the kernel tail",
     "resolution": ""
   },
+  "DW-536": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give `/api/assets/[...path]` the same `hiddenSlugs`/`rawPathAllowed` gate the Workbench doors use, derived for the request's principal, keeping the no-auth path only for slugs that gate admits. Pin that an agent-scoped page's asset is refused unauthenticated and that an ordinary public page's asset still serves with no session.",
+    "key": "1",
+    "label": "Align the assets route on hiddenSlugs",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
