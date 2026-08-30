@@ -23,6 +23,7 @@ import path from "node:path";
 import { READ_ONLY_REFUSAL } from "../read-only";
 import {
   WIKI_CREATE_READ_ONLY_COPY,
+  WIKI_READ_ONLY_COPY,
   WIKI_TEMPLATE_READ_ONLY_COPY,
 } from "../workbench-tree";
 import { DELETE_PAGE_READ_ONLY_COPY } from "@/components/DeletePageButton";
@@ -257,6 +258,61 @@ describe("client refusal copy mirrors the server's", () => {
     expect(await routeSource("wikis/current/route.ts")).toContain(
       servedAs(READ_ONLY_REFUSAL.wikiSwitch),
     );
+  });
+
+  it("the switcher's sentence is a deliberate UMBRELLA over four doors", () => {
+    // DW-302. `WIKI_READ_ONLY_COPY` is the one client constant on this surface
+    // that mirrors no single door: it is rendered once, beside a left column
+    // where the switcher, New Wiki, Rename and Delete are ALL dimmed at the
+    // same time, and four sentences stacked there would say the same fact four
+    // ways. So it names the four verbs in one line instead, and the difference
+    // is recorded here rather than left to look like the re-ingest bug above.
+    //
+    // Wider than each of the four server sentences, not narrower — the
+    // opposite direction from Revert and Create page — which is why "differs"
+    // is asserted against all four rather than a single kernel sentence.
+    // THE FOUR DOORS, not merely four constants. Each key below is pinned
+    // against the literal its route actually serves by a sibling case in this
+    // file — "the wiki-lifecycle kernel sentences equal the literals their
+    // routes serve" (create, template, rename) and "the wiki delete/switch
+    // kernel sentences equal the literals their routes serve" (delete, switch)
+    // — so a divergence recorded here is a divergence from what the owner
+    // would have met in the 403, not from a constant that drifted off its door
+    // unnoticed. That is why this case reads no route source of its own.
+    for (const sentence of [
+      READ_ONLY_REFUSAL.wikiCreate,
+      READ_ONLY_REFUSAL.wikiSwitch,
+      READ_ONLY_REFUSAL.wikiRename,
+      READ_ONLY_REFUSAL.wikiDelete,
+    ]) {
+      expect(WIKI_READ_ONLY_COPY).not.toBe(sentence);
+      // Each door's own sentence names the deployment state…
+      expect(sentence).toContain("read-only");
+    }
+    // …and so does the one sentence standing in for all four, which is the
+    // property that makes any of them actionable.
+    expect(WIKI_READ_ONLY_COPY).toContain("read-only");
+
+    // The umbrella only earns the divergence if it actually covers all four —
+    // a reword that dropped a verb would leave one dimmed control unexplained
+    // while every other assertion here stayed green. WORD-BOUNDED: a bare
+    // substring check would accept "recreated" for "created", which is how a
+    // reword sneaks past a test that looks like it is reading the sentence.
+    for (const verb of ["created", "switched", "renamed", "deleted"]) {
+      expect(WIKI_READ_ONLY_COPY, verb).toMatch(new RegExp(`\\b${verb}\\b`));
+    }
+
+    // And distinct from the two NARROWER constants the same surface exports:
+    // `Change template` and the canvas's `Create Wiki` each mirror their own
+    // door character for character, and one string reused across the three is
+    // how a re-point goes unnoticed.
+    expect(WIKI_READ_ONLY_COPY).not.toBe(WIKI_CREATE_READ_ONLY_COPY);
+    expect(WIKI_READ_ONLY_COPY).not.toBe(WIKI_TEMPLATE_READ_ONLY_COPY);
+    // Templates are NOT one of the four verbs, which is the reason
+    // `WIKI_TEMPLATE_READ_ONLY_COPY` has to exist at all. Case-folded, or the
+    // check would pass against an umbrella that had quietly grown a
+    // "Templates cannot be applied" clause.
+    expect(WIKI_READ_ONLY_COPY.toLowerCase()).not.toContain("template");
   });
 
   it("the orphan sweep's sentence mirrors no route, and says so", async () => {

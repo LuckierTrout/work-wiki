@@ -2191,7 +2191,9 @@ source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
 location: src/lib/__tests__/read-only-copy-parity.test.ts
 severity: low
 reason: This change added parity cases for `WIKI_TEMPLATE_READ_ONLY_COPY`, `WIKI_CREATE_READ_ONLY_COPY` and `WORKSPACE_PURPOSE_READ_ONLY_COPY`, and the second of those proves `POST /api/wikis` answers "Wikis cannot be created while this deployment is read-only." — so the switcher's four-verb `WIKI_READ_ONLY_COPY` (src/lib/workbench-tree.ts:120) does not match any single door it sits in front of. That is defensible (it covers four routes at once, like the Revert narrowing already recorded), but it is unrecorded: the suite's own header says every client constant is compared "CHARACTER-IDENTICAL where the door answers its own refusal, and explicitly recorded where it deliberately does not", and this one is neither. Pre-existing (DW-37 shipped it unpinned).
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-kernel-writer-coverage
+resolution-undo: 7babae5c1f979f9f9a279840f690171a0608302a7a14bc08597a783af1ca2015 2026-08-30 7374617475733a206f70656e
 
 ### DW-303: The flat branch can now be refused for vector legs no flat field can satisfy (endpoint, API key, Workers AI binding), and the legacy /settings page has no control for any of them.
 
@@ -2283,7 +2285,9 @@ source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
 location: src/lib/__tests__/read-only-door-coverage.test.ts:36
 severity: low
 reason: `KERNEL_WRITERS` and `WRITER_EXPORTS` do not name `createWiki`, `applyScenarioTemplate`, `renameWiki` or `saveWorkspaceProfile`, and the file's staleness guard re-derives only from `KERNEL_WRITERS`. A future `route.ts` importing `createWiki` with neither treatment would serve the refusal as a 500 and the scan would not notice. Every route that reaches them today gates first, so nothing is broken now. Deliberately not fixed here: widening that registry re-derives a route-treatment map across the whole app.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-kernel-writer-coverage
+resolution-undo: 7babae5c1f979f9f9a279840f690171a0608302a7a14bc08597a783af1ca2015 2026-08-30 7374617475733a206f70656e
 
 ### DW-316: The three wiki lifecycle routes classify a `ReadOnlyError` as 500 rather than mapping it to 403.
 origin: spec-deferred 56ea98b9ffae
@@ -2301,7 +2305,9 @@ source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
 location: src/lib/wikis.ts (putWikiArtifact); src/lib/workspace-profile.ts (putWorkspaceProfile)
 severity: low
 reason: `putWikiArtifact`'s `assertWritable` is shadowed by `writeWikiArtifact`'s gate and by the three lifecycle entry gates; `putWorkspaceProfile`'s is shadowed by `saveWorkspaceProfile`'s. Deleting either leaves the whole suite green, so they are pinned by inspection only and could be removed as dead code by a future reader. A direct call with a held token under `YOPEDIA_READONLY=1` would pin each.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-kernel-writer-coverage
+resolution-undo: 7babae5c1f979f9f9a279840f690171a0608302a7a14bc08597a783af1ca2015 2026-08-30 7374617475733a206f70656e
 
 ### DW-318: Two sibling wiki doors own inline read-only literals with no constant and no parity assertion, and `wikiRename` has no client counterpart.
 origin: spec-deferred ad2cf2a1e9d1
@@ -4938,4 +4944,12 @@ location: src/app/api/names-terms/route.ts:57
 source_spec: `spec-dw-316-319-526-read-only-lifecycle-route-status.md`
 severity: low
 reason: Both catches end `{ status: error instanceof NamesTermConflictError ? 409 : 400 }`, so an EACCES, a full disk or a lock timeout inside `createNamesTerm` / `updateNamesTerm` is reported as the caller's bad input, the exact reasoning DW-319 used against `PUT /api/workspace-profile`. Sibling `DELETE /api/names-terms/[id]` already answers 500 for the same class, so the one store states two verdicts about itself. Pre-existing and untouched by this pass, which only prepended the 403 branch; no DW entry names it.
+status: open
+
+### DW-642: The door-coverage registry still omits every gated store writer outside the wiki-lifecycle family, so a future route importing one untreated stays invisible to the scan.
+origin: spec-deferred e64fee3b9328
+location: src/lib/__tests__/read-only-door-coverage.test.ts:36
+source_spec: `spec-dw-302-315-317-read-only-kernel-writer-coverage.md`
+severity: low
+reason: `KERNEL_WRITERS` in `read-only-door-coverage.test.ts` now names the page/artifact, wiki-lifecycle and workspace-profile writers. Still absent and still carrying `assertWritable`: `createNamesTerm`, `updateNamesTerm`, `deleteNamesTerm` (`src/lib/names-terms.ts:322,354,378`), `createResearchProject` / `deleteResearchProject` (`src/lib/research-projects.ts`), `saveEmailIngestConfig` (`src/lib/email-ingest.ts:107`), plus `lifecycle.ts`'s `pruneStaleIndexEntry` (:1118) and `deleteWikiPageWhileLocked` (:1205). Their doors are enumerated by name in `read-only-copy-parity.test.ts` rather than derived, so nothing is broken today — the gap is prospective, the same one DW-315 named for the wiki-lifecycle writers. The new `KERNEL_WRITERS` docblock records the omission explicitly, so this is a recorded scope boundary rather than an oversight. Out of this bundle's intent, which names only the wiki-lifecycle and workspace-profile writers.
 status: open

@@ -13,7 +13,7 @@
  * refresh counter) land before throwing, would satisfy `rejects.toThrow` and
  * still have mutated the deployment.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -32,7 +32,13 @@ import {
   sweepOrphanWikiDirectories,
   writeWikiArtifact,
 } from "../wikis";
-import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile";
+import {
+  getWorkspaceProfile,
+  putWorkspaceProfile,
+  saveWorkspaceProfile,
+} from "../workspace-profile";
+import { withWikiLock } from "../wiki-lock";
+import { logger } from "../logger";
 import { listWikiArtifactRevisions } from "../wiki-artifact-revisions";
 import { readDataVersion } from "../data-version";
 import { READ_ONLY_REFUSAL, ReadOnlyError, isReadOnlyError } from "../read-only";
@@ -286,11 +292,18 @@ describe("the kernel writers refuse on a read-only deployment", () => {
  * `applyScenarioTemplate`, `renameWiki`, `saveWorkspaceProfile`, `deleteWiki`,
  * `setCurrentWiki` and `sweepOrphanWikiDirectories`.
  *
- * Not kernel writers in the DW-188 sense — `read-only-door-coverage.test.ts`
- * keeps `KERNEL_WRITERS` at four on purpose — but the same exposure: they are
- * exported library functions that write bytes, and a DIRECT LIBRARY CALLER (a
- * CLI command, a future MCP tool, a maintenance script) reaches them with no
- * route in front. Today the API routes are their only callers and every one of
+ * IS `renameWiki` A KERNEL WRITER? The two files that could disagree now give
+ * one answer. `read-only-door-coverage.test.ts` SCANS for these — DW-315
+ * widened its `KERNEL_WRITERS` roll past the original four to include them, so
+ * a future route importing one untreated fails there. What the DW-188 label
+ * still marks off is narrower and unchanged: the four page/artifact writers
+ * that answer `pageWrite`, `pageDelete`, `pageMetadata` and `artifactEdit`.
+ * These carry sentences of their OWN instead.
+ *
+ * What they share with the four is the exposure: they are exported library
+ * functions that write bytes, and a DIRECT LIBRARY CALLER (a CLI command, a
+ * future MCP tool, a maintenance script) reaches them with no route in
+ * front. Today the API routes are their only callers and every one of
  * those gates first, so what these cases pin is the direct call.
  *
  * THE FAMILY IS COMPLETE NOW, which this note used to say it was not. DW-266
@@ -499,6 +512,151 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
     // The delete already swept, so the standalone sweep has nothing left —
     // which is the answer it should give, not a throw.
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+  });
+});
+
+/**
+ * THE TWO UNLOCKED BYTE PUTTERS, reached with the entry gate already passed
+ * (DW-317).
+ *
+ * `putWikiArtifact` (`wikis.ts`) and `putWorkspaceProfile`
+ * (`workspace-profile.ts`) each open with
+ * `assertWritable(READ_ONLY_REFUSAL.wikiFileWrite)` — the backstop their
+ * docstrings describe, for a future caller inside `wikis.ts` or a direct
+ * library caller already holding the lock that forgets to gate for itself.
+ * Every case above reaches them through an entry point that refuses FIRST, so
+ * deleting either line leaves the whole suite green and the backstop is pinned
+ * by inspection only.
+ *
+ * So both cases below get PAST the entry gate before the flag is set, and both
+ * assert BYTES rather than a rejection — `rejects.toThrow` would be satisfied
+ * by whichever gate happened to fire, which is exactly the shadowing these two
+ * cases exist to see through. Nothing is mocked: a stubbed `assertWritable`
+ * would prove nothing about the real one.
+ */
+describe("the unlocked byte putters refuse with the entry gate already passed", () => {
+  it("putWikiArtifact — a flag that flips mid-rename leaves purpose.md's heading", async () => {
+    const wiki = await createWiki(OWNER, { name: "Original", scenario: "research" });
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Original");
+    const registryBefore = await getWikiRegistry(OWNER);
+
+    // `retitlePurpose`'s catch swallows ANY error, so "the heading did not
+    // move" is equally what a failed read or a broken storage adapter looks
+    // like. The `logger.warn` it hands the swallowed error to is the only place
+    // that error survives, so it is what tells "the gate refused" apart from
+    // "something else broke" — the sibling case gets the same sharpness for
+    // free by pinning the sentence through `expectRefusal`.
+    //
+    // SPIED, NOT STUBBED: `vi.spyOn` records the call and delegates to the real
+    // logger, and nothing about the gate under test is replaced.
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      // Hold `wikis:<tenant>` from the test. `renameWiki` runs its own gate
+      // SYNCHRONOUSLY — while the deployment is still writable — and then
+      // queues on this lock, so the flag flips before its locked body ever
+      // runs. That is the real mid-request flip the codebase already recognises
+      // (DW-319), not a contrivance: `putWikiArtifact` is module-private on
+      // purpose and there is no direct call to make.
+      let pending!: ReturnType<typeof renameWiki>;
+      await withWikiLock(OWNER, async () => {
+        pending = renameWiki(OWNER, wiki.id, "Renamed");
+        process.env.YOPEDIA_READONLY = "1";
+      });
+
+      // The rename RESOLVES. `retitlePurpose` is fail-soft by design, so the
+      // `ReadOnlyError` the putter raises inside it is warned about and
+      // swallowed — which is precisely why the heading, and not a rejection, is
+      // the only observable this gate leaves on disk.
+      const renamed = await pending;
+      expect(renamed?.name).toBe("Renamed");
+      // …and the registry write DID land, so the case is not passing against a
+      // rename that never got past the lock at all.
+      expect((await getWikiRegistry(OWNER)).wikis.map((w) => w.name)).toEqual([
+        "Renamed",
+      ]);
+      expect(registryBefore.wikis.map((w) => w.name)).toEqual(["Original"]);
+
+      // THE assertion this case exists for. Gate present => the seeded heading
+      // stands. Gate deleted from `putWikiArtifact` => it reads `# Renamed`,
+      // and nothing else in the repo would have said so.
+      const purpose = await readWikiArtifact(OWNER, wiki.id, "purpose.md");
+      expect(purpose).toContain("# Original");
+      expect(purpose).not.toContain("# Renamed");
+
+      // …and the heading stood because THE REFUSAL is what `retitlePurpose`
+      // caught. `logger.warn(tag, msg, ...args)` puts the swallowed error at
+      // index 2; exactly one such warning, carrying the putter's own sentence.
+      const swallowed = warn.mock.calls.filter((call) => isReadOnlyError(call[2]));
+      expect(
+        swallowed.map((call) => (call[2] as Error).message),
+        "the error retitlePurpose swallowed",
+      ).toEqual([READ_ONLY_REFUSAL.wikiFileWrite]);
+      expect(swallowed[0][0]).toBe("wikis");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("putWorkspaceProfile — a direct call under a LIVE token is refused, bytes intact", async () => {
+    const wiki = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
+    const seeded = await getWorkspaceProfile(OWNER, wiki.id);
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    // `saveWorkspaceProfile`'s gate is not in the way here — this is the shape a
+    // direct library caller inside the lock takes, and the only one where the
+    // putter's OWN gate is what answers. The token is minted by `withWikiLock`,
+    // the one sanctioned spelling, so `assertWikiLockHeld` passes and cannot be
+    // the gate being observed; `expectRefusal` pins the sentence, not just the
+    // fact of a throw, for the same reason.
+    await withWikiLock(OWNER, async (held) => {
+      await expectRefusal(
+        () =>
+          putWorkspaceProfile(held, OWNER, wiki.id, {
+            scenario: "custom",
+            purpose: "Rewritten on a read-only deployment.",
+            keyQuestions: [],
+            inScope: [],
+            outOfScope: [],
+            outputLanguage: "English",
+            pageConventions: "",
+          }),
+        READ_ONLY_REFUSAL.wikiFileWrite,
+      );
+    });
+
+    expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(seeded);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("both putters write on a writable deployment — the control case", async () => {
+    // `YOPEDIA_READONLY` is UNSET, and the two calls take exactly the shapes
+    // above. Without this, both "unchanged" assertions would also pass against
+    // a putter that had simply stopped writing — or against a mid-rename hold
+    // that never let the locked body run.
+    const wiki = await createWiki(OWNER, { name: "Original", scenario: "research" });
+
+    let pending!: ReturnType<typeof renameWiki>;
+    await withWikiLock(OWNER, async () => {
+      pending = renameWiki(OWNER, wiki.id, "Renamed");
+    });
+    expect((await pending)?.name).toBe("Renamed");
+    // The same read the first case expects to be UNCHANGED — retitled here.
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Renamed");
+
+    const written = await withWikiLock(OWNER, (held) =>
+      putWorkspaceProfile(held, OWNER, wiki.id, {
+        scenario: "custom",
+        purpose: "Owner-authored.",
+        keyQuestions: [],
+        inScope: [],
+        outOfScope: [],
+        outputLanguage: "English",
+        pageConventions: "",
+      }),
+    );
+    expect(written.purpose).toBe("Owner-authored.");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).purpose).toBe("Owner-authored.");
   });
 });
 
