@@ -2,8 +2,10 @@ import { afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
 
 /**
- * DOM-project setup: unmount between tests, plus the three browser capabilities
- * jsdom does not have that the components under test read directly.
+ * DOM-project setup: unmount between tests, plus the browser capabilities the
+ * environment does not expose that the components under test read directly.
+ * jsdom has no matchMedia / layout / visibilityState; Node 26's own Storage
+ * getter shadows the one jsdom would otherwise put on `window`.
  *
  * Every shim lives HERE and never in `src/`. The point of the DOM project is to
  * pin the behaviour the app already has; reshaping a component so it stops
@@ -27,6 +29,7 @@ afterEach(() => {
   resetMediaQueries();
   resetElementRects();
   setVisibilityState("visible");
+  resetDomStorage();
 });
 
 // ---------------------------------------------------------------------------
@@ -412,4 +415,80 @@ export function setVisibilityState(state: DocumentVisibilityState): void {
 export function fireVisibilityChange(state: DocumentVisibilityState): void {
   setVisibilityState(state);
   document.dispatchEvent(new Event("visibilitychange"));
+}
+
+// ---------------------------------------------------------------------------
+// window.localStorage / sessionStorage
+// ---------------------------------------------------------------------------
+//
+// jsdom 30 implements Storage. Node 26.8 also ships a `globalThis.localStorage`
+// getter, and that getter wins: without `--localstorage-file` it returns
+// `undefined` and prints `ExperimentalWarning: localStorage is not available`.
+// The getter is on the realm, not on jsdom's window prototype, so constructing
+// a JSDOM directly still works — vitest's `environment: "jsdom"` is what
+// exposes the Node one as `window.localStorage`. Every mounted suite that
+// calls `window.localStorage.clear()` then dies before asserting anything.
+//
+// The descriptor is `configurable: true` (probed on this Node), so we can
+// replace it. We define the same Storage instance on `window` AND `globalThis`
+// because some suites read one and some the other, and a node-project file
+// that stubs `globalThis.window` must still be able to redefine it
+// (`configurable: true`).
+
+class MemoryStorage implements Storage {
+  #map = new Map<string, string>();
+
+  get length(): number {
+    return this.#map.size;
+  }
+
+  clear(): void {
+    this.#map.clear();
+  }
+
+  getItem(key: string): string | null {
+    const name = String(key);
+    return this.#map.has(name) ? this.#map.get(name)! : null;
+  }
+
+  key(index: number): string | null {
+    if (!Number.isInteger(index) || index < 0 || index >= this.#map.size) {
+      return null;
+    }
+    return [...this.#map.keys()][index] ?? null;
+  }
+
+  removeItem(key: string): void {
+    this.#map.delete(String(key));
+  }
+
+  setItem(key: string, value: string): void {
+    this.#map.set(String(key), String(value));
+  }
+}
+
+const localStorageShim = new MemoryStorage();
+const sessionStorageShim = new MemoryStorage();
+
+function defineStorage(
+  target: object,
+  name: "localStorage" | "sessionStorage",
+  storage: Storage,
+): void {
+  Object.defineProperty(target, name, {
+    configurable: true,
+    enumerable: true,
+    get: () => storage,
+  });
+}
+
+defineStorage(window, "localStorage", localStorageShim);
+defineStorage(window, "sessionStorage", sessionStorageShim);
+defineStorage(globalThis, "localStorage", localStorageShim);
+defineStorage(globalThis, "sessionStorage", sessionStorageShim);
+
+/** Empty both stores, so one file cannot leak keys into the next. */
+export function resetDomStorage(): void {
+  localStorageShim.clear();
+  sessionStorageShim.clear();
 }

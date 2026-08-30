@@ -90,7 +90,8 @@ describe("the dom shim controls are reached through one aliased door (DW-112)", 
     // `@/test/dom-helpers` re-exports `vitest.setup.dom`, which imports `vitest`
     // and `@testing-library/react` (devDependencies) and, at MODULE LOAD,
     // redefines `window.matchMedia`, `HTMLElement.prototype.offsetParent`,
-    // `offsetWidth`, `getClientRects` and `Element.prototype.scrollIntoView`.
+    // `offsetWidth`, `getClientRects`, `Element.prototype.scrollIntoView`,
+    // and `window`/`globalThis` Storage.
     // Reached from anything the app bundles, that is a failed `next build` at
     // best and a shimmed prototype in the browser at worst.
     //
@@ -126,6 +127,10 @@ describe("the dom shim controls are reached through one aliased door (DW-112)", 
     // barrel; an implementation added here would falsify the document silently.
     const source = await read(DOM_HELPERS);
     expect(source).toContain('from "../../vitest.setup.dom"');
+    // DW-588: the Storage reset is a first-class control, same as the others.
+    // A barrel that forgot to re-export it would leave suites importing a
+    // function the setup file's afterEach never shares.
+    expect(source).toContain("resetDomStorage");
     // Only `export { … } from` / `export type { … } from` forms. A local
     // `function`, `const`, `class` or a re-implementation of a shim would all
     // introduce a definition.

@@ -98,15 +98,6 @@
     "label": "Canonical slug in the 404",
     "resolution": ""
   },
-  "DW-25": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add a configured allowed-origin list to sidecar/server.mjs alongside the loopback default, answer the Private Network Access preflight for it, document the full response contract (CORS headers, PNA, mixed-content) in src/lib/sidecar.ts, and pin that a non-loopback configured origin passes the probe while an unconfigured one still fails closed.",
-    "key": "1",
-    "label": "Allow a configured deployment origin",
-    "resolution": ""
-  },
   "DW-287": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -222,15 +213,6 @@
     "intent": "Add an owner-only repair route that moves an unparseable registry aside to a timestamped quarantine key, starts a fresh empty registry, and returns the quarantined path; have the refusing 500 body name that route, and pin that no readable registry is ever quarantined.",
     "key": "1",
     "label": "Quarantine-and-restart route",
-    "resolution": ""
-  },
-  "DW-486": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Resolve owner-ness through the stable Clerk id (principal.userId === YOPEDIA_OWNER_USER_ID) with the handle comparison kept only as a fallback for principals that carry no id, apply it at every isOwnerHandle call site, and pin that a principal admitted by the middleware is never refused by a route gate.",
-    "key": "1",
-    "label": "Gate on the stable id",
     "resolution": ""
   },
   "DW-489": {
@@ -357,15 +339,6 @@
     "intent": "",
     "key": "2",
     "label": "Wait for DW-14",
-    "resolution": ""
-  },
-  "DW-588": {
-    "answered_at": "2026-08-29",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add a real `Storage` implementation to vitest.setup.dom.ts and define `window.localStorage` (and `sessionStorage`) from it, matching that file's own stated convention that every capability jsdom lacks is shimmed there and never in `src/`. Reset it in the existing `afterEach` alongside the other shims, and expose it through `@/test/dom-helpers` the way the repo's other dom capabilities are. Verify by running the whole `dom` project to zero failures and pin the shim itself so a regression is visible.",
-    "key": "1",
-    "label": "Shim Storage in vitest.setup.dom.ts",
     "resolution": ""
   },
   "DW-595": {

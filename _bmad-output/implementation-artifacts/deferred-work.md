@@ -4041,7 +4041,8 @@ location: vitest.config.ts (dom project) / AGENTS.md "Test environments"
 source_spec: `spec-dw-433-hidden-attribute-css-specificity.md`
 severity: low
 reason: Every failure is `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Identical at `baseline_revision` 144767a4 and after this change (13 failed files / 229 failed tests both times, +3 passing from the new suite). On Node 22.16.0 — the version `.github/workflows/ci.yml` pins — the full suite is green: 337 files / 7731 passed, 1 skipped. Raw jsdom 30.0.1 with an http URL does provide `localStorage`, so the gap is in how the vitest jsdom environment exposes it under Node 26, not in jsdom itself. Not a repository defect and not caused by this change, but it makes local verification on a current Node look catastrophically broken, and `AGENTS.md` "Test environments" does not warn of it.
-status: open
+status: done 2026-08-29
+resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
 
 ### DW-540: A truncated backup keeps whatever the storage walk happened to reach first, so which of the owner's data survives the cut is arbitrary rather than prioritised.
 origin: spec-deferred a560134e9889
@@ -4447,7 +4448,8 @@ location: vitest.setup.dom.ts (and every mounted suite that reads window.localSt
 source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
 severity: high
 reason: `pnpm test` fails 233 tests across 13 dom-project files with `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Node prints `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided` — Node 26.8.1 ships its own `globalThis.localStorage` getter, which shadows the one vitest's jsdom environment would otherwise expose (jsdom 30.0.1 supplies it correctly when constructed directly). Confirmed pre-existing: stashing this whole change and re-running `src/components/workbench/__tests__/workbench-split-wiring.test.tsx` reproduces the identical 29/29 failure on baseline a34c4fee. Counts are identical with and without this bundle's new suite. The fix is a repo-level decision (pin Node, or shim Storage in `vitest.setup.dom.ts`), not something a test-pin bundle should make.
-status: open
+status: done 2026-08-29
+resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
 decision: 2026-08-29 Shim Storage in vitest.setup.dom.ts — Add a real `Storage` implementation to vitest.setup.dom.ts and define `window.localStorage` (and `sessionStorage`) from it, matching that file's own stated convention that every capability jsdom lacks is shimmed there and never in `src/`. Reset it in the existing `afterEach` alongside the other shims, and expose it through `@/test/dom-helpers` the way the repo's other dom capabilities are. Verify by running the whole `dom` project to zero failures and pin the shim itself so a regression is visible.
 decision: 2026-08-29 Shim Storage in vitest.setup.dom.ts — Add a real `Storage` implementation to vitest.setup.dom.ts and define `window.localStorage` (and `sessionStorage`) from it, matching that file's own stated convention that every capability jsdom lacks is shimmed there and never in `src/`. Reset it in the existing `afterEach` alongside the other shims, and expose it through `@/test/dom-helpers` the way the repo's other dom capabilities are. Verify by running the whole `dom` project to zero failures and pin the shim itself so a regression is visible.
 
@@ -4473,7 +4475,8 @@ location: vitest.setup.dom.ts
 source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
 severity: medium
 reason: Reproduced at the baseline revision with both of this story's files stashed: `pnpm exec vitest run --project dom` gives 13 failed files / 233 failed tests, every one `TypeError: Cannot read properties of undefined (reading 'clear')` (248 occurrences) or `(reading 'remove')` (18) from a `window.localStorage.clear()` in a suite's own setup -- e.g. `src/components/workbench/__tests__/icon-rail.test.tsx:62`, `activity-dock.test.tsx:27`, `workbench-split-wiring.test.tsx:97`. Node here is v26.8.1 and the run prints `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided`. Pre-existing and unrelated to this change (the failing set is identical before and after it), but it means `pnpm test` cannot be green on a Node 26 machine, and the repo's own convention says a capability jsdom lacks belongs in `vitest.setup.dom.ts` behind `@/test/dom-helpers` rather than in each suite.
-status: open
+status: done 2026-08-29
+resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
 
 ### DW-592: DW-325 closed the flake class for one case; ~14 structurally identical `returnToTab()` + `waitFor` cases in the same describe keep the same millisecond-budget exposure.
 origin: spec-deferred bdd55ed0cf5a
@@ -4523,7 +4526,8 @@ location: src/components/workbench/__tests__/ (13 files); vitest.setup.dom.ts
 source_spec: `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md`
 severity: medium
 reason: 233 tests across 13 files die with "TypeError: Cannot read properties of undefined (reading 'clear')". Reproduced on a stashed tree at 34f1863d, so it is not a branch regression. Root cause confirmed by probe: Node 26.8.1's built-in `localStorage` global shadows jsdom's own and is `undefined` unless the process is started with `--localstorage-file` ("ExperimentalWarning: localStorage is not available because --localstorage-file was not provided"). Every other dom suite passes. Needs a repo-wide decision (pin Node, pass the flag, or shim the global in vitest.setup.dom.ts), so it was not fixed inside this bundle.
-status: open
+status: done 2026-08-29
+resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
 
 ### DW-598: DW-404's own recorded reproduction (topK 1, one stale-tagged and one current-tagged vector, alternating queries) still emits four drift lines under the narrowed whole-window gate, so the entry's named
 origin: spec-deferred 13bb0e02d8ee

@@ -105,13 +105,15 @@ scan reads this file too.
 - jsdom computes no layout, so every box is all-zeros and no stylesheet applies.
   `vitest.setup.dom.ts` holds every shim and nothing in `src/` does — still
   literally true alongside `@/test/dom-helpers` above, which re-exports all
-  seven controls and defines none of them (pinned by
+  eight controls and defines none of them (pinned by
   `test-infra-conventions.test.ts`). It
   unconditionally overrides `Element.prototype.getBoundingClientRect`,
   `HTMLElement.prototype.offsetWidth`, `offsetParent`, `getClientRects`,
-  `scrollIntoView`, `window.matchMedia` and `document.visibilityState` — every
-  box read in the dom project goes through a wrapper, which delegates to jsdom's
-  own accessor unless a test has declared otherwise.
+  `scrollIntoView`, `window.matchMedia`, `document.visibilityState`, and
+  `window`/`globalThis` `localStorage`/`sessionStorage` (Node 26's native
+  Storage getter shadows jsdom's) — every box read in the dom project goes
+  through a wrapper, which delegates to jsdom's own accessor unless a test has
+  declared otherwise.
 - That declaration is `setElementRect(selector, { width })`, which is how a
   width-derived decision becomes reachable at all (declare before `render()`, and
   per test — the `afterEach` empties the registry). A declared box is a stated
@@ -169,7 +171,8 @@ replaced on refresh, and this list must survive the refresh.
 - Prefer BMAD Fast path (draft with assumption tags) over Coaching when a working mode is offered.
 - Prefer Claude Opus 5 at high effort for bmad-loop adapter (dev and triage). Independent review is off during deferred-work culls; do not re-arm a finished bundle just because the ledger was dirty. When review is on, use Codex (`gpt-5.6-terra`), one cycle, and enforce the session budget (2.5M weighted tokens, 60-minute timeout). ChatGPT-auth Codex cannot use `gpt-5-codex`.
 - Prefer bmad-loop sweep commit/finalize to proceed automatically so remaining deferred-work items can be culled.
-- Sweep triage must put every open `severity: low` deferred-work entry in `skip` (project excludes low-priority residue until after Epic 8). Do not put low items in bundles, even when they share a file with a medium item. Leave low entries open; do not close them as resolved.
+- Epic 8 is done: sweep triage may bundle `severity: low` entries. Skip only `review-budget-followup` stubs and entries the project explicitly excludes — not every low merely because it is low. When an entry is already fixed, mark `already_resolved`. Keep bundles to one goal, 2–3 DWs.
+- Sweep/dev leftovers default to `severity: low`. File at most 5 new deferred-work rows per bundle. Prefer omitting a row over minting residue; do not restate a Never clause or an already-skipped low.
 - Do not use Cursor IDE chat as a bmad-loop adapter; there is no shipped cursor profile.
 - When implementing a story range, the implementable spec in `_bmad-output/implementation-artifacts/spec-*.md` is the sole source of truth; do not edit `<intent-contract>` in those specs, and do not treat `epics.md` planning text as the implementation contract.
 
