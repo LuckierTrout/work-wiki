@@ -2202,6 +2202,12 @@ export function workbenchSettingsStored(
   cfg: AppConfig,
   hasWorkersAiBinding: boolean,
 ): WorkbenchSettingsStored {
+  // ONE read of the filter, feeding BOTH halves below (DW-552). The two fields
+  // are EXCLUSIVE — the invalid one is exactly what the filter threw away — and
+  // the join in `mergedVectorInputs` relies on that exclusivity for its `??` to
+  // be a join rather than a precedence question. Two independent calls would
+  // make it hold only incidentally; one local makes it structural.
+  const envProvider = envEmbeddingProvider();
   return {
     vectorSearchEnabled: cfg.vectorSearchEnabled === true,
     // The CONFIG halves — what a patch can move.
@@ -2211,7 +2217,17 @@ export function workbenchSettingsStored(
     hasEmbeddingApiKey: nonEmpty(cfg.embeddingApiKey) !== null,
     // …and the ENV halves, which it cannot, kept apart so the merge answers
     // identically to the browser's own `draftVectorInputs`.
-    envEmbeddingProvider: envEmbeddingProvider(),
+    envEmbeddingProvider: envProvider,
+    // …and the value that filter threw away, read as `getWorkbenchSettings`
+    // reads it for the payload (DW-508/DW-552) — the two expressions are pinned
+    // equal across all four variable states by
+    // `settings-runtime-wiring.test.ts`, because this one is what the ROUTE
+    // runs and the payload's is what the BROWSER gets. The route's half re-joins
+    // the two at the point of use, so a junk `EMBEDDING_PROVIDER` is refused
+    // here for the same reason `getVectorSearchSettings` refuses it — rather
+    // than falling through to the stored provider and waving the switch on.
+    envEmbeddingProviderInvalid:
+      envProvider === null ? nonEmpty(process.env.EMBEDDING_PROVIDER) : null,
     envEmbeddingModel: nonEmpty(process.env.EMBEDDING_MODEL),
     envEmbeddingApiKeyProviders: envEmbeddingApiKeyProviders(),
     hasWorkersAiBinding,

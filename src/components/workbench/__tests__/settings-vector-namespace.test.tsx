@@ -749,6 +749,29 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
     expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
     expect(providerSelect().value).toBe("openai");
 
+    // …and the SWITCH is the opposite answer on the same deployment (DW-552).
+    // This is the surface the ledger's first symptom was seen at: the select
+    // stays open because the store is what applies once the variable is fixed,
+    // but the vector rule re-JOINS the invalid value and reads `deepseek`, so
+    // the switch is refused. It used to read as satisfiable here — every leg met
+    // by the stored OpenAI config — while the route stored `true` and nothing
+    // embedded.
+    const vectorSwitch = screen.getByLabelText(
+      "Enable vector search",
+    ) as HTMLInputElement;
+    expect(vectorSwitch.getAttribute("aria-disabled")).toBe("true");
+    expect(announcedFor(vectorSwitch)).toBe(
+      "Vector search needs an embedding provider before it can be turned on.",
+    );
+    // CLICKED, not merely inspected: "the owner cannot turn it on" is a claim
+    // about the handler, and `aria-disabled` alone would pass even if `onChange`
+    // stopped consulting the refusal.
+    fireEvent.click(vectorSwitch);
+    await waitFor(() => expect(vectorSwitch.checked).toBe(false));
+    expectNoSaveAttempted();
+
+    // The select, meanwhile, still writes — the two answers coexist, which is
+    // the whole point of keeping the PIN and the RULE separate reads.
     fireEvent.change(providerSelect(), { target: { value: "google" } });
 
     await waitFor(() => expect(providerSelect().value).toBe("google"));
@@ -779,6 +802,15 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
     expect(announced).not.toContain(settingsEnvProviderInvalidCopy("deepseek"));
     expect(announced).not.toContain("deepseek");
     expect(providerSelect().getAttribute("aria-disabled")).toBe("true");
+    // …and the RULE takes the pin too, not the invalid twin (DW-552): with
+    // `google` winning, every leg is met and the switch is offered. Had the
+    // ordering gone the other way, this deployment would render a refused switch
+    // beside a select pinned to a perfectly good vendor.
+    const vectorSwitch = screen.getByLabelText(
+      "Enable vector search",
+    ) as HTMLInputElement;
+    expect(vectorSwitch.getAttribute("aria-disabled")).toBeNull();
+    expect(announcedFor(vectorSwitch)).not.toContain("needs an embedding provider");
   });
 
   it("leaves an UNPINNED select editable, still applying the three-field rule", async () => {

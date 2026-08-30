@@ -92,6 +92,7 @@ import {
   llmTimeoutOption,
   loadConfig,
   saveConfig,
+  workbenchSettingsStored,
   type AppConfig,
 } from "../config";
 import {
@@ -1033,27 +1034,39 @@ describe("the stored embedding credential and endpoint are read", () => {
     expect(error).not.toContain("or choose another embedding provider");
   });
 
-  it("serves a JUNK EMBEDDING_PROVIDER as no env provider at all (DW-398)", async () => {
+  it("serves a JUNK EMBEDDING_PROVIDER as no PINNED provider, but as a REFUSED one to the rule (DW-398)", async () => {
     // `envEmbeddingProvider()` filters through `isEmbeddingProvider`, so an
-    // unsupported variable never reaches the browser as a selection — it
-    // arrives as `null`, and the payload reads exactly as it does with no
-    // variable set. That is the boundary the settings surface's env pin sits
-    // on: it pins on this field, so a junk value leaves the provider select
-    // editable, which is what the owner needs once they correct the variable
-    // and the STORE becomes the thing that applies.
+    // unsupported variable never reaches the browser as a SELECTION — it
+    // arrives on that field as `null`. That is the boundary the settings
+    // surface's env pin sits on (DW-398): `SettingsCanvas` pins on this field,
+    // so a junk value leaves the provider select editable, which is what the
+    // owner needs once they correct the variable and the STORE becomes the
+    // thing that applies.
     process.env.EMBEDDING_PROVIDER = "deepseek";
     await store({ embeddingProvider: "openai", embeddingModel: "text-embedding-3-small" });
 
     const payload = getWorkbenchSettings(false);
     expect(payload.envEmbeddingProvider).toBeNull();
-    // …and the stored selection is what the derived origin reports, unshadowed.
+    // …and the stored selection is what the editable box still holds, unshadowed.
     expect(payload.embeddingProvider).toBe("openai");
-    const inputs = draftVectorInputs(settingsDraftFromPayload(payload), payload);
-    expect(inputs.providerOrigin).toBe("stored");
-    // …but NOT as "no variable at all" any more (DW-508): the rejected string
-    // rides beside the filtered field, which is the only owner-visible signal
-    // that the deployment set something the resolver refuses.
+    // NOT "no variable at all" (DW-508): the rejected string rides beside the
+    // filtered field, which is the only owner-visible signal that the
+    // deployment set something the resolver refuses.
     expect(payload.envEmbeddingProviderInvalid).toBe("deepseek");
+
+    // The PIN and the RULE are different questions (DW-552). The pin is off,
+    // per the paragraph above; the rule re-JOINS the two fields, so the value
+    // the gate is read against is the one the runtime actually resolves —
+    // filtering it here is what let the browser offer a switch on a provider
+    // that never embeds. These two lines are the ones this deployment's fix
+    // makes true; the RUNTIME's matching refusal is pinned on a store with the
+    // flag actually set by "REFUSES a junk EMBEDDING_PROVIDER at the runtime
+    // gate, as the resolver does (DW-509)" below, which is the stronger read —
+    // asserting `enabled` here, where nothing ever stored `true`, would pass
+    // with the whole join reverted.
+    const inputs = draftVectorInputs(settingsDraftFromPayload(payload), payload);
+    expect(inputs.provider).toBe("deepseek");
+    expect(inputs.providerOrigin).toBe("env");
   });
 
   it("reports no invalid value when EMBEDDING_PROVIDER is unset, blank or supported (DW-508)", async () => {
@@ -1067,12 +1080,57 @@ describe("the stored embedding credential and endpoint are read", () => {
     expect(getWorkbenchSettings(false).envEmbeddingProviderInvalid).toBeNull();
 
     process.env.EMBEDDING_PROVIDER = "   ";
-    expect(getWorkbenchSettings(false).envEmbeddingProviderInvalid).toBeNull();
+    const blank = getWorkbenchSettings(false);
+    expect(blank.envEmbeddingProviderInvalid).toBeNull();
+    // …and with BOTH halves null there is nothing for the rule's join to take,
+    // so the stored selection still owns the gate (DW-552). Pinned here rather
+    // than left to follow from the two nulls: a blank variable is the one state
+    // where "set" and "unset" could plausibly have parted.
+    const blankInputs = draftVectorInputs(settingsDraftFromPayload(blank), blank);
+    expect(blankInputs.provider).toBe("openai");
+    expect(blankInputs.providerOrigin).toBe("stored");
 
     process.env.EMBEDDING_PROVIDER = "google";
     const pinned = getWorkbenchSettings(false);
     expect(pinned.envEmbeddingProviderInvalid).toBeNull();
     expect(pinned.envEmbeddingProvider).toBe("google");
+  });
+
+  it("reads the SAME invalid value into the payload and into the route's stored view", async () => {
+    // Two INDEPENDENTLY WRITTEN expressions for one fact (DW-552).
+    // `getWorkbenchSettings` spells it `envProviderRaw !== null && envProvider
+    // === null ? envProviderRaw : null`; `workbenchSettingsStored` spells it
+    // `envProvider === null ? nonEmpty(process.env.EMBEDDING_PROVIDER) : null`.
+    // They are meant to be the same read, and the join in `mergedVectorInputs`
+    // is only equivalent to the browser's if they are — but only a comment said
+    // so, and the two feeders they supply are the two the whole story is about
+    // keeping identical. The BROWSER gets the first; the ROUTE runs the second.
+    const cfg: AppConfig = { embeddingProvider: "openai" };
+    await store(cfg);
+
+    const states: Array<{ name: string; set: string | undefined; expected: string | null }> = [
+      { name: "unset", set: undefined, expected: null },
+      // The trim-and-null both sides read the variable through: a whitespace-only
+      // variable is "unset" to each, not "set to junk" to one and unset to the other.
+      { name: "whitespace only", set: "   ", expected: null },
+      { name: "junk", set: "deepseek", expected: "deepseek" },
+      // A SUPPORTED value lands on the filtered field instead, so the invalid
+      // twin is null on both — the exclusivity the `??` join depends on.
+      { name: "supported", set: "google", expected: null },
+    ];
+
+    for (const state of states) {
+      if (state.set === undefined) delete process.env.EMBEDDING_PROVIDER;
+      else process.env.EMBEDDING_PROVIDER = state.set;
+
+      const fromPayload = getWorkbenchSettings(false).envEmbeddingProviderInvalid;
+      const fromStored = workbenchSettingsStored(cfg, false).envEmbeddingProviderInvalid;
+      expect({ state: state.name, fromPayload, fromStored }).toEqual({
+        state: state.name,
+        fromPayload: state.expected,
+        fromStored: state.expected,
+      });
+    }
   });
 
   it("REFUSES a junk EMBEDDING_PROVIDER at the runtime gate, as the resolver does (DW-509)", async () => {

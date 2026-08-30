@@ -2478,6 +2478,18 @@ describe("the client and the route read the same vector rule", () => {
     config: AppConfig;
     /** The RUNTIME fact both halves must be handed. Default: off Workers. */
     binding?: boolean;
+    /**
+     * The THIRD feeder's gate answer, where it legitimately differs from the
+     * two above. Default: the same answer.
+     *
+     * `getVectorSearchSettings` is a sync cache read that cannot ask for the
+     * Cloudflare `AI` binding, so it carries `hasWorkersAiBinding: null` and
+     * applies NO binding leg (DW-225). A bindingless `workers-ai` therefore
+     * reads as satisfiable there while both halves above refuse it — the one
+     * declared divergence, spelled per situation rather than derived, so a new
+     * row cannot inherit an excuse it has not earned.
+     */
+    runtimeEnabled?: boolean;
   }> = [
     { name: "nothing configured", env: {}, config: {} },
     {
@@ -2526,6 +2538,7 @@ describe("the client and the route read the same vector rule", () => {
       env: {},
       config: { embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" },
       binding: false,
+      runtimeEnabled: true,
     },
     {
       name: "the model the environment forces cannot be served by the provider",
@@ -2542,12 +2555,28 @@ describe("the client and the route read the same vector rule", () => {
       env: { provider: "workers-ai" },
       config: { embeddingModel: "@cf/baai/bge-m3" },
       binding: false,
+      runtimeEnabled: true,
     },
     {
       name: "the environment forces workers-ai and the binding exists",
       env: { provider: "workers-ai" },
       config: { embeddingModel: "@cf/baai/bge-m3" },
       binding: true,
+    },
+    // The situation the two-feeder pin could NOT have caught (DW-552): the two
+    // halves agreed with each other on `openai` and only the runtime dissented.
+    // `EMBEDDING_PROVIDER` names nothing that can embed, over a stored config
+    // that would otherwise satisfy every leg — so falling through to the store
+    // is exactly the shadowing `getVectorSearchSettings` stopped doing.
+    {
+      name: "the environment forces a provider that cannot embed",
+      env: { provider: "deepseek", key: "sk-env" },
+      config: {
+        embeddingProvider: "openai",
+        embeddingBaseUrl: "https://embed.example",
+        embeddingModel: "text-embedding-3-small",
+        embeddingApiKey: "sk-1",
+      },
     },
   ];
 
@@ -2587,8 +2616,199 @@ describe("the client and the route read the same vector rule", () => {
         situation: situation.name,
         client: route,
       });
+
+      // …and the THIRD feeder of the same one rule (DW-552).
+      //
+      // Two halves is not enough: they are written from the same payload shape
+      // and drift TOGETHER, which is precisely how a junk `EMBEDDING_PROVIDER`
+      // came to read as satisfiable on both while `getVectorSearchSettings`
+      // — the answer the embed path actually uses — refused it.
+      //
+      // The PROVIDER first, because it is the value every leg is judged
+      // against: all three must name the same vendor, refused or not.
+      const runtimeProvider = getVectorSearchSettings().provider;
+      expect({ situation: situation.name, runtimeProvider }).toEqual({
+        situation: situation.name,
+        runtimeProvider: inputs.provider,
+      });
+      // Then the gate. `enabled` is the stored flag INTERSECTED with the
+      // predicate, so the only way to read the predicate alone is to store the
+      // flag on — done last, so nothing above sees a config it was not given.
+      await store({ ...situation.config, vectorSearchEnabled: true });
+      const runtime = getVectorSearchSettings().enabled;
+      expect({ situation: situation.name, runtime }).toEqual({
+        situation: situation.name,
+        runtime: situation.runtimeEnabled ?? client,
+      });
     });
   }
+
+  it("refuses a junk EMBEDDING_PROVIDER on ALL THREE feeders, naming the provider leg", async () => {
+    // The deployment the two-feeder pin waved through (DW-552): a variable that
+    // names no embedding vendor over a stored config that satisfies every leg.
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+    const config: AppConfig = {
+      embeddingProvider: "openai",
+      embeddingBaseUrl: "https://embed.example",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "sk-1",
+    };
+    await store(config);
+
+    const payload = getWorkbenchSettings(false);
+    // The payload carries the two halves APART — the filtered field stays null
+    // so `SettingsCanvas` leaves the select unpinned (DW-398), and the raw value
+    // rides beside it so the rule can still read it.
+    expect(payload.envEmbeddingProvider).toBeNull();
+    expect(payload.envEmbeddingProviderInvalid).toBe("deepseek");
+
+    const draft = settingsDraftFromPayload(payload);
+    const inputs = draftVectorInputs(draft, payload);
+    // …and the rule reads the JOIN, so the browser names the refused vendor
+    // rather than the stored one it would otherwise fall through to.
+    expect(inputs.provider).toBe("deepseek");
+    expect(inputs.providerOrigin).toBe("env");
+    expect(draftCanEnableVectorSearch(draft, payload)).toBe(false);
+
+    // The ROUTE, for the very body that draft would send.
+    const refusal = validateWorkbenchSettingsPatch(
+      { ...settingsSaveBody(draft), vectorSearchEnabled: true },
+      workbenchSettingsStored(config, false),
+    );
+    expect(refusal).toEqual({
+      ok: false,
+      error: "Vector search needs an embedding provider before it can be turned on.",
+    });
+
+    // …and the RUNTIME, whose answer the other two are being aligned TO.
+    await store({ ...config, vectorSearchEnabled: true });
+    expect(getVectorSearchSettings()).toMatchObject({
+      provider: "deepseek",
+      enabled: false,
+    });
+  });
+
+  it("lets the PIN win over an invalid value on BOTH feeders if a payload carries both", async () => {
+    // Neither builder can mint this pair — the invalid string is exactly what
+    // the `isEmbeddingProvider` filter threw away, so it is non-null only where
+    // the filtered field is `null`, and `workbenchSettingsStored` now reads the
+    // filter ONCE to keep that structural. But `WorkbenchSettingsPayload` is a
+    // WIRE type: `isWorkbenchSettingsPayload` does not enforce the exclusivity,
+    // `storedState()` can construct the pair, and `SettingsCanvas` already
+    // guards the disagreement explicitly ("where they disagree the PIN wins").
+    // The two feeders get the same precedence from bare `??` ORDERING, which
+    // until now was backed by a comment and nothing else — and getting it
+    // backwards would refuse a perfectly good `EMBEDDING_PROVIDER=openai`
+    // deployment on the strength of a stale invalid field.
+    process.env.EMBEDDING_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "sk-env";
+    const config: AppConfig = {
+      embeddingBaseUrl: "https://embed.example",
+      embeddingModel: "text-embedding-3-small",
+    };
+    await store(config);
+
+    // The BROWSER's half, off a payload the wire could deliver.
+    const payload = {
+      ...getWorkbenchSettings(false),
+      envEmbeddingProviderInvalid: "deepseek",
+    };
+    const draft = settingsDraftFromPayload(payload);
+    const inputs = draftVectorInputs(draft, payload);
+    expect(inputs.provider).toBe("openai");
+    expect(inputs.providerOrigin).toBe("env");
+    expect(draftCanEnableVectorSearch(draft, payload)).toBe(true);
+
+    // …and the ROUTE's, which reaches the same join through the merge: with
+    // `openai` winning every leg is met and the turn-on is ACCEPTED. Had the
+    // invalid value won, this would be the provider-leg refusal instead — so
+    // the verdict itself is what pins the ordering.
+    const storedSide = {
+      ...workbenchSettingsStored(config, false),
+      envEmbeddingProvider: "openai",
+      envEmbeddingProviderInvalid: "deepseek",
+    };
+    expect(validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, storedSide).ok).toBe(
+      true,
+    );
+  });
+
+  it("refuses the vector legs on the WORKBENCH under a junk env, without locking the flat page out", async () => {
+    // The fix has to bite where the surface can act and stay out of the way
+    // where it cannot. Four rows on ONE deployment: `EMBEDDING_PROVIDER` names
+    // nothing that can embed, the flag is ALREADY stored on (bytes that landed
+    // before the variable was set, or a hand edit), and the store itself is a
+    // complete OpenAI config.
+    process.env.EMBEDDING_PROVIDER = "deepseek";
+    const config: AppConfig = {
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingBaseUrl: "https://embed.example",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "sk-1",
+    };
+    const storedSide = workbenchSettingsStored(config, false);
+    expect(storedSide.envEmbeddingProviderInvalid).toBe("deepseek");
+
+    // (a) MOVES NOTHING the rule reads, so the gate is never entered (DW-219).
+    // `turningOn` is false and `vectorInputsEqual(current, merged)` holds, so an
+    // owner is not locked out of an unrelated edit by a variable they may be on
+    // their way to fixing.
+    expect(validateWorkbenchSettingsPatch({ llmTimeoutSeconds: 90 }, storedSide).ok).toBe(
+      true,
+    );
+    // Re-asserting the SAME flag is not a turn-on either.
+    expect(
+      validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, storedSide).ok,
+    ).toBe(true);
+
+    // (b) MOVES an embedding field from the WORKBENCH, which reaches every
+    // control — so the gate is entered, the join hands it `deepseek`, and the
+    // provider leg is unmet. The SWITCHED-ON frame, not "before it can be turned
+    // on": the flag is already ticked, so the sentence the save bar lands beside
+    // it has to describe the state the surface is visibly in (DW-279/DW-308).
+    // Its remedy — "Turn it off, or supply what is missing" — is the honest one
+    // here: on this deployment "supply what is missing" means correcting
+    // `EMBEDDING_PROVIDER`, and turning the switch off is the action the
+    // Workbench itself can take.
+    //
+    // This is the row that FAILS with the join removed: without it the merge
+    // reads `openai`, every leg is met, and the model edit saves 200 while
+    // nothing embeds.
+    expect(
+      validateWorkbenchSettingsPatch(
+        { embeddingModel: "text-embedding-3-large" },
+        storedSide,
+      ),
+    ).toEqual({
+      ok: false,
+      error:
+        "Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing.",
+    });
+
+    // (c) THE SAME MOVE from the flat `/settings` page, which renders no
+    // provider select — so it is scoped to the legs it can actually move, and
+    // DW-303's suppression applies: `canEnableVectorSearch(current)` is now
+    // `false`, so this request did not break anything, and the one unmet leg
+    // (`provider`) is not one this surface names. The edit lands.
+    //
+    // The VERDICT here is `ok` with or without the join — before it, the gate
+    // was never entered at all; after it, the gate is entered and the
+    // suppression carries it. So this row is not a pin on the join itself: it is
+    // the pin that the join did not turn DW-303's escape hatch into a lockout,
+    // and it is the CONTRAST with (b) that shows the scoping is what does the
+    // work.
+    const legs = flatMovableVectorLegs({ embeddingModel: "text-embedding-3-large" });
+    expect([...legs]).toEqual(["model"]);
+    expect(
+      validateWorkbenchSettingsPatch(
+        { embeddingModel: "text-embedding-3-large" },
+        storedSide,
+        storedSide,
+        legs,
+      ).ok,
+    ).toBe(true);
+  });
 
   it("keeps the editable model field STORED while the gate sees the env override", async () => {
     process.env.EMBEDDING_MODEL = "text-embedding-3-small";

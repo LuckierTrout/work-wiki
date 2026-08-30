@@ -1601,6 +1601,32 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
     }, STORED_ETAG);
   });
 
+  it("REFUSES turning vector search ON under a junk variable, and stores nothing", async () => {
+    // THE LEDGER'S SYMPTOM, at the handler (DW-552). The pin above is about the
+    // provider SELECT, which stays open on junk because the store is what
+    // applies once the variable is corrected. The vector SWITCH is the opposite
+    // question, and it used to answer 200: `mergedVectorInputs` read the
+    // FILTERED env value, found `null`, and fell through to the complete stored
+    // OpenAI config — so the route stored `vectorSearchEnabled: true` while
+    // `getVectorSearchSettings()` answered `{provider: "deepseek", enabled:
+    // false}` and nothing embedded.
+    vi.stubEnv("EMBEDDING_PROVIDER", "deepseek");
+    store({ ...OPENAI_STORE });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const response = await PUT(request({ workbench: { vectorSearchEnabled: true } }));
+
+    expect(response.status).toBe(400);
+    // `turningOn` is true — the store holds no flag — so the sentence is the
+    // "before it can be turned on" frame, naming the leg the join now refuses.
+    expect(await response.json()).toEqual({
+      error: "Vector search needs an embedding provider before it can be turned on.",
+    });
+    // …and the write never happened. A 400 that still persisted the flag would
+    // leave the store in exactly the state the ledger describes.
+    expect(mockedSave).not.toHaveBeenCalled();
+  });
+
   it("stays OPEN with no EMBEDDING_PROVIDER at all", async () => {
     // The unpinned deployment, unchanged — the state every other case in this
     // describe runs under, asserted once against the pin.

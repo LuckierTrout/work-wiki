@@ -1971,6 +1971,26 @@ export interface WorkbenchSettingsStored {
   embeddingModel: string | null;
   hasEmbeddingApiKey: boolean;
   envEmbeddingProvider: string | null;
+  /**
+   * The EXACT mirror of {@link WorkbenchSettingsPayload.envEmbeddingProviderInvalid}
+   * — `EMBEDDING_PROVIDER` set to something `isEmbeddingProvider` refuses (DW-552).
+   *
+   * The route's half cannot refuse a raw value it does not carry. The field
+   * above is filtered, so a junk `EMBEDDING_PROVIDER=deepseek` arrives there as
+   * `null` and {@link mergedVectorInputs} used to fall THROUGH to the stored
+   * provider — answering `openai`, every leg met, while `getVectorSearchSettings`
+   * (which reads the variable raw, DW-509) answered `deepseek` with the gate
+   * refused. The two halves promised to be identical agreed with each other and
+   * both dissented from the runtime.
+   *
+   * REQUIRED, not optional, unlike the payload twin: exactly one constructor of
+   * this interface exists ({@link workbenchSettingsStored}), so requiring it
+   * makes an omission a compile error rather than a silent `undefined`. It is
+   * re-JOINED to the field above at the point of use and never folded into it —
+   * `envEmbeddingProvider` is what PINS the provider select, and an unsupported
+   * value names no vendor to pin (DW-398).
+   */
+  envEmbeddingProviderInvalid: string | null;
   envEmbeddingModel: string | null;
   /** See {@link WorkbenchSettingsPayload.envEmbeddingApiKeyProviders}. */
   envEmbeddingApiKeyProviders: string[];
@@ -2430,7 +2450,18 @@ function mergedVectorInputs(
   // here would wave through a vector switch the route then refuses to honour —
   // and the two legs it waved through belong to the previous vendor.
   const switched = embeddingProviderChanged(stored.embeddingProvider, storedProviderAfter);
-  const provider = stored.envEmbeddingProvider ?? storedProviderAfter;
+  // The env override, RE-JOINED from the two fields it is served as (DW-552).
+  //
+  // `getVectorSearchSettings` reads `EMBEDDING_PROVIDER` raw, so a value the
+  // filter refuses still wins there and still fails the gate's first leg. This
+  // half carries the same variable split in two — filtered for the select,
+  // invalid beside it — for a surface reason only, so joining them back here is
+  // what makes the two answers the same variable again. Filtered FIRST, so a
+  // supported value is unchanged in every existing situation; the two are
+  // exclusive as the one constructor produces them, so the `??` is a join and
+  // never a precedence question.
+  const envProvider = stored.envEmbeddingProvider ?? stored.envEmbeddingProviderInvalid;
+  const provider = envProvider ?? storedProviderAfter;
   const key = patch.embeddingApiKey;
   const hasKey =
     // An env credential counts only for the vendor it belongs to — and it is
@@ -2458,8 +2489,10 @@ function mergedVectorInputs(
     modelOrigin: stored.envEmbeddingModel !== null ? "env" : "stored",
     // The `??` on the `provider` line above, read the same way: with
     // `EMBEDDING_PROVIDER` set, the select is not what the gate is looking at
-    // and "choose another provider" is advice it cannot follow (DW-281).
-    providerOrigin: stored.envEmbeddingProvider !== null ? "env" : "stored",
+    // and "choose another provider" is advice it cannot follow (DW-281). Over
+    // the JOINED value, matching `getVectorSearchSettings`' own
+    // `providerOrigin: envProvider !== null ? "env" : "stored"` over its raw read.
+    providerOrigin: envProvider !== null ? "env" : "stored",
     // A runtime fact no patch can move — it arrives on `stored` from the route.
     hasWorkersAiBinding: stored.hasWorkersAiBinding,
   };
@@ -2927,7 +2960,15 @@ export function draftVectorInputs(
   draft: SettingsDraft,
   payload: WorkbenchSettingsValues,
 ): VectorSearchInputs {
-  const provider = payload.envEmbeddingProvider ?? draftText(draft.embeddingProvider);
+  // The same re-JOIN the route's `mergedVectorInputs` performs (DW-552): the
+  // filtered field first, then the value the filter refused, so the browser
+  // stops offering a switch on a junk `EMBEDDING_PROVIDER` that both the route
+  // and `getVectorSearchSettings` refuse. OPTIONAL on the payload (it is the
+  // mirror of `envResearchProviderInvalid`), so normalised to `null` here —
+  // `providerOrigin` below is a `!== null` test and `undefined` is not "unset".
+  const envProvider =
+    payload.envEmbeddingProvider ?? payload.envEmbeddingProviderInvalid ?? null;
+  const provider = envProvider ?? draftText(draft.embeddingProvider);
   const typed = secretPatchValue(draft.embeddingApiKey);
   const hasKey =
     // An env credential counts only for the vendor it belongs to — the same
@@ -2952,8 +2993,10 @@ export function draftVectorInputs(
     modelOrigin: payload.envEmbeddingModel !== null ? "env" : "stored",
     // The same reading of the `provider` line above that the route's
     // `mergedVectorInputs` applies — both halves must read the same origin, or
-    // they answer differently for the same deployment.
-    providerOrigin: payload.envEmbeddingProvider !== null ? "env" : "stored",
+    // they answer differently for the same deployment. Over the JOINED value,
+    // so a refused `EMBEDDING_PROVIDER` still says the environment owns the
+    // selection and "choose another provider" is not the advice given.
+    providerOrigin: envProvider !== null ? "env" : "stored",
     // Served on the payload precisely because the browser cannot ask.
     hasWorkersAiBinding: payload.hasWorkersAiBinding,
   };
