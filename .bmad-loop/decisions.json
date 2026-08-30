@@ -296,6 +296,15 @@
     "label": "Priority walk order",
     "resolution": ""
   },
+  "DW-543": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Resolve guidance through `humanOf` everywhere it is looked up \u2014 the merge door's guidanceOwner resolution and the ingest door at src/lib/ingest.ts:1760 \u2014 so an agent handle reads its human's Workspace Purpose and dictionary. Leave `ownerToTenant` alone as the storage-addressing function it is, and name the distinction in both modules. Pin an agent-owned survivor folding with the human's guidance.",
+    "key": "1",
+    "label": "Guidance is addressed by human owner",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
