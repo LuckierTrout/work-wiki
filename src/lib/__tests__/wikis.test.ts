@@ -2974,6 +2974,285 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
     expect(await readDataVersion()).toBe(versionBefore);
   });
 
+  it("bumps the refresh signal when the registry write landed before reporting failure (DW-484)", async () => {
+    // THE COMPENSATION'S OTHER ASSUMPTION. `restoreSeededFiles` answers for the
+    // FILES; the registry was taken on trust, on the reasoning that a write
+    // specified atomic which THREW cannot have stored its bytes. Atomicity is a
+    // claim about the file — never a half-written one — not about the throw: a
+    // provider can land the object and still fail on the way back, on a flush,
+    // a close, or an ack lost after the store. When it does, the compensation
+    // puts every artifact back and leaves the registry naming a scenario
+    // NOTHING on disk describes, under a call that reports failure.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bytesBefore = await seededBytes(wiki.id);
+    const versionBefore = await readDataVersion();
+    expect(versionBefore).toBeGreaterThan(0); // so "moved" is not "left zero"
+
+    // Writes `wikis.json` and THEN throws. Every other write passes through —
+    // the three restores included — so "the bytes are back" means the
+    // compensation put them back, exactly as the clean-rollback rows require.
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        await write(target, content);
+        if (target.endsWith("wikis.json")) throw new Error(FAULT);
+      });
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        // The ORIGINAL diagnosis, unwrapped: the read-back neither replaces nor
+        // wraps what actually broke.
+        await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+          FAULT,
+        );
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The detection is LOGGED, not just bumped: this is the most operationally
+    // interesting degradation this module has, and every other one here warns.
+    expect(
+      warned.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes(
+            "the registry names the Reading Scenario Template for wiki",
+          ) &&
+          String(message).includes("may describe a different one"),
+      ),
+    ).toHaveLength(1);
+    // And the compensation stayed silent — the fact the blanket "nothing
+    // warned" assertion was really here to prove: every restore landed, so
+    // "the bytes are back" means the restore put them back.
+    expect(
+      warned.filter(([, message]) =>
+        String(message).includes("after a failed re-template failed"),
+      ),
+    ).toEqual([]);
+    // Byte-identical artifacts — all three describe business still…
+    expect(await seededBytes(wiki.id)).toEqual(bytesBefore);
+    expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
+      "### Scenario conventions — Business",
+    );
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+    // …under a stored record that names READING. That divergence is the bug:
+    // the switcher, `describeWiki` and the guidance all read this record, so a
+    // Preview left open goes on rendering business bytes the registry disowns.
+    const stored = JSON.parse(
+      await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8"),
+    ) as { wikis: { id: string; scenario: string }[] };
+    expect(stored.wikis.find((item) => item.id === wiki.id)?.scenario).toBe("reading");
+    expect((await getCurrentWiki(OWNER))?.scenario).toBe("reading");
+    // Once — the failure path owes exactly the tail the success path owes, and
+    // the two facts compose ONE reason rather than two bumps.
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+  });
+
+  it("bumps exactly once when the registry landed AND the restore was incomplete", async () => {
+    // Both facts at the same time. They are independent observations with
+    // different remedies, so both have to be true here — and the tail still
+    // has to move the signal once, because a second bump would be a second
+    // refetch of the same state.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bytesBefore = await seededBytes(wiki.id);
+    const versionBefore = await readDataVersion();
+    expect(versionBefore).toBeGreaterThan(0);
+
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const seen = new Map<string, number>();
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        const nth = (seen.get(target) ?? 0) + 1;
+        seen.set(target, nth);
+        // The registry lands and then reports failure…
+        if (target.endsWith("wikis.json")) {
+          await write(target, content);
+          throw new Error(FAULT);
+        }
+        // …and the SECOND write to `purpose.md` — the restore's — fails, so the
+        // new template's purpose is left on disk as well.
+        if (target.endsWith("purpose.md") && nth === 2) {
+          throw new Error("the artifact store is unavailable");
+        }
+        return write(target, content);
+      });
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+          FAULT,
+        );
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The restore really did fail, on `purpose.md` and on nothing else.
+    expect(
+      warned.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("after a failed re-template failed"),
+      ),
+    ).toHaveLength(1);
+    // Both halves of the divergence: a purpose on the new template, a registry
+    // on the new scenario, and a Schema and profile still on the old one.
+    const bytesAfter = await seededBytes(wiki.id);
+    expect(bytesAfter[0]).not.toBe(bytesBefore[0]);
+    expect(bytesAfter.slice(1)).toEqual(bytesBefore.slice(1));
+    expect((await getCurrentWiki(OWNER))?.scenario).toBe("reading");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+
+    // ONE bump, not two.
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+  });
+
+  it("bumps anyway when the registry read-back itself fails", async () => {
+    // The read-back runs on a path that already holds the diagnosis it owes the
+    // caller, so a read that throws must not become the failure. It is also the
+    // only thing that can answer whether the registry moved, so a read that
+    // throws cannot answer "no" either: it answers "landed" and pays one
+    // spurious refetch, the same side of the trade DW-210 takes.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bytesBefore = await seededBytes(wiki.id);
+    const versionBefore = await readDataVersion();
+    expect(versionBefore).toBeGreaterThan(0);
+
+    // The registry write is genuinely ATTEMPTED here — it lands and then throws,
+    // as the landed row's does — because the read-back is reached only when
+    // `writeRegistry` was actually called. A seed fault would skip it entirely
+    // and this row would pin nothing. Only the READ is broken, and only after
+    // the write: keyed off the fault rather than off a read counter, so it
+    // cannot start faulting the read that FINDS the record if this call ever
+    // reads `wikis.json` a third time.
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const read = storage.readFile.bind(storage);
+    let registryWritten = false;
+    const writeSpy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        await write(target, content);
+        if (target.endsWith("wikis.json")) {
+          registryWritten = true;
+          throw new Error(FAULT);
+        }
+      });
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        if (registryWritten && target.endsWith("wikis.json")) {
+          throw new Error("the registry is unreadable");
+        }
+        return read(target);
+      });
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+          FAULT,
+        );
+      });
+    } finally {
+      readSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    // Warned and swallowed — and it is the READ-BACK's warning, not the
+    // positive detection's: the helper never got to see the record.
+    expect(
+      warned.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes(
+            "reading the registry back after a failed re-template",
+          ),
+      ),
+    ).toHaveLength(1);
+    expect(
+      warned.filter(([, message]) =>
+        String(message).includes("may describe a different one"),
+      ),
+    ).toEqual([]);
+    // …and NOT because the compensation also failed: the restore was clean.
+    expect(
+      warned.filter(([, message]) =>
+        String(message).includes("after a failed re-template failed"),
+      ),
+    ).toEqual([]);
+    // The artifacts went back, and the bump happened on an answer the helper
+    // could not actually read. The over-signal is paid knowingly, and this row
+    // exists to pin that it is paid rather than swallowed along with the read.
+    expect(await seededBytes(wiki.id)).toEqual(bytesBefore);
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+  });
+
+  it("still re-throws the original error when the landed-registry bump also fails", async () => {
+    // The other half of the fail-soft the incomplete-restore row already pins,
+    // on the path DW-484 added: a counter that will not move must not replace
+    // the diagnosis any more than a restore that will not write does. Both
+    // facts now feed ONE bump call, so both need this guarantee proved of them.
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const versionBefore = await readDataVersion();
+
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        await write(target, content);
+        if (target.endsWith("wikis.json")) throw new Error(FAULT);
+      });
+    const putIndex = vi
+      .spyOn(storage, "putIndex")
+      .mockRejectedValue(new Error("kv is gone"));
+    // `bumpDataVersion` catches its own failure and warns, so `bumpRefreshSignal`'s
+    // catch is redundant defence — and the composed reason it logs is, today,
+    // observable NOWHERE ELSE. That swallow's own `logger.warn` is the one seam
+    // that can make the bump reject, so it is the seam this row uses; if
+    // `bumpDataVersion` ever stops swallowing, the rejection arrives on its own
+    // and these assertions keep holding.
+    const warn = vi
+      .spyOn(logger, "warn")
+      .mockImplementation((scope: string) => {
+        if (scope === "data-version") throw new Error("the log sink is gone");
+      });
+    let warned: unknown[][] = [];
+    try {
+      await expect(applyScenarioTemplate(OWNER, wiki.id, "reading")).rejects.toThrow(
+        FAULT,
+      );
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      putIndex.mockRestore();
+      spy.mockRestore();
+    }
+
+    // WHY THE TWO FACTS ARE NOT ONE FLAG. The bump's own failure warning is the
+    // only place the COMPOSED reason is observable, and the claim being made of
+    // it is that it names which fact fired — so the rollback, which was clean
+    // on this row, has to be absent from it. A fixed string would satisfy the
+    // first assertion and fail the second.
+    const reasons = warned
+      .map(([, message]) => String(message))
+      .filter((message) => message.includes("the refresh signal did not move after"));
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain("a registry write that landed");
+    expect(reasons[0]).toContain(`the failed re-template of wiki "${wiki.id}"`);
+    expect(reasons[0]).not.toContain("an incomplete rollback");
+
+    // The signal genuinely did not move — read from the store, not inferred
+    // from the mock having been called.
+    expect(await readDataVersion()).toBe(versionBefore);
+  });
+
   it("snapshots exactly the files the seed goes on to write", async () => {
     // `seededFilePaths` derives from `WIKI_ARTIFACT_FILES` while
     // `seedWikiArtifacts` spells its writes out one call at a time, so the two

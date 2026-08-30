@@ -136,6 +136,21 @@ describe("Change template confirm gate", () => {
     ).toBeTruthy();
   });
 
+  it("tells the owner in the RENDERED dialog which half of the overwrite is recoverable", () => {
+    // `create-wiki-ui.test.ts` pins this sentence by reading WikiWorkbench.tsx
+    // as text, which is the right tool for "is the sentence still written" and
+    // no tool at all for "does the owner see it". The same scan passes with the
+    // paragraph hoisted out of the dialog subtree or put behind a condition
+    // that never fires — and the owner would then confirm the most destructive
+    // operation on the canvas without being told that the Schema comes back
+    // from History while purpose.md and the Workspace Purpose do not.
+    const dialog = openTemplateDialog();
+
+    expect(dialog.textContent?.replace(/\s+/g, " ")).toContain(
+      "The Schema it replaces is kept in the Preview’s History and can be restored; purpose.md and the Workspace Purpose are not kept and cannot be recovered.",
+    );
+  });
+
   it("enables Overwrite once a different scenario is picked", () => {
     openTemplateDialog();
 

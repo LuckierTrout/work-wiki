@@ -2791,7 +2791,9 @@ source_spec: `spec-dw-213-214-artifact-revision-recovery.md`
 location: src/components/WikiWorkbench.tsx:415-419
 severity: low
 reason: `src/components/WikiWorkbench.tsx:415-419` tells the owner "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki", and the comments at `:222` and `:348` call it "an irreversible rewrite" / "an irreversible overwrite". Since this story a committed re-template records the replaced `schema.md` as a revision the Preview's History panel can list and revert, so the confirm understates what the owner can get back. `purpose.md` and the Workspace Purpose are still unrecoverable, so the sentence is not simply wrong — it needs to separate the two halves. Copy only; no behaviour.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-scenario-template-failure-truth
+resolution-undo: 7d1542c4c2d4b1fa95833a726570cdeb403e73d0fc63131b28636e52d3b80b5d 2026-08-30 7374617475733a206f70656e
 
 ### DW-382: `deleteWiki` removes a Wiki's `purpose.md` and `schema.md` outright and moves no `dataVersion`, so a Preview open on those artifacts in a second client keeps rendering bytes whose Wiki is gone.
 
@@ -3613,7 +3615,9 @@ source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
 location: src/lib/wikis.ts (applyScenarioTemplate failure path)
 severity: low
 reason: `applyScenarioTemplate` decides to bump from `restoreSeededFiles`'s completeness alone. If `writeRegistry` throws after the store accepted the bytes, every restore succeeds, `rollbackIncomplete` is false, and no bump fires -- yet the registry now names a scenario the artifacts do not describe. Detecting it needs a registry read-back on the failure path, which neither DW-210 nor this spec's matrix asks for. Same family as the DW-291 "landed but reported failure" shape.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-scenario-template-failure-truth
+resolution-undo: 7d1542c4c2d4b1fa95833a726570cdeb403e73d0fc63131b28636e52d3b80b5d 2026-08-30 7374617475733a206f70656e
 
 ### DW-485: The pre-existing DW-289 cap rows became calendar-dependent when the per-pass window started rotating on a UTC-day clock.
 origin: spec-deferred f8ca87e4f546
@@ -5252,4 +5256,20 @@ location: src/lib/wikis.ts:1688
 source_spec: `spec-dw-483-485-488-wiki-sweep-warn-and-tombstones.md`
 severity: low
 reason: `newestWriteTime` accepts any finite number (src/lib/wikis.ts:1592, :1601), and the future-dated branch formats it with `new Date(newest).toISOString()` (src/lib/wikis.ts:1688), which throws `RangeError: Invalid time value` outside that range. The throw escapes `sweepOrphans` — every other per-candidate step in that loop is deliberately fail-soft — and `sweepOrphanWikiDirs` swallows it as "removed 0", so a single bogus mtime silently stops the tenant's reclaim on every pass. Pre-existing: the same expression shipped with DW-290; this change only moved it into a helper.
+status: open
+
+### DW-675: `createWiki`'s compensation still assumes a `writeRegistry` that threw never landed — the assumption DW-484 has just falsified for `applyScenarioTemplate`.
+origin: spec-deferred 970513e5d9db
+location: src/lib/wikis.ts (createWiki failure path; also setCurrentWiki, renameWiki, deleteWiki)
+source_spec: `spec-dw-381-484-scenario-template-failure-truth.md`
+severity: medium
+reason: `createWiki`'s catch reasons "no registry entry names it, so discarding the whole directory is the exact undo", and `discardCreatedWikiDirectory` repeats "The registry never named this id". A review agent drove the case against the repo's real temp-DATA_DIR harness with a `writeFile` spy that writes `wikis.json` through and THEN throws: `createWiki` rejects, and afterwards the stored registry contains the new entry AND `currentId` points at it, while the compensation has deleted that wiki's directory — a tenant whose CURRENT wiki has no `purpose.md`, no `schema.md` and no profile on disk, and no bump. The record is well-formed so `normalizeRegistry` keeps it, and `sweepOrphanWikiDirectories` has no directory left to reclaim, so it persists. Every existing create row passes because `failWritesTo` rejects WITHOUT calling through, so the registry those rows compare byte-for-byte never moves. `setCurrentWiki`, `renameWiki` and `deleteWiki` carry the milder version of the same shape: the re
+status: open
+
+### DW-676: Nothing reconciles or surfaces the registry/artifact divergence DW-484 now detects — the bump and a server-side warning are the whole remedy.
+origin: spec-deferred a6d2e8e62045
+location: src/lib/wikis.ts (applyScenarioTemplate failure tail) / src/app/api/wikis/[id]/template/route.ts
+source_spec: `spec-dw-381-484-scenario-template-failure-truth.md`
+severity: low
+reason: `registryNamesScenario` is documented "DETECTS, DOES NOT RECONCILE", which is what the intent asked for, but the state it detects is left standing: `POST /api/wikis/[id]/template` still answers a bare 500 with the original error, `WikiWorkbench.applyTemplate`'s catch calls `router.refresh()` only on an `unconfirmed` failure, and the switcher row silently re-labels itself with the new scenario once the 10s `DATA_VERSION_POLL_MS` watcher picks the bump up. So the owner is told the re-template failed while the surface goes on to say it succeeded. The module already has `sweepOrphanWikiDirectories` as precedent for a maintenance-scan repair; no owner exists for this one.
 status: open

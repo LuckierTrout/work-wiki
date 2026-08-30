@@ -21,7 +21,7 @@ import {
   SCENARIO_LABELS,
   WIKI_ARTIFACT_FILES,
 } from "../wiki-scenarios";
-import { PREVIEW_UNSELECTED_COPY } from "../workbench-preview";
+import { PREVIEW_HISTORY_COPY, PREVIEW_UNSELECTED_COPY } from "../workbench-preview";
 
 const COMPONENTS = path.resolve(__dirname, "../../components");
 
@@ -186,9 +186,24 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // The Workspace Purpose is per-wiki and a re-template rewrites it too, so
     // the confirm has to name it, say what is LOST (a purpose hand-authored in
     // Settings, not just a file), and say the blast radius stops at this wiki.
+    //
+    // The two halves are named SEPARATELY because they no longer share a fate
+    // (DW-213/DW-381): a committed re-template files the replaced `schema.md` as
+    // a revision — `EDITABLE_ARTIFACT_FILES` is exactly `["schema.md"]`, and
+    // `recordRetemplatedArtifacts` records that set — so the Preview's History
+    // panel lists it and reverts it, while `purpose.md` and the profile are
+    // written over with nothing kept. Calling the whole operation unrecoverable
+    // was true before that and is not now, and a confirm that overstates what it
+    // destroys is as wrong as one that understates it.
     expect(warning).toContain(
-      "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki — a purpose you wrote in Settings will be replaced by the new template’s. Other wikis, Pages and Sources are not changed.",
+      "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki — a purpose you wrote in Settings will be replaced by the new template’s. The Schema it replaces is kept in the Preview’s History and can be restored; purpose.md and the Workspace Purpose are not kept and cannot be recovered. Other wikis, Pages and Sources are not changed.",
     );
+    // The sentence sends the owner to a panel by NAME, and that name is owned
+    // one module over. Joined here so renaming the disclosure fails on this row
+    // — which names the confirm — rather than leaving a confirm that directs
+    // people to a surface no longer called that. The copy itself stays inline
+    // JSX; this pins the word, not the sentence.
+    expect(warning).toContain(`the Preview’s ${PREVIEW_HISTORY_COPY} and can be restored`);
   });
 
   it("blocks the destructive confirm when the template would not change", async () => {

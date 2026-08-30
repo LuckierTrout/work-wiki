@@ -107,9 +107,10 @@ describe("Change template refuses before the confirm rather than after it", () =
 
     fireEvent.click(screen.getByRole("button", { name: "Change template" }));
 
-    // The dialog names an irreversible overwrite of purpose.md, the Schema and
-    // the Workspace Purpose. Confirming that and THEN meeting a 403 is the shape
-    // this refusal exists to remove.
+    // The dialog names an overwrite of purpose.md, the Schema and the Workspace
+    // Purpose — irreversible for the first and the last, the Schema recoverable
+    // from the Preview's History. Confirming that and THEN meeting a 403 is the
+    // shape this refusal exists to remove.
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("Change Scenario Template")).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();

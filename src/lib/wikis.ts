@@ -1138,18 +1138,122 @@ export async function createWiki(
 }
 
 /**
+ * Does the STORED registry record for `wikiId` now name `scenario` (DW-484)?
+ *
+ * `StorageProvider.writeFile` is specified atomic from the caller's view, but
+ * atomic is not all-or-nothing about the THROW: a provider can land the bytes
+ * and then fail on the way back — a flush, a close, an ack lost after the
+ * object was stored — so a `writeRegistry` that rejected is not by itself proof
+ * the registry is still on the old scenario. Reading it back is.
+ *
+ * {@link readRegistry} rather than the in-memory registry the caller closed
+ * over: the locked body mutates `wiki.scenario` in place BEFORE the seed, so
+ * that object always shows the new scenario. `readRegistry` re-reads and
+ * re-parses `wikis.json`, so it reports what is actually stored.
+ *
+ * DETECTS, DOES NOT RECONCILE. No `updatedAt` comparison and no re-write: this
+ * path's whole job is to decide whether an open Preview must be told, and a
+ * repair attempted from inside a failure it is already re-throwing would be a
+ * second write nobody asked for.
+ *
+ * FAIL-SOFT, AND TOWARDS "LANDED". It runs on a path that already holds the
+ * diagnosis it owes the caller, so a read that throws must never replace it —
+ * and of the two ways to be wrong, claiming the registry moved costs one
+ * spurious refetch while claiming it did not leaves a Preview rendering a
+ * template the stored record no longer names.
+ *
+ * SO THE READ HAS THREE ANSWERS, NOT TWO. Finding the record and reading a
+ * DIFFERENT scenario is the only one that means "did not land" — it is positive
+ * evidence that the old bytes are still there. A record that is ABSENT is not
+ * that: {@link readRegistry} turns ENOENT into an empty registry and
+ * `normalizeRegistry` silently drops an entry whose shape or scenario no longer
+ * parses, so "no record" says the registry stopped naming, inside this very
+ * lock, a wiki it named moments ago — unknown, and unknown resolves towards
+ * landed like every other uncertainty here. A raw I/O or `JSON.parse` throw is
+ * the third, and resolves the same way. Comparing the found record's scenario
+ * with `?.` would have collapsed the first two into one and answered "did not
+ * land" to the unknown, which is the exact under-signal the paragraph above
+ * swears off.
+ *
+ * A POSITIVE DETECTION WARNS, and says what was OBSERVED rather than what it
+ * implies: `wikis.json` naming the requested template after a call that
+ * reported failure is also what re-applying a Wiki's CURRENT scenario looks
+ * like, so "the restored artifacts MAY describe a different one" is true of
+ * both readings and "the registry diverged" is true of only one.
+ *
+ * Reads `wikis.json` only, which {@link restoreSeededFiles} does not touch, so
+ * the caller's `wikis:<tenant>` is enough — no second lock key is taken.
+ */
+async function registryNamesScenario(
+  owner: string,
+  wikiId: string,
+  scenario: CreatableScenario,
+): Promise<boolean> {
+  try {
+    const registry = await readRegistry(owner);
+    const stored = registry.wikis.find((item) => item.id === wikiId);
+    if (!stored) {
+      logger.warn(
+        "wikis",
+        `the registry no longer names wiki "${wikiId}" after a re-template that reported failure — treating its bytes as landed`,
+      );
+      return true;
+    }
+    // The one answer that is evidence of NOT landing: the record is there and
+    // still on the scenario the snapshot belongs to.
+    if (stored.scenario !== scenario) return false;
+    logger.warn(
+      "wikis",
+      `the registry names the ${SCENARIO_LABELS[scenario]} Scenario Template for wiki "${wikiId}" after a re-template that reported failure — the restored artifacts may describe a different one`,
+    );
+    return true;
+  } catch (error) {
+    logger.warn(
+      "wikis",
+      `reading the registry back after a failed re-template of wiki "${wikiId}" failed — assuming its bytes landed`,
+      error,
+    );
+    return true;
+  }
+}
+
+/**
  * What {@link applyScenarioTemplate}'s locked body hands back to its tail.
  *
  * Three exits, and the tail owes each a different thing: `unknown` wrote
  * nothing and answers `null`; `applied` bumps and returns the record; `failed`
- * re-throws `error` unchanged, having first bumped IF AND ONLY IF the
- * compensation could not put every file back. Private — the shape exists so the
- * bump can sit outside `wikis:<tenant>`, not as an API.
+ * re-throws `error` unchanged, having first bumped IF AND ONLY IF the disk
+ * moved under the reported failure — because the compensation could not put
+ * every file back (`rollbackIncomplete`, DW-210), or because the registry write
+ * landed before reporting failure (`registryLanded`, DW-484). Private — the
+ * shape exists so the bump can sit outside `wikis:<tenant>`, not as an API.
+ *
+ * TWO BOOLEANS RATHER THAN ONE RENAMED FLAG. They are different observations
+ * with different remedies — "a restore entry failed" against "the stored
+ * scenario moved under a reported failure" — and collapsing them would lose
+ * which one the log line should name. The tail composes ONE reason from
+ * whichever fired, so the failure path still bumps at most once.
+ *
+ * WHAT `registryLanded` PROVES, EXACTLY: that `wikis.json` NOW names the
+ * requested scenario. What it deliberately cannot tell that apart from is
+ * re-applying a Wiki's CURRENT scenario, where the stored record already named
+ * it and the write never ran — over-signalling, the same side of the trade the
+ * DW-210 paragraphs below argue for. The canvas keeps the OWNER off that path
+ * with `confirmDisabled={pendingScenario === current?.scenario}`, but that is a
+ * client-side courtesy, not a gate: `POST /api/wikis/[id]/template` parses the
+ * scenario and nothing more, and a library or MCP caller has no guard at all,
+ * so a direct re-apply that then fails does take this branch. It costs the same
+ * one spurious refetch of bytes that did not change.
  */
 type RetemplateOutcome =
   | { kind: "unknown" }
   | { kind: "applied"; wiki: WikiRecord }
-  | { kind: "failed"; error: unknown; rollbackIncomplete: boolean };
+  | {
+      kind: "failed";
+      error: unknown;
+      rollbackIncomplete: boolean;
+      registryLanded: boolean;
+    };
 
 /**
  * Apply a different Scenario Template to an existing Wiki.
@@ -1193,9 +1297,26 @@ type RetemplateOutcome =
  * applied. "A restore entry failed" is the strongest thing this path can
  * cheaply know, and it is the side of the trade to be wrong on.
  *
- * The flag is carried OUT of the locked callback rather than bumped inside it,
- * for the reason the success tail is outside: `bumpDataVersion` takes
- * `DATA_VERSION_LOCK` and `withFileLock` is not reentrant.
+ * AND WHEN THE REGISTRY WRITE ITSELF LANDED (DW-484). That flag answers for the
+ * FILES alone, which left the compensation's other assumption unchecked: that a
+ * `writeRegistry` which threw never stored its bytes. A provider may land the
+ * object and still fail on the way back, and the stored record would then name
+ * the NEW scenario while the restored artifacts describe the old one — a
+ * re-template that moved what the tree and the guidance report and, before
+ * this, told nobody. So the `catch` reads `wikis.json` back
+ * ({@link registryNamesScenario}) and carries that as a SECOND fact.
+ *
+ * ONE BUMP, EITHER FACT. The tail fires when `rollbackIncomplete` OR
+ * `registryLanded` is true and names whichever fired in the one reason it
+ * passes, so the failure path keeps exactly one call site — a clean rollback
+ * whose registry write did not land still bumps nothing, because the old bytes
+ * are back and the stored record never moved.
+ *
+ * Both flags are carried OUT of the locked callback rather than bumped inside
+ * it, for the reason the success tail is outside:
+ * `bumpDataVersion` takes `DATA_VERSION_LOCK` and `withFileLock` is not
+ * reentrant. The read-back itself stays INSIDE — it reads `wikis.json`, which
+ * this callback's own lock already covers and the restore does not touch.
  */
 export async function applyScenarioTemplate(
   owner: string,
@@ -1228,8 +1349,15 @@ export async function applyScenarioTemplate(
     const snapshot = await snapshotSeededFiles(owner, wiki.id);
     wiki.scenario = scenario;
     wiki.updatedAt = new Date().toISOString();
+    // Set IMMEDIATELY BEFORE the write, so a throw from the write itself still
+    // counts as attempted while a seed that faulted first does not. Control
+    // flow answers this exactly — it is not a heuristic about which error came
+    // back — and most failures here are seed faults, which reach the `catch`
+    // with `writeRegistry` never called and therefore nothing to read back.
+    let registryWriteAttempted = false;
     try {
       await seedWikiArtifacts(held, owner, wiki);
+      registryWriteAttempted = true;
       await writeRegistry(owner, registry);
     } catch (error) {
       // What makes "put the old artifacts back" the correct undo rather than a
@@ -1251,11 +1379,21 @@ export async function applyScenarioTemplate(
       // state where a re-template changed what a Preview renders and told
       // nobody (DW-210). That is the flag; the compensation itself is
       // unchanged, still fail-soft per entry and still attempting all three.
-      return {
-        kind: "failed",
-        error,
-        rollbackIncomplete: !(await restoreSeededFiles(snapshot)),
-      };
+      const rollbackIncomplete = !(await restoreSeededFiles(snapshot));
+      // …and the atomicity the paragraph above leans on is a claim about the
+      // FILE, not about the throw: bytes that landed can still be followed by a
+      // rejection (DW-484). So the other half of "did the disk move" is read,
+      // not assumed — after the restore, because the restore does not touch
+      // `wikis.json` and the answer is the same either side of it.
+      //
+      // Guarded by the flag rather than asked unconditionally: a read-back on a
+      // seed fault would be a read nobody needs, and — because the helper
+      // resolves every uncertainty towards "landed" — could answer "landed" and
+      // put "a registry write that landed" in the log for a write that was
+      // never issued.
+      const registryLanded =
+        registryWriteAttempted && (await registryNamesScenario(owner, wikiId, scenario));
+      return { kind: "failed", error, rollbackIncomplete, registryLanded };
     }
     // COMMITTED — the seed and the registry write both landed, so the bytes the
     // snapshot above holds are gone from the artifact path for good unless they
@@ -1270,12 +1408,18 @@ export async function applyScenarioTemplate(
   // Unknown id: nothing was written, so there is nothing to refresh to.
   if (outcome.kind === "unknown") return null;
   if (outcome.kind === "failed") {
-    // A CLEAN rollback bumps nothing: the old bytes are back, so telling an
-    // open Preview to refetch would be churn. An INCOMPLETE one earns the same
-    // fail-soft tail a success does, because the disk really did move.
-    if (outcome.rollbackIncomplete) {
+    // A CLEAN rollback whose registry write did not land bumps nothing: the old
+    // bytes are back and the stored record never moved, so telling an open
+    // Preview to refetch would be churn. Either other fact earns the same
+    // fail-soft tail a success does, because the disk really did move — and the
+    // reason names whichever fired, so the log line says which remedy applies.
+    const moved = [
+      outcome.rollbackIncomplete ? "an incomplete rollback" : null,
+      outcome.registryLanded ? "a registry write that landed" : null,
+    ].filter((fact): fact is string => fact !== null);
+    if (moved.length > 0) {
       await bumpRefreshSignal(
-        `an incomplete rollback of the re-template of wiki "${wikiId}"`,
+        `${moved.join(" and ")} under the failed re-template of wiki "${wikiId}"`,
       );
     }
     // The original diagnosis, unwrapped and unreplaced.

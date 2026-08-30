@@ -302,7 +302,9 @@ export function WikiWorkbench() {
     // Same backstop as `create`, and it matters more here: a mid-flight flip to
     // read-only leaves an already-open DESTRUCTIVE confirm on screen, and its
     // Overwrite would post into the 403 this change exists to stop AFTER the
-    // owner has agreed to an irreversible rewrite.
+    // owner has agreed to a rewrite that discards purpose.md and the Workspace
+    // Purpose for good. (The Schema alone survives, as a History revision
+    // DW-213 records — which is why the confirm names the two halves apart.)
     if (readOnly) return;
     if (!current) return;
     // Behind the confirm's `disabled={busy}`. A second POST rewrites this
@@ -457,8 +459,9 @@ export function WikiWorkbench() {
               }`}
               // `POST /api/wikis/[id]/template` answers 403 on a read-only
               // deployment, and the dialog this opens is a DESTRUCTIVE confirm
-              // naming an irreversible overwrite of purpose.md, the Schema and
-              // the Workspace Purpose. Refusing after the owner has confirmed
+              // naming an overwrite of purpose.md, the Schema and the Workspace
+              // Purpose — irreversible for the first and the last, the Schema
+              // recoverable from History. Refusing after the owner has confirmed
               // that is the confirm-then-403 shape; the refusal belongs here,
               // before the overlay. `aria-disabled` rather than `disabled` for
               // the reason `WikiSwitcherProps.readOnly` states in full.
@@ -530,7 +533,9 @@ export function WikiWorkbench() {
             <p>
               This overwrites purpose.md, Schema, and the Workspace Purpose for this
               wiki — a purpose you wrote in Settings will be replaced by the new
-              template’s. Other wikis, Pages and Sources are not changed.
+              template’s. The Schema it replaces is kept in the Preview’s History and
+              can be restored; purpose.md and the Workspace Purpose are not kept and
+              cannot be recovered. Other wikis, Pages and Sources are not changed.
             </p>
             <label
               htmlFor="wiki-workbench-template"
