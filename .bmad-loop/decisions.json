@@ -359,6 +359,15 @@
     "label": "Wait for DW-14",
     "resolution": ""
   },
+  "DW-588": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a real `Storage` implementation to vitest.setup.dom.ts and define `window.localStorage` (and `sessionStorage`) from it, matching that file's own stated convention that every capability jsdom lacks is shimmed there and never in `src/`. Reset it in the existing `afterEach` alongside the other shims, and expose it through `@/test/dom-helpers` the way the repo's other dom capabilities are. Verify by running the whole `dom` project to zero failures and pin the shim itself so a regression is visible.",
+    "key": "1",
+    "label": "Shim Storage in vitest.setup.dom.ts",
+    "resolution": ""
+  },
   "DW-67": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
