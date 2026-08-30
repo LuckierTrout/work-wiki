@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import {
   createResearchProject,
@@ -138,6 +138,13 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({ project }, { status: 201 });
   } catch (error) {
+    // Backstop for a flag that flipped mid-request: the gate above already
+    // answered for a deployment that was read-only when the request arrived, so
+    // reaching here means the kernel writer refused. A refusal is neither a
+    // server fault nor the caller's bad input.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     // Classification is by TYPE alone — the `src/app/api/wikis/route.ts` idiom.
     // A `ClientInputError` is the caller's fault by construction (the
     // MAX_PROJECTS refusal, and `cleanInput`'s blank title/question checks);

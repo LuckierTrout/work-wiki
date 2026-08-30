@@ -2291,7 +2291,9 @@ source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
 location: src/app/api/wikis/route.ts; src/app/api/wikis/[id]/route.ts; src/app/api/wikis/[id]/template/route.ts
 severity: low
 reason: `src/app/api/wikis/route.ts`, `src/app/api/wikis/[id]/route.ts` and `src/app/api/wikis/[id]/template/route.ts` branch only on `ClientInputError` (400) and answer 500 for everything else. Every other read-only-aware route carries an `isReadOnlyError(error) -> 403` branch beside its early gate (see `src/app/api/workbench/artifact/route.ts:68`). Reachable only if `YOPEDIA_READONLY` flips between the route's own `isReadOnly()` gate and the kernel call. Route files were fenced out of this change.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-lifecycle-route-status
+resolution-undo: 8d0d9d1b39fad0e0145b43bf523a8c44a01125170236b0b6b41ab2d01975abaf 2026-08-30 7374617475733a206f70656e
 
 ### DW-317: The two putter backstop gates are unreachable through every current caller, so no test observes them firing.
 origin: spec-deferred 0b21a169fec9
@@ -2316,7 +2318,9 @@ source_spec: `spec-dw-140-145-workspace-profile-route-preconditions.md`
 location: src/app/api/workspace-profile/route.ts
 severity: low
 reason: The route's own comment above the registry read states the rule: "a registry that cannot be READ is not the caller's input being wrong. GET answers 500 for that exact condition, and answering 400 here would tell the owner their edit was rejected when storage was merely unreadable." This pass gave the precondition READ its own 500 branch, but `saveWorkspaceProfile` still throws into the generic `catch` that returns 400 — so an unwritable store (an EACCES, a full disk, a lock timeout) surfaces as a raw machine-authored sentence at 400, the same class of message DW-140 removed from this route. Pre-existing: the write has thrown into that catch since the route was written, and this change did not move it.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-lifecycle-route-status
+resolution-undo: 8d0d9d1b39fad0e0145b43bf523a8c44a01125170236b0b6b41ab2d01975abaf 2026-08-30 7374617475733a206f70656e
 
 ### DW-320: `save()` has no unmount guard, so a PUT that resolves after the form unmounts still writes state.
 
@@ -3954,7 +3958,9 @@ location: src/app/api/names-terms/route.ts:48
 source_spec: `spec-dw-385-read-only-kernel-guards.md`
 severity: low
 reason: Gating the kernel writers created a path these catches never saw before. `POST /api/names-terms` (route.ts:48-53) and `PUT /api/names-terms/[id]` ([id]/route.ts:39-46) map any thrown error to 400/409, so a refusal would be answered as a client-input error carrying the read-only sentence; `DELETE /api/names-terms/[id]`, `PUT /api/email/settings` and `POST /api/research` map it to 500. Reachable only if YOPEDIA_READONLY changes between the route's isReadOnly() gate and the kernel call, so the write is still refused and the copy is still right — only the status is wrong. The repo already has the fix shape at `src/app/api/ingest/reingest/route.ts:90` ("Backstop for a flag that flipped mid-request"). Same class: the Review-accept door (`src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts`) gates early with `reviewQueue` but its `isReadOnlyError` catch now surfaces `researchCreate`, so one door can state two sentences.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-lifecycle-route-status
+resolution-undo: 8d0d9d1b39fad0e0145b43bf523a8c44a01125170236b0b6b41ab2d01975abaf 2026-08-30 7374617475733a206f70656e
 
 ### DW-527: The research CAS primitives stay writable by a direct library caller, so DW-385's guarantee has a named hole at `PATCH /api/research/[id]`'s writer.
 origin: spec-deferred 9303b9f7d20e
@@ -4908,4 +4914,28 @@ location: src/lib/workbench-settings.ts:2463
 source_spec: `spec-dw-552-settings-vector-provider-parity.md`
 severity: low
 reason: `getVectorSearchSettings` (src/lib/config.ts:1623) reads the variable raw; `mergedVectorInputs` (src/lib/workbench-settings.ts:2463) and `draftVectorInputs` (:2969) each re-join the filtered and invalid halves in their own expression. DW-552 was caused by exactly this: one of three copies moved. A shared helper — `resolveEnvEmbeddingProvider(filtered, invalid)` used by both halves, over a single raw reader — would remove the remaining chances to drift. Today only the tests hold them together.
+status: open
+
+### DW-639: DELETE /api/research/[id] still answers a mid-request read-only refusal as 500, the exact defect class this bundle fixed at nine sibling doors.
+origin: spec-deferred c60cf410a39a
+location: src/app/api/research/[id]/route.ts:103
+source_spec: `spec-dw-316-319-526-read-only-lifecycle-route-status.md`
+severity: low
+reason: `retireResearchProject` opens with `assertWritable(READ_ONLY_REFUSAL.researchMutate)` (src/lib/research-runtime.ts:463), and the DELETE handler's catch is the unchanged `error instanceof ClientInputError ? 400 : 500` shape, so a flag that flips between the route's `isReadOnly()` gate and the writer is reported as a server fault. Not named by DW-316, DW-319 or DW-526, whose intent enumerates the doors to fix, so it was left out of this bundle rather than swept in. Its suite (`research-run-route.test.ts:305`) pins the 400-vs-500 classification with a plain Error and a ClientInputError only, so nothing there would surface it. PATCH on the same file is NOT affected: `updateResearchProjectIf` reaches no `assertWritable`; the only two in `research-projects.ts` are at :442 and :656.
+status: open
+
+### DW-640: No source scan enforces the read-only treatment on the wiki-lifecycle, workspace-profile, Names & Terms, email-settings or research writers, so the next door added repeats the defect with the suite gr
+origin: spec-deferred 58b7385a8d66
+location: src/lib/__tests__/read-only-door-coverage.test.ts:34
+source_spec: `spec-dw-316-319-526-read-only-lifecycle-route-status.md`
+severity: low
+reason: `read-only-door-coverage.test.ts` exists precisely to catch "the door added TOMORROW", but its `KERNEL_WRITERS`/`WRITER_EXPORTS` cover only `writeWikiPageWithSideEffects`, `deleteWikiPage`, `patchMetadata` and `writeWikiArtifact`. `createWiki`, `renameWiki`, `deleteWiki`, `setCurrentWiki`, `applyScenarioTemplate`, `saveWorkspaceProfile`, `createNamesTerm`/`updateNamesTerm`/`deleteNamesTerm`, `saveEmailIngestConfig`, `createResearchProject` and `retireResearchProject` are all gated in the kernel (DW-266, DW-314, DW-385) yet invisible to it. Every one of the eleven handlers fixed in this pass is pinned only by a hand-written per-door case. Widening the map is a change of its own: it would also demand a treatment on the doors listed in the entry above and on `PUT /api/settings`, `POST /api/tasks/scan` and the rebuild-embeddings doors, none of which this bundle's intent reaches.
+status: open
+
+### DW-641: POST /api/names-terms and PUT /api/names-terms/[id] still answer a storage fault 400, telling the owner their input was wrong — DW-319's complaint at a different door.
+origin: spec-deferred 814be1124eb2
+location: src/app/api/names-terms/route.ts:57
+source_spec: `spec-dw-316-319-526-read-only-lifecycle-route-status.md`
+severity: low
+reason: Both catches end `{ status: error instanceof NamesTermConflictError ? 409 : 400 }`, so an EACCES, a full disk or a lock timeout inside `createNamesTerm` / `updateNamesTerm` is reported as the caller's bad input, the exact reasoning DW-319 used against `PUT /api/workspace-profile`. Sibling `DELETE /api/names-terms/[id]` already answers 500 for the same class, so the one store states two verdicts about itself. Pre-existing and untouched by this pass, which only prepended the 403 branch; no DW entry names it.
 status: open

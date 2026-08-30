@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 import { applyScenarioTemplate, parseScenarioInput } from "@/lib/wikis";
 
 interface RouteContext {
@@ -44,6 +45,13 @@ export async function POST(request: Request, { params }: RouteContext) {
       ? NextResponse.json({ wiki })
       : NextResponse.json({ error: "Wiki not found." }, { status: 404 });
   } catch (error) {
+    // Backstop for a flag that flipped mid-request: the gate above already
+    // answered for a deployment that was read-only when the request arrived, so
+    // reaching here means the kernel writer refused. A refusal is neither a
+    // server fault nor the caller's bad input.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     const status = error instanceof ClientInputError ? 400 : 500;
     return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }

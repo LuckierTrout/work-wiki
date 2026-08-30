@@ -18,7 +18,7 @@ import {
 } from "@/lib/names-terms";
 import { GET, POST } from "@/app/api/names-terms/route";
 import { DELETE, PUT } from "@/app/api/names-terms/[id]/route";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedCreate = vi.mocked(createNamesTerm);
@@ -159,5 +159,67 @@ describe("Names & Terms writers on a read-only deployment", () => {
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(mockedUpdate).not.toHaveBeenCalled();
     expect(mockedDelete).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * THE MID-REQUEST FLAG FLIP (DW-526).
+ *
+ * `YOPEDIA_READONLY` is UNSET here — the outer `beforeEach` clears it — so every
+ * route gate passes and the kernel writer is reached. It refuses anyway, which
+ * is what happens when the flag moves while the handler is in flight. POST and
+ * PUT used to answer that refusal 400 ("your input was wrong") and DELETE 500
+ * ("the server broke"); all three are 403 with the kernel's own sentence.
+ */
+describe("Names & Terms writers when the flag flips mid-request", () => {
+  const context = () => ({ params: Promise.resolve({ id: "entry-1" }) });
+  const INPUT = { kind: "person", canonical: "Christian Lee", aliases: [] };
+
+  it("403s POST rather than blaming the body", async () => {
+    mockedCreate.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.namesTerms),
+    );
+    const response = await POST(request("POST", INPUT));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.namesTerms });
+    // The gate did not answer this — the writer did.
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("403s PUT rather than blaming the body", async () => {
+    mockedUpdate.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.namesTerms),
+    );
+    const response = await PUT(request("PUT", INPUT), context());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.namesTerms });
+  });
+
+  it("403s DELETE rather than reporting a server fault", async () => {
+    mockedDelete.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.namesTerms),
+    );
+    const response = await DELETE(new Request("http://localhost"), context());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.namesTerms });
+  });
+
+  it("leaves the conflict mapping alone — a name clash is still 409", async () => {
+    // The 403 branch is FIRST in each catch, so it must not have swallowed the
+    // classification underneath it.
+    const { NamesTermConflictError } = await import("@/lib/names-terms");
+    mockedCreate.mockRejectedValueOnce(
+      new NamesTermConflictError("That name is already recorded."),
+    );
+    expect((await POST(request("POST", INPUT))).status).toBe(409);
+    mockedUpdate.mockRejectedValueOnce(
+      new NamesTermConflictError("That name is already recorded."),
+    );
+    expect((await PUT(request("PUT", INPUT), context())).status).toBe(409);
+    // …and an ordinary failure keeps the status it had.
+    mockedDelete.mockRejectedValueOnce(new Error("disk on fire"));
+    expect(
+      (await DELETE(new Request("http://localhost"), context())).status,
+    ).toBe(500);
   });
 });

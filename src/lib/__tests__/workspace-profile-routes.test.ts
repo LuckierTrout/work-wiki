@@ -19,6 +19,8 @@ import {
 } from "@/lib/write-precondition";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
+import { ClientInputError } from "@/lib/errors";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 import { getCurrentWiki } from "@/lib/wikis";
 import {
   emptyWorkspaceProfile,
@@ -382,5 +384,78 @@ describe("the write precondition on the Workspace Purpose (DW-140, DW-145)", () 
     );
     expect(response.status).toBe(200);
     expect(mockedGet).toHaveBeenLastCalledWith("alice", WIKI.id);
+  });
+});
+
+/**
+ * THE WRITE'S OWN CLASSIFICATION (DW-319).
+ *
+ * The handler's single catch used to flatten every failure past the guards to
+ * 400 — including a storage fault and the kernel's read-only refusal — so an
+ * EACCES or a mid-request flag flip both told the owner their edit had been
+ * rejected. The 400 belongs to the input guards and to nothing else; the write
+ * now classifies its own failure by TYPE.
+ *
+ * Each case supplies a matching `If-Match` so the precondition passes and
+ * `saveWorkspaceProfile` is actually reached.
+ */
+describe("failures of the workspace-profile WRITE itself (DW-319)", () => {
+  const goodPut = () =>
+    PUT(putRequest({ ...PROFILE, wikiId: WIKI.id }, ifMatch(VERSION)));
+
+  it("answers 500, not 400, when the profile cannot be WRITTEN", async () => {
+    // The same rule the two READS above already obey. A full disk, an EACCES or
+    // a lock timeout is not the owner's payload being wrong, and a 400 invites
+    // them to edit a body that was never the problem.
+    mockedSave.mockRejectedValueOnce(
+      new Error("EACCES: permission denied, open 'workspace-profile.json'"),
+    );
+    const response = await goodPut();
+    expect(response.status).toBe(500);
+    expect((await response.json()).error).toContain("EACCES");
+  });
+
+  it("403s a write the KERNEL refuses after the gate let the request in", async () => {
+    // The mid-request flag flip: `isReadOnly()` is false at the top of the
+    // handler — `beforeEach` leaves it so, the deployment was writable when the
+    // request arrived — and `saveWorkspaceProfile` refuses anyway. The kernel's
+    // own sentence is carried verbatim, so this is the one path on which an
+    // HTTP caller reads `wikiFileWrite` rather than the route's narrower
+    // Settings literal.
+    mockedSave.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.wikiFileWrite),
+    );
+    const response = await goodPut();
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: READ_ONLY_REFUSAL.wikiFileWrite,
+    });
+  });
+
+  it("keeps 400 for the caller's own input — the guards, and a typed store refusal", async () => {
+    // The three input guards still answer 400 through the OUTER catch, and a
+    // `ClientInputError` raised by the writer is still the caller's fault.
+    // Every rejection in this describe is `…Once`, so no row leaves
+    // `saveWorkspaceProfile` rejecting for whatever is appended after it.
+    mockedCurrentWiki.mockResolvedValueOnce(null);
+    expect((await goodPut()).status).toBe(400);
+
+    const drifted = await PUT(
+      putRequest(
+        { ...PROFILE, wikiId: "00000000-0000-4000-8000-00000000000b" },
+        ifMatch(VERSION),
+      ),
+    );
+    expect(drifted.status).toBe(400);
+
+    const badField = await PUT(
+      putRequest({ scenario: "other", wikiId: WIKI.id }, ifMatch(VERSION)),
+    );
+    expect(badField.status).toBe(400);
+
+    mockedSave.mockRejectedValueOnce(new ClientInputError("Purpose is required."));
+    const refused = await goodPut();
+    expect(refused.status).toBe(400);
+    expect((await refused.json()).error).toBe("Purpose is required.");
   });
 });

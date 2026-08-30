@@ -44,6 +44,7 @@ import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError } from "@/lib/errors";
 import { isOwnerPrincipal } from "@/lib/owner";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 import {
   applyScenarioTemplate,
   createWiki,
@@ -417,5 +418,101 @@ describe("PUT /api/wikis/current", () => {
     mockedSetCurrent.mockResolvedValue(null);
     expect((await PUT(currentRequest({ id: "nope" }))).status).toBe(404);
     expect((await PUT(currentRequest({}))).status).toBe(400);
+  });
+});
+
+/**
+ * THE MID-REQUEST FLAG FLIP (DW-316).
+ *
+ * `isReadOnly()` is FALSE at every gate here — the deployment was writable when
+ * the request arrived — and the kernel writer refuses anyway, because the flag
+ * moved while the handler was in flight. Each of these catches used to call that
+ * `ReadOnlyError` a server fault and answer 500, which tells the owner their
+ * refused write broke something. It is a refusal: 403, carrying the KERNEL's own
+ * sentence rather than the route's inline literal, the
+ * `PUT /api/workbench/artifact` shape.
+ *
+ * The gates themselves are untouched — the "refuses writes on a read-only
+ * deployment" case above still pins them, and the writers are never reached
+ * there.
+ */
+describe("a flag that flips mid-request on the wiki-lifecycle writes", () => {
+  it("403s POST /api/wikis with the kernel's create sentence", async () => {
+    mockedCreate.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.wikiCreate),
+    );
+    const response = await POST(createRequest({ name: "x", scenario: "business" }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.wikiCreate });
+    // The gate did not answer this — the writer did.
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("403s PATCH /api/wikis/<id> with the kernel's rename sentence", async () => {
+    mockedRename.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.wikiRename),
+    );
+    const response = await RENAME_WIKI(renameRequest({ name: "Q4 plan" }), idContext());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.wikiRename });
+  });
+
+  it("403s DELETE /api/wikis/<id> with the kernel's delete sentence", async () => {
+    mockedDelete.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.wikiDelete),
+    );
+    const response = await DELETE_WIKI(deleteRequest(), idContext());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.wikiDelete });
+  });
+
+  it("403s POST /api/wikis/<id>/template with the kernel's template sentence", async () => {
+    mockedApply.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.wikiTemplate),
+    );
+    const response = await APPLY_TEMPLATE(
+      templateRequest({ scenario: "reading" }),
+      templateContext(),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.wikiTemplate });
+  });
+
+  it("403s PUT /api/wikis/current with the kernel's switch sentence", async () => {
+    // `setCurrentWiki` writes ONE file and nothing else, which is exactly why it
+    // needs the same answer: which Wiki is current decides which `schema.md`
+    // every prompt runs on.
+    mockedSetCurrent.mockRejectedValueOnce(
+      new ReadOnlyError(READ_ONLY_REFUSAL.wikiSwitch),
+    );
+    const response = await PUT(currentRequest({ id: WIKI.id }));
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.wikiSwitch });
+  });
+
+  it("leaves the OTHER classifications alone — 400 for input, 500 for a fault", async () => {
+    // The 403 branch is first in each catch, so it must not have swallowed the
+    // mapping underneath it.
+    mockedCreate.mockRejectedValueOnce(new ClientInputError("Wiki name is required."));
+    expect((await POST(createRequest({ name: "x", scenario: "business" }))).status).toBe(400);
+    mockedCreate.mockRejectedValueOnce(new Error("disk on fire"));
+    expect((await POST(createRequest({ name: "x", scenario: "business" }))).status).toBe(500);
+    mockedSetCurrent.mockRejectedValueOnce(new Error("disk on fire"));
+    expect((await PUT(currentRequest({ id: WIKI.id }))).status).toBe(500);
+    mockedApply.mockRejectedValueOnce(new Error("disk on fire"));
+    expect(
+      (await APPLY_TEMPLATE(templateRequest({ scenario: "reading" }), templateContext()))
+        .status,
+    ).toBe(500);
+    // Both handlers in `wikis/[id]/route.ts` too — each gained its OWN branch,
+    // so each needs its own post-403 mapping pinned. `renameWiki` and
+    // `deleteWiki` already have 400/500 rows of their own above; these are here
+    // because the branch that could swallow them is new.
+    mockedRename.mockRejectedValueOnce(new Error("disk on fire"));
+    expect(
+      (await RENAME_WIKI(renameRequest({ name: "x" }), idContext())).status,
+    ).toBe(500);
+    mockedDelete.mockRejectedValueOnce(new Error("disk on fire"));
+    expect((await DELETE_WIKI(deleteRequest(), idContext())).status).toBe(500);
   });
 });

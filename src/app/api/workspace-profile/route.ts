@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { isReadOnlyError } from "@/lib/read-only";
 import { getCurrentWiki, type WikiRecord } from "@/lib/wikis";
 import {
   checkWritePrecondition,
@@ -181,7 +182,36 @@ export async function PUT(request: Request) {
         { status: precondition.status },
       );
     }
-    const profile = await saveWorkspaceProfile(principal.handle, wiki.id, input);
+    // THE WRITE, IN ITS OWN try/catch (DW-319) — the third on this handler, for
+    // the same reason the registry read and the profile read above have theirs.
+    // The outer catch answers 400, and that 400 belongs to the INPUT GUARDS
+    // (`NO_WIKI`, `WIKI_DRIFTED`, `parseWorkspaceProfileInput`) and to nothing
+    // else: a store that cannot be WRITTEN is not the owner's edit being wrong,
+    // exactly the rule the comment on the registry read already states for the
+    // READ. Falling into it told the owner an EACCES, a full disk or a lock
+    // timeout was their payload's fault, relayed as whatever the filesystem
+    // happened to say.
+    //
+    // Classified by TYPE, never by message — the `research/route.ts` idiom.
+    let profile: Awaited<ReturnType<typeof saveWorkspaceProfile>>;
+    try {
+      profile = await saveWorkspaceProfile(principal.handle, wiki.id, input);
+    } catch (error) {
+      // Backstop for a flag that flipped mid-request: the `isReadOnly()` gate at
+      // the top of this handler already answered for a deployment that was
+      // read-only when the request arrived, so reaching here means
+      // `saveWorkspaceProfile` refused in the kernel. Its own sentence is
+      // carried verbatim — this is the one path on which an HTTP caller reads
+      // `READ_ONLY_REFUSAL.wikiFileWrite` rather than the narrower Settings
+      // literal above.
+      if (isReadOnlyError(error)) {
+        return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+      }
+      if (error instanceof ClientInputError) {
+        return NextResponse.json({ error: getErrorMessage(error) }, { status: 400 });
+      }
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+    }
     return NextResponse.json({
       profile,
       wiki: { id: wiki.id, name: wiki.name },

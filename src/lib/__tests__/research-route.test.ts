@@ -29,7 +29,7 @@ import { getPrincipal } from "@/lib/auth";
 import { ClientInputError } from "@/lib/errors";
 import { createResearchProject, listResearchProjects } from "@/lib/research-projects";
 import { reconcileResearchProjects } from "@/lib/research-runtime";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 import { listWikis } from "@/lib/wikis";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
@@ -132,6 +132,26 @@ describe("POST /api/research failure classification", () => {
     expect(await response.json()).toEqual({
       error: "This workspace already has the maximum of 100 research projects.",
     });
+  });
+
+  it("403s a create the KERNEL refuses after the flag flipped mid-request", async () => {
+    // DW-526. `YOPEDIA_READONLY` is unset — the gate above passed, because the
+    // deployment was writable when the request arrived — and
+    // `createResearchProject` refuses anyway (DW-385). Classified as "not a
+    // ClientInputError" this was a 500: a refusal reported as a server fault.
+    // The kernel's own sentence is carried verbatim.
+    mockedCreate.mockRejectedValue(
+      new ReadOnlyError(READ_ONLY_REFUSAL.researchCreate),
+    );
+
+    const response = await POST(request(BODY));
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({
+      error: READ_ONLY_REFUSAL.researchCreate,
+    });
+    // The gate did not answer this — the store did.
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
   });
 
   it("still 500s a storage failure", async () => {

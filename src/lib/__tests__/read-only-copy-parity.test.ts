@@ -149,6 +149,13 @@ describe("client refusal copy mirrors the server's", () => {
     // true of every field that surface owns, and unhelpful beside a form that
     // edits one thing. Recorded as a difference rather than left to look like
     // the re-ingest bug above.
+    //
+    // OF THE AT-ARRIVAL GATE, precisely (DW-319). A flag that flips MID-request
+    // is answered by the route's backstop with the kernel's own
+    // `wikiFileWrite`, so this is not the only sentence the door can serve —
+    // see "the Settings route and the kernel behind it answer DIFFERENT
+    // sentences" below. What is asserted here is unaffected: the gate's literal
+    // is still narrower than the client constant beside the form.
     const route = await routeSource("workspace-profile/route.ts");
     const served = "Settings are read-only in this deployment.";
     expect(route).toContain(servedAs(served));
@@ -187,10 +194,18 @@ describe("client refusal copy mirrors the server's", () => {
     // `tenants/<t>/wikis/<id>/` and `saveWorkspaceProfile`. Unlike the three
     // wiki-lifecycle keys above it deliberately does NOT mirror its route:
     // `PUT /api/workspace-profile` gates first with a sentence about SETTINGS —
-    // narrower, and the only one an HTTP caller ever reads — while a direct
-    // library caller reaching `saveWorkspaceProfile` gets the kernel's. Two
-    // sentences for one door, recorded as a difference so it does not look like
-    // the re-ingest bug above.
+    // narrower, and the one an HTTP caller reads on a deployment that was
+    // already read-only when the request arrived — while a direct library caller
+    // reaching `saveWorkspaceProfile` gets the kernel's. Two sentences for one
+    // door, recorded as a difference so it does not look like the re-ingest bug
+    // above.
+    //
+    // NOT "the only one an HTTP caller ever reads" any more (DW-319). The route
+    // now carries the `isReadOnlyError` backstop on its write, so a flag that
+    // flips MID-REQUEST — writable at the gate, refused by the kernel — answers
+    // 403 with `wikiFileWrite` verbatim. Which sentence a caller meets tells
+    // them WHEN the deployment turned read-only; that is the point of carrying
+    // the kernel's own rather than re-serving the route's literal.
     const route = await routeSource("workspace-profile/route.ts");
     const served = "Settings are read-only in this deployment.";
     expect(route).toContain(servedAs(served));

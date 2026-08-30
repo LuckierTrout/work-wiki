@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { isOwnerPrincipal } from "@/lib/owner";
 import {
   MAX_EMAIL_SENDERS,
@@ -183,6 +183,13 @@ export async function PUT(request: Request) {
       agents: agents.map(({ id, name }) => ({ id, name })),
     });
   } catch (error) {
+    // Backstop for a flag that flipped mid-request: the gate above already
+    // answered for a deployment that was read-only when the request arrived, so
+    // reaching here means the kernel writer refused. A refusal is neither a
+    // server fault nor the caller's bad input.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     logger.error("email-ingest", "settings update failed", error);
     return NextResponse.json(
       { error: getErrorMessage(error) },

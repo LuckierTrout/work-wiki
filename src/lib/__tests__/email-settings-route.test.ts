@@ -28,7 +28,8 @@ import {
 } from "@/lib/email-ingest";
 import { getAgent } from "@/lib/agents";
 import { getVault, vaultOwnedBy } from "@/lib/vault";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { logger } from "@/lib/logger";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedIsOwner = vi.mocked(isOwnerPrincipal);
@@ -214,5 +215,59 @@ describe("/api/email/settings", () => {
       destinationVaultId: "luckiertrout--work",
       destinationAgentId: "luckiertrout--yoyo",
     }));
+  });
+});
+
+/**
+ * THE MID-REQUEST FLAG FLIP (DW-526).
+ *
+ * `YOPEDIA_READONLY` is UNSET here — the outer `beforeEach` clears it — so the
+ * gate passes and `saveEmailIngestConfig` is reached. It refuses in the kernel
+ * (DW-385) because the flag moved while the handler was in flight. That used to
+ * fall into the catch, be logged as a fault and answered 500.
+ */
+describe("PUT /api/email/settings when the flag flips mid-request", () => {
+  const VALID = {
+    enabled: true,
+    inboundAddress: "ingest@example.com",
+    allowedSenders: ["owner@example.com"],
+  };
+
+  it("403s with the kernel's sentence, and logs no error", async () => {
+    // A refusal is not a server fault, so it must not reach `logger.error` —
+    // an operator reading the logs of a deployment they themselves put into
+    // read-only mode would otherwise be chasing a failure that never happened.
+    const errorLog = vi.spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      mockedSave.mockRejectedValueOnce(
+        new ReadOnlyError(READ_ONLY_REFUSAL.emailSettings),
+      );
+      const { PUT } = await import("@/app/api/email/settings/route");
+      const response = await PUT(request(VALID));
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: READ_ONLY_REFUSAL.emailSettings,
+      });
+      expect(errorLog).not.toHaveBeenCalled();
+      // The gate did not answer this — the writer did.
+      expect(mockedSave).toHaveBeenCalledTimes(1);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  it("still 500s and still LOGS an ordinary save failure", async () => {
+    // The discriminator: the 403 branch returns before the log, and nothing
+    // else about the catch changed.
+    const errorLog = vi.spyOn(logger, "error").mockImplementation(() => {});
+    try {
+      mockedSave.mockRejectedValueOnce(new Error("disk on fire"));
+      const { PUT } = await import("@/app/api/email/settings/route");
+      const response = await PUT(request(VALID));
+      expect(response.status).toBe(500);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 });

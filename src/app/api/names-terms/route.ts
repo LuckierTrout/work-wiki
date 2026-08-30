@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage } from "@/lib/errors";
 import {
   createNamesTerm,
@@ -47,6 +47,13 @@ export async function POST(request: Request) {
     );
     return NextResponse.json({ entry }, { status: 201 });
   } catch (error) {
+    // Backstop for a flag that flipped mid-request: the gate above already
+    // answered for a deployment that was read-only when the request arrived, so
+    // reaching here means the kernel writer refused. A refusal is neither a
+    // server fault nor the caller's bad input.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     const message = getErrorMessage(error);
     return NextResponse.json(
       { error: message },

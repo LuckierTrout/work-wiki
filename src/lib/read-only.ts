@@ -87,6 +87,23 @@
  * (`applyResearchProjectMutation` and its wrappers) are deliberately left OPEN
  * — see the note on that function.
  *
+ * AND NINE OF THOSE DOORS NOW CARRY A BACKSTOP AS WELL (DW-316, DW-319,
+ * DW-526). The five wiki-lifecycle writes, the three Names & Terms verbs,
+ * `PUT /api/email/settings`, `POST /api/research` and the
+ * `PUT /api/workspace-profile` write each classify {@link isReadOnlyError} as
+ * the FIRST branch of their catch — the shape `PUT /api/workbench/artifact` and
+ * `POST /api/ingest/reingest` already used. Every early gate above is unchanged
+ * and still answers first; the branch is reached only when the flag flips
+ * MID-request — writable on arrival, refused by the writer — which these doors
+ * used to report as a server fault (500) or as the caller's bad input (400).
+ * It carries the KERNEL's sentence verbatim rather than re-serving the route's
+ * literal, so a mid-request flip is the one path on which the two sentences a
+ * door owns can differ: WHICH one a caller reads records WHEN the deployment
+ * turned read-only. `PUT /api/workspace-profile` is where that shows most
+ * plainly — its gate answers the narrow "Settings are read-only in this
+ * deployment." and its backstop the wider
+ * {@link READ_ONLY_REFUSAL.wikiFileWrite}.
+ *
  * A CLIENT SENTENCE MAY BE NARROWER THAN THE SERVER'S. The Revert control is
  * the case: the server refusal it meets is `pageWrite`, the KERNEL's sentence
  * for any page write, because the revert route maps the writer's error rather
@@ -186,9 +203,10 @@ export const READ_ONLY_REFUSAL = {
    * rename and a Settings save alike — the same reasoning as {@link pageWrite}.
    *
    * `PUT /api/workspace-profile` keeps its own narrower 403 ("Settings are
-   * read-only in this deployment.") and never reaches this sentence, since its
-   * `isReadOnly()` gate answers first; `read-only-copy-parity.test.ts` records
-   * that divergence.
+   * read-only in this deployment.") for a deployment already read-only when the
+   * request arrived, since its `isReadOnly()` gate answers first — but it does
+   * reach this sentence on the mid-request flip its catch now backstops
+   * (DW-319); `read-only-copy-parity.test.ts` records that divergence.
    */
   wikiFileWrite:
     "Wiki files cannot be written while this deployment is read-only.",
