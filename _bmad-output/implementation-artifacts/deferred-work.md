@@ -4413,7 +4413,9 @@ location: src/lib/research-projects.ts:221
 source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
 severity: low
 reason: `research-projects.ts` calls `JSON.parse(raw)` unwrapped, so truncated or non-JSON registry bytes surface as `Unexpected token } in JSON at position 41` — the same opaque-error-far-from-the-cause shape DW-476 existed to kill. The sibling `parseSlots` (`research-concurrency.ts:88-94`) wraps it and throws "Research lease file is unreadable." The per-element message was mirrored; this first one was not. Pre-existing since DW-297.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-store-parse-and-guards
+resolution-undo: 04528005c204bdaa752cc306b31fd1cc0c7aa3a7952ef6613b409978b94e6a61 2026-08-30 7374617475733a206f70656e
 
 ### DW-576: `GET /api/research/[id]/run` has no catch, so a refused registry escapes as a framework 500 with no `{ error }` body.
 origin: spec-deferred 5bac45c721bc
@@ -4449,7 +4451,9 @@ location: src/lib/research-completion.ts:649
 source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
 severity: low
 reason: A stored `completion: { phase: "sources" }` with no `sources` array reaches `.findIndex(...)` / `.map(...)` and throws the same class of error DW-476 removed from the sort. `isResearchProject` deliberately does not validate nested optional structures, so the registry guard does not cover this path. Pre-existing.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-store-parse-and-guards
+resolution-undo: 04528005c204bdaa752cc306b31fd1cc0c7aa3a7952ef6613b409978b94e6a61 2026-08-30 7374617475733a206f70656e
 
 ### DW-580: The v1 façade answers 4xx with machine tokens everywhere except the new `deep_research` 400, which emits an English sentence.
 origin: spec-deferred 1a77a9c8b8f4
@@ -4655,7 +4659,9 @@ location: src/lib/research-projects.ts:140
 source_spec: `spec-dw-442-research-create-drops-source-urls.md`
 severity: low
 reason: Since DW-442 the run's patch is the sole writer of `project.sourceUrls` (`research-runtime.ts:1559` -> `updateResearchProject`). The store tests cover only the `javascript:` protocol filter. A run whose provider returns more than 40 unique results silently stores 40, and the Studio's "Collect N URLs" then ingests 40 of them with nothing saying so. The cap predates this change; only its exposure is new.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-store-parse-and-guards
+resolution-undo: 04528005c204bdaa752cc306b31fd1cc0c7aa3a7952ef6613b409978b94e6a61 2026-08-30 7374617475733a206f70656e
 
 ### DW-604: No operator-facing surface documents WORKWIKI_SIDECAR_ALLOWED_ORIGINS, so an owner whose deployed page reports down has nowhere outside the source to learn the knob exists.
 origin: spec-deferred 709eca390daa
@@ -5040,4 +5046,44 @@ location: src/lib/research-runtime.ts:322
 source_spec: `spec-dw-480-576-577-research-run-route-error-typing.md`
 severity: low
 reason: `"Research project is retired"` (`src/lib/research-runtime.ts:322`), `"Research project completion is still being delivered"` (`:325`, `:390`), the rerun-baseline race (`:393`) and `applyResearchProjectMutation`'s `"Research projects were busy; retry the request."` (`src/lib/research-projects.ts:387`) all stay plain `Error` and so keep the 500 the old regex ladder also gave them. Two are genuinely caller-visible states: a retired project is a 404 on `GET /api/research/[id]/run` and a 500 on the POST, and a CAS exhaustion is transient contention reported as a permanent server fault with no retry signal. Deliberately excluded here — the bundle intent authorises typing not-found and conflict, not remapping statuses — and now documented as excluded in `ResearchProjectConflictError`'s docblock.
+status: open
+
+### DW-652: `commitResearchPage`'s `completion?.sources?.length` fallbacks persist a truthy non-array `sources` forward before the drain guard can refuse it.
+origin: spec-deferred bca3a66d4ead
+location: src/lib/research-completion.ts:536
+source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
+severity: low
+reason: `src/lib/research-completion.ts:536` writes `sources: project.completion?.sources?.length ? project.completion.sources : sources`, so a stored `completion: { phase: "page", sources: "https://example.com/a" }` is rewritten to `phase: "sources"` KEEPING the string, with `progress.message` reporting the string's character count as a source count ("Ingesting 21 sources."). Only the drain immediately after refuses it. The two lines cannot simply be routed through `requireCompletionSources`: a missing or empty list there is the ordinary first-commit path, so guarding them as written would refuse an ordinary commit. Closing this needs a "completion exists but its sources are not a list" test distinct from "no completion yet". Pre-existing; DW-579 named the `findIndex`/`map` dereferences, not this write. Now named accurately in the `requireCompletionSources` docblock.
+status: open
+
+### DW-653: The drain's follow-up mutator guard is defense-in-depth that no test can reach.
+origin: spec-deferred db1d294b915f
+location: src/lib/research-completion.ts:921
+source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
+severity: low
+reason: `requireCompletionSources(project.completion).map(...)` at `src/lib/research-completion.ts:921` re-reads the row inside the post-ingest CAS, so it fires only when a concurrent writer corrupts `completion.sources` after the loop guard at `:908` has already read it AND after every `checkpointSource` in the loop has finished. An independent mutation check confirmed reverting it alone leaves all four research suites green. The sibling guard at `:692` is now pinned (a mid-drain corruption row added during review); this one still is not, and the window it protects is narrow enough that a later edit could strip it unnoticed.
+status: open
+
+### DW-654: `requireCompletionSources` validates only `Array.isArray`, so an array of wrong-shaped ELEMENTS reproduces DW-579's failure class one level down.
+origin: spec-deferred d18a4d5b9054
+location: src/lib/research-completion.ts:89
+source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
+severity: low
+reason: `["https://example.com/a"]`, `[null]` and `[{}]` all pass the guard and then reach `source.url === url` in `checkpointSource` and `meta.url` / `meta.slug` in the drain loop — undefined-keyed `byUrl` lookups and the same opaque `TypeError` class DW-579 set out to remove, one level in. The limit is deliberate and now named in the helper's docblock: a per-element notion of "valid completion source" belongs beside `isResearchProject`, not as a second divergent one here. Closing it means deciding whether the registry guard should start validating nested optional structures, which its own docblock currently declines to do.
+status: open
+
+### DW-655: `cleanUrls`' 2000-character slice and its slice-before-dedupe order are silent data loss, now pinned as expected behaviour by characterization tests.
+origin: spec-deferred d77a9c6122e5
+location: src/lib/research-projects.ts:181
+source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
+severity: low
+reason: The slice stores a DIFFERENT, still-parseable URL that resolves somewhere else than the one the provider returned, and because `cleanList` slices before it dedupes, two distinct URLs agreeing on their first 2000 characters collapse into one stored entry — two sources become one with nothing said. The new DW-603 rows (`src/lib/__tests__/research-projects.test.ts`) document both and say so in their own comments ("Documented, not desired"); this bundle's `Never` clause forbade changing the behaviour. The 40-item cap has the same silence and is the exposure DW-603's reason actually names: the Studio's "Collect N URLs" reports N with nothing saying the tail was dropped.
+status: open
+
+### DW-656: `markResearchDeliveryBlocked` tells the operator to "Repair the reported lock" for every drain fault, and its Retry re-hits a shape refusal forever.
+origin: spec-deferred 2aaff0311e76
+location: src/lib/research-runtime.ts:246
+source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
+severity: low
+reason: `src/lib/research-runtime.ts:246-270` writes `progress.message: "Research delivery is blocked. Repair the reported lock, then retry."` and surfaces the caught message as `error`. Both drain call sites (`:606-613`, `:1310-1314`) route through it, so the new `Research completion sources are not a list.` refusal is presented under an instruction naming a lock that is not involved, pointing at a Retry that re-enters the same refusal. Separately `:498` and `:500` swallow drain faults with `.catch(() => undefined)`, so cancel and retire silently no-op against a corrupt completion. Pre-existing for every fault class this path already carried; the shape refusal only makes the mismatch easier to hit.
 status: open

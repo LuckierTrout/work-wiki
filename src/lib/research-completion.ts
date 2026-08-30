@@ -16,6 +16,7 @@ import {
   getResearchProject,
   mutateResearchProject,
   updateResearchProjectIf,
+  type ResearchCompletion,
   type ResearchCompletionSource,
   type ResearchProject,
   type ResearchProjectResult,
@@ -46,6 +47,65 @@ export interface FetchedSource {
   url: string;
   title: string;
   text?: string;
+}
+
+/**
+ * A stored `completion` whose `sources` is not a list.
+ *
+ * A plain `extends Error` with `this.name` set, the same idiom as
+ * `ResearchProjectNotFoundError` and `ResearchLeaseError`, so a duplicated
+ * module graph cannot un-classify it and a door that wants to recognise it
+ * never has to string-match. Exported for the tests that pin the refusal.
+ */
+export class ResearchCompletionShapeError extends Error {
+  constructor(message = "Research completion sources are not a list.") {
+    super(message);
+    this.name = "ResearchCompletionShapeError";
+  }
+}
+
+/**
+ * The guard in front of every read of a stored `completion.sources` that
+ * ITERATES or INDEXES it — REFUSES a wrong shape.
+ *
+ * `ResearchCompletion` declares `sources: ResearchCompletionSource[]`, but the
+ * registry guard (`isResearchProject`) validates no nested optional structure,
+ * so a hand-edited or half-written row can reach here as `{ phase: "sources",
+ * pageSlug: "p" }` with no `sources` at all, or with a STRING there. Undefined
+ * died in `findIndex`/`map` as the opaque `TypeError` DW-476 removed from the
+ * registry sort; a string was iterated one character at a time, quietly
+ * turning a completion into per-character garbage.
+ *
+ * FAIL CLOSED — never coerce to `[]`. An empty list would report the
+ * completion as having delivered nothing and let the drain mark it `done`,
+ * silently losing the sources: DW-297's "unreadable is not empty" mistake in a
+ * different file. Same discipline as `parseSlots` on a lease file.
+ *
+ * WHAT IT CHECKS, AND THE LIMIT IT ACCEPTS. `Array.isArray` and nothing more,
+ * so an array of WRONG-SHAPED ELEMENTS — `["https://…"]`, `[null]`, `[{}]` —
+ * passes and then reaches `source.url === url` and `meta.slug`, reproducing
+ * DW-579's failure class one level down. That is a knowing limit, not an
+ * oversight: per-element validation belongs with the registry guard that
+ * admitted the row, and adding it here would put a second, divergent notion of
+ * a valid source in the module that only consumes them.
+ *
+ * WHAT IS NOT ROUTED THROUGH IT. `checkpointSource` returns
+ * `updated?.completion?.sources.find(…)` unguarded — it reads back exactly
+ * what the guarded mutator one line above just wrote, so the shape is already
+ * established. The `completion?.sources?.length ? … : …` fallbacks in
+ * {@link commitResearchPage} stay unguarded because a missing or empty list
+ * there is the ORDINARY first-commit path — guarding them would refuse a
+ * perfectly normal commit. The cost is real and worth naming: a truthy
+ * non-array is truthy, so that fallback PERSISTS the bad value forward — it
+ * writes the string into the stored `completion.sources`, moves the row
+ * `phase: "page"` → `"sources"` and records a `progress.message` counting the
+ * string's CHARACTERS as sources — and only then does the drain immediately
+ * after refuse here. The refusal is not prevention; it stops the bad value at
+ * the first door that would act on it.
+ */
+function requireCompletionSources(completion: ResearchCompletion): ResearchCompletionSource[] {
+  if (!Array.isArray(completion.sources)) throw new ResearchCompletionShapeError();
+  return completion.sources;
 }
 
 /** Delete a requested project only after its durable execution claim is gone. */
@@ -646,12 +706,13 @@ async function checkpointSource(
 ): Promise<ResearchCompletionSource | null> {
   const updated = await mutateResearchProject(owner, id, (project) => {
     if (!project.completion) return null;
-    const index = project.completion.sources.findIndex((source) => source.url === url);
+    const stored = requireCompletionSources(project.completion);
+    const index = stored.findIndex((source) => source.url === url);
     if (index < 0) return null;
-    const current = project.completion.sources[index];
+    const current = stored[index];
     if (patch.jobId && current.jobId && current.jobId !== patch.jobId) return project;
     if (current.ingested && patch.ingested === false) return project;
-    const sources = project.completion.sources.slice();
+    const sources = stored.slice();
     sources[index] = { ...current, ...patch, jobId: current.jobId ?? patch.jobId };
     project.completion = { ...project.completion, sources };
     return project;
@@ -861,7 +922,7 @@ export async function drainResearchOutbox(
 
   const byUrl = new Map(outbox.sources.map((source) => [source.url, source]));
   const nextSources: ResearchCompletionSource[] = [];
-  for (const meta of completion.sources) {
+  for (const meta of requireCompletionSources(completion)) {
     const fetched = byUrl.get(meta.url);
     nextSources.push(
       fetched
@@ -874,7 +935,7 @@ export async function drainResearchOutbox(
     if (!project.completion) return null;
     if (project.deliveryAttemptId !== deliveryAttemptId) return null;
     const localByUrl = new Map(nextSources.map((source) => [source.url, source]));
-    const sources = project.completion.sources.map((stored) => {
+    const sources = requireCompletionSources(project.completion).map((stored) => {
       const local = localByUrl.get(stored.url);
       if (!local) return stored;
       if (stored.ingested) {

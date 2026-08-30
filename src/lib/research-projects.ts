@@ -303,9 +303,28 @@ function isResearchProject(value: unknown): value is ResearchProject {
  * server fault (500), never a `ClientInputError`. Matches `parseSlots` in
  * `research-concurrency.ts`, which refuses a non-array lease file and an
  * invalid lease entry the same way.
+ *
+ * The BYTES-ARE-NOT-JSON fault is typed like the other two for that same
+ * reason. A bare `JSON.parse` let truncated or non-JSON registry bytes escape
+ * as a raw `SyntaxError` — `Unexpected token } in JSON at position 41`, an
+ * opaque message naming a byte offset instead of the file, which is exactly
+ * the far-from-the-cause shape DW-476 removed from the registry sort. It is
+ * refused here, with the file named, so every door says the same thing;
+ * `parseSlots` already wraps its own parse identically.
+ *
+ * The `SyntaxError` is kept as the `cause` rather than dropped. Same argument
+ * as the element index above: with no repair route, the operator needs a
+ * handle on WHERE the bytes went wrong, and the parser's byte offset is the
+ * only one that exists. It rides along without reaching the caller, whose
+ * message and 500 are unchanged.
  */
 function parseRegistry(raw: string): ResearchProject[] {
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error("Research projects file is unreadable.", { cause: error });
+  }
   if (!Array.isArray(parsed)) {
     throw new Error("Research projects file is not a list.");
   }

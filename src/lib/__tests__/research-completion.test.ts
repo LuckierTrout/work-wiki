@@ -11,6 +11,7 @@ import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { _resetLocks } from "../lock";
 import {
   RESEARCH_PAGE_WRITE_STALE_MS,
+  ResearchCompletionShapeError,
   commitResearchPage,
   clearResearchStaging,
   drainResearchOutbox,
@@ -27,6 +28,7 @@ import {
   deleteResearchProject,
   getResearchProject,
   updateResearchProject,
+  type ResearchCompletion,
 } from "../research-projects";
 import { cancelResearchProject, retireResearchProject } from "../research-runtime";
 import { _resetStorage, getStorage } from "../storage";
@@ -807,5 +809,192 @@ describe("research completion outbox", () => {
     expect(await commitResearchPage("alice", created.id, OUTBOX)).toBeNull();
     expect(mockedWritePage).not.toHaveBeenCalled();
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+  });
+});
+
+/**
+ * DW-579. `isResearchProject` validates no nested optional structure, so a
+ * stored `completion` can reach the drain with no `sources` at all or with a
+ * STRING there. Undefined died in `findIndex`/`map` as the same opaque
+ * `TypeError` DW-476 removed from the registry sort; a string was iterated one
+ * character at a time, turning the completion into per-character garbage. Both
+ * now refuse by name, and refusing is the point — coercing to `[]` would mark
+ * the completion `done` having delivered nothing.
+ */
+describe("a stored completion whose sources are not a list", () => {
+  /** Seed a `sources`-phase completion the registry accepts but the drain must refuse. */
+  async function seedBadCompletion(completion: Record<string, unknown>): Promise<string> {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      completion: completion as unknown as ResearchCompletion,
+    });
+    return created.id;
+  }
+
+  it.each([
+    ["missing entirely", { phase: "sources", pageSlug: OUTBOX.pageSlug }],
+    // `null` and a string are both non-arrays but not interchangeable: a FALSY
+    // non-array fails `completion?.sources?.length` in `commitResearchPage`'s
+    // fallbacks the way a missing list does, while a truthy one passes it and
+    // is persisted forward. Both must still refuse here.
+    ["null", { phase: "sources", pageSlug: OUTBOX.pageSlug, sources: null }],
+    ["a string", { phase: "sources", pageSlug: OUTBOX.pageSlug, sources: "https://example.com/a" }],
+    ["an object", { phase: "sources", pageSlug: OUTBOX.pageSlug, sources: { url: "x" } }],
+  ])("refuses the drain by name when sources are %s", async (_label, completion) => {
+    const id = await seedBadCompletion(completion);
+
+    // ONE drain, one caught error: a refusing drain is not byte-for-byte
+    // idempotent (it mints `deliveryAttemptId` first, see the row below), so
+    // all three assertions have to be made against the same thrown value.
+    const caught = await drainResearchOutbox("alice", id).then(
+      () => { throw new Error("drain resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    // By NAME first: a duplicated module graph must not be able to un-classify
+    // the refusal, so the name is the load-bearing assertion and `instanceof`
+    // is the stronger one that holds in this single-graph test process.
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+    expect((caught as Error).message).toBe("Research completion sources are not a list.");
+  });
+
+  it("leaves the completion, the status and the outbox alone, writing only the delivery fence", async () => {
+    const id = await seedBadCompletion({
+      phase: "sources",
+      pageSlug: OUTBOX.pageSlug,
+      sources: "https://example.com/a",
+    });
+    const before = await getResearchProject("alice", id);
+    expect(before?.deliveryAttemptId).toBeUndefined();
+
+    await expect(drainResearchOutbox("alice", id)).rejects.toBeInstanceOf(
+      ResearchCompletionShapeError,
+    );
+
+    const after = await getResearchProject("alice", id);
+    // NOT a whole-row no-write guarantee, and the exception is pinned rather
+    // than hidden by a narrow comparison: `drainResearchOutbox` mints and
+    // PERSISTS `deliveryAttemptId` before it ever reads `completion.sources`,
+    // so a refusing drain does write the row — that field and `updatedAt`.
+    expect(after?.deliveryAttemptId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(after?.updatedAt).not.toBe(before?.updatedAt);
+
+    // What IS guaranteed: the bad value is neither repaired nor acted on. The
+    // completion payload is byte-identical, the status never moves, the outbox
+    // still holds the bodies so an operator fix can drain them, and no Ingest
+    // was enqueued for the string's characters.
+    expect(after?.completion).toEqual(before?.completion);
+    expect(after?.status).toBe(before?.status);
+    expect(await loadResearchOutbox("alice", id)).not.toBeNull();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("refuses from checkpointSource when the row is corrupted mid-drain", async () => {
+    // The drain loop guards only the SNAPSHOT it read at the top, so every row
+    // above refuses there and `checkpointSource`'s own guard never runs. This
+    // row is the one that reaches it: the stored `sources` is a valid list when
+    // the drain starts and is corrupted while the FIRST source is in flight, so
+    // the next `checkpointSource` — which re-reads the stored row inside its
+    // mutator — is the door that has to refuse.
+    const second = {
+      url: "https://example.com/launch/timeline",
+      title: "Launch timeline",
+      text: "THE SECOND BODY.",
+    };
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, {
+      ...OUTBOX,
+      sources: [OUTBOX.sources[0], second],
+    });
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [
+          {
+            url: OUTBOX.sources[0].url,
+            title: OUTBOX.sources[0].title,
+            slug: "research-example-com-launch-brief",
+            sha: "abc",
+          },
+          {
+            url: second.url,
+            title: second.title,
+            slug: "research-example-com-launch-timeline",
+            sha: "def",
+          },
+        ],
+      },
+    });
+
+    // The `enqueueTask` seam runs inside the dispatch of source one, after the
+    // drain has taken its snapshot and before any later checkpoint.
+    let corrupted = false;
+    mockedEnqueue.mockImplementation(async () => {
+      if (!corrupted) {
+        corrupted = true;
+        await updateResearchProject("alice", created.id, {
+          completion: {
+            phase: "sources",
+            pageSlug: OUTBOX.pageSlug,
+            sources: "https://example.com/launch/brief",
+          } as unknown as ResearchCompletion,
+        });
+      }
+      return true;
+    });
+
+    const caught = await drainResearchOutbox("alice", created.id).then(
+      () => { throw new Error("drain resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+
+    // This is what makes the row specific to `checkpointSource`: the drain got
+    // past its own loop guard and did REAL WORK — source one's Ingest was
+    // dispatched — before anything refused. A refusal from the loop guard
+    // would have enqueued nothing at all.
+    expect(mockedEnqueue).toHaveBeenCalledTimes(1);
+    expect(corrupted).toBe(true);
+
+    // And the corrupt value is still on disk, untouched: refusing is not
+    // repairing.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.completion?.sources).toBe("https://example.com/launch/brief");
+    expect(after?.completion?.phase).toBe("sources");
+  });
+
+  it("still drains a completion whose sources are a proper list", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [{
+          url: OUTBOX.sources[0].url,
+          title: OUTBOX.sources[0].title,
+          slug: "research-example-com-launch-brief",
+          sha: "abc",
+        }],
+      },
+    });
+
+    // The guard adds refusals only for shapes that already failed: a real
+    // list still drains to `done` exactly as before.
+    expect((await drainResearchOutbox("alice", created.id))?.completion?.phase).toBe("done");
   });
 });

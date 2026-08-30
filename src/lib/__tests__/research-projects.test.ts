@@ -171,6 +171,83 @@ describe("research projects", () => {
     expect(updated?.sourceUrls).toEqual(["https://example.com/found"]);
   });
 
+  /**
+   * DW-603. `cleanUrls`' bounds were only ever pinned through the create,
+   * which since DW-442 no longer accepts URLs — so the cap, the per-URL slice
+   * and the dedupe were live on the run's patch (`research-runtime`'s
+   * `{ results, sourceUrls }`) with nothing holding them. These rows pin the
+   * CURRENT numbers; they are a characterization, not a request to change them.
+   */
+  describe("the run patch's source-URL bounds", () => {
+    async function patchUrls(urls: readonly string[]): Promise<string[] | undefined> {
+      const project = await createResearchProject("alice", {
+        title: "Launch research",
+        question: "What evidence supports the launch date?",
+      });
+      const updated = await updateResearchProject("alice", project.id, { sourceUrls: urls });
+      return updated?.sourceUrls;
+    }
+
+    it("keeps the first 40 of a longer list, in first-seen order", async () => {
+      const urls = Array.from({ length: 45 }, (_, i) => `https://example.com/found/${i}`);
+
+      const stored = await patchUrls(urls);
+
+      expect(stored).toHaveLength(40);
+      expect(stored).toEqual(urls.slice(0, 40));
+      // The tail is DROPPED, not rotated in: the cap `break`s on the way, so
+      // the newest URLs a long run collected are the ones that do not land.
+      expect(stored).not.toContain("https://example.com/found/40");
+    });
+
+    it("lets an unusable entry among the first 40 consume a slot and then drops it", async () => {
+      // Where the cap actually bites. `cleanList` applies the 40-item cap and
+      // `break`s BEFORE `cleanUrls`' http/https filter ever runs, so a
+      // `javascript:` entry is counted toward the 40, then thrown away — and
+      // the 40th good URL, which would otherwise have fitted, is never reached.
+      // A run whose provider returns one unusable URL silently loses one good
+      // one. Characterized, not endorsed; the order is not this bundle's to
+      // change.
+      const valid = Array.from({ length: 40 }, (_, i) => `https://example.com/found/${i}`);
+
+      const stored = await patchUrls(["javascript:alert(1)", ...valid]);
+
+      expect(stored).toHaveLength(39);
+      expect(stored).toEqual(valid.slice(0, 39));
+      expect(stored).not.toContain("https://example.com/found/39");
+    });
+
+    it("truncates a URL longer than 2000 characters", async () => {
+      const long = `https://example.com/${"a".repeat(4_000)}`;
+
+      const stored = await patchUrls([long]);
+
+      expect(stored).toHaveLength(1);
+      expect(stored?.[0]).toHaveLength(2_000);
+      expect(stored?.[0]).toBe(long.slice(0, 2_000));
+    });
+
+    it("keeps a duplicate URL once, at its first position", async () => {
+      const a = "https://example.com/a";
+      const b = "https://example.com/b";
+
+      // Dedupe runs on the CLEANED string, so surrounding whitespace does not
+      // buy a second slot either.
+      expect(await patchUrls([a, b, a, `  ${a}  `])).toEqual([a, b]);
+    });
+
+    it("counts a truncated URL as a duplicate of one sharing its first 2000 characters", async () => {
+      // The slice happens BEFORE the dedupe, so two distinct URLs that agree
+      // for their first 2000 characters collapse to one. Documented, not
+      // desired — nothing here asks for the order to change.
+      const prefix = `https://example.com/${"a".repeat(4_000)}`;
+
+      const stored = await patchUrls([`${prefix}?one`, `${prefix}?two`]);
+
+      expect(stored).toEqual([prefix.slice(0, 2_000)]);
+    });
+  });
+
   it("deletes only from the owning workspace", async () => {
     const project = await createResearchProject("alice", {
       title: "Topic",
@@ -503,6 +580,101 @@ describe("research projects", () => {
       expect(stored).toHaveLength(7);
       expect(filterResearchProjects(stored, null)).toHaveLength(6);
       expect(await getResearchProject("alice", "seed-4")).toMatchObject({ status: "complete" });
+    });
+  });
+
+  /**
+   * DW-575. `parseRegistry` wrapped neither of the two throws below it in a
+   * try/catch around `JSON.parse`, so bytes that are not JSON at all escaped
+   * as a raw `SyntaxError` naming a byte offset instead of the file — the
+   * opaque-error-far-from-the-cause shape the element guard above exists to
+   * kill. The parse fault is now the same plain `Error` refusal, at the same
+   * shared helper, so every door still says the same thing.
+   */
+  describe("a registry whose bytes are not JSON", () => {
+    const unreadable: [string, string][] = [
+      ["truncated bytes", '{"id":'],
+      ["a truncated list", '[{"id":"seed-0"}'],
+      ["bytes that are not JSON at all", "not json at all"],
+      ["empty bytes", ""],
+    ];
+
+    it.each(unreadable)("rejects reads when the registry holds %s", async (_label, raw) => {
+      await seedRawRegistry("alice", raw);
+
+      // A plain Error, NOT a ClientInputError: unreadable stored bytes are a
+      // server fault (500). The message names the FILE — a `SyntaxError`'s
+      // "Unexpected token … at position 41" names only an offset.
+      await expect(listResearchProjects("alice")).rejects.toThrow(
+        "Research projects file is unreadable.",
+      );
+      await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(ClientInputError);
+      await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(SyntaxError);
+      await expect(getResearchProject("alice", "seed-0")).rejects.toThrow(
+        "Research projects file is unreadable.",
+      );
+    });
+
+    it.each(unreadable)(
+      "rejects a create against %s and leaves the stored bytes byte-identical",
+      async (_label, raw) => {
+        await seedRawRegistry("alice", raw);
+        const storage = getStorage();
+        const spies = [
+          vi.spyOn(storage, "writeFile"),
+          vi.spyOn(storage, "writeFileIfMatch"),
+          vi.spyOn(storage, "writeFileIfAbsent"),
+        ];
+
+        try {
+          // The CAS read refuses too, so the create never sees `[]`, never
+          // clears the cap guard and never overwrites the corrupt file.
+          await expect(
+            createResearchProject("alice", { title: "Overwrite", question: "Lands?" }),
+          ).rejects.toThrow("Research projects file is unreadable.");
+          for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+        } finally {
+          for (const spy of spies) spy.mockRestore();
+        }
+
+        expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
+      },
+    );
+
+    it.each([
+      [
+        "an update",
+        async () => {
+          await updateResearchProject("alice", "seed-0", { status: "complete" });
+        },
+      ],
+      [
+        "a delete",
+        async () => {
+          await deleteResearchProject("alice", "seed-0");
+        },
+      ],
+    ])("rejects %s and leaves the stored bytes byte-identical", async (_label, run) => {
+      const raw = "not json at all";
+      await seedRawRegistry("alice", raw);
+
+      await expect(run()).rejects.toThrow("Research projects file is unreadable.");
+      await expect(run()).rejects.not.toBeInstanceOf(ClientInputError);
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
+    });
+
+    it("still treats a MISSING registry as an empty one", async () => {
+      // Only the parse fault is retyped: `readProjects` still swallows ENOENT,
+      // so a tenant with no file yet is not an unreadable one.
+      expect(await listResearchProjects("alice")).toEqual([]);
+      const project = await createResearchProject("alice", { title: "First", question: "New?" });
+      expect((await listResearchProjects("alice")).map((p) => p.id)).toEqual([project.id]);
+    });
+
+    it("still reads a well-formed registry", async () => {
+      await seedRawRegistry("alice", JSON.stringify([seedRow(0), seedRow(1)]));
+      expect((await listResearchProjects("alice")).map((p) => p.id)).toEqual(["seed-1", "seed-0"]);
     });
   });
 
