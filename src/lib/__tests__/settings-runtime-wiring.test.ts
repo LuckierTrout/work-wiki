@@ -253,13 +253,13 @@ describe("the custom provider is visible to the gates every LLM feature asks", (
     // them, which is the silently-inert save the `custom` branch exists to
     // prevent.
     await store(CUSTOM);
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
 
     await store({ provider: "custom", customApiKey: "sk-custom" });
-    expect(hasLLMKey()).toBe(false);
+    expect(await hasLLMKey()).toBe(false);
 
     await store({ provider: "custom", customBaseUrl: "https://api.example/v1" });
-    expect(hasLLMKey()).toBe(false);
+    expect(await hasLLMKey()).toBe(false);
   });
 
   it("does not report the literal string 'custom' as the active model", async () => {
@@ -301,7 +301,7 @@ describe("the custom provider is visible to the gates every LLM feature asks", (
     process.env.LLM_CUSTOM_BASE_URL = "";
     await store(CUSTOM);
 
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
     await callLLM("system", "message");
     expect(createOpenAIMock).toHaveBeenCalledWith({
       apiKey: "sk-custom",

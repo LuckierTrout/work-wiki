@@ -44,7 +44,7 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
 
-  mockedHasLLMKey.mockReturnValue(true);
+  mockedHasLLMKey.mockResolvedValue(true);
   mockedCallLLM.mockReset();
 
   // Save original fetch

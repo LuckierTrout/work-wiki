@@ -61,7 +61,7 @@ beforeEach(async () => {
   resetAliasIndex();
 
   // Default: no LLM key (fallback synthesis)
-  mockedHasLLMKey.mockReturnValue(false);
+  mockedHasLLMKey.mockResolvedValue(false);
 });
 
 afterEach(async () => {

@@ -70,7 +70,7 @@ beforeEach(async () => {
   _resetStorage();
 
   // Default: no LLM key
-  mockedHasLLMKey.mockReturnValue(false);
+  mockedHasLLMKey.mockResolvedValue(false);
   mockedCallLLM.mockReset();
   mockedCallLLM.mockResolvedValue("[]");
 });
@@ -547,7 +547,7 @@ describe("parseContradictionResponse", () => {
 
 describe("checkContradictions", () => {
   it("returns info issue when no LLM key is configured", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await ensureDirectories();
 
     const issues = await checkContradictions(["some-slug"]);
@@ -560,7 +560,7 @@ describe("checkContradictions", () => {
   });
 
   it("returns contradiction issues when LLM finds them", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Create two pages that link to each other
     await writeWikiPage(
@@ -593,7 +593,7 @@ describe("checkContradictions", () => {
   });
 
   it("returns no issues when LLM finds no contradictions", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "consistent-a",
@@ -616,7 +616,7 @@ describe("checkContradictions", () => {
   });
 
   it("handles malformed LLM response gracefully", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "mal-a",
@@ -642,7 +642,7 @@ describe("checkContradictions", () => {
   });
 
   it("handles LLM call failure gracefully", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "err-a",
@@ -666,7 +666,7 @@ describe("checkContradictions", () => {
   });
 
   it("returns no issues when pages have no cross-references", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "isolated-a",
@@ -689,7 +689,7 @@ describe("checkContradictions", () => {
   });
 
   it("includes SCHEMA.md conventions in contradiction detection prompt", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("[]");
 
     // Write a temporary SCHEMA.md in tmpDir so loadPageConventions picks it up
@@ -810,7 +810,7 @@ Every page must start with a level-1 heading.
 
   describe("checkMissingConceptPages", () => {
     it("returns info-level skip message when no LLM key is configured", async () => {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       await ensureDirectories();
 
       const issues = await checkMissingConceptPages(["page-a", "page-b"]);
@@ -822,7 +822,7 @@ Every page must start with a level-1 heading.
     });
 
     it("returns empty array when fewer than 2 pages exist", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
 
       await writeWikiPage("solo", "# Solo Page\n\nJust one page with enough content.");
 
@@ -832,7 +832,7 @@ Every page must start with a level-1 heading.
     });
 
     it("returns missing-concept-page issues when LLM identifies concepts", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue(
         JSON.stringify([
           {
@@ -861,7 +861,7 @@ Every page must start with a level-1 heading.
     });
 
     it("returns empty array when LLM returns empty array", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue("[]");
 
       await writeWikiPage(
@@ -878,7 +878,7 @@ Every page must start with a level-1 heading.
     });
 
     it("handles LLM call failure gracefully", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockRejectedValue(new Error("API error"));
 
       await writeWikiPage(
@@ -896,7 +896,7 @@ Every page must start with a level-1 heading.
   });
 
   it("lint result includes missing-concept-page issues when LLM is available", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Both checks run in parallel via Promise.all, so call order is
     // non-deterministic. Dispatch based on the system prompt content instead.
@@ -1105,7 +1105,7 @@ describe("lint with LintOptions", () => {
 
   it("excludes info-level issues when minSeverity is 'warning'", async () => {
     // Set up LLM mock to be unavailable (which generates info issues)
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     // Create two pages that mention each other's title but don't cross-link
     // → missing-crossref (info severity)
@@ -1234,7 +1234,7 @@ describe("lint with LintOptions", () => {
 
 describe("checkIncompleteCoverage", () => {
   it("returns info issue when no LLM key is configured", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await ensureDirectories();
 
     const issues = await checkIncompleteCoverage(["some-slug"]);
@@ -1247,7 +1247,7 @@ describe("checkIncompleteCoverage", () => {
   });
 
   it("returns no issues when slug has no raw source", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "no-raw",
@@ -1263,7 +1263,7 @@ describe("checkIncompleteCoverage", () => {
   });
 
   it("reports issues when LLM finds gaps between raw source and wiki page", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Create a wiki page and its corresponding raw source
     await writeWikiPage(
@@ -1294,7 +1294,7 @@ describe("checkIncompleteCoverage", () => {
   });
 
   it("returns no issues when LLM finds no gaps", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "complete-page",
@@ -1321,7 +1321,7 @@ describe("checkIncompleteCoverage", () => {
     // never even considered for coverage. The caller unions the snapshot
     // listing and falls back to `readRawSourceById`, so the snapshot's content
     // is what actually reaches the comparison.
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "hashed-only",
@@ -1356,7 +1356,7 @@ describe("checkIncompleteCoverage", () => {
     // branch came back. `listRawSources` stats every flat entry it lists, so a
     // file that vanishes between the listing and the stat is what breaks it;
     // the decoy exists purely to give that walk something to stat.
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "flat-listing-broken",
@@ -1408,7 +1408,7 @@ describe("checkIncompleteCoverage", () => {
     // snapshot walk that throws — an unreadable `raw/sources/<slug>/` subtree —
     // must not blank the whole check and lose the flat Sources that are right
     // there; before the union there was one listing and one `return []`.
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage(
       "flat-only",
@@ -1472,7 +1472,7 @@ describe("checkIncompleteCoverage", () => {
   // without an explicit budget. Only the budget moves; the cap assertion below
   // is untouched.
   it("processes at most MAX_COVERAGE_CHECKS pages per run", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // Create more pages with raw sources than the cap
     const count = MAX_COVERAGE_CHECKS + 10;
@@ -1650,7 +1650,7 @@ describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
 
   it("checkContradictions prompts with the active Wiki's conventions", async () => {
     await seedActiveWiki();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("[]");
 
     // Two mutually-linked pages, so `buildClusters` forms a cluster and the
@@ -1678,7 +1678,7 @@ describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
 
   it("checkMissingConceptPages prompts with the active Wiki's conventions", async () => {
     await seedActiveWiki();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("[]");
 
     await writeWikiPage(

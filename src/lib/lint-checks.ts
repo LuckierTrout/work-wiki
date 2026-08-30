@@ -366,7 +366,7 @@ export function parseContradictionResponse(
 export async function checkContradictions(
   diskSlugs: string[],
 ): Promise<LintIssue[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return [
       {
         type: "contradiction",
@@ -513,7 +513,7 @@ export function parseMissingConceptResponse(
 export async function checkMissingConceptPages(
   diskSlugs: string[],
 ): Promise<LintIssue[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return [
       {
         type: "missing-concept-page",
@@ -956,7 +956,7 @@ export const MAX_COVERAGE_CHECKS = 20;
 export async function checkIncompleteCoverage(
   diskSlugs: string[],
 ): Promise<LintIssue[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return [
       {
         type: "incomplete-coverage",

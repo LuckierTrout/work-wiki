@@ -608,7 +608,8 @@ export async function runList(raw: boolean): Promise<void> {
 
 export async function runStatus(): Promise<void> {
   const { listWikiPages } = await import("./lib/wiki");
-  const { getEffectiveSettings, loadConfig } = await import("./lib/config");
+  const { getEffectiveSettings, readConfig } = await import("./lib/config");
+  const { getErrorMessage } = await import("./lib/errors");
 
   const pages = await listWikiPages();
   // Same union as `list --raw`: a count that omitted hashed snapshots would
@@ -630,17 +631,55 @@ export async function runStatus(): Promise<void> {
   //
   // WARMING AT THE CALL, which is what the web surface does too — there is no
   // startup hook in this repo to warm anything globally. `src/app/api/status/
-  // route.ts` awaits `loadConfig()` immediately before `getProviderInfo()`, per
+  // route.ts` awaits a config read immediately before `getProviderInfo()`, per
   // request, for exactly this reason; this is the same move on the CLI side.
   //
-  // No error handling belongs here: `loadConfig()` answers `{}` for a missing or
-  // unreadable config and never throws, so the four rows below print either way.
-  await loadConfig();
+  // THROUGH `readConfig()` RATHER THAN `loadConfig()` (DW-549). Both warm the
+  // sync cache identically on the success path, so the DW-502 fix is unchanged;
+  // `readConfig()` is simply the only door that tells an ABSENT store from an
+  // UNREADABLE one. `loadConfig()` flattens both to `{}`, and the rows below
+  // then say "not configured" in the same sentence for "nothing was ever saved"
+  // and for "what you saved could not be read" — on the one surface with no
+  // Settings screen to go and look at.
+  //
+  // No error handling belongs here either: `readConfig()` RETURNS its failure
+  // rather than throwing, so the rows below print either way.
+  const stored = await readConfig();
 
   const settings = getEffectiveSettings();
 
   console.log(`Wiki pages:\t${pages.length}`);
   console.log(`Raw sources:\t${sources.length}`);
+  // WHY the unreadable store is reported ABOVE the provider verdict (DW-549).
+  //
+  // A store that could not be read degrades EVERY settings row below it to the
+  // environment alone — provider, endpoint and embeddings alike — so it is a
+  // caveat on all of them, not a note on one. `Ollama endpoint:` stays
+  // immediately after `LLM provider:` because it qualifies exactly that subject.
+  //
+  // CONDITIONAL, like `Ollama endpoint:`. ENOENT is `status: "ok"` with `{}`, so
+  // a deployment that simply never saved anything still prints the four rows it
+  // always has — `Label:\tvalue` is a parsed shape, and an unconditional fifth
+  // row would be a new field for every reader of this output.
+  if (stored.status !== "ok") {
+    // WHY THE MESSAGE IS FLATTENED AND CAPPED.
+    //
+    // `Label:\tvalue` is a parsed shape, and the value here is the only one on
+    // this surface that comes from OUTSIDE the program: V8's `JSON.parse` error
+    // quotes a snippet of the offending bytes back at you, so a config file
+    // holding a newline printed a SECOND, unlabelled physical line and detached
+    // the "environment only" caveat from the label it qualifies. Collapsing
+    // whitespace is what keeps one `console.log` to one row no matter what is in
+    // the file; the cap keeps a large malformed file from turning the row into a
+    // paragraph. The row is a POINTER — the operator opens the file next — so
+    // losing the tail of a long parser message costs nothing.
+    const detail = getErrorMessage(stored.error).replace(/\s+/g, " ").trim();
+    const message = detail.length > 200 ? `${detail.slice(0, 197)}...` : detail;
+    console.log(
+      `Stored config:\tunreadable — ${message}; ` +
+      `the settings below reflect the environment only`,
+    );
+  }
   console.log(`LLM provider:\t${settings.provider ?? "not configured"}`);
   // WHY the endpoint was thrown away (DW-402, DW-418).
   //
@@ -760,21 +799,36 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  const message = err instanceof Error ? err.message : String(err);
+// Only run main when executed directly (not imported for testing) — DW-551.
+//
+// This module exports `runStatus`, `runList` and the rest for the suites that
+// pin them, and a bare `main()` at module scope runs a COMMAND on every one of
+// those imports: with no argv the parser falls through to `help`, so a suite
+// gets the HELP block in its output, and any command that throws reaches the
+// `process.exit(1)` below and takes the vitest worker down with it.
+//
+// The shape mirrors `src/mcp.ts` verbatim so the two entry points cannot drift.
+const isDirectExecution =
+  process.argv[1]?.endsWith("cli.ts") ||
+  process.argv[1]?.endsWith("cli.js");
 
-  // Friendly message for missing API key
-  if (message.toLowerCase().includes("api key") || message.toLowerCase().includes("api_key")) {
-    console.error(
-      `Error: No LLM API key configured.\n\n` +
-      `Set one of these environment variables:\n` +
-      `  ANTHROPIC_API_KEY=sk-...\n` +
-      `  OPENAI_API_KEY=sk-...\n` +
-      `  GOOGLE_GENERATIVE_AI_API_KEY=...\n\n` +
-      `Or configure a provider in the Settings UI (http://localhost:3000/settings).`,
-    );
-  } else {
-    console.error(`Error: ${message}`);
-  }
-  process.exit(1);
-});
+if (isDirectExecution) {
+  main().catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+
+    // Friendly message for missing API key
+    if (message.toLowerCase().includes("api key") || message.toLowerCase().includes("api_key")) {
+      console.error(
+        `Error: No LLM API key configured.\n\n` +
+        `Set one of these environment variables:\n` +
+        `  ANTHROPIC_API_KEY=sk-...\n` +
+        `  OPENAI_API_KEY=sk-...\n` +
+        `  GOOGLE_GENERATIVE_AI_API_KEY=...\n\n` +
+        `Or configure a provider in the Settings UI (http://localhost:3000/settings).`,
+      );
+    } else {
+      console.error(`Error: ${message}`);
+    }
+    process.exit(1);
+  });
+}

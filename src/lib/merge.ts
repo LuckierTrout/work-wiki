@@ -444,7 +444,7 @@ async function mergePagesWhileSourceLocked({
     let mergedBody = `${into.body}\n\n${from.body}`;
     let disputed =
       into.frontmatter.disputed === true || from.frontmatter.disputed === true;
-    if (hasLLMKey()) {
+    if (await hasLLMKey()) {
       try {
         // Whose workspace standards govern the fold (DW-323). The merged prose
         // is written to the SURVIVOR and lives on in ITS owner's wiki, so that

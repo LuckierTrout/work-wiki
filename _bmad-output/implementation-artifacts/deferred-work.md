@@ -4125,7 +4125,9 @@ location: src/lib/llm.ts:226-243
 source_spec: `spec-dw-502-cli-status-config-load.md`
 severity: medium
 reason: `src/lib/llm.ts:226-243` falls through to `loadConfigSync()` for `cfg.provider === "ollama"` (line 232) and `"custom"` (line 243). `callLLM` warms the cache (`src/lib/llm.ts:481`), but `hasLLMKey()` runs first and short-circuits: `src/lib/query.ts:330`, `src/lib/ingest.ts:1042` and `src/lib/ingest.ts:1562` all gate on it. On a cold process the store leg is `{}`, so `pnpm cli query` answers "No API key configured." and ingest degrades to the fallback page for a provider the owner did save. Same class as DW-502, at a call site DW-502's intent did not reach. `src/mcp.ts` exposes the same entry points and warms nothing either.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-cli-config-warm-and-status
+resolution-undo: a03d638ef5170f352ddfe9f8eca27752064289754188259e18a74eb976a43feb 2026-08-30 7374617475733a206f70656e
 
 ### DW-549: `yopedia status` prints "not configured" for a config object it could not read, which is the same sentence it prints when nothing was ever stored.
 origin: spec-deferred 28bf2339b3bc
@@ -4133,7 +4135,9 @@ location: src/cli.ts:584
 source_spec: `spec-dw-502-cli-status-config-load.md`
 severity: medium
 reason: `runStatus` now warms through `loadConfig()` (`src/lib/config.ts:813-816`), which flattens `readStoredConfig`'s `unreadable` answer to `{}`. `readConfig()` (`src/lib/config.ts:782`) keeps that distinction. So malformed JSON, a non-object parse, or a storage read failure all surface as "nothing was ever set" on the one surface with no Settings screen to go and look at — the exact conflation DW-402 closed for the `Ollama endpoint:` row, one row above it. The intent named `loadConfig()` explicitly, so widening the row set was out of scope for DW-502.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-cli-config-warm-and-status
+resolution-undo: a03d638ef5170f352ddfe9f8eca27752064289754188259e18a74eb976a43feb 2026-08-30 7374617475733a206f70656e
 
 ### DW-550: `loadConfigSync()`'s doc comment still justifies its `{}` answer with a startup sequence that does not exist in this repo.
 origin: spec-deferred 6cf381b01ada
@@ -4151,7 +4155,9 @@ location: src/cli.ts:703
 source_spec: `spec-dw-502-cli-status-config-load.md`
 severity: low
 reason: There is no `require.main`/`import.meta` guard — `main().catch(...)` runs at `src/cli.ts:703`. Under vitest, argv parses to `help`, so importing the module prints the whole HELP block into the run's stdout (visible in `cli.test.ts` and `cli-status-config-load.test.ts` output today). The catch arm ends in `process.exit(1)`, so an argv that parsed to any other command would abort the worker mid-collection. Pre-existing; DW-502 added a second static importer of the module rather than creating the hazard.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-cli-config-warm-and-status
+resolution-undo: a03d638ef5170f352ddfe9f8eca27752064289754188259e18a74eb976a43feb 2026-08-30 7374617475733a206f70656e
 
 ### DW-552: DW-509 aligned only the RUNTIME gate on a junk EMBEDDING_PROVIDER, so the route's and the browser's halves of canEnableVectorSearch now disagree with it for that state.
 origin: spec-deferred dd238fd4fbbe
@@ -4734,4 +4740,20 @@ location: src/app/api/settings/route.ts, src/lib/config.ts:getWorkbenchSettings
 source_spec: `spec-dw-334-550-config-single-read-resolution.md`
 severity: low
 reason: `src/app/api/settings/route.ts` resolves `getEffectiveSettings()` and then `getWorkbenchSettings(...)` after an async hop; `getWorkbenchSettings` makes its own `loadConfigSync()` read and calls `getFirecrawlSettings()`, `getResearchSettings()` and `getVectorSearchSettings()`, none of which accepts a snapshot. One HTTP response can therefore describe two config generations across the two panes it renders.
+status: open
+
+### DW-621: `hasLLMKey()` keys only off `cfg.provider`, so a store that selects a store-only provider through `chatProvider` or `ingestProvider` alone still reports that nothing is configured.
+origin: spec-deferred f1e1f0e2caf6
+location: src/lib/llm.ts:247-270
+source_spec: `spec-dw-548-549-551-cli-config-warm-and-status.md`
+severity: low
+reason: The gate reads `cfg.provider` and nothing else (`src/lib/llm.ts:247-270`), but `AppConfig` carries `chatProvider` and `ingestProvider` as independent workload selections (`src/lib/config.ts:63,66`) and the resolvers honour them (`getChatModelSettings` at `src/lib/config.ts:1351`, `getIngestModelSettings` at `:1362`). A deployment that sets only `chatProvider: "ollama"` therefore has Chat refused by the gate at `src/lib/chat.ts:865` for a provider the workload resolver would have constructed. Pre-existing — the gate has always read that one field; DW-548 changed WHERE the field is read from, not WHICH field.
+status: open
+
+### DW-622: `src/app/api/status/route.ts` still reads through `loadConfig()`, so the web status surface keeps the unreadable-versus-absent conflation DW-549 just closed on the CLI.
+origin: spec-deferred 3ea22bfe0219
+location: src/app/api/status/route.ts:6-8
+source_spec: `spec-dw-548-549-551-cli-config-warm-and-status.md`
+severity: low
+reason: `src/app/api/status/route.ts:7` awaits `loadConfig()`, which flattens `readStoredConfig`'s `unreadable` answer to `{}` (`src/lib/config.ts:813`). The served `ProviderInfo` therefore reports `configured: false` for a config that exists but could not be parsed, exactly as `yopedia status` used to. `readConfig()` keeps the distinction and is the same single round-trip. DW-549's intent named `yopedia status` only, so the web route was out of scope for this bundle.
 status: open

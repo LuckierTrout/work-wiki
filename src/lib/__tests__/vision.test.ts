@@ -21,14 +21,14 @@ function bindingReturning(run: (...a: unknown[]) => unknown) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedHasLLMKey.mockReturnValue(false); // default: exercise the Workers AI path
+  mockedHasLLMKey.mockResolvedValue(false); // default: exercise the Workers AI path
 });
 
 const bytes = new Uint8Array([1, 2, 3]).buffer;
 
 describe("describeImage — LLM (multimodal) path", () => {
   it("uses the configured LLM when a key is present, and does NOT call Workers AI", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallVisionLLM.mockResolvedValue("  一只猫  ");
     const run = vi.fn();
     bindingReturning(run);
@@ -45,7 +45,7 @@ describe("describeImage — LLM (multimodal) path", () => {
   });
 
   it("falls back to Workers AI when the LLM vision call throws", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallVisionLLM.mockRejectedValue(new Error("not multimodal"));
     const run = vi.fn().mockResolvedValue({ description: "a cat" });
     bindingReturning(run);

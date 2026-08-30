@@ -121,7 +121,7 @@ export async function extractTodoCandidatesFromMeeting(
   slug: string,
   sourcePath?: string,
 ): Promise<TodoItem[]> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     throw new Error("Configure an LLM to extract Todos.");
   }
   const page = await readWikiPageWithFrontmatter(slug);

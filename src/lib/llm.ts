@@ -8,7 +8,6 @@ import {
   getResolvedCredentials,
   detectEnvProvider,
   loadConfig,
-  loadConfigSync,
   apiKeyForProvider,
   getChatModelSettings,
   getCustomBaseUrl,
@@ -222,14 +221,39 @@ export async function retryWithBackoff<T>(
  *       Ollama → nomic-embed-text
  *     Anthropic does not support embeddings.
  *     See `src/lib/embeddings.ts` for the full embedding API.
+ *
+ * ASYNC BECAUSE THE GATE WARMS ITSELF (DW-548). The store leg used to read
+ * `loadConfigSync()`, which answers `{}` whenever the in-memory cache is not
+ * warm — and re-stamps that `{}` for another `CACHE_TTL_MS` (5 s,
+ * `src/lib/config.ts`) each time it does. A CLI or MCP process hits that EVERY
+ * time, because nothing ran ahead of the command to warm anything, so an owner
+ * who saved Ollama or Custom was told no API key was configured and watched
+ * ingest, lint, vision, search and the query route all skip their LLM steps.
+ *
+ * WARMING AT THE GATE rather than at each `main()`. This is the one place that
+ * can see the store on behalf of all ~20 call sites at once, and the 5 s TTL
+ * makes a warm at process start unreliable anyway: it has expired long before a
+ * multi-second `ingest` reaches its gate.
+ *
+ * THE ENV FAST PATH STAYS FIRST, so an env-configured deployment still answers
+ * without touching storage and the gate costs it nothing.
+ *
+ * EVERY CALL SITE MUST `await` THIS. An un-awaited call returns a Promise, which
+ * is truthy, so a negated bare call passes the gate SILENTLY — and no type-aware
+ * lint rule in this repo would catch it. `llm-key-cold-config.test.ts` scans
+ * `src/` for exactly that slip, which is also why this sentence does not spell
+ * the offending call out: the scan reads this file too.
  */
-export function hasLLMKey(): boolean {
+export async function hasLLMKey(): Promise<boolean> {
   // Fast path: check env vars via shared helper
   const env = detectEnvProvider();
   if (env.provider) return true;
 
+  // The store leg needs the STORE, and `loadConfigSync()` cannot read it on a
+  // cold cache (DW-548) — so this awaits the real read.
+  const cfg = await loadConfig();
+
   // Ollama is keyless — only config-file provider path that works without env vars
-  const cfg = loadConfigSync();
   if (cfg.provider === "ollama") return true;
 
   // Story 1.9's `custom` provider is the other config-file path that works
@@ -239,7 +263,10 @@ export function hasLLMKey(): boolean {
   // — and have ingest, lint, vision, search and the query route all silently
   // skip their LLM steps. `providerIsConfigured` is the one rule for "can this
   // provider actually be constructed", so it is called rather than restated.
-  return cfg.provider === "custom" && providerIsConfigured("custom");
+  //
+  // `cfg` is FORWARDED (DW-334): letting it re-enter `loadConfigSync()` would
+  // answer the two halves of one question from two reads of a 5 s-TTL cache.
+  return cfg.provider === "custom" && providerIsConfigured("custom", cfg);
 }
 
 // ---------------------------------------------------------------------------

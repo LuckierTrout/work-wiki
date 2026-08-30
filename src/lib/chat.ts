@@ -858,11 +858,11 @@ async function generateChatAnswer(
       content = await callHermes(system, messages);
       backend = "hermes";
     } catch {
-      if (!hasLLMKey()) throw new Error("Hermes is unavailable and no fallback LLM is configured.");
+      if (!(await hasLLMKey())) throw new Error("Hermes is unavailable and no fallback LLM is configured.");
       content = await callLLM(system, rawRetrievalQuestion);
     }
   } else {
-    if (!hasLLMKey()) throw new Error("No LLM provider is configured.");
+    if (!(await hasLLMKey())) throw new Error("No LLM provider is configured.");
     content = await callLLM(system, rawRetrievalQuestion);
   }
 

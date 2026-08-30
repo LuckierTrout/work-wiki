@@ -132,7 +132,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!hasLLMKey()) {
+    if (!(await hasLLMKey())) {
       return NextResponse.json(
         {
           error:

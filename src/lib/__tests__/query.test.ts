@@ -52,7 +52,7 @@ beforeEach(async () => {
   _resetStorage();
 
   // Reset mocks
-  mockedHasLLMKey.mockReturnValue(false);
+  mockedHasLLMKey.mockResolvedValue(false);
   mockedCallLLM.mockReset();
   mockedSearchByVector.mockReset();
   mockedSearchByVector.mockResolvedValue([]);
@@ -368,7 +368,7 @@ describe("searchIndex", () => {
   });
 
   it("with no LLM key, falls back to keyword matching", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     const entries: IndexEntry[] = [
       { slug: "python", title: "Python", summary: "Python programming language" },
@@ -383,7 +383,7 @@ describe("searchIndex", () => {
   });
 
   it("uses LLM re-ranking when available and parses JSON response", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue('["deep-learning", "neural-networks"]');
 
     const entries: IndexEntry[] = [
@@ -412,7 +412,7 @@ describe("searchIndex", () => {
   });
 
   it("falls back to fusion order when LLM returns invalid JSON", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("I think you should look at neural networks");
 
     const entries: IndexEntry[] = [
@@ -430,7 +430,7 @@ describe("searchIndex", () => {
   });
 
   it("falls back to fusion order when LLM re-ranking throws", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockRejectedValue(new Error("API error"));
 
     const entries: IndexEntry[] = [
@@ -445,7 +445,7 @@ describe("searchIndex", () => {
   });
 
   it("filters out slugs not in fusion candidates from LLM response", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // LLM returns a slug that exists in entries but wasn't a fusion candidate
     mockedCallLLM.mockResolvedValue('["valid-slug", "not-a-candidate"]');
 
@@ -478,7 +478,7 @@ describe("searchIndex", () => {
   });
 
   it("LLM re-ranking narrows candidates from fusion results, not full index", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     const entries: IndexEntry[] = [
       { slug: "relevant-a", title: "Relevant A", summary: "Machine learning overview" },
@@ -510,7 +510,7 @@ describe("searchIndex", () => {
   });
 
   it("LLM re-ranking failure falls back to fusion order", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockRejectedValue(new Error("LLM service unavailable"));
 
     const entries: IndexEntry[] = [
@@ -530,7 +530,7 @@ describe("searchIndex", () => {
   });
 
   it("re-ranking prompt includes content snippets from page bodies", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue('["snippet-page"]');
 
     const entries: IndexEntry[] = [
@@ -555,7 +555,7 @@ describe("searchIndex", () => {
   });
 
   it("re-ranking prompt includes relevance criteria and chain-of-thought instructions", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       'The page directly addresses transformers.\n["criteria-page"]'
     );
@@ -729,7 +729,7 @@ describe("query", () => {
   });
 
   it("returns no-api-key message when no key configured", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     // Create a small wiki (<=5 pages)
     await writeWikiPage("page-one", "# Page One\n\nSome content.");
@@ -745,7 +745,7 @@ describe("query", () => {
   });
 
   it("loads all pages for small wikis (<= 5 pages)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("Answer citing [Alpha](alpha.md)");
 
     await writeWikiPage("alpha", "# Alpha\n\nAlpha content.");
@@ -767,7 +767,7 @@ describe("query", () => {
   });
 
   it("uses searchIndex for large wikis (> 5 pages)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     // First call is re-ranking in searchIndex, second is the actual query
     mockedCallLLM
@@ -798,7 +798,7 @@ describe("query", () => {
   });
 
   it("includes full index listing in system prompt for large wikis", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     mockedCallLLM
       .mockResolvedValueOnce('["page-1"]')
@@ -851,7 +851,7 @@ describe("query", () => {
     // The single generation point: query() bakes slides/HTML answers. With no
     // XAI_API_KEY here, generation returns null and the directive is dropped —
     // proving the bake ran for format=slides (no leftover fence reaches the client).
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // A slides answer is now a self-contained HTML deck, so its illustration
     // directive is an HTML <figure>, baked via the HTML path.
     mockedCallLLM.mockResolvedValue(
@@ -871,7 +871,7 @@ describe("query", () => {
   it("does not bake prose answers (illustrations only apply to slides/HTML)", async () => {
     // Prose isn't an illustration format, so query() skips the bake entirely — a
     // (contrived) directive in a prose answer passes through untouched.
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       "Prose answer.\n\n```yoyo-illustration\nyoyo waving hello\n```\n",
     );
@@ -1203,7 +1203,7 @@ describe("saveAnswerToWiki", () => {
   });
 
   it("cross-references related pages after saving", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // findRelatedPages will call the LLM and expect a JSON array of slugs
     mockedCallLLM.mockResolvedValue('["react", "nextjs"]');
 
@@ -1304,7 +1304,7 @@ describe("saveAnswerToWiki", () => {
 // ---------------------------------------------------------------------------
 describe("query — SCHEMA.md conventions", () => {
   it("includes SCHEMA.md conventions in the system prompt when available", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("Answer based on wiki pages.");
 
     const schemaContent = `# Wiki Schema
@@ -1341,7 +1341,7 @@ Every page must start with a level-1 heading.
   });
 
   it("works without SCHEMA.md (no conventions appended)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("Answer based on wiki pages.");
 
     // tmpDir has no SCHEMA.md; cwd is unchanged so loadPageConventions
@@ -1750,7 +1750,7 @@ describe("query — scope parameter", () => {
     await updateIndex([{ slug: "test", title: "Test", summary: "Some content about testing." }]);
 
     // No LLM key => returns the no-key fallback
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     const result = await query("test question");
     expect(result.answer).toContain("No API key configured");
     expect(result.answer).toContain("test");
@@ -1789,7 +1789,7 @@ describe("query — scoped search with registered agent", () => {
     await registerAgent(profile);
 
     // With LLM key — verify the scoped pages are selected for context
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       "The agent knows about testing. [[agent-identity]] [[agent-learnings]]",
     );
@@ -1853,7 +1853,7 @@ describe("query — scoped search with registered agent", () => {
     };
     await registerAgent(profile);
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     const result = await query("anything", "prose", "agent:partial-agent");
     // Should work with whatever pages exist — the existing-page should show up
     expect(result.answer).toContain("existing-page");

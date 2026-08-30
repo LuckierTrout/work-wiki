@@ -48,7 +48,7 @@ beforeEach(async () => {
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
 
-  mockedHasLLMKey.mockReturnValue(false);
+  mockedHasLLMKey.mockResolvedValue(false);
   mockedSearchByVector.mockReset();
   mockedSearchByVector.mockResolvedValue([]);
 });

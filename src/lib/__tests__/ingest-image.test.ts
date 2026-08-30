@@ -131,7 +131,7 @@ describe("ingestImage", () => {
 
 describe("source images → dropped (ingest, LLM path)", () => {
   it("drops source images: body is image-free with no ## Figures; raw keeps the original refs", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // The synthesizer is fed image-free text and returns clean prose.
     mockedCallLLM.mockResolvedValue(
       "# Doc\n\n## Summary\n\nDistilled.\n\n## Details\n\nMore.",
@@ -158,7 +158,7 @@ describe("source images → dropped (ingest, LLM path)", () => {
   });
 
   it("no-LLM-key fallback also drops images (no gallery, body image-free)", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     const result = await ingest(
       "Doc Fallback",
@@ -175,7 +175,7 @@ describe("source images → dropped (ingest, LLM path)", () => {
 
 describe("source provenance — text-paste supersession", () => {
   it("a real source URL replaces a prior text-paste placeholder of the same type", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# X\n\n## Summary\n\nv1.");
     // First ingest with no URL → an x-mention source with a "text-paste" placeholder.
     await ingest("Recur Src", "version one content here", {

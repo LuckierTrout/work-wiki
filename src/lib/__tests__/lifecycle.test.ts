@@ -1866,7 +1866,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
 
   it("fails a tracked compile when Analysis is not valid JSON", async () => {
     const llm = await import("../llm");
-    const hasKey = vi.spyOn(llm, "hasLLMKey").mockReturnValue(true);
+    const hasKey = vi.spyOn(llm, "hasLLMKey").mockResolvedValue(true);
     const call = vi
       .spyOn(llm, "callLLM")
       .mockResolvedValue("# Not JSON\n\nWiki body.");

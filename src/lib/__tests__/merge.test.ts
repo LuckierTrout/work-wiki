@@ -96,7 +96,7 @@ beforeEach(async () => {
   resetSourceIndex();
   resetAliasIndex();
   vi.clearAllMocks();
-  mockedHasLLMKey.mockReturnValue(true);
+  mockedHasLLMKey.mockResolvedValue(true);
   mockedCallLLM.mockResolvedValue("# Merged\n\nFolded body covering both sources.");
   await ensureDirectories();
 });
@@ -211,7 +211,7 @@ describe("mergePages", () => {
   });
 
   it("resumes a partial merge without folding the absorbed body twice", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", {
       title: "Agent Harness",
       body: "# Agent Harness\n\nSURVIVOR UNIQUE.",
@@ -256,7 +256,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("resumes an earlier partial merge after a later merge advances the survivor generation", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", {
       title: "Agent Harness",
       body: "# Agent Harness\n\nSURVIVOR UNIQUE.",
@@ -308,7 +308,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("serializes an absorbed-Page edit behind the complete merge lifecycle", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     await seedPage("other", {
@@ -362,7 +362,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("does not reuse a completed survivor receipt for a later same-pair merge", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", {
       title: "Agent Harness",
       body: "# Agent Harness\n\nSURVIVOR BASE.",
@@ -386,7 +386,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("retires a completed marker that survived cleanup before same-pair reuse", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", {
       title: "Harness (AI agents)",
@@ -418,7 +418,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("serializes inverse merges without deadlocking", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("alpha", { title: "Alpha" });
     await seedPage("beta", { title: "Beta" });
 
@@ -432,7 +432,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("serializes disjoint cross-linked merges without a lock cycle", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("alpha", {
       title: "Alpha",
       body: "# Alpha\n\nSee [charlie](charlie.md).",
@@ -453,7 +453,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("serializes a cross-linked merge and ordinary delete without a lock cycle", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("alpha", {
       title: "Alpha",
       body: "# Alpha\n\nSee [zeta](zeta.md).",
@@ -501,7 +501,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("resumes delete lifecycle side effects when Page bytes were already removed", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const storage = getStorage();
@@ -550,7 +550,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("rejects a recreated survivor after the absorbed Page was already deleted", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const storage = getStorage();
@@ -589,7 +589,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("rejects a same-owner recreated survivor even when stale revisions could not be cleaned", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const storage = getStorage();
@@ -642,7 +642,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("fails before mutation when a canonical Page is stored under the wrong tenant", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const fromBefore = (await readWikiPage("harness-ai-agents"))!.content;
@@ -673,7 +673,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("fails before mutation when one slug exists in multiple tenant silos", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const fromBefore = (await readWikiPage("harness-ai-agents"))!.content;
@@ -696,7 +696,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("removes a backlink added after the merge repoint pass", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     await seedPage("late-linker", { title: "Late linker" });
@@ -746,7 +746,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("rejects a stale link when the absorbed slug was recreated by another owner", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     await seedPage("late-linker", { title: "Late linker" });
@@ -781,7 +781,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("rejects a stale link when the absorbed slug was recreated by the same owner", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     await seedPage("late-linker", { title: "Late linker" });
@@ -816,7 +816,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("re-points a fragment backlink from a physical Page missing from index.md", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     await seedPage("orphan-linker", {
@@ -839,7 +839,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("re-points a fragment backlink from a canonical-only tenant Page", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const linker = serializeFrontmatter(
@@ -855,7 +855,7 @@ describe("mergePages", () => {
   }, 15_000);
 
   it("re-points a fragment backlink inside the survivor body", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", {
       title: "Agent Harness",
       body: "# Agent Harness\n\nSee [details](harness-ai-agents.md#details).",
@@ -926,7 +926,7 @@ describe("mergePages", () => {
   });
 
   it("appends both bodies (no reconcile) when there's no LLM key", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", {
       title: "Agent Harness",
       body: "# Agent Harness\n\nThe harness loop.",

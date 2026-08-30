@@ -154,7 +154,7 @@ describe("ingest — title derivation", () => {
   });
 
   it("a title-less paste with an LLM CONCEPT lands on the concept slug + records the derived title as an alias", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     try {
       mockedCallLLM.mockResolvedValue(
         "CONCEPT: Vector Databases\nALIASES: none\n\n# Vector Databases\n\n## Summary\n\nThey store embeddings.",
@@ -173,13 +173,13 @@ describe("ingest — title derivation", () => {
       );
       expect(aliases).not.toContain("");
     } finally {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
 
   it("a title-less paste derives its slug from the synthesized CONCEPT (no fork)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     try {
       // No preview/commit two-step anymore: synthesis runs and the CONCEPT marker
       // drives the slug for a title-less paste.
@@ -190,7 +190,7 @@ describe("ingest — title derivation", () => {
       expect(result.primarySlug).toBe("topic-x");
       expect(await readWikiPageWithFrontmatter("topic-x")).not.toBeNull();
     } finally {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
@@ -457,10 +457,10 @@ describe("ingest", () => {
 
 describe("ingest — auto tags", () => {
   beforeEach(() => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -1743,7 +1743,7 @@ describe("ingestUrl", () => {
 describe("cross-referencing", () => {
   describe("findRelatedPages", () => {
     it("returns empty array when no LLM key", async () => {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
       ];
@@ -1752,13 +1752,13 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array when no existing pages", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       const result = await findRelatedPages("new-page", "some content", []);
       expect(result).toEqual([]);
     });
 
     it("returns related slugs from LLM response", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue('["ai", "machine-learning"]');
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1770,7 +1770,7 @@ describe("cross-referencing", () => {
     });
 
     it("filters out invalid slugs from LLM response", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue('["ai", "nonexistent-page"]');
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1780,7 +1780,7 @@ describe("cross-referencing", () => {
     });
 
     it("filters out the new page's own slug", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue('["new-page", "ai"]');
       const entries: IndexEntry[] = [
         { title: "New Page", slug: "new-page", summary: "The new page" },
@@ -1791,7 +1791,7 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array on LLM error", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockRejectedValue(new Error("API error"));
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1801,7 +1801,7 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array on malformed JSON", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM.mockResolvedValue("not valid json at all");
       const entries: IndexEntry[] = [
         { title: "AI", slug: "ai", summary: "About AI" },
@@ -1811,7 +1811,7 @@ describe("cross-referencing", () => {
     });
 
     it("returns empty array when only entry is the new page itself", async () => {
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       const entries: IndexEntry[] = [
         { title: "New Page", slug: "new-page", summary: "The new page" },
       ];
@@ -1901,7 +1901,7 @@ describe("cross-referencing", () => {
       ]);
 
       // Enable LLM and mock responses
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
 
       // First call: generate wiki page content; second call: find related pages
       mockedCallLLM
@@ -1937,7 +1937,7 @@ describe("cross-referencing", () => {
         summary: "Private roadmap",
         owner: "bob",
       }]);
-      mockedHasLLMKey.mockReturnValue(true);
+      mockedHasLLMKey.mockResolvedValue(true);
       mockedCallLLM
         .mockResolvedValueOnce("# Alice launch\n\n## Summary\n\nLaunch notes.")
         .mockResolvedValueOnce('["bob-roadmap"]');
@@ -1952,7 +1952,7 @@ describe("cross-referencing", () => {
     });
 
     it("returns only the new page when no LLM key (existing behavior)", async () => {
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       const result = await ingest("Solo Page", "Content for a solo page. More text.");
       expect(result.wikiPages).toEqual(["solo-page"]);
       expect(result.primarySlug).toBe("solo-page");
@@ -1962,7 +1962,7 @@ describe("cross-referencing", () => {
 
   // Restore default mock after cross-referencing tests
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 });
@@ -2259,10 +2259,10 @@ describe("ingest — concept-slug convergence", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -2372,7 +2372,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockImplementation(async (system: string, user: string) => {
       // The adjudicator (distinct system prompt) decides merges; by default it
       // confirms a merge into "alpha-thing" whenever that candidate is offered.
@@ -2387,7 +2387,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
     });
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
     mockedHasEmbeddingSupport.mockReturnValue(false);
     mockedSearchByVector.mockResolvedValue([]);
@@ -2590,10 +2590,10 @@ describe("ingest — reconcile on merge", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -2680,10 +2680,10 @@ describe("ingest — private-page convergence guard", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
   });
   afterEach(() => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
@@ -2893,7 +2893,7 @@ describe("chunkText", () => {
 describe("ingest — chunked LLM calls", () => {
   it("calls LLM multiple times for long content", async () => {
     // Enable LLM mock
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Wiki Page\n\n## Summary\n\nMocked content.");
 
     // Create content longer than MAX_LLM_INPUT_CHARS
@@ -2911,12 +2911,12 @@ describe("ingest — chunked LLM calls", () => {
     expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
 
     // Reset
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("map-reduces long content: maps each chunk from source, then merges into one article", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     // Route MAP vs REDUCE off the USER message structure (stable behavior), not
     // prompt prose: reduce is fed the merged "# Part N" notes; map is fed a raw
     // "Part k of N of the source" chunk.
@@ -2951,12 +2951,12 @@ describe("ingest — chunked LLM calls", () => {
     expect(page!.content).toContain("Merged.");
     expect(page!.content.match(/## Key Points/g) ?? []).toHaveLength(1);
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("map-reduce partial failure: single chunk error does not crash ingest", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     let mapCallCount = 0;
     mockedCallLLM.mockImplementation(async (system: string, _user: string) => {
       // Reduce call — identified by the reduce system prompt
@@ -2988,12 +2988,12 @@ describe("ingest — chunked LLM calls", () => {
     const page = await readWikiPageWithFrontmatter(result.primarySlug);
     expect(page!.content).toContain("Merged.");
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("map-reduce total failure: all chunks error produces clear error", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockImplementation(async (system: string, _user: string) => {
       // Map calls all fail; reduce should never be reached
       if (/given faithful NOTES/.test(system)) {
@@ -3013,12 +3013,12 @@ describe("ingest — chunked LLM calls", () => {
       /synthesis produced no content/,
     );
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 
   it("calls LLM exactly once for short content", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Short Page\n\n## Summary\n\nBrief.");
 
     const shortContent = "A brief article about something. Not very long.";
@@ -3028,7 +3028,7 @@ describe("ingest — chunked LLM calls", () => {
 
     expect(mockedCallLLM.mock.calls.length).toBe(1);
 
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
   });
 });
@@ -3374,7 +3374,7 @@ describe("reingest", () => {
   });
 
   it("re-ingesting a plain URL stays on the page's slug even when the concept differs (no fork)", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     const originalFetch = global.fetch;
     try {
       // First ingest → concept "Original Concept" → slug "original-concept".
@@ -3410,13 +3410,13 @@ describe("reingest", () => {
       ).toBeNull();
     } finally {
       global.fetch = originalFetch;
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
 
   it("re-synthesizes the page in place — a renamed concept doesn't fork the slug", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     const originalFetch = global.fetch;
     try {
       mockedCallLLM.mockResolvedValue("CONCEPT: Topic\n\n# Topic\n\n## Summary\n\nv1 body.");
@@ -3447,7 +3447,7 @@ describe("reingest", () => {
       expect(entries.find((e) => e.slug === "topic")!.title).toBe("Renamed Topic");
     } finally {
       global.fetch = originalFetch;
-      mockedHasLLMKey.mockReturnValue(false);
+      mockedHasLLMKey.mockResolvedValue(false);
       mockedCallLLM.mockReset();
     }
   });
@@ -3742,7 +3742,7 @@ describe("ingest dedup", () => {
     // (they rebuild from the fresh temp-dir frontmatter on demand).
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Page\n\n## Summary\n\nMocked synthesis.");
   });
 
@@ -3797,7 +3797,7 @@ describe("ingest attribution", () => {
   beforeEach(() => {
     resetSourceIndex();
     resetAliasIndex();
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("# Page\n\n## Summary\n\nMocked.");
   });
 
@@ -3933,7 +3933,7 @@ describe("ingest resolves workspace guidance once per document", () => {
       pageConventions: "",
     });
 
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       "CONCEPT: Project Lighthouse\n\n# Project Lighthouse\n\n## Summary\n\nMocked synthesis.",
     );
@@ -3948,7 +3948,7 @@ describe("ingest resolves workspace guidance once per document", () => {
     // And put the file's defaults back the way the rest of this file leaves
     // them: `hasLLMKey` is `false` in the module mock, and `callLLM` carries no
     // implementation.
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
     if (originalDataDir === undefined) delete process.env.DATA_DIR;
     else process.env.DATA_DIR = originalDataDir;

@@ -43,8 +43,13 @@ export async function findRelatedPages(
   newContent: string,
   existingEntries: IndexEntry[],
 ): Promise<string[]> {
-  // Nothing to cross-reference when there's no LLM or no existing pages
-  if (!hasLLMKey() || existingEntries.length === 0) {
+  // Nothing to cross-reference when there's no LLM or no existing pages.
+  //
+  // THE FREE TEST GOES FIRST (DW-548). The gate reads the store now, so the
+  // operand ORDER decides whether a workspace with nothing to cross-reference
+  // against pays a storage round-trip to find that out. `existingEntries` is
+  // already in hand; asking it first costs an array length.
+  if (existingEntries.length === 0 || !(await hasLLMKey())) {
     return [];
   }
 

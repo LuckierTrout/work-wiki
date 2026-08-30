@@ -425,7 +425,7 @@ describe("fixContradiction", () => {
   });
 
   it("throws FixNotFoundError when source page does not exist", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedReadWikiPage.mockResolvedValue(null);
 
     await expect(
@@ -437,7 +437,7 @@ describe("fixContradiction", () => {
   });
 
   it("throws FixNotFoundError when target page does not exist", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedReadWikiPage
       .mockResolvedValueOnce({
         slug: "source",
@@ -453,7 +453,7 @@ describe("fixContradiction", () => {
   });
 
   it("throws FixValidationError when no LLM key is configured", async () => {
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     await expect(
       fixContradiction("source", "target", "msg"),
@@ -466,7 +466,7 @@ describe("fixContradiction", () => {
   });
 
   it("calls LLM with both pages' content and the contradiction description", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedReadWikiPage
       .mockResolvedValueOnce({
         slug: "page-a",
@@ -496,7 +496,7 @@ describe("fixContradiction", () => {
   });
 
   it("writes the rewritten page via lifecycle pipeline", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedReadWikiPage
       .mockResolvedValueOnce({
         slug: "page-a",
@@ -570,7 +570,7 @@ describe("fixMissingConceptPage", () => {
 
   it("generates a stub page when no LLM key is available", async () => {
     mockedReadWikiPage.mockResolvedValue(null);
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     const result = await fixMissingConceptPage(validMessage);
 
@@ -593,7 +593,7 @@ describe("fixMissingConceptPage", () => {
 
   it("calls callLLM when a key is available", async () => {
     mockedReadWikiPage.mockResolvedValue(null);
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
       "# Backpropagation\n\nBackpropagation is an algorithm for training neural networks.",
     );
@@ -614,7 +614,7 @@ describe("fixMissingConceptPage", () => {
 
   it("returns a proper FixResult shape", async () => {
     mockedReadWikiPage.mockResolvedValue(null);
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     const result = await fixMissingConceptPage(validMessage);
 
@@ -898,7 +898,7 @@ describe("fixLintIssue", () => {
   });
 
   it("dispatches contradiction to fixContradiction", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedReadWikiPage
       .mockResolvedValueOnce({
         slug: "alpha",
@@ -924,7 +924,7 @@ describe("fixLintIssue", () => {
 
   it("dispatches missing-concept-page to fixMissingConceptPage", async () => {
     mockedReadWikiPage.mockResolvedValue(null);
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
 
     const msg =
       'Concept "Attention Mechanism" is mentioned in transformers, bert but has no dedicated page. Important concept.';
@@ -1140,7 +1140,7 @@ describe("fresh + strict merge-base reads", () => {
   });
 
   it("fixContradiction reads both pages fresh+strict", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedReadWikiPage
       .mockResolvedValueOnce(page("alpha", "# Alpha\n\nA."))
       .mockResolvedValueOnce(page("beta", "# Beta\n\nB."));

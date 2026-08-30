@@ -1039,7 +1039,7 @@ async function adjudicateMerge(
   embedBody: string,
   candidates: { slug: string; title: string; snippet: string }[],
 ): Promise<string | null> {
-  if (!hasLLMKey()) return null;
+  if (!(await hasLLMKey())) return null;
   const list = candidates
     .map((c) => `- slug: ${c.slug}\n  title: ${c.title}\n  snippet: ${c.snippet}`)
     .join("\n");
@@ -1559,7 +1559,7 @@ async function analyzeSource(
   relativePath?: string,
 ): Promise<IngestAnalysis> {
   const context = classificationContext(relativePath);
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     return emptyIngestAnalysis(context);
   }
   const user = [
@@ -1635,7 +1635,7 @@ async function synthesizeBody(
   cache?: GuidanceCache,
   analysis?: IngestAnalysis,
 ): Promise<string> {
-  if (!hasLLMKey()) {
+  if (!(await hasLLMKey())) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
@@ -2170,7 +2170,7 @@ export async function ingest(
   // new source contradicts what's there. Skipped without an LLM key (fall back
   // to the prior overwrite behaviour) and for a prebuilt image body (already
   // final). The page summary is computed from the raw source, so it is unaffected.
-  const canReconcileWithLlm = hasLLMKey();
+  const canReconcileWithLlm = await hasLLMKey();
   if (existing && canReconcileWithLlm && !prebuiltContent) {
     try {
       // Reconcile against the frontmatter-STRIPPED body (existing.content still

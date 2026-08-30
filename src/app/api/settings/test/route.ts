@@ -3,7 +3,6 @@ import { getPrincipal } from "@/lib/auth";
 import { isOwnerPrincipal } from "@/lib/owner";
 import { callLLM, getProviderInfo, hasLLMKey } from "@/lib/llm";
 import { getErrorMessage } from "@/lib/errors";
-import { loadConfig } from "@/lib/config";
 
 export async function POST() {
   const principal = await getPrincipal();
@@ -11,8 +10,11 @@ export async function POST() {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  await loadConfig();
-  if (!hasLLMKey()) {
+  // No `loadConfig()` warm ahead of the gate any more (DW-548). The gate below
+  // reads the store itself now, so a warm here bought a SECOND full storage
+  // round-trip per request — and a window between the two reads in which the
+  // answer could change. The gate's own read is the one snapshot.
+  if (!(await hasLLMKey())) {
     return NextResponse.json(
       { error: "No provider credential is configured on the server." },
       { status: 400 },

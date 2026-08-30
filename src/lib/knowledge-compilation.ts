@@ -290,7 +290,9 @@ export async function compileKnowledgePage(
         run.pass2.changed = true;
       }
 
-      if (hasLLMKey() && relatedPages.length > 0) {
+      // The free test first: the gate reads the store since DW-548, so a pass
+      // with no related pages to fold in must not pay for one to learn it.
+      if (relatedPages.length > 0 && (await hasLLMKey())) {
         const { context } = await buildContext(relatedPages.map((candidate) => candidate.slug));
         const output = cleanCompiledBody(await callLLM(
           "You are the second-pass compiler for a private, evidence-first wiki. Return the complete replacement MARKDOWN BODY for the target page and nothing else. Reconcile only facts supported by the target or related-page context. Preserve the target H1, useful detail, internal markdown links, uncertainty, dates, and source distinctions. Do not invent facts, erase conflicts, include YAML frontmatter, or claim actions were completed.",

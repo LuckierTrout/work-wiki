@@ -1550,7 +1550,7 @@ describe("resolveScopeSlugs", () => {
 
 describe("findRelatedPages — candidate prefilter", () => {
   beforeEach(() => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
     mockedSearchByVector.mockReset();
     mockedSearchByVector.mockResolvedValue([]);
     mockedCallLLM.mockReset();
@@ -1559,7 +1559,7 @@ describe("findRelatedPages — candidate prefilter", () => {
 
   afterEach(() => {
     // Restore the suite-wide default so later describes see no LLM.
-    mockedHasLLMKey.mockReturnValue(false);
+    mockedHasLLMKey.mockResolvedValue(false);
   });
 
   function makeEntries(n: number): IndexEntry[] {

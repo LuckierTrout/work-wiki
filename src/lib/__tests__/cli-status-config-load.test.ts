@@ -12,7 +12,8 @@ import { _resetStorage } from "../storage";
 import { ollamaBaseUrlRefusedCopy } from "../workbench-settings";
 
 /**
- * `yopedia status` against the REAL config module and a REAL store (DW-502).
+ * `yopedia status` against the REAL config module and a REAL store (DW-502,
+ * DW-549).
  *
  * `cli.test.ts` mocks `../config` wholesale, which is exactly why it could never
  * observe this bug: a mocked `getEffectiveSettings` hands back a fully populated
@@ -143,6 +144,11 @@ describe("yopedia status reads the stored config on a cold process (DW-502)", ()
     await runStatus();
 
     expect(printedLines()).toContain("LLM provider:\topenai");
+    // READABLE IS NOT UNREADABLE (DW-549). The empty-store case pins that an
+    // ABSENT config prints no caveat; this pins the other readable shape — a
+    // store with real content in it — so the row cannot creep in as
+    // unconditional by way of a truthiness check on the wrong field.
+    expect(printedLines().join("\n")).not.toContain("Stored config:");
   });
 
   it("reports a stored Ollama endpoint the resolver refused", async () => {
@@ -171,6 +177,11 @@ describe("yopedia status reads the stored config on a cold process (DW-502)", ()
     expect(lines).toHaveLength(4);
     expect(lines).toContain("LLM provider:\tnot configured");
     expect(lines.join("\n")).not.toContain("Ollama endpoint:");
+    // ABSENT IS NOT UNREADABLE (DW-549). `readStoredConfig` turns ENOENT into
+    // `status: "ok"` with `{}`, so a deployment that simply never saved anything
+    // must not be told its store could not be read — which is what an
+    // unconditional fifth row would say to every one of them.
+    expect(lines.join("\n")).not.toContain("Stored config:");
   });
 
   it("keeps the store leg ahead of the environment, as the web surface does", async () => {
@@ -183,6 +194,103 @@ describe("yopedia status reads the stored config on a cold process (DW-502)", ()
     await runStatus();
 
     expect(printedLines()).toContain("LLM provider:\topenai");
+  });
+
+  /**
+   * Write RAW bytes into the store, bypassing `JSON.stringify` — the unreadable
+   * cases need text that is not a config object, which `storeConfig` cannot
+   * express.
+   */
+  async function storeRaw(body: string): Promise<void> {
+    await fs.writeFile(path.join(tmpDir, ".llm-wiki-config.json"), body, "utf8");
+    _resetConfigCache();
+    _resetStorage();
+  }
+
+  it("says the stored config is UNREADABLE when it is not valid JSON (DW-549)", async () => {
+    // THE POINT. `loadConfig()` flattens both "nothing is stored" and "what is
+    // stored could not be read" to `{}`, so `status` said "not configured" in
+    // the same sentence for both — and only one of them has an action attached.
+    // This is the surface with no Settings screen to go and look at, so the
+    // headless operator had no way at all to tell a config they never wrote from
+    // one the process could not parse.
+    await storeRaw("{ this is not json");
+
+    await runStatus();
+
+    const lines = printedLines();
+    const row = lines.find((l) => l.startsWith("Stored config:"));
+    expect(row, "status must report an unreadable store").toBeDefined();
+    // NAMES THE FAILURE. A bare "unreadable" is the same dead end as "not
+    // configured"; the parser's own message is what points at the typo.
+    expect(row).toContain("unreadable");
+    expect(row).toContain("the settings below reflect the environment only");
+    // DISTINCT FROM the provider verdict, which still prints its own sentence —
+    // the new row is a caveat on the rows below it, not a replacement for one.
+    expect(lines).toContain("LLM provider:\tnot configured");
+  });
+
+  it("keeps the unreadable row to ONE physical line when the file holds newlines", async () => {
+    // `Label:\tvalue` is a parsed shape, and this row's value is the only one on
+    // this surface that comes from outside the program: V8's `JSON.parse` error
+    // QUOTES the offending bytes back, so a config file containing newlines
+    // printed a second, unlabelled physical line and detached the "environment
+    // only" caveat from the label it qualifies.
+    //
+    // THE ASSERTION LOOKS INSIDE AN ENTRY, not at how many there are.
+    // `printedLines()` is one entry per `console.log` CALL, and the broken
+    // version made exactly ONE call whose argument happened to contain a `\n` —
+    // so a length check passes on the bug. What a reader of this output sees is
+    // physical lines, and that is what is pinned here.
+    await storeRaw("not json\nat all\nreally");
+
+    await runStatus();
+
+    const lines = printedLines();
+    for (const line of lines) {
+      expect(line).not.toContain("\n");
+    }
+    // Still one row, still carrying its whole sentence — flattening must not
+    // have cost the caveat that makes the row worth printing.
+    const row = lines.find((l) => l.startsWith("Stored config:"));
+    expect(row).toBeDefined();
+    expect(row).toContain("the settings below reflect the environment only");
+  });
+
+  it("says the same when the stored config is valid JSON but not an object", async () => {
+    // `[1,2,3]` parses. `isPlainConfigObject` is what rejects it, and it is a
+    // separate leg of `readStoredConfig` from the parse failure above — an
+    // owner who wrote an array into the file gets the same distinct row rather
+    // than the silent `{}` both legs used to collapse to.
+    await storeRaw("[1,2,3]");
+
+    await runStatus();
+
+    const row = printedLines().find((l) => l.startsWith("Stored config:"));
+    expect(row).toBeDefined();
+    expect(row).toContain("unreadable");
+  });
+
+  it("puts the unreadable row ABOVE the provider verdict, leaving the endpoint adjacency", async () => {
+    // PLACEMENT, said out loud. An unreadable store degrades EVERY settings row
+    // to the environment alone — provider, endpoint and embeddings alike — so it
+    // is a caveat on all of them and belongs above the first of them.
+    // `Ollama endpoint:` qualifies exactly one subject and stays immediately
+    // after it; the ordering assertion here is what keeps a future row from
+    // being inserted between them.
+    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    await storeRaw("{ this is not json");
+
+    await runStatus();
+
+    const lines = printedLines();
+    const stored = lines.findIndex((l) => l.startsWith("Stored config:"));
+    const provider = lines.findIndex((l) => l.startsWith("LLM provider:"));
+    const endpoint = lines.findIndex((l) => l.startsWith("Ollama endpoint:"));
+
+    expect(stored).toBeGreaterThanOrEqual(0);
+    expect(stored).toBeLessThan(provider);
+    expect(endpoint).toBe(provider + 1);
   });
 
   it("reports the stored provider when the REAL CLI process runs `status`", async () => {

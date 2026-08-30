@@ -34,7 +34,7 @@ export async function extractActionsFromPage(
   owner: string,
   slug: string,
 ): Promise<ActionItem[]> {
-  if (!hasLLMKey()) return [];
+  if (!(await hasLLMKey())) return [];
   const page = await readWikiPageWithFrontmatter(slug);
   if (!page) throw new Error(`Page "${slug}" not found`);
 

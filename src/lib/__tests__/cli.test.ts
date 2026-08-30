@@ -335,10 +335,22 @@ vi.mock("../raw", () => ({
 
 vi.mock("../config", () => ({
   getEffectiveSettings: vi.fn(),
-  // `runStatus()` warms the sync config cache before reading it (DW-502). The
-  // export has to exist here or every `runStatus` case below dies on
-  // `loadConfig is not a function` rather than on an assertion.
-  loadConfig: vi.fn(),
+  // `runStatus()` warms the sync config cache before reading it (DW-502), and
+  // since DW-549 it does that through `readConfig()` — the one door that tells
+  // an absent store from an unreadable one. The export has to exist here or
+  // every `runStatus` case below dies on `readConfig is not a function` rather
+  // than on an assertion.
+  //
+  // GIVEN A DEFAULT, not left as a bare `vi.fn()`: that returns `undefined` and
+  // `runStatus` reads `.status` off the answer, so every case here would die on
+  // a TypeError instead. `ok` with an empty config is the readable-and-empty
+  // store, which is what this mocked suite's row-shape cases assume.
+  readConfig: vi.fn(async () => ({
+    status: "ok",
+    config: {},
+    version: "unstamped",
+    etag: null,
+  })),
 }));
 
 vi.mock("../query", () => ({
@@ -793,8 +805,10 @@ describe("CLI command execution", () => {
   it("runStatus() warms the config cache BEFORE reading effective settings (DW-502)", async () => {
     // ORDER is the whole assertion. `getEffectiveSettings()` is synchronous and
     // reads the store through `loadConfigSync()`, which answers `{}` until an
-    // async load has warmed the cache — so a `loadConfig()` that ran after it,
+    // async load has warmed the cache — so a `readConfig()` that ran after it,
     // or not at all, leaves a cold CLI process reporting env-only settings.
+    // `readConfig()` warms that cache exactly as `loadConfig()` did (DW-549);
+    // what it adds is the absent/unreadable distinction, not a different read.
     //
     // This suite mocks `../config` wholesale, so it can only pin the CALL, never
     // the effect: a mocked `getEffectiveSettings` returns a full object whatever
@@ -802,7 +816,7 @@ describe("CLI command execution", () => {
     // the real module and a real store.
     const { listWikiPages } = await import("../wiki");
     const { listRawSources } = await import("../raw");
-    const { getEffectiveSettings, loadConfig } = await import("../config");
+    const { getEffectiveSettings, readConfig } = await import("../config");
 
     vi.mocked(listWikiPages).mockResolvedValueOnce([]);
     vi.mocked(listRawSources).mockResolvedValueOnce([]);
@@ -811,9 +825,9 @@ describe("CLI command execution", () => {
     const { runStatus } = await import("../../cli");
     await runStatus();
 
-    expect(vi.mocked(loadConfig)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(readConfig)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(getEffectiveSettings)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(loadConfig).mock.invocationCallOrder[0]).toBeLessThan(
+    expect(vi.mocked(readConfig).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(getEffectiveSettings).mock.invocationCallOrder[0],
     );
   });

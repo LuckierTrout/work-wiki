@@ -47,8 +47,12 @@ beforeEach(() => {
   // Point DATA_DIR at a nonexistent path so no config file is found
   process.env.DATA_DIR = "/tmp/llm-wiki-test-nonexistent-" + Date.now();
 
-  // Reset config cache so tests don't see stale data
+  // Reset config cache so tests don't see stale data — and the storage
+  // singleton with it: `hasLLMKey()` reads the STORE on its non-env legs since
+  // DW-548, and a singleton still bound to an earlier root would answer from a
+  // directory this test never set.
   _resetConfigCache();
+  _resetStorage();
 });
 
 afterEach(() => {
@@ -73,44 +77,44 @@ afterEach(() => {
 });
 
 describe("hasLLMKey", () => {
-  it("returns false when no provider env var is set", () => {
-    expect(hasLLMKey()).toBe(false);
+  it("returns false when no provider env var is set", async () => {
+    expect(await hasLLMKey()).toBe(false);
   });
 
-  it("returns true when ANTHROPIC_API_KEY is set", () => {
+  it("returns true when ANTHROPIC_API_KEY is set", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
   });
 
-  it("returns true when OPENAI_API_KEY is set", () => {
+  it("returns true when OPENAI_API_KEY is set", async () => {
     process.env.OPENAI_API_KEY = "sk-test";
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
   });
 
-  it("returns true when only GOOGLE_GENERATIVE_AI_API_KEY is set", () => {
+  it("returns true when only GOOGLE_GENERATIVE_AI_API_KEY is set", async () => {
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "google-test-key";
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
   });
 
-  it("returns true when only OLLAMA_BASE_URL is set", () => {
+  it("returns true when only OLLAMA_BASE_URL is set", async () => {
     process.env.OLLAMA_BASE_URL = "http://localhost:11434/api";
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
   });
 
-  it("returns true when OLLAMA_API_KEY is set", () => {
+  it("returns true when OLLAMA_API_KEY is set", async () => {
     process.env.OLLAMA_API_KEY = "ollama-cloud-key";
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
   });
 
-  it("returns true when only OLLAMA_MODEL is set", () => {
+  it("returns true when only OLLAMA_MODEL is set", async () => {
     process.env.OLLAMA_MODEL = "llama3.2";
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
   });
 
-  it("returns true when multiple keys are set", () => {
+  it("returns true when multiple keys are set", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     process.env.OPENAI_API_KEY = "sk-test";
-    expect(hasLLMKey()).toBe(true);
+    expect(await hasLLMKey()).toBe(true);
   });
 });
 

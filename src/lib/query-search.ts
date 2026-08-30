@@ -212,7 +212,9 @@ export async function searchIndex(
   // Phase 2 — LLM re-ranking of fusion candidates (if available)
   // Instead of sending the full wiki index, we send only the fusion candidates
   // with content snippets so the LLM can make quality relevance judgments.
-  if (hasLLMKey() && fusedSlugs.length > 0) {
+  // The free test first: the gate reads the store since DW-548, and a search
+  // that fused no candidates has nothing to re-rank either way.
+  if (fusedSlugs.length > 0 && (await hasLLMKey())) {
     try {
       // Load content snippets for each candidate
       const candidateLines: string[] = [];

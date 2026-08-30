@@ -327,7 +327,7 @@ export async function query(
     const { context } = await buildContext(selectedSlugs);
 
     // No API key — return a helpful fallback
-    if (!hasLLMKey()) {
+    if (!(await hasLLMKey())) {
       const allSlugs = entries.map((e) => e.slug);
       const pageList = allSlugs.map((s) => `- ${s}`).join("\n");
       return {

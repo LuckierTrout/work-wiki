@@ -1568,7 +1568,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
 
     const results = uniqueResults(collected);
     if (results.length === 0) throw new Error("The research provider returned no usable sources");
-    if (!hasLLMKey()) throw new Error("An LLM provider is required to synthesize research");
+    if (!(await hasLLMKey())) throw new Error("An LLM provider is required to synthesize research");
 
     const balanced = balancedResearchResults(results, queries);
     // Provider-inline bodies are deliberately discarded above. Fetch and stage

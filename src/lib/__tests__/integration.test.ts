@@ -43,7 +43,7 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
 
-  mockedHasLLMKey.mockReturnValue(true);
+  mockedHasLLMKey.mockResolvedValue(true);
   mockedCallLLM.mockReset();
 });
 
@@ -127,7 +127,7 @@ describe("ingest → query integration", () => {
   });
 
   it("query on empty wiki returns appropriate message", async () => {
-    mockedHasLLMKey.mockReturnValue(true);
+    mockedHasLLMKey.mockResolvedValue(true);
 
     const result = await query("anything");
 
