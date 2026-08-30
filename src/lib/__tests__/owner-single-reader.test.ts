@@ -1,6 +1,7 @@
 /**
- * DW-157 — `getOwnerHandle()` is the ONE production reader of
- * `NEXT_PUBLIC_OWNER_HANDLE`.
+ * DW-157 / DW-486 — `src/lib/owner.ts` is the ONE production reader of BOTH
+ * owner env vars: `getOwnerHandle()` for `NEXT_PUBLIC_OWNER_HANDLE`, and
+ * `getOwnerUserId()` for `YOPEDIA_OWNER_USER_ID`.
  *
  * The value of that invariant is entirely a grep property: a reviewer asking
  * "who resolves the site owner?" greps for `getOwnerHandle` and expects the
@@ -25,7 +26,7 @@ import path from "path";
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const SRC_ROOT = path.join(REPO_ROOT, "src");
 
-/** The single file allowed to read the env var directly. */
+/** The single file allowed to read either env var directly. */
 const ALLOWED = ["src/lib/owner.ts"];
 
 /**
@@ -90,6 +91,49 @@ describe("NEXT_PUBLIC_OWNER_HANDLE has exactly one production reader", () => {
         `\`getOwnerHandle\` finds every site-owner resolution. Route the new ` +
         `read(s) in ${readers.filter((f) => !ALLOWED.includes(f)).join(", ")} ` +
         `through \`getOwnerHandle()\` instead — it already trims and treats ` +
+        `blank as "no owner configured".`,
+    ).toEqual(ALLOWED);
+  });
+});
+
+/**
+ * DW-486 — the same grep property for the STABLE owner id.
+ *
+ * This one is load-bearing beyond tidiness. `YOPEDIA_OWNER_USER_ID` is the fact
+ * the deployment gate in `src/middleware.ts` admits on, and since DW-486 it is
+ * also the fact every server route gate decides on (through
+ * `isOwnerPrincipal`). Those two answers must be computed from ONE reading of
+ * the variable, or the class of bug DW-486 fixed — middleware admits, route gate
+ * refuses — comes back by way of a second reader that trims differently, or
+ * validates, or defaults.
+ *
+ * `e2eOwnerUserId()` is the near miss to watch: it keeps its own `OWNER_ID_RE`
+ * shape check (a harness constraint, not part of "who is the owner"), but it
+ * reads the value through `getOwnerUserId()`.
+ */
+describe("YOPEDIA_OWNER_USER_ID has exactly one production reader", () => {
+  it("is read only by src/lib/owner.ts", async () => {
+    const files = await sourceFiles(SRC_ROOT);
+    expect(files.length).toBeGreaterThan(100);
+
+    const readers: string[] = [];
+    for (const file of files) {
+      const code = stripComments(await fs.readFile(file, "utf8"));
+      if (
+        /process\.env\.YOPEDIA_OWNER_USER_ID\b/.test(code) ||
+        /process\.env\[\s*["'`]YOPEDIA_OWNER_USER_ID["'`]\s*\]/.test(code)
+      ) {
+        readers.push(path.relative(REPO_ROOT, file).split(path.sep).join("/"));
+      }
+    }
+
+    expect(
+      readers.sort(),
+      `DW-486: \`getOwnerUserId()\` in src/lib/owner.ts must be the only ` +
+        `production reader of YOPEDIA_OWNER_USER_ID, so the deployment gate in ` +
+        `middleware and every route gate resolve the owner from ONE reading of ` +
+        `it. Route the new read(s) in ${readers.filter((f) => !ALLOWED.includes(f)).join(", ")} ` +
+        `through \`getOwnerUserId()\` instead — it already trims and treats ` +
         `blank as "no owner configured".`,
     ).toEqual(ALLOWED);
   });

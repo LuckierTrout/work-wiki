@@ -642,6 +642,7 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `embeddingApiKeyFor` now falls back to `loadConfigSync().embeddingApiKey` (which the spec's Execution list requires, or the three stored vector values would have no reader at all). `hasEmbeddingSupport()` → `getEmbeddingModelName()` → `resolveEmbeddingProvider()` → `embeddingApiKeyFor()`, so an owner who pastes a key into Settings → Embeddings and leaves the switch off — the story's headline default — turns `ingest.ts:989` from off to on. Nothing fails: `embeddings.test.ts` drives that path from env vars, which are unchanged. The epic assigns "embed after ingest only when vector is on" to Story 2.9 and the spec's Never list forbids gating the callers here, so closing it is that story's work.
 status: open
+decision: 2026-08-29 Gate the ingest caller, leave the predicate alone — Gate src/lib/ingest.ts:1011 on `getVectorSearchSettings().enabled` rather than on `hasEmbeddingSupport()`, keeping `hasEmbeddingSupport`'s contract and `embeddings.test.ts` untouched. Fall through to the existing corpus-stats path when the switch is off, which is the same branch an unconfigured deployment already takes. Pin that a stored embedding key with the switch off takes the non-vector branch.
 
 ### DW-69: One `embeddingApiKey` is shared by both keyed embedding vendors, so switching provider silently reuses the other vendor's key.
 origin: spec-deferred bddb90da84c0
@@ -4429,7 +4430,9 @@ source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
 location: src/app/api/wikis/route.ts:65
 severity: medium
 reason: `handlePrivateRequest` (src/middleware.ts:248-259) admits on `YOPEDIA_OWNER_USER_ID`; `isOwnerHandle` (src/lib/owner.ts:22-25) compares against `NEXT_PUBLIC_OWNER_HANDLE`. `getPrincipal` falls back to the raw Clerk id as the handle when a user has no username and no linked X account (src/lib/auth.ts:135-147, a case it logs), and `NEXT_PUBLIC_*` is inlined at build time so a username change needs a redeploy. In both cases the owner passes the middleware and is then 403'd by the handle gate with a message saying they are not the owner, with no in-app recovery. Pre-existing at `PUT /api/workbench/artifact`; DW-159 widens it to Wiki creation.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw2-owner-identity-gate-on-stable-id
+resolution-undo: da460d2e7d3f42e3a08000de9503b7dfd13243050a8732f8a265db152127f867 2026-08-29 7374617475733a206f70656e
 decision: 2026-08-28 Gate on the stable id — Resolve owner-ness through the stable Clerk id (principal.userId === YOPEDIA_OWNER_USER_ID) with the handle comparison kept only as a fallback for principals that carry no id, apply it at every isOwnerHandle call site, and pin that a principal admitted by the middleware is never refused by a route gate.
 
 ### DW-487: `requireOwnerPrincipal` is fail-OPEN when no owner handle is configured while the direct `isOwnerHandle` gates are fail-CLOSED, and nothing records the divergence.
@@ -4858,6 +4861,7 @@ source_spec: `spec-dw-491-493-494-workbench-raw-path-gate-parity.md`
 severity: medium
 reason: DW-491 closed the disclosure at the Workbench doors (`listWorkbenchFilePaths`, `readWorkbenchFile`, `readWorkbenchFileBytes`, `/api/workbench/media`), which all route through `rawPathAllowed`. `/api/assets/[...path]` reads the SAME bytes out of the same `raw/assets/<slug>/<file>` tree (route.ts:83, `rawRelPath("assets/" + segments.join("/"))`) and its only gate is `page.frontmatter.visibility === "private"` (route.ts:73-79). `hiddenSlugs` is broader than that: `workbenchSlugGate` refuses every slug the principal's index named that `buildKnowledgeTree` dropped — agent-scoped types and artifacts included, none of which need `visibility: private`. So after this change the Files tab withholds `raw/assets/agentpage/pic.png` while a plain `GET /api/assets/agentpage/pic.png` still returns the bytes. Pre-existing: that route's gate predates DW-491 and was not touched here. Whether the two gates SHOULD agree is a product decision — `/api/assets/` is deliberately no-auth so public pages skip pri
 status: open
+decision: 2026-08-29 Align the assets route on hiddenSlugs — Give `/api/assets/[...path]` the same `hiddenSlugs`/`rawPathAllowed` gate the Workbench doors use, derived for the request's principal, keeping the no-auth path only for slugs that gate admits. Pin that an agent-scoped page's asset is refused unauthenticated and that an ordinary public page's asset still serves with no session.
 
 ### DW-537: The v1 rescan ROUTE's `v1SlugGate` -> `hiddenSlugs` wiring is still unpinned; DW-493 pinned the forward inside `rescanSources`, one level below the door.
 origin: spec-deferred 85f7687e3987
@@ -4890,6 +4894,7 @@ source_spec: `spec-dw-215-artifact-revision-retention.md`
 severity: medium
 reason: `walkFiles` recurses in raw `listFiles` order and the filesystem provider returns `fs.readdir` order unsorted (`src/lib/storage/filesystem.ts:315-327`), so a single oversized silo early in the walk can consume the whole file/byte budget and every later prefix — including `wiki/`, the owner's actual pages — is dropped, flagged only as "partial". DW-215's own framing ("so a large artifact history degrades") reads as: the oversized history is what should fall off first. The literal instruction was "truncate ... instead of throwing", which this satisfies, so an ordering policy (walk `wiki/` before `raw/`, or exclude `revisions/` from a truncating pass) is a separate decision, not this story's.
 status: open
+decision: 2026-08-29 Priority walk order — Give `walkFiles` an explicit prefix priority — `wiki/` first, then the rest of the owner's live data, with `revisions/` and other append-only history last — so a truncating pass drops history before pages. Sort within a prefix so the result is deterministic rather than readdir-ordered. Pin that a budget exceeded by an oversized silo still yields a backup containing every `wiki/` page.
 
 ### DW-541: The retention cap deletes artifact revisions silently — no surface tells the owner the history they are looking at is the newest 50 rather than all of them.
 origin: spec-deferred 097ec847ef17
@@ -4914,6 +4919,7 @@ source_spec: `spec-dw-323-merge-door-workspace-guidance.md`
 severity: medium
 reason: `ownerToTenant` (src/lib/links.ts) lowercases and path-sanitizes but does not strip the `--` agent suffix, so `alice--yoyo` keys its own tenant. The same-owner guard 40 lines above the fold deliberately collapses that pair via `sameHumanOwner`/`humanOf` (src/lib/ingest.ts), so the two treat the same handle differently. The ingest door passes the raw handle too, so this is a codebase-wide convention question, not a merge-door bug: deciding it means deciding whether guidance is addressed by silo or by human, for every prompt site at once. Out of scope for DW-323, whose intent is the door asymmetry.
 status: open
+decision: 2026-08-29 Guidance is addressed by human owner — Resolve guidance through `humanOf` everywhere it is looked up — the merge door's guidanceOwner resolution and the ingest door at src/lib/ingest.ts:1760 — so an agent handle reads its human's Workspace Purpose and dictionary. Leave `ownerToTenant` alone as the storage-addressing function it is, and name the distinction in both modules. Pin an agent-owned survivor folding with the human's guidance.
 
 ### DW-544: `synthesizeResearchBrief` still reads `textStream`, so a fired deadline commits a truncated research brief as a finished wiki page.
 origin: spec-deferred d3ff3aae961a
@@ -5002,6 +5008,7 @@ source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
 severity: medium
 reason: The `unreadable` verdict clears the held version on the stated ground that a 2xx is no proof the route did not run (`src/lib/workbench-settings.ts:3103-3119`), and the canvas acts on it (`SettingsCanvas.tsx:343`). The sentence shown beside that action is "Settings couldn't be saved." — an assertion the same reasoning says nobody is in a position to make. The neighbouring `it.each` docblock in `workbench-settings.test.ts` spells out exactly that objection for the sibling branch. Fixing it means a new owner-facing sentence for a third outcome, which is an intent-level copy decision this bundle's intent did not open.
 status: open
+decision: 2026-08-29 Add a third sentence for the unknown outcome — Add a distinct copy constant for the `unreadable` verdict saying the outcome is unknown and what to do about it (reload to see what landed), matching the vocabulary the unconfirmed-write sentences already use elsewhere in the Workbench. Route `SettingsCanvas` onto it for that branch only, leave `SETTINGS_SAVE_FAILED_COPY` for real failures, and extend the existing `it.each` to assert each verdict's sentence.
 
 ### DW-555: Once the held version is cleared, the Settings canvas is a dead end: every later save is refused 428 and the only recovery is a reload that destroys the draft.
 origin: spec-deferred cd771655dc8e
@@ -5058,6 +5065,7 @@ source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
 severity: medium
 reason: `ProviderForm.tsx:355-359` keeps `DEFAULT_MODELS[effectiveProvider]`, so a blank picker over a stored `openai` shows placeholder `gpt-4o` one line below "Select a provider to check its server credential". Two statements about the same control now disagree, which is the DW-505 harm shape applied to a different node. Out of scope on the intent's own authority — it says to keep the stored-provider fallback for everything but the credential line — so the disagreement is a consequence this bundle was told to accept, not a deviation from it.
 status: open
+decision: 2026-08-29 Blank the placeholder on a blank pick — Extend the blank-pick rule from the credential line to the model placeholder, so a blank provider selection shows no model default rather than the stored provider's. Keep the stored-provider fallback everywhere the pick is not blank. Pin that the credential line and the model placeholder make the same statement for every pick state.
 
 ### DW-562: The env-locked model boxes have no accessible NAME — their `<label htmlFor>` points at an id no element carries.
 origin: spec-deferred 0af3363949ae
@@ -5090,6 +5098,7 @@ source_spec: `spec-dw-446-email-inline-part-eligibility.md`
 severity: medium
 reason: DW-446's recorded 2026-08-28 decision is "never forwarded", and this change implements it: an inline part leaves eligibility, so it is not forwarded, not named in `attachmentName`, and contributes to none of the four loss terms. A message whose only part is an inline `.md` is therefore answered with "work-wiki found no email text to ingest." — a document arrived and no sentence in the reply mentions it. Apple Mail and Outlook are reported to mark PDFs and images rendered in the message body as inline, so the false-positive population is not empty. Two readings were raised by review and both were rejected by the recorded decision rather than by evidence: forward-but-count (make the accounting honest instead of eligibility narrower), and drop-but-report (one "not queued" line naming inline documents). Revisiting means re-opening a decision a human already made, which is why it is deferred rather than patched.
 status: open
+decision: 2026-08-29 Drop, but report — Keep inline parts out of eligibility exactly as DW-446 decided, and add one acknowledgement line naming supported documents that were not queued because they were labelled inline, so a message is never answered as if nothing arrived. Count them in a fifth loss term rather than reshaping the existing four. Pin the reply for a message whose only part is an inline supported document.
 
 ### DW-566: DW-450's recorded decision to widen `inlineAttachment` to trust `contentId` becomes a data-loss change once it lands on top of DW-446, not the cosmetic reply-line fix it was filed as.
 origin: spec-deferred 7dff0e55af2e
@@ -5098,6 +5107,7 @@ source_spec: `spec-dw-446-email-inline-part-eligibility.md`
 severity: medium
 reason: `inlineAttachment` reads `disposition` and nothing else, and DW-450 carries a 2026-08-28 decision to treat a part with a `Content-ID` and no `Content-Disposition` as inline. Under DW-359 that predicate governed only which parts were COUNTED, so widening it could at worst suppress a reply sentence. After DW-446 the same predicate governs whether a part is forwarded at all, so widening it silently discards every supported document a client tags with a Content-ID. Neither entry records the interaction, and whichever lands second inherits a blast radius its own reason never described.
 status: open
+decision: 2026-08-29 Split the predicate in two — Separate the counting predicate from the forwarding predicate: let the counting one trust `Content-ID` (which is what DW-450 was filed to fix — the phantom skipped-attachment line) while the forwarding one keeps reading `disposition` only, so no document is dropped on a Content-ID alone. Record the interaction in both call sites. Pin a Content-ID-only signature logo (no phantom line, not forwarded) and a Content-ID-only supported document (still handled).
 
 ### DW-567: No real-MIME fixture omits `Content-Disposition` entirely, so the `null`-disposition branch — whose stakes this change raised — has only mocked coverage.
 origin: spec-deferred 2ad4fdb0a5d9
@@ -5122,6 +5132,7 @@ source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: medium
 reason: `listRawSourceSnapshots` skips any child not ending in `.md`, and `listRawSources` is non-recursive, so bytes stored by `saveRawSourceBytes` at `raw/sources/<slug>/<id>.<ext>` appear in neither. The DW-437 decision named `listRawSourceSnapshots` as the listing to move the callers onto, so closing this needs a separate decision about what the listing's unit is.
 status: open
+decision: 2026-08-29 One row per stored artefact — Make `listRawSourceSnapshots` recurse and return one row per stored artefact regardless of extension, carrying the media type so callers that only want markdown can filter explicitly. Audit every caller the DW-437 decision moved onto it and state which ones filter. Pin that a PDF-only workspace reports a non-zero Source count and that markdown-only callers are unchanged.
 
 ### DW-570: `storeRawSource`'s silo repair falls back to mirroring the REQUEST body when re-reading the stored bytes fails, which its own comment forbids.
 origin: spec-deferred bcbe0252414f
@@ -5274,6 +5285,7 @@ source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
 severity: high
 reason: `pnpm test` fails 233 tests across 13 dom-project files with `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Node prints `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided` — Node 26.8.1 ships its own `globalThis.localStorage` getter, which shadows the one vitest's jsdom environment would otherwise expose (jsdom 30.0.1 supplies it correctly when constructed directly). Confirmed pre-existing: stashing this whole change and re-running `src/components/workbench/__tests__/workbench-split-wiring.test.tsx` reproduces the identical 29/29 failure on baseline a34c4fee. Counts are identical with and without this bundle's new suite. The fix is a repo-level decision (pin Node, or shim Storage in `vitest.setup.dom.ts`), not something a test-pin bundle should make.
 status: open
+decision: 2026-08-29 Shim Storage in vitest.setup.dom.ts — Add a real `Storage` implementation to vitest.setup.dom.ts and define `window.localStorage` (and `sessionStorage`) from it, matching that file's own stated convention that every capability jsdom lacks is shimmed there and never in `src/`. Reset it in the existing `afterEach` alongside the other shims, and expose it through `@/test/dom-helpers` the way the repo's other dom capabilities are. Verify by running the whole `dom` project to zero failures and pin the shim itself so a regression is visible.
 
 ### DW-589: The DW-356 AGENTS.md parity test is per-PATTERN, so a member added to or dropped from a multi-member enumeration never has to be documented.
 origin: spec-deferred 250f5205735c
@@ -5330,6 +5342,7 @@ source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
 severity: medium
 reason: `handleClick` (src/hooks/useGraphSimulation.ts:272-291) hit-tests `e.clientX/clientY` against node positions, and `hoveredRef` is written only by `handleMouseMove`, so there is no keyboard-addressable node. Opening a wiki page from the graph is therefore pointer-only. The text alternative (the Workbench Knowledge tree) covers it for WCAG purposes but is not an exact substitute — the graph is `?scope=` lens-scoped and the tree is not, as the page's own block comment records. The only trace of the unbuilt branch today is a code comment and a test failure message.
 status: open
+decision: 2026-08-29 Build the keyboard node cursor — Give the graph a keyboard-owned node cursor: a focusable canvas with an owned index into the node set, arrow keys moving it, Enter/Space reaching the same handler `handleClick` does, and a visible cursor indication drawn on the canvas plus an accessible announcement of the focused node. Keep the pointer path unchanged and route both through one activation function. Pin keyboard activation opening the same page a click does.
 
 ### DW-596: Nothing pins that the graph canvas's click activation path stays wired, so dropping `onClick` would leave the canvas fully inert with every accessibility test still green.
 origin: spec-deferred 4ffcbecbb9b6
@@ -5354,6 +5367,7 @@ source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: medium
 reason: `queryEmbeddings` sorts and slices to topK BEFORE `searchByVector` applies the model filter, so with `topK: 1` the window holds a single match; when that match is the current-tagged vector the window matches wholly and re-arms exactly as `kept.length > 0` did. Reproduced independently by two reviewers against the patched code: four lines before, four lines after. Closing it needs a corpus-level signal (the rebuild-completion epoch the ledger names as the alternative fix), which the 2026-08-22 decision did not authorize and this spec forbids.
 status: open
+decision: 2026-08-29 Filter before the topK slice — Apply the model filter inside `queryEmbeddings` before the sort-and-slice, so the window `searchByVector` judges is a filtered one and a topK-1 window can no longer be wholly-current by accident. This stays inside the authorized whole-window gate rather than reopening the decision. Pin DW-404's own reproduction — topK 1, one stale-tagged and one current-tagged vector, alternating queries — as the case that must emit one line, not four.
 
 ### DW-599: After the narrowing, one stale ORPHAN vector wedges `drift:<model>` shut permanently, so a second genuine drift ships silent on any store that has ever deleted, renamed, or emptied a page.
 origin: spec-deferred 238c046ea45c
@@ -5362,6 +5376,7 @@ source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: medium
 reason: `rebuildVectorStore` never deletes (its own docblock says so) and `continue`s past pages with empty content or a failed embed, so a COMPLETED rebuild can still leave stale-tagged vectors behind. Every window containing one is mixed forever, and a mixed window no longer re-arms. Verified by probe: two vectors, a completed rebuild re-tagging only the live one, then a genuine re-drift under the same active model produced ONE warning where the DW-332 pins assert two. Documented in prose on `warnedMisconfigurations` by this change, but not mitigated and not pinned by any test — mitigating it would need the rebuild to delete, or persisted rebuild state, both Block-If conditions here.
 status: open
+decision: 2026-08-29 Persist rebuild state and re-arm from it — Persist the completion of a rebuild (an epoch or generation stamp) and re-arm the drift warning from that rather than from the composition of a query window, so an orphan vector cannot wedge the warning shut. Leave `rebuildVectorStore`'s never-delete contract intact. Pin the probe's scenario: two vectors, a completed rebuild re-tagging only the live one, then a genuine re-drift must warn again.
 
 ### DW-600: `spec-dw-404-405-406-embedding-drift-rearm-gate.md` is still `status: in-review` though it was never implemented, and now prescribes a predicate that contradicts the 2026-08-22 human decision.
 origin: spec-deferred 3019a8e56821
@@ -5370,6 +5385,7 @@ source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: medium
 reason: That spec reconciles DW-404 and DW-405 into `matches.every((m) => m.metadata.model === model)` and also rewrites `relatedByVector` (DW-406). HEAD before this run still had `kept.length > 0`, so none of it ever landed. A later run routing on its `in-review` status would re-derive the strict-label gate and silently close DW-405, which the human decision deliberately left open, and would pull DW-406 in with it. It needs to be withdrawn or re-scoped by whoever owns the ledger.
 status: open
+decision: 2026-08-29 Withdraw the spec — Move the spec's status from `in-review` to `withdrawn` with a note recording that DW-404 and DW-405 were settled by the 2026-08-22 decision and closed by later sweeps, and that its prescribed predicate contradicts that decision. Name the commits that closed them so a reader can find the shipped behaviour. Leave DW-406 to be re-filed on its own terms if it is still wanted.
 
 ### DW-601: No test discriminates the permissive whole-window gate from the strict-label variant, so the DW-405 decision point rests on one code line with zero coverage in either direction.
 origin: spec-deferred 0e302255352d
@@ -5457,4 +5473,36 @@ location: src/lib/silo.ts:223
 source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
 severity: low
 reason: `saveRawSourceTree` (src/lib/raw.ts:459) writes `raw/sources/<dir>/<file>` at any depth with every segment validateSlug'd, so a folder-import root can collide with a page slug. The new sync loop copies top-level files only, while `deleteDirSafe` is recursive on both providers (filesystem.ts fs.rm recursive; r2.ts prefix sweep). A page slugged the same as an import root therefore mirrors that import's top-level files into its silo and deletes the whole import tree with the page. The namespace ambiguity predates DW-435; this change exercises it.
+status: open
+
+### DW-612: A drifted-handle owner now passes the gate but still addresses a handle-keyed silo, so their writes land in a tenant nothing reads.
+origin: spec-deferred c9f4e0a090a3
+location: src/app/api/wikis/route.ts:85
+source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
+severity: medium
+reason: `isOwnerPrincipal` resolves WHO the owner is by the stable Clerk id, but WHICH tenant they address is still derived from `principal.handle`: `POST /api/wikis` calls `createWiki(principal.handle, ...)` (src/app/api/wikis/route.ts) while the Schema that executes is read from `getOwnerHandle()` (`readActiveWikiSchema`, src/lib/wikis.ts:2149), and `PUT /api/workbench/artifact` writes to the caller's tenant. Before this change the owner-by-id whose handle had drifted got a loud 403; now they get a 200 whose bytes land in a silo (named after the raw Clerk id, in the no-username case) that no prompt or reader ever opens. Both routes' own comments describe exactly that "silently inert save" as the thing their gate existed to prevent. DW-486's recorded decision covered owner-ness only; which silo the admitted owner addresses is a separate fact needing its own decision, and the fix has more than one defensible shape (route the owner's tenant through `getOwnerHandle()`; refuse when the id-owner's
+status: open
+
+### DW-613: The three client owner gates cannot see the stable id, so client and server owner-ness can now disagree in BOTH directions, and the harness written to catch that never runs with an owner id configured
+origin: spec-deferred 5863e6ee762f
+location: src/components/__tests__/article-actions-delete-gate.test.tsx:211
+source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
+severity: medium
+reason: `NavHeader.tsx:53`, `ArticleActions.tsx:118` and `RevisionHistory.tsx:132` stay on `isOwnerHandle` because `YOPEDIA_OWNER_USER_ID` is server-only and is never inlined into the bundle. With an id configured the client answer is no longer merely NARROWER than the server's: an impostor holding a stale `NEXT_PUBLIC_OWNER_HANDLE` is refused by every server gate yet is still shown the owner affordances, and the id-matching owner whose handle drifted is shown none. `src/components/__tests__/article-actions-delete-gate.test.tsx` is the one harness that compares the client gate against the real `canWritePage`, and it sets only `NEXT_PUBLIC_OWNER_HANDLE` in its `beforeEach` (:211) so both sides resolve from the same fact and agree by construction; running it with `YOPEDIA_OWNER_USER_ID=user_2stable` produces 4 failures, including "offers Delete to nobody the server would refuse". Closing this needs a decision: hand the islands a server-computed `isOwner` prop, or accept the divergence and parame
+status: open
+
+### DW-614: `src/mcp.ts` mints `service:mcp` principal ids from a raw string literal rather than the shared `SERVICE_PRINCIPAL_ID_PREFIX`.
+origin: spec-deferred bf8b971590b0
+location: src/mcp.ts:296
+source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
+severity: low
+reason: Three sites (src/mcp.ts:296, :374, :398) write `{ id: "service:mcp", ... }` inline. `src/lib/principal-id.ts` was added precisely to give that prefix one definition shared by the module that mints it and the module that reads it; these mints predate the change and were outside its scope. Behaviour is correct today — `isSynthesizedPrincipalId` matches on the colon, not the prefix — so this is drift risk, not a live defect.
+status: open
+
+### DW-615: Pre-existing: 13 workbench DOM test files fail on this branch because `window.localStorage` is undefined under jsdom.
+origin: spec-deferred 6e6c028887b0
+location: src/components/workbench/__tests__/workbench-split-wiring.test.tsx:97
+source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
+severity: medium
+reason: `npx vitest run` reports 233 failing tests across 13 `src/components/workbench/__tests__/*.tsx` files, every one of them the same `TypeError: Cannot read properties of undefined (reading 'clear')` raised from a `beforeEach` calling `window.localStorage.clear()`. Confirmed pre-existing: with every `src/` change from this story stashed, the same file fails 29/29 at baseline revision 249fc694. The failure count is identical before and after this story, so nothing here caused or worsened it — but the suite is red on this branch and any spec asserting "`pnpm test` passes" cannot be met until it is fixed.
 status: open

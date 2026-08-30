@@ -6,6 +6,7 @@ import {
   isE2eIdentityArmed,
   principalFromCookieValue,
 } from "@/lib/e2e-identity";
+import { getOwnerUserId } from "@/lib/owner";
 
 // HTTP methods that mutate state.
 const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
@@ -214,7 +215,7 @@ export async function handlePrivateRequest(
   // Local Playwright identity: same owner gate, no Clerk session. Never armed
   // on the production origin — see `isE2eIdentityArmed`.
   if (isE2eIdentityArmed()) {
-    const ownerUserId = process.env.YOPEDIA_OWNER_USER_ID?.trim();
+    const ownerUserId = getOwnerUserId();
     const identity = await principalFromCookieValue(
       req.cookies.get(E2E_COOKIE_NAME)?.value,
     );
@@ -245,7 +246,7 @@ export async function handlePrivateRequest(
 
   // Stable Clerk id, not an editable username. Missing configuration fails
   // closed so a bad deployment can never silently become "any signed-in user".
-  const ownerUserId = process.env.YOPEDIA_OWNER_USER_ID?.trim();
+  const ownerUserId = getOwnerUserId();
   if (!ownerUserId) {
     return isApi
       ? jsonError("Private deployment is not configured.", 503)

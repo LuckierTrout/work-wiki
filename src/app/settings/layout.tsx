@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 
 /**
  * Settings is an admin (site-owner) surface — it exposes the LLM provider/model
@@ -15,6 +15,6 @@ export default async function SettingsLayout({
   children: React.ReactNode;
 }) {
   const principal = await getPrincipal();
-  if (!isOwnerHandle(principal?.handle)) notFound();
+  if (!isOwnerPrincipal(principal)) notFound();
   return <>{children}</>;
 }

@@ -2100,7 +2100,7 @@ export async function readWikiArtifact(
  * whose Clerk `userId` is not `YOPEDIA_OWNER_USER_ID` (404 for non-API
  * navigation), and `/api/wikis` is neither in `IN_ROUTE_AUTH_PATHS` nor matched
  * by `authenticatesInRoute`, so a non-owner never reaches the route at all on a
- * configured deployment. The SECOND door is the route's own `isOwnerHandle`
+ * configured deployment. The SECOND door is the route's own `isOwnerPrincipal`
  * check (DW-159) — defense-in-depth behind the middleware, and the same gate
  * `src/app/api/workbench/artifact/route.ts` puts on Schema edits. The KERNEL,
  * {@link createWiki} below, is deliberately NOT owner-asserted: it still takes

@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
-vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
+vi.mock("@/lib/owner", async (original) => ({
+  ...(await original<typeof import("@/lib/owner")>()),
+  isOwnerPrincipal: vi.fn(),
+}));
 vi.mock("@/lib/agents", () => ({
   getAgent: vi.fn(),
   listAgentsForOwner: vi.fn(async () => []),
@@ -18,7 +21,7 @@ vi.mock("@/lib/email-ingest", async (original) => ({
 }));
 
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import {
   loadEmailIngestConfig,
   saveEmailIngestConfig,
@@ -28,7 +31,7 @@ import { getVault, vaultOwnedBy } from "@/lib/vault";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
-const mockedIsOwner = vi.mocked(isOwnerHandle);
+const mockedIsOwner = vi.mocked(isOwnerPrincipal);
 const mockedLoad = vi.mocked(loadEmailIngestConfig);
 const mockedSave = vi.mocked(saveEmailIngestConfig);
 const mockedGetAgent = vi.mocked(getAgent);

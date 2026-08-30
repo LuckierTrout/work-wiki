@@ -4,7 +4,10 @@ import os from "os";
 import path from "path";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
-vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
+vi.mock("@/lib/owner", async (original) => ({
+  ...(await original<typeof import("@/lib/owner")>()),
+  isOwnerPrincipal: vi.fn(),
+}));
 
 /**
  * `fixLintIssue` is SPIED, not stubbed: the factory spreads `importOriginal`,
@@ -21,7 +24,7 @@ vi.mock("@/lib/lint-fix", async (importOriginal) => {
 });
 
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { fixLintIssue } from "@/lib/lint-fix";
 import { ensureDirectories, writeWikiPage } from "@/lib/wiki";
 import { _resetStorage, getStorage } from "@/lib/storage";
@@ -29,7 +32,7 @@ import { _resetLocks } from "@/lib/lock";
 import { serializeFrontmatter } from "@/lib/frontmatter";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
-const mockedIsOwner = vi.mocked(isOwnerHandle);
+const mockedIsOwner = vi.mocked(isOwnerPrincipal);
 const spiedFixLintIssue = vi.mocked(fixLintIssue);
 
 /**

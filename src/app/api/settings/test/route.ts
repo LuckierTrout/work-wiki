@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { callLLM, getProviderInfo, hasLLMKey } from "@/lib/llm";
 import { getErrorMessage } from "@/lib/errors";
 import { loadConfig } from "@/lib/config";
 
 export async function POST() {
   const principal = await getPrincipal();
-  if (!isOwnerHandle(principal?.handle)) {
+  if (!isOwnerPrincipal(principal)) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 

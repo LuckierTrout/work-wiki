@@ -4,11 +4,11 @@ import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 
 export async function POST() {
   const principal = await getPrincipal();
-  if (!isOwnerHandle(principal?.handle)) {
+  if (!isOwnerPrincipal(principal)) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 

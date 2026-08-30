@@ -13,7 +13,8 @@
 import { agentOwnerHandle } from "./agents";
 import { belongsInCommons } from "./commons";
 import { slugify } from "./slugify";
-import { isOwnerHandle } from "./owner";
+import { isOwnerPrincipal } from "./owner";
+import { isServicePrincipalId } from "./principal-id";
 import type { IndexEntry } from "./types";
 import type { Principal } from "./auth";
 
@@ -52,13 +53,15 @@ export function isAdmin(
   principal: { id?: string; handle?: string } | null | undefined,
 ): boolean {
   // The site owner runs the instance, so they ARE the operator/admin — they may
-  // delete commons pages and manage any page. Matched by handle (case-insensitive)
-  // against the deploy-configured NEXT_PUBLIC_OWNER_HANDLE — the SAME handle-trust
-  // caveat as the ADMIN_HANDLES path below (it assumes Clerk usernames aren't
-  // user-editable; registration here is invite-only + owner-controlled, which
-  // closes that gap). This is the one place owner ⇒ admin is granted for PAGE
-  // authz; the admin/tenant + admin/migrate routes do their own owner checks.
-  if (isOwnerHandle(principal?.handle)) return true;
+  // delete commons pages and manage any page. Matched by `isOwnerPrincipal`
+  // (DW-486): the STABLE Clerk id `YOPEDIA_OWNER_USER_ID` when one is configured
+  // and this principal carries a Clerk id, else the deploy-configured
+  // NEXT_PUBLIC_OWNER_HANDLE, case-insensitively. The id path removes the
+  // handle-trust caveat the ADMIN_HANDLES path below still carries, and makes
+  // the owner ⇒ admin grant survive a username change. This is the one place
+  // owner ⇒ admin is granted for PAGE authz; the admin/tenant + admin/migrate
+  // routes do their own owner checks.
+  if (isOwnerPrincipal(principal)) return true;
 
   const raw = process.env.ADMIN_HANDLES;
   if (!raw) return false;
@@ -257,7 +260,7 @@ export function canWritePage(
   writeKind: WriteKind = "metadata",
 ): boolean {
   // Deployment-trusted automated caller — writes for owners (agents, cron).
-  if (principal?.id.startsWith("service:")) return true;
+  if (isServicePrincipalId(principal?.id)) return true;
   // Admins may write/delete/manage every page (incl. others' private pages).
   if (isAdmin(principal)) return true;
 

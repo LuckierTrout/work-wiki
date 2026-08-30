@@ -322,8 +322,8 @@ export async function purgeStaleJobs(): Promise<number> {
  * `/api/*` request whose Clerk `userId` is not `YOPEDIA_OWNER_USER_ID`, and
  * `/api/wikis` is neither in `IN_ROUTE_AUTH_PATHS` nor matched by
  * `authenticatesInRoute`, so a non-owner is turned away before the route runs.
- * The route's own `isOwnerHandle` check (DW-159) is the SECOND door behind it,
- * defense-in-depth. `createWiki` itself is deliberately un-asserted — it takes
+ * The route's own `isOwnerPrincipal` check (DW-159) is the SECOND door behind
+ * it, defense-in-depth. `createWiki` itself is deliberately un-asserted — it takes
  * any `owner` string, and what makes that safe is that the route is its only
  * caller today; a direct kernel caller (a CLI command, a future MCP tool) would
  * open a tenant this sweep never sees, so adding one means revisiting this

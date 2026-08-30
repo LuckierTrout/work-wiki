@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
-vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
+vi.mock("@/lib/owner", async (original) => ({
+  ...(await original<typeof import("@/lib/owner")>()),
+  isOwnerPrincipal: vi.fn(),
+}));
 vi.mock("@/lib/config", async (original) => ({
   ...(await original<typeof import("@/lib/config")>()),
   readConfig: vi.fn(),
@@ -37,7 +40,7 @@ vi.mock("@/lib/embeddings", () => ({
 }));
 
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import {
   CONFIG_UNREADABLE_COPY,
   getEffectiveProvider,
@@ -61,7 +64,7 @@ import {
 
 const mockedBinding = vi.mocked(getWorkersAiBinding);
 const mockedPrincipal = vi.mocked(getPrincipal);
-const mockedIsOwner = vi.mocked(isOwnerHandle);
+const mockedIsOwner = vi.mocked(isOwnerPrincipal);
 const mockedReadOnly = vi.mocked(isReadOnly);
 const mockedRead = vi.mocked(readConfig);
 const mockedSave = vi.mocked(saveConfig);

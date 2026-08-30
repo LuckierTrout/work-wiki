@@ -11,14 +11,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/config", () => ({ isReadOnly: vi.fn() }));
-// `@/lib/owner` MUST be mocked here: the real `isOwnerHandle` reads
-// `NEXT_PUBLIC_OWNER_HANDLE`, which is unset under vitest, so it would answer
-// false for `alice` and 403 every POST case below. `beforeEach` defaults it to
-// true so each existing status keeps meaning what it meant. The whole module is
-// replaced rather than spread because `wikis.ts` — loaded for real here — only
-// calls `getOwnerHandle()` from `readActiveWikiSchema`, which no route under
-// test reaches.
-vi.mock("@/lib/owner", () => ({ isOwnerHandle: vi.fn() }));
+// `@/lib/owner` MUST be mocked here: the real `isOwnerPrincipal` resolves the
+// owner from `YOPEDIA_OWNER_USER_ID` / `NEXT_PUBLIC_OWNER_HANDLE`, both unset
+// under vitest, so it would answer false for `alice` and 403 every POST case
+// below. `beforeEach` defaults it to true so each existing status keeps meaning
+// what it meant. SPREAD, not replaced: `owner.ts` also exports `getOwnerHandle`,
+// `getOwnerUserId` and `isOwnerConfigured`, and real modules in this graph call
+// them — `owner-route.ts` spends two of them on every `requireOwnerPrincipal`,
+// and `wikis.ts` calls `getOwnerHandle()` from `readActiveWikiSchema`. Replacing
+// the module would leave those `undefined`, so adding any route that reaches
+// them to this suite would fail with "not a function" rather than a real result.
+// Only the predicate under test is stubbed.
+vi.mock("@/lib/owner", async (original) => ({
+  ...(await original<typeof import("@/lib/owner")>()),
+  isOwnerPrincipal: vi.fn(),
+}));
 vi.mock("@/lib/wikis", async (original) => ({
   ...(await original<typeof import("@/lib/wikis")>()),
   getWikiRegistry: vi.fn(),
@@ -36,7 +43,7 @@ import { DELETE as DELETE_WIKI, PATCH as RENAME_WIKI } from "@/app/api/wikis/[id
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError } from "@/lib/errors";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import {
   applyScenarioTemplate,
   createWiki,
@@ -57,7 +64,7 @@ const WIKI: WikiRecord = {
 
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedReadOnly = vi.mocked(isReadOnly);
-const mockedIsOwner = vi.mocked(isOwnerHandle);
+const mockedIsOwner = vi.mocked(isOwnerPrincipal);
 const mockedRegistry = vi.mocked(getWikiRegistry);
 const mockedCreate = vi.mocked(createWiki);
 const mockedApply = vi.mocked(applyScenarioTemplate);
@@ -162,7 +169,7 @@ describe("wiki API auth", () => {
     expect(response.status).toBe(403);
     expect((await response.json()).error).toMatch(/owner/i);
     expect(mockedCreate).not.toHaveBeenCalled();
-    expect(mockedIsOwner).toHaveBeenCalledWith("alice");
+    expect(mockedIsOwner).toHaveBeenCalledWith({ id: "user-1", handle: "alice" });
     expect((await GET()).status).toBe(200);
     expect((await PUT(currentRequest({ id: WIKI.id }))).status).toBe(200);
     expect(

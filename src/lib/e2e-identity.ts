@@ -14,7 +14,7 @@
  * wrangler vars and Cloudflare secrets.
  */
 
-import { getOwnerHandle } from "./owner";
+import { getOwnerHandle, getOwnerUserId } from "./owner";
 
 export const E2E_COOKIE_NAME = "yopedia_e2e";
 export const E2E_SECRET_MIN_LENGTH = 32;
@@ -38,7 +38,13 @@ export function isE2eIdentityArmed(): boolean {
 }
 
 export function e2eOwnerUserId(): string | null {
-  const id = process.env.YOPEDIA_OWNER_USER_ID?.trim();
+  // Through `getOwnerUserId()` rather than a second raw read of
+  // `YOPEDIA_OWNER_USER_ID` (DW-486): the helper already trims and treats blank
+  // and whitespace-only as absent, so this is byte-identical to the inline read
+  // it replaced — and keeps `src/lib/owner.ts` the only reader of the env var.
+  // The `OWNER_ID_RE` shape check stays HERE: it is this harness's own extra
+  // constraint (the id is HMAC'd into a cookie), not part of "who is the owner".
+  const id = getOwnerUserId();
   return id && OWNER_ID_RE.test(id) ? id : null;
 }
 

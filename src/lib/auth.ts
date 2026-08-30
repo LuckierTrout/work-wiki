@@ -20,6 +20,7 @@ import {
   principalFromCookieValue,
 } from "./e2e-identity";
 import { logger } from "./logger";
+import { SERVICE_PRINCIPAL_ID_PREFIX } from "./principal-id";
 
 export interface Principal {
   /** Stable Clerk user id (never changes). */
@@ -198,5 +199,7 @@ export function getServicePrincipal(req: Request): Principal | null {
   const provided = bearerToken(req.headers.get("authorization"));
   if (!provided || !timingSafeEqual(provided, expected)) return null;
 
-  return { id: `service:${handle}`, handle };
+  // Through `SERVICE_PRINCIPAL_ID_PREFIX` so the shape this mints and the
+  // `isServicePrincipalId` predicate `owner.ts` reads it with cannot drift.
+  return { id: `${SERVICE_PRINCIPAL_ID_PREFIX}${handle}`, handle };
 }

@@ -6,7 +6,7 @@ import { getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { parseFrontmatter, type Frontmatter } from "@/lib/frontmatter";
 import { stripFrontmatterBlock } from "@/lib/markdown";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { listReadableWikiPages, readWikiPage } from "@/lib/wiki";
 import {
   isEditableArtifactFile,
@@ -346,13 +346,17 @@ async function handle(request: Request) {
     //
     // The artifact half also consults BOTH refusals `PUT
     // /api/workbench/artifact` answers 403 to — `isReadOnly()` and
-    // `isOwnerHandle()` — because offering `Edit` where the write will refuse
+    // `isOwnerPrincipal()` — because offering `Edit` where the write will refuse
     // walks the owner through the confirm dialog and a full retype of an
     // executable Schema only to fail at `Save`. The owner half matters even on a
-    // single-owner deployment: `isOwnerHandle` is false for EVERYONE when
-    // `NEXT_PUBLIC_OWNER_HANDLE` is unset (`owner.ts`), while the Workbench
-    // itself is only signed-in-gated (`page.tsx`), so without this the affordance
-    // is offered on a deployment where no save can ever land.
+    // single-owner deployment: `isOwnerPrincipal` is false for EVERYONE when
+    // NEITHER `YOPEDIA_OWNER_USER_ID` NOR `NEXT_PUBLIC_OWNER_HANDLE` is
+    // configured (`owner.ts`), while the Workbench itself is only
+    // signed-in-gated (`page.tsx`), so without this the affordance is offered on
+    // a deployment where no save can ever land. It reads the SAME predicate the
+    // write door does (DW-486) — the stable Clerk id where one is configured —
+    // so an owner whose handle drifted is offered `Edit` exactly where the save
+    // will land.
     //
     // The page half consults exactly the refusals `PUT /api/wiki/[slug]`
     // answers 403 to, and no more: `isReadOnly()` (DW-37) AND that route's
@@ -367,7 +371,7 @@ async function handle(request: Request) {
       ((slug !== undefined &&
         !isReadOnly() &&
         canWriteFrontmatter(fm, principal, "body")) ||
-        (artifact !== undefined && !isReadOnly() && isOwnerHandle(principal.handle))),
+        (artifact !== undefined && !isReadOnly() && isOwnerPrincipal(principal))),
   };
   return json(payload);
 }

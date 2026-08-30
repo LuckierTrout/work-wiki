@@ -38,7 +38,7 @@ import {
 import { getErrorMessage } from "@/lib/errors";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import {
   IF_MATCH_HEADER,
   WRITE_CONFLICT_COPY,
@@ -48,7 +48,7 @@ import {
 
 async function requireOwner() {
   const principal = await getPrincipal();
-  return principal && isOwnerHandle(principal.handle) ? principal : null;
+  return isOwnerPrincipal(principal) ? principal : null;
 }
 
 /**

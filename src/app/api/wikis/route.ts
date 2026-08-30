@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { createWiki, getWikiRegistry, parseCreateWikiInput } from "@/lib/wikis";
 
 /**
@@ -31,7 +31,7 @@ export async function GET() {
  * POST /api/wikis — create a Wiki from one of the five Scenario Templates.
  *
  * Owner-only (DW-159): signing in is not enough — the creation door is gated on
- * `isOwnerHandle`, in the same 401 → owner → read-only order the other
+ * `isOwnerPrincipal`, in the same 401 → owner → read-only order the other
  * owner-gated write door (`PUT /api/workbench/artifact`) uses.
  *
  * Body: `{ name, scenario }`. `custom`, an unknown scenario, and a blank name
@@ -52,13 +52,19 @@ export async function POST(request: Request) {
   // and before body parsing, matching the artifact route, so both write doors
   // answer a non-owner identically whatever else is true of the request.
   //
-  // FAILS CLOSED, deliberately: `isOwnerHandle` answers false for EVERYONE when
-  // `NEXT_PUBLIC_OWNER_HANDLE` is unset or blank, so an unconfigured deployment
-  // refuses creation to every caller including the deployer. A deployment with
-  // no owner has nobody to create for, and opening the door to "any signed-in
-  // user" on a missing env var is the failure this ordering exists to avoid —
-  // so an operator meeting this 403 on a fresh deploy should set that var.
-  if (!isOwnerHandle(principal.handle)) {
+  // FAILS CLOSED, deliberately: `isOwnerPrincipal` answers false for EVERYONE
+  // when NEITHER `YOPEDIA_OWNER_USER_ID` NOR `NEXT_PUBLIC_OWNER_HANDLE` is set
+  // or non-blank, so an unconfigured deployment refuses creation to every caller
+  // including the deployer. A deployment with no owner has nobody to create for,
+  // and opening the door to "any signed-in user" on a missing env var is the
+  // failure this ordering exists to avoid — so an operator meeting this 403 on a
+  // fresh deploy should set those vars.
+  //
+  // DECIDED ON THE STABLE CLERK ID (DW-486), not the handle, whenever
+  // `YOPEDIA_OWNER_USER_ID` is configured: that is the same fact the middleware
+  // admitted this request on, so the owner the deployment gate let through can
+  // never be the caller this 403 turns away.
+  if (!isOwnerPrincipal(principal)) {
     return NextResponse.json(
       { error: "Only the workspace owner can create Wikis." },
       { status: 403 },

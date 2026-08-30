@@ -876,8 +876,9 @@ describe("editing the Schema", () => {
     // The mirror of the read-only case above, for the OTHER 403 the write route
     // answers. Both halves matter, and the second is not hypothetical: the
     // Workbench is signed-in-gated rather than owner-gated (`page.tsx`), and
-    // `isOwnerHandle` is false for EVERYONE when `NEXT_PUBLIC_OWNER_HANDLE` is
-    // unset — so without this the affordance is offered on a deployment where no
+    // `isOwnerPrincipal` is false for EVERYONE when neither
+    // `YOPEDIA_OWNER_USER_ID` nor `NEXT_PUBLIC_OWNER_HANDLE` is set — so without
+    // this the affordance is offered on a deployment where no
     // save can ever land, and the owner discovers it only after retyping an
     // executable Schema. The bytes still render in both cases: not-editable
     // means not-editable, not hidden.
@@ -1199,11 +1200,12 @@ describe("the two routes", () => {
     // then this half consulted nothing precisely BECAUSE that route refused
     // nothing. The page half also carries that route's realm-aware ACL since
     // DW-42 (`canWriteFrontmatter(..., "body")`), which is the OTHER refusal it
-    // answers 403 to; the artifact half keeps `isOwnerHandle`, which is what
-    // `PUT /api/workbench/artifact` refuses on. The executed tests pin the
-    // behaviour; this pins that the conditions stay in ONE expression.
+    // answers 403 to; the artifact half keeps the owner predicate — since DW-486
+    // `isOwnerPrincipal`, which is what `PUT /api/workbench/artifact` refuses on.
+    // The executed tests pin the behaviour; this pins that the conditions stay in
+    // ONE expression.
     expect(source).toMatch(
-      /editable:\s*format === "markdown" &&\s*\(\(slug !== undefined &&\s*!isReadOnly\(\) &&\s*canWriteFrontmatter\(fm, principal, "body"\)\) \|\|\s*\(artifact !== undefined && !isReadOnly\(\) && isOwnerHandle\(principal\.handle\)\)\)/,
+      /editable:\s*format === "markdown" &&\s*\(\(slug !== undefined &&\s*!isReadOnly\(\) &&\s*canWriteFrontmatter\(fm, principal, "body"\)\) \|\|\s*\(artifact !== undefined && !isReadOnly\(\) && isOwnerPrincipal\(principal\)\)\)/,
     );
     // The `kind=page` branch says the same thing about the same route — the two
     // surfaces onto one Page must not disagree about whether it can be saved.

@@ -9,7 +9,7 @@ import {
 import { AUTO_FIXABLE_CHECK_TYPES } from "@/lib/lint-types";
 import { getErrorMessage } from "@/lib/errors";
 import { getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { logger } from "@/lib/logger";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
   try {
     // Lint fixes mutate pages — owner-only.
     const principal = await getPrincipal();
-    if (!isOwnerHandle(principal?.handle)) {
+    if (!isOwnerPrincipal(principal)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -158,8 +158,8 @@ export async function POST(req: NextRequest) {
       slug ?? "",
       targetSlug,
       message,
-      // Non-null: `isOwnerHandle` is false for a null/undefined handle, so the
-      // 403 above has already returned for every principal-less request.
+      // Non-null: `isOwnerPrincipal` is false for a null/undefined principal,
+      // so the 403 above has already returned for every principal-less request.
       principal!.handle,
     );
     return NextResponse.json(result);

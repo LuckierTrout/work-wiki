@@ -4,7 +4,7 @@ import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import {
   listWikiArtifactRevisions,
@@ -32,7 +32,7 @@ import { scopedContentVersion } from "@/lib/write-precondition";
  * its own idea of what may be written.
  *
  * WHICH OF THE PARENT'S GATES THIS CARRIES. Verbatim: `getPrincipal()` → 401,
- * `isOwnerHandle` → 403, `isReadOnly()` → 403 (on the POST — see below), `?path=`
+ * `isOwnerPrincipal` → 403, `isReadOnly()` → 403 (on the POST — see below), `?path=`
  * → the same single {@link NOT_EDITABLE} 400 that discloses nothing about which
  * file it was, the Wiki re-derived from the registry's `currentId`, and
  * `hasPageConventions` → 400 with the parent's own copy. The browser can address
@@ -114,7 +114,7 @@ async function gate(
   if (!principal) {
     return { ok: false, response: json({ error: "Sign in required." }, 401) };
   }
-  if (!isOwnerHandle(principal.handle)) {
+  if (!isOwnerPrincipal(principal)) {
     return {
       ok: false,
       response: json({ error: "Only the workspace owner can edit the Schema." }, 403),

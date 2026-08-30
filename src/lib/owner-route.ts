@@ -1,15 +1,17 @@
 import { getPrincipal, getServicePrincipal, type Principal } from "./auth";
-import { getOwnerHandle, isOwnerHandle } from "./owner";
+import { getOwnerHandle, isOwnerConfigured, isOwnerPrincipal } from "./owner";
 
 /**
  * Signed-in owner for kernel wiki / chat / search APIs.
- * When no owner handle is configured (tests), any signed-in principal passes.
+ * When NO owner is configured (tests), any signed-in principal passes —
+ * "unconfigured" now means NEITHER `YOPEDIA_OWNER_USER_ID` NOR
+ * `NEXT_PUBLIC_OWNER_HANDLE` is set, so a deployment that names the owner by id
+ * alone still gates, instead of falling through to "any signed-in user".
  */
 export async function requireOwnerPrincipal(): Promise<Principal | null> {
   const principal = await getPrincipal();
   if (!principal) return null;
-  const owner = getOwnerHandle();
-  if (owner && !isOwnerHandle(principal.handle)) return null;
+  if (isOwnerConfigured() && !isOwnerPrincipal(principal)) return null;
   return principal;
 }
 
@@ -38,7 +40,16 @@ export async function requireOwnerOrServicePrincipal(
   if (session) return session;
   const service = getServicePrincipal(request);
   if (!service) return null;
-  const owner = getOwnerHandle();
-  if (owner && !isOwnerHandle(service.handle)) return null;
+  // KEYED ON THE HANDLE ALONE, unlike the session branch above — deliberately.
+  // A service principal's id is synthesized, so it carries no Clerk id to
+  // compare and `isOwnerPrincipal` decides it on the handle. Gating this branch
+  // on `isOwnerConfigured()` would refuse the token outright on a deployment
+  // that sets `YOPEDIA_OWNER_USER_ID` and NOT `NEXT_PUBLIC_OWNER_HANDLE`:
+  // "configured" would be true while the only fact this principal has to offer
+  // is unset, so the sidecar and every automation would lose every route this
+  // gate protects. The condition below is exactly the one this branch has always
+  // had — refuse only when a handle IS configured and the service handle differs.
+  const ownerHandle = getOwnerHandle();
+  if (ownerHandle && !isOwnerPrincipal(service)) return null;
   return service;
 }

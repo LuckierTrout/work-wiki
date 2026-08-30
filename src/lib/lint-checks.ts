@@ -404,7 +404,7 @@ export async function checkContradictions(
   // resolved from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
   // inside `readActiveWikiSchema`). This detector takes no owner at all. The
   // only owner gate is on the HTTP entry point (`src/app/api/lint/route.ts`,
-  // via `isOwnerHandle`); `runLint` in `src/cli.ts` reaches the same code with
+  // via `isOwnerPrincipal`); `runLint` in `src/cli.ts` reaches the same code with
   // no principal. So do not read this as "caller == site owner" — the
   // conventions come from the site owner either way. A second tenant means
   // threading a tenant argument through `loadPageConventions()` and down
@@ -560,7 +560,7 @@ export async function checkMissingConceptPages(
   // resolved from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
   // inside `readActiveWikiSchema`). This detector takes no owner at all. The
   // only owner gate is on the HTTP entry point (`src/app/api/lint/route.ts`,
-  // via `isOwnerHandle`); `runLint` in `src/cli.ts` reaches the same code with
+  // via `isOwnerPrincipal`); `runLint` in `src/cli.ts` reaches the same code with
   // no principal. So do not read this as "caller == site owner" — the
   // conventions come from the site owner either way. A second tenant means
   // threading a tenant argument through `loadPageConventions()` and down

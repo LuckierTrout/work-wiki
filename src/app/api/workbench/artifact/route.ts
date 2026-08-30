@@ -4,7 +4,7 @@ import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import { isEditableArtifactFile } from "@/lib/wiki-scenarios";
 import { getWikiRegistry, writeWikiArtifact } from "@/lib/wikis";
@@ -104,7 +104,12 @@ async function handle(request: Request) {
   // refresh counter. That is exactly the silently-inert save `hasPageConventions`
   // exists to prevent, arriving by another door. work-wiki is a single-owner
   // deployment (`owner.ts`), so this is a refusal, not a permission model.
-  if (!isOwnerHandle(principal.handle)) {
+  //
+  // `isOwnerPrincipal`, not the handle (DW-486): with `YOPEDIA_OWNER_USER_ID`
+  // configured this decides on the SAME stable Clerk id the middleware admitted
+  // the request on, so a drifted username cannot 403 the owner here after the
+  // deployment gate let them in.
+  if (!isOwnerPrincipal(principal)) {
     return json({ error: "Only the workspace owner can edit the Schema." }, 403);
   }
   if (isReadOnly()) {

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import {
   MAX_EMAIL_SENDERS,
   isEmailAddress,
@@ -17,7 +17,7 @@ import { getVault, listVaults, vaultOwnedBy } from "@/lib/vault";
 
 async function requireOwner() {
   const principal = await getPrincipal();
-  return principal && isOwnerHandle(principal.handle) ? principal : null;
+  return isOwnerPrincipal(principal) ? principal : null;
 }
 
 export async function GET() {

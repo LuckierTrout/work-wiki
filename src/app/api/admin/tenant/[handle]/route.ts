@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServicePrincipal, getPrincipal } from "@/lib/auth";
-import { isOwnerHandle } from "@/lib/owner";
+import { isOwnerPrincipal } from "@/lib/owner";
 import { tenantForOwner, DEFAULT_TENANT } from "@/lib/wiki";
 import { deleteTenant } from "@/lib/tenant-admin";
 import { decodeSlug } from "@/lib/slugify";
@@ -34,7 +34,7 @@ export async function DELETE(
   // "self" = same TENANT, not same handle — distinct handles that normalize to
   // the same tenant (e.g. "a.b"/"a-b") share a silo and can self-delete it.
   const isSelf = !!principal && tenantForOwner(principal.handle) === tenant;
-  const isAdmin = !!service || isOwnerHandle(principal?.handle);
+  const isAdmin = !!service || isOwnerPrincipal(principal);
   if (!isAdmin && !isSelf) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
