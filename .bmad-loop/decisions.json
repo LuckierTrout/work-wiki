@@ -287,6 +287,15 @@
     "label": "Align the assets route on hiddenSlugs",
     "resolution": ""
   },
+  "DW-540": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give `walkFiles` an explicit prefix priority \u2014 `wiki/` first, then the rest of the owner's live data, with `revisions/` and other append-only history last \u2014 so a truncating pass drops history before pages. Sort within a prefix so the result is deterministic rather than readdir-ordered. Pin that a budget exceeded by an oversized silo still yields a backup containing every `wiki/` page.",
+    "key": "1",
+    "label": "Priority walk order",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
