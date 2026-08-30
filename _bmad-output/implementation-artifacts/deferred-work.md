@@ -1943,7 +1943,9 @@ source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
 location: src/lib/config.ts:139
 severity: low
 reason: The flag appears only in code docstrings and spec artifacts — not in README.md and not under docs/. It now means "no page or artifact write through any caller, including MCP and the CLI", while settings, the wikis registry, vaults, agent profiles, tasks, monitors, structured knowledge, `raw/`, the ingest ledger and the revision store all still mutate. An operator setting the flag has nowhere to read that boundary; the new `isReadOnly()` docstring in src/lib/config.ts states it, but only to a reader already in the code.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-operator-docs
+resolution-undo: 3b09c8630704cd1ee6b9a953f6709b99d99347084c194b69f40f07e555f82e49 2026-08-30 7374617475733a206f70656e
 
 ### DW-269: The Re-ingest and Revert client affordances are still offered where the same commons-realm gate refuses them — the exact shape DW-120 fixed for Delete.
 
@@ -2845,7 +2847,9 @@ source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md
 location: DEPLOY.md; src/app/api/tasks/scan/route.ts:62
 severity: low
 reason: The scan is the only trigger for the DW-137 workspace-profile backfill and the only scheduled trigger for the orphan-directory sweep, and a monitor that treats non-2xx as failure will now alert once per tick while `YOPEDIA_READONLY` is set. DEPLOY.md's read-only section documents the Workbench settings affordances and says nothing about the scan.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-operator-docs
+resolution-undo: 3b09c8630704cd1ee6b9a953f6709b99d99347084c194b69f40f07e555f82e49 2026-08-30 7374617475733a206f70656e
 
 ### DW-389: The `disputed-page` lint guidance still tells the reader to clear the Disputed toggle with a PATCH that DW-121 now refuses for every non-admin.
 
@@ -4974,4 +4978,44 @@ location: src/components/workbench/ResearchCanvas.tsx:403
 source_spec: `spec-dw-529-530-531-read-only-client-refusal-parity.md`
 severity: low
 reason: `src/components/workbench/ResearchCanvas.tsx:403,409` render Cancel and Start/Retry only when `!readOnly`, so on a read-only deployment the controls vanish rather than standing refused with a reason — a third shape beside `disabled` and `aria-disabled`, and the one that explains least. Their door is `POST /api/research/[id]/run`, whose sentence `RESEARCH_MUTATE_READ_ONLY_COPY` this change moved into `src/lib/research-panel.ts` for the canvases and which still has exactly one consumer, the Studio. DW-531 named only the five `disabled=` controls in Graph and Review, and the bundle intent excluded ResearchCanvas, so the hidden rows were left as they are.
+status: open
+
+### DW-645: Three in-repo sites assert the wrong queue semantics for a read-only 403 — the code is right and the comments are wrong, and DEPLOY.md now contradicts them.
+origin: spec-deferred ca7d934d9456
+location: src/app/api/tasks/run/route.ts:166
+source_spec: `spec-dw-268-388-read-only-operator-docs.md`
+severity: medium
+reason: `src/app/api/tasks/run/route.ts:166-173` states "4xx means the consumer ACKS AND DROPS the message ... work queued against a read-only deployment is discarded rather than replayable"; `src/app/api/tasks/scan/route.ts:73-77` repeats "the consumer treats a 4xx as terminal"; and `src/lib/__tests__/scan-route.test.ts:409-414` restates it inside a passing test's rationale. `workers/task-consumer/index.ts:114` acks and drops on `400 || 404 || 422` only; a 403 falls to the transient branch at `:126-139` and is retried to `MAX_DELIVERY_ATTEMPTS = 4`, then parked in the DLQ. The first draft of this doc inherited the falsehood from the route comment, which is how it was found. Whoever edits the consumer next reads these comments, not DEPLOY.md.
+status: open
+
+### DW-646: `POST /api/tasks/run`'s read-only 403 is pinned by no test, and the one check that touches it passes even if the gate is deleted.
+origin: spec-deferred ffc35a87d8c8
+location: src/lib/__tests__/tasks-route.test.ts
+source_spec: `spec-dw-268-388-read-only-operator-docs.md`
+severity: low
+reason: `READ_ONLY_REFUSAL.queuedWork` has exactly two references repo-wide — its definition at `src/lib/read-only.ts:255` and the route at `src/app/api/tasks/run/route.ts:176` — and no test reference. `src/lib/__tests__/tasks-route.test.ts` never sets `YOPEDIA_READONLY`. `read-only-copy-parity.test.ts:376-397` lists `tasks/scan` but not `tasks/run`. `read-only-door-coverage.test.ts:225-249` is a source regex matching `isReadOnly()` OR `isReadOnlyError(`, and the route's catch already uses the latter, so removing the early gate keeps it green. The scan's identical claims are pinned twice; this door's are pinned zero times, and DEPLOY.md now publishes both its status and its sentence as an operator alerting contract.
+status: open
+
+### DW-647: `task-consumer.test.ts` never drives a 403, leaving the poison-set boundary that DEPLOY.md's "replayable, not lost" rests on unpinned.
+origin: spec-deferred f2819b49faf0
+location: src/lib/__tests__/task-consumer.test.ts
+source_spec: `spec-dw-268-388-read-only-operator-docs.md`
+severity: low
+reason: The suite asserts only 200, 422 -> ack and 503 -> retry. Both are satisfied by many poison sets, including one containing 403. Appending `|| res.status === 403` to `workers/task-consumer/index.ts:114` keeps every case green and silently inverts the documented outcome to the one that discards queued ingests.
+status: open
+
+### DW-648: DEPLOY.md quotes two `READ_ONLY_REFUSAL` sentences verbatim with no parity pin, though the repo established that idiom twice for this same file.
+origin: spec-deferred ab31cf5b052b
+location: src/lib/__tests__/read-only-copy-parity.test.ts
+source_spec: `spec-dw-268-388-read-only-operator-docs.md`
+severity: low
+reason: `src/lib/__tests__/workbench-settings.test.ts:5599` ("keeps DEPLOY.md's quoted refusal identical to the constant it quotes (DW-222)") and `src/components/__tests__/embedding-substitution-copy-parity.test.tsx:191` both read DEPLOY.md off disk and compare against the shipped copy. Neither can reach the new section: both harvest only lines beginning with `>`, and the new quotes are inline JSON in prose. Rewording either constant leaves every suite green and DEPLOY.md quoting a body no deployment returns — exactly the drift those two pins exist to stop, and the section's alerting advice depends on the bodies being exact.
+status: open
+
+### DW-649: `agents/[id]/route.ts`'s comment states unconditionally that `updateAgent` writes through the kernel before persisting, which is true only when the request adds pages.
+origin: spec-deferred 3c1f46522c38
+location: src/app/api/agents/[id]/route.ts:268
+source_spec: `spec-dw-268-388-read-only-operator-docs.md`
+severity: low
+reason: `src/app/api/agents/[id]/route.ts:268-272` says `updateAgent` "writes the agent's identity PAGE through the kernel before it persists the profile with `registerAgent`". In `src/lib/agents.ts:772-846` that `writeWikiPageWithSideEffects` call sits inside `if (options.addPages && options.addPages.length > 0)`; a name, description, trigger, instructions, `defaultVault` or `removePages` edit reaches only `registerAgent`, a bare `storage.writeFile`, and returns 200 on a read-only deployment. DEPLOY.md now documents the split correctly, so the comment is the remaining wrong statement.
 status: open

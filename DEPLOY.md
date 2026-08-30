@@ -56,6 +56,7 @@ You only need **one** provider. The app auto-detects which key is set.
 | `EMBEDDING_MODEL` | Override the embedding model name — must be one of the supported `@cf/` embedding ids when the embedding provider is `workers-ai`, and must sit outside `@cf/` when it is not (see below) | Provider default |
 | `LOG_LEVEL` | Minimum log level (`debug`, `info`, `warn`, `error`, `silent`) | `warn` |
 | `PORT` | Server port inside the container | `3000` |
+| `YOPEDIA_READONLY` | Set to `1` to refuse most content writes — see [Read-only deployments](#read-only-deployments) | Unset (writable) |
 
 **`EMBEDDING_PROVIDER=workers-ai` requires the Cloudflare Workers runtime.** The
 provider reaches Cloudflare through the `AI` binding declared in
@@ -425,6 +426,132 @@ the absence of a repeated line says nothing about whether the mismatch is still
 standing. So confirm the current state from
 Settings or from the model tag on freshly written vectors, not from the log's
 silence.
+
+### Read-only deployments
+
+**`YOPEDIA_READONLY` is on at the literal `1` and at nothing else.** The check is
+a plain `process.env.YOPEDIA_READONLY === "1"` in `src/lib/config.ts` — exact
+and untrimmed — so `true`, `yes`, `on`, a value with a stray trailing space,
+and an unset variable all leave the deployment fully writable, and nothing is
+logged to say a value was seen and rejected. Write `YOPEDIA_READONLY=1`, and
+leave the quotes off. Compose v2 strips surrounding quotes from `.env`, so
+`YOPEDIA_READONLY="1"` happens to work on the deployment this document
+describes — but legacy `docker-compose` v1 and `docker run --env-file` do not
+strip them, and there the quoted form reads as off.
+
+**Almost everything a reader does still works.** Browsing pages, search and
+query answering are untouched: the flag refuses writes, not requests. The chat
+API is ungated too, but the Workbench chat canvas reads the flag and disables
+its composer — the textarea, the Send button and the composer tools — so chat
+is answerable everywhere except there. **Most** refused controls carry a
+standing explanatory sentence beside them — "…while this deployment is
+read-only" — rather than failing for no stated reason; a few, including Todos,
+lint auto-fix and that chat composer, are simply disabled with no read-only
+text.
+
+**Refused for every caller, HTTP or not.** These refusals live in the library, so
+they hold no matter who reaches them — a REST route, the stdio MCP server, the
+CLI, an agent, ingest, lint-fix, merge, or a maintenance script calling straight
+into `src/lib`. They cover every page create, edit, revert, delete and metadata
+patch, and every Schema (artifact) save; creating, renaming, deleting,
+re-templating and switching Wikis; every write to a file inside a Wiki's own
+directory, including the Workspace Purpose profile; research projects and
+research runs; Names & Terms entries; the email-ingestion settings; Todos; the
+Review queue; marking a source as a meeting; and dismissing a Graph Insight. The
+four kernel writers `writeWikiPageWithSideEffects`, `deleteWikiPage`,
+`patchMetadata` and `writeWikiArtifact` were the *starting* set, not the whole
+of it — the wiki-lifecycle writers and the stores listed above assert the same
+refusal today. An HTTP caller reading one of these gets **403** with the refusal
+sentence as the JSON `error`; a CLI, MCP, agent or library caller gets that same
+sentence thrown as an error instead of a status code.
+
+**Refused at the HTTP door as well.** Most of the writes above *also* carry a
+check at their own route, so the refusal arrives before an upload is staged, a
+`raw/` snapshot is written or an LLM call is spent — the two lists are not
+disjoint, and seeing an item in both means it is refused twice over rather than
+that one entry is a mistake. The following are gated on the HTTP path **only**
+— the route is the one place the check is spelled, so what a non-HTTP caller
+meets depends on whether the work happens to end at a writer that refuses:
+saving Settings (`PUT /api/settings`), the Settings **Rebuild Vector Index**
+button (`POST /api/settings/rebuild-embeddings`), the part of the ingest family
+that is not covered above (`POST /api/extract/jobs`, the Workbench `intake`,
+`source` and `activity` doors, and the v1 project source rescan), saving an
+answer as a page from **either** Query or Chat, lint auto-fix from either the
+page view or the Workbench, and both `/api/tasks` doors.
+
+**Still writable — and this is where an operator gets hurt.** The flag is not a
+backup, and three of the four administrative doors are ungated.
+`POST /api/admin/reset` still deletes `wiki/`, `raw/`, `discuss/` and `tenants/`
+outright. `POST /api/archive/import` still writes a whole archive over the wiki
+— and that is the door the documented `sync push --confirm` restore drives, so a
+restore against a "read-only" deployment succeeds and overwrites.
+`POST /api/admin/migrate` still runs the tenant migration. The fourth admin
+door is the exception, so the surface is not uniformly open:
+`DELETE /api/admin/tenant/[handle]` **is** refused — `deleteTenant` asserts
+before it lists or deletes anything, and the route answers 403. Beyond those:
+vaults and vault page membership, agent skills, agent tokens, chat
+conversations and their messages, query history, action items, integrations and
+the integration outbox, source monitors and monitor digests, structured
+knowledge and the graph (dismissing an insight is the one exception), the
+queue's enqueue side, backups, the operation ledger, the revision store, `raw/`
+snapshots and the ingest ledger all still write. Vaults, agent skills and the
+archive restore are called out in `src/lib/read-only.ts` as this flag's
+*deliberate* boundary and are pinned there by test, so their silence is a
+decision rather than an oversight. Two things split rather than land on one
+side. Memory change proposals split by action: raising one still writes, and so
+do **reject** and **revise**, but **accepting** one is refused, because
+`applyMemoryChangeProposal` writes the page through a kernel writer before it
+marks the proposal accepted — the refusal leaves the proposal pending and
+nothing committed. Agent profiles split mid-route: **seeding** an agent is
+refused, because `seedAgent` writes its identity pages through a kernel writer
+before the profile is registered, while **editing** an agent that adds no
+pages — a name, description, trigger, instructions, default vault or a page
+removal — and **deleting** an agent are not refused. One escape hatch is
+deliberate in the other direction: `POST /api/admin/rebuild-embeddings` is
+service-token only and carries no read-only gate, so the embedding rebuild
+prescribed as the drift remedy in the embedding-provider notes above is still
+available even though the Settings button beside it refuses.
+
+**`POST /api/tasks/scan` answers 403 on every cron pass.** The body is
+`{"error": "Maintenance scans cannot run while this deployment is read-only."}`,
+and the gate sits ahead of the `?dry=1` branch, so the documented inspection
+switch is refused too rather than degrading to a `dry`-shaped 200 that would
+report a scan which never ran. Two consequences worth planning for. Nothing in
+the deployment raises an alarm about this by itself: the bundled consumer's cron
+is `"0 6 * * *"` — once a day — and its scheduled handler only logs the status
+it got back rather than failing, so the alert has to come from an external
+monitor watching the endpoint or the log stream. Such a monitor, treating any
+non-2xx as a failure, then **fails on every pass** for as long as the flag is
+set: once a day on the shipped schedule, once per tick on whatever cadence you
+run. And the work this scan alone drives simply stops: the Workspace Purpose
+backfill, the orphan wiki-directory sweep, the derived-index self-heal,
+the terminal ingest-job garbage collection, and the scheduled-agent,
+source-monitor, monitor-digest, integration-outbox and owner-backup passes. The
+stores behind the last five are in the still-writable list above, so nothing
+refuses their writes — nothing is asking for them. The sweep and the backfill
+carry refusals of their own, but the scan is refused long before it calls
+either.
+
+**`POST /api/tasks/run` refuses with its own sentence, and the queued work is
+retried rather than dropped.** The body is
+`{"error": "Queued work cannot run while this deployment is read-only."}` — a
+different sentence from the scan's, so an alert rule matching the scan's text
+will never fire on the consumer. The task consumer acknowledges and discards a
+message only on `400`, `404` and `422`; a **403 falls into its transient branch
+and is retried**, up to four delivery attempts, after which the message is parked
+in the dead-letter queue. Queued work is therefore replayable, not lost. The cost
+is noise rather than loss: every queued message burns its retries against a
+deployment that cannot succeed, and on the final attempt an email-origin ingest
+sends its submitter a *failure* receipt for what is only a paused deployment.
+Pausing the producer, or draining the queue, before setting the flag avoids
+both.
+
+**It is a gate, not a deployment-wide write lock.** Every refusal above exists
+because some function or route spells the check; a writer added tomorrow is
+writable until it does. Read the lists here as the boundary as it stands today,
+and re-check it after an upgrade rather than assuming coverage. If what you want
+is a genuine write lock, that is a read-only container filesystem or a read-only
+volume mount, not this variable.
 
 ## Volume Mounts
 
