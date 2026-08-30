@@ -323,6 +323,15 @@
     "label": "Blank the placeholder on a blank pick",
     "resolution": ""
   },
+  "DW-565": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Keep inline parts out of eligibility exactly as DW-446 decided, and add one acknowledgement line naming supported documents that were not queued because they were labelled inline, so a message is never answered as if nothing arrived. Count them in a fifth loss term rather than reshaping the existing four. Pin the reply for a message whose only part is an inline supported document.",
+    "key": "1",
+    "label": "Drop, but report",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
