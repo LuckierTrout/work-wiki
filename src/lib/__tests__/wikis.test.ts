@@ -26,6 +26,7 @@ import {
   ORPHAN_SWEEP_CANDIDATE_CAP,
   ORPHAN_SWEEP_GRACE_MS,
   ORPHAN_SWEEP_ROTATION_MS,
+  _resetWikiSweepWarnings,
   applyScenarioTemplate,
   createWiki,
   deleteWiki,
@@ -69,6 +70,10 @@ beforeEach(async () => {
   process.env.DATA_DIR = tmpDir;
   _resetLocks();
   _resetStorage();
+  // The future-dated sweep warn is warn-ONCE across the module's lifetime
+  // (DW-483), so without this the first row to assert it would silence it for
+  // every row after — and the COUNT is what those rows are about.
+  _resetWikiSweepWarnings();
 });
 
 afterEach(async () => {
@@ -920,15 +925,36 @@ async function exists(target: string): Promise<boolean> {
  * Every directory these tests plant was written milliseconds ago, so WITHOUT
  * this the grace window skips it — and a sweep test that passed by deleting the
  * grace check instead would be testing the code it removed.
+ *
+ * A NEGATIVE `ageMs` IS A FUTURE DATE, and load-bearing: the subtraction below
+ * runs unchanged, so `-ORPHAN_SWEEP_GRACE_MS * 4` stamps the tree four grace
+ * windows AHEAD of now. Every DW-290 and DW-483 row addresses the future-dated
+ * branch that way; {@link stampDirectory} is the one to reach for when the row
+ * needs the SAME future instant twice.
  */
 async function ageDirectory(
   dir: string,
   ageMs = ORPHAN_SWEEP_GRACE_MS * 2,
 ): Promise<void> {
-  const when = new Date(Date.now() - ageMs);
+  await stampDirectory(dir, new Date(Date.now() - ageMs));
+}
+
+/**
+ * Stamp every mtime under `dir` (and the directory's own) at `when` EXACTLY.
+ *
+ * {@link ageDirectory} is relative to `Date.now()`, and until this existed it
+ * re-read that clock at EVERY level of its own recursion — so a single call
+ * left a nested tree holding several distinct mtimes, and two calls with the
+ * same offset were further apart still. None of that matters to a row that only
+ * asks which side of a threshold an age falls on, and all of it matters to one
+ * asking whether a LATER pass read the SAME instant, which is precisely the
+ * DW-483 dedupe key. Hoisting the resolved `when` up here fixes both: one clock
+ * reading per call, and an exact instant the caller can name twice.
+ */
+async function stampDirectory(dir: string, when: Date): Promise<void> {
   for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
     const child = path.join(dir, entry.name);
-    if (entry.isDirectory()) await ageDirectory(child, ageMs);
+    if (entry.isDirectory()) await stampDirectory(child, when);
     else await fs.utimes(child, when, when);
   }
   // The directory itself LAST: it is the fallback when a candidate holds no
@@ -1517,47 +1543,61 @@ describe("the orphan-directory sweep", () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const OVERFLOW = 3;
     const planted: string[] = [];
-    for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
-      const dir = await plantOrphan(
-        `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, "0")}`,
-      );
-      await ageDirectory(dir);
-      planted.push(dir);
-    }
-
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    let removed: number;
-    let warned: unknown[][] = [];
+    // THE CLOCK IS PINNED because this row plants MORE than the cap, so
+    // `rotatingSweepWindow` actually chooses a window — and which one it hands
+    // this pass is a function of the UTC day (DW-383). Left on the real clock,
+    // which `cap` of the `cap + 3` are reclaimed first depends on the date the
+    // suite happens to run (DW-485). `Date` alone is faked, so the file lock's
+    // own `setTimeout` waits stay real, and it is set BEFORE the planting so
+    // `ageDirectory` and the sweep read the same clock.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const day0 = Date.UTC(2026, 4, 20, 6, 0, 0);
     try {
-      removed = await sweepOrphanWikiDirectories(OWNER);
-      warned = warn.mock.calls.map((call) => [...call]);
+      vi.setSystemTime(day0);
+      for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
+        const dir = await plantOrphan(
+          `aaaaaaaa-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        );
+        await ageDirectory(dir);
+        planted.push(dir);
+      }
+
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+      let removed: number;
+      let warned: unknown[][] = [];
+      try {
+        removed = await sweepOrphanWikiDirectories(OWNER);
+        warned = warn.mock.calls.map((call) => [...call]);
+      } finally {
+        warn.mockRestore();
+      }
+
+      // Exactly the cap — the return value is still "directories removed by THIS
+      // pass", not a total.
+      expect(removed).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
+      const survivors: string[] = [];
+      for (const dir of planted) if (await exists(dir)) survivors.push(dir);
+      expect(survivors).toHaveLength(OVERFLOW);
+      // The truncation is reported, naming how many were held back — a silent cap
+      // would look exactly like a sweep that had finished its work.
+      expect(
+        warned.some(
+          ([scope, message]) =>
+            scope === "wikis" &&
+            String(message).includes(`deferring ${OVERFLOW} to a later UTC day`),
+        ),
+      ).toBe(true);
+
+      // Continuation needs no cursor: removal IS the progress, so the next pass
+      // starts on a listing the reclaimed directories are already gone from.
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(OVERFLOW);
+      for (const dir of planted) expect(await exists(dir)).toBe(false);
+      // …and the real wiki was never a candidate at any point.
+      expect(await exists(wikiDir(wiki.id))).toBe(true);
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
     } finally {
-      warn.mockRestore();
+      vi.useRealTimers();
     }
-
-    // Exactly the cap — the return value is still "directories removed by THIS
-    // pass", not a total.
-    expect(removed).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
-    const survivors: string[] = [];
-    for (const dir of planted) if (await exists(dir)) survivors.push(dir);
-    expect(survivors).toHaveLength(OVERFLOW);
-    // The truncation is reported, naming how many were held back — a silent cap
-    // would look exactly like a sweep that had finished its work.
-    expect(
-      warned.some(
-        ([scope, message]) =>
-          scope === "wikis" &&
-          String(message).includes(`deferring ${OVERFLOW} to a later UTC day`),
-      ),
-    ).toBe(true);
-
-    // Continuation needs no cursor: removal IS the progress, so the next pass
-    // starts on a listing the reclaimed directories are already gone from.
-    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(OVERFLOW);
-    for (const dir of planted) expect(await exists(dir)).toBe(false);
-    // …and the real wiki was never a candidate at any point.
-    expect(await exists(wikiDir(wiki.id))).toBe(true);
-    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
   });
 
   it("logs no truncation warning when the candidate list is exactly at the cap", async () => {
@@ -1601,44 +1641,60 @@ describe("the orphan-directory sweep", () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const OVERFLOW = 3;
     const planted: string[] = [];
-    for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
-      // Deliberately NOT `ageDirectory`d — these were written milliseconds ago.
-      planted.push(
-        await plantOrphan(`cccccccc-0000-4000-8000-${String(index).padStart(12, "0")}`),
-      );
-    }
-
-    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
-    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
-    let removed: number;
-    let logged: unknown[][] = [];
-    let warned: unknown[][] = [];
+    // Pinned for the same reason as the row above: more than the cap is planted,
+    // so `rotatingSweepWindow` picks a window and the real calendar date would
+    // otherwise decide which `cap` of them got probed (DW-485).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const day0 = Date.UTC(2026, 4, 20, 6, 0, 0);
     try {
-      removed = await sweepOrphanWikiDirectories(OWNER);
-      logged = info.mock.calls.map((call) => [...call]);
-      warned = warn.mock.calls.map((call) => [...call]);
-    } finally {
-      warn.mockRestore();
-      info.mockRestore();
-    }
+      vi.setSystemTime(day0);
+      for (let index = 0; index < ORPHAN_SWEEP_CANDIDATE_CAP + OVERFLOW; index += 1) {
+        const dir = await plantOrphan(
+          `cccccccc-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        );
+        // Aged INSIDE the grace window rather than left at the real mtime the
+        // write just gave them: against the PINNED `now` a real-clock mtime is
+        // months ahead of the horizon, which is the future-dated branch, not the
+        // grace-window one this row counts. Half the window is unambiguously
+        // young and unambiguously not skewed.
+        await ageDirectory(dir, ORPHAN_SWEEP_GRACE_MS / 2);
+        planted.push(dir);
+      }
 
-    // Nothing was reclaimed — every candidate is inside the grace window.
-    expect(removed).toBe(0);
-    for (const dir of planted) expect(await exists(dir)).toBe(true);
-    // …and the cap still applied, because only `cap` of them were ever reached.
-    // A removal cap would have probed all 28 and logged 28.
-    const skipped = logged.filter(
-      ([scope, message]) =>
-        scope === "wikis" &&
-        String(message).includes("skipped orphaned wiki directory"),
-    );
-    expect(skipped).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
-    expect(
-      warned.some(([, message]) =>
-        String(message).includes(`deferring ${OVERFLOW} to a later UTC day`),
-      ),
-    ).toBe(true);
-    expect(await exists(wikiDir(wiki.id))).toBe(true);
+      const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+      let removed: number;
+      let logged: unknown[][] = [];
+      let warned: unknown[][] = [];
+      try {
+        removed = await sweepOrphanWikiDirectories(OWNER);
+        logged = info.mock.calls.map((call) => [...call]);
+        warned = warn.mock.calls.map((call) => [...call]);
+      } finally {
+        warn.mockRestore();
+        info.mockRestore();
+      }
+
+      // Nothing was reclaimed — every candidate is inside the grace window.
+      expect(removed).toBe(0);
+      for (const dir of planted) expect(await exists(dir)).toBe(true);
+      // …and the cap still applied, because only `cap` of them were ever reached.
+      // A removal cap would have probed all 28 and logged 28.
+      const skipped = logged.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("skipped orphaned wiki directory"),
+      );
+      expect(skipped).toHaveLength(ORPHAN_SWEEP_CANDIDATE_CAP);
+      expect(
+        warned.some(([, message]) =>
+          String(message).includes(`deferring ${OVERFLOW} to a later UTC day`),
+        ),
+      ).toBe(true);
+      expect(await exists(wikiDir(wiki.id))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("still reclaims a tombstoned directory that sorts past the cap against an empty registry", async () => {
@@ -1803,6 +1859,276 @@ describe("the orphan-directory sweep", () => {
         String(message).includes("further into the future"),
       ),
     ).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // …and it is said once per fact, not once per pass (DW-483)
+  //
+  // EVERY ROW BELOW RUNS ON THE REAL CLOCK, and may only keep doing so while it
+  // plants FEWER THAN `ORPHAN_SWEEP_CANDIDATE_CAP` directories. Under the cap,
+  // `rotatingSweepWindow` returns the candidate list unchanged on any UTC day,
+  // so naming specific ids is safe; at or over it the window becomes a function
+  // of the calendar and the ids a row reaches depend on the date the suite runs
+  // — the DW-485 hazard the two overflow rows above are pinned against. A new
+  // row here that needs more than the cap needs the pinning recipe too.
+  // -------------------------------------------------------------------------
+
+  /** The future-dated WARN lines naming `id`, in emission order. */
+  function futureWarnsFor(warned: unknown[][], id: string): string[] {
+    return warned
+      .filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes(id) &&
+          String(message).includes("further into the future"),
+      )
+      .map(([, message]) => String(message));
+  }
+
+  /**
+   * One scheduled pass that reclaims nothing, with every log line it produced.
+   *
+   * The DW-483 rows are all about a directory the sweep can never remove, so
+   * "removed 0" is a precondition of each of them rather than an assertion any
+   * one of them makes — asserting it here keeps a row that accidentally planted
+   * a reclaimable directory from reading as a silent warn.
+   */
+  async function sweepCollecting(): Promise<{
+    warned: unknown[][];
+    logged: unknown[][];
+  }> {
+    const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+      return {
+        warned: warn.mock.calls.map((call) => [...call]),
+        logged: info.mock.calls.map((call) => [...call]),
+      };
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  }
+
+  it("says a standing future-dated write once, not once per pass", async () => {
+    // The condition cannot self-clear — the bytes sit there until the wall clock
+    // passes that date, which for a restored archive is months — while the cron
+    // re-reaches the same directory every tick. Said per pass, this is exactly
+    // the noise the empty-registry warn a few lines above it is keyed against.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const ID = "dddddddd-6666-4666-8666-666666666666";
+    const ahead = await plantOrphan(ID);
+    await ageDirectory(ahead, -ORPHAN_SWEEP_GRACE_MS * 4);
+
+    const spoken: string[] = [];
+    for (let pass = 0; pass < 3; pass += 1) {
+      spoken.push(...futureWarnsFor((await sweepCollecting()).warned, ID));
+    }
+
+    // Once across all three — and the SKIP is untouched on every one of them,
+    // which is the half of this that must never become a dedupe.
+    expect(spoken).toHaveLength(1);
+    expect(await exists(ahead)).toBe(true);
+  });
+
+  it("speaks again when the future date moves further out", async () => {
+    // The sentence NAMES the date, so a different instant is a different fact.
+    // Keying on the directory alone would leave the operator holding a date the
+    // directory has since moved past.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const ID = "dddddddd-7777-4777-8777-777777777777";
+    const ahead = await plantOrphan(ID);
+    await ageDirectory(ahead, -ORPHAN_SWEEP_GRACE_MS * 4);
+    const first = futureWarnsFor((await sweepCollecting()).warned, ID);
+    await ageDirectory(ahead, -ORPHAN_SWEEP_GRACE_MS * 40);
+    const second = futureWarnsFor((await sweepCollecting()).warned, ID);
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    // …and it is the NEW instant, not a replay of the one already reported.
+    expect(second[0]).not.toBe(first[0]);
+    expect(second[0]).toMatch(/dated \d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("re-arms once a pass sees the directory back inside the grace window", async () => {
+    // The evidence the skew ENDED, and the reason the record is re-armable
+    // rather than write-once. `stampDirectory` puts the SAME instant back for
+    // the third pass, so this row cannot be satisfied by a warn that simply
+    // repeats a fact it already reported.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const ID = "dddddddd-8888-4888-8888-888888888888";
+    const ahead = await plantOrphan(ID);
+    const future = new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS * 4);
+    await stampDirectory(ahead, future);
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(1);
+
+    // The clock caught up, or the provider's did: young now, and not skewed.
+    await ageDirectory(ahead, ORPHAN_SWEEP_GRACE_MS / 2);
+    const middle = await sweepCollecting();
+    expect(futureWarnsFor(middle.warned, ID)).toHaveLength(0);
+    expect(
+      middle.logged.some(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes(ID) &&
+          String(message).includes("grace window"),
+      ),
+    ).toBe(true);
+
+    // …and the same future instant is news again.
+    await stampDirectory(ahead, future);
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(1);
+  });
+
+  it("neither warns nor re-arms on an age it could not read", async () => {
+    // `null` is "I could not look" — the same non-answer that refuses to
+    // authorise a delete, and just as much not evidence that the skew ended.
+    // Re-arming on it would repeat the future-dated line on the next readable
+    // pass, for a fact the operator already has.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const ID = "dddddddd-9999-4999-8999-999999999999";
+    const ahead = await plantOrphan(ID);
+    const future = new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS * 4);
+    await stampDirectory(ahead, future);
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(1);
+
+    // Only THIS directory's age is unreadable — the registry read and the file
+    // lock keep working, so the pass is otherwise the same pass.
+    const storage = getStorage();
+    const readStat = storage.stat.bind(storage);
+    const stat = vi
+      .spyOn(storage, "stat")
+      .mockImplementation(async (target: string) => {
+        if (target.includes(ID)) throw new Error("the age is unreadable");
+        return readStat(target);
+      });
+    let blind: { warned: unknown[][]; logged: unknown[][] };
+    try {
+      blind = await sweepCollecting();
+    } finally {
+      stat.mockRestore();
+    }
+
+    // `newestWriteTime` already said the age is unreadable; the future-dated
+    // line would be a second sentence about a date this pass never read.
+    expect(futureWarnsFor(blind.warned, ID)).toHaveLength(0);
+    expect(
+      blind.warned.some(([, message]) =>
+        String(message).includes("could not read the age of wiki directory"),
+      ),
+    ).toBe(true);
+
+    // And the record was left exactly as it was: the same instant is still said
+    // to be old news on the next readable pass.
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(0);
+    expect(await exists(ahead)).toBe(true);
+  });
+
+  it("re-arms on the pass that RECLAIMS the directory, not only on a young one", async () => {
+    // The re-arm sits before the age gate, which claims both halves of "the skew
+    // ended": a young directory that will settle, and an aged one this very pass
+    // is about to reclaim. Only the second half distinguishes that placement — a
+    // re-arm hung on the grace-window branch instead would satisfy the young row
+    // above and fail here.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const ID = "dddddddd-eeee-4eee-8eee-eeeeeeeeeeee";
+    const future = new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS * 4);
+    await stampDirectory(await plantOrphan(ID), future);
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(1);
+
+    // The archive's dates are corrected in place: same directory, an age this
+    // pass can finally act on. It is reclaimed, and re-armed on the way past.
+    await ageDirectory(wikiDir(ID));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(await exists(wikiDir(ID))).toBe(false);
+
+    // The same id comes back at the SAME future instant, with no pass in between
+    // that could have pruned the key for it — so speaking again is the re-arm's
+    // doing and nothing else's.
+    await stampDirectory(await plantOrphan(ID), future);
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(1);
+  });
+
+  it("forgets a directory that stops being an orphan between passes", async () => {
+    // THE EVICTION. Re-arming only fires for a directory the pass REACHED, so a
+    // directory that quietly stops being a candidate — removed out of band here,
+    // and equally a directory a restored `wikis.json` claims again — would leave
+    // its key behind for the life of the isolate. The prune runs over `found`
+    // every pass and is what actually bounds the record.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const ID = "dddddddd-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
+    const future = new Date(Date.now() + ORPHAN_SWEEP_GRACE_MS * 4);
+    await stampDirectory(await plantOrphan(ID), future);
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(1);
+    // Standing state, so the next pass is silent — the state this row then
+    // changes underneath the record.
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(0);
+
+    await fs.rm(wikiDir(ID), { recursive: true, force: true });
+    // THE LOAD-BEARING STEP: a pass while the directory is ABSENT. Nothing
+    // reaches it, so no re-arm can fire; the only thing that can clear the key
+    // is the prune reading it out of `found`. Remove that pass and the row below
+    // fails, which is exactly the difference between an evicting record and one
+    // that only ever grows.
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(0);
+
+    // Back, at the SAME instant the record once held — so a surviving key would
+    // silence it, and speaking again is the prune's doing.
+    await stampDirectory(await plantOrphan(ID), future);
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(1);
+  });
+
+  it("shares the record with the sweep that runs inside a delete", async () => {
+    // The record is deliberately NOT keyed on which caller ran the pass. The
+    // inline sweep is the only path that reaches a tenant created before the
+    // DW-159 gate — the schedule resolves the single configured owner — so a
+    // dedupe gated on `scheduled` would leave exactly those tenants repeating the
+    // line on every delete, and on the owner's own tenant would let the two
+    // callers each say the same fact once.
+    const keep = await createWiki(OWNER, { name: "Keep", scenario: "business" });
+    const drop = await createWiki(OWNER, { name: "Drop", scenario: "reading" });
+    await setCurrentWiki(OWNER, keep.id);
+    const ID = "dddddddd-ffff-4fff-8fff-ffffffffffff";
+    const ahead = await plantOrphan(ID);
+    await ageDirectory(ahead, -ORPHAN_SWEEP_GRACE_MS * 4);
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let inline: unknown[][] = [];
+    try {
+      expect((await deleteWiki(OWNER, drop.id))?.id).toBe(drop.id);
+      inline = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+    }
+
+    // The inline pass said it once…
+    expect(futureWarnsFor(inline, ID)).toHaveLength(1);
+    // …so the scheduled pass behind it says nothing, and the directory is still
+    // there for it to have said nothing about.
+    expect(futureWarnsFor((await sweepCollecting()).warned, ID)).toHaveLength(0);
+    expect(await exists(ahead)).toBe(true);
+  });
+
+  it("names each future-dated directory, not just the first one in the pass", async () => {
+    // The record is per DIRECTORY: one skewed restore must not silence the next
+    // one in the same listing, which is what a per-pass flag would have done.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const FIRST = "dddddddd-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const SECOND = "dddddddd-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    for (const id of [FIRST, SECOND]) {
+      await ageDirectory(await plantOrphan(id), -ORPHAN_SWEEP_GRACE_MS * 4);
+    }
+
+    const { warned } = await sweepCollecting();
+
+    expect(futureWarnsFor(warned, FIRST)).toHaveLength(1);
+    expect(futureWarnsFor(warned, SECOND)).toHaveLength(1);
   });
 
   // -------------------------------------------------------------------------

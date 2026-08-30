@@ -1620,6 +1620,146 @@ interface SweepOrphansOptions {
 }
 
 /**
+ * Future-dated orphan directories already reported, keyed `${owner}/${name}`
+ * and holding the future instant the warn NAMED (DW-483).
+ *
+ * The warn this backs is STANDING STATE, not an event: a directory dated past
+ * the horizon can never age out on its own, so the condition holds until the
+ * wall clock catches up — months, for a restored archive — while the scheduled
+ * sweep re-reaches the same directory on every cron tick. Emitted per candidate
+ * per pass, that is precisely the noise the `tombstonedOnly` warn a few lines
+ * below is keyed against; emitted once per FACT it is one line an operator can
+ * act on.
+ *
+ * A MAP, NOT A SET, AND KEYED ON THE DIRECTORY RATHER THAN THE OBSERVATION. The
+ * sentence names the date, so a directory whose newest write moves to a
+ * DIFFERENT future instant is a different fact and gets said again — which is
+ * the rule `config.ts` states (the key is the identity AND the value, because
+ * the sentence names the value), applied here to a value that is unbounded.
+ * Folding the instant into the key would say the same things, but a churning
+ * mtime would then grow the collection without limit; carried as a VALUE, a
+ * directory costs one entry however often its mtime moves.
+ *
+ * WHAT ACTUALLY BOUNDS IT IS THE PRUNE, not that shape. One entry per directory
+ * is still unbounded over an isolate's life, because a directory STOPS being an
+ * orphan — reclaimed by this sweep, deleted out of band, or claimed again by a
+ * restored `wikis.json` — and then falls out of `found` and is never revisited,
+ * so nothing here would look at its key again.
+ * {@link pruneFutureDatedWarnings} runs on every pass of both callers, and
+ * leaves at most one entry per directory the last pass for that owner actually
+ * listed as an orphan.
+ *
+ * AND "ONCE" MEANS ONCE PER ISOLATE, not once ever. This is module state: a
+ * recycled isolate starts empty and says every standing fact again — the same
+ * assumption the sweep's other comments make about isolates coming and going.
+ * That is precisely the bound `config.ts` and `embeddings.ts` accept for their
+ * warn-once records, and it is the right one here: the alternative is persisting
+ * operator-log bookkeeping to storage, a write per pass to save a line the
+ * operator otherwise sees once per deploy.
+ */
+const reportedFutureDatedWrites = new Map<string, number>();
+
+/** `reportedFutureDatedWrites`' key: one directory of one tenant. */
+function futureDatedKey(owner: string, name: string): string {
+  return `${owner}/${name}`;
+}
+
+/**
+ * Emit the future-dated skip the first time this directory is seen at this
+ * instant; a later pass reading the SAME newest write is silent.
+ *
+ * Mirrors `warnOnceAbout` in `src/lib/config.ts` and `src/lib/embeddings.ts` —
+ * one module-level collection, one emitter, one `@internal` reset. The sentence
+ * is byte-identical to the one DW-290 landed, because that is what the operator
+ * reading logs and the rows asserting it both match on.
+ */
+function warnOnceAboutFutureDatedWrite(
+  owner: string,
+  name: string,
+  newest: number,
+): void {
+  const key = futureDatedKey(owner, name);
+  if (reportedFutureDatedWrites.get(key) === newest) return;
+  reportedFutureDatedWrites.set(key, newest);
+  logger.warn(
+    "wikis",
+    `skipped orphaned wiki directory "${name}": its newest write is dated ${new Date(
+      newest,
+    ).toISOString()}, further into the future than the ${
+      ORPHAN_SWEEP_GRACE_MS / 60_000
+    }-minute grace window allows for clock skew — its bytes stay until the clock passes that date`,
+  );
+}
+
+/**
+ * Forget `name`, so the next future-dated read of it speaks again.
+ *
+ * The counterpart `config.ts` has no use for and `embeddings.ts` does: this
+ * caller can see EVIDENCE the condition ended from inside the process. A pass
+ * that reads an age AT OR BEFORE the horizon has watched the skew clear — and
+ * it cleared whether the directory then aged out and was reclaimed or is merely
+ * young, which is why the re-arm sits before the age gate rather than on either
+ * branch under it.
+ *
+ * AN UNREADABLE AGE IS NOT THAT EVIDENCE. `null` is "I could not look", the
+ * same non-answer that refuses to authorise a delete; treating it as the skew
+ * ending would re-arm on exactly the passes that learned nothing, and the next
+ * readable future date would then repeat a line the operator already has. So
+ * `null` neither warns nor re-arms and the record is left exactly as it was.
+ * Deleting a key that was never set is a silent no-op, so the call site re-arms
+ * unconditionally without first asking whether it ever warned.
+ */
+function rearmFutureDatedWarning(owner: string, name: string): void {
+  reportedFutureDatedWrites.delete(futureDatedKey(owner, name));
+}
+
+/**
+ * Forget every directory of `owner` that `found` no longer lists as an orphan.
+ *
+ * The eviction that makes the record's size a property of the tenant rather
+ * than of the isolate's uptime. {@link rearmFutureDatedWarning} only ever fires
+ * for a directory the pass REACHED, and a reached directory is one this pass
+ * still calls an orphan; the keys that leak are the ones for directories that
+ * quietly stopped being candidates between passes, which no per-candidate hook
+ * can see. Running over `found` — the pre-tombstone, pre-cap orphan list — is
+ * what does see them: anything absent from it is, by this pass's own reading,
+ * not a directory the future-dated sentence can be true of.
+ *
+ * DELIBERATELY OVER `found` RATHER THAN `candidates`. The cap means most passes
+ * reach only a window of the list, so pruning against what was WALKED would
+ * evict every entry outside today's window and re-warn the whole tail tomorrow —
+ * turning the per-day rotation into the per-pass repetition DW-483 removed.
+ *
+ * Other owners' keys are left alone: this is a per-tenant pass, and it has
+ * observed nothing about any other tenant's directories.
+ */
+function pruneFutureDatedWarnings(owner: string, found: string[]): void {
+  if (reportedFutureDatedWrites.size === 0) return;
+  const orphaned = new Set(found);
+  const prefix = `${owner}/`;
+  for (const key of reportedFutureDatedWrites.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    if (!orphaned.has(key.slice(prefix.length))) {
+      reportedFutureDatedWrites.delete(key);
+    }
+  }
+}
+
+/**
+ * Forget every reported future-dated directory so the next pass warns again.
+ *
+ * Mirrors `_resetConfigWarnings`/`_resetEmbeddingWarnings`: without it the first
+ * row to assert this warning would silence it for every row after, and the
+ * warn-once COUNT is exactly what those rows are about. There is no central
+ * reset registry in `vitest.setup.ts`, so it is wired into the `beforeEach` of
+ * the suite that asserts it, beside `_resetLocks` and `_resetStorage`.
+ * @internal
+ */
+export function _resetWikiSweepWarnings(): void {
+  reportedFutureDatedWrites.clear();
+}
+
+/**
  * Remove one orphaned `wikis/<uuid>/` directory per entry that no registry
  * record claims. Returns how many were removed.
  *
@@ -1697,6 +1837,12 @@ async function sweepOrphans(
     .map((entry) => entry.name)
     .filter((name) => WIKI_ID_RE.test(name));
   const found = directories.filter((name) => !known.has(name));
+  // HERE, above every branch, so BOTH callers evict: `deleteWiki`'s inline sweep
+  // is the one that reclaims directories on a tenant the schedule never visits,
+  // so a prune hung off the scheduled path would leak exactly the keys that pass
+  // had just made unreachable. It costs one Set build over a list this function
+  // has already materialised, and nothing at all when the record is empty.
+  pruneFutureDatedWarnings(owner, found);
   // The complement of `found`, and the ONLY set the tombstone reclaim below
   // touches: a directory the registry names is by definition not an orphan, so
   // nothing in this list is ever a delete candidate. Computed ONLY when that
@@ -1779,6 +1925,12 @@ async function sweepOrphans(
   for (const name of candidates) {
     const dir = wikiDirPath(owner, name);
     const newest = await newestWriteTime(dir);
+    // BEFORE the age gate, because a read at or inside the horizon settles the
+    // skew question whichever side of `cutoff` the directory then lands on: an
+    // aged one is about to be reclaimed and a young one is merely young, and in
+    // both cases the future date this once reported is no longer true. `null`
+    // is excluded deliberately — see {@link rearmFutureDatedWarning}.
+    if (newest !== null && newest <= horizon) rearmFutureDatedWarning(owner, name);
     if (newest === null || newest > cutoff) {
       // The in-flight-create guard. `newestWriteTime` already warned when the
       // age was unreadable, so only the two READ ages need a line of their own.
@@ -1789,14 +1941,13 @@ async function sweepOrphans(
         // which for a restored archive can be months. The age still refuses to
         // authorise a delete (an age that cannot be trusted must never gate one
         // (DW-290)), so warning is the whole remedy the sweep has.
-        logger.warn(
-          "wikis",
-          `skipped orphaned wiki directory "${name}": its newest write is dated ${new Date(
-            newest,
-          ).toISOString()}, further into the future than the ${
-            ORPHAN_SWEEP_GRACE_MS / 60_000
-          }-minute grace window allows for clock skew — its bytes stay until the clock passes that date`,
-        );
+        //
+        // WARN-ONCE PER FACT (DW-483), for the same reason it is not the info
+        // line: the condition cannot self-clear, so a line per pass would repeat
+        // this sentence on every cron tick for as long as the clock needs. The
+        // skip below is unconditional either way — dedupe changes what is SAID,
+        // never what is done.
+        warnOnceAboutFutureDatedWrite(owner, name, newest);
       } else if (newest !== null) {
         // INFO, because it is the expected, benign outcome that repeats on
         // every pass for as long as the directory stays young.
@@ -1882,6 +2033,14 @@ async function sweepOrphans(
  * a daily cron is normally the whole of it; two independent rare faults landing
  * in the same day is what it does not cover. Closing that would mean trusting
  * an empty registry, which is the one thing {@link sweepOrphans} must never do.
+ *
+ * A SECOND RESIDUAL FOLLOWS FROM "SCHEDULED SWEEPS ONLY" AND IS RECORDED
+ * ELSEWHERE (DW-488): the schedule resolves the single configured owner, so a
+ * tenant created before the DW-159 creation gate landed has no clearer for its
+ * stale markers at all — this never sees that tenant, and the inline sweep that
+ * does reach it is exactly the caller the paragraph above keeps this off.
+ * Accepted, with the arithmetic, in the SCOPE docblock on `sweepOrphanWikiDirs`
+ * in `maintenance.ts`, beside the orphan-directory residual it sits next to.
  */
 async function clearStaleDiscardTombstones(
   owner: string,

@@ -457,6 +457,48 @@ describe("sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147)", (
 
     await expect(sweepOrphanWikiDirs()).resolves.toBe(0);
   });
+
+  it("records the stale-tombstone residual in its SCOPE docblock (DW-488)", async () => {
+    // DW-488 is a DOCUMENTATION gap, not a behaviour one: the inline-versus-
+    // scheduled split is already pinned by "leaves the marker alone on the sweep
+    // that runs inside a delete" in `wikis.test.ts`, and DW-291 settled that the
+    // inline path must not pay the per-claimed-directory probe. What was missing
+    // is that the SCOPE note here accounted only for orphan DIRECTORIES on
+    // pre-gate tenants — which `deleteWiki` at least reclaims inline — and said
+    // nothing about their stale `.discarded` markers, which no path clears at
+    // all. The note IS the deliverable, so the note is what this observes.
+    const source = await fs.readFile(
+      path.resolve(__dirname, "../maintenance.ts"),
+      "utf8",
+    );
+    // BOTH ANCHORS HAVE TO RESOLVE, or this row fails open: `indexOf` returns -1
+    // when either is renamed, `slice(start, -1)` then hands back very nearly the
+    // whole module, and every substring below would match text from somewhere
+    // else in it while the docblock said nothing at all.
+    const start = source.indexOf("SCOPE (DW-288, settled)");
+    const end = source.indexOf("export async function sweepOrphanWikiDirs");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const scope = source.slice(start, end);
+
+    // The orphan-directory residual the note already carried, unchanged…
+    expect(scope).toContain("The one honest residual today is tenants created");
+
+    // …and the tombstone residual beside it, asserted on the PARAGRAPH rather
+    // than on the whole block, so four substrings scattered across a long
+    // docblock cannot satisfy this row between them.
+    const opens = scope.indexOf("THE SECOND RESIDUAL");
+    const widen = scope.indexOf("Widen this only if");
+    expect(opens).toBeGreaterThan(0);
+    expect(widen).toBeGreaterThan(opens);
+    const residual = scope.slice(opens, widen);
+    expect(residual).toContain("DW-488");
+    expect(residual).toContain("clearStaleDiscardTombstones");
+    expect(residual).toMatch(/scheduled/i);
+    expect(residual).toMatch(/ACCEPTED, not fixed/i);
+    // …and the widen-trigger the note already names, which now covers both.
+    expect(scope.slice(widen)).toContain("readActiveWikiSchema");
+  });
 });
 
 describe("backfillWorkspaceProfiles — the scheduled Workspace Purpose migration (DW-137)", () => {

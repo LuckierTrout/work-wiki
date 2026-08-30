@@ -335,9 +335,27 @@ export async function purgeStaleJobs(): Promise<number> {
  * Wiki-tenant enumeration index the repo does not have
  * (`listSourceMonitorOwners` is that index for source monitors, not for Wikis),
  * and building one to walk a set the creation gate now keeps from growing is
- * work with no live input. Widen this only if a second tenant
- * is ever legitimately served — see the MIGRATION note on
- * `readActiveWikiSchema` in `wikis.ts`, which is the same trigger.
+ * work with no live input.
+ *
+ * THE SECOND RESIDUAL, ON THE SAME PRE-GATE TENANTS, AND STRICTLY WORSE
+ * (DW-488): a stale `.discarded` marker there has NO clearer at all.
+ * `clearStaleDiscardTombstones` runs only on the scheduled path — DW-291 settled
+ * that, because clearing costs one `fileExists` per registry-claimed directory
+ * and `deleteWiki`'s inline sweep is a user-facing request holding
+ * `wikis:<tenant>` — and the schedule resolves the single `getOwnerHandle()`
+ * tenant below. So where an orphan DIRECTORY on such a tenant is at least
+ * reclaimed the next time someone deletes a Wiki, its stale marker is reachable
+ * from neither path: the inline sweep will not clear it and this one never sees
+ * the tenant. Left in place it arms a delete of a live Wiki's artifacts for the
+ * day that tenant's `wikis.json` is lost — the state the empty-registry rule in
+ * `sweepOrphans` exists to survive. ACCEPTED, not fixed, on the same arithmetic
+ * as the residual above: the marker only lands after the three-failure
+ * half-create DW-291 describes, on a tenant the creation gate can no longer add
+ * to, and closing it needs the same enumeration index that does not exist.
+ *
+ * Widen this only if a second tenant is ever legitimately served — see the
+ * MIGRATION note on `readActiveWikiSchema` in `wikis.ts`, which is the same
+ * trigger for both residuals.
  */
 export async function sweepOrphanWikiDirs(): Promise<number> {
   try {

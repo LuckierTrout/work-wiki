@@ -3603,7 +3603,9 @@ source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
 location: src/lib/wikis.ts (sweepOrphans, future-dated skip branch)
 severity: low
 reason: A future-dated directory stays a candidate on every pass, so the new warn repeats indefinitely — potentially for months after a restored archive. This is the same noise pattern the neighbouring `tombstonedOnly` comment in `sweepOrphans` argues against ("warning about it every few minutes would train the operator to ignore the line that matters"). Not caused by the escalation itself, which is correct; caused by pairing a per-pass warn with a condition that cannot clear on its own.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-wiki-sweep-warn-and-tombstones
+resolution-undo: 020b057c8448b3b983440c1987b281d5c8db0827df3245aef020dde13923241e 2026-08-30 7374617475733a206f70656e
 
 ### DW-484: A registry write that reports failure after its bytes actually landed leaves the registry on the new scenario and the artifacts on the old, with a "clean" rollback and therefore no bump.
 origin: spec-deferred c22cef649f92
@@ -3619,7 +3621,9 @@ source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
 location: src/lib/__tests__/wikis.test.ts (the orphan-directory sweep, DW-289 cap rows)
 severity: low
 reason: Those rows plant `cap + OVERFLOW` orphans against the real system clock, so WHICH window a pass takes now varies with the date the suite runs. They pass on any date today because every assertion is a count or spans all planted directories, but any future row in that `describe` that names a specific directory would be flaky by calendar. Pinning the clock for the whole `describe` is its own piece of work -- the block has ~20 rows that depend on real time for `ageDirectory` and the file lock's waits.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-wiki-sweep-warn-and-tombstones
+resolution-undo: 020b057c8448b3b983440c1987b281d5c8db0827df3245aef020dde13923241e 2026-08-30 7374617475733a206f70656e
 
 ### DW-486: The middleware admits the owner by stable Clerk id while every `isOwnerHandle` route gate refuses by handle, so the two owner identities can disagree and lock the real owner out.
 
@@ -3645,7 +3649,9 @@ source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
 location: src/lib/maintenance.ts (sweepOrphanWikiDirs)
 severity: low
 reason: `clearStaleDiscardTombstones` (DW-291) runs only on the scheduled path, and the schedule resolves a single owner via `getOwnerHandle()`. `deleteWiki`'s inline sweep runs with `scheduled` unset, so for a tenant created before the DW-159 gate landed the tombstones have no clearer at all — unlike the orphan directories, which `deleteWiki` at least reclaims inline. The new SCOPE note in `maintenance.ts` accounts only for the directories.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-wiki-sweep-warn-and-tombstones
+resolution-undo: 020b057c8448b3b983440c1987b281d5c8db0827df3245aef020dde13923241e 2026-08-30 7374617475733a206f70656e
 
 ### DW-489: A `wiki/` display path asked for directly still previews one object and saves another: the read gate and the preview route's slug derivation were left at their old reach, so only the LISTING door was
 origin: spec-deferred 2bf03502f431
@@ -5238,4 +5244,12 @@ location: src/lib/__tests__/mcp-http.test.ts (MCP_TOOLS ↔ stdio registration p
 source_spec: `spec-dw-563-614-mcp-door-hardening.md`
 severity: medium
 reason: `MCP_TOOLS ↔ stdio registration parity` compares tool names, the `write`/`readOnlyHint` flag, and (new) that every `required` name is a declared property with a decidable `type`. It does not compare the two doors' `required` lists or declared types. Before this change a drift there was cosmetic; now a field the HTTP schema calls `required` while the stdio zod calls it `.optional()`, or a `number` against a `z.string()`, refuses every real call to that tool at one door only. A hand comparison of ~11 fields found no live disagreement, so this is an unpinned risk rather than a present defect, and seven tools have no authenticated door-level row that would notice.
+status: open
+
+### DW-674: `newestWriteTime` guards its mtime with `Number.isFinite` but not against `Date`'s +/-8.64e15 ms range, so a wild provider mtime turns the future-dated log line into a `RangeError` that aborts the who
+origin: spec-deferred 3528a52f021c
+location: src/lib/wikis.ts:1688
+source_spec: `spec-dw-483-485-488-wiki-sweep-warn-and-tombstones.md`
+severity: low
+reason: `newestWriteTime` accepts any finite number (src/lib/wikis.ts:1592, :1601), and the future-dated branch formats it with `new Date(newest).toISOString()` (src/lib/wikis.ts:1688), which throws `RangeError: Invalid time value` outside that range. The throw escapes `sweepOrphans` — every other per-candidate step in that loop is deliberately fail-soft — and `sweepOrphanWikiDirs` swallows it as "removed 0", so a single bogus mtime silently stops the tenant's reclaim on every pass. Pre-existing: the same expression shipped with DW-290; this change only moved it into a helper.
 status: open
