@@ -5141,6 +5141,7 @@ severity: medium
 reason: `listRawSourceSnapshots` skips any child not ending in `.md`, and `listRawSources` is non-recursive, so bytes stored by `saveRawSourceBytes` at `raw/sources/<slug>/<id>.<ext>` appear in neither. The DW-437 decision named `listRawSourceSnapshots` as the listing to move the callers onto, so closing this needs a separate decision about what the listing's unit is.
 status: open
 decision: 2026-08-29 One row per stored artefact — Make `listRawSourceSnapshots` recurse and return one row per stored artefact regardless of extension, carrying the media type so callers that only want markdown can filter explicitly. Audit every caller the DW-437 decision moved onto it and state which ones filter. Pin that a PDF-only workspace reports a non-zero Source count and that markdown-only callers are unchanged.
+decision: 2026-08-29 One row per stored artefact — Make `listRawSourceSnapshots` recurse and return one row per stored artefact regardless of extension, carrying the media type so callers that only want markdown can filter explicitly. Audit every caller the DW-437 decision moved onto it and state which ones filter. Pin that a PDF-only workspace reports a non-zero Source count and that markdown-only callers are unchanged.
 
 ### DW-570: `storeRawSource`'s silo repair falls back to mirroring the REQUEST body when re-reading the stored bytes fails, which its own comment forbids.
 origin: spec-deferred bcbe0252414f

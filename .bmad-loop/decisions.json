@@ -341,6 +341,15 @@
     "label": "Split the predicate in two",
     "resolution": ""
   },
+  "DW-569": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Make `listRawSourceSnapshots` recurse and return one row per stored artefact regardless of extension, carrying the media type so callers that only want markdown can filter explicitly. Audit every caller the DW-437 decision moved onto it and state which ones filter. Pin that a PDF-only workspace reports a non-zero Source count and that markdown-only callers are unchanged.",
+    "key": "1",
+    "label": "One row per stored artefact",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
