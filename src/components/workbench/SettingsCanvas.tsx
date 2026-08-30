@@ -109,6 +109,7 @@ import {
   saveWorkbenchSettings,
   settingsCategory,
   settingsDirty,
+  settingsDraftAfterEmbeddingPinRefusal,
   settingsDraftAfterEmbeddingProvider,
   settingsDraftFromPayload,
   settingsEnvKeyCopy,
@@ -117,6 +118,7 @@ import {
   settingsEnvProviderInvalidCopy,
   settingsEnvProviderPinCopy,
   settingsModelSubstitutedCopy,
+  settingsRefusalPinsEmbeddingProvider,
   settingsSaveBody,
   verdictClearsHeldVersion,
   vectorSearchFieldIssue,
@@ -311,12 +313,69 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
     setSaving(true);
     setSaveError(null);
     setStatus("");
+    // THE RECOVERY READ (DW-555). A clearing verdict — and a versionless 200,
+    // and a load that carried none — leaves this surface holding no version,
+    // and nothing else on it ever puts one back: every later save then goes out
+    // with no `If-Match` and is refused 428, escapable only by a reload that
+    // destroys the draft. So the version, and ONLY the version, is re-read at
+    // the one moment it matters.
+    //
+    // FALSINESS, NOT `=== undefined`, on BOTH the trigger and the adoption.
+    // The static type says `version?: string`, but `isWorkbenchSettingsPayload`
+    // deliberately accepts `null` and `""` as spellings of absence and
+    // `workbenchSettingsFrom` hands the candidate back verbatim, so all three
+    // reach this ref at runtime. `saveWorkbenchSettings` gates the header on
+    // TRUTHINESS (`options.version ? …`), and this has to gate on the SAME rule
+    // or the two disagree: an `=== undefined` trigger would let a held `null`
+    // walk straight past the recovery into the headerless 428 this exists to
+    // remove, and an `!== undefined` adoption would write that `null` back into
+    // the held payload and switch the recovery off for the life of the tab.
+    // `SkillsCanvas.toggle` tests the same way, for the same reason.
+    //
+    // LAZY, NEVER EAGER. A HELD version is the description of the config this
+    // draft was seeded from, which is the whole point of the precondition;
+    // refreshing one behind the owner's back would silently turn every conflict
+    // into a clobber. Only the absent case has nothing left to lose.
+    //
+    // AND THE TRADE IT MAKES, stated rather than left to be discovered: reading
+    // the precondition immediately before the PUT means this retry can no
+    // longer be refused as a conflict, so a third party's edit landing between
+    // the cleared save and the retry is OVERWRITTEN rather than caught. That is
+    // accepted here, and only here, because the version was cleared precisely
+    // because it could no longer detect anything — the choice is not between
+    // conflict detection and none, it is between a save that can happen and a
+    // surface that can never save again without a reload that destroys every
+    // unsaved edit on it. A HELD version still buys the real 412, which is
+    // exactly why this never refreshes one.
+    //
+    // THE DRAFT IS NOT TOUCHED. This is a read for one field, not the re-seed
+    // the surface deliberately does not have — every unsaved edit stays exactly
+    // where the owner left it, and the answered payload's other values are
+    // discarded. Close to `SkillsCanvas.toggle`'s shape, and different in the
+    // two ways that matter: that one re-reads on EVERY write, because the
+    // Settings pane writes the same file underneath it, and REFUSES when the
+    // read yields no version. This one reads only when NONE is held, and never
+    // refuses — swallowing the save would strand a draft the owner can neither
+    // save nor reload away from. It goes out with no `If-Match` at all, exactly
+    // as it does today, and the route answers 428 — the sentence this surface
+    // already shows.
+    let version = payloadRef.current?.version;
+    if (!version) {
+      const seeded = await fetchWorkbenchSettings({
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      const answered = seeded.status === "ok" ? seeded.payload.version : undefined;
+      if (answered) {
+        version = answered;
+        setPayload((held) => (held ? { ...held, version: answered } : held));
+      }
+    }
     // The body is built by a pure function the suite executes, so "an untouched
     // key field is omitted entirely" is a property something can run rather than
     // a condition typed here.
     const result = await saveWorkbenchSettings(settingsSaveBody(current), {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      version: payloadRef.current?.version,
+      version,
     });
     setSaving(false);
     if (result.status === "ok") {
@@ -342,6 +401,31 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       // Every edit stays on screen — a refused save must never be the thing
       // that loses it — and the SERVER's sentence is shown, never a transport's.
       setSaveError(result.message);
+      // THE ENV-PIN RECOVERY (DW-553). The route refuses a MOVE of the
+      // embedding provider under `EMBEDDING_PROVIDER`, and the draft that made
+      // that move has already had its endpoint blanked and its key un-touched
+      // by `settingsDraftAfterEmbeddingProvider` — so a retry would re-send the
+      // identical refused move, forever. Putting the three embedding legs back
+      // to the values this surface is HOLDING makes the very next Save a
+      // request the pin does not refuse, without costing the owner any other
+      // edit on the surface.
+      //
+      // RECOGNISED BY THE SENTENCE, because the route sends no code for it and
+      // adding one would be a wire-contract change. The rule that decides is
+      // pure and lives beside the copy it matches, where the node suite runs it
+      // against every member of the closed set the route can mint from.
+      //
+      // The sentence above and the version handling below are untouched: the
+      // owner still reads the SERVER's words, and an arrived refusal applied
+      // nothing, so the held version is still current.
+      if (settingsRefusalPinsEmbeddingProvider(result.message)) {
+        const held = payloadRef.current;
+        if (held) {
+          setDraft((shown) =>
+            shown ? settingsDraftAfterEmbeddingPinRefusal(shown, held) : shown,
+          );
+        }
+      }
       if (verdictClearsHeldVersion(result.verdict)) {
         // TWO different facts, one action (DW-427). `"unconfirmed"`: nobody
         // answered, so the patch may already be stored (DW-376). `"unreadable"`:

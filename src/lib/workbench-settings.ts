@@ -469,6 +469,37 @@ export function settingsEnvProviderPinRefusalCopy(value: string): string {
 }
 
 /**
+ * Is this refused save's sentence the env pin's? (DW-553)
+ *
+ * The route sends no machine-readable code for the refusal above — adding one
+ * would be a wire-contract change — so the browser recognises it by the only
+ * thing it was sent: the sentence. That is safe here, and only here, because
+ * the set is CLOSED AT BOTH ENDS. The route mints it exclusively from
+ * `storedBefore.envEmbeddingProvider`, typed `EmbeddingProvider | null` and
+ * filtered through `isEmbeddingProvider` by `envEmbeddingProvider()` in
+ * `config.ts` — so every sentence the route can send is one of the four this
+ * function mints from {@link EMBEDDING_PROVIDERS} and compares against.
+ *
+ * EXACT EQUALITY over that enumeration, never a regex, a substring or a parse.
+ * A loose match would drag in {@link settingsEnvProviderPinCopy}, which shares
+ * the first half of the wording, and would go on matching a sentence somebody
+ * later rewrote into something this recovery is wrong for. Equality against a
+ * mint fails CLOSED: reword the copy and the match simply stops, leaving the
+ * old behaviour rather than a re-seed nobody asked for.
+ *
+ * WHY THE SURFACE ASKS. The pin refuses a MOVE, and the draft that made the
+ * move has already had its endpoint and key blanked by
+ * {@link settingsDraftAfterEmbeddingProvider}. Without this, every retry
+ * re-sends the identical refused move for the rest of the session —
+ * {@link settingsDraftAfterEmbeddingPinRefusal} is the undo.
+ */
+export function settingsRefusalPinsEmbeddingProvider(message: string): boolean {
+  return EMBEDDING_PROVIDERS.some(
+    (provider) => settingsEnvProviderPinRefusalCopy(provider) === message,
+  );
+}
+
+/**
  * Why an Ollama endpoint was thrown away — ONE sentence per source (DW-402).
  *
  * `getOllamaBaseUrl` refuses a value that is not an absolute `http(s)` URL and
@@ -2863,6 +2894,48 @@ export function settingsDraftAfterEmbeddingProvider(
     // Always untouched, in BOTH directions: the stored key is reported through
     // `draftEmbeddingKeyStored` rather than held here, and anything the owner
     // typed belonged to the vendor being left.
+    embeddingApiKey: SECRET_UNTOUCHED,
+  };
+}
+
+/**
+ * The draft after `PUT /api/settings` refused the move under the env pin
+ * (DW-553).
+ *
+ * The undo of {@link settingsDraftAfterEmbeddingProvider}'s blanking, and
+ * nothing more. That rule cleared the endpoint and un-touched the key because
+ * the move was going to happen; the route has now said it is not, so the three
+ * embedding legs go back to exactly what {@link settingsDraftFromPayload}
+ * seeds them with — the values the surface is HOLDING, which is the store's own
+ * answer to the read this draft came from.
+ *
+ * WITHOUT IT the surface is stuck: the draft still names the vendor the pin
+ * refuses, so the next Save re-sends the identical refused move, and the only
+ * escape is a reload that destroys every other unsaved edit. With it, Save is
+ * immediately usable again for the rest of the draft.
+ *
+ * EXACTLY THREE FIELDS. Every other edit on the surface — a timeout, a model, a
+ * research key — is untouched by the refusal and must survive it: a refused
+ * save is never allowed to be the thing that loses an edit. And the version is
+ * not this rule's business either; an arrived refusal applied nothing, so the
+ * held one is still current ({@link verdictClearsHeldVersion}).
+ *
+ * IT ADOPTS NOTHING NEW. `envEmbeddingProvider` is the fact the refusal is
+ * ABOUT, and it is deliberately not written into the payload from here: the
+ * surface may only show store state it was actually SERVED, and a stale tab's
+ * payload says `null` because that is what the read answered. The next read is
+ * what corrects it.
+ */
+export function settingsDraftAfterEmbeddingPinRefusal(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): SettingsDraft {
+  return {
+    ...draft,
+    // The same three expressions `settingsDraftFromPayload` uses, so a
+    // re-seeded draft and a freshly loaded one agree field for field.
+    embeddingProvider: payload.embeddingProvider ?? "",
+    embeddingBaseUrl: payload.embeddingBaseUrl ?? "",
     embeddingApiKey: SECRET_UNTOUCHED,
   };
 }

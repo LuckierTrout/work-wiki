@@ -364,6 +364,8 @@ describe("a read-only deployment (DW-37, DW-65)", () => {
 describe("the Settings canvas sends the version it was seeded with (DW-63)", () => {
   const SEEDED = "s1:11111111111111112222222222222222";
   const LANDED = "s1:33333333333333334444444444444444";
+  /** What the RECOVERY read answers once the held version is gone (DW-555). */
+  const RECOVERED = "s1:55555555555555556666666666666666";
 
   /** Mount writable, with one response per call rather than one for all. */
   async function mountWritable(responses: Array<() => unknown>) {
@@ -404,6 +406,19 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
   function ifMatchOf(call: number): string | undefined {
     const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
     return ((init.headers ?? {}) as Record<string, string>)["If-Match"];
+  }
+
+  /** `undefined` for a GET — `fetchWorkbenchSettings` names no method. */
+  function methodOf(call: number): string | undefined {
+    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
+    return init.method;
+  }
+
+  /** The `workbench` patch the nth call sent. */
+  function patchOf(call: number): Record<string, unknown> {
+    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
+    return (JSON.parse(String(init.body)) as { workbench: Record<string, unknown> })
+      .workbench;
   }
 
   it("puts the seeded payload's version on the save, and adopts the answered one", async () => {
@@ -451,9 +466,251 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
         })(),
       }),
     });
+    await mountWritable([read(SEEDED), versionless, read(RECOVERED), saved(LANDED)]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
+    expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
+
+    // THE RECOVERY (DW-555). The version really is gone — and the next save is
+    // no longer stuck: it RE-READS one, at the moment it needs one, and carries
+    // it. Before this, every later save on the surface went out headerless and
+    // came back 428, escapable only by a reload that destroyed the draft.
+    typeChatModel("gpt-4.1-mini");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    // A GET precedes the PUT, and the PUT carries what it answered.
+    expect(methodOf(2)).toBeUndefined();
+    expect(methodOf(3)).toBe("PUT");
+    expect(ifMatchOf(3)).toBe(`"${RECOVERED}"`);
+
+    // The read moved the VERSION and nothing else: the body carries the owner's
+    // unsaved edit, not the `gpt-4o` that read just served.
+    expect(patchOf(3).chatModel).toBe("gpt-4.1-mini");
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
+  });
+
+  it("re-reads ONLY the version, leaving every unsaved edit on screen (DW-555)", async () => {
+    // The half a body assertion cannot make: what the OWNER sees afterwards.
+    // The recovery read answers a full payload — a different chat model, a
+    // different everything — and none of it may reach the draft. This surface
+    // has no refresh precisely because a re-seed throws away unsaved edits, and
+    // the recovery must not become one by the back door.
     await mountWritable([
       read(SEEDED),
-      versionless,
+      () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          workbench: payload({
+            readOnly: false,
+            version: RECOVERED,
+            chatModel: "served-by-the-read",
+            llmTimeoutSeconds: 90,
+          }),
+        }),
+      }),
+      () => ({
+        ok: false,
+        status: 412,
+        json: async () => ({ error: WRITE_CONFLICT_COPY }),
+      }),
+    ]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+
+    typeChatModel("gpt-4.1-mini");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    // The version the read answered is adopted…
+    expect(ifMatchOf(3)).toBe(`"${RECOVERED}"`);
+    // …and nothing else it carried is. The box still shows what the owner
+    // typed, and the save sent that.
+    expect(patchOf(3).chatModel).toBe("gpt-4.1-mini");
+    await waitFor(() => expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy());
+    expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
+      "gpt-4.1-mini",
+    );
+    expect(screen.queryByDisplayValue("served-by-the-read")).toBeNull();
+  });
+
+  /**
+   * The three spellings of "no version", driven end to end (DW-555).
+   *
+   * `isWorkbenchSettingsPayload` accepts `undefined`, `null` AND `""` — a
+   * versionless store, a JSON serializer that wrote a null, an empty stamp —
+   * and `workbenchSettingsFrom` hands the candidate straight back, so all three
+   * reach the ref the recovery tests despite the `version?: string` type saying
+   * only one can. `saveWorkbenchSettings` gates the `If-Match` header on
+   * TRUTHINESS, so all three are equally headerless and all three are equally
+   * stuck: the recovery has to fire for every one of them or the two halves
+   * disagree about what "held" means.
+   */
+  const ABSENT: ReadonlyArray<readonly [string, unknown]> = [
+    ["undefined", undefined],
+    ["null", null],
+    ["an empty string", ""],
+  ];
+
+  for (const [label, held] of ABSENT) {
+    it(`recovers a version when the load carried ${label} (DW-555)`, async () => {
+      // The cast is the point of the case: TypeScript says this cannot happen
+      // and the runtime validator says it can, and it is the runtime that
+      // reaches `payloadRef`.
+      const loaded = {
+        ...payload({ readOnly: false }),
+        version: held,
+      } as unknown as WorkbenchSettingsPayload;
+      await mountWritable([
+        () => ({ ok: true, status: 200, json: async () => ({ workbench: loaded }) }),
+        read(RECOVERED),
+        saved(LANDED),
+      ]);
+
+      typeChatModel("gpt-4.1");
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+      // A GET first, then a PUT that can actually be checked — where before
+      // this every one of these three went out headerless into the 428.
+      expect(methodOf(1)).toBeUndefined();
+      expect(methodOf(2)).toBe("PUT");
+      expect(ifMatchOf(2)).toBe(`"${RECOVERED}"`);
+      // …carrying the owner's edit, not what the recovery read served.
+      expect(patchOf(2).chatModel).toBe("gpt-4.1");
+      await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
+    });
+  }
+
+  it("ADOPTS the recovered version, so it recovers once and then holds (DW-555)", async () => {
+    // The half every other case here is blind to: the local variable alone is
+    // enough to make one PUT carry the header, so deleting the `setPayload`
+    // that writes it back into the held payload leaves them all green. What it
+    // would break is the NEXT save — which would re-read again, and again,
+    // turning the one-off recovery into the eager refresh that silently
+    // converts every conflict into a clobber.
+    //
+    // The middle PUT is REFUSED with a 412, whose verdict is `"refused"`, so
+    // `verdictClearsHeldVersion` leaves the held payload exactly as the
+    // adoption left it. That is what makes the second press an observation of
+    // the adoption rather than of anything else.
+    await mountWritable([
+      read(SEEDED),
+      () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
+      read(RECOVERED),
+      () => ({
+        ok: false,
+        status: 412,
+        json: async () => ({ error: WRITE_CONFLICT_COPY }),
+      }),
+    ]);
+
+    // The clearing verdict: the held version goes.
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+
+    // The recovery: one GET, then a PUT carrying what it answered.
+    typeChatModel("gpt-4.1-mini");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(methodOf(2)).toBeUndefined();
+    expect(ifMatchOf(3)).toBe(`"${RECOVERED}"`);
+    await waitFor(() => expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy());
+
+    // AND THE POINT: pressing Save again makes exactly ONE more request. No
+    // second GET — the version was adopted, so it is held, and a held version
+    // is never refreshed behind the owner's back.
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(5));
+    expect(methodOf(4)).toBe("PUT");
+    expect(ifMatchOf(4)).toBe(`"${RECOVERED}"`);
+  });
+
+  it("makes NO second request while a version is still held (DW-555)", async () => {
+    // The recovery is LAZY, and this is the reason: a held version describes the
+    // config the draft was seeded from, so refreshing one behind the owner's
+    // back would silently turn every conflict into a clobber. Only the absent
+    // case has nothing left to lose.
+    await mountWritable([read(SEEDED), saved(LANDED)]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
+
+    // Exactly the mount read and the save — no re-read in between.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(methodOf(1)).toBe("PUT");
+    expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
+  });
+
+  for (const [label, answered] of ABSENT) {
+    it(`still SENDS the save when the recovery read answers ${label} (DW-555)`, async () => {
+      // The recovery is a best effort, never a gate. `SkillsCanvas.toggle`
+      // refuses to write without a version; this surface must not, because
+      // refusing here would strand a draft the owner can neither save nor
+      // reload away from. It sends headerless exactly as it did before, and the
+      // route answers 428 — the sentence this surface already knows how to show.
+      //
+      // ALL THREE SPELLINGS AGAIN, on the ADOPTION side this time: a falsy
+      // answer must not be written into the held payload. Adopted, `null` and
+      // `""` would sit there looking like a version to anything testing
+      // `!== undefined` while `saveWorkbenchSettings` still sent no header —
+      // the recovery permanently off, and silently.
+      const served = {
+        ...payload({ readOnly: false }),
+        version: answered,
+      } as unknown as WorkbenchSettingsPayload;
+      await mountWritable([
+        read(SEEDED),
+        () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
+        () => ({ ok: true, status: 200, json: async () => ({ workbench: served }) }),
+        () => ({
+          ok: false,
+          status: 428,
+          json: async () => ({ error: WRITE_PRECONDITION_REQUIRED_COPY }),
+        }),
+      ]);
+
+      typeChatModel("gpt-4.1");
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+      await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+
+      typeChatModel("gpt-4.1-mini");
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+      expect(methodOf(3)).toBe("PUT");
+      expect(ifMatchOf(3)).toBeUndefined();
+      await waitFor(() =>
+        expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
+      );
+      expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
+        "gpt-4.1-mini",
+      );
+
+      // Nothing falsy was adopted, so the surface is still holding NO version
+      // and the next press tries the recovery again rather than giving up.
+      fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+      expect(methodOf(4)).toBeUndefined();
+      expect(methodOf(5)).toBe("PUT");
+    });
+  }
+
+  it("still SENDS the save when the recovery read FAILS outright (DW-555)", async () => {
+    // Same answer for a read that never lands: the 428 is a sentence about a
+    // header, which is at least true, where a swallowed save would be a draft
+    // the owner cannot get rid of.
+    await mountWritable([
+      read(SEEDED),
+      () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
+      () => ({ ok: false, status: 503, json: async () => ({ error: "nope" }) }),
       () => ({
         ok: false,
         status: 428,
@@ -463,19 +720,17 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
 
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
-    expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
 
-    // The NEXT save carries no `If-Match` at all…
     typeChatModel("gpt-4.1-mini");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-    expect(ifMatchOf(2)).toBeUndefined();
-
-    // …and is refused with the 428 sentence, with every edit still on screen.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(ifMatchOf(3)).toBeUndefined();
     await waitFor(() =>
       expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
     );
+    // Nothing from the failed read reaches the owner, and the edit stands.
+    expect(screen.queryByText("nope")).toBeNull();
     expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
       "gpt-4.1-mini",
     );
@@ -494,12 +749,16 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
 
     expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe("gpt-4o");
-    // …and a save from it carries NO `If-Match`, which the route answers 428
-    // with the draft still on screen — never an unconditional write.
+    // …and a save from it tries the recovery read first (DW-555) — this store
+    // answers no version either, so the PUT still carries NO `If-Match`, which
+    // the route answers 428 with the draft still on screen. Never an
+    // unconditional write, and never a swallowed save.
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(ifMatchOf(1)).toBeUndefined();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(methodOf(1)).toBeUndefined();
+    expect(methodOf(2)).toBe("PUT");
+    expect(ifMatchOf(2)).toBeUndefined();
   });
 
   /**
@@ -551,15 +810,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
 
   for (const [label, unconfirmed] of UNCONFIRMED) {
     it(`keeps every edit and drops the stale If-Match after ${label} (DW-376)`, async () => {
-      await mountWritable([
-        read(SEEDED),
-        unconfirmed,
-        () => ({
-          ok: false,
-          status: 428,
-          json: async () => ({ error: WRITE_PRECONDITION_REQUIRED_COPY }),
-        }),
-      ]);
+      await mountWritable([read(SEEDED), unconfirmed, read(RECOVERED), saved(LANDED)]);
 
       typeChatModel("gpt-4.1");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -584,21 +835,21 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
 
       // THE reconciliation. If the save landed, the stored config has moved past
       // the version this canvas is holding, so that version is the one thing on
-      // screen that can now be a lie. The next save carries NONE — refused as
-      // the 428, which claims only that the save could not be checked, and is
-      // true — rather than the superseded one, which could only ever be refused
-      // as the 412: a flat "your save was not applied", blamed on a change made
-      // somewhere else, when the change may be this owner's own save.
+      // screen that can now be a lie — and it is dropped rather than re-sent as
+      // a 412 that would flatly deny a save which may have been this owner's
+      // own. What used to follow was a dead end: every later save went out with
+      // no `If-Match` and came back 428, recoverable only by a reload that
+      // destroyed the draft. Now the next save RE-READS a version and carries
+      // it, so it can actually be checked — and lands (DW-555).
       typeChatModel("gpt-4.1-mini");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-      expect(ifMatchOf(2)).toBeUndefined();
-      await waitFor(() =>
-        expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
-      );
-      expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
-        "gpt-4.1-mini",
-      );
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+      expect(methodOf(2)).toBeUndefined();
+      expect(ifMatchOf(3)).toBe(`"${RECOVERED}"`);
+      // The re-read moved the version and NOT the draft: what goes out is the
+      // owner's edit, not the `gpt-4o` the recovery read served.
+      expect(patchOf(3).chatModel).toBe("gpt-4.1-mini");
+      await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
     });
   }
 
@@ -640,15 +891,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       // applied", blamed on a change made somewhere else, when the change would
       // be this owner's own. Sending nothing gets the 428, which claims only
       // that the save could not be checked, and is true either way.
-      await mountWritable([
-        read(SEEDED),
-        unreadable,
-        () => ({
-          ok: false,
-          status: 428,
-          json: async () => ({ error: WRITE_PRECONDITION_REQUIRED_COPY }),
-        }),
-      ]);
+      await mountWritable([read(SEEDED), unreadable, read(RECOVERED), saved(LANDED)]);
 
       typeChatModel("gpt-4.1");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -664,18 +907,17 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
       expect(ifMatchOf(1)).toBe(`"${SEEDED}"`);
 
-      // THE reconciliation: the next save carries NONE, and is refused with the
-      // 428 sentence rather than a conflict one, with every edit still on screen.
+      // THE reconciliation: the held version is dropped rather than re-sent as a
+      // conflict — and the next save RE-READS one instead of going out headerless
+      // into a 428 the surface could never escape without a reload (DW-555).
       typeChatModel("gpt-4.1-mini");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
-      expect(ifMatchOf(2)).toBeUndefined();
-      await waitFor(() =>
-        expect(screen.getByText(WRITE_PRECONDITION_REQUIRED_COPY)).toBeTruthy(),
-      );
-      expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe(
-        "gpt-4.1-mini",
-      );
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+      expect(methodOf(2)).toBeUndefined();
+      expect(ifMatchOf(3)).toBe(`"${RECOVERED}"`);
+      // The read moved the version and NOT the draft.
+      expect(patchOf(3).chatModel).toBe("gpt-4.1-mini");
+      await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
     });
   }
 

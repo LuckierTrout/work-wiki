@@ -59,6 +59,7 @@ import type { Ai } from "@/lib/storage/cloudflare-types";
 import {
   SETTINGS_INVALID_URL_COPY,
   settingsEnvProviderPinRefusalCopy,
+  settingsRefusalPinsEmbeddingProvider,
   vectorSearchInactiveCopy,
 } from "@/lib/workbench-settings";
 
@@ -1500,10 +1501,20 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
     );
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({
+    const body = (await response.json()) as { error: string };
+    expect(body).toEqual({
       error: settingsEnvProviderPinRefusalCopy("workers-ai"),
     });
     expect(mockedSave).not.toHaveBeenCalled();
+
+    // THE COUPLING DW-553 RESTS ON, pinned against a REAL route body rather
+    // than against a sentence a test minted for itself. The route sends no
+    // machine-readable code for this refusal, so the browser recognises it by
+    // exact equality over the closed set `EMBEDDING_PROVIDERS` can mint — and
+    // this is the save path a Workbench owner actually takes, so if the two
+    // ever drift, `SettingsCanvas` silently stops re-seeding the draft and
+    // every retry re-sends the identical refused move.
+    expect(settingsRefusalPinsEmbeddingProvider(body.error)).toBe(true);
   });
 
   it("lets an UNRELATED edit land while the pin is on", async () => {

@@ -4177,7 +4177,9 @@ location: src/components/workbench/SettingsCanvas.tsx:341 (save result handling)
 source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
 severity: medium
 reason: `SettingsCanvas`'s save keeps the draft on any non-ok result (SettingsCanvas.tsx:341-343), and the draft that produced the refusal already had `embeddingBaseUrl` and `embeddingApiKey` blanked by `settingsDraftAfterEmbeddingProvider`. The owner of a tab opened before `EMBEDDING_PROVIDER` was set can only escape by reverting the select by hand or reloading, and the refusal sentence names neither. The same keep-the-draft behaviour applies to every other 400 on this surface, so re-seeding the draft from the answered payload for this refusal specifically — or saying "reload" in the copy — is a surface decision this bundle did not carry.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-save-refusal-recovery
+resolution-undo: 716f1e124d71c877be120780325383a2aebe3196b7bdc13ffbcd71d99803527f 2026-08-30 7374617475733a206f70656e
 
 ### DW-554: `SETTINGS_SAVE_FAILED_COPY` tells the owner their settings were not saved on the one branch whose whole justification is that nobody knows whether they were.
 origin: spec-deferred 9e310e9c443f
@@ -4195,7 +4197,9 @@ location: src/components/workbench/SettingsCanvas.tsx:343-372
 source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
 severity: medium
 reason: `SettingsCanvas.save` clears `payload.version` and nothing on this surface ever restores it — the read effect runs once on mount and there is no re-seed affordance. Every subsequent save therefore carries no `If-Match` and is answered 428, whose recovery half is "copy it, reload, and apply it to the current version". `SkillsCanvas.toggle` shows the available shape: re-read ONLY the version via `fetchWorkbenchSettings()` and leave the draft alone. Pre-existing since DW-376; DW-427 brings a second branch to the same dead end rather than creating it, and the one-call-site scan at `workbench-settings.test.ts:4661` means adding a re-seed is a deliberate decision.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-save-refusal-recovery
+resolution-undo: 716f1e124d71c877be120780325383a2aebe3196b7bdc13ffbcd71d99803527f 2026-08-30 7374617475733a206f70656e
 
 ### DW-556: `savePreviewBody` reads its 2xx body with an unguarded `.catch(() => null)` and still answers `{ status: "ok" }`, so a body read that dies mid-stream is reported to Preview as a LANDED save.
 origin: spec-deferred c4281a7f973b
@@ -4790,4 +4794,28 @@ location: src/components/workbench/SkillsCanvas.tsx:106-118
 source_spec: `spec-dw-556-557-558-settings-save-verdict-shape.md`
 severity: low
 reason: `SkillsCanvas.tsx:106-118` calls `saveWorkbenchSettings` and re-scans only on `result.status === "ok"`; every error path sets the message and returns. A `"unconfirmed"` verdict means the enablement flip may already be stored, so the list it renders can disagree with the sidecar until something else triggers a scan. Pre-existing since DW-376 — the verdict collapse only made the state readable by name — and this is the one `saveWorkbenchSettings` call site the intent deliberately left untouched.
+status: open
+
+### DW-626: Edits typed while a save is in flight are silently dropped, and the DW-555 recovery read doubles the window in which that can happen.
+origin: spec-deferred 72bb54e8c37e
+location: src/components/workbench/SettingsCanvas.tsx (save)
+source_spec: `spec-dw-553-555-settings-save-refusal-recovery.md`
+severity: low
+reason: `SettingsCanvas.save` captures `const current = draftRef.current` before the awaits, and only the Save button is disabled while `saving` — the field-level `aria-disabled` attributes key off `readOnly`/`envPinned`, not `saving`. A landed save then re-seeds the draft from the answered payload, so a keystroke made during the round trip is neither sent nor kept. Pre-existing, but on a surface holding no version the window is now two sequential `REQUEST_TIMEOUT_MS` deadlines rather than one.
+status: open
+
+### DW-627: `mountWritable` and `patchOf` are now copied verbatim into a second mounted Settings suite, the duplication DW-228 consolidated the rest of that harness to remove.
+origin: spec-deferred d82e8f3af1e3
+location: src/components/workbench/__tests__/settings-harness.tsx
+source_spec: `spec-dw-553-555-settings-save-refusal-recovery.md`
+severity: low
+reason: `settings-read-only.test.tsx` and `settings-embedding-provider-switch.test.tsx` each carry their own one-response-per-call mount helper and PUT-body reader, differing only in the category mounted. `settings-harness.tsx` already exists as the stated shared home for exactly this kind of helper, and its header explains why a per-file copy is what drifts.
+status: open
+
+### DW-628: `PUT /api/settings` sends no machine-readable code for the env-pin refusal, so the browser recognises it by matching the English sentence.
+origin: spec-deferred 96463401329e
+location: src/app/api/settings/route.ts:434-437
+source_spec: `spec-dw-553-555-settings-save-refusal-recovery.md`
+severity: low
+reason: `settingsRefusalPinsEmbeddingProvider` compares the refusal body against every sentence `settingsEnvProviderPinRefusalCopy` can mint. That is exact, closed and fails closed, and `settings-route.test.ts` now pins the route's body against the same predicate — but a surface branching on copy is a coupling a wire-level code would remove. Adding one was ruled out of this bundle as a wire-contract change.
 status: open

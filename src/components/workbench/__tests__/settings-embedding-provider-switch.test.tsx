@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { embeddingProviderLabel } from "@/lib/providers";
+import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
   SETTINGS_KEY_ABSENT_COPY,
   SETTINGS_KEY_REMOVE_COPY,
   SETTINGS_KEY_REMOVE_PENDING_COPY,
   SETTINGS_KEY_STORED_COPY,
   SETTINGS_KEY_UNDO_COPY,
+  SETTINGS_LOADING_COPY,
+  SETTINGS_SAVED_COPY,
+  SETTINGS_SAVE_COPY,
+  settingsEnvProviderPinRefusalCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
 import {
@@ -46,10 +51,10 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
   });
 }
 
-// Registers the `fetch` stub and the `cleanup()`-first teardown. Nothing here
-// asserts on the request itself — the mount helper is the only caller — so the
-// mock it returns is not held.
-installSettingsFetchMock();
+// Registers the `fetch` stub and the `cleanup()`-first teardown. The DW-553
+// describe at the bottom drives one response per call and reads the PUT bodies
+// back, so the mock it returns IS held.
+const fetchMock = installSettingsFetchMock();
 
 /** Mount the embeddings category and let the single on-mount read settle. */
 function mount(stored: WorkbenchSettingsPayload) {
@@ -186,5 +191,206 @@ describe("the embeddings surface clears the vendor pair on a switch (DW-69/DW-72
     expect(providerSelect().value).toBe("openai");
     expect(endpointBox().value).toBe("https://o/v1");
     expect(announcedFor(keyBox())).toContain(SETTINGS_KEY_STORED_COPY);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A way forward after the env pin refuses the move (DW-553)
+// ---------------------------------------------------------------------------
+//
+// `workbench-settings.test.ts` runs the two rules — that the sentence is
+// recognised by exact equality over the closed set, and that the re-seed puts
+// the three embedding legs back. What it cannot see is the seam: that the
+// canvas ASKS on a refused save, and that the retry it makes possible is
+// therefore no longer the move the route refuses. Both halves are only
+// observable from a mounted surface driving two real PUTs.
+//
+// The motivating case is a STALE TAB: this payload was read before
+// `EMBEDDING_PROVIDER` was set, so it carries `envEmbeddingProvider: null`, the
+// select is not pinned, and the surface has no way to know until the route
+// answers. That is exactly why the recovery has to be driven by the refusal.
+
+describe("the embeddings surface recovers from the env-pin refusal (DW-553)", () => {
+  /** The sentence the route mints from its own `EMBEDDING_PROVIDER`. */
+  const PINNED = settingsEnvProviderPinRefusalCopy("workers-ai");
+
+  /** Mount the embeddings category with one response per call. */
+  async function mountWritable(responses: Array<() => unknown>) {
+    let call = 0;
+    fetchMock.mockImplementation(async () => {
+      const next = responses[Math.min(call, responses.length - 1)];
+      call += 1;
+      return next() as Response;
+    });
+    render(<SettingsCanvas category="embeddings" headingId="wb-set-heading" />);
+    await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
+  }
+
+  /** The stale tab's read: OpenAI stored, and NO pin visible to the browser. */
+  const staleRead = () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ workbench: payload({ envEmbeddingProvider: null }) }),
+  });
+
+  const refusal = () => ({
+    ok: false,
+    status: 400,
+    json: async () => ({ error: PINNED }),
+  });
+
+  const modelBox = () => screen.getByLabelText("Embedding model") as HTMLInputElement;
+  const saveButton = () => screen.getByRole("button", { name: SETTINGS_SAVE_COPY });
+
+  /** The `workbench` patch of the nth `fetch` call. */
+  function patchOf(call: number): Record<string, unknown> {
+    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
+    return (JSON.parse(String(init.body)) as { workbench: Record<string, unknown> })
+      .workbench;
+  }
+
+  it("re-seeds the three embedding legs and keeps every other edit", async () => {
+    await mountWritable([staleRead, refusal]);
+
+    // The owner moves the vendor — and edits something else, which is what
+    // keeps Save reachable after the re-seed cleans the embedding legs.
+    fireEvent.change(modelBox(), { target: { value: "text-embedding-3-large" } });
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+    expect(providerSelect().value).toBe("google");
+    expect(endpointBox().value).toBe("");
+
+    fireEvent.click(saveButton());
+
+    // The SERVER's sentence, unchanged and unparaphrased.
+    await waitFor(() => expect(screen.getByText(PINNED)).toBeTruthy());
+    expect(screen.queryByText(SETTINGS_SAVED_COPY)).toBeNull();
+
+    // …and the way forward: all three embedding legs read the STORE again, so
+    // the surface no longer describes a save the route will refuse.
+    expect(providerSelect().value).toBe("openai");
+    expect(endpointBox().value).toBe("https://o/v1");
+    expect(announcedFor(keyBox())).toContain(SETTINGS_KEY_STORED_COPY);
+    expect(screen.queryByText(SETTINGS_KEY_REMOVE_COPY)).not.toBeNull();
+    expect(keyBox().value).toBe("");
+
+    // A refused save is never the thing that loses an edit: the unrelated one
+    // stands, and it is what leaves the draft dirty.
+    expect(modelBox().value).toBe("text-embedding-3-large");
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("makes the RETRY a request the pin does not refuse", async () => {
+    await mountWritable([
+      staleRead,
+      refusal,
+      () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          saved: true,
+          workbench: payload({
+            envEmbeddingProvider: null,
+            embeddingModel: "text-embedding-3-large",
+            version: "w1:3-0000000000000000",
+          }),
+        }),
+      }),
+    ]);
+
+    fireEvent.change(modelBox(), { target: { value: "text-embedding-3-large" } });
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(screen.getByText(PINNED)).toBeTruthy());
+
+    // Call 0 is the read, call 1 the refused move: it really did carry the
+    // move, so the retry below is not passing vacuously.
+    expect(patchOf(1).embeddingProvider).toBe("google");
+    expect(patchOf(1).embeddingBaseUrl).toBeNull();
+
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+    // The retry carries the STORED vendor and its endpoint, so
+    // `embeddingProviderChanged` sees no move and the route's pin never fires —
+    // while the edit the owner actually still wants rides along.
+    expect(patchOf(2).embeddingProvider).toBe("openai");
+    expect(patchOf(2).embeddingBaseUrl).toBe("https://o/v1");
+    expect(patchOf(2).embeddingModel).toBe("text-embedding-3-large");
+    // UNTOUCHED, not a pretend Remove: nothing rides that could delete the
+    // pinned vendor's own credential.
+    expect(patchOf(2).embeddingApiKey).toBeUndefined();
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
+  });
+
+  it("ends CLEAN when the refused move was the owner's only edit", async () => {
+    // The other cases here carry a second, unrelated edit, which is what keeps
+    // Save reachable afterwards. This is the case without one, and its ending
+    // is different by design: the re-seed puts the three legs back where the
+    // payload has them, so the draft now EQUALS the payload, `settingsDirty`
+    // answers false and Save goes disabled.
+    //
+    // That is the correct terminal state, not a dead end. The owner's only edit
+    // was one the environment forbids; it has been undone, and the route's
+    // sentence on screen says why. There is genuinely nothing left to save, and
+    // a Save button live over a draft identical to the store would only offer
+    // to re-send the request that was just refused.
+    await mountWritable([staleRead, refusal]);
+
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+    expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(screen.getByText(PINNED)).toBeTruthy());
+    expect(providerSelect().value).toBe("openai");
+    expect(endpointBox().value).toBe("https://o/v1");
+    expect(announcedFor(keyBox())).toContain(SETTINGS_KEY_STORED_COPY);
+
+    // Nothing left to save, and the explanation still on screen.
+    await waitFor(() => expect((saveButton() as HTMLButtonElement).disabled).toBe(true));
+    expect(screen.getByText(PINNED)).toBeTruthy();
+    // …and no further request was provoked by the re-seed itself.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the embedding legs ALONE on any other refusal", async () => {
+    // The recognition is exact equality over the closed set, so a refusal about
+    // anything else — here the 412 conflict — must not re-seed a thing.
+    await mountWritable([
+      staleRead,
+      () => ({
+        ok: false,
+        status: 412,
+        json: async () => ({ error: "Someone else changed these settings." }),
+      }),
+    ]);
+
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+    fireEvent.click(saveButton());
+
+    await waitFor(() =>
+      expect(screen.getByText("Someone else changed these settings.")).toBeTruthy(),
+    );
+    expect(providerSelect().value).toBe("google");
+    expect(endpointBox().value).toBe("");
+    expect(announcedFor(keyBox())).toContain(SETTINGS_KEY_ABSENT_COPY);
+  });
+
+  it("does not adopt the pinned vendor into the payload it was served", async () => {
+    // The refusal names `EMBEDDING_PROVIDER=workers-ai`, and the surface must
+    // NOT write that into the store state it is holding: it was not served it,
+    // and inventing it would pin the select and change every vector sentence on
+    // the strength of a 400 body. The next READ is what corrects the tab.
+    await mountWritable([staleRead, refusal]);
+
+    fireEvent.change(modelBox(), { target: { value: "text-embedding-3-large" } });
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(screen.getByText(PINNED)).toBeTruthy());
+
+    // Still editable, and still on the STORED vendor rather than the pinned one.
+    expect(providerSelect().hasAttribute("aria-disabled")).toBe(false);
+    expect(providerSelect().value).toBe("openai");
+    fireEvent.change(providerSelect(), { target: { value: "ollama" } });
+    expect(providerSelect().value).toBe("ollama");
   });
 });

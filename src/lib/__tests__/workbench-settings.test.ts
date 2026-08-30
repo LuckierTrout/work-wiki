@@ -125,12 +125,14 @@ import {
   saveWorkbenchSettings,
   settingsAnnouncement,
   settingsDirty,
+  settingsDraftAfterEmbeddingPinRefusal,
   settingsDraftAfterEmbeddingProvider,
   settingsDraftFromPayload,
   settingsEnvOverrideCopy,
   settingsEnvProviderInvalidCopy,
   settingsEnvProviderPinCopy,
   settingsEnvProviderPinRefusalCopy,
+  settingsRefusalPinsEmbeddingProvider,
   settingsCategory,
   settingsPointer,
   settingsSaveBody,
@@ -5055,7 +5057,24 @@ describe("the Settings components stay inside the shell", () => {
     expect(canvas).not.toMatch(/[^a-zA-Z]fetch\(/);
     expect(canvas).not.toContain('"/api/');
     expect(canvas.match(/saveWorkbenchSettings\(/g) ?? []).toHaveLength(1);
-    expect(canvas.match(/fetchWorkbenchSettings\(/g) ?? []).toHaveLength(1);
+    // TWO reads, and the second is a decision rather than an accident (DW-555).
+    // One is the mount read that seeds the payload and the draft. The other is
+    // the recovery read inside `save`, which fires ONLY when NO version is held
+    // and adopts the answered VERSION alone — the draft is left exactly as the
+    // owner typed it. A third would be the one to worry about: any read that
+    // re-seeded the draft would throw away every unsaved edit, which is the
+    // whole reason this surface has no refresh.
+    expect(canvas.match(/fetchWorkbenchSettings\(/g) ?? []).toHaveLength(2);
+    expect(canvas).toContain("let version = payloadRef.current?.version;");
+    // FALSINESS on both the trigger and the adoption, which is the rule
+    // `saveWorkbenchSettings` gates the `If-Match` header on. `null` and `""`
+    // are spellings of absence `isWorkbenchSettingsPayload` accepts, so an
+    // `=== undefined` test here would walk a held `null` past the recovery and
+    // an `!== undefined` adoption would write one back and disable it for good.
+    expect(canvas).toContain("if (!version) {");
+    expect(canvas).toContain("if (answered) {");
+    expect(canvas).not.toContain("version === undefined");
+    expect(canvas).not.toContain("answered !== undefined");
     expect(canvas).toContain("AbortSignal.timeout(REQUEST_TIMEOUT_MS)");
     // The read's deadline carries its own reason, so a blown deadline clears
     // `loading` and shows the failure sentence while an unmount stays silent.
@@ -5672,6 +5691,172 @@ describe("settingsDraftAfterEmbeddingProvider", () => {
     settingsDraftAfterEmbeddingProvider(draft, "google", OPENAI_PAYLOAD);
     expect(draft.embeddingProvider).toBe("openai");
     expect(draft.embeddingBaseUrl).toBe("https://o/v1");
+  });
+});
+
+describe("settingsRefusalPinsEmbeddingProvider (DW-553)", () => {
+  it("recognises the sentence for EVERY provider the route can name", () => {
+    // The set is closed at both ends — the route mints the sentence only from
+    // `storedBefore.envEmbeddingProvider`, and `envEmbeddingProvider()` filters
+    // through `isEmbeddingProvider` — so every sentence that can arrive is one
+    // of these. A provider added to `EMBEDDING_PROVIDERS` is covered the moment
+    // it is added, which is the point of enumerating rather than parsing.
+    for (const provider of EMBEDDING_PROVIDERS) {
+      expect(
+        settingsRefusalPinsEmbeddingProvider(settingsEnvProviderPinRefusalCopy(provider)),
+      ).toBe(true);
+    }
+  });
+
+  it("refuses a NEAR MISS rather than matching loosely", () => {
+    // EXACT equality, never a substring or a regex. Each of these shares enough
+    // wording with the refusal that a loose match would take it — and each one
+    // means something the re-seed is wrong for.
+    const pinned = settingsEnvProviderPinRefusalCopy("workers-ai");
+    expect(settingsRefusalPinsEmbeddingProvider(`${pinned} `)).toBe(false);
+    expect(settingsRefusalPinsEmbeddingProvider(pinned.slice(0, -1))).toBe(false);
+    expect(settingsRefusalPinsEmbeddingProvider(pinned.toLowerCase())).toBe(false);
+    // A value outside the closed set can never have been minted by the route.
+    expect(
+      settingsRefusalPinsEmbeddingProvider(settingsEnvProviderPinRefusalCopy("deepseek")),
+    ).toBe(false);
+    // The ROW's pin sentence shares the whole first half and is not a refusal
+    // at all: it is what the surface says beside a disabled select.
+    expect(
+      settingsRefusalPinsEmbeddingProvider(settingsEnvProviderPinCopy("workers-ai")),
+    ).toBe(false);
+  });
+
+  it("takes none of the other sentences a refused save can carry", () => {
+    // The rest of this seam's vocabulary. Every one of them leaves the draft
+    // exactly as the owner typed it.
+    for (const other of [
+      WRITE_CONFLICT_COPY,
+      WRITE_PRECONDITION_REQUIRED_COPY,
+      SETTINGS_SAVE_FAILED_COPY,
+      settingsEnvProviderInvalidCopy("deepseek"),
+      "",
+    ]) {
+      expect(settingsRefusalPinsEmbeddingProvider(other)).toBe(false);
+    }
+  });
+});
+
+describe("settingsDraftAfterEmbeddingPinRefusal (DW-553)", () => {
+  /** A deployment storing OpenAI's endpoint and OpenAI's key. */
+  const STORED: WorkbenchSettingsPayload = {
+    ...emptyPayload(),
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+    embeddingBaseUrl: "https://o/v1",
+    hasEmbeddingApiKey: true,
+    llmTimeoutSeconds: 30,
+  };
+
+  /** The stale tab's draft: the move the route is about to refuse. */
+  function movedDraft() {
+    return settingsDraftAfterEmbeddingProvider(
+      settingsDraftFromPayload(STORED),
+      "google",
+      STORED,
+    );
+  }
+
+  it("puts the three embedding legs back where the STORE has them", () => {
+    const moved = movedDraft();
+    // The blanking really happened, so the restore below cannot pass vacuously.
+    expect(moved.embeddingProvider).toBe("google");
+    expect(moved.embeddingBaseUrl).toBe("");
+
+    const back = settingsDraftAfterEmbeddingPinRefusal(moved, STORED);
+    expect(back.embeddingProvider).toBe("openai");
+    expect(back.embeddingBaseUrl).toBe("https://o/v1");
+    expect(back.embeddingApiKey).toBe(SECRET_UNTOUCHED);
+    // Field for field what a freshly seeded draft holds — the whole promise of
+    // reusing `settingsDraftFromPayload`'s three expressions.
+    const seeded = settingsDraftFromPayload(STORED);
+    expect(back.embeddingProvider).toBe(seeded.embeddingProvider);
+    expect(back.embeddingBaseUrl).toBe(seeded.embeddingBaseUrl);
+    expect(back.embeddingApiKey).toBe(seeded.embeddingApiKey);
+  });
+
+  it("makes the RETRY a request the pin does not refuse", () => {
+    // What the save actually carries afterwards: the stored provider and the
+    // stored endpoint, so `embeddingProviderChanged` sees no move and the
+    // route's pin never fires.
+    const body = settingsSaveBody(settingsDraftAfterEmbeddingPinRefusal(movedDraft(), STORED));
+    expect(body.embeddingProvider).toBe("openai");
+    expect(body.embeddingBaseUrl).toBe("https://o/v1");
+    expect(embeddingProviderChanged(STORED.embeddingProvider, body.embeddingProvider ?? null)).toBe(
+      false,
+    );
+    // And no key rides: the field is UNTOUCHED, not a pretend Remove.
+    expect(body.embeddingApiKey).toBeUndefined();
+  });
+
+  it("moves NOTHING else, however the owner edited it", () => {
+    // A refused save is never allowed to be the thing that loses an edit, and
+    // the refusal is about ONE field. Everything else on the surface stands.
+    const edited = {
+      ...movedDraft(),
+      chatModel: "gpt-4.1-mini",
+      llmTimeoutSeconds: "45",
+      embeddingModel: "text-embedding-3-large",
+      searxngBaseUrl: "https://s/search",
+      loopbackApiToken: "wk_generated",
+    };
+    const back = settingsDraftAfterEmbeddingPinRefusal(edited, STORED);
+    expect(back.chatModel).toBe("gpt-4.1-mini");
+    expect(back.llmTimeoutSeconds).toBe("45");
+    // Not vendor-bound in the way the endpoint and the key are, and not what
+    // the pin refused: the model the owner typed survives.
+    expect(back.embeddingModel).toBe("text-embedding-3-large");
+    expect(back.searxngBaseUrl).toBe("https://s/search");
+    // A token generated in this draft is shown ONCE; losing it here would lose
+    // it for good.
+    expect(back.loopbackApiToken).toBe("wk_generated");
+  });
+
+  it("restores an EMPTY endpoint and auto-detect when the store holds neither", () => {
+    // `?? ""` on both legs, exactly as the seeding does: a store on auto-detect
+    // with no endpoint restores to blank boxes rather than to `null` text.
+    const bare: WorkbenchSettingsPayload = {
+      ...STORED,
+      embeddingProvider: null,
+      embeddingBaseUrl: null,
+    };
+    const back = settingsDraftAfterEmbeddingPinRefusal(movedDraft(), bare);
+    expect(back.embeddingProvider).toBe("");
+    expect(back.embeddingBaseUrl).toBe("");
+  });
+
+  it("discards a key and a pending REMOVE typed against the refused vendor", () => {
+    // Both are about a vendor the store never moved to. `null` is "Remove", and
+    // left standing it would delete the pinned vendor's own credential on the
+    // retry — the very sabotage the route's refusal exists to prevent.
+    const typed = { ...movedDraft(), embeddingApiKey: "sk-typed-for-google" };
+    expect(settingsDraftAfterEmbeddingPinRefusal(typed, STORED).embeddingApiKey).toBe(
+      SECRET_UNTOUCHED,
+    );
+    const removing = { ...movedDraft(), embeddingApiKey: null };
+    expect(settingsDraftAfterEmbeddingPinRefusal(removing, STORED).embeddingApiKey).toBe(
+      SECRET_UNTOUCHED,
+    );
+  });
+
+  it("lands on a draft that is not dirty in the fields it restored", () => {
+    // The re-seeded legs agree with the payload, so the surface shows what a
+    // reload would show — and a draft that changed nothing else is clean.
+    const back = settingsDraftAfterEmbeddingPinRefusal(movedDraft(), STORED);
+    expect(settingsDirty(back, STORED)).toBe(false);
+    expect(draftEmbeddingKeyStored(back, STORED)).toBe(true);
+  });
+
+  it("does not mutate the draft it was handed", () => {
+    const moved = movedDraft();
+    settingsDraftAfterEmbeddingPinRefusal(moved, STORED);
+    expect(moved.embeddingProvider).toBe("google");
+    expect(moved.embeddingBaseUrl).toBe("");
   });
 });
 
