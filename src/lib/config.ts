@@ -932,15 +932,23 @@ const CACHE_TTL_MS = 5_000;
  * This is safe because:
  *   - LLM calls await `loadConfig()` before resolving the active provider
  *   - The config file is optional — `{}` is the documented default
- *   - The app's startup sequence calls `loadConfig()` before any LLM call
+ *   - Each surface warms the cache at its OWN call site, because this repo has
+ *     no startup hook to warm it globally (DW-550): `src/app/api/status/
+ *     route.ts` awaits `loadConfig()` per request immediately before
+ *     `getProviderInfo()`, and `src/cli.ts` does the same before
+ *     `getEffectiveSettings()`. A caller that reaches a resolver on a cold
+ *     cache gets `{}` — the empty-config answer — not a stale one.
  */
 export function loadConfigSync(): AppConfig {
   const now = Date.now();
   if (_configCache && now - _configCache.ts < CACHE_TTL_MS) {
     return _configCache.data;
   }
-  // Cache cold — return empty config. The cache will be populated
-  // by the next async loadConfig() call.
+  // Cache cold — `{}` is the answer, and it may be the STANDING answer. Nothing
+  // warms this for you (DW-550): a surface that wants the file on disk awaits
+  // `loadConfig()` at its own call site, and a caller that never does keeps
+  // getting `{}` for the life of the process. The entry is still written so the
+  // TTL bounds how often a cold path retries.
   _configCache = { data: {}, ts: now };
   return {};
 }
@@ -1020,8 +1028,28 @@ function envCustomApiKey(): string | null {
   return nonEmpty(process.env.LLM_CUSTOM_API_KEY);
 }
 
-/** Return the server-side credential for a specific provider. */
-export function apiKeyForProvider(provider: string | null): string | null {
+/**
+ * Return the server-side credential for a specific provider.
+ *
+ * `cfg` is OPTIONAL and read only where the store is actually consulted (the
+ * `custom` branch below), NOT a `cfg: AppConfig = loadConfigSync()` default
+ * parameter (DW-334). A default parameter is evaluated on EVERY call, so an
+ * `anthropic` resolution — which never touches the store — would make a cache
+ * write on behalf of a caller that never reaches it, pinning the `{}` entry and
+ * its TTL earlier than that caller's own first store read would have. (It could
+ * not HIDE a config loaded later: `readStoredConfig` and `saveConfig` both
+ * assign `_configCache` unconditionally, ignoring the TTL.) Callers that hold a
+ * snapshot (`getEffectiveSettings`, `getResolvedCredentials`,
+ * `providerIsConfigured`) pass it so the whole resolution answers from one
+ * config generation; everyone else passes nothing and gets today's behaviour.
+ *
+ * A `cfg` passed here is a WHOLE config generation, not a field-level override —
+ * see the note on {@link getStructuredKnowledgeModelSettings}.
+ */
+export function apiKeyForProvider(
+  provider: string | null,
+  cfg?: AppConfig,
+): string | null {
   switch (provider) {
     case "anthropic":
       return process.env.ANTHROPIC_API_KEY ?? null;
@@ -1043,7 +1071,7 @@ export function apiKeyForProvider(provider: string | null): string | null {
       // reads as a credential while `getModel()` refuses it as missing. That
       // reading lives in {@link envCustomApiKey}, which the Settings payload
       // reads too, so the surface and this resolver cannot drift.
-      return envCustomApiKey() ?? nonEmpty(loadConfigSync().customApiKey);
+      return envCustomApiKey() ?? nonEmpty((cfg ?? loadConfigSync()).customApiKey);
     default:
       return null;
   }
@@ -1054,13 +1082,19 @@ export function apiKeyForProvider(provider: string | null): string | null {
  * endpoint with no key is a request that 401s, so reporting either as
  * "configured" would promise a provider the runtime cannot construct — the
  * silently-inert save this story exists to prevent.
+ *
+ * `cfg` is forwarded to BOTH halves (DW-334): the key and the endpoint are one
+ * question, so resolving them against two reads of a 5 s-TTL cache could report
+ * `custom` unconfigured because the second read fell to `{}`.
  */
-export function providerIsConfigured(provider: string | null): boolean {
+export function providerIsConfigured(provider: string | null, cfg?: AppConfig): boolean {
   if (provider === "ollama") return true;
   if (provider === "custom") {
-    return apiKeyForProvider("custom") !== null && getCustomBaseUrl() !== null;
+    return (
+      apiKeyForProvider("custom", cfg) !== null && getCustomBaseUrl(cfg) !== null
+    );
   }
-  return apiKeyForProvider(provider) !== null;
+  return apiKeyForProvider(provider, cfg) !== null;
 }
 
 /**
@@ -1099,8 +1133,12 @@ export function providerIsConfigured(provider: string | null): boolean {
  * inherits. `providerIsConfigured` happens to reject those names first today;
  * that is a second gate's behaviour, not this predicate's contract.
  */
-export function providerIsUsable(provider: string | null, model: string | null): boolean {
-  if (!providerIsConfigured(provider)) return false;
+export function providerIsUsable(
+  provider: string | null,
+  model: string | null,
+  cfg?: AppConfig,
+): boolean {
+  if (!providerIsConfigured(provider, cfg)) return false;
   if (provider !== null && Object.hasOwn(DEFAULT_MODELS, provider)) return true;
   return nonEmpty(model) !== null;
 }
@@ -1111,10 +1149,17 @@ export function providerIsUsable(provider: string | null, model: string | null):
  * Truthiness, not nullishness, for the same reason as
  * {@link apiKeyForProvider}'s `custom` branch: `LLM_CUSTOM_BASE_URL=""` must not
  * mask an endpoint the owner stored through Settings.
+ *
+ * `cfg` is OPTIONAL and read at the point of use, for the same reason as
+ * {@link apiKeyForProvider} (DW-334): the store leg sits behind `??`, so a
+ * deployment that sets the variable never reaches it, and an eagerly-evaluated
+ * default parameter would make a cache write — pinning the `{}` entry and its
+ * TTL — on behalf of a caller that never asked the store anything.
  */
-export function getCustomBaseUrl(): string | null {
+export function getCustomBaseUrl(cfg?: AppConfig): string | null {
   return (
-    nonEmpty(process.env.LLM_CUSTOM_BASE_URL) ?? nonEmpty(loadConfigSync().customBaseUrl)
+    nonEmpty(process.env.LLM_CUSTOM_BASE_URL) ??
+    nonEmpty((cfg ?? loadConfigSync()).customBaseUrl)
   );
 }
 
@@ -1125,9 +1170,14 @@ export function getCustomBaseUrl(): string | null {
  * Environment variables provide credentials, not preference. This allows an
  * installation to keep several provider keys and switch between them in the
  * Settings UI without whichever secret is checked first taking over.
+ *
+ * `cfg` is a DEFAULT PARAMETER, the convention {@link getOllamaBaseUrl} already
+ * uses, because this function reads the store unconditionally — there is no
+ * lazy leg to protect. A caller that already holds a snapshot
+ * (`workloadModelSettings`) passes it so the whole answer describes one config
+ * generation (DW-334).
  */
-export function getEffectiveProvider(): ProviderInfo {
-  const cfg = loadConfigSync();
+export function getEffectiveProvider(cfg: AppConfig = loadConfigSync()): ProviderInfo {
   const env = detectEnvProvider();
 
   const provider = cfg.provider ?? env.provider ?? null;
@@ -1174,8 +1224,10 @@ export function getEffectiveProvider(): ProviderInfo {
     // The MODEL is part of the question (DW-403): a `custom` selection with
     // both credential halves and no model name resolves `model: null` two lines
     // up, and reporting it configured promised `/api/status` a provider
-    // `getConfiguredModel` cannot construct.
-    configured: providerIsUsable(provider, model),
+    // `getConfiguredModel` cannot construct. Against the `cfg` this function
+    // holds (DW-334), so the credential question and the provider question
+    // cannot straddle two generations of the 5 s-TTL cache.
+    configured: providerIsUsable(provider, model, cfg),
     provider,
     model,
     // ENV LEG ONLY, matching what this object describes (DW-402). `ProviderInfo`
@@ -1199,14 +1251,24 @@ export function getEffectiveProvider(): ProviderInfo {
  * A saved workload override wins. When no override is saved, extraction
  * inherits the primary provider and model exactly, preserving existing
  * behavior while allowing owners to route this stricter workload separately.
+ *
+ * A PASSED `cfg` IS THE WHOLE CONFIG GENERATION, not a field-level override —
+ * the contract every `cfg` parameter added by DW-334 shares. This function
+ * forwards it into `getEffectiveProvider(cfg)`, so an object carrying only
+ * `structuredKnowledgeProvider` also decides the primary this workload would
+ * inherit: the two workload keys are read from the same object that answers
+ * "what is the primary provider, and is it usable?". Pass a full snapshot, or
+ * pass nothing and take the cache.
  */
-export function getStructuredKnowledgeModelSettings(): StructuredKnowledgeModelSettings {
-  const cfg = loadConfigSync();
+export function getStructuredKnowledgeModelSettings(
+  cfg: AppConfig = loadConfigSync(),
+): StructuredKnowledgeModelSettings {
   // The ladder itself lives in `workloadModelSettings` (below), which Chat and
   // Ingest also call. This function is now only "which two keys".
   return workloadModelSettings(
     cfg.structuredKnowledgeProvider,
     cfg.structuredKnowledgeModel,
+    cfg,
   );
 }
 
@@ -1222,12 +1284,23 @@ export function getStructuredKnowledgeModelSettings(): StructuredKnowledgeModelS
  * falls to that provider's default; nothing saved inherits the primary provider
  * AND model exactly. `getStructuredKnowledgeModelSettings` calls through to this
  * rather than keeping its own copy, so the three cannot drift.
+ *
+ * `cfg` is threaded down to the primary resolver and the readiness predicate
+ * (DW-334). Without it this ladder cost two further entries into the 5 s-TTL
+ * cache — `getEffectiveProvider()` and `providerIsUsable` — so an inherited
+ * workload could describe a different config generation than the caller that
+ * asked for it.
+ *
+ * REQUIRED, not defaulted, though this function is private and every caller has
+ * a snapshot to hand: a default here would let a fourth caller reintroduce that
+ * second cache entry silently. Required, it cannot compile without one.
  */
 function workloadModelSettings(
   provider: ProviderValue | undefined,
   model: string | undefined,
+  cfg: AppConfig,
 ): StructuredKnowledgeModelSettings {
-  const primary = getEffectiveProvider();
+  const primary = getEffectiveProvider(cfg);
   const primaryProvider =
     typeof primary.provider === "string" && isValidProvider(primary.provider)
       ? primary.provider
@@ -1260,8 +1333,9 @@ function workloadModelSettings(
     // Against THIS ladder's model (DW-403). `structuredKnowledgeConfigured` is
     // what the extraction section's badge reads, and `extractStructuredKnowledge`
     // refuses on `!selection.model` — so a workload that inherits a `custom`
-    // primary with no model must not report itself ready.
-    configured: providerIsUsable(resolvedProvider, resolvedModel),
+    // primary with no model must not report itself ready. Against the same
+    // `cfg` the primary above was resolved from (DW-334).
+    configured: providerIsUsable(resolvedProvider, resolvedModel, cfg),
     usesPrimary: provider === undefined && model === undefined,
   };
 }
@@ -1271,9 +1345,10 @@ function workloadModelSettings(
  * sites — nothing in `chat.ts` reads this yet, by design
  * (`epic-1-context.md:63`).
  */
-export function getChatModelSettings(): StructuredKnowledgeModelSettings {
-  const cfg = loadConfigSync();
-  return workloadModelSettings(cfg.chatProvider, cfg.chatModel);
+export function getChatModelSettings(
+  cfg: AppConfig = loadConfigSync(),
+): StructuredKnowledgeModelSettings {
+  return workloadModelSettings(cfg.chatProvider, cfg.chatModel, cfg);
 }
 
 /**
@@ -1281,9 +1356,10 @@ export function getChatModelSettings(): StructuredKnowledgeModelSettings {
  * sites. Independent of {@link getChatModelSettings} and of the primary
  * provider — that independence is the story's headline behaviour.
  */
-export function getIngestModelSettings(): StructuredKnowledgeModelSettings {
-  const cfg = loadConfigSync();
-  return workloadModelSettings(cfg.ingestProvider, cfg.ingestModel);
+export function getIngestModelSettings(
+  cfg: AppConfig = loadConfigSync(),
+): StructuredKnowledgeModelSettings {
+  return workloadModelSettings(cfg.ingestProvider, cfg.ingestModel, cfg);
 }
 
 export interface VectorSearchSettings {
@@ -2102,7 +2178,9 @@ export function getEffectiveSettings(): EffectiveSettings {
   // API key — env, except for `custom`, whose credential MAY come from the
   // store (Story 1.9). Attributing a stored key to the environment would have
   // the legacy page's source badge point the owner at a variable nobody set.
-  const resolvedApiKey = apiKeyForProvider(provider);
+  // From the `cfg` read at the top, not a fresh one (DW-334) — see the note on
+  // `configured` below.
+  const resolvedApiKey = apiKeyForProvider(provider, cfg);
   const apiKeySource: SettingSource = !resolvedApiKey
     ? "none"
     : provider === "custom" && !envCustomApiKey()
@@ -2187,7 +2265,11 @@ export function getEffectiveSettings(): EffectiveSettings {
   // into describing the same config differently.
   const embedding = embeddingModelAnswer(cfg);
 
-  const structuredKnowledge = getStructuredKnowledgeModelSettings();
+  // The same snapshot too (DW-334). This leg used to cost THREE further reads
+  // on its own — the workload ladder's `getEffectiveProvider()` and its
+  // `providerIsUsable`, plus its own — so the extraction rows could describe a
+  // config generation the provider rows above had never seen.
+  const structuredKnowledge = getStructuredKnowledgeModelSettings(cfg);
 
   return {
     provider,
@@ -2197,11 +2279,13 @@ export function getEffectiveSettings(): EffectiveSettings {
     // Against the model this function just resolved (DW-403), so the flat
     // `/settings` page and `/api/status` cannot disagree about whether a
     // default-less provider with no model name is ready.
-    configured: providerIsUsable(provider, model),
-    // The SAME `cfg` every other half of this answer is resolved against
-    // (DW-313) — "does this deployment embed?" and "with what?" are one
-    // question, and a second read of the 5 s-TTL cache could answer them about
-    // two different snapshots.
+    configured: providerIsUsable(provider, model, cfg),
+    // The SAME `cfg` EVERY half of this answer is resolved against — the
+    // credential, provider, endpoint and extraction legs as well as this one
+    // (DW-313 closed the embedding half; DW-334 closed the rest). This function
+    // enters `loadConfigSync` exactly once, so no field can describe a config
+    // generation another field never saw: a second read of the 5 s-TTL cache
+    // could answer them about two different snapshots.
     embeddingSupport: hasEmbeddingSupport(cfg),
     embeddingModel: embedding.model,
     embeddingModelSource: embedding.source,
@@ -2254,8 +2338,16 @@ export function getResolvedCredentials(): ResolvedCredentials {
     };
   }
 
-  // API keys remain server-side environment secrets.
-  const apiKey = apiKeyForProvider(provider);
+  // API keys remain server-side environment secrets. Resolved from the `cfg`
+  // read at the top rather than from a fresh entry into the 5 s-TTL cache
+  // (DW-334), so the key, the model and the endpoint below describe one config
+  // generation — `getModel()` builds a single client out of all three.
+  //
+  // `getModel()`, NOT every route into `llm.ts`: `getConfiguredModel`'s
+  // explicit-provider / workload branch bypasses this function and still
+  // resolves the workload settings, the key and the base URL as separate cache
+  // entries. Closing that is a follow-up, not a claim this comment gets to make.
+  const apiKey = apiKeyForProvider(provider, cfg);
 
   // Model
   const modelOverride = process.env.LLM_MODEL;
@@ -2295,6 +2387,8 @@ export function getResolvedCredentials(): ResolvedCredentials {
     apiKey,
     model,
     ollamaBaseUrl,
-    customBaseUrl: provider === "custom" ? getCustomBaseUrl() : null,
+    // The `cfg` above again (DW-334): the endpoint and the key are the two
+    // halves `createOpenAI` is handed together.
+    customBaseUrl: provider === "custom" ? getCustomBaseUrl(cfg) : null,
   };
 }

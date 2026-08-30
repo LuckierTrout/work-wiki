@@ -16,6 +16,10 @@ import {
   getEffectiveSettings,
   getStructuredKnowledgeModelSettings,
   getResolvedCredentials,
+  apiKeyForProvider,
+  getCustomBaseUrl,
+  getChatModelSettings,
+  getIngestModelSettings,
   getWikiDir,
   getRawDir,
   getEmbeddingModelOverride,
@@ -1868,5 +1872,302 @@ describe("a provider with no default model is only ready once it is handed one",
     // A model cannot rescue a provider with no credential, in either direction.
     expect(providerIsUsable(null, "a-model")).toBe(false);
     expect(providerIsUsable("anthropic", "a-model")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One read per resolution (DW-334)
+// ---------------------------------------------------------------------------
+
+describe("single-read resolution", () => {
+  const CUSTOM_GENERATION = {
+    provider: "custom",
+    customApiKey: "sk-generation-a",
+    customBaseUrl: "https://generation-a.example/v1",
+    model: "generation-a-model",
+  } as const;
+
+  /**
+   * Count `Date.now()` calls made inside `body` — WITHOUT adding production
+   * instrumentation.
+   *
+   * The helper counts CLOCK READS, which is not the same thing as
+   * `loadConfigSync` entries; the two are equal only because of a property of
+   * today's call paths, not of this helper. `loadConfigSync`'s first statement
+   * is a `Date.now()` (the TTL check), it is the only clock read on any
+   * resolution path measured here, and neither `embeddings.ts` nor `paths.ts`
+   * reads a clock at all. So `clockReads` is named for what it measures, and
+   * every assertion below says why that number answers the cache question.
+   *
+   * The alternative was exporting a counter from module state, which would put
+   * a test-only field on a hot production path.
+   *
+   * `now` is a function of the call index so a case can make the clock JUMP
+   * between reads, which is how the straddle cases below manufacture two config
+   * generations without waiting five real seconds.
+   */
+  function withClockSpy<T>(now: (call: number) => number, body: () => T): {
+    result: T;
+    clockReads: number;
+  } {
+    let calls = 0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => now(calls++));
+    try {
+      const result = body();
+      return { result, clockReads: calls };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  /** A clock that never moves — every read lands inside the TTL. */
+  function frozen(): (call: number) => number {
+    const t = Date.now();
+    return () => t;
+  }
+
+  /**
+   * A clock whose FIRST read lands inside the TTL and whose every later read
+   * lands far past it, so a second `loadConfigSync` entry would fall to the
+   * cold-cache `{}` — the empty-config answer, and a visibly different
+   * generation.
+   */
+  function jumpsAfterFirstRead(): (call: number) => number {
+    const t0 = Date.now();
+    return (call) => (call === 0 ? t0 : t0 + 10 * 60 * 1000);
+  }
+
+  describe("read counts — one config-cache entry per resolution", () => {
+    // Each of these is `1` because `loadConfigSync`'s TTL check is the only
+    // clock read on the path: one clock read IS one config-cache entry.
+
+    it("getEffectiveSettings enters loadConfigSync exactly once", async () => {
+      // The bug this pins: only the EMBEDDING half of this answer was resolved
+      // from the `cfg` read at the top (DW-313). The credential leg
+      // (`apiKeyForProvider`), the readiness leg (`providerIsUsable` →
+      // `providerIsConfigured` → `getCustomBaseUrl`) and the extraction leg
+      // (`getStructuredKnowledgeModelSettings` → `workloadModelSettings` →
+      // `getEffectiveProvider`) each re-entered the 5 s-TTL cache themselves —
+      // five entries in all.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getEffectiveSettings()).clockReads).toBe(1);
+    });
+
+    it("getResolvedCredentials enters loadConfigSync exactly once", async () => {
+      // The same shape, on the object `getModel()` builds a client out of: the
+      // key, the model and the endpoint must be three halves of one generation.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getResolvedCredentials()).clockReads).toBe(1);
+    });
+
+    it("getEffectiveProvider enters loadConfigSync exactly once", async () => {
+      // The resolver `/api/status` and `POST /api/settings/test` serve, and the
+      // one `loadConfigSync`'s own docblock cites as the reason each surface
+      // warms the cache per request. Its `providerIsUsable` call used to walk
+      // back into the cache for both `custom` credential halves.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getEffectiveProvider()).clockReads).toBe(1);
+    });
+
+    it("getStructuredKnowledgeModelSettings enters loadConfigSync exactly once", async () => {
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(
+        withClockSpy(frozen(), () => getStructuredKnowledgeModelSettings()).clockReads,
+      ).toBe(1);
+    });
+
+    it("getChatModelSettings enters loadConfigSync exactly once", async () => {
+      // Chat and Ingest route through the same `workloadModelSettings` ladder as
+      // extraction, so they inherit the same hop — and without a count here,
+      // dropping the `cfg` argument at either call site leaves every other test
+      // in this file green.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getChatModelSettings()).clockReads).toBe(1);
+    });
+
+    it("getIngestModelSettings enters loadConfigSync exactly once", async () => {
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getIngestModelSettings()).clockReads).toBe(1);
+    });
+  });
+
+  describe("generation straddle — one snapshot answers the whole call", () => {
+    it("getEffectiveSettings answers from ONE generation when the cache expires mid-call", async () => {
+      // Before this change `hasApiKey`, `apiKeySource` and the whole
+      // structured-knowledge block came from a second, empty generation.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      const { result, clockReads } = withClockSpy(jumpsAfterFirstRead(), () =>
+        getEffectiveSettings(),
+      );
+
+      expect(clockReads).toBe(1);
+      expect(result).toMatchObject({
+        provider: "custom",
+        providerSource: "config",
+        model: "generation-a-model",
+        hasApiKey: true,
+        // `config`, not `env`: the key came from the store, which is exactly the
+        // leg a second read would have emptied.
+        apiKeySource: "config",
+        structuredKnowledgeProvider: "custom",
+        structuredKnowledgeModel: "generation-a-model",
+      });
+    });
+
+    it("getResolvedCredentials answers from ONE generation when the cache expires mid-call", async () => {
+      // The concrete harm, asserted as one object: a key from generation A
+      // beside an endpoint from an empty generation B is a client built out of
+      // two configs — `createOpenAI({ apiKey, baseURL })` is handed both.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      const { result, clockReads } = withClockSpy(jumpsAfterFirstRead(), () =>
+        getResolvedCredentials(),
+      );
+
+      expect(clockReads).toBe(1);
+      expect(result).toMatchObject({
+        provider: "custom",
+        apiKey: "sk-generation-a",
+        model: "generation-a-model",
+        customBaseUrl: "https://generation-a.example/v1",
+      });
+    });
+  });
+
+  describe("the cfg parameter", () => {
+    it("honours an explicitly passed cfg over the live cache", async () => {
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      // The point of the parameter: resolve against THIS snapshot, not against
+      // whatever the cache holds now.
+      expect(apiKeyForProvider("custom", { customApiKey: "sk-a" })).toBe("sk-a");
+      expect(getCustomBaseUrl({ customBaseUrl: "https://explicit.example/v1" })).toBe(
+        "https://explicit.example/v1",
+      );
+      expect(providerIsConfigured("custom", {})).toBe(false);
+      expect(
+        getStructuredKnowledgeModelSettings({
+          structuredKnowledgeProvider: "openai",
+          structuredKnowledgeModel: "gpt-4o",
+        }),
+      ).toMatchObject({ provider: "openai", model: "gpt-4o" });
+    });
+
+    it("threads an explicit cfg through every resolver that takes one", async () => {
+      // Each of these would keep passing on the LIVE cache if its `cfg` thread
+      // were dropped, because the cache holds a usable `custom` too. The passed
+      // snapshot names a DIFFERENT provider with different credentials, so a
+      // dropped thread shows up as the cached answer rather than this one.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+      process.env.OPENAI_API_KEY = "sk-openai-env";
+
+      const snapshot: AppConfig = { provider: "openai", model: "gpt-4o" };
+
+      expect(getEffectiveProvider(snapshot)).toMatchObject({
+        provider: "openai",
+        model: "gpt-4o",
+        configured: true,
+      });
+      // `providerIsUsable` → `providerIsConfigured` → both credential doors: an
+      // empty snapshot has no stored `custom` key, so the cached one must not
+      // rescue it.
+      expect(providerIsUsable("custom", "any-model", {})).toBe(false);
+      expect(providerIsUsable("custom", "any-model", CUSTOM_GENERATION)).toBe(true);
+      // The workload ladder forwards `cfg` into the PRIMARY resolver too, so an
+      // inheriting workload reports the snapshot's provider, not the cache's.
+      expect(getChatModelSettings(snapshot)).toMatchObject({
+        provider: "openai",
+        model: "gpt-4o",
+        usesPrimary: true,
+      });
+      expect(getIngestModelSettings(snapshot)).toMatchObject({
+        provider: "openai",
+        usesPrimary: true,
+      });
+    });
+
+    it("keeps env-over-store precedence even against an explicit cfg", async () => {
+      // The invariant this bundle promised not to disturb. A later
+      // "simplification" of `cfg ?? loadConfigSync()` into a leading read could
+      // invert this with every other test in the file still green, because no
+      // other case sets the variable AND passes a snapshot.
+      process.env.LLM_CUSTOM_API_KEY = "sk-env-wins";
+      process.env.LLM_CUSTOM_BASE_URL = "https://env-wins.example/v1";
+
+      expect(apiKeyForProvider("custom", { customApiKey: "sk-snapshot" })).toBe(
+        "sk-env-wins",
+      );
+      expect(getCustomBaseUrl({ customBaseUrl: "https://snapshot.example/v1" })).toBe(
+        "https://env-wins.example/v1",
+      );
+    });
+
+    it("answers exactly as before when no cfg is passed", async () => {
+      // Every caller outside `config.ts` passes nothing, so the trailing
+      // optional parameters must be invisible to them.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(apiKeyForProvider("custom")).toBe("sk-generation-a");
+      expect(getCustomBaseUrl()).toBe("https://generation-a.example/v1");
+      expect(providerIsConfigured("custom")).toBe(true);
+      expect(providerIsUsable("custom", "generation-a-model")).toBe(true);
+      expect(getEffectiveProvider()).toMatchObject({
+        provider: "custom",
+        model: "generation-a-model",
+        configured: true,
+      });
+      expect(getStructuredKnowledgeModelSettings()).toMatchObject({
+        provider: "custom",
+        model: "generation-a-model",
+        usesPrimary: true,
+      });
+      expect(getChatModelSettings()).toMatchObject({ provider: "custom" });
+      expect(getIngestModelSettings()).toMatchObject({ provider: "custom" });
+    });
+
+    it("keeps the store read LAZY when the env answers first", () => {
+      // This is why `apiKeyForProvider` and `getCustomBaseUrl` take `cfg?` read
+      // at the point of use rather than a `cfg: AppConfig = loadConfigSync()`
+      // default: a default parameter is evaluated on EVERY call, so an
+      // `anthropic` resolution that never wants the store would make a cache
+      // write on its behalf, pinning the `{}` entry and its TTL earlier than
+      // that caller's own first store read would have.
+      _resetConfigCache();
+      process.env.ANTHROPIC_API_KEY = "sk-ant-env";
+      process.env.LLM_CUSTOM_BASE_URL = "https://env.example/v1";
+      process.env.LLM_CUSTOM_API_KEY = "sk-env";
+
+      // Zero clock reads is zero `loadConfigSync` entries: the TTL check is the
+      // function's first statement, so it cannot be entered without one.
+      const anthropic = withClockSpy(frozen(), () => apiKeyForProvider("anthropic"));
+      expect(anthropic.result).toBe("sk-ant-env");
+      expect(anthropic.clockReads).toBe(0);
+
+      const baseUrl = withClockSpy(frozen(), () => getCustomBaseUrl());
+      expect(baseUrl.result).toBe("https://env.example/v1");
+      expect(baseUrl.clockReads).toBe(0);
+
+      const customKey = withClockSpy(frozen(), () => apiKeyForProvider("custom"));
+      expect(customKey.result).toBe("sk-env");
+      expect(customKey.clockReads).toBe(0);
+    });
   });
 });

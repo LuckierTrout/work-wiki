@@ -2432,7 +2432,9 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 location: src/lib/config.ts:getEffectiveSettings
 severity: low
 reason: After DW-313 the embedding legs all resolve against the `cfg` read at the top of the function, but `getStructuredKnowledgeModelSettings()`, `apiKeyForProvider`'s `custom` branch and `getCustomBaseUrl()` each call `loadConfigSync()` themselves. The intent's sentence — "give `getEffectiveSettings` one config snapshot" — reads broader than the ledger entry it came from, which names only `getEmbeddingModelName` and `hasEmbeddingSupport`. Closing the rest means `cfg`-taking doors on three more resolvers, which is a distinct piece of work from the one DW-313 described.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-config-single-read-resolution
+resolution-undo: 918c9d4112f6248cfdcfe721ad357c3745c069bc57d18c4196811f896d74d7a7 2026-08-29 7374617475733a206f70656e
 
 ### DW-335: `settings-vector-namespace.test.tsx`'s default fixture encodes a config whose real payload would carry the substitution note, so several exact-equality announcements pin a state the wire cannot produc
 origin: spec-deferred b09de8588471
@@ -4139,7 +4141,9 @@ location: src/lib/config.ts:930-937
 source_spec: `spec-dw-502-cli-status-config-load.md`
 severity: low
 reason: `src/lib/config.ts:930-937` says the cold-cache `{}` is safe because "The app's startup sequence calls `loadConfig()` before any LLM call". There is no startup hook: no `instrumentation.ts` anywhere in the repo, and neither `next.config.ts` nor `src/app/layout.tsx` calls `loadConfig`. Every surface warms at its own call site instead (`src/app/api/status/route.ts:6-8`, and now `src/cli.ts`). That comment is the premise DW-502's call site was written against; leaving it invites the next caller to make the same assumption.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-config-single-read-resolution
+resolution-undo: 918c9d4112f6248cfdcfe721ad357c3745c069bc57d18c4196811f896d74d7a7 2026-08-29 7374617475733a206f70656e
 
 ### DW-551: `src/cli.ts` calls `main()` unconditionally at module load, so every test that imports it runs a CLI command and could exit the vitest worker.
 origin: spec-deferred 86487c972526
@@ -4706,4 +4710,28 @@ location: src/components/ProviderForm.tsx — the `Ollama Base URL` env branch
 source_spec: `spec-dw-560-562-env-locked-model-box-a11y.md`
 severity: medium
 reason: `ProviderForm.tsx` renders `<label htmlFor="ollamaBaseUrl">` unconditionally, while the `settings?.ollamaBaseUrlSource === "env"` branch renders a bare `<div>` with no id — so on an `OLLAMA_BASE_URL`-pinned deployment the label names an id nothing carries and the value is announced with no accessible name, exactly the state removed from `#model` and `#embeddingModel`. Excluded by this bundle's intent, which names only the model boxes. Nothing would catch it drifting further: a repo-wide search for `ollamaBaseUrlSource: "env"` matches only `src/lib/__tests__/config.test.ts` (a server-side resolver test that renders nothing), and every mounted suite uses `config` sources for that field. The fix is the same one-line element swap plus a twin of the accessible-name case.
+status: open
+
+### DW-618: `src/lib/llm.ts` resolves one model client out of several independent entries into the 5 s config cache — the same straddle DW-334 closed inside `config.ts`.
+origin: spec-deferred b016a504ab40
+location: src/lib/llm.ts:231-242, src/lib/llm.ts:392-451
+source_spec: `spec-dw-334-550-config-single-read-resolution.md`
+severity: medium
+reason: `hasLLMKey` (src/lib/llm.ts:231-242) reads `const cfg = loadConfigSync()` and then asks `providerIsConfigured("custom")` without passing it, and `getConfiguredModel`'s explicit-provider / workload path (src/lib/llm.ts:392-451) calls `getChatModelSettings()` / `getIngestModelSettings()`, `apiKeyForProvider(provider)` and `getCustomBaseUrl()` / `getOllamaBaseUrl()` as separate reads before handing all of them to one `createOpenAI({apiKey, baseURL}).chat(model)`. That path bypasses `getResolvedCredentials`, which this story did close. The optional `cfg` parameters added here make each of these a one-argument fix.
+status: open
+
+### DW-619: `chatModelForRetrieve` builds one `chatModel` answer from two or three config-cache entries.
+origin: spec-deferred 6c595b6cbe1a
+location: src/lib/wiki-retrieve.ts:543-549
+source_spec: `spec-dw-334-550-config-single-read-resolution.md`
+severity: low
+reason: `src/lib/wiki-retrieve.ts:543-549` calls `getChatModelSettings()` and then `getCustomBaseUrl()` (or `getOllamaBaseUrl()`) with no shared snapshot, and puts `provider` / `model` / `configured` on `AssembledContext`. Same shape as the legs closed here; both resolvers now take a `cfg`.
+status: open
+
+### DW-620: The settings payload straddles an `await`, and three of its resolvers still take no `cfg`.
+origin: spec-deferred 4ad30020b011
+location: src/app/api/settings/route.ts, src/lib/config.ts:getWorkbenchSettings
+source_spec: `spec-dw-334-550-config-single-read-resolution.md`
+severity: low
+reason: `src/app/api/settings/route.ts` resolves `getEffectiveSettings()` and then `getWorkbenchSettings(...)` after an async hop; `getWorkbenchSettings` makes its own `loadConfigSync()` read and calls `getFirecrawlSettings()`, `getResearchSettings()` and `getVectorSearchSettings()`, none of which accepts a snapshot. One HTTP response can therefore describe two config generations across the two panes it renders.
 status: open
