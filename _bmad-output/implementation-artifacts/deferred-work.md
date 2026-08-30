@@ -2305,7 +2305,8 @@ source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
 location: src/app/api/wikis/[id]/route.ts:63; src/app/api/wikis/current/route.ts:19
 severity: low
 reason: `DELETE /api/wikis/[id]` ("Wikis cannot be deleted while this deployment is read-only.") and `PUT /api/wikis/current` ("The active wiki cannot be changed...") are spelled inline and compared against nothing, which is the drift `read-only-copy-parity.test.ts` exists to prevent. `wikiRename` also has no client constant beside a dimmed control, unlike `WIKI_CREATE_READ_ONLY_COPY` and `WIKI_TEMPLATE_READ_ONLY_COPY`.
-status: open
+status: done 2026-08-29
+resolution: already resolved: Resolved by commit 2b5d20f8: READ_ONLY_REFUSAL.wikiDelete (src/lib/read-only.ts:154) and .wikiSwitch (:164) now own both literals, pinned at src/lib/__tests__/read-only-copy-parity.test.ts:233-245.
 
 ### DW-319: A storage failure inside `saveWorkspaceProfile` is still answered 400 by `PUT /api/workspace-profile`, telling the owner their edit was rejected when the write merely could not reach storage.
 origin: spec-deferred 926718bb8f18
@@ -3607,7 +3608,8 @@ source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
 location: src/lib/owner-route.ts:8
 severity: low
 reason: `src/lib/owner-route.ts:8-14` reads "when no owner handle is configured (tests), any signed-in principal passes" and only refuses when `getOwnerHandle()` is truthy. The artifact route and now `POST /api/wikis` call `isOwnerHandle` directly, which answers false for everyone when the var is unset. A future Wiki route written through the helper would silently reopen creation on an unconfigured deployment. Pre-existing; surfaced by review of DW-159.
-status: open
+status: done 2026-08-29
+resolution: already resolved: Resolved by commit 769e4d0a (DW-486): src/lib/owner-route.ts:14 now gates on isOwnerConfigured(), src/lib/owner.ts:88-95 documents requireOwnerPrincipal as the sole unconfigured escape, pinned at src/lib/__tests__/owner-gate-parity.test.ts:251-263.
 
 ### DW-488: Stale discard tombstones on pre-gate non-owner tenants are cleared by nothing, which is a second residual beyond the orphan directories the DW-288 scope note records.
 origin: spec-deferred 1ea21f891a70
@@ -3927,7 +3929,8 @@ location: vitest dom project setup
 source_spec: `spec-dw-385-read-only-kernel-guards.md`
 severity: medium
 reason: `pnpm exec vitest run --project dom` reports 13 failed files / 229 failed tests both WITH this change and with the whole change stashed (`git stash push -u -- src _bmad-output`), at HEAD 9312ba420b3bd738a6bd52aede3261627c00db41. The `node` project is 277 files / 6843 pass / 0 fail with this change.
-status: open
+status: done 2026-08-29
+resolution: already resolved: Resolved by commit c95483f2: MemoryStorage shim at vitest.setup.dom.ts:438 with defineStorage on window/globalThis at :485 and resetDomStorage in the afterEach at :32; the dom project runs green.
 
 ### DW-526: The research, Names & Terms and email-ingest route catches now classify a mid-request-flip `ReadOnlyError` as 400 or 500 instead of 403.
 origin: spec-deferred d082697c56ec
@@ -4565,7 +4568,8 @@ location: src/lib/__tests__/embeddings.test.ts (describe("searchByVector") drift
 source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: low
 reason: Mutating the gate to `matches.every((m) => m.metadata?.model === currentModel)` leaves all 173 tests in `embeddings.test.ts` passing. This is deliberate — the intent forbids pinning the unlabelled-legacy case either way while DW-405 is open — but it means whichever way DW-405 is eventually decided, the change will be unguarded until that entry adds its own pin.
-status: open
+status: done 2026-08-29
+resolution: already resolved: Resolved by DW-405: src/lib/__tests__/embeddings.test.ts:960 (re-arms on an active-model vector beside an unlabelled one, 2 warnings) and :913 (does not re-arm on an entirely unlabelled window, 1 warning) discriminate the permissive gate from the strict-label variant in both directions.
 
 ### DW-602: Two `searchByVector` calls in flight at once can interleave so that a window read BEFORE the drift key was burnt applies its re-arm AFTER, un-burning the key and letting the same standing drift speak
 origin: spec-deferred 66e879681741
@@ -4677,4 +4681,5 @@ location: src/components/workbench/__tests__/workbench-split-wiring.test.tsx:97
 source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
 severity: medium
 reason: `npx vitest run` reports 233 failing tests across 13 `src/components/workbench/__tests__/*.tsx` files, every one of them the same `TypeError: Cannot read properties of undefined (reading 'clear')` raised from a `beforeEach` calling `window.localStorage.clear()`. Confirmed pre-existing: with every `src/` change from this story stashed, the same file fails 29/29 at baseline revision 249fc694. The failure count is identical before and after this story, so nothing here caused or worsened it — but the suite is red on this branch and any spec asserting "`pnpm test` passes" cannot be met until it is fixed.
-status: open
+status: done 2026-08-29
+resolution: already resolved: Resolved by commit c95483f2: vitest.setup.dom.ts:438-492 defines MemoryStorage and window/globalThis localStorage and sessionStorage, so window.localStorage.clear() is defined in workbench-split-wiring.test.tsx:97 and the other 12 dom suites.
