@@ -332,6 +332,15 @@
     "label": "Drop, but report",
     "resolution": ""
   },
+  "DW-566": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Separate the counting predicate from the forwarding predicate: let the counting one trust `Content-ID` (which is what DW-450 was filed to fix \u2014 the phantom skipped-attachment line) while the forwarding one keeps reading `disposition` only, so no document is dropped on a Content-ID alone. Record the interaction in both call sites. Pin a Content-ID-only signature logo (no phantom line, not forwarded) and a Content-ID-only supported document (still handled).",
+    "key": "1",
+    "label": "Split the predicate in two",
+    "resolution": ""
+  },
   "DW-58": {
     "answered_at": "2026-08-16",
     "bundle_name": "",
