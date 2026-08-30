@@ -166,6 +166,73 @@ describe("MCP_TOOLS ↔ stdio registration parity", () => {
     expect([...httpNames].sort()).toEqual([...stdioNames].sort());
   });
 
+  // The door's argument gate (DW-563) reads `required` and `properties` off
+  // these same schemas, so a `required` name with no matching property would
+  // make a tool permanently uncallable — every request refused for a field the
+  // caller cannot supply, because nothing advertises it. Cheap to typo, and
+  // invisible until an agent hits it, so pin the shape rather than the tools.
+  it("declares every `required` name as a property on every tool", () => {
+    const broken: string[] = [];
+    for (const tool of MCP_TOOLS) {
+      const schema = tool.inputSchema as {
+        required?: unknown;
+        properties?: Record<string, unknown>;
+      };
+      const required = Array.isArray(schema.required) ? schema.required : [];
+      const properties = schema.properties ?? {};
+      for (const name of required) {
+        if (!Object.prototype.hasOwnProperty.call(properties, name as string)) {
+          broken.push(`${tool.name}.${String(name)}`);
+        }
+      }
+    }
+
+    expect(
+      broken,
+      `required names with no declared property: ${broken.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  // The gate can only decide a declared type `jsonType` can return, and it
+  // SKIPS anything else rather than refusing — the safe direction, because
+  // comparing against a type `jsonType` never returns (`"integer"`, or a union
+  // like `["string","null"]`) would refuse every value for that field and make
+  // the tool permanently uncallable. Skipping is silent, though, so a schema
+  // edit could quietly drop a field out of the gate with nothing to show for
+  // it. This is what makes that visible: today every declared type is one the
+  // gate decides, and a future `"integer"` has to come here and say so.
+  it("declares only types the argument gate can decide", () => {
+    const decidable = new Set(["string", "number", "boolean", "object", "array"]);
+    const primitives = new Set(["string", "number", "boolean"]);
+    const undecidable: string[] = [];
+
+    for (const tool of MCP_TOOLS) {
+      const properties =
+        (tool.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
+      for (const [name, declaration] of Object.entries(properties)) {
+        const decl = declaration as { type?: unknown; items?: unknown };
+        if (!decidable.has(decl.type as string)) {
+          undecidable.push(`${tool.name}.${name}: ${JSON.stringify(decl.type)}`);
+          continue;
+        }
+        if (decl.type !== "array") continue;
+        const itemType = (decl.items as { type?: unknown } | undefined)?.type;
+        // `"object"` is the deliberate pass-through case: element-level
+        // `required` is out of this gate's scope, so object arrays go to the
+        // handler unchecked. Anything OTHER than that or a primitive is an
+        // element type nothing decides and nothing meant to skip.
+        if (itemType !== "object" && !primitives.has(itemType as string)) {
+          undecidable.push(`${tool.name}.${name}[]: ${JSON.stringify(itemType)}`);
+        }
+      }
+    }
+
+    expect(
+      undecidable,
+      `declared types the gate silently skips: ${undecidable.join(", ")}`,
+    ).toEqual([]);
+  });
+
   // Matching names is not parity on its own: `ToolDef.write` is what gates the
   // HTTP side (auth requirement in `dispatchMcp`, the vault-filing suffix on
   // write-tool descriptions), and its stdio counterpart is
@@ -284,6 +351,218 @@ describe("dispatchMcp — tools/call auth gating", () => {
 
   it("exposes a batch cap constant", () => {
     expect(MCP_MAX_BATCH).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The generic argument gate (DW-563)
+// ---------------------------------------------------------------------------
+/**
+ * `dispatchMcp` reads the `inputSchema` each `ToolDef` already declares and
+ * refuses arguments that contradict it, before `tool.run`.
+ *
+ * WHY THESE ROWS EXIST. `batch_ingest_urls` with `urls: "https://x"` used to
+ * reach `handleBatchIngest`, where a string's `.length` and index access make it
+ * array-like enough to be reported back as `Malformed URLs at indices 0, 1, 2…`
+ * — one complaint per CHARACTER, about a field the caller passed once. The
+ * stdio door answers the same body at `z.array(z.string())`. Every other
+ * `ToolDef.run` spreads-and-casts the same way, so the rows below drive the GATE
+ * through `dispatchMcp` rather than any one tool's `run`: they are about the
+ * door, and a per-tool suite could not tell the two apart.
+ *
+ * Every row goes through `dispatchMcp` with a principal, because a refusal that
+ * arrived from the auth check instead of the gate would prove nothing.
+ */
+describe("dispatchMcp — the argument gate", () => {
+  type ToolCallResult = { isError?: boolean; content: { text: string }[] };
+
+  // `arguments` is typed `Record<string, unknown>` on the wire type, and some
+  // rows below deliberately send something else — that is the case under test.
+  const call = async (
+    name: string,
+    args: unknown,
+    principal: Principal | null = ALICE,
+  ): Promise<ToolCallResult> => {
+    const res = await dispatchMcp(
+      {
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args } as Record<string, unknown>,
+      },
+      principal,
+    );
+    return res!.result as ToolCallResult;
+  };
+
+  const text = async (res: Promise<ToolCallResult>) => (await res).content[0].text;
+
+  const refusal = async (res: Promise<ToolCallResult>) => {
+    const r = await res;
+    expect(r.isError).toBe(true);
+    return r.content[0].text;
+  };
+
+  it("lets a well-shaped call through to its handler", async () => {
+    // The control, and it deliberately uses a URL the HANDLER rejects: the
+    // array-of-strings shape is what the gate judges, and "Malformed URLs at
+    // indices 0" can only have been written by `handleBatchIngest`, past the
+    // gate, without this suite reaching the network.
+    expect(await refusal(call("batch_ingest_urls", { urls: ["not-a-url"] }))).toContain(
+      "Malformed URLs at indices 0",
+    );
+  });
+
+  it("refuses a string where the schema declares an array, before the handler", async () => {
+    // The ledger's case (DW-563). The old answer indexed the string's
+    // characters; the new one names the field and the type it wanted.
+    const message = await refusal(call("batch_ingest_urls", { urls: "https://x" }));
+
+    expect(message).toBe("Error: Invalid request field `urls`: expected array");
+    expect(message).not.toContain("indices 0, 1, 2");
+  });
+
+  it("refuses a missing `required` name in the doors' shared vocabulary", async () => {
+    // Same sentence `@/lib/lint-fix` and `POST /api/lint/fix` answer with.
+    expect(await refusal(call("batch_ingest_urls", {}))).toBe(
+      "Error: Missing required field: urls",
+    );
+  });
+
+  it("refuses an explicit null — absent is unset, null is a value", async () => {
+    // `LINT_FIX_REQUEST`'s `z.string().optional()` accepts a missing key and
+    // `undefined` but answers "received null" for an explicit null. Reading
+    // null as "unset" here would make one body a 400 at the REST door and a
+    // silent success at this one.
+    expect(await refusal(call("read_page", { slug: null }))).toBe(
+      "Error: Invalid request field `slug`: expected string",
+    );
+  });
+
+  it("refuses a bad element inside a primitive array, naming its index", async () => {
+    // `items.type` is the last thing the gate reads. The index is the point:
+    // "expected string" about a ten-element `tags` is not actionable without it.
+    expect(
+      await refusal(call("create_page", { slug: "s", content: "c", tags: [1] })),
+    ).toBe("Error: Invalid request field `tags[0]`: expected string");
+  });
+
+  it("refuses arguments that are not a JSON object at all", async () => {
+    expect(await refusal(call("read_page", "slug"))).toBe(
+      "Error: Invalid request arguments: expected a JSON object",
+    );
+  });
+
+  it("refuses an explicit null envelope the same way it refuses a null field", async () => {
+    // One rule, applied at both levels. `arguments: null` used to be coalesced
+    // to `{}` by a `?? {}` in `dispatchMcp`, so `list_agents` SUCCEEDED on a
+    // body whose `arguments` was null while the gate one line down refused
+    // `{slug: null}` as "a value, not unset" — the gate contradicting itself
+    // between the envelope and the fields inside it. `list_agents` is the sharp
+    // case because it has no `required` list: nothing else would have objected.
+    expect(await refusal(call("list_agents", null))).toBe(
+      "Error: Invalid request arguments: expected a JSON object",
+    );
+  });
+
+  it("refuses a string where the schema declares a number", async () => {
+    // The parity this buys is the stdio door's `z.number()`. `limit`, `cap` and
+    // `timestamp` are declared `type: "number"` across many tools, and a
+    // string-shaped `limit` previously travelled into the handler — where
+    // `"10"` is not `10` and the failure, if any, surfaces far from the field.
+    // Refused before any storage read, so this row needs no fixtures.
+    expect(await refusal(call("search_wiki", { query: "x", limit: "10" }))).toBe(
+      "Error: Invalid request field `limit`: expected number",
+    );
+  });
+
+  it("leaves array elements alone when `items` is an object schema", async () => {
+    // A SCOPE boundary, not a delegation: element-level `required` was out of
+    // scope for DW-563, so a malformed section reaches the handler — and
+    // `handleSeedAgent` does not validate it either. It maps and delegates, and
+    // `src/lib/agents.ts` throws "Cannot read properties of undefined" some
+    // way in. That answer is bad, and it is deliberately NOT pinned here:
+    // asserting it would freeze a crash as the contract. The only claim is the
+    // negative one — the gate did not speak, so nothing about object array
+    // elements changed with this door. Closing the gap is a separate change
+    // that has to design a sentence first.
+    const message = await refusal(
+      call("seed_agent", {
+        agent_id: "gatetest",
+        name: "Gate Test",
+        description: "d",
+        sections: [{ slug: "s" }],
+      }),
+    );
+
+    expect(message).not.toContain("Invalid request field `sections");
+  });
+
+  it("does not REFUSE an undeclared key", async () => {
+    // `vault_curate` is called with an `owner` its schema never mentions, and a
+    // gate that rejected unknown keys would refuse the call outright. This row
+    // proves it does not: the curate succeeds.
+    //
+    // It does NOT prove the key survives. `vault_curate`'s `run` builds
+    // `{slug, owner: p.handle, vault}` and never reads `a.owner`, so the
+    // assertions below hold whether the gate passed the key through, ignored
+    // it, or stripped it. Non-stripping is unobservable through this tool —
+    // every tool that would notice needs the ingest pipeline to run — so the
+    // claim is deliberately the weaker one the fixture can actually support.
+    await writeWikiPage(
+      "gate-curate-me",
+      "---\ntitle: Gate Curate\nvisibility: public\n---\n# Gate Curate\nBody",
+    );
+
+    const parsed = JSON.parse(
+      await text(
+        call("vault_curate", {
+          slug: "gate-curate-me",
+          vault: "research",
+          owner: "evil-hacker",
+        }),
+      ),
+    );
+
+    expect(parsed.curated).toBe(true);
+    expect(parsed.owner).toBe("alice");
+  });
+
+  it.each([
+    ["absent arguments", undefined],
+    ["empty arguments", {}],
+  ])("still admits %s for a tool with no `required` list", async (_label, args) => {
+    // `list_agents` declares `schema({})` — no properties, no `required`. The
+    // gate must be a no-op there rather than inventing a contract.
+    const r = await call("list_agents", args);
+
+    expect(r).not.toHaveProperty("isError");
+    expect(JSON.parse(r.content[0].text)).toBeDefined();
+  });
+
+  it("admits an optional property that is simply absent", async () => {
+    // `wiki_graph`'s `scope` is declared and optional; omitting it is not a
+    // type violation, and the gate skips what is not there.
+    const r = await call("wiki_graph", {});
+
+    expect(r).not.toHaveProperty("isError");
+    expect(JSON.parse(r.content[0].text).nodes).toBeDefined();
+  });
+
+  it("keeps the auth refusal ahead of the gate", async () => {
+    // Order matters for what an unauthenticated caller learns: telling them
+    // which field is malformed before telling them they may not call at all
+    // would answer a question they had not earned an answer to.
+    expect(await refusal(call("batch_ingest_urls", { urls: 7 }, null))).toMatch(
+      /authentication required/i,
+    );
+  });
+
+  it("keeps the unknown-tool refusal ahead of the gate", async () => {
+    // There is no schema to read for a tool that does not exist, so the gate
+    // could not speak here even if it ran first.
+    expect(await refusal(call("no_such_tool", { urls: 7 }))).toContain(
+      "Unknown tool: no_such_tool",
+    );
   });
 });
 
@@ -766,11 +1045,15 @@ describe("dispatchMcp — fix_lint_issue", () => {
   /**
    * The `type` gate this transport has to carry itself (DW-348).
    *
-   * `tools/call` above hands `params.arguments` to `tool.run` with NO schema
-   * validation — the `inputSchema` on a `ToolDef` is advertising, read by the
-   * agent and by nothing else here. The stdio server gets its gate from the SDK
-   * (`z.enum(AUTO_FIXABLE_CHECK_TYPES)`, pinned in `mcp.test.ts`); this one
-   * lives in the tool's own `run`, so these rows are its only observer.
+   * `tools/call` now runs `validateToolArguments` over the tool's own
+   * `inputSchema` before `run` (DW-563), so `type`'s DECLARED SHAPE — present,
+   * and a string — is answered at the door. What that generic gate deliberately
+   * does NOT read is `enum`: the stdio server gets member checking from the SDK
+   * (`z.enum(AUTO_FIXABLE_CHECK_TYPES)`, pinned in `mcp.test.ts`), and here it
+   * stays in the tool's own `run` so a recognized-but-not-fixable type keeps the
+   * explanation written for a human instead of an "expected one of" list. These
+   * rows are that gate's only observer; the door's half is pinned by
+   * `dispatchMcp — the argument gate` below.
    */
   describe("the type gate", () => {
     it("refuses a recognized-but-not-fixable type, with its own explanation", async () => {
@@ -798,20 +1081,41 @@ describe("dispatchMcp — fix_lint_issue", () => {
 
     it.each([
       ["an unknown type", { type: "made-up-type", slug: "p" }],
-      // `hasOwnProperty.call` runs its key through `ToPropertyKey`, so
-      // `["orphan-page"]` stringifies to a REAL handler key. That coercion is
-      // what `ownEntry`'s `typeof` guard exists to stop; it is now stopped a
-      // layer earlier, before any lookup.
-      ["a non-string type", { type: ["orphan-page"], slug: "p" }],
-      // Inherited `Object.prototype` members — the other half of that guard.
+      // Inherited `Object.prototype` members — `ownEntry`'s `typeof`/own-key
+      // guard is what stops `constructor` resolving to a real function.
       ["a prototype-chain type", { type: "constructor", slug: "p" }],
-      ["no type at all", { slug: "p" }],
     ])("refuses %s without dispatching", async (_label, args) => {
       const text = errorText(await call(args));
 
       expect(text).toContain("Auto-fix not supported for this issue type");
       expect(spiedFixLintIssue).not.toHaveBeenCalled();
     });
+
+    it.each([
+      // `hasOwnProperty.call` runs its key through `ToPropertyKey`, so
+      // `["orphan-page"]` stringifies to a REAL handler key. That coercion is
+      // what `ownEntry`'s `typeof` guard exists to stop; the door's generic gate
+      // now stops it a layer earlier still, before any lookup — and answers with
+      // the field name, which is the thing an agent can act on.
+      [
+        "a non-string type",
+        { type: ["orphan-page"], slug: "p" },
+        "Invalid request field `type`: expected string",
+      ],
+      // `type` is this tool's one `required` name, so an absent one is the
+      // door's sentence rather than `autoFixRefusal`'s. Still a refusal, still
+      // undispatched — only the wording moved, and it moved toward naming the
+      // field that is wrong.
+      ["no type at all", { slug: "p" }, "Missing required field: type"],
+    ])(
+      "refuses %s at the door, before `run` is reached",
+      async (_label, args, expected) => {
+        const text = errorText(await call(args));
+
+        expect(text).toContain(expected);
+        expect(spiedFixLintIssue).not.toHaveBeenCalled();
+      },
+    );
 
     it("still dispatches a fixable type — the control", async () => {
       // The gate refuses what it should and nothing else. The page is absent, so
@@ -850,15 +1154,22 @@ describe("dispatchMcp — fix_lint_issue", () => {
   /**
    * The three STRING fields, gated the same way `type` is (DW-455).
    *
-   * `dispatchMcp` validates nothing — `params.arguments` reaches `tool.run` as
-   * whatever JSON arrived — and this tool used to spread that object straight
-   * into `handleFixLintIssue` behind a cast. A non-string `slug` therefore
-   * travelled all the way to `fixOrphanPage` and came back a 404 naming
-   * `[object Object]`: an error about a page the caller never asked for,
+   * `dispatchMcp` used to validate nothing — `params.arguments` reached
+   * `tool.run` as whatever JSON arrived — and this tool spread that object
+   * straight into `handleFixLintIssue` behind a cast. A non-string `slug`
+   * therefore travelled all the way to `fixOrphanPage` and came back a 404
+   * naming `[object Object]`: an error about a page the caller never asked for,
    * useless for correcting the call. The gate must name the FIELD instead, and
    * the dispatcher must never be reached — the spy is what proves the second
    * half, since a refusal alone cannot tell "stopped at the door" from
    * "dispatched and failed".
+   *
+   * The gate now lives at the door for every tool (`validateToolArguments`,
+   * DW-563) rather than in this tool's `run`, and answers these rows in the same
+   * words. They stay HERE, driven through `fix_lint_issue`, because the claim
+   * they pin is behavioural — this tool's three optional strings match
+   * `LINT_FIX_REQUEST`'s field for field — not a claim about where the check
+   * happens to be implemented.
    */
   describe("the string-field gate", () => {
     it.each([

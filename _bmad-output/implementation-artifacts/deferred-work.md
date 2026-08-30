@@ -4323,7 +4323,9 @@ location: src/lib/mcp-http.ts (dispatchMcp + every ToolDef.run)
 source_spec: `spec-dw-395-455-456-457-mcp-rest-door-parity.md`
 severity: medium
 reason: `dispatchMcp` hands `params.arguments` to `tool.run` unvalidated, and roughly nine sibling handlers do `a as Parameters<typeof handler>[0]` (src/lib/mcp-http.ts lines ~370, 466, 576, 577, 629, 644, 667, 691, 704, 721). Concrete: `batch_ingest_urls` with `urls: "https://x"` reaches `handleBatchIngest`, where a string's `.length` and index access make it look array-like and it reports `Malformed URLs at indices 0, 1, 2...`; `urls: undefined` throws. The stdio door catches both at `z.array(z.string())`. Every `ToolDef` already declares a JSON Schema with a `required` list, so `dispatchMcp` could validate generically once. DW-455's title scopes it to `fix_lint_issue`, so the rest was left alone.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-mcp-door-hardening
+resolution-undo: 69668be5bc24c764633fb3e08e3c2a165cd7fed4b1be2c9451585feb8d1d19fb 2026-08-30 7374617475733a206f70656e
 
 ### DW-564: The REST lint-fix door names the field `targetSlug` while both MCP doors name it `target`, so an agent's request body is not portable between the two surfaces the bundle set out to bring to one contra
 origin: spec-deferred 8a6272c94a12
@@ -4761,7 +4763,9 @@ location: src/mcp.ts:296
 source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
 severity: low
 reason: Three sites (src/mcp.ts:296, :374, :398) write `{ id: "service:mcp", ... }` inline. `src/lib/principal-id.ts` was added precisely to give that prefix one definition shared by the module that mints it and the module that reads it; these mints predate the change and were outside its scope. Behaviour is correct today — `isSynthesizedPrincipalId` matches on the colon, not the prefix — so this is drift risk, not a live defect.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-mcp-door-hardening
+resolution-undo: 69668be5bc24c764633fb3e08e3c2a165cd7fed4b1be2c9451585feb8d1d19fb 2026-08-30 7374617475733a206f70656e
 
 ### DW-615: Pre-existing: 13 workbench DOM test files fail on this branch because `window.localStorage` is undefined under jsdom.
 origin: spec-deferred 6e6c028887b0
@@ -5218,4 +5222,20 @@ location: src/lib/__tests__/query-stream-route.test.ts:155
 source_spec: `spec-dw-546-query-stream-test-fidelity.md`
 severity: low
 reason: `buildQuerySystemPrompt` is mocked and observable (test file line 45), and the route passes `queryFormat` to it at route.ts:165-171. The test asserts only a 200 and the filtered entry list. Pre-existing naming/coverage mismatch.
+status: open
+
+### DW-672: Array elements declared as objects reach the handler unchecked, and `seed_agent` answers a malformed section with a TypeError the stdio door refuses cleanly at zod.
+origin: spec-deferred 5bc1e171e489
+location: src/lib/mcp-http.ts (validateToolArguments) + src/mcp.ts handleSeedAgent
+source_spec: `spec-dw-563-614-mcp-door-hardening.md`
+severity: medium
+reason: The HTTP gate reads `items.type` only for primitive elements, by design. Two reviewers independently drove `seed_agent {agent_id, name, description, sections:[{slug:"s"}]}` through `dispatchMcp` and got `Error: Cannot read properties of undefined (reading 'split')`, thrown by `section.content.split` in `src/lib/agents.ts`. The stdio door refuses the same body at `z.object({...})`. `handleSeedAgent` validates nothing — it maps and delegates — so nothing between the wire and `agents.ts` speaks for the nested `required: ["slug","title","type","content"]` that the schema already declares. Pre-existing (the crash predates this change); surfaced because the gate's doc block had to state what it does not cover. Same shape for `update_agent.addPages`.
+status: open
+
+### DW-673: The HTTP `inputSchema` declarations are now enforced at runtime, but nothing pins them against the stdio door's zod schemas they are supposed to mirror.
+origin: spec-deferred 1ba349db68fb
+location: src/lib/__tests__/mcp-http.test.ts (MCP_TOOLS ↔ stdio registration parity)
+source_spec: `spec-dw-563-614-mcp-door-hardening.md`
+severity: medium
+reason: `MCP_TOOLS ↔ stdio registration parity` compares tool names, the `write`/`readOnlyHint` flag, and (new) that every `required` name is a declared property with a decidable `type`. It does not compare the two doors' `required` lists or declared types. Before this change a drift there was cosmetic; now a field the HTTP schema calls `required` while the stdio zod calls it `.optional()`, or a `number` against a `z.string()`, refuses every real call to that tool at one door only. A hand comparison of ~11 fields found no live disagreement, so this is an unpinned risk rather than a present defect, and seven tools have no authenticated door-level row that would notice.
 status: open

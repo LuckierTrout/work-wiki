@@ -35,6 +35,20 @@
 export const SERVICE_PRINCIPAL_ID_PREFIX = "service:";
 
 /**
+ * Mint a synthesized SERVICE principal id for `handle`.
+ *
+ * The one construction site, paired with {@link isServicePrincipalId}: the
+ * module that WRITES the shape and the module that READS it now share a single
+ * definition of the prefix, so neither can drift from the other by an edit that
+ * only touched one of them. Callers are `getServicePrincipal` (the bearer
+ * service credential, `src/lib/auth.ts`) and the stdio MCP door's system caller
+ * (`src/mcp.ts`).
+ */
+export function servicePrincipalId(handle: string): string {
+  return `${SERVICE_PRINCIPAL_ID_PREFIX}${handle}`;
+}
+
+/**
  * Whether `id` belongs to a bearer SERVICE principal specifically.
  *
  * Narrower than {@link isSynthesizedPrincipalId} on purpose: this is the

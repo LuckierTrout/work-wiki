@@ -45,7 +45,9 @@ import {
   handleWikiGraph,
   handleMaintenanceScan,
   createMcpServer,
+  STDIO_SERVICE_PRINCIPAL_ID,
 } from "../../mcp";
+import { isServicePrincipalId } from "../principal-id";
 import { vaultIdFor, listVaults, getVault, createVault } from "../vault";
 import { readWikiPageWithFrontmatter } from "../wiki";
 import { _resetStorage } from "../storage";
@@ -2875,6 +2877,35 @@ describe("fix_lint_issue", () => {
     await expect(handleFixLintIssue({ type: "orphan-page" })).rejects.toThrow(
       "Missing required field: slug",
     );
+  });
+});
+
+/**
+ * The id this door mints for its deployment-trusted system caller (DW-614).
+ *
+ * `handleUpdatePage`, `handleUpdateMetadata` and `handleDeletePage` fall back to
+ * this principal when no explicit one is passed, and it is now minted from
+ * `servicePrincipalId` instead of three raw literals. Nothing else observes the
+ * VALUE: `owner-gate-parity`, `owner-handle` and `patch-metadata` each write
+ * `"service:mcp"` out as a literal, but they build their own principals with it,
+ * so they pin what those readers expect and would stay green if this door
+ * started minting `service:mcp-stdio`. These two rows are the only thing
+ * standing between that refactor and a silent change of identity.
+ */
+describe("the stdio door's service principal id", () => {
+  it("is exactly `service:mcp`", () => {
+    // The literal the untouched suites spell from the outside. Written out here
+    // deliberately rather than recomputed from `servicePrincipalId` — a test
+    // that rebuilds the value the same way the source does cannot catch the
+    // source changing.
+    expect(STDIO_SERVICE_PRINCIPAL_ID).toBe("service:mcp");
+  });
+
+  it("is recognized as a SERVICE principal by the predicate that grants writes", () => {
+    // `authz.ts` spends `isServicePrincipalId` to let this caller write anything
+    // on a deployment-trusted path. An id that stopped matching would not fail
+    // loudly — the stdio door would quietly lose the grant it writes with.
+    expect(isServicePrincipalId(STDIO_SERVICE_PRINCIPAL_ID)).toBe(true);
   });
 });
 

@@ -93,6 +93,31 @@ import { mergePages, type MergePagesResult } from "./lib/merge";
 import { scanForMaintenance } from "./lib/maintenance";
 import { getTrail, type TrailEvent } from "./lib/trail";
 import { logger } from "./lib/logger";
+import { servicePrincipalId } from "./lib/principal-id";
+
+// ---------------------------------------------------------------------------
+// The stdio door's system caller
+// ---------------------------------------------------------------------------
+
+/**
+ * The principal id every deployment-trusted stdio write falls back to.
+ *
+ * Minted through `servicePrincipalId` rather than written out, so this door and
+ * the `isServicePrincipalId` predicate that reads it (`src/lib/authz.ts`, the
+ * deployment-trusted write grant) share ONE definition of the prefix.
+ *
+ * WHAT PINS THE VALUE. `owner-gate-parity.test.ts`, `owner-handle.test.ts` and
+ * `patch-metadata.test.ts` each spell the id out as a literal, but they BUILD
+ * their own principals with it — they pin what those READERS expect, and would
+ * stay green if this constant changed underneath them. So it is EXPORTED, and
+ * `mcp.test.ts` asserts directly that what this door mints is exactly
+ * `service:mcp` and that `isServicePrincipalId` accepts it. Exported for that
+ * observer, not for callers: nothing else in the app imports it.
+ *
+ * The handle varies per call (`args.author ?? "system"`); only the id is fixed,
+ * so this is a constant rather than a whole principal.
+ */
+export const STDIO_SERVICE_PRINCIPAL_ID = servicePrincipalId("mcp");
 
 // ---------------------------------------------------------------------------
 // Tool handler logic — exported for direct testing without transport
@@ -293,7 +318,7 @@ export async function handleUpdatePage(args: {
   const principal: Principal | null =
     args.principal !== undefined
       ? args.principal
-      : { id: "service:mcp", handle: args.author ?? "system" };
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
   if (!canWriteFrontmatter(existingPage.frontmatter, principal, "body")) {
     if (canReadFrontmatter(existingPage.frontmatter, principal)) {
       // Readable (the cloak below runs otherwise), so the resolver may name
@@ -371,7 +396,7 @@ export async function handleUpdateMetadata(args: {
   const principal: Principal | null =
     args.principal !== undefined
       ? args.principal
-      : { id: "service:mcp", handle: args.author ?? "system" };
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
   return patchMetadata({
     slug: args.slug,
     metadata: args.metadata,
@@ -395,7 +420,7 @@ export async function handleDeletePage(args: {
   const principal: Principal | null =
     args.principal !== undefined
       ? args.principal
-      : { id: "service:mcp", handle: args.author ?? "system" };
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
   const existing = await readWikiPageWithFrontmatter(args.slug);
   if (!existing) {
     throw new Error(`page not found: ${args.slug}`);

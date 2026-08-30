@@ -147,6 +147,143 @@ const schema = (
   ...(required.length ? { required } : {}),
 });
 
+// ---------------------------------------------------------------------------
+// The argument gate
+// ---------------------------------------------------------------------------
+
+/** A value's JSON Schema `type` — `null` and arrays split out of `typeof`. */
+function jsonType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/**
+ * The JSON Schema `type` values `jsonType` can actually decide.
+ *
+ * A declared type OUTSIDE this set is skipped rather than failed, and the
+ * direction matters: `jsonType` never returns `"integer"` (a legal JSON Schema
+ * spelling, and the likely one for a future numeric field) or anything from a
+ * union like `["string","null"]`, so comparing it would refuse EVERY value for
+ * that property and make the tool permanently uncallable — a whole door closed
+ * by a schema edit that looked like documentation. Silence is the safe
+ * direction: the handler still sees what it always saw, which is exactly the
+ * state every tool was in before this gate existed. The parity suite pins that
+ * nothing on disk today is in the skipped case, so the skip is a guard against
+ * a future edit rather than cover for a present gap.
+ */
+const DECIDABLE_TYPES = new Set([
+  "string",
+  "number",
+  "boolean",
+  "object",
+  "array",
+]);
+
+/** The subset `jsonType` can decide an ARRAY ELEMENT against. */
+const PRIMITIVE_ITEM_TYPES = new Set(["string", "number", "boolean"]);
+
+/**
+ * The one runtime check `tools/call` arguments pass through (DW-563).
+ *
+ * WHY IT IS GENERIC. Every `ToolDef` above already declares a JSON Schema, and
+ * the stdio door turns the same declarations into zod — so a `batch_ingest_urls`
+ * with `urls: "https://x"` is refused there at `z.array(z.string())` while this
+ * door handed the string to `handleBatchIngest`, where a string is array-like
+ * enough to come back as "Malformed URLs at indices 0, 1, 2…". Every other
+ * `ToolDef.run` still spreads-and-casts the same way, so a per-tool guard would
+ * be one chance to forget per tool. Reading the schemas that are already on disk
+ * closes all of them at once and cannot drift from what `tools/list` advertises,
+ * because it IS what `tools/list` advertises.
+ *
+ * WHY ONLY `required`, `type`, AND PRIMITIVE ARRAY ELEMENTS. That is exactly the
+ * parity the stdio door has, and no more. Where a handler already answers for a
+ * value in a better sentence than a schema error could, it keeps doing so:
+ * `autoFixRefusal` names the check type and its clear path, `validateQuery`
+ * answers `unknown filter op` for a bad dataview operator. A generic "expected
+ * string" in front of those would be a worse answer, not a safer one.
+ *
+ * NESTED-OBJECT `required` IS NOT CHECKED, AND NOTHING ELSE CHECKS IT EITHER.
+ * That is a scope decision, not a claim about the handlers: `seed_agent` with
+ * `sections: [{slug:"s"}]` reaches `handleSeedAgent`, which validates nothing —
+ * it maps and delegates, and `src/lib/agents.ts` then throws "Cannot read
+ * properties of undefined". Element-level `required` was out of scope for
+ * DW-563, so that body still reaches the handler and what it answers is not
+ * pinned anywhere. Closing it is a separate change with its own message design.
+ *
+ * WHAT IT DELIBERATELY LETS THROUGH. Undeclared keys: `vault_curate` is called
+ * with an `owner` its schema never mentions, and `run` overrides it from the
+ * principal — rejecting or stripping unknown keys would break that, and the
+ * schemas here are advertising, not a closed-world contract.
+ *
+ * ABSENT IS NOT `null`. A missing key and an explicit `undefined` are "unset"
+ * and skip the type check; an explicit `null` is a VALUE and is refused, which
+ * is how `LINT_FIX_REQUEST`'s `z.string().optional()` answers the same body at
+ * `POST /api/lint/fix`. Reading `null` as "unset" here would make one body a 400
+ * at the REST door and a silent success at this one.
+ *
+ * Returns the refusal sentence, or `null` when the arguments are acceptable.
+ * The vocabulary is the doors' shared one: `Missing required field: <name>`
+ * (`@/lib/lint-fix`) and ``Invalid request field `<name>`: expected <type>``
+ * (`src/app/api/lint/fix/route.ts`).
+ */
+function validateToolArguments(
+  inputSchema: Record<string, unknown>,
+  args: unknown,
+): string | null {
+  if (jsonType(args) !== "object") {
+    return "Invalid request arguments: expected a JSON object";
+  }
+  const values = args as Record<string, unknown>;
+
+  const required = Array.isArray(inputSchema.required)
+    ? (inputSchema.required as unknown[])
+    : [];
+  // Own properties only, in this loop and the next. A bare `values[name]` walks
+  // the prototype chain, so a `required` name colliding with an
+  // `Object.prototype` member (`constructor`, `toString`) would be "satisfied"
+  // by an inherited function and then type-checked against it. Same house rule
+  // as `ownEntry` in `@/lib/lint-fix` and the parity suite's own read.
+  const own = (name: string): unknown =>
+    Object.prototype.hasOwnProperty.call(values, name) ? values[name] : undefined;
+
+  for (const name of required) {
+    if (typeof name !== "string") continue;
+    if (own(name) === undefined) return `Missing required field: ${name}`;
+  }
+
+  const properties =
+    jsonType(inputSchema.properties) === "object"
+      ? (inputSchema.properties as Record<string, unknown>)
+      : {};
+  for (const [name, declaration] of Object.entries(properties)) {
+    const value = own(name);
+    if (value === undefined) continue; // absent means absent
+    if (jsonType(declaration) !== "object") continue;
+    const decl = declaration as { type?: unknown; items?: unknown };
+    if (typeof decl.type !== "string") continue; // nothing declared to check
+    if (!DECIDABLE_TYPES.has(decl.type)) continue; // see DECIDABLE_TYPES
+    if (jsonType(value) !== decl.type) {
+      return `Invalid request field \`${name}\`: expected ${decl.type}`;
+    }
+    if (decl.type !== "array" || jsonType(decl.items) !== "object") continue;
+    const itemType = (decl.items as { type?: unknown }).type;
+    if (typeof itemType !== "string" || !PRIMITIVE_ITEM_TYPES.has(itemType)) {
+      // Object elements (and any undecidable spelling) pass through. Nothing
+      // downstream validates them either — see the doc block above.
+      continue;
+    }
+    const elements = value as unknown[];
+    for (let i = 0; i < elements.length; i++) {
+      if (jsonType(elements[i]) !== itemType) {
+        return `Invalid request field \`${name}[${i}]\`: expected ${itemType}`;
+      }
+    }
+  }
+
+  return null;
+}
+
 /** Owner-attribution for writes: every write tool stamps the resolved owner. */
 function attributed(
   args: Record<string, unknown>,
@@ -497,10 +634,12 @@ export const MCP_TOOLS: ToolDef[] = [
           ...str(
             `Lint issue type. Valid: ${AUTO_FIXABLE_CHECK_TYPES.join(", ")}`,
           ),
-          // ADVERTISED, and separately ENFORCED in `run` below. `tools/call`
-          // hands `params.arguments` to `tool.run` with no schema validation at
-          // all on this transport, so an `enum` here is documentation for the
-          // agent, not a gate (DW-348).
+          // ADVERTISED, and separately ENFORCED in `run` below. The door's
+          // generic gate (`validateToolArguments`) reads `required` and each
+          // declared `type`, deliberately NOT `enum` members — so this list is
+          // still documentation for the agent rather than a gate, and the
+          // sentence a wrong member gets is `autoFixRefusal`'s, which names the
+          // check type and its clear path instead of "expected one of" (DW-348).
           enum: [...AUTO_FIXABLE_CHECK_TYPES],
         },
         slug: str(
@@ -518,47 +657,43 @@ export const MCP_TOOLS: ToolDef[] = [
     ),
     write: true,
     run: async (a, p) => {
-      // The gate this transport cannot provide generically. Per-tool because
-      // `fix_lint_issue` is the one whose declared `type: string` was load-
-      // bearing: it reached `fixLintIssue`'s dispatch table directly. The
-      // sentence comes from `@/lib/lint-fix` so a recognized-but-not-fixable
-      // type gets its own explanation here, word for word as the HTTP route
-      // answers it, rather than a bare "unsupported".
+      // The three STRING fields arrive already gated (DW-455, generalized by
+      // DW-563): `dispatchMcp` runs `validateToolArguments` over this tool's
+      // own `inputSchema` before reaching here, so each of `slug`/`target`/
+      // `message` is either absent or a string — the per-tool `optionalString`
+      // helper that used to do it here said nothing the generic gate does not
+      // say, in the same words. What it stopped still cannot get through: a
+      // spread-and-cast once let an object `slug` reach `fixOrphanPage` and come
+      // back a 404 naming `[object Object]`, an error about a page the caller
+      // never asked for.
       //
-      // The three STRING fields need the same treatment (DW-455). `tools/call`
-      // hands `params.arguments` straight to this `run` with no validation, so
-      // a spread-and-cast let a non-string `slug` through as itself: an object
-      // slug reached `fixOrphanPage` and came back a 404 naming
-      // `[object Object]`. This mirrors `LINT_FIX_REQUEST`'s three optional
-      // string fields exactly, and names the field that is wrong.
+      // ABSENT is still not `null` — the gate refuses an explicit `null` as a
+      // value, matching `LINT_FIX_REQUEST`'s `z.string().optional()` at the REST
+      // door, so `{"type":"orphan-page","slug":null}` cannot be a 400 there and
+      // a silent success here.
       //
-      // ABSENT means absent — `null` is a value, and a REFUSED one: zod's
-      // `.optional()` accepts a missing key and `undefined`, but answers
-      // "expected string, received null" for an explicit `null`. Treating
-      // `null` as "unset" here would make `{"type":"orphan-page","slug":null}`
-      // a 400 at the REST door and a silent success at this one, which is the
-      // exact divergence this bundle exists to close.
-      const optionalString = (field: string): string | undefined => {
-        if (!(field in a) || a[field] === undefined) return undefined;
-        const v = a[field];
-        if (typeof v !== "string") {
-          throw new Error(`Invalid request field \`${field}\`: expected string`);
-        }
-        return v;
-      };
-
-      const slug = optionalString("slug");
-      const target = optionalString("target");
-      const message = optionalString("message");
+      // `type` keeps its OWN gate, which the generic one cannot subsume: the
+      // schema declares `enum`, and `validateToolArguments` deliberately checks
+      // declared `type`s and not `enum` members. `autoFixRefusal` comes from
+      // `@/lib/lint-fix` so a recognized-but-not-fixable type gets its own
+      // explanation here, word for word as the HTTP route answers it, rather
+      // than a bare "unsupported".
+      const slug = a.slug as string | undefined;
+      const target = a.target as string | undefined;
+      const message = a.message as string | undefined;
 
       const refusal = autoFixRefusal(a.type, slug ?? "");
       if (refusal) throw new Error(refusal);
 
-      // Explicit fields rather than a spread: every one of them has now been
-      // gated — the three strings just above, and `type` by `autoFixRefusal`,
-      // which answers `AUTO_FIX_UNSUPPORTED` for anything that is not a string
-      // naming a real handler. So the cast below records a narrowing the gate
-      // already proved, instead of asserting one nothing checked.
+      // Explicit fields rather than a spread: every one of them has been gated
+      // — the three strings by `validateToolArguments`, and `type` by
+      // `autoFixRefusal`, which answers `AUTO_FIX_UNSUPPORTED` for anything that
+      // is not a string naming a real handler. So the casts record narrowings a
+      // gate already proved, FOR ARGUMENTS THAT ARRIVED THROUGH `dispatchMcp` —
+      // the only caller today, but `MCP_TOOLS` is exported, and a direct
+      // `tool.run(...)` bypasses the door and every check it performs. The
+      // `autoFixRefusal` line below holds either way; the three string casts
+      // hold only on the gated path.
       return handleFixLintIssue({
         type: a.type as string,
         slug,
@@ -1085,8 +1220,21 @@ export async function dispatchMcp(
           ),
         );
       }
+      // The generic argument gate (DW-563), AFTER the unknown-tool and
+      // missing-principal checks so neither refusal is displaced, and BEFORE
+      // `run` so no handler ever sees arguments its own schema contradicts.
+      // Thrown rather than returned: the `catch` below already renders a tool
+      // failure as an `isError` result, and a malformed argument is a tool
+      // failure, not a JSON-RPC protocol error.
+      // Only `undefined` is absent. `?? {}` would coalesce an explicit
+      // `arguments: null` into a valid empty object, so `{"arguments":null}`
+      // would succeed while the gate one line down refuses `null` on a FIELD as
+      // "a value, not unset" — the gate's own rule contradicted at the envelope.
+      const args = params.arguments === undefined ? {} : params.arguments;
       try {
-        const result = await tool.run(params.arguments ?? {}, principal);
+        const refusal = validateToolArguments(tool.inputSchema, args);
+        if (refusal) throw new Error(refusal);
+        const result = await tool.run(args, principal);
         const filed = tool.write ? await fileIntoVault(result, targetVault) : result;
         return ok(id, toolResult(filed));
       } catch (err) {
