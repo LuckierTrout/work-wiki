@@ -12,17 +12,21 @@
  * after the write, or one that lets a lock lease land before throwing, would
  * satisfy `rejects.toThrow` and still have mutated the deployment.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
 
 import { ensureDirectories } from "../wiki";
 import {
+  applyResearchProjectMutation,
   createResearchProject,
   deleteResearchProject,
+  editResearchProject,
   getResearchProject,
+  isResearchWriteRefused,
   listResearchProjects,
+  RESEARCH_WRITE_REFUSED,
   updateResearchProjectIf,
   withResearchProjectLifecycleFence,
 } from "../research-projects";
@@ -39,6 +43,7 @@ import { READ_ONLY_REFUSAL, isReadOnlyError } from "../read-only";
 import { isEnoent } from "../errors";
 import { _resetLocks, _setDurableLocksForTests } from "../lock";
 import { _resetStorage } from "../storage";
+import * as config from "../config";
 
 const OWNER = "yuanhao";
 
@@ -468,19 +473,18 @@ describe("the read-only gate precedes the store's lock", () => {
     }
   });
 
-  it("the research CAS primitives still WRITE on a read-only deployment", async () => {
-    // The exemption's real claim, stated behaviourally. The source-text case
-    // below cannot make it: a future change that gated these INDIRECTLY — a
-    // guard inside `lockedMutation` or `applyResearchProjectMutation`'s storage
-    // call — would leave every function body free of `assertWritable(` and keep
-    // that case green while stranding in-flight runs.
+  it("the research CAS wrappers refuse WITHOUT throwing (DW-527)", async () => {
+    // The inversion of what this case used to pin. Until DW-527 the primitive
+    // WROTE here, and a direct library caller could patch a project's fields on
+    // a read-only deployment. It now refuses — but as a VALUE, because several
+    // callers read `null` as "lost the CAS race" and compensate, so a throw
+    // would turn fail-soft recovery into a stranded run.
     //
-    // This is a DELIBERATE exemption, not an accident: several callers read a
-    // `null` return as "lost the CAS race" and compensate, so a throw here
-    // turns fail-soft recovery into a stranded run. Its cost is named in the
-    // note on `applyResearchProjectMutation` — a direct library caller can
-    // still patch a project's fields while read-only.
+    // The source-text case below cannot make this claim: it only sees that the
+    // four bodies carry no `assertWritable(`, which stays true of a refusal
+    // that writes anyway and of one that does not.
     const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const before = await seededSnapshot();
     process.env.YOPEDIA_READONLY = "1";
 
     const progressed = await updateResearchProjectIf(
@@ -490,19 +494,142 @@ describe("the read-only gate precedes the store's lock", () => {
       { status: "collecting", synthesis: "an in-flight run's own progress" },
     );
 
-    expect(progressed).not.toBeNull();
-    expect(progressed?.status).toBe("collecting");
-    // And it reached the BYTES, not just the returned object.
+    // `null`, not a throw: the fail-soft contract the ~30 runtime call sites
+    // depend on.
+    expect(progressed).toBeNull();
+    // BYTES, not just the return: a refusal placed after the write, or one
+    // that let a lock lease land, would satisfy the line above and still have
+    // mutated the deployment.
+    expect(await snapshot()).toEqual(before);
     const stored = await getResearchProject(OWNER, project.id);
+    expect(stored?.status).toBe("draft");
+    expect(stored?.synthesis).toBeUndefined();
+  });
+
+  it("the primitive itself returns a sentinel a caller can tell from a lost race", async () => {
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+    let ran = false;
+
+    const result = await applyResearchProjectMutation(OWNER, (projects) => {
+      ran = true;
+      return { projects: projects.filter((row) => row.id !== project.id), result: "wrote" };
+    });
+
+    expect(isResearchWriteRefused(result)).toBe(true);
+    expect(result).toBe(RESEARCH_WRITE_REFUSED);
+    // `mutate` never ran, so nothing was even computed against the registry.
+    expect(ran).toBe(false);
+    expect(await snapshot()).toEqual(before);
+    // And the refusal is not confusable with a caller's own look-alike value.
+    expect(isResearchWriteRefused({ researchWrite: "read-only" })).toBe(false);
+    expect(isResearchWriteRefused(null)).toBe(false);
+  });
+
+  it("editResearchProject — the owner's edit THROWS, and no byte moves", async () => {
+    // The other half of the pair. `PATCH /api/research/[id]` goes through this
+    // entry point, where the quiet `null` above would be reported as 409
+    // "A running or finished research project cannot be edited." — the wrong
+    // reason for a refusal that is really about the deployment.
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => editResearchProject(
+        OWNER,
+        project.id,
+        (current) => current.id === project.id,
+        { title: "Renamed while read-only" },
+      ),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    expect(await snapshot()).toEqual(before);
+    expect((await getResearchProject(OWNER, project.id))?.title)
+      .toBe(RESEARCH_INPUT.title);
+  });
+
+  it("create and delete THROW when the flag flips after their own gate", async () => {
+    // The third shape of the refusal (DW-527). `isReadOnly()` is read TWICE on
+    // these paths — once by the entry point's own `assertWritable`, once by the
+    // CAS primitive — so writable at the first read and read-only at the second
+    // is the mid-request flip, the only moment the sentinel can reach an entry
+    // point whose contract is to throw. A silent `false` from the delete would
+    // read as "no such project" and a fake row from the create would report a
+    // write that never happened.
+    const seeded = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const before = await seededSnapshot();
+    let reads = 0;
+    const flag = vi.spyOn(config, "isReadOnly").mockImplementation(() => reads++ > 0);
+
+    try {
+      await expectRefusal(
+        () => deleteResearchProject(OWNER, seeded.id),
+        READ_ONLY_REFUSAL.researchMutate,
+      );
+      reads = 0;
+      await expectRefusal(
+        () => createResearchProject(OWNER, { ...RESEARCH_INPUT, title: "Second" }),
+        READ_ONLY_REFUSAL.researchMutate,
+      );
+      // The owner's edit is the third: its CAS returns `null` here, which the
+      // route would serve as 409 "cannot be edited" — the wrong reason. It
+      // re-reads the flag on that null path so the window stays a refusal.
+      reads = 0;
+      await expectRefusal(
+        () => editResearchProject(
+          OWNER,
+          seeded.id,
+          (current) => current.id === seeded.id,
+          { title: "Renamed mid-flip" },
+        ),
+        READ_ONLY_REFUSAL.researchMutate,
+      );
+    } finally {
+      flag.mockRestore();
+    }
+
+    // Neither reported a fake outcome, and neither moved a byte.
+    expect(await snapshot()).toEqual(before);
+    expect(await getResearchProject(OWNER, seeded.id)).not.toBeNull();
+    expect(await listResearchProjects(OWNER)).toHaveLength(1);
+  });
+
+  it("both paths still write on a WRITABLE deployment", async () => {
+    // The control every refusal case above needs: a gate that refused
+    // unconditionally would satisfy all of them and break the product.
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+
+    const edited = await editResearchProject(
+      OWNER,
+      project.id,
+      (current) => current.id === project.id,
+      { title: "Renamed by the owner" },
+    );
+    const progressed = await updateResearchProjectIf(
+      OWNER,
+      project.id,
+      (current) => current.id === project.id,
+      { status: "collecting", synthesis: "an in-flight run's own progress" },
+    );
+
+    expect(edited?.title).toBe("Renamed by the owner");
+    expect(progressed?.status).toBe("collecting");
+    const stored = await getResearchProject(OWNER, project.id);
+    expect(stored?.title).toBe("Renamed by the owner");
     expect(stored?.status).toBe("collecting");
     expect(stored?.synthesis).toBe("an in-flight run's own progress");
   });
 
-  it("the research CAS primitives carry no gate in their own source", async () => {
-    // The textual half: their being ungated is a decision, pinned here so a
-    // later "completeness" sweep has to argue with it rather than quietly
-    // reverse it. Paired with the behavioural case above, which catches the
-    // indirect gating this one cannot see.
+  it("the research CAS primitives carry no THROWING gate in their own source", async () => {
+    // Still meaningful after DW-527, with a NEW rationale: these four must
+    // refuse by RETURNING the sentinel, never by throwing, because a throw
+    // here strands an in-flight run. `assertWritable(` in one of these bodies
+    // is exactly that regression, so its absence is the thing pinned — the
+    // gated owner door lives in `editResearchProject`, deliberately outside
+    // this list.
     const source = await fs.readFile(
       path.resolve(__dirname, "../research-projects.ts"),
       "utf8",

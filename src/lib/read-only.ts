@@ -110,13 +110,28 @@
  * still reads as one sentence whether the caller came through a route or
  * straight into `src/lib`. Their routes KEEP the early `isReadOnly()` gate: it
  * refuses before the body parse, so a malformed body cannot pre-empt the
- * refusal with a 400. The research CAS primitives
- * (`applyResearchProjectMutation` and its wrappers) are deliberately left OPEN
- * — see the note on that function.
+ * refusal with a 400.
  *
- * AND NINE OF THOSE DOORS NOW CARRY A BACKSTOP AS WELL (DW-316, DW-319,
- * DW-526). The five wiki-lifecycle writes, the three Names & Terms verbs,
- * `PUT /api/email/settings`, `POST /api/research` and the
+ * THE RESEARCH CAS PRIMITIVES REFUSE WITHOUT THROWING (DW-527), which is the
+ * one shape in this module that is not an {@link assertWritable}.
+ * `applyResearchProjectMutation` returns a frozen `RESEARCH_WRITE_REFUSED`
+ * sentinel before it reads, leases or writes anything, because its wrappers
+ * are an in-flight run's own progress recorders and a throw there strands the
+ * run — the reason DW-385 left them open at all. `mutateResearchProject`, the
+ * single funnel, collapses the sentinel to the `null` those callers already
+ * read as a lost CAS race; `createResearchProject` and
+ * `deleteResearchProject` convert it to a `ReadOnlyError` so their gates still
+ * hold when the flag flips underneath them. The OWNER's edit is a separate,
+ * gated, throwing entry point — `editResearchProject`, which
+ * `PATCH /api/research/[id]` calls — because at that door a `null` is served
+ * as 409 "cannot be edited", which names the wrong reason. So the deployment
+ * is closed to a direct library caller in every case; what differs is whether
+ * the refusal arrives as a value or as a throw.
+ *
+ * AND TEN OF THOSE DOORS NOW CARRY A BACKSTOP AS WELL (DW-316, DW-319,
+ * DW-526, and DW-527's `PATCH /api/research/[id]`). The five wiki-lifecycle
+ * writes, the three Names & Terms verbs, `PUT /api/email/settings`,
+ * `POST /api/research`, `PATCH /api/research/[id]` and the
  * `PUT /api/workspace-profile` write each classify {@link isReadOnlyError} as
  * the FIRST branch of their catch — the shape `PUT /api/workbench/artifact` and
  * `POST /api/ingest/reingest` already used. Every early gate above is unchanged

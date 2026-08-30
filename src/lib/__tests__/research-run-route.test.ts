@@ -29,6 +29,7 @@ vi.mock("@/lib/research-projects", async (importOriginal) => ({
   deleteResearchProject: vi.fn(),
   updateResearchProject: vi.fn(),
   updateResearchProjectIf: vi.fn(),
+  editResearchProject: vi.fn(),
   getResearchProject: vi.fn(),
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
@@ -37,17 +38,17 @@ import { GET, POST } from "@/app/api/research/[id]/run/route";
 import { DELETE, PATCH } from "@/app/api/research/[id]/route";
 import { getPrincipal } from "@/lib/auth";
 import { ClientInputError } from "@/lib/errors";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 import {
   ResearchProviderOverrideError,
   ResearchProviderUnconfiguredError,
 } from "@/lib/research-providers";
 import {
+  editResearchProject,
   getResearchProject,
   ResearchProjectConflictError,
   ResearchProjectNotFoundError,
   updateResearchProject,
-  updateResearchProjectIf,
 } from "@/lib/research-projects";
 import {
   cancelResearchProject,
@@ -62,7 +63,7 @@ const mockedQueue = vi.mocked(queueResearchProject);
 const mockedRun = vi.mocked(runResearchProject);
 const mockedCancel = vi.mocked(cancelResearchProject);
 const mockedEnqueue = vi.mocked(enqueueTask);
-const mockedUpdate = vi.mocked(updateResearchProjectIf);
+const mockedEdit = vi.mocked(editResearchProject);
 const mockedDelete = vi.mocked(retireResearchProject);
 const mockedGet = vi.mocked(getResearchProject);
 
@@ -255,7 +256,7 @@ describe("PATCH and DELETE /api/research/[id]", () => {
 
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.researchMutate });
-    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedEdit).not.toHaveBeenCalled();
   });
 
   it("403s a read-only DELETE before the store is written", async () => {
@@ -271,17 +272,17 @@ describe("PATCH and DELETE /api/research/[id]", () => {
   });
 
   it("still writes on a writable deployment", async () => {
-    mockedUpdate.mockResolvedValue({ id: "p1", title: "New" } as Awaited<
+    mockedEdit.mockResolvedValue({ id: "p1", title: "New" } as Awaited<
       ReturnType<typeof updateResearchProject>
     >);
 
     const response = await PATCH(patchRequest({ title: "New" }), { params });
 
     expect(response.status).toBe(200);
-    expect(mockedUpdate).toHaveBeenCalled();
-    expect(mockedUpdate.mock.calls[0][2]({ status: "draft" } as never)).toBe(true);
-    expect(mockedUpdate.mock.calls[0][2]({ status: "collecting" } as never)).toBe(false);
-    expect(mockedUpdate.mock.calls[0][2]({ status: "draft", deleteRequested: true } as never)).toBe(false);
+    expect(mockedEdit).toHaveBeenCalled();
+    expect(mockedEdit.mock.calls[0][2]({ status: "draft" } as never)).toBe(true);
+    expect(mockedEdit.mock.calls[0][2]({ status: "collecting" } as never)).toBe(false);
+    expect(mockedEdit.mock.calls[0][2]({ status: "draft", deleteRequested: true } as never)).toBe(false);
   });
 
   it("refuses a client-supplied status or synthesis", async () => {
@@ -291,7 +292,7 @@ describe("PATCH and DELETE /api/research/[id]", () => {
 
     expect((await PATCH(patchRequest({ status: "complete" }), { params })).status).toBe(400);
     expect((await PATCH(patchRequest({ synthesis: "# Invented" }), { params })).status).toBe(400);
-    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedEdit).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -306,7 +307,7 @@ describe("PATCH and DELETE /api/research/[id]", () => {
     }), { params });
 
     expect(response.status).toBe(400);
-    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedEdit).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -316,11 +317,11 @@ describe("PATCH and DELETE /api/research/[id]", () => {
     ["non-string query", { queries: [7] }],
   ])("400s %s PATCH input", async (_label, body) => {
     expect((await PATCH(patchRequest(body), { params })).status).toBe(400);
-    expect(mockedUpdate).not.toHaveBeenCalled();
+    expect(mockedEdit).not.toHaveBeenCalled();
   });
 
   it("404s an edit of a row DELETE already retired", async () => {
-    mockedUpdate.mockResolvedValue(null);
+    mockedEdit.mockResolvedValue(null);
     mockedGet.mockResolvedValue({ id: "p1", status: "cancelled", deleteRequested: true } as Awaited<
       ReturnType<typeof getResearchProject>
     >);
@@ -329,7 +330,7 @@ describe("PATCH and DELETE /api/research/[id]", () => {
   });
 
   it("refuses an edit of a running project", async () => {
-    mockedUpdate.mockResolvedValue(null);
+    mockedEdit.mockResolvedValue(null);
     mockedGet.mockResolvedValue({ id: "p1", status: "collecting" } as Awaited<
       ReturnType<typeof getResearchProject>
     >);
@@ -348,12 +349,68 @@ describe("PATCH and DELETE /api/research/[id]", () => {
     ["400s", new ClientInputError("Research question is required"), 400],
     ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
   ])("%s a store fault on PATCH", async (_label, fault, status) => {
-    mockedUpdate.mockRejectedValue(fault);
+    mockedEdit.mockRejectedValue(fault);
 
     const response = await PATCH(patchRequest({ title: "New" }), { params });
 
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual({ error: fault.message });
+  });
+
+  /**
+   * DW-527. The early `isReadOnly()` gate above answers a deployment that was
+   * already read-only when the request arrived. This is the OTHER moment: the
+   * flag flips after the gate passed, so the refusal comes from
+   * `editResearchProject`'s own `assertWritable`. Before the new first branch
+   * that landed as a 500 — a server fault the owner would retry forever — and
+   * a `null`-returning writer would have landed as the 409 below, which names
+   * the wrong reason entirely.
+   */
+  it("403s a PATCH whose writer refuses mid-request", async () => {
+    mockedEdit.mockRejectedValue(new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate));
+
+    const response = await PATCH(patchRequest({ title: "New" }), { params });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.researchMutate });
+    // The gate did not fire — the store WAS reached, which is what makes this
+    // the mid-request flip rather than the early refusal above.
+    expect(mockedEdit).toHaveBeenCalled();
+  });
+
+  it("403s a foreign ReadOnlyError, since the branch classifies by name", async () => {
+    // `isReadOnlyError` matches `err.name`, not `instanceof` — a second copy of
+    // `read-only.ts` (vitest's two projects, a split server/edge bundle, the
+    // stdio MCP entry point) would otherwise turn this 403 into a 500 only in
+    // production.
+    const foreign = new Error(READ_ONLY_REFUSAL.researchMutate);
+    foreign.name = "ReadOnlyError";
+    mockedEdit.mockRejectedValue(foreign);
+
+    expect((await PATCH(patchRequest({ title: "New" }), { params })).status).toBe(403);
+  });
+
+  it("does not swallow the other PATCH outcomes", async () => {
+    // The control for the branch above: a `isReadOnlyError` check that matched
+    // too widely would turn every one of these into a 403.
+    mockedEdit.mockRejectedValue(new ClientInputError("Research question is required"));
+    expect((await PATCH(patchRequest({ title: "New" }), { params })).status).toBe(400);
+
+    mockedEdit.mockRejectedValue(new Error("EINVAL: invalid argument"));
+    expect((await PATCH(patchRequest({ title: "New" }), { params })).status).toBe(500);
+
+    mockedEdit.mockResolvedValue(null);
+    mockedGet.mockResolvedValue(null);
+    expect((await PATCH(patchRequest({ title: "New" }), { params })).status).toBe(404);
+
+    mockedGet.mockResolvedValue({ id: "p1", status: "collecting" } as Awaited<
+      ReturnType<typeof getResearchProject>
+    >);
+    const conflict = await PATCH(patchRequest({ title: "New" }), { params });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({
+      error: "A running or finished research project cannot be edited.",
+    });
   });
 
   it.each([

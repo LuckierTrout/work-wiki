@@ -47,7 +47,7 @@ import {
   type ResearchProvider,
   type ResearchSearchResult,
 } from "./research-providers";
-import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
+import { READ_ONLY_REFUSAL, assertWritable, isReadOnlyError } from "./read-only";
 import { researchPageSlug } from "./research-slug";
 import {
   extractThinking,
@@ -454,8 +454,9 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
 
 /** Request retirement, but let an active worker release its own lease. */
 export async function retireResearchProject(owner: string, id: string): Promise<boolean> {
-  // Deployment read-only (DW-385). THE ENTRY POINT has to gate even though the
-  // CAS mutator it calls first is deliberately open: this function TOMBSTONES
+  // Deployment read-only (DW-385). THE ENTRY POINT gates rather than leaning on
+  // the CAS mutator it calls first — which since DW-527 refuses by returning
+  // `null` rather than by throwing: this function TOMBSTONES
   // before it deletes — `mutateResearchProject` below sets `deleteRequested`,
   // `cancelRequested`, `status: "cancelled"` and the progress message
   // "Deleted." — and only reaches the gated `deleteResearchProject` at its last
@@ -821,7 +822,27 @@ export async function reconcileResearchProjects(
         changed = true;
       }
       } catch (error) {
-        logger.warn("research", `reconcile skipped damaged project ${snapshot.id}`, error);
+        // A refused write is not damage (DW-528). Reconcile calls the gated
+        // `deleteResearchProject`, so a deployment that turns read-only mid
+        // sweep raises a `ReadOnlyError` here — and reporting that as
+        // "damaged project" told an operator their data was corrupt when
+        // nothing was wrong with the row at all. Either way the loop
+        // continues to the next project.
+        //
+        // STILL HARD TO REACH, and that is not an accident:
+        // `GET /api/research` skips reconciliation entirely when read-only and
+        // `POST /api/tasks/run` refuses, so nothing in the deployed app drives
+        // this sweep on a read-only deployment. The branch is for the caller
+        // added next, and for the flag that flips mid-sweep.
+        if (isReadOnlyError(error)) {
+          logger.warn(
+            "research",
+            `reconcile skipped read-only project ${snapshot.id}`,
+            error,
+          );
+        } else {
+          logger.warn("research", `reconcile skipped damaged project ${snapshot.id}`, error);
+        }
       }
     }
     for (const orphanId of outboxIds) {

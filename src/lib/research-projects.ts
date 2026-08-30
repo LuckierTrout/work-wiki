@@ -1,6 +1,7 @@
+import { isReadOnly } from "./config";
 import { ClientInputError, isEnoent } from "./errors";
 import { withDurableLock, withFileLock } from "./lock";
-import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
+import { READ_ONLY_REFUSAL, ReadOnlyError, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { hasResearchSlot } from "./research-concurrency";
@@ -368,6 +369,23 @@ function serializeProjects(projects: ResearchProject[]): string {
 }
 
 /**
+ * What {@link applyResearchProjectMutation} returns instead of writing when the
+ * deployment is read-only (DW-527).
+ *
+ * A frozen object compared by IDENTITY, not by shape: a caller's own
+ * `{ researchWrite: "read-only" }` — or a `result` a `mutate` happened to
+ * return — must not be mistaken for the store's refusal. Frozen so no caller
+ * can mutate the one shared instance the identity check depends on.
+ */
+export const RESEARCH_WRITE_REFUSED = Object.freeze({ researchWrite: "read-only" as const });
+export type ResearchWriteRefused = typeof RESEARCH_WRITE_REFUSED;
+
+/** Whether a CAS result is the read-only refusal rather than a mutation result. */
+export function isResearchWriteRefused(value: unknown): value is ResearchWriteRefused {
+  return value === RESEARCH_WRITE_REFUSED;
+}
+
+/**
  * Compare-and-set mutation of the project registry.
  *
  * Same-isolate callers still serialize on {@link withFileLock}. Cross-isolate
@@ -376,32 +394,44 @@ function serializeProjects(projects: ResearchProject[]): string {
  * only locked in memory could run twice. Exported so tests can race two
  * callers without that lock.
  *
- * DELIBERATELY NOT READ-ONLY GATED (DW-385), unlike
- * {@link createResearchProject} and {@link deleteResearchProject}. This and its
- * wrappers ({@link mutateResearchProject}, {@link updateResearchProjectIf},
- * {@link updateResearchProject}) are mostly an IN-FLIGHT run's own progress
- * recorders, reached from `research-runtime`/`research-completion` behind doors
- * that already refuse — and `GET /api/research` skips reconciliation entirely
- * when read-only, so a read-only deployment does not drive them. Several of
- * those callers read a `null` return as "lost the CAS race" and compensate; a
- * throw here would turn that fail-soft path into a stranded run, which is the
- * reason the exemption exists.
+ * READ-ONLY REFUSES HERE, AND DOES NOT THROW (DW-527, replacing DW-385's
+ * exemption). When `isReadOnly()` this returns {@link RESEARCH_WRITE_REFUSED}
+ * BEFORE the attempt loop — before any `readFileWithEtag`, any
+ * `writeFileIfMatch`, and before `mutate` is invoked at all — so a read-only
+ * deployment's stored registry is byte-identical afterwards no matter which
+ * caller arrived.
  *
- * WHAT THE EXEMPTION COSTS, NAMED. They are not reached ONLY by the runtime:
- * `PATCH /api/research/[id]` calls {@link updateResearchProjectIf} to edit an
- * owner's title, question and queries. That route gates on `isReadOnly()`, so
- * the deployed app refuses — but a DIRECT LIBRARY caller with no route in front
- * can still patch a research project's fields while read-only. That is a known,
- * deliberate limit of DW-385, not an oversight: closing it means giving the
- * runtime's fail-soft callers a path that does not throw, which is a larger
- * change than adding a gate. The ENTRY POINTS that would otherwise write and
- * then fail — {@link createResearchProject}, {@link deleteResearchProject} and
- * `retireResearchProject` — are gated instead.
+ * WHY A SENTINEL RATHER THAN `assertWritable`. This and its wrappers
+ * ({@link mutateResearchProject}, {@link updateResearchProjectIf},
+ * {@link updateResearchProject}) are mostly an IN-FLIGHT run's own progress
+ * recorders, reached from `research-runtime`/`research-completion`. Several of
+ * those callers read a `null` return as "lost the CAS race" and compensate; a
+ * THROW here would turn that fail-soft path into a stranded run, which is the
+ * reason DW-385 left the primitive open in the first place. So the refusal is
+ * a value: {@link mutateResearchProject} — the one funnel all three fail-soft
+ * wrappers pass through — collapses it to the `null` those ~30 call sites
+ * already handle, while {@link createResearchProject} and
+ * {@link deleteResearchProject} convert it to a `ReadOnlyError` so their
+ * throwing contract survives a flag that flips after their own
+ * `assertWritable`. A sentinel rather than a bare `null` because at the
+ * PRIMITIVE a refusal and a lost race are different facts, and
+ * {@link isResearchWriteRefused} is how a direct caller tells them apart.
+ *
+ * WHAT THE OLD EXEMPTION COST, NOW CLOSED. `PATCH /api/research/[id]` used to
+ * call {@link updateResearchProjectIf} to edit an owner's title, question and
+ * queries, so a DIRECT LIBRARY caller with no route in front could patch a
+ * research project's fields while read-only. That door now goes through
+ * {@link editResearchProject}, which is gated and THROWS — the owner reads the
+ * refusal sentence instead of a `null` mislabelled as 409 "cannot be edited".
  */
 export async function applyResearchProjectMutation<T>(
   owner: string,
   mutate: (projects: ResearchProject[]) => { projects: ResearchProject[]; result: T },
-): Promise<T> {
+): Promise<T | ResearchWriteRefused> {
+  // FIRST, ahead of the storage handle and the attempt loop: a refusal that
+  // read the registry, took a lease, or ran `mutate` would already have
+  // touched the deployment it is about to refuse.
+  if (isReadOnly()) return RESEARCH_WRITE_REFUSED;
   const storage = getStorage();
   const path = projectPath(owner);
   const lastError = new Error("Research projects were busy; retry the request.");
@@ -425,10 +455,18 @@ export async function applyResearchProjectMutation<T>(
   throw lastError;
 }
 
+/**
+ * {@link applyResearchProjectMutation} under the owner's in-process file lock.
+ *
+ * Carries the {@link RESEARCH_WRITE_REFUSED} sentinel through rather than
+ * collapsing it here, because the two kinds of caller want opposite things
+ * from it: {@link mutateResearchProject} turns it into `null` (fail-soft), the
+ * two gated lifecycle writers turn it into a throw.
+ */
 async function lockedMutation<T>(
   owner: string,
   mutate: (projects: ResearchProject[]) => { projects: ResearchProject[]; result: T },
-): Promise<T> {
+): Promise<T | ResearchWriteRefused> {
   return withFileLock(lockKey(owner), () => applyResearchProjectMutation(owner, mutate));
 }
 
@@ -503,7 +541,7 @@ export async function createResearchProject(
   // reach. Same reasoning as the wiki-lifecycle gates in `read-only.ts`.
   assertWritable(READ_ONLY_REFUSAL.researchCreate);
   const cleaned = cleanInput(input);
-  return lockedMutation(owner, (projects) => {
+  const created = await lockedMutation(owner, (projects) => {
     if (filterResearchProjects(projects, null).length >= MAX_PROJECTS) {
       throw new ClientInputError(
         `This workspace already has the maximum of ${MAX_PROJECTS} research projects.`,
@@ -526,6 +564,14 @@ export async function createResearchProject(
     projects.push(project);
     return { projects, result: project };
   });
+  // The flag flipped between the gate above and the CAS (DW-527). The
+  // primitive refuses with a VALUE so the runtime's fail-soft callers are not
+  // stranded by a throw; this entry point's contract is to throw, so the
+  // sentinel is converted rather than handed back as a fake project.
+  if (isResearchWriteRefused(created)) {
+    throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+  }
+  return created;
 }
 
 export async function updateResearchProject(
@@ -578,13 +624,20 @@ export async function updateResearchProjectIf(
  * Apply an in-place mutator under the same CAS as {@link updateResearchProjectIf}.
  *
  * Returns `null` when the project is gone or `mutate` returns null (lost claim).
+ *
+ * THE ONE FUNNEL, and so the one place the read-only refusal is collapsed
+ * (DW-527). {@link updateResearchProject}, {@link updateResearchProjectIf} and
+ * {@link mutateProject} all reach the CAS through here, so turning
+ * {@link RESEARCH_WRITE_REFUSED} into `null` on this line covers every
+ * fail-soft caller in `research-runtime`/`research-completion` without editing
+ * one of them: they already treat `null` as a lost CAS race and compensate.
  */
 export async function mutateResearchProject(
   owner: string,
   id: string,
   mutate: (project: ResearchProject) => ResearchProject | null,
 ): Promise<ResearchProject | null> {
-  return lockedMutation(owner, (projects) => {
+  const result = await lockedMutation(owner, (projects) => {
     const index = projects.findIndex((item) => item.id === id);
     if (index < 0) return { projects, result: null };
     const next = mutate(projects[index]);
@@ -593,6 +646,46 @@ export async function mutateResearchProject(
     projects[index] = next;
     return { projects, result: next };
   });
+  return isResearchWriteRefused(result) ? null : result;
+}
+
+/**
+ * Edit the OWNER's own fields of a project — the entry point behind
+ * `PATCH /api/research/[id]` (DW-527).
+ *
+ * The loud half of the pair whose quiet half is {@link mutateResearchProject}.
+ * Same CAS path, same `null` for "gone, or the predicate said no", but gated:
+ * a read-only deployment refuses with a `ReadOnlyError` carrying
+ * {@link READ_ONLY_REFUSAL.researchMutate} rather than collapsing to `null`.
+ * The collapse would be a LIE at this door — the route reports a `null` as 409
+ * "A running or finished research project cannot be edited.", which names the
+ * wrong reason for a refusal that is really about the deployment.
+ *
+ * The patch type is narrowed to the three fields the door accepts, so this
+ * cannot become a second, gated way to write `status`, `synthesis` or the
+ * run's own bookkeeping.
+ */
+export async function editResearchProject(
+  owner: string,
+  id: string,
+  predicate: (project: ResearchProject) => boolean,
+  patch: Pick<Partial<ResearchProjectInput>, "title" | "question" | "queries">,
+): Promise<ResearchProject | null> {
+  // BEFORE the CAS and before its file lock, the `deleteResearchProject`
+  // discipline: the refusal must precede every read, lease and write.
+  assertWritable(READ_ONLY_REFUSAL.researchMutate);
+  const edited = await mutateProject(owner, id, predicate, patch);
+  // A `null` normally means "gone, or the predicate said no" — but the CAS
+  // ALSO refuses read-only by returning null, because
+  // {@link mutateResearchProject} collapses the sentinel for its fail-soft
+  // callers. So a flag that flipped between the gate above and the write would
+  // leave this door by the route's 409 "A running or finished research project
+  // cannot be edited.": the wrong reason, and the exact mislabel this entry
+  // point exists to prevent. Re-reading the flag on the null path — the one
+  // path where the two facts are indistinguishable — turns that window back
+  // into the refusal it is, and costs a writable deployment nothing.
+  if (!edited) assertWritable(READ_ONLY_REFUSAL.researchMutate);
+  return edited;
 }
 
 async function mutateProject(
@@ -720,10 +813,17 @@ export async function deleteResearchProject(owner: string, id: string): Promise<
     // Recheck under the same fence used by lease rotation. A caller's earlier
     // release/confirm can otherwise race a recovery that publishes a successor.
     if (await hasResearchSlot(owner, id)) return false;
-    return lockedMutation(owner, (projects) => {
+    const deleted = await lockedMutation(owner, (projects) => {
       const next = projects.filter((project) => project.id !== id);
       if (next.length === projects.length) return { projects, result: false };
       return { projects: next, result: true };
     });
+    // The flag flipped between the gate above and the CAS (DW-527). A silent
+    // `false` would read as "no such project" — the caller would stop looking
+    // for a row that is still there. Throw, as the gate would have.
+    if (isResearchWriteRefused(deleted)) {
+      throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+    }
+    return deleted;
   });
 }

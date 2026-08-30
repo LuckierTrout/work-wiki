@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
-import { getResearchProject, updateResearchProjectIf } from "@/lib/research-projects";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
+import { editResearchProject, getResearchProject } from "@/lib/research-projects";
 import { retireResearchProject } from "@/lib/research-runtime";
 
 interface RouteContext { params: Promise<{ id: string }> }
@@ -55,7 +55,12 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         return NextResponse.json({ error: "At least one research query is required." }, { status: 400 });
       }
     }
-    const project = await updateResearchProjectIf(
+    // `editResearchProject`, not `updateResearchProjectIf` (DW-527): the
+    // gated owner-editing entry point, so a DIRECT library caller is refused
+    // by the same sentence this door serves, and a flag that flips after the
+    // gate above arrives here as a `ReadOnlyError` rather than a `null` the
+    // 409 below would mislabel as "cannot be edited".
+    const project = await editResearchProject(
       principal.handle,
       id,
       (current) => EDITABLE.has(current.status) && !current.deleteRequested,
@@ -75,6 +80,16 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       { status: 409 },
     );
   } catch (error) {
+    // Read-only FIRST (DW-527). The early `isReadOnly()` gate above answers the
+    // ordinary case; this branch is reached only when the deployment turns
+    // read-only MID-request — writable on arrival, refused by the writer —
+    // which used to leave by the 500 below. The caught message is echoed
+    // rather than re-serving the route's own literal, the backstop shape
+    // DW-316/DW-319/DW-526 established at nine sibling doors; this is the
+    // tenth.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     // Classification by TYPE alone, the `src/app/api/research/route.ts` idiom
     // (DW-478). The store throws `ClientInputError` for the caller's own faults
     // — `cleanInput`'s blank title/question refusal reaches this door too, via

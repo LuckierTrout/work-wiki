@@ -72,6 +72,8 @@ import { drainResearchOutbox, loadResearchOutbox, saveResearchOutbox } from "../
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { callLLM, callLLMStream } from "../llm";
 import { _resetLocks } from "../lock";
+import { logger } from "../logger";
+import * as projectsModule from "../research-projects";
 import { saveRawSourceFor } from "../raw";
 import {
   acquireResearchSlot,
@@ -1273,6 +1275,77 @@ describe("deep research — remediations", () => {
     expect(mockedEnqueue).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "run-research", projectId: recoverable.id }),
     );
+  });
+
+  it("logs a read-only skip, not data damage, when a delete is refused", async () => {
+    // DW-528. Reconcile's per-project catch reported EVERY fault as
+    // `reconcile skipped damaged project`, so a deployment that turned
+    // read-only mid sweep told the operator their rows were corrupt. The
+    // refusal comes from the gated `deleteResearchProject`, which reconcile
+    // calls for a tombstoned row whose slot is gone — the same path the
+    // "reconcile deletes a finished row DELETE could not remove" case walks.
+    const ids: string[] = [];
+    for (const title of ["Retired one", "Retired two"]) {
+      const created = await project({ title });
+      await runResearchProject("alice", created.id);
+      await mutateResearchProject("alice", created.id, (current) => {
+        current.deleteRequested = true;
+        return current;
+      });
+      ids.push(created.id);
+    }
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const savedReadOnly = process.env.YOPEDIA_READONLY;
+    process.env.YOPEDIA_READONLY = "1";
+
+    let lines: string[] = [];
+    try {
+      await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    } finally {
+      if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+      else process.env.YOPEDIA_READONLY = savedReadOnly;
+      // BEFORE `mockRestore`, which resets the recorded calls along with the
+      // implementation — reading them afterwards yields an empty list and
+      // every assertion below would pass vacuously.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+    }
+
+    expect(lines.length, "reconcile logged nothing at all").toBeGreaterThan(0);
+    // BOTH rows, which is also how the loop's continuation is pinned: a catch
+    // that rethrew would have logged only the first.
+    for (const id of ids) {
+      expect(lines).toContain(`reconcile skipped read-only project ${id}`);
+    }
+    expect(lines.some((line) => line.includes("damaged project"))).toBe(false);
+    // And the refusal was real: neither tombstone was reaped.
+    for (const id of ids) {
+      expect(await getResearchProject("alice", id)).not.toBeNull();
+    }
+  });
+
+  it("still names a DAMAGED project when the fault is not a refusal", async () => {
+    // The control for the case above (DW-528). A catch that logged the
+    // read-only line for EVERY fault would satisfy it and hide every real one,
+    // so this walks the same catch with an ordinary storage fault.
+    const created = await project({ title: "Damaged row" });
+    const failing = vi
+      .spyOn(projectsModule, "getResearchProject")
+      .mockRejectedValue(new Error("EIO: registry unreadable"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let lines: string[] = [];
+    try {
+      await reconcileResearchProjects("alice", [created]);
+    } finally {
+      // BEFORE `mockRestore`, which clears the recorded calls with it.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+      failing.mockRestore();
+    }
+
+    expect(lines).toContain(`reconcile skipped damaged project ${created.id}`);
+    expect(lines.some((line) => line.includes("read-only project"))).toBe(false);
   });
 
   it("executes a create → queue → parseTask → run delivery once", async () => {

@@ -3980,7 +3980,9 @@ location: src/lib/research-projects.ts:228
 source_spec: `spec-dw-385-read-only-kernel-guards.md`
 severity: medium
 reason: `applyResearchProjectMutation`, `mutateResearchProject`, `updateResearchProjectIf` and `updateResearchProject` are deliberately ungated because several `research-runtime`/`research-completion` callers read a `null` return as "lost the CAS race" and compensate; a throw would strand a run. But `updateResearchProjectIf` is also what `src/app/api/research/[id]:58` calls to edit an owner's title, question and queries, so a CLI/MCP/agent-runtime caller can still patch a project's fields on a read-only deployment. Closing it needs a non-throwing refusal path for the fail-soft callers — a larger change than a gate. Recorded in the `applyResearchProjectMutation` docstring.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-read-only-gates
+resolution-undo: decad39e69a2c98280db3b6a268b2eed07cb4f509aa48fa266810968411b6482 2026-08-30 7374617475733a206f70656e
 
 ### DW-528: `reconcileResearchProjects` would relabel a read-only refusal as a damaged project.
 origin: spec-deferred 5c97dda65344
@@ -3988,7 +3990,9 @@ location: src/lib/research-runtime.ts:578
 source_spec: `spec-dw-385-read-only-kernel-guards.md`
 severity: low
 reason: `src/lib/research-runtime.ts:578,648,662` call the newly gated `deleteResearchProject` inside a per-project try whose catch logs "reconcile skipped damaged project <id>". A `ReadOnlyError` arriving there is logged as data damage. Unreachable today — `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses — so no gate or catch was added, but the log line would mislead an operator if a future caller drives reconcile on a read-only deployment.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-read-only-gates
+resolution-undo: decad39e69a2c98280db3b6a268b2eed07cb4f509aa48fa266810968411b6482 2026-08-30 7374617475733a206f70656e
 
 ### DW-529: A fourth research refusal sentence lives one screen away, inline and unowned: the Workbench Deep Research canvas.
 origin: spec-deferred 03ea64393d30
@@ -5086,4 +5090,44 @@ location: src/lib/research-runtime.ts:246
 source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
 severity: low
 reason: `src/lib/research-runtime.ts:246-270` writes `progress.message: "Research delivery is blocked. Repair the reported lock, then retry."` and surfaces the caught message as `error`. Both drain call sites (`:606-613`, `:1310-1314`) route through it, so the new `Research completion sources are not a list.` refusal is presented under an instruction naming a lock that is not involved, pointing at a Retry that re-enters the same refusal. Separately `:498` and `:500` swallow drain faults with `.catch(() => undefined)`, so cancel and retire silently no-op against a corrupt completion. Pre-existing for every fault class this path already carried; the shape refusal only makes the mismatch easier to hit.
+status: open
+
+### DW-657: The runtime's gated entry points report a mid-request read-only refusal as "Research project not found." instead of a refusal.
+origin: spec-deferred 26f2c8480da4
+location: src/lib/research-runtime.ts:490
+source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
+severity: medium
+reason: DW-527 made the CAS return `null` when read-only, and `mutateResearchProject` collapses it for its fail-soft callers. Three GATED, throwing entry points read that `null` as "the row is gone": `retireResearchProject` (src/lib/research-runtime.ts:490) returns `false`, which `DELETE /api/research/[id]` serves as 404; `queueResearchProject` (:413) and `cancelResearchProject` (:437) raise `ResearchProjectNotFoundError`, which `POST /api/research/[id]/run` serves as 404. Only reachable when the flag flips between an entry point's own `assertWritable` and its CAS write, and nothing is written either way — but the owner is told a stored project does not exist. `editResearchProject`, `createResearchProject` and `deleteResearchProject` each convert that same window back into a `ReadOnlyError`; these three were left on the collapse because DW-527's intent names the owner-editing entry point only.
+status: open
+
+### DW-658: A deployment that turns read-only mid-run aborts the run with "Research attempt was replaced" and leaves the row at `collecting`.
+origin: spec-deferred 5e5b20d7ebc8
+location: src/lib/research-runtime.ts:236
+source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
+severity: medium
+reason: `note` (src/lib/research-runtime.ts:236) and `updateResearchAttempt` (:312) turn a `null` from the CAS into `ResearchLeaseError("Research attempt for <id> was replaced.")`. Since DW-527 that `null` is also how a read-only refusal arrives, so a mid-run flip reports lease replacement rather than the deployment state, and the failure-marking write that would follow is refused too — the row stays `collecting` until the deployment is writable again and reconcile reaps it. Nothing is written, so this is a labelling and recovery-latency cost, not damage. No test flips the flag during a run.
+status: open
+
+### DW-659: `createResearchProject` answers a mid-flip refusal with `researchMutate` while its own gate answers `researchCreate`.
+origin: spec-deferred 93d5fb006b8c
+location: src/lib/research-projects.ts:571
+source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
+severity: low
+reason: src/lib/research-projects.ts:571 throws `new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate)` on the sentinel, three lines below a gate that throws `READ_ONLY_REFUSAL.researchCreate`. One door, two sentences — and `researchCreate` exists precisely because it says the thing `researchMutate` cannot: that nothing was created. The wording was pinned by this spec's own I/O matrix, so the code is correct as specified; the matrix row is what should have said `researchCreate`.
+status: open
+
+### DW-660: Reconcile's orphan-outbox catch still calls a read-only refusal a damaged outbox — the sibling of the line DW-528 fixed.
+origin: spec-deferred 348e7e8f6ccb
+location: src/lib/research-runtime.ts:843
+source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
+severity: low
+reason: src/lib/research-runtime.ts:843 logs `reconcile skipped damaged orphan outbox <id>` for every fault, and `drainResearchOutbox` reaches the gated kernel page writers, so a `ReadOnlyError` lands there exactly as it lands in the per-project catch one loop above. DW-528's intent names the per-project catch only, so the orphan loop was left alone rather than swept in.
+status: open
+
+### DW-661: The read-only sentinel is distinguishable only at the CAS primitive; every fail-soft runtime caller still sees a plain `null`.
+origin: spec-deferred a9fa661e1eb6
+location: src/lib/research-projects.ts:649
+source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
+severity: low
+reason: `mutateResearchProject` (src/lib/research-projects.ts:649) collapses `RESEARCH_WRITE_REFUSED` to `null`, which is what keeps the ~30 `research-runtime`/`research-completion` call sites unedited. So at the surface DW-527's intent named — "the fail-soft research-runtime callers can distinguish" — a refusal is still indistinguishable from a lost CAS race; only a direct caller of `applyResearchProjectMutation` can tell them apart, via `isResearchWriteRefused`. Closing that would mean editing the call sites one at a time, which is the larger change the ledger entry itself set aside.
 status: open
