@@ -386,6 +386,15 @@
     "label": "Filter before the topK slice",
     "resolution": ""
   },
+  "DW-599": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Persist the completion of a rebuild (an epoch or generation stamp) and re-arm the drift warning from that rather than from the composition of a query window, so an orphan vector cannot wedge the warning shut. Leave `rebuildVectorStore`'s never-delete contract intact. Pin the probe's scenario: two vectors, a completed rebuild re-tagging only the live one, then a genuine re-drift must warn again.",
+    "key": "1",
+    "label": "Persist rebuild state and re-arm from it",
+    "resolution": ""
+  },
   "DW-67": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
