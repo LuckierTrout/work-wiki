@@ -368,6 +368,15 @@
     "label": "Shim Storage in vitest.setup.dom.ts",
     "resolution": ""
   },
+  "DW-595": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give the graph a keyboard-owned node cursor: a focusable canvas with an owned index into the node set, arrow keys moving it, Enter/Space reaching the same handler `handleClick` does, and a visible cursor indication drawn on the canvas plus an accessible announcement of the focused node. Keep the pointer path unchanged and route both through one activation function. Pin keyboard activation opening the same page a click does.",
+    "key": "1",
+    "label": "Build the keyboard node cursor",
+    "resolution": ""
+  },
   "DW-67": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
