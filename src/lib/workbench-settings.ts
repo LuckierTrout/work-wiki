@@ -567,6 +567,21 @@ export function ollamaBaseUrlRefusedCopy(
  * `EMBEDDING_MODEL` owns the value. So this wording names "the model that is
  * set" rather than pointing at a control, and carries no markup at all. Two
  * surfaces, one fact, two sentences shaped for where they are read.
+ *
+ * What holds the WORDING together is
+ * `src/components/__tests__/embedding-substitution-copy-parity.test.tsx`
+ * (DW-336): it mounts the flat note, calls this function, asserts every SHARED
+ * clause against both, and compares them character-identical once "the model
+ * above" is normalized to "the model that is set" — with that one divergence
+ * pinned in both directions. It also pins the THIRD copy, `DEPLOY.md`'s block
+ * quote of this variant, against this function. Reword any of the three and it
+ * fails, which is what makes the duplication above safe to keep.
+ *
+ * What that suite does NOT hold is the render: it calls this function rather
+ * than mounting the canvas, so nothing there would fail if `SettingsCanvas.tsx`
+ * stopped joining the string into the model row's hint. That hop is pinned by
+ * `src/components/workbench/__tests__/settings-vector-namespace.test.tsx`,
+ * which restates the sentence by hand on purpose.
  */
 export function settingsModelSubstitutedCopy(modelInEffect: string): string {
   return (

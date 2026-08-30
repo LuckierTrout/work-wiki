@@ -277,6 +277,16 @@ export function EmbeddingSettings({
         deployment embeds with  — the embedding provider cannot serve…". A
         sentence with a hole where the model name goes is worse than no
         sentence.
+
+        This sentence has a TWIN: `settingsModelSubstitutedCopy` in
+        `workbench-settings.ts` says the same fact on the Workbench canvas, and
+        `DEPLOY.md` block-quotes that variant for operators. Exactly ONE clause
+        differs, on purpose — the note BELOW says "the model above", because it
+        sits under a box that always shows the value it means; the CANVAS
+        sentence says "the model that is set", because its box is empty whenever
+        `EMBEDDING_MODEL` owns the value. Reword any clause here and
+        `src/components/__tests__/embedding-substitution-copy-parity.test.tsx`
+        fails until every copy is considered.
       */}
       {showOverrideNote && (
         <p

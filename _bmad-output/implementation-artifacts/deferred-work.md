@@ -2452,7 +2452,9 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 location: src/components/EmbeddingSettings.tsx with src/lib/workbench-settings.ts:settingsModelSubstitutedCopy
 severity: low
 reason: `EmbeddingSettings.tsx` renders "Not in effect. This deployment embeds with <mono/> — the embedding provider cannot serve the model above, …" while `settingsModelSubstitutedCopy` returns the same sentence with "the model that is set". The divergence is deliberate and argued (the canvas box is empty whenever `EMBEDDING_MODEL` owns the value, so it cannot point at a control), and both are separately tested — but a wording fix to one leaves the other stale with no failing test. DW-312 asked for the two surfaces to answer the same question; they now agree on the VALUES, through `embeddingModelAnswer`, and nothing holds the two sentences together.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-substitution-copy-parity
+resolution-undo: c833a8e8d47fb3752cd6e865237e548fd33822c4a7a78a59c80f20fa192a10a2 2026-08-30 7374617475733a206f70656e
 
 ### DW-337: The canvas substitution note is payload-derived while the two sentences beside it are draft-derived, so mid-edit the row can describe pre-edit server state.
 origin: spec-deferred 30c4576690ec
