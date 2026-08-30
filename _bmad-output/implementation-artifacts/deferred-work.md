@@ -4125,7 +4125,9 @@ location: src/lib/backups.ts:155-163
 source_spec: `spec-dw-215-artifact-revision-retention.md`
 severity: low
 reason: `createOwnerBackupUnlocked` calls `getStorage().readAsset(sourcePath)` and only then tests `totalBytes + data.byteLength > limits.maxBytes`, so at the production ceiling an oversized object is materialised in memory in full to copy zero bytes of it — on every backup run. Pre-existing (the throwing version read first too), and `StorageProvider` already exposes `stat(path)`, which could gate the read. Not caused by DW-215; surfaced by reviewing the same loop.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-backups-oversize-read-avoidance
+resolution-undo: 6d34716c3469f637fd2d9e86f29ec50257de069b2e0d7f30137bc03814cd184d 2026-08-30 7374617475733a206f70656e
 
 ### DW-543: An agent handle owning the survivor resolves guidance against the agent's own tenant silo rather than the human's, so an agent-owned page folds with no Workspace Purpose and no dictionary.
 origin: spec-deferred 005cb3050e8f
@@ -5272,4 +5274,28 @@ location: src/lib/wikis.ts (applyScenarioTemplate failure tail) / src/app/api/wi
 source_spec: `spec-dw-381-484-scenario-template-failure-truth.md`
 severity: low
 reason: `registryNamesScenario` is documented "DETECTS, DOES NOT RECONCILE", which is what the intent asked for, but the state it detects is left standing: `POST /api/wikis/[id]/template` still answers a bare 500 with the original error, `WikiWorkbench.applyTemplate`'s catch calls `router.refresh()` only on an `unconfirmed` failure, and the switcher row silently re-labels itself with the new scenario once the 10s `DATA_VERSION_POLL_MS` watcher picks the bump up. So the owner is told the re-template failed while the surface goes on to say it succeeded. The module already has `sweepOrphanWikiDirectories` as precedent for a maintenance-scan repair; no owner exists for this one.
+status: open
+
+### DW-677: The backup copy loop still materialises every file that DOES fit, in full, and holds it through `sha256`, so one large-but-fitting object can exhaust the Workers isolate long before the 2 GiB total ce
+origin: spec-deferred e8197b7f615b
+location: src/lib/backups.ts:176-186
+source_spec: `spec-dw-542-backup-oversize-read-avoidance.md`
+severity: low
+reason: `createOwnerBackupUnlocked` reads each fitting file with `readAsset` into a whole ArrayBuffer, then hashes and writes it. There is no per-file size guard and no streaming/chunked copy. `MAX_BACKUP_BYTES` is 2 GiB while the Workers isolate memory limit is a small fraction of that, so the OOM arrives from a single large object rather than from the ceiling that was designed to stop it. DW-542 removed the wasted read of a file that does NOT fit; it does not bound the read of one that does.
+status: open
+
+### DW-678: A throw partway through the copy loop leaves already-written backup files orphaned with no manifest and no ledger line, and nothing ever prunes them.
+origin: spec-deferred 938b9e785214
+location: src/lib/backups.ts:139-198
+source_spec: `spec-dw-542-backup-oversize-read-avoidance.md`
+severity: low
+reason: `createOwnerBackupUnlocked` has no try/catch: when `stat` or `readAsset` rejects mid-copy, the files already written under `backups/<tenant>/<id>/files/` stay forever, `writeManifest` never runs, and unlike `verifyOwnerBackup` — which records a `status: "failed"` operation — no ledger line is recorded at all. `backups.ts` has no pruning of any kind, so repeated failures accumulate silently and invisibly. Pre-existing; the new `stat` call rejects on exactly the same path the read did.
+status: open
+
+### DW-679: `buildPortableArchive` has the read-then-check shape DW-542 just replaced in the backup loop.
+origin: spec-deferred ac599c73e868
+location: src/lib/portable-archive.ts:89-92
+source_spec: `spec-dw-542-backup-oversize-read-avoidance.md`
+severity: low
+reason: It calls `readAsset` on each file, adds `data.byteLength` to `totalBytes`, and only then throws past `MAX_BYTES` — so the object that trips the 500 MB limit is pulled fully into memory before the failure. It throws rather than truncating, so its observable contract differs from the backup loop's, but the read-avoidance argument applies unchanged.
 status: open

@@ -42,6 +42,15 @@
  * - `listFiles` returns **file names only** (not full paths), filtered by a
  *   prefix directory. This matches the `readdir()` usage across the codebase.
  *
+ * - `stat(p).size` MUST equal `(await readAsset(p)).byteLength` for the same
+ *   `p`: the number a provider reports is the number of bytes a read of that
+ *   path hands back, not a stored, compressed, encoded or padded length. This
+ *   is what lets a caller substitute a cheap metadata call for a full read when
+ *   all it needs is the size — `createOwnerBackup` gates its 2 GiB ceiling on
+ *   one HEAD per file rather than materialising the file that does not fit. A
+ *   provider that reported some other number would make that backup stop at a
+ *   file that fit, or copy one it should have stopped at.
+ *
  * - `appendFile` exists specifically for `log.md`, which is the only file
  *   appended to rather than overwritten.
  *
@@ -66,7 +75,11 @@
 
 /** Minimal file metadata returned by stat-like operations. */
 export interface FileInfo {
-  /** File size in bytes */
+  /**
+   * File size in bytes — the SAME count `readAsset` on that path returns as
+   * `byteLength`, never a stored or encoded length. See the cross-provider
+   * invariant in this file's header docblock.
+   */
   size: number;
   /** Last modified time (ISO string or Date) */
   lastModified: Date;
@@ -221,6 +234,11 @@ export interface StorageProvider {
 
   /**
    * Get file metadata (size, last modified time).
+   *
+   * `size` MUST agree with `readAsset` on the same path, byte for byte, so a
+   * caller that only needs the size can ask here instead of reading the whole
+   * object. See the header docblock; `createOwnerBackup` depends on it.
+   *
    * @param path — relative path
    * @returns FileInfo
    * @throws if the file does not exist

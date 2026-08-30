@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -10,6 +10,7 @@ import {
   summarizeBackup,
   verifyOwnerBackup,
 } from "../backups";
+import { isEnoent } from "../errors";
 import { listOperations } from "../operation-ledger";
 import { _resetStorage, getStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
@@ -28,6 +29,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
   _resetStorage();
@@ -172,6 +174,173 @@ describe("backups that hit a limit", () => {
       created.files.reduce((sum, file) => sum + file.size, 0),
     );
     expect(created.files.some((file) => file.path.endsWith("big.md"))).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // DW-542 — the ceiling is gated on `stat`, not on a completed read
+  // -------------------------------------------------------------------------
+  //
+  // The loop used to `readAsset` first and only THEN test the ceiling, so the
+  // first object that did not fit was pulled into memory in full to copy zero
+  // bytes of it. The gate that replaced that has three observable halves: the
+  // oversized file is never read, every file that DOES fit still is, and the
+  // post-read check still owns the invariant — which on a real provider, where
+  // `stat().size` and `readAsset().byteLength` always agree, is only visible
+  // if a test forces them to disagree.
+
+  /**
+   * Spy `stat` and `readAsset` on the storage singleton, recording every path
+   * each is asked for.
+   *
+   * The singleton, not a fake provider: the fixture's real
+   * `FilesystemStorageProvider` is what `stat` has to agree with, and a fake
+   * would be free to make them agree by construction.
+   *
+   * @param refuseRead — paths whose `readAsset` must never happen. Asking for
+   *   one THROWS, so a regression fails the backup instead of passing quietly.
+   * @param understate — paths whose `stat` reports zero bytes, the strongest
+   *   under-report there is, while the file on disk keeps its real length.
+   */
+  function spyOnStorage({
+    refuseRead = () => false,
+    understate = () => false,
+  }: {
+    refuseRead?: (path: string) => boolean;
+    understate?: (path: string) => boolean;
+  } = {}): { statted: string[]; read: string[] } {
+    const storage = getStorage();
+    const originalStat = storage.stat.bind(storage);
+    const originalRead = storage.readAsset.bind(storage);
+    const statted: string[] = [];
+    const read: string[] = [];
+    vi.spyOn(storage, "stat").mockImplementation(async (target) => {
+      statted.push(target);
+      const info = await originalStat(target);
+      return understate(target) ? { ...info, size: 0 } : info;
+    });
+    vi.spyOn(storage, "readAsset").mockImplementation(async (target) => {
+      read.push(target);
+      if (refuseRead(target)) {
+        throw new Error(`readAsset must never be called for ${target}`);
+      }
+      return originalRead(target);
+    });
+    return { statted, read };
+  }
+
+  /**
+   * Seed a `wiki/` file that CANNOT fit, and return the ceiling that excludes
+   * it. It is larger than that ceiling itself, so no prefix of the walk leaves
+   * room for it and the case does not depend on the order `walkFiles` yields.
+   *
+   * Sized from the measurement rather than a literal on purpose: a hard-coded
+   * 4 KiB would start FITTING the day the shared fixture outgrows it, and the
+   * case would then fail on fixture growth rather than on a regression.
+   */
+  async function seedUnfittable(name: string): Promise<number> {
+    const { bytes: maxBytes } = await measureTenant();
+    await getStorage().writeFile(`${ROOT}/wiki/${name}`, "x".repeat(maxBytes + 1));
+    return maxBytes;
+  }
+
+  it("never reads the file that would pass the byte cap", async () => {
+    const maxBytes = await seedUnfittable("oversized.md");
+    const { read } = spyOnStorage({
+      refuseRead: (target) => target.endsWith("/wiki/oversized.md"),
+    });
+
+    const created = await createOwnerBackup(
+      "alice",
+      new Date("2026-08-03T08:00:00.000Z"),
+      { maxFiles: 100, maxBytes },
+    );
+
+    // It resolved at all, with the byte reason — so the break happened, and the
+    // only file that can break this backup is the one whose read throws.
+    expect(created.truncated).toBe(true);
+    expect(created.truncationReason).toBe("total-bytes");
+    expect(read.some((target) => target.endsWith("/wiki/oversized.md"))).toBe(false);
+    expect(created.files.some((file) => file.path.endsWith("oversized.md"))).toBe(false);
+    // `stat` gates; it never accounts. A gate that credited the size it was
+    // told instead of the bytes it copied would break this equality first.
+    expect(created.totalBytes).toBe(
+      created.files.reduce((sum, file) => sum + file.size, 0),
+    );
+    expect(created.totalBytes).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it("re-tests the ceiling on the bytes it read when `stat` under-reports", async () => {
+    // The one case that can see the post-read check at all: on the filesystem
+    // provider `stat` and the read always agree, so the pre-read gate decides
+    // every other case here and the second check could be deleted unnoticed.
+    const maxBytes = await seedUnfittable("liar.md");
+    const { read } = spyOnStorage({
+      understate: (target) => target.endsWith("/wiki/liar.md"),
+    });
+
+    const created = await createOwnerBackup(
+      "alice",
+      new Date("2026-08-03T08:00:00.000Z"),
+      { maxFiles: 100, maxBytes },
+    );
+
+    // The gate waved it through on a lie; the check on the real bytes stopped
+    // it, and the manifest is still under the ceiling.
+    expect(read.some((target) => target.endsWith("/wiki/liar.md"))).toBe(true);
+    expect(created.truncated).toBe(true);
+    expect(created.truncationReason).toBe("total-bytes");
+    expect(created.files.some((file) => file.path.endsWith("liar.md"))).toBe(false);
+    expect(created.totalBytes).toBeLessThanOrEqual(maxBytes);
+  });
+
+  it("stats and reads exactly the files it copies, once each, when the tenant fits", async () => {
+    // The mirror of the oversize case: a gate that silently SKIPPED files would
+    // pass that one too. A whole backup touches the copied set and nothing else.
+    await seedExtras(3);
+    const { count: total } = await measureTenant();
+    const { statted, read } = spyOnStorage();
+
+    const created = await createOwnerBackup(
+      "alice",
+      new Date("2026-08-03T08:00:00.000Z"),
+      { maxFiles: 100, maxBytes: 1024 * 1024 },
+    );
+
+    expect(created.files).toHaveLength(total);
+    expect("truncated" in created).toBe(false);
+    expect("truncationReason" in created).toBe(false);
+    const copied = created.files.map((file) => file.path).sort();
+    // Once each, both ways. A short `read` means files that fit were skipped;
+    // a long `statted` means the gate costs more than the one HEAD per file it
+    // was justified by.
+    expect([...read].sort()).toEqual(copied);
+    expect([...statted].sort()).toEqual(copied);
+  });
+
+  it("rejects when a file the walk listed is gone by copy time", async () => {
+    // The walk and the copy are two passes over the same tree, so a file can
+    // disappear between them. `stat` now asks first, and its not-found must be
+    // the same rejection `readAsset`'s was: a backup that quietly omitted a
+    // file it had been told exists would report itself WHOLE.
+    const { read } = spyOnStorage();
+    const storage = getStorage();
+    const originalList = storage.listFiles.bind(storage);
+    vi.spyOn(storage, "listFiles").mockImplementation(async (prefix) => {
+      const entries = await originalList(prefix);
+      return prefix === `${ROOT}/wiki`
+        ? [...entries, { name: "vanished.md", isDirectory: false }]
+        : entries;
+    });
+
+    const error = await createOwnerBackup("alice", new Date("2026-08-03T08:00:00.000Z"))
+      .then(() => null, (caught: unknown) => caught);
+
+    expect(isEnoent(error)).toBe(true);
+    // ENOENT on its own would be satisfied by any missing file anywhere in the
+    // call. These two say it was THIS path, and that `stat` — not `readAsset` —
+    // is what refused it.
+    expect((error as NodeJS.ErrnoException).path).toContain("vanished.md");
+    expect(read.some((target) => target.endsWith("vanished.md"))).toBe(false);
   });
 
   // The two boundaries. `walkFiles` pushes while `files.length < maxFiles` and

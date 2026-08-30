@@ -153,10 +153,31 @@ async function createOwnerBackupUnlocked(
     : null;
 
   for (const sourcePath of walked.files) {
-    const data = await getStorage().readAsset(sourcePath);
-    if (totalBytes + data.byteLength > limits.maxBytes) {
+    // Ask the size before pulling the bytes (DW-542). `stat` is one HEAD on R2,
+    // one statx on disk; `readAsset` is the whole object. The trade is one
+    // extra stat on every file against at most one avoided read — worth taking
+    // only because the read it avoids is, by definition, of a file big enough
+    // to break the ceiling.
+    //
+    // Two things this gate is NOT. It is not symmetric: an UNDER-reporting stat
+    // is caught below, but an OVER-reporting one records a tenant that would
+    // have fit as `truncated` — wrong in the conservative, visible direction.
+    // And it is not the only not-found detector: a file can still vanish in the
+    // window this opens between the stat and the read.
+    const { size } = await getStorage().stat(sourcePath);
+    if (totalBytes + size > limits.maxBytes) {
       // The byte ceiling stops the copy EARLIER in the same list than the file
       // ceiling did, so it is the truer answer to "what stopped this backup".
+      truncationReason = "total-bytes";
+      break;
+    }
+    const data = await getStorage().readAsset(sourcePath);
+    // The check above is the optimisation; this one owns the invariant. `stat`
+    // gates and never accounts — `totalBytes`, the entry's `size` and its
+    // `sha256` all come from these bytes — so re-testing the ceiling here is
+    // what keeps `totalBytes <= maxBytes` true when stat under-reports. When
+    // the two agree, which is always on a healthy provider, this never fires.
+    if (totalBytes + data.byteLength > limits.maxBytes) {
       truncationReason = "total-bytes";
       break;
     }
