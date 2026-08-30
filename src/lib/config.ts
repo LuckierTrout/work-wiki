@@ -10,7 +10,6 @@ import { sourceSha256 } from "./source-sha256";
 import { getStorage } from "./storage";
 import { LOOPBACK_TOKEN_ENV, type LoopbackTokenSource } from "./v1-contract";
 import {
-  LOOPBACK_MCP_ENTRY,
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
   embeddingProviderChanged,
@@ -25,6 +24,7 @@ import {
   type WorkbenchSettingsStored,
   type WorkbenchSettingsValues,
 } from "./workbench-settings";
+import { LOOPBACK_MCP_ENTRY } from "./workbench-api-mcp-settings";
 
 // Re-export provider constants so existing consumers can import from config
 export { PROVIDER_INFO, VALID_PROVIDERS, DEFAULT_MODELS, providerLabel } from "./providers";

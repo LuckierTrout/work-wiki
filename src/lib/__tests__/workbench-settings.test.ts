@@ -5056,6 +5056,12 @@ describe("the Settings components stay inside the shell", () => {
     // would have to start with one of these.
     expect(canvas).not.toMatch(/[^a-zA-Z]fetch\(/);
     expect(canvas).not.toContain('"/api/');
+    // The API + MCP pane holds the same posture (DW-445). Its one network call
+    // is `probeLoopbackApiPane`, which goes through the shared loopback client
+    // and names its URLs in `v1-contract.ts` — the pane names none of its own.
+    const apiPane = await readComponent("SettingsApiMcpPane.tsx");
+    expect(apiPane).not.toMatch(/[^a-zA-Z]fetch\(/);
+    expect(apiPane).not.toContain('"/api/');
     expect(canvas.match(/saveWorkbenchSettings\(/g) ?? []).toHaveLength(1);
     // TWO reads, and the second is a decision rather than an accident (DW-555).
     // One is the mount read that seeds the payload and the draft. The other is
@@ -5135,23 +5141,30 @@ describe("the Settings components stay inside the shell", () => {
     // Every control a read-only deployment refuses routes its description
     // through `describedBy`, which APPENDS the save bar's read-only sentence to
     // the control's own hint — `aria-describedby` takes a space-separated list,
-    // so the hint is kept rather than replaced. ELEVEN call sites now: the two
-    // provider pickers, the vector switch, `textRow`, `secretRow` (DW-307),
-    // the Deep Research provider picker — whose hint carries both the
-    // env-pinned note and the "this provider has no credential" refusal —
+    // so the hint is kept rather than replaced. NINE call sites in the canvas:
+    // the two provider pickers, the vector switch, `textRow`, `secretRow`
+    // (DW-307), the Deep Research provider picker — whose hint carries both the
+    // env-pinned note and the "this provider has no credential" refusal — and
     // Epic 7's three: Intake's keep-parsed checkbox, MinerU's enable checkbox
     // and MinerU's mode select, whose description IS the orange
     // leave-the-machine warning and so must be announced rather than merely
-    // rendered beside the control — and Epic 8's two on the API + MCP pane: the
-    // API switch, and the unauthenticated-access switch whose description is the
-    // orange "anything on this machine can read the wiki" warning.
-    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(11);
+    // rendered beside the control.
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(9);
+    // Epic 8's two went WITH the pane when it moved out (DW-445): the API
+    // switch, and the unauthenticated-access switch whose description is the
+    // orange "anything on this machine can read the wiki" warning. `describedBy`
+    // is passed down from the canvas, so both still append the same sentence.
+    const apiPane = await readComponent("SettingsApiMcpPane.tsx");
+    expect(apiPane.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(2);
     expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
     expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
     // Each row builder wires its own hint; none of them renders a bare span.
-    const hintSpans = [...canvas.matchAll(/<span className="wb-set-hint"/g)];
-    const identified = [...canvas.matchAll(/<span className="wb-set-hint" id=/g)];
-    expect(identified.length).toBe(hintSpans.length);
+    // A ratio, so it holds per file — the API + MCP pane carries its own two.
+    for (const source of [canvas, apiPane]) {
+      const hintSpans = [...source.matchAll(/<span className="wb-set-hint"/g)];
+      const identified = [...source.matchAll(/<span className="wb-set-hint" id=/g)];
+      expect(identified.length).toBe(hintSpans.length);
+    }
     // NO bare `hintId` left. The secret row was the last one, exempted on the
     // reasoning that a read-only deployment renders it `readOnly` rather than
     // `aria-disabled` so it has "no refusal to announce" — which was never true
@@ -5184,14 +5197,21 @@ describe("the Settings components stay inside the shell", () => {
     expect(canvas).toContain("disabled={saving || payload.readOnly || !dirty}");
 
     // Every control the read-only flag ALONE refuses carries the attribute: the
-    // LLM provider picker, Epic 7's Intake keep-parsed checkbox, MinerU enable
-    // checkbox and MinerU mode select, and Epic 8's API switch and
-    // unauthenticated-access switch. Counted rather than enumerated so a new
-    // refusable control cannot be added without this number moving — the vector
-    // switch has its own compound predicate below.
+    // LLM provider picker, and Epic 7's Intake keep-parsed checkbox, MinerU
+    // enable checkbox and MinerU mode select. Counted rather than enumerated so
+    // a new refusable control cannot be added without this number moving — the
+    // vector switch has its own compound predicate below.
     expect(canvas.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
-      6,
+      4,
     );
+    // Epic 8's two left with the pane (DW-445) — the API switch and the
+    // unauthenticated-access switch — and they refuse the same way there, on
+    // the same `stored` the canvas hands down.
+    const apiPane = await readComponent("SettingsApiMcpPane.tsx");
+    expect(apiPane.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
+      2,
+    );
+    expect(apiPane).not.toMatch(/(?<![-\w])disabled=\{/);
     // TWO controls refuse on read-only OR an env pin: the Deep Research
     // provider select, and the embedding provider select (DW-398). Both are
     // selects whose move is DESTRUCTIVE beyond the field itself — the embedding
@@ -5376,8 +5396,42 @@ describe("the Settings components stay inside the shell", () => {
     expect(canvas).toMatch(/setStatus\(""\);[\s\S]{0,300}setSaveError\(null\);/);
   });
 
+  it("leaves the API + MCP pane's vocabulary and live state entirely to the pane (DW-445)", async () => {
+    // The extraction's own pin. The category moved out with its copy, its
+    // reveal toggle and its health probe; the canvas keeps only the `case` that
+    // renders it. Anything of these names reappearing here is the split coming
+    // undone — a second copy of a sentence, or a second probe firing from a
+    // surface that is not showing the pane.
+    const canvas = await readComponent("SettingsCanvas.tsx");
+    expect(canvas).not.toMatch(/SETTINGS_API_[A-Z_]+/);
+    expect(canvas).not.toContain("probeLoopbackApiPane");
+    expect(canvas).not.toContain("revealToken");
+    expect(canvas).not.toContain("apiLive");
+    expect(canvas).not.toContain("loopbackMcpConfig");
+    expect(canvas).not.toContain("maskToken");
+    // …and the pane is what the category renders, from the one `case`.
+    expect(canvas).toContain("<SettingsApiMcpPane");
+    expect(canvas.match(/<SettingsApiMcpPane/g)).toHaveLength(1);
+    // The pane takes the canvas's id builder and describer rather than making
+    // its own, so its controls stay in the one `useId` namespace and the
+    // read-only sentence still appends to both of its hints.
+    expect(canvas).toContain("field={field}");
+    expect(canvas).toContain("describedBy={describedBy}");
+    // `apply` is the only edit gesture handed down — it is what clears the
+    // status and the refusal, so a pane with its own `setDraft` would leave
+    // both standing beside an edit that invalidated them.
+    expect(canvas).toContain("apply={apply}");
+    const pane = await readComponent("SettingsApiMcpPane.tsx");
+    expect(pane).not.toContain("setDraft");
+    expect(pane).not.toContain("useId(");
+  });
+
   it("keeps the shell router-free and the draft out of durable storage", async () => {
-    for (const file of ["SettingsCanvas.tsx", "SettingsNav.tsx"]) {
+    for (const file of [
+      "SettingsCanvas.tsx",
+      "SettingsNav.tsx",
+      "SettingsApiMcpPane.tsx",
+    ]) {
       const source = await readComponent(file);
       expect(source).not.toMatch(/\buseRouter\(/);
       expect(source).not.toMatch(/from "next\/link"/);
@@ -5521,6 +5575,7 @@ describe("the Settings components stay inside the shell", () => {
     const sources = [
       await readComponent("SettingsCanvas.tsx"),
       await readComponent("SettingsNav.tsx"),
+      await readComponent("SettingsApiMcpPane.tsx"),
     ].join("\n");
     const applied = new Set(
       [...sources.matchAll(/\bwb-set-[a-z-]+/g)].map((match) => match[0]),

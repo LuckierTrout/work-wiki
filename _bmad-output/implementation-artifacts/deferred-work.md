@@ -3269,7 +3269,9 @@ archived: 2026-08-29
 origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
 location: src/components/workbench/SettingsCanvas.tsx, src/lib/workbench-settings.ts
 reason: Split out of epic-8-retro-architecture-follow-on so that run could cover only the `sidecar/server.mjs` provider and the Chat transport. Pulling the API/MCP category out of the generic SettingsCanvas / workbench-settings pair is an independent Settings extract and can land and merge without the sidecar change.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-api-mcp-category-extract
+resolution-undo: efd74897002ddbf6666e6d804364305806fd666f85c17f9f6ff37c11ab8de695 2026-08-30 7374617475733a206f70656e
 
 ### DW-446: Inline parts still consume attachment-count slots and aggregate-budget bytes while being excluded from every countable loss, so the over-cap sentence can quote a limit the sender never reached and an
 
@@ -4856,4 +4858,28 @@ location: src/lib/llm.ts:433
 source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
 severity: low
 reason: Both ladders now end at the same derived destination, but they disagree on what is wrong. `getModel` (`src/lib/llm.ts:336-360`) checks the base URL first and then says "The Custom provider needs an API key."; `getConfiguredModel`'s pre-switch guard (`:433`) fires before the `custom` case and says "The Custom provider is not configured on this server." — reporting the missing key before the missing base URL, the reverse of its sibling's order. DW-503 asked only for the destination and the display label, both delivered; the diagnosis half is untouched and pre-existing. `llm.test.ts:544`'s cross-ladder parity test sets `LLM_CUSTOM_API_KEY` specifically to step past this guard, so the one Custom state where the two ladders disagree is the state it does not cover. Not already in the ledger: `deferred-work.md:3748` is DW-503 itself, which names the ordering but does not record the divergence.
+status: open
+
+### DW-633: The `starting` loopback health status renders the pane's "The sidecar is running" sentence, because the health ternary only special-cases port_conflict, unreachable and error.
+origin: spec-deferred ab4203592b4f
+location: src/components/workbench/SettingsApiMcpPane.tsx (the apiLive health ternary)
+source_spec: `spec-dw-445-settings-api-mcp-extract-2.md`
+severity: medium
+reason: `LOOPBACK_STATUSES` in `src/lib/v1-contract.ts` is ["starting","running","port_conflict","error"], and `classifyLoopbackHealth` returns "starting" verbatim. The pane's ternary falls through everything that is not port_conflict/unreachable/error to SETTINGS_API_HEALTH_RUNNING_COPY, so a starting sidecar is described as running. There is no SETTINGS_API_HEALTH_STARTING_COPY to render instead. Pre-existing: moved verbatim out of SettingsCanvas by DW-445, not introduced by it, and outside that refactor's byte-identical mandate.
+status: open
+
+### DW-634: The API token row's hint span carries an id that no control references, so the env-pinned and "copy it now" sentences are announced by nothing.
+origin: spec-deferred 36697e62aabe
+location: src/components/workbench/SettingsApiMcpPane.tsx (the API token row)
+source_spec: `spec-dw-445-settings-api-mcp-extract-2.md`
+severity: medium
+reason: The span is `id={field("apiToken-hint")}`, but Generate, Show/Hide and Copy all point their `aria-describedby` at `field("apiToken-label")`. The workbench-settings.ts source scan only asserts every `wb-set-hint` span HAS an id, never that a control references it, so this reads as covered while the sentence is unannounced. Pre-existing: moved verbatim by DW-445.
+status: open
+
+### DW-635: SETTINGS_API_TOKEN_ABSENT_COPY can render twice on screen at once — as the token row's hint and again as the wb-set-warn status note.
+origin: spec-deferred 38456ba05e5b
+location: src/components/workbench/SettingsApiMcpPane.tsx (token hint + missing-token note)
+source_spec: `spec-dw-445-settings-api-mcp-extract-2.md`
+severity: low
+reason: With the door open, unauth off and no token anywhere, the hint's final fallback branch selects SETTINGS_API_TOKEN_ABSENT_COPY and `draftApiTokenMissing` renders the same sentence again as a role="status" note. The new dom suite has to work around the duplicate with `getAllByRole("status").find(...)` rather than `getByText`. One of the two should say something different. Pre-existing: moved verbatim by DW-445.
 status: open

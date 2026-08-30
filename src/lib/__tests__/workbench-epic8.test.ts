@@ -63,7 +63,7 @@ import {
   settingsDraftAfterApiEnabled,
   settingsDraftAfterTokenGenerated,
   WORK_WIKI_SKILL_DIR,
-} from "../workbench-settings";
+} from "../workbench-api-mcp-settings";
 import { getLoopbackApiSettings, skillEnabled } from "../config";
 import {
   matchSkills,

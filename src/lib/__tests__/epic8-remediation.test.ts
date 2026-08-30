@@ -62,7 +62,7 @@ import {
 } from "../v1-contract";
 import { registerLoopbackTools } from "../../../sidecar/mcp.mjs";
 import { persistChatTurn, createChatConversation, getChatConversation } from "../chat";
-import { loopbackMcpConfig } from "../workbench-settings";
+import { loopbackMcpConfig } from "../workbench-api-mcp-settings";
 import { classifyLoopbackHealth } from "../workbench-loopback-health";
 import { rescanSources } from "../source-rescan";
 import { _resetLocks } from "../lock";

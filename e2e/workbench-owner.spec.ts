@@ -6,7 +6,7 @@ import {
   SETTINGS_API_ENABLE_LABEL,
   SETTINGS_API_MCP_COPY,
   SETTINGS_API_MCP_HEADING,
-} from "../src/lib/workbench-settings";
+} from "../src/lib/workbench-api-mcp-settings";
 import {
   SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
   SETTINGS_API_HEALTH_RUNNING_COPY,
