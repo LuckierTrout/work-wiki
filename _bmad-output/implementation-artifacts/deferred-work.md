@@ -3990,7 +3990,9 @@ location: src/components/workbench/ResearchCanvas.tsx:265
 source_spec: `spec-dw-386-387-read-only-client-parity.md`
 severity: medium
 reason: `src/components/workbench/ResearchCanvas.tsx:265` renders the literal "Deep Research cannot start while this deployment is read-only." in front of `POST /api/research` and `POST /api/research/[id]/run` — the same two doors this change gave `RESEARCH_CREATE_READ_ONLY_COPY` and `RESEARCH_MUTATE_READ_ONLY_COPY`. It is not in `READ_ONLY_REFUSAL`, has no parity-suite entry, and is not character-identical to either sentence its doors answer, so the Workbench and the Studio now state one deployment state three ways. Pre-existing — the canvas is outside this bundle's surfaces — but it is the DW-387 shape on a surface DW-387 did not name.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-client-refusal-parity
+resolution-undo: 615600ac4e8f50e2aa5c551cc7c336110956d0d7909f068f2bbaf7e239cbff25 2026-08-30 7374617475733a206f70656e
 
 ### DW-530: The Knowledge Studio panels outside the Research desk still compose writes in front of doors that refuse, with no read-only term at all.
 origin: spec-deferred 879face3635e
@@ -3998,7 +4000,9 @@ location: src/components/KnowledgeStudio.tsx:412
 source_spec: `spec-dw-386-387-read-only-client-parity.md`
 severity: medium
 reason: `SetupPanel` POSTs `/api/vaults` (`src/components/KnowledgeStudio.tsx:412`), `SkillsPanel` creates, patches and deletes agent skills (968, 986, 1004), and `PortabilityPanel` imports an archive (1049). None reads `readOnly`, which the Studio now has on hand, so each still submits and meets its refusal afterwards — the DW-386 shape, on the panels this bundle's intent did not name (it justified `KnowledgeStudio` solely with "posts to `/api/research`"). Recorded in the `KnowledgeStudio.tsx` module note rather than widened into this change.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-client-refusal-parity
+resolution-undo: 615600ac4e8f50e2aa5c551cc7c336110956d0d7909f068f2bbaf7e239cbff25 2026-08-30 7374617475733a206f70656e
 
 ### DW-531: Three Workbench canvases gate the read-only flag with plain `disabled=`, the DW-191/DW-299 shape the rest of the codebase argues against.
 origin: spec-deferred e6d35d1920b4
@@ -4006,7 +4010,9 @@ location: src/components/workbench/ReviewCanvas.tsx:230
 source_spec: `spec-dw-386-387-read-only-client-parity.md`
 severity: low
 reason: `src/components/workbench/GraphCanvas.tsx:549,558` and `src/components/workbench/ReviewCanvas.tsx:230,242,250` pass `readOnly` straight into `disabled`, and `ResearchCanvas.tsx:259` folds it into `disabled={!canStart}`. A `disabled` control leaves the tab order, so the standing refusal cannot be reached or announced with its reason — the exact defect DW-191 and DW-299 removed from `/settings` and `WorkspacePurposeSettings`. Pre-existing; surfaced by this change only because its comments restate that rule as if it held everywhere.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-client-refusal-parity
+resolution-undo: 615600ac4e8f50e2aa5c551cc7c336110956d0d7909f068f2bbaf7e239cbff25 2026-08-30 7374617475733a206f70656e
 
 ### DW-532: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`'s golden example still quotes the pre-DW-389 `disputed-page` suggestion verbatim.
 origin: spec-deferred 2d89eeccb2ef
@@ -4952,4 +4958,20 @@ location: src/lib/__tests__/read-only-door-coverage.test.ts:36
 source_spec: `spec-dw-302-315-317-read-only-kernel-writer-coverage.md`
 severity: low
 reason: `KERNEL_WRITERS` in `read-only-door-coverage.test.ts` now names the page/artifact, wiki-lifecycle and workspace-profile writers. Still absent and still carrying `assertWritable`: `createNamesTerm`, `updateNamesTerm`, `deleteNamesTerm` (`src/lib/names-terms.ts:322,354,378`), `createResearchProject` / `deleteResearchProject` (`src/lib/research-projects.ts`), `saveEmailIngestConfig` (`src/lib/email-ingest.ts:107`), plus `lifecycle.ts`'s `pruneStaleIndexEntry` (:1118) and `deleteWikiPageWhileLocked` (:1205). Their doors are enumerated by name in `read-only-copy-parity.test.ts` rather than derived, so nothing is broken today — the gap is prospective, the same one DW-315 named for the wiki-lifecycle writers. The new `KERNEL_WRITERS` docblock records the omission explicitly, so this is a recorded scope boundary rather than an oversight. Out of this bundle's intent, which names only the wiki-lifecycle and workspace-profile writers.
+status: open
+
+### DW-643: The Workbench Todos canvas still folds the standing read-only refusal into plain `disabled=`, in front of a door that DOES refuse.
+origin: spec-deferred 3b2a6f3f943e
+location: src/components/workbench/TodosCanvas.tsx:216
+source_spec: `spec-dw-529-530-531-read-only-client-refusal-parity.md`
+severity: medium
+reason: `src/components/workbench/TodosCanvas.tsx` gates every write control with `disabled={readOnly || …}` (216, 224, 266, 286, 307, 316, 319, 356, 364, 376, 388, 398, 406, 419, 428) and renders no read-only sentence at all, while `POST /api/todos` and `PATCH`/`DELETE /api/todos/[id]` answer `READ_ONLY_REFUSAL.todos`. It takes the same `readOnly` from the same parent (`ModeCanvas.tsx:226`) as the two canvases DW-531 named, uses the same `.wb-todos-btn` class this change gave an `aria-disabled` face, and has no client mirror and no parity-suite row. `todos-canvas.test.tsx:145-158` pins the OLD shape, so adopting the new one is a test change too. Not in DW-531's five controls, so left alone rather than widened into this change.
+status: open
+
+### DW-644: The Deep Research canvas HIDES its row controls under read-only instead of refusing them, so `RESEARCH_MUTATE_READ_ONLY_COPY` has no Workbench voice.
+origin: spec-deferred 0ee6df37af63
+location: src/components/workbench/ResearchCanvas.tsx:403
+source_spec: `spec-dw-529-530-531-read-only-client-refusal-parity.md`
+severity: low
+reason: `src/components/workbench/ResearchCanvas.tsx:403,409` render Cancel and Start/Retry only when `!readOnly`, so on a read-only deployment the controls vanish rather than standing refused with a reason — a third shape beside `disabled` and `aria-disabled`, and the one that explains least. Their door is `POST /api/research/[id]/run`, whose sentence `RESEARCH_MUTATE_READ_ONLY_COPY` this change moved into `src/lib/research-panel.ts` for the canvases and which still has exactly one consumer, the Studio. DW-531 named only the five `disabled=` controls in Graph and Review, and the bundle intent excluded ResearchCanvas, so the hidden rows were left as they are.
 status: open

@@ -5477,6 +5477,16 @@ describe("the Settings components stay inside the shell", () => {
     expect(css).toMatch(
       /\.wb-wiki-switch-action\[aria-disabled="true"\] \{[^}]*cursor: default;/,
     );
+    // DW-531's five: the Graph and Review card controls. `readOnly` no longer
+    // sets `disabled` on any of them, so without this rule all five render at
+    // full opacity with a pointer cursor while refusing every click — and no
+    // mounted test can see it, because jsdom applies no stylesheet. `disabled`
+    // stays for their transient states, so the face has to be reachable through
+    // both selectors.
+    expect(css).toMatch(/\.wb-todos-btn\[disabled\] \{[^}]*cursor: default;/);
+    expect(css).toMatch(
+      /\.wb-todos-btn\[aria-disabled="true"\] \{[^}]*cursor: default;/,
+    );
   });
 
   it("labels the embedding provider that is not an LLM provider", async () => {

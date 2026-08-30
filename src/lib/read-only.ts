@@ -29,11 +29,11 @@
  * (`DELETE_PAGE_READ_ONLY_COPY`, `EDIT_PAGE_READ_ONLY_COPY`,
  * `REINGEST_READ_ONLY_COPY`, `REVERT_READ_ONLY_COPY`,
  * `WORKSPACE_PURPOSE_READ_ONLY_COPY`, `BULK_DELETE_READ_ONLY_COPY`,
- * `CREATE_PAGE_READ_ONLY_COPY`, DW-386's `NAMES_TERMS_READ_ONLY_COPY`,
- * `EMAIL_INGEST_READ_ONLY_COPY`, `RESEARCH_CREATE_READ_ONLY_COPY`,
- * `RESEARCH_MUTATE_READ_ONLY_COPY` and `RESEARCH_COLLECT_READ_ONLY_COPY`,
- * DW-387's `EMBEDDING_REBUILD_READ_ONLY_COPY`, and the
- * `workbench-tree`/`workbench-preview`
+ * `CREATE_PAGE_READ_ONLY_COPY`, DW-386's `NAMES_TERMS_READ_ONLY_COPY` and
+ * `EMAIL_INGEST_READ_ONLY_COPY`, DW-387's
+ * `EMBEDDING_REBUILD_READ_ONLY_COPY`, DW-531's
+ * `GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY` and `REVIEW_QUEUE_READ_ONLY_COPY`,
+ * and the `workbench-tree`/`workbench-preview`
  * pair `WIKI_CREATE_READ_ONLY_COPY`/`WIKI_TEMPLATE_READ_ONLY_COPY` and
  * `PREVIEW_HISTORY_READ_ONLY_COPY`) because this module
  * imports `./config`, which pulls the settings/storage/embeddings graph and
@@ -42,12 +42,39 @@
  * instead: `src/lib/__tests__/read-only-copy-parity.test.ts` compares each
  * client constant against the server sentence it mirrors.
  *
- * One client mirror does NOT live beside its component: `SETTINGS_READ_ONLY_COPY`
- * in `workbench-settings.ts`, which the Workbench save bar and the `/settings`
- * banner both render. That module is already client-safe and already owns the
- * rest of the settings surface's copy, so a second constant beside either
- * consumer would be a second owner of one sentence. It mirrors
- * {@link READ_ONLY_REFUSAL.settingsSave} and is pinned like every other mirror.
+ * FOUR client mirrors do NOT live beside a component, because more than one
+ * surface renders each and a constant beside either consumer would be a second
+ * owner of one sentence. `SETTINGS_READ_ONLY_COPY` in `workbench-settings.ts`
+ * is rendered by the Workbench save bar and the `/settings` banner and mirrors
+ * {@link READ_ONLY_REFUSAL.settingsSave}. DW-386's three research sentences —
+ * `RESEARCH_CREATE_READ_ONLY_COPY`, `RESEARCH_MUTATE_READ_ONLY_COPY` and
+ * `RESEARCH_COLLECT_READ_ONLY_COPY` — moved out of `KnowledgeStudio.tsx` into
+ * `research-panel.ts` at DW-529, once the Workbench's Research, Graph and
+ * Review canvases turned out to stand in front of the same doors: a canvas
+ * cannot import a page component for a string, and the Research canvas had
+ * written a fourth wording of the create sentence inline rather than try. Both
+ * modules are already client-safe and already own the rest of their surface's
+ * copy, and both sets are pinned like every other mirror.
+ *
+ * NOT EVERY STUDIO WRITE HAS A SENTENCE TO MIRROR (DW-530). The Studio's
+ * Purpose & vaults, Agent skills and Portability panels render no read-only
+ * term for THEIR OWN write controls — create vault, rename and delete vault,
+ * create/patch/delete skill, restore archive — because the doors behind those
+ * controls refuse nothing: `POST /api/vaults`,
+ * `PATCH`/`DELETE /api/vaults/[id]`,
+ * `POST`/`PATCH`/`DELETE /api/agent-skills[/id]` and
+ * `POST /api/archive/import` carry no gate, and neither do `createVault`,
+ * `renameVault`, `deleteVault`, the agent-skill writers or
+ * `importPortableArchive`. DW-268 records that as this flag's deliberate
+ * boundary — vaults and agent profiles still mutate — so a refusal on those
+ * controls would be a client-invented one. The parity suite pins those five
+ * routes as ungated, and fails the moment that changes.
+ *
+ * That is NOT the same as "those panels carry no mirror at all". Purpose &
+ * vaults embeds `<WorkspacePurposeSettings />`, which stands in front of a
+ * DIFFERENT door — `PUT /api/workspace-profile`, which does refuse — and
+ * renders {@link WORKSPACE_PURPOSE_READ_ONLY_COPY} accordingly. One panel, two
+ * doors, and only one of them answers a refusal.
  *
  * THE WIKI-LIFECYCLE ROUTES KEEP THEIR INLINE LITERALS. `POST /api/wikis`,
  * `POST /api/wikis/[id]/template`, `PATCH`/`DELETE /api/wikis/[id]` and

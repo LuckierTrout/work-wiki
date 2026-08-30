@@ -6,6 +6,11 @@ import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { MarkdownRenderer } from "@/components/MarkdownRenderer";
 import { WorkspacePurposeSettings } from "@/components/WorkspacePurposeSettings";
 import { LocalSyncPanel } from "@/components/LocalSyncPanel";
+import {
+  RESEARCH_COLLECT_READ_ONLY_COPY,
+  RESEARCH_CREATE_READ_ONLY_COPY,
+  RESEARCH_MUTATE_READ_ONLY_COPY,
+} from "@/lib/research-panel";
 import type { AgentSkill } from "@/lib/agent-skills";
 import type { GraphInsight } from "@/lib/graph-insights";
 import type { ResearchProject } from "@/lib/research-projects";
@@ -93,38 +98,57 @@ const SECTIONS: Array<{
 ];
 
 /**
- * Why the Research desk refuses on a read-only deployment (DW-386).
+ * Why ONLY the Research desk carries a read-only term OF ITS OWN (DW-386,
+ * corrected by DW-530).
  *
- * Three doors stand behind this desk, so three sentences — each the CLIENT
- * mirror of the one its own door answers, character-identical, and all three
- * pinned by `read-only-copy-parity.test.ts`:
+ * The three sentences it renders — create, mutate, collect — now live in
+ * `@/lib/research-panel` and are imported above, because the Workbench canvases
+ * stand in front of the same doors and must not import this page component for
+ * a string. See {@link RESEARCH_CREATE_READ_ONLY_COPY} for which door owns
+ * which sentence.
  *
- *   - `POST /api/research` (Create, and Graph insights' **Research this**) —
- *     `READ_ONLY_REFUSAL.researchCreate`.
- *   - `POST /api/research/[id]/run` and `DELETE /api/research/[id]` (Run,
- *     Cancel, Delete) — `READ_ONLY_REFUSAL.researchMutate`.
- *   - `POST /api/ingest/batch` (Collect) — `READ_ONLY_REFUSAL.ingest`, which is
- *     not a research sentence at all: Collect pushes the brief's source URLs
- *     into the ordinary ingest pipeline, and saying "Research projects cannot
- *     be changed…" beside it would name the wrong refusal.
+ * THE OTHER PANELS ARE NOT AN OVERSIGHT, which is what the previous wording
+ * here ("deliberately left as they are rather than half-gated on a flag whose
+ * sentences nobody has written yet") was read as, and how DW-530 came to ask
+ * for a refusal on Purpose & vaults, Agent skills and Portability. The verdict
+ * for all six, verified at DW-529/530/531:
  *
- * ONLY the Research desk. The other Studio panels — Purpose & vaults, Compile,
- * Original sources, Agent skills, Portability, Connections — write through
- * doors this change does not cover, so they are deliberately left as they are
- * rather than half-gated on a flag whose sentences nobody has written yet.
+ *   - **Compile** issues no request at all, and **Original sources** only
+ *     `GET /api/sources/search`. Neither writes, so neither has anything to
+ *     refuse.
+ *   - **Purpose & vaults**, **Agent skills** and **Portability** DO own write
+ *     controls, and those controls' doors refuse nothing: `POST /api/vaults`,
+ *     `PATCH`/`DELETE /api/vaults/[id]`,
+ *     `POST`/`PATCH`/`DELETE /api/agent-skills[/id]` and
+ *     `POST /api/archive/import` carry no `isReadOnly()` call, and
+ *     `createVault`, `renameVault`, `deleteVault`, the three agent-skill
+ *     writers and `importPortableArchive` carry no `assertWritable`. Vaults and
+ *     agent profiles still mutate under `YOPEDIA_READONLY`, which DW-268
+ *     records as the flag's deliberate, still-open boundary.
+ *   - **Connections** composes exactly one write, `LocalSyncPanel`'s
+ *     `DELETE /api/sync/status`, whose route is ungated too. It is absent from
+ *     the tripwire below only because no control of the Studio's OWN stands in
+ *     front of it — the panel is embedded whole, so the sentence, if that door
+ *     ever starts refusing, would belong to `LocalSyncPanel`.
+ *
+ * "NO READ-ONLY TERM" MEANS THE PANELS' OWN CONTROLS, not the panels. **Purpose
+ * & vaults** embeds `<WorkspacePurposeSettings />`, which stands in front of a
+ * DIFFERENT door — `PUT /api/workspace-profile`, which does refuse — and
+ * renders its own mirror, `WORKSPACE_PURPOSE_READ_ONLY_COPY`, on a read-only
+ * deployment. One panel, two doors, and only one of them answers a refusal.
+ *
+ * So a "…cannot be created while this deployment is read-only." beside Create
+ * vault, a skill's Save or Restore archive would state a deployment property
+ * that is not true, mirror no server sentence, and take away a capability the
+ * deployment still permits. Widening what the flag refuses is DW-268's
+ * operator-facing decision, not this surface's.
+ *
+ * `read-only-copy-parity.test.ts` now PINS those five routes and three kernel
+ * writers as ungated: the moment one of them starts refusing, that suite fails
+ * and names the Studio panel that needs its client mirror.
  *
  * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
  */
-export const RESEARCH_CREATE_READ_ONLY_COPY =
-  "Research projects cannot be created while this deployment is read-only.";
-
-/** See {@link RESEARCH_CREATE_READ_ONLY_COPY} — run, cancel and delete. */
-export const RESEARCH_MUTATE_READ_ONLY_COPY =
-  "Research projects cannot be changed while this deployment is read-only.";
-
-/** See {@link RESEARCH_CREATE_READ_ONLY_COPY} — Collect, which is an INGEST. */
-export const RESEARCH_COLLECT_READ_ONLY_COPY =
-  "Sources cannot be ingested while this deployment is read-only.";
 
 /**
  * Collect with nothing to collect (DW-442).

@@ -40,7 +40,9 @@ import {
   RESEARCH_COLLECT_READ_ONLY_COPY,
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
-} from "@/components/KnowledgeStudio";
+} from "../research-panel";
+import { GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY } from "@/components/workbench/GraphCanvas";
+import { REVIEW_QUEUE_READ_ONLY_COPY } from "@/components/workbench/ReviewCanvas";
 import { SETTINGS_READ_ONLY_COPY } from "../workbench-settings";
 
 /**
@@ -61,6 +63,30 @@ import { SETTINGS_READ_ONLY_COPY } from "../workbench-settings";
  */
 async function routeSource(route: string): Promise<string> {
   return readFile(path.resolve(__dirname, "../../app/api", route), "utf8");
+}
+
+/**
+ * A kernel writer's source, read the same way {@link routeSource} reads a
+ * handler's.
+ *
+ * Used only by the ungated-door tripwire below, which asserts the ABSENCE of a
+ * gate — and absence is the one thing an import cannot express. There is no
+ * constant to compare, so the file itself is the evidence.
+ */
+async function libSource(file: string): Promise<string> {
+  return readFile(path.resolve(__dirname, "..", file), "utf8");
+}
+
+/**
+ * A client component's source, read the same way {@link routeSource} reads a
+ * handler's.
+ *
+ * For the surfaces that render a sentence they do not OWN. A constant can be
+ * imported and compared; "this file renders it by name and retypes nothing"
+ * cannot, and that is the state `ResearchCanvas` is in.
+ */
+async function componentSource(file: string): Promise<string> {
+  return readFile(path.resolve(__dirname, "../../components", file), "utf8");
 }
 
 /**
@@ -362,6 +388,12 @@ describe("client refusal copy mirrors the server's", () => {
       // door, keeps its own literal, and is pinned by value above.
       ["settings/route.ts", "settingsSave"],
       ["settings/rebuild-embeddings/route.ts", "embeddingRebuild"],
+      // DW-531 — the two Workbench canvas doors. They have answered 403 since
+      // they were written, but neither was pinned here, so the client mirrors
+      // added beside their now-`aria-disabled` controls had nothing holding
+      // them to the sentence the owner would meet in the 403.
+      ["graph/insights/route.ts", "graphInsightDismiss"],
+      ["review-queue/[id]/route.ts", "reviewQueue"],
     ] as const) {
       const source = await routeSource(route);
       expect(source, route).toContain(`error: READ_ONLY_REFUSAL.${key}`);
@@ -386,6 +418,11 @@ describe("client refusal copy mirrors the server's", () => {
   });
 
   it("the Research desk says exactly what its THREE doors answer", () => {
+    // Imported from `research-panel.ts`, not from `KnowledgeStudio.tsx`, since
+    // DW-529: the Workbench's `ResearchCanvas` stands in front of the same
+    // create door and had a fourth wording of its own inline, owned by nobody
+    // and pinned by nothing. One owner, three surfaces.
+    //
     // DW-386. Create, Run/Cancel/Delete and Collect meet three different doors,
     // so the desk states three sentences rather than one — and Collect's is not
     // a research sentence at all: it pushes the brief's URLs into the ordinary
@@ -403,6 +440,112 @@ describe("client refusal copy mirrors the server's", () => {
         RESEARCH_COLLECT_READ_ONLY_COPY,
       ]).size,
     ).toBe(3);
+  });
+
+  it("the Graph and Review canvases say exactly what THEIR OWN doors answer", () => {
+    // DW-531. Both canvases passed `readOnly` straight into `disabled`: the
+    // standing refusal left the tab order and could never be announced with a
+    // reason — the exact defect DW-191/DW-299 removed elsewhere. The controls
+    // now carry `aria-disabled` and point at these sentences, so the sentences
+    // have to be the ones the doors answer.
+    expect(GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY).toBe(
+      READ_ONLY_REFUSAL.graphInsightDismiss,
+    );
+    expect(REVIEW_QUEUE_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.reviewQueue);
+    // ONE CONTROL, ONE DOOR. Both canvases also offer **Deep Research**, which
+    // resolves nothing and dismisses nothing — it meets `POST /api/research`,
+    // so it points at the CREATE sentence instead. Three distinct strings, or
+    // a control would announce a refusal it does not meet.
+    expect(
+      new Set([
+        GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY,
+        REVIEW_QUEUE_READ_ONLY_COPY,
+        RESEARCH_CREATE_READ_ONLY_COPY,
+      ]).size,
+    ).toBe(3);
+  });
+
+  it("the Studio panels' own write doors refuse nothing, so there is nothing to mirror", async () => {
+    // DW-530 asked for a read-only refusal on the Studio's Setup, Skills and
+    // Portability panels, on the premise that each "still submits and meets its
+    // refusal afterwards". IT DOES NOT. None of the doors those panels' OWN
+    // write controls stand in front — create vault, rename/delete vault,
+    // create/patch/delete skill, restore archive — calls `isReadOnly()`, and
+    // none of the kernel writers behind them calls `assertWritable`. Vaults and
+    // agent profiles still mutate under `YOPEDIA_READONLY`, which DW-268
+    // records as the flag's deliberate, still-open boundary. A sentence beside
+    // those controls would state a deployment property that is false and mirror
+    // no server sentence, so they render none.
+    //
+    // NOT "those panels render no read-only term at all". Purpose & vaults
+    // embeds `<WorkspacePurposeSettings />`, a DIFFERENT door
+    // (`PUT /api/workspace-profile`) which does refuse and does render
+    // `WORKSPACE_PURPOSE_READ_ONLY_COPY` — pinned by its own case above. One
+    // panel, two doors, one of them silent.
+    //
+    // THIS CASE IS THE TRIPWIRE, not documentation. WHEN IT FAILS: one of the
+    // doors named below has started refusing, and the Studio panel standing in
+    // front of it now needs the client mirror DW-530 asked for — export a
+    // constant beside `RESEARCH_CREATE_READ_ONLY_COPY`'s three, pin it against
+    // the new `READ_ONLY_REFUSAL` key with a case above, and give the panel's
+    // controls the `aria-disabled` + `aria-describedby` shape
+    // `EmailIngestSettings` sets. Then delete that door's row here. Do NOT
+    // simply relax the assertion.
+    //
+    // THE GATES ARE MATCHED AS CALLS, not as mentions. A future comment in one
+    // of these handlers explaining WHY it does not gate — naming `isReadOnly`,
+    // `isReadOnlyError` or `assertWritable` in prose — is welcome and must not
+    // turn this case red; only the call form means the door started answering.
+    // `READ_ONLY_REFUSAL` is the one still matched bare, because it is an
+    // import: it cannot appear in a handler except to be served, and spelling
+    // it in a comment here is the one phrasing to avoid.
+    for (const [route, panel] of [
+      ["vaults/route.ts", "SetupPanel (Purpose & vaults) — create vault"],
+      ["vaults/[id]/route.ts", "SetupPanel (Purpose & vaults) — rename/delete vault"],
+      ["agent-skills/route.ts", "SkillsPanel (Agent skills)"],
+      ["agent-skills/[id]/route.ts", "SkillsPanel (Agent skills)"],
+      ["archive/import/route.ts", "PortabilityPanel (Portability)"],
+    ] as const) {
+      const source = await routeSource(route);
+      expect(source, panel).not.toContain("isReadOnly(");
+      expect(source, panel).not.toContain("isReadOnlyError(");
+      expect(source, panel).not.toContain("READ_ONLY_REFUSAL");
+    }
+    // …and no gate one layer down either, which is where DW-266/DW-314/DW-385
+    // put the wiki, todo and research refusals. A route with no `isReadOnly()`
+    // in front of a writer that DOES `assertWritable` still refuses — just with
+    // the kernel's sentence — so the writers have to be checked too.
+    for (const [file, panel] of [
+      ["vault.ts", "SetupPanel (Purpose & vaults)"],
+      ["agent-skills.ts", "SkillsPanel (Agent skills)"],
+      ["portable-archive.ts", "PortabilityPanel (Portability)"],
+    ] as const) {
+      const source = await libSource(file);
+      expect(source, panel).not.toContain("assertWritable(");
+      expect(source, panel).not.toContain("READ_ONLY_REFUSAL");
+    }
+  });
+
+  it("the Deep Research canvas renders the constant, never a retyped sentence", async () => {
+    // DW-529. `ResearchCanvas` owns no constant of its own — it stands in front
+    // of the create door three other surfaces already mirror — so there is no
+    // value pair to compare. What there WAS is the regression this row exists
+    // to prevent: the hint spelled a fourth wording of the create sentence
+    // inline, owned by nobody, and nothing in this suite could see it.
+    const canvas = await componentSource("workbench/ResearchCanvas.tsx");
+    // The sentence arrives by NAME, so a reword of the constant reaches the
+    // canvas without anyone editing it.
+    expect(canvas).toContain("RESEARCH_CREATE_READ_ONLY_COPY");
+    // The retired literal is gone — not merely unused, absent.
+    expect(canvas).not.toContain(
+      "Deep Research cannot start while this deployment is read-only.",
+    );
+    // …and no OTHER server sentence has been retyped there in its place. The
+    // whole table, so a future hint that copies `researchMutate` beside Cancel
+    // fails here rather than drifting silently.
+    for (const [key, sentence] of Object.entries(READ_ONLY_REFUSAL)) {
+      expect(canvas, key).not.toContain(sentence);
+    }
   });
 
   it("the /settings banner and the save bar say exactly what PUT /api/settings answers", () => {

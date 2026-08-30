@@ -3,10 +3,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import {
   KnowledgeStudio,
   RESEARCH_COLLECT_EMPTY_COPY,
+} from "@/components/KnowledgeStudio";
+// The three read-only sentences moved out of the Studio at DW-529 — the
+// Workbench canvases stand in front of the same doors and must not import a
+// page component for a string.
+import {
   RESEARCH_COLLECT_READ_ONLY_COPY,
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
-} from "@/components/KnowledgeStudio";
+} from "@/lib/research-panel";
 
 /**
  * The Studio's Research desk on a read-only deployment, MOUNTED (DW-386).

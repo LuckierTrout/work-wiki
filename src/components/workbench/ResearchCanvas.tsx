@@ -6,6 +6,7 @@ import { workbenchMode } from "@/lib/workbench-modes";
 import { readStoredResearchFill } from "@/lib/workbench-state";
 import {
   RESEARCH_ACTIVE_STATUSES,
+  RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_POLL_MS,
   researchIsPolling,
   researchStatusLabel,
@@ -261,8 +262,14 @@ export function ResearchCanvas({
           {starting ? "Starting…" : "Start Deep Research"}
         </button>
         <span className="wb-set-hint">
+          {/* THE CREATE DOOR'S OWN SENTENCE (DW-529), not a fourth wording of
+              it. This control's first call is `POST /api/research`, which
+              answers `READ_ONLY_REFUSAL.researchCreate`; the literal that used
+              to sit here ("Deep Research cannot start…") was owned by nobody
+              and pinned by nothing, so the owner read one sentence before
+              pressing and would have met another in the 403. */}
           {readOnly
-            ? "Deep Research cannot start while this deployment is read-only."
+            ? RESEARCH_CREATE_READ_ONLY_COPY
             : queries.length === 0
               ? "Add a topic and at least one query."
               : `${queries.length} ${queries.length === 1 ? "query" : "queries"} ready.`}

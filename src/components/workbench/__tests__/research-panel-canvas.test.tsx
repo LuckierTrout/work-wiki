@@ -21,7 +21,10 @@ vi.mock("@/lib/workbench-request", () => ({
 }));
 
 import { ResearchCanvas } from "../ResearchCanvas";
-import { RESEARCH_POLL_MS } from "@/lib/research-panel";
+import {
+  RESEARCH_CREATE_READ_ONLY_COPY,
+  RESEARCH_POLL_MS,
+} from "@/lib/research-panel";
 import { workbenchMode } from "@/lib/workbench-modes";
 
 /** A stored project, with only the fields the panel reads. */
@@ -611,8 +614,12 @@ describe("Research Panel — read-only", () => {
     expect(start.disabled).toBe(true);
     // The reason names the DEPLOYMENT, not the form: an owner who typed a topic
     // and a query would otherwise read "add a topic".
-    expect(screen.getByText("Deep Research cannot start while this deployment is read-only."))
-      .toBeTruthy();
+    //
+    // ASSERTED THROUGH THE CONSTANT, not a retyped literal (DW-529). This hint
+    // used to spell a fourth wording of the create door's sentence inline, and
+    // a test that retyped it would keep passing against copy that no longer
+    // matched what `POST /api/research` answers.
+    expect(screen.getByText(RESEARCH_CREATE_READ_ONLY_COPY)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     expect((screen.getByLabelText("Topic") as HTMLInputElement).readOnly).toBe(true);
   });

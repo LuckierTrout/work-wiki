@@ -3326,6 +3326,16 @@ body:has(.wb-shell) {
   opacity: 0.6;
   cursor: default;
 }
+/* The read-only deployment's face (DW-531), the same precedent
+   `.wb-wiki-switch-*[aria-disabled="true"]` set below. The Graph and Review
+   cards keep `disabled` for their TRANSIENT states and take `aria-disabled` for
+   the standing refusal, so the dimmed treatment has to be reachable through
+   both selectors — otherwise a control that refuses every click looks live and
+   still shows the pointer cursor `.wb-todos-btn` sets above. */
+.wb-todos-btn[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
 .wb-todos-cards {
   list-style: none;
   margin: 0;

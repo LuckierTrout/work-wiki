@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { GRAPH_NARROW_COPY, workbenchMode } from "@/lib/workbench-modes";
 import { STRONG_EDGE_WEIGHT } from "@/lib/graph-relevance";
@@ -12,7 +12,7 @@ import {
   readStoredGraphLayout,
   writeStoredGraphLayout,
 } from "@/lib/workbench-state";
-import { researchWikiId } from "@/lib/research-panel";
+import { RESEARCH_CREATE_READ_ONLY_COPY, researchWikiId } from "@/lib/research-panel";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
 import { cameraStateToFitNodes, stableNodePositions } from "@/lib/graph-camera-fit";
 import { DeepResearchConfirm } from "./DeepResearchConfirm";
@@ -37,6 +37,24 @@ interface GraphResponse {
 }
 
 type ColorMode = "type" | "community";
+
+/**
+ * Why **Dismiss** refuses on a read-only deployment (DW-531).
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.graphInsightDismiss` — what
+ * `POST /api/graph/insights` answers — character-identical to it and pinned by
+ * `read-only-copy-parity.test.ts`. Exported because it is the sentence the
+ * refused control POINTS AT through `aria-describedby`.
+ *
+ * NOT the sentence the insight list's other button carries. **Deep Research**
+ * stands in front of `POST /api/research` and names
+ * {@link RESEARCH_CREATE_READ_ONLY_COPY} instead: two controls in one card, two
+ * doors, two sentences — the policy the DW-386 review settled on.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY =
+  "Graph insights cannot be dismissed while this deployment is read-only.";
 
 const TYPE_PALETTE = COMMUNITY_PALETTE;
 
@@ -98,6 +116,17 @@ export function GraphCanvas({
   const loadSeq = useRef(0);
   const researchSeq = useRef(0);
   const wikiScope = useRef(wikiId);
+  /**
+   * One id per DOOR, not one per canvas.
+   *
+   * **Dismiss** meets `POST /api/graph/insights` and **Deep Research** meets
+   * `POST /api/research`, so a single shared note would announce one door's
+   * refusal beside the other's control. Both are rendered only while `readOnly`
+   * AND only while an insight of the matching kind is listed, so the attribute
+   * is never set without a node of that id to resolve.
+   */
+  const dismissNoteId = useId();
+  const researchNoteId = useId();
 
   useEffect(() => {
     wikiScope.current = wikiId;
@@ -375,6 +404,18 @@ export function GraphCanvas({
   }
 
   async function confirmResearch(values: { topic: string; queries: string[] }) {
+    // DEFENCE IN DEPTH for a future opener. Today the button that opens this
+    // dialog early-returns, so `readOnly` cannot reach here — but this is the
+    // door-facing call, the same shape `dismissInsight` and
+    // `ResearchCanvas.cancel` carry, and it is the one place a second opener
+    // could not route around. It STATES THE REASON rather than dropping the
+    // confirm: a bare `return` would leave the dialog open with a spent Confirm
+    // and no explanation, which is the silent-refusal shape this whole change
+    // exists to remove.
+    if (readOnly) {
+      setResearchError(RESEARCH_CREATE_READ_ONLY_COPY);
+      return;
+    }
     const originWikiId = wikiScope.current;
     const seq = ++researchSeq.current;
     setResearchBusy(true);
@@ -541,12 +582,22 @@ export function GraphCanvas({
                             <h3 className="wb-todos-title">{insight.title}</h3>
                             <p className="wb-todos-rationale">{insight.summary}</p>
                           </button>
+                          {/* STANDING REFUSAL, NOT `disabled` (DW-531, the
+                              DW-191/DW-299 shape). `disabled` takes the control
+                              out of the tab order and strips its description,
+                              so the sentence beside it could never be
+                              announced — the owner met a dead button with no
+                              reason. `aria-disabled` keeps it focusable and
+                              announced; the handler is what refuses. Neither
+                              control has any TRANSIENT state of its own, so
+                              there is nothing left in `disabled` here. */}
                           <div className="wb-todos-actions">
                             {insight.kind === "surprise" ? (
                               <button
                                 type="button"
                                 className="wb-todos-btn"
-                                disabled={readOnly}
+                                aria-disabled={readOnly || undefined}
+                                aria-describedby={readOnly ? dismissNoteId : undefined}
                                 onClick={() => void dismissInsight(insight)}
                               >
                                 Dismiss
@@ -555,7 +606,8 @@ export function GraphCanvas({
                               <button
                                 type="button"
                                 className="wb-todos-btn wb-todos-btn--primary"
-                                disabled={readOnly}
+                                aria-disabled={readOnly || undefined}
+                                aria-describedby={readOnly ? researchNoteId : undefined}
                                 onClick={() => {
                                   if (readOnly) return;
                                   setResearchError(null);
@@ -570,6 +622,23 @@ export function GraphCanvas({
                       ))}
                     </ul>
                   )}
+                  {/* Identified so each refused control above can point at its
+                      OWN door's sentence. Each is guarded on an insight of the
+                      matching kind being listed: a note for a control the owner
+                      was never offered would announce the refusal of an
+                      operation that is not on screen, and `aria-describedby`
+                      would resolve to nothing. Not `role="alert"` — nothing
+                      failed; it is the deployment's standing state. */}
+                  {readOnly && insights.some((item) => item.kind === "surprise") ? (
+                    <p id={dismissNoteId} className="wb-todos-meta">
+                      {GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY}
+                    </p>
+                  ) : null}
+                  {readOnly && insights.some((item) => item.kind !== "surprise") ? (
+                    <p id={researchNoteId} className="wb-todos-meta">
+                      {RESEARCH_CREATE_READ_ONLY_COPY}
+                    </p>
+                  ) : null}
                 </aside>
               )}
               </div>

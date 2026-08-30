@@ -152,3 +152,43 @@ export function parseResearchQueries(text: string): string[] {
   }
   return out;
 }
+
+/**
+ * Why the Deep Research surfaces refuse on a read-only deployment (DW-386).
+ *
+ * Three doors stand behind the Research desk and its two Workbench canvases, so
+ * three sentences — each the CLIENT mirror of the one its own door answers,
+ * character-identical, and all three pinned by
+ * `read-only-copy-parity.test.ts`:
+ *
+ *   - `POST /api/research` (the Studio's Create, the Studio's and the Graph
+ *     canvas's **Research this**, the Review canvas's **Deep Research**, and
+ *     the Research canvas's **Start Deep Research**) —
+ *     `READ_ONLY_REFUSAL.researchCreate`.
+ *   - `POST /api/research/[id]/run` and `DELETE /api/research/[id]` (Run,
+ *     Cancel, Delete) — `READ_ONLY_REFUSAL.researchMutate`.
+ *   - `POST /api/ingest/batch` (Collect) — `READ_ONLY_REFUSAL.ingest`, which is
+ *     not a research sentence at all: Collect pushes the brief's source URLs
+ *     into the ordinary ingest pipeline, and saying "Research projects cannot
+ *     be changed…" beside it would name the wrong refusal.
+ *
+ * HERE RATHER THAN IN `KnowledgeStudio.tsx`, where they used to live (DW-529).
+ * The Workbench's `ResearchCanvas` stands in front of the SAME create door and
+ * had written a fourth wording of its own inline, owned by nobody and pinned by
+ * nothing. It cannot import the Studio for a string — that would pull a large
+ * `"use client"` page component into three canvases — so the sentences move to
+ * the module both sides already import, for the `workbench-settings.ts` reason:
+ * one owner, reachable from every surface that stands in front of the door.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const RESEARCH_CREATE_READ_ONLY_COPY =
+  "Research projects cannot be created while this deployment is read-only.";
+
+/** See {@link RESEARCH_CREATE_READ_ONLY_COPY} — run, cancel and delete. */
+export const RESEARCH_MUTATE_READ_ONLY_COPY =
+  "Research projects cannot be changed while this deployment is read-only.";
+
+/** See {@link RESEARCH_CREATE_READ_ONLY_COPY} — Collect, which is an INGEST. */
+export const RESEARCH_COLLECT_READ_ONLY_COPY =
+  "Sources cannot be ingested while this deployment is read-only.";

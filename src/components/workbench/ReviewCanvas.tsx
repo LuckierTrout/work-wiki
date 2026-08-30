@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { researchWikiId } from "@/lib/research-panel";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { RESEARCH_CREATE_READ_ONLY_COPY, researchWikiId } from "@/lib/research-panel";
 import { normalizeReviewCount } from "@/lib/review-count";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
@@ -23,6 +23,24 @@ interface ReviewResponse {
   items?: ReviewItem[];
   pendingCount?: number;
 }
+
+/**
+ * Why **Create Page** and **Skip** refuse on a read-only deployment (DW-531).
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.reviewQueue` — what
+ * `POST /api/review-queue/[id]` answers for both actions — character-identical
+ * to it and pinned by `read-only-copy-parity.test.ts`. Exported because it is
+ * the sentence those two refused controls POINT AT through `aria-describedby`.
+ *
+ * NOT the third control's sentence. **Deep Research** resolves no card: it
+ * stands in front of `POST /api/research` and names
+ * {@link RESEARCH_CREATE_READ_ONLY_COPY} instead — three controls in one card,
+ * two doors, two sentences, the policy the DW-386 review settled on.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const REVIEW_QUEUE_READ_ONLY_COPY =
+  "Review items cannot be changed while this deployment is read-only.";
 
 export function ReviewCanvas({
   wikiId,
@@ -46,6 +64,18 @@ export function ReviewCanvas({
   const actionSeq = useRef(0);
   const researchSeq = useRef(0);
   const wikiScope = useRef(wikiId);
+  /**
+   * One id per DOOR, not one per card.
+   *
+   * **Create Page** and **Skip** meet `POST /api/review-queue/[id]`;
+   * **Deep Research** meets `POST /api/research` and resolves no card at all.
+   * A single shared note would announce one door's refusal beside the other's
+   * control. Both notes render once for the whole list rather than per card —
+   * the sentence is a property of the deployment, not of a row — and only while
+   * there is a control of that kind on screen to describe.
+   */
+  const queueNoteId = useId();
+  const researchNoteId = useId();
 
   useEffect(() => {
     wikiScope.current = wikiId;
@@ -113,6 +143,17 @@ export function ReviewCanvas({
   }
 
   async function confirmResearch(values: { topic: string; queries: string[] }) {
+    // DEFENCE IN DEPTH for a future opener. Today the button that opens this
+    // dialog early-returns, so `readOnly` cannot reach here — but this is the
+    // door-facing call, the same shape `act` above carries, and it is the one
+    // place a second opener could not route around. It STATES THE REASON rather
+    // than dropping the confirm: a bare `return` would leave the dialog open
+    // with a spent Confirm and no explanation, which is the silent-refusal
+    // shape this whole change exists to remove.
+    if (readOnly) {
+      setResearchError(RESEARCH_CREATE_READ_ONLY_COPY);
+      return;
+    }
     const originWikiId = wikiScope.current;
     const originPageSlug = research?.pageSlug;
     const seq = ++researchSeq.current;
@@ -181,14 +222,19 @@ export function ReviewCanvas({
     onOpenResearch?.(created);
   }
 
+  // The cards this canvas is actually showing: Wiki A's rows are never painted
+  // under Wiki B's id. Named once so the read-only notes below can be guarded
+  // on the SAME list the controls they describe are rendered from.
+  const shown = itemsWikiId === wikiId ? items : [];
+
   return (
     <div className="wb-review">
       {error && <p className="wb-todos-error">{error}</p>}
-      {(itemsWikiId === wikiId ? items : []).length === 0 ? (
+      {shown.length === 0 ? (
         <p className="wb-empty">{empty}</p>
       ) : (
         <ul className="wb-todos-cards">
-          {(itemsWikiId === wikiId ? items : []).map((item) => (
+          {shown.map((item) => (
             <li key={item.id} className="wb-todos-card">
               <span className="wb-review-kind" aria-hidden="true">
                 {item.kind === "warning" ? (
@@ -222,13 +268,23 @@ export function ReviewCanvas({
                   {item.path}
                 </button>
               </p>
+              {/* `busy` and `creating` are TRANSIENT and keep `disabled`, but
+                  both YIELD to the standing refusal (DW-531, the
+                  DW-191/DW-299 shape): a request that never settles would
+                  otherwise leave `busy` true forever and take the controls
+                  carrying the sentence out of the tab order — reached by a
+                  stalled write instead of by a fieldset. `aria-disabled` is
+                  the standing state; the handlers are what refuse. */}
               <div className="wb-todos-actions">
                 {item.queries.length > 0 && (
                   <button
                     type="button"
                     className="wb-todos-btn wb-todos-btn--primary"
-                    disabled={readOnly || busy || item.status === "creating"}
+                    disabled={!readOnly && (busy || item.status === "creating")}
+                    aria-disabled={readOnly || undefined}
+                    aria-describedby={readOnly ? researchNoteId : undefined}
                     onClick={() => {
+                      if (readOnly) return;
                       setResearchError(null);
                       setResearch(item);
                     }}
@@ -239,7 +295,9 @@ export function ReviewCanvas({
                 <button
                   type="button"
                   className="wb-todos-btn"
-                  disabled={readOnly || busy || item.status === "creating"}
+                  disabled={!readOnly && (busy || item.status === "creating")}
+                  aria-disabled={readOnly || undefined}
+                  aria-describedby={readOnly ? queueNoteId : undefined}
                   onClick={() => void act(item.id, "create-page")}
                 >
                   Create Page
@@ -247,7 +305,9 @@ export function ReviewCanvas({
                 <button
                   type="button"
                   className="wb-todos-btn"
-                  disabled={readOnly || busy || item.status === "creating"}
+                  disabled={!readOnly && (busy || item.status === "creating")}
+                  aria-disabled={readOnly || undefined}
+                  aria-describedby={readOnly ? queueNoteId : undefined}
                   onClick={() => void act(item.id, "skip")}
                 >
                   Skip
@@ -257,6 +317,24 @@ export function ReviewCanvas({
           ))}
         </ul>
       )}
+      {/* Identified so each refused control above can point at its OWN door's
+          sentence. The queue note rides on there being a card at all — every
+          card carries Create Page and Skip — while the create note rides on
+          some card actually OFFERING Deep Research, which only a card with
+          queries does. A note for a control the owner was never offered would
+          announce the refusal of an operation that is not on screen, and
+          `aria-describedby` would resolve to nothing. Not `role="alert"` —
+          nothing failed; it is the deployment's standing state. */}
+      {readOnly && shown.length > 0 ? (
+        <p id={queueNoteId} className="wb-todos-meta">
+          {REVIEW_QUEUE_READ_ONLY_COPY}
+        </p>
+      ) : null}
+      {readOnly && shown.some((item) => item.queries.length > 0) ? (
+        <p id={researchNoteId} className="wb-todos-meta">
+          {RESEARCH_CREATE_READ_ONLY_COPY}
+        </p>
+      ) : null}
       <DeepResearchConfirm
         open={research !== null}
         initialTopic={research?.title ?? ""}
