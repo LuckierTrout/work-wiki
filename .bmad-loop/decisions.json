@@ -296,6 +296,15 @@
     "label": "Freeze the form while saving",
     "resolution": ""
   },
+  "DW-68": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Gate src/lib/ingest.ts:1011 on `getVectorSearchSettings().enabled` rather than on `hasEmbeddingSupport()`, keeping `hasEmbeddingSupport`'s contract and `embeddings.test.ts` untouched. Fall through to the existing corpus-stats path when the switch is off, which is the same branch an unconfigured deployment already takes. Pin that a stored embedding key with the switch off takes the non-vector branch.",
+    "key": "1",
+    "label": "Gate the ingest caller, leave the predicate alone",
+    "resolution": ""
+  },
   "DW-70": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
