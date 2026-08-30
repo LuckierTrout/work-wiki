@@ -17,6 +17,37 @@
  */
 
 import { SIDECAR_ORIGIN } from "./sidecar";
+import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
+
+/**
+ * Where the three sentences below send an owner: the Settings surface, arrow,
+ * and the `api-mcp` category's own nav label (DW-504).
+ *
+ * ONE value, DERIVED. Three constants in this file used to spell that
+ * destination out as a literal, so renaming the category in
+ * `SETTINGS_CATEGORIES` — which owns that label for the whole of `src/lib` —
+ * would have left three rendered sentences naming a nav row the Settings
+ * surface no longer shows. The literal is deliberately absent from this file
+ * now, including from this comment.
+ *
+ * ONE hand-typed copy survives outside `src/lib`, and it is architecturally
+ * forced rather than missed: `sidecar/mcp.mjs`'s `MCP_INSTRUCTIONS` names the
+ * same destination for every MCP client that reads it, and the sidecar may not
+ * import `src/lib` (AD-6), so that sentence cannot be derived from here. A
+ * rename therefore still has exactly one other place to visit, by design.
+ *
+ * The SHORT surface label is passed rather than defaulted because these three
+ * render INSIDE the Workbench: there the unprefixed "Settings" already names
+ * the surface the owner is standing on, while the "Workbench" prefix exists to
+ * point a sentence on the legacy flat `/settings` page at the OTHER surface, so
+ * here it would only be noise. That rule belongs to {@link settingsPointer} —
+ * see its doc block in `./workbench-settings`.
+ *
+ * The import keeps this module's client-safe, pure posture: `workbench-settings`
+ * is browser-importable (`SettingsCanvas` imports it), pulls in no Node built-in,
+ * and does not import back into this file.
+ */
+const API_MCP_POINTER = settingsPointer("api-mcp", SETTINGS_LABEL);
 
 // ---------------------------------------------------------------------------
 // Tool rows
@@ -373,7 +404,7 @@ export const SKILLS_SCAN_HINT_COPY =
  * the API on. One sentence for both would send half the owners to the wrong fix.
  */
 export const SKILLS_SCAN_FAILED_COPY =
-  "Skills are scanned by the local sidecar, and it did not answer. Start it with `pnpm sidecar`, and check Settings → API + MCP.";
+  `Skills are scanned by the local sidecar, and it did not answer. Start it with \`pnpm sidecar\`, and check ${API_MCP_POINTER}.`;
 
 /** The toggle's label, which names what the click will do. */
 export function skillToggleLabel(skill: SkillSummary): string {
@@ -487,11 +518,11 @@ export function outputChipLabel(output: { name: string; bytes: number }): string
  * enabled it needs to be told where the switch is, not that Chat failed.
  */
 export const CHAT_API_DISABLED_COPY =
-  "The local API is off. Turn it on in Settings → API + MCP to use Chat.";
+  `The local API is off. Turn it on in ${API_MCP_POINTER} to use Chat.`;
 
 /** The door refused the browser's token. Same place, different fix. */
 export const CHAT_API_UNAUTHORIZED_COPY =
-  "The local API refused this token. Generate one in Settings → API + MCP.";
+  `The local API refused this token. Generate one in ${API_MCP_POINTER}.`;
 
 /** Turn the door's one-word refusal into the sentence that names the fix. */
 export function chatDoorRefusalCopy(error: string | undefined): string | null {

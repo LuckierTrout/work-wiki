@@ -3751,7 +3751,9 @@ source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
 location: src/lib/llm.ts:404
 severity: low
 reason: `src/lib/llm.ts:404` throws "The custom provider is not configured on this server." - lowercase provider id, no remedy - where the five sites DW-369 covers now all end in the derived "Set it in Settings -> <category>." That guard is reached before the `custom` case, so some keyless calls get the un-pointed sentence. Pre-existing; outside the five literals the intent named.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-pointer-derivation
+resolution-undo: 3b9756105e36d2bdcec8197080dcb7f249c0fb81e9e5de622a3a05178883792b 2026-08-30 7374617475733a206f70656e
 
 ### DW-504: Three constants in `chat-agent.ts` hand-type "Settings -> API + MCP", the same drift class DW-369 removed from `llm.ts`.
 origin: spec-deferred c0bc147e9aef
@@ -3759,7 +3761,9 @@ source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
 location: src/lib/chat-agent.ts:376, :490, :494
 severity: low
 reason: `SKILLS_SCAN_FAILED_COPY` (`src/lib/chat-agent.ts:376`), `CHAT_API_DISABLED_COPY` (`:490`) and `CHAT_API_UNAUTHORIZED_COPY` (`:494`) spell the `api-mcp` category label, whose owner is `src/lib/workbench-settings.ts:97`. They render through `SkillsCanvas` and `ChatCanvas`, and no test derives them, so renaming that category leaves three user-facing sentences naming a nav row the surface no longer shows. Pre-existing and outside this bundle's named sites; `settingsPointer` is now exported, so the fix is the same one-line derivation.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-pointer-derivation
+resolution-undo: 3b9756105e36d2bdcec8197080dcb7f249c0fb81e9e5de622a3a05178883792b 2026-08-30 7374617475733a206f70656e
 
 ### DW-505: Selecting the blank "— Select provider —" option leaves the picker announcing the STORED provider's credential state.
 
@@ -4818,4 +4822,36 @@ location: src/app/api/settings/route.ts:434-437
 source_spec: `spec-dw-553-555-settings-save-refusal-recovery.md`
 severity: low
 reason: `settingsRefusalPinsEmbeddingProvider` compares the refusal body against every sentence `settingsEnvProviderPinRefusalCopy` can mint. That is exact, closed and fails closed, and `settings-route.test.ts` now pins the route's body against the same predicate — but a surface branching on copy is a coupling a wire-level code would remove. Adding one was ruled out of this bundle as a wire-contract change.
+status: open
+
+### DW-629: `sidecar/mcp.mjs`'s `MCP_INSTRUCTIONS` still hand-types the `api-mcp` category label, the last copy of the destination DW-504 derived.
+origin: spec-deferred 97b7ae61e968
+location: sidecar/mcp.mjs:54
+source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
+severity: low
+reason: `sidecar/mcp.mjs:52-55` reads "the owner has switched the API off in Settings → API + MCP" — the same sentence as `CHAT_API_DISABLED_COPY`, still a literal. It is the standing instruction text every MCP client reads before its first call, so it is owner-facing. `grep -rn MCP_INSTRUCTIONS` returns only its definition (`:50`) and its `McpServer` registration (`:345`); no test asserts its content. Renaming `api-mcp` in `SETTINGS_CATEGORIES` now moves the three `chat-agent.ts` sentences automatically and leaves this one stale with the whole suite green. A plain import cannot fix it — AD-6 forbids the sidecar importing `src/lib` — so it needs a shared `.mjs` constant, or a node-project test that imports `MCP_INSTRUCTIONS` (the idiom `epic8-chat-agent.test.ts` already uses for `sidecar/shell.mjs`) and asserts it contains `settingsPointer("api-mcp", SETTINGS_LABEL)`.
+status: open
+
+### DW-630: Two provider refusals send the owner to a bare "Settings" with no category, now less specific than the guard DW-503 just fixed.
+origin: spec-deferred 2d9ef479a717
+location: src/lib/llm.ts:303, src/lib/structured-knowledge.ts:299
+source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
+severity: low
+reason: `src/lib/llm.ts:303-308` (`getModel`'s no-provider-at-all throw) ends "…or configure a provider in Settings.", and `src/lib/structured-knowledge.ts:299-301` throws "Structured Knowledge needs a configured extraction provider. Choose one in Settings; credentials stay in server secrets." Neither names a category, so neither can drift — but both are now WEAKER than the sentence thrown 130 lines below the first one, which reads "Set it in Settings → LLM Models." The no-provider case is the most common keyless path, so the owner most in need of the pointer is the one who does not get it. Neither line contains "Set it in ", so the widened byte scan added in this bundle walks straight past both.
+status: open
+
+### DW-631: `getModel`'s Ollama Cloud refusal hand-types the display label `providerLabel` owns and names no destination.
+origin: spec-deferred 23ccead14b73
+location: src/lib/llm.ts:380
+source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
+severity: low
+reason: `src/lib/llm.ts:378-382` throws "Ollama Cloud requires OLLAMA_API_KEY to be configured as a server secret." It spells "Ollama Cloud", which is `PROVIDER_INFO`'s label for `ollama-cloud` (`src/lib/providers.ts:17`) and is now derived through `providerLabel` at the sibling guard this bundle fixed — so the same rename that moves one leaves the other. It also names an env var and no Settings field, where the five DW-369 refusals and the DW-503 guard all end in the derived pointer. Same `switch` the change touched; outside the intent's named sites.
+status: open
+
+### DW-632: A keyless `custom` provider gets two different diagnoses depending on which resolution ladder it arrives on.
+origin: spec-deferred 1ae87fbfb4c3
+location: src/lib/llm.ts:433
+source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
+severity: low
+reason: Both ladders now end at the same derived destination, but they disagree on what is wrong. `getModel` (`src/lib/llm.ts:336-360`) checks the base URL first and then says "The Custom provider needs an API key."; `getConfiguredModel`'s pre-switch guard (`:433`) fires before the `custom` case and says "The Custom provider is not configured on this server." — reporting the missing key before the missing base URL, the reverse of its sibling's order. DW-503 asked only for the destination and the display label, both delivered; the diagnosis half is untouched and pre-existing. `llm.test.ts:544`'s cross-ladder parity test sets `LLM_CUSTOM_API_KEY` specifically to step past this guard, so the one Custom state where the two ladders disagree is the state it does not cover. Not already in the ledger: `deferred-work.md:3748` is DW-503 itself, which names the ordering but does not record the divergence.
 status: open

@@ -61,12 +61,16 @@ import {
 } from "../../../sidecar/shell.mjs";
 import {
   AGENT_TOOL_NAMES,
+  CHAT_API_DISABLED_COPY,
+  CHAT_API_UNAUTHORIZED_COPY,
   isChatToolRow,
   outputChipLabel,
+  SKILLS_SCAN_FAILED_COPY,
   TOOL_ROW_STATES,
   toolRowLabel,
   workspaceFileUrl,
 } from "../chat-agent";
+import { SETTINGS_LABEL, settingsCategory, settingsPointer } from "../workbench-settings";
 import { normalizeConversation } from "../chat";
 
 let dir = "";
@@ -1923,5 +1927,76 @@ describe("the shell asks before it leaves the workspace", () => {
     expect(toolRow("t1", "shell", "denied", SHELL_DENIED_COPY).detail).toBe(
       SHELL_DENIED_COPY,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The three Chat/Skills refusals point at a nav row that exists (DW-504)
+// ---------------------------------------------------------------------------
+
+describe("chat-agent copy derives its Settings destination", () => {
+  /** Built the one sanctioned way, so a rename moves the test with the code. */
+  const pointer = settingsPointer("api-mcp", SETTINGS_LABEL);
+
+  it("sends the Skills scan failure to the derived pointer", () => {
+    expect(SKILLS_SCAN_FAILED_COPY).toBe(
+      `Skills are scanned by the local sidecar, and it did not answer. Start it with \`pnpm sidecar\`, and check ${pointer}.`,
+    );
+    // SHORT form, deliberately: `settingsPointer`'s default says "Workbench
+    // Settings → …", and these three render inside the Workbench already.
+    expect(SKILLS_SCAN_FAILED_COPY).not.toContain("Workbench");
+  });
+
+  it("sends both door refusals to the same derived pointer", () => {
+    expect(CHAT_API_DISABLED_COPY).toBe(
+      `The local API is off. Turn it on in ${pointer} to use Chat.`,
+    );
+    expect(CHAT_API_UNAUTHORIZED_COPY).toBe(
+      `The local API refused this token. Generate one in ${pointer}.`,
+    );
+    expect(CHAT_API_DISABLED_COPY).not.toContain("Workbench");
+    expect(CHAT_API_UNAUTHORIZED_COPY).not.toContain("Workbench");
+  });
+
+  it("spells the category label nowhere in chat-agent.ts itself", async () => {
+    // The mutation this catches: re-typing the literal into one of the three
+    // while the constant stays in place for the other two. Read as bytes,
+    // because that drift is invisible to any assertion on a single sentence.
+    // Within `src/lib` the label belongs to `SETTINGS_CATEGORIES` and is typed
+    // nowhere else; the one copy outside it, `sidecar/mcp.mjs`, is forced by
+    // AD-6 (the sidecar may not import `src/lib`) and is not in scope here.
+    const source = await readFile(
+      path.resolve(__dirname, "../chat-agent.ts"),
+      "utf8",
+    );
+    expect(source).not.toContain(pointer);
+    // READ FROM THE OWNER, not sliced back out of `pointer`: reconstructing the
+    // label by trimming a known prefix means a change to the separator or the
+    // surface word yields a mis-offset string, and `not.toContain(garbage)`
+    // then passes for the wrong reason — a green light on the one assertion
+    // this test exists to make.
+    expect(source).not.toContain(settingsCategory("api-mcp").label);
+    // THREE, one per constant, counted as occurrences rather than as lines: a
+    // formatter that wraps a template literal, or a doc line that names the
+    // constant, moves a line count without any drift having happened.
+    const uses = source.split("${API_MCP_POINTER}").length - 1;
+    expect(uses).toBe(3);
+  });
+
+  it("keeps chat-agent.ts client-safe and pure", async () => {
+    // The doc block above now claims this posture, and the new
+    // `./workbench-settings` import makes it load-bearing for `ChatCanvas`,
+    // `SkillsCanvas` and `WorkspacePreview` — a Node built-in reachable from
+    // here breaks the browser bundle, not this suite. Same scan
+    // `workbench-settings.test.ts` runs over its own module, for the same
+    // reason and in the same shape.
+    const source = await readFile(
+      path.resolve(__dirname, "../chat-agent.ts"),
+      "utf8",
+    );
+    expect(source).not.toMatch(/from "node:/);
+    expect(source).not.toMatch(/from "(fs|path|os)"/);
+    expect(source).not.toContain("./storage");
+    expect(source).not.toContain("./config");
   });
 });

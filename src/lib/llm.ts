@@ -15,6 +15,7 @@ import {
   getOllamaBaseUrl,
   llmTimeoutOption,
   providerIsConfigured,
+  providerLabel,
   DEFAULT_MODELS,
 } from "./config";
 import type { ProviderValue } from "./config";
@@ -430,7 +431,16 @@ export async function getConfiguredModel(options?: {
   if (provider) {
     const apiKey = apiKeyForProvider(provider);
     if (provider !== "ollama" && !apiKey) {
-      throw new Error(`The ${provider} provider is not configured on this server.`);
+      // The sixth destination, and until DW-503 the only one of them that named
+      // none: this sentence used to end at "server." and hand back the raw slug
+      // ("openai", "ollama-cloud"), so the owner learned that something was
+      // unconfigured but neither what it is called nor where the field lives.
+      // Both halves are derived — `providerLabel` owns the display name and
+      // {@link LLM_MODELS_POINTER} owns the destination — which is what keeps
+      // this in step with the five sibling refusals rather than beside them.
+      throw new Error(
+        `The ${providerLabel(provider)} provider is not configured on this server. Set it in ${LLM_MODELS_POINTER}.`,
+      );
     }
     const resolvedModel =
       model?.trim() ||
