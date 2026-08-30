@@ -377,6 +377,15 @@
     "label": "Build the keyboard node cursor",
     "resolution": ""
   },
+  "DW-598": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Apply the model filter inside `queryEmbeddings` before the sort-and-slice, so the window `searchByVector` judges is a filtered one and a topK-1 window can no longer be wholly-current by accident. This stays inside the authorized whole-window gate rather than reopening the decision. Pin DW-404's own reproduction \u2014 topK 1, one stale-tagged and one current-tagged vector, alternating queries \u2014 as the case that must emit one line, not four.",
+    "key": "1",
+    "label": "Filter before the topK slice",
+    "resolution": ""
+  },
   "DW-67": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
