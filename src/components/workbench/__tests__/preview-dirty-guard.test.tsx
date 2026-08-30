@@ -598,6 +598,12 @@ describe("a save the write precondition refuses (DW-38, DW-51)", () => {
    * it can no longer trust, and nudges the shell to re-check `dataVersion`. All
    * three are reconciliations of a write that may in fact have landed, and none
    * of them exists outside a rendered tree.
+   *
+   * The table now covers BOTH sides of the 2xx body read (DW-556): a status
+   * line that never arrived at all, and one that arrived over a body that then
+   * died mid-stream. The second used to be reported to this column as a landed
+   * save, which closed the editor and kept the `If-Match` — so the same three
+   * assertions are exactly what pins the fix.
    */
   describe("a save nothing came back from (DW-376)", () => {
     /**
@@ -647,6 +653,21 @@ describe("a save the write precondition refuses (DW-38, DW-51)", () => {
         }),
       ],
       ["a dropped connection", () => new TypeError("Failed to fetch")],
+      [
+        "a 200 whose body read died mid-stream",
+        // NOT an `Error` handed back — the helper throws only what it is given
+        // as one, and that would be a `fetch` that never resolved. This is a
+        // response that ARRIVED with a 200 and whose body then died, which is
+        // the case DW-556 reclassified: before the guard, `savePreviewBody`
+        // swallowed it and answered a landed save.
+        () => ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new TypeError("Failed to fetch");
+          },
+        }),
+      ],
     ];
 
     for (const [label, write] of UNCONFIRMED) {

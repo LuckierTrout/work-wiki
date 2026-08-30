@@ -118,6 +118,7 @@ import {
   settingsEnvProviderPinCopy,
   settingsModelSubstitutedCopy,
   settingsSaveBody,
+  verdictClearsHeldVersion,
   vectorSearchFieldIssue,
   vectorSearchInactiveCopy,
   vectorSearchMissingCopy,
@@ -341,13 +342,22 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
       // Every edit stays on screen — a refused save must never be the thing
       // that loses it — and the SERVER's sentence is shown, never a transport's.
       setSaveError(result.message);
-      if (result.unconfirmed || result.unreadable) {
-        // TWO different facts, one action (DW-427). `unconfirmed`: nobody
-        // answered, so the patch may already be stored (DW-376). `unreadable`:
+      if (verdictClearsHeldVersion(result.verdict)) {
+        // TWO different facts, one action (DW-427). `"unconfirmed"`: nobody
+        // answered, so the patch may already be stored (DW-376). `"unreadable"`:
         // the route answered a 2xx and its body yielded nothing we could read —
         // which is why the two get DIFFERENT sentences above, one saying the
         // outcome is unknown and one not claiming that over a status line that
         // arrived.
+        //
+        // ASKED, not re-derived (DW-558). The rule lives beside
+        // `SettingsSaveVerdict`, written as an exhaustive switch, so a fourth
+        // verdict added later fails to COMPILE until it states its own answer.
+        // Naming the two here would have looked equivalent and was not: a new
+        // verdict would have fallen to the `else` and silently inherited
+        // `"refused"`'s answer — keep the held version — which is the more
+        // dangerous of the two to be wrong about, for the reason set out
+        // below.
         //
         // They end at the same action because the held version is the one thing
         // on this surface that can now be a LIE either way: a save that landed

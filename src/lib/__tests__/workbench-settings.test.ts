@@ -136,10 +136,13 @@ import {
   settingsSaveBody,
   storedVectorInputs,
   validateWorkbenchSettingsPatch,
+  verdictClearsHeldVersion,
   vectorSearchFieldIssue,
   vectorSearchInactiveCopy,
   vectorSearchMissingCopy,
   type SettingsFetch,
+  type SettingsSaveResult,
+  type SettingsSaveVerdict,
   type VectorSearchInputs,
   type VectorSearchLegField,
   type WorkbenchSettingsPayload,
@@ -3132,8 +3135,7 @@ describe("the settings client", () => {
       message: "Vector search needs an API key before it can be turned on.",
       // The route ANSWERED, so nothing about this save is unknown — and its
       // body was read, so the held version is untouched.
-      unconfirmed: false,
-      unreadable: false,
+      verdict: "refused",
     });
 
     // A plain `Error` is not something `fetch` produces for a dead connection —
@@ -3144,8 +3146,10 @@ describe("the settings client", () => {
     await expect(saveWorkbenchSettings({}, { fetchImpl: thrown })).resolves.toEqual({
       status: "error",
       message: SETTINGS_SAVE_FAILED_COPY,
-      unconfirmed: false,
-      unreadable: false,
+      // A thrown cause that is not an unconfirmed one: nothing was applied as
+      // far as this client can tell, so the held version is still current —
+      // the same answer the two booleans gave (DW-558).
+      verdict: "refused",
     });
 
     const blank = stubFetch(() => ({ ok: false, status: 500, body: { error: "  " } })).impl;
@@ -3154,8 +3158,7 @@ describe("the settings client", () => {
       // A PLAIN 500 is the route's own verdict: it ran and it fell over. Not
       // widened to unknown — see the gateway case below.
       message: SETTINGS_SAVE_FAILED_COPY,
-      unconfirmed: false,
-      unreadable: false,
+      verdict: "refused",
     });
   });
 
@@ -3175,10 +3178,9 @@ describe("the settings client", () => {
       await expect(saveWorkbenchSettings({}, { fetchImpl: gateway })).resolves.toEqual({
         status: "error",
         message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
-        unconfirmed: true,
         // Nothing was read off a 2xx here: this is silence, not an unreadable
         // answer, and the two verdicts stay apart.
-        unreadable: false,
+        verdict: "unconfirmed",
       });
     }
 
@@ -3196,8 +3198,7 @@ describe("the settings client", () => {
       expect(result).toEqual({
         status: "error",
         message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
-        unconfirmed: true,
-        unreadable: false,
+        verdict: "unconfirmed",
       });
       // Still no transport vocabulary: the FACT the cause carries is used, the
       // string it carries never is.
@@ -3213,14 +3214,13 @@ describe("the settings client", () => {
     expect(result).toEqual({
       status: "error",
       message: SETTINGS_SAVE_FAILED_COPY,
-      unconfirmed: false,
-      unreadable: true,
+      verdict: "unreadable",
     });
-    expect(result.status === "error" && result.unconfirmed).toBe(false);
-    // …and `unreadable` on its own (DW-427): the body yielded no payload, so the
+    // Asserted on its own too (DW-427): the body yielded no payload, so the
     // caller must clear the version it was holding even though the route
-    // answered. Which side of that line a cause falls on is the whole point.
-    expect(result.status === "error" && result.unreadable).toBe(true);
+    // answered — and the outcome is NOT unknown. Which side of that line a
+    // cause falls on is the whole point, and one field now states it.
+    expect(result.status === "error" && result.verdict).toBe("unreadable");
   });
 
   it("treats an UNPARSEABLE 200 the same way — the route answered (DW-408)", async () => {
@@ -3246,18 +3246,16 @@ describe("the settings client", () => {
     expect(result).toEqual({
       status: "error",
       message: SETTINGS_SAVE_FAILED_COPY,
-      unconfirmed: false,
-      unreadable: true,
+      verdict: "unreadable",
     });
     // Asserted on its own as well as inside the object: the status line came
     // back, so the patch's outcome is KNOWN and the owner must not be told
-    // otherwise — only the ability to re-seed the draft was lost.
-    expect(result.status === "error" && result.unconfirmed).toBe(false);
-    // …which is what `unreadable` is for (DW-427). "The outcome is unknown" is
-    // the one thing this branch must not say, and "the version I am holding is
-    // still good" is the other — so the fact gets its own field rather than
-    // being folded into `unconfirmed`.
-    expect(result.status === "error" && result.unreadable).toBe(true);
+    // otherwise — only the ability to re-seed the draft was lost. That is what
+    // `"unreadable"` is for (DW-427). "The outcome is unknown" is the one thing
+    // this branch must not say, and "the version I am holding is still good" is
+    // the other — so the fact gets its own NAME rather than being folded into
+    // `"unconfirmed"`.
+    expect(result.status === "error" && result.verdict).toBe("unreadable");
     expect(result.status === "error" && result.message).not.toBe(
       unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
     );
@@ -3296,14 +3294,197 @@ describe("the settings client", () => {
     expect(result).toEqual({
       status: "error",
       message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
-      unconfirmed: true,
-      unreadable: false,
+      verdict: "unconfirmed",
     });
     // The line between the two verdicts, from the other side (DW-427). Both
     // clear the held version, so folding them together would look harmless —
     // but only ONE of them may put "the outcome is unknown" in front of the
     // owner, and that is this one.
-    expect(result.status === "error" && result.unreadable).toBe(false);
+    expect(result.status === "error" && result.verdict).toBe("unconfirmed");
+  });
+
+  it("still calls a REFUSAL whose body read died mid-stream a refusal (DW-557)", async () => {
+    // The refusal-branch parse is unguarded, deliberately — and until now that
+    // was argued in a comment with nothing executing it. A refusal STATUS
+    // arrived, so the outcome is KNOWN whatever then happened to the body: the
+    // route ran and declined, nothing was applied, and the version the caller
+    // is holding is still current.
+    //
+    // The same `TypeError` off the same dead socket answers `"unconfirmed"` when
+    // it kills a 2xx body read (the `it.each` above) and `"refused"` here. The
+    // status line is the whole difference, which is why the guard belongs on one
+    // parse and not the other.
+    //
+    // A bare literal rather than `stubFetch`, whose `json` cannot throw.
+    const dyingRefusal: SettingsFetch = async () => ({
+      ok: false,
+      status: 400,
+      json: async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    const result = await saveWorkbenchSettings({}, { fetchImpl: dyingRefusal });
+    expect(result).toEqual({
+      status: "error",
+      // `served` is empty — nothing was read out of that body — so the fallback
+      // is shown. Not the unknown-outcome sentence: a status line came back.
+      message: SETTINGS_SAVE_FAILED_COPY,
+      verdict: "refused",
+    });
+    expect(result.status === "error" && result.message).not.toBe(
+      unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+    );
+  });
+
+  it("still calls a GATEWAY whose body read died an unknown outcome (DW-557)", async () => {
+    // The same dying body read, one status over — and the answer flips, because
+    // the STATUS decides it and not the body. `refusedWriteFailure` reads a
+    // gateway status as unconfirmed whatever the body did, so the refusal
+    // branch's own `failedSave` must carry that through rather than calling
+    // everything that arrived with a status line a refusal.
+    //
+    // Nothing executed this before: the DW-557 case above uses a 400, and the
+    // gateway loop stubs a body that parses. The interaction of the two is
+    // exactly the argued-but-unexecuted gap DW-557 exists to close.
+    for (const status of UNCONFIRMED_STATUSES) {
+      const dyingGateway: SettingsFetch = async () => ({
+        ok: false,
+        status,
+        json: async () => {
+          throw new TypeError("Failed to fetch");
+        },
+      });
+      const result = await saveWorkbenchSettings({}, { fetchImpl: dyingGateway });
+      expect([status, result]).toEqual([
+        status,
+        {
+          status: "error",
+          message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+          verdict: "unconfirmed",
+        },
+      ]);
+    }
+  });
+
+  it("answers each verdict's held-version duty from ONE rule (DW-558)", async () => {
+    // The action the canvas takes, pinned where the rule lives rather than only
+    // through the DOM. `"refused"` KEEPS the version — nothing was applied, so
+    // it is still current. The other two CLEAR it: the stored config may have
+    // moved past it either way, and a 412 on the next save would deny a save
+    // that landed.
+    expect(verdictClearsHeldVersion("refused")).toBe(false);
+    expect(verdictClearsHeldVersion("unconfirmed")).toBe(true);
+    expect(verdictClearsHeldVersion("unreadable")).toBe(true);
+
+    // Every member answered, read off the type rather than off this list — a
+    // verdict added to the union with no answer here leaves a hole a reader can
+    // see. The `never` default inside the helper is the other half: it makes
+    // that hole fail to COMPILE instead of silently inheriting one of the two
+    // answers, which is what a hand-written `||` of two names would have done.
+    const ALL: readonly SettingsSaveVerdict[] = ["refused", "unconfirmed", "unreadable"];
+    expect(ALL.map(verdictClearsHeldVersion)).toEqual([false, true, true]);
+  });
+
+  it("has no spelling left for a fourth verdict (DW-558)", async () => {
+    // The state space, executed. Two independent booleans could express FOUR
+    // states when exactly three are legal, and nothing forbade the fourth —
+    // `{ unconfirmed: true, unreadable: true }` type-checked and meant nothing.
+    // One discriminated field makes that unconstructible, and this case pins
+    // both halves of the claim: every producing scenario answers exactly the
+    // three keys, and all three verdicts are still reachable.
+    const VERDICTS = ["refused", "unconfirmed", "unreadable"] as const;
+    const producers: ReadonlyArray<readonly [string, SettingsFetch]> = [
+      [
+        "an arrived refusal",
+        stubFetch(() => ({ ok: false, status: 400, body: { error: "No." } })).impl,
+      ],
+      ["a gateway", stubFetch(() => ({ ok: false, status: 502, body: {} })).impl],
+      [
+        "this route's own 503",
+        stubFetch(() => ({
+          ok: false,
+          status: 503,
+          body: { error: CONFIG_UNREADABLE_COPY },
+        })).impl,
+      ],
+      [
+        "a thrown plain Error",
+        async () => {
+          throw new Error("NetworkError when attempting to fetch resource");
+        },
+      ],
+      [
+        "a dropped connection",
+        async () => {
+          throw new TypeError("Failed to fetch");
+        },
+      ],
+      [
+        "an abort",
+        async () => {
+          throw Object.assign(new Error("signal timed out"), { name: "TimeoutError" });
+        },
+      ],
+      ["a shapeless 200", stubFetch(() => ({ ok: true, status: 200, body: { saved: true } })).impl],
+      [
+        "an UNPARSEABLE 200",
+        async () => ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }),
+      ],
+      [
+        "a 200 whose body read died",
+        async () => ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new TypeError("Failed to fetch");
+          },
+        }),
+      ],
+    ];
+
+    const seen = new Set<string>();
+    for (const [label, fetchImpl] of producers) {
+      const result = await saveWorkbenchSettings({}, { fetchImpl });
+      expect([label, result.status]).toEqual([label, "error"]);
+      if (result.status !== "error") continue;
+      // Exactly three keys: no leftover boolean, and no second field a fourth
+      // state could be assembled out of.
+      expect([label, Object.keys(result).sort()]).toEqual([
+        label,
+        ["message", "status", "verdict"],
+      ]);
+      expect([label, VERDICTS.includes(result.verdict)]).toEqual([label, true]);
+      seen.add(result.verdict);
+    }
+    // …and the union is no wider than the producers: every name in it is one
+    // some scenario above actually answers.
+    expect([...seen].sort()).toEqual([...VERDICTS].sort());
+
+    // The TYPE-LEVEL half of the same claim, which no runtime assertion can
+    // reach: the fourth state is not merely unproduced, it is unspellable.
+    // `@ts-expect-error` FAILS `tsc` if either construction ever compiles
+    // again, which is the actual regression to catch — a boolean quietly
+    // re-added beside `verdict`, or a verdict name outside the union.
+    void ((): SettingsSaveResult => ({
+      status: "error",
+      message: SETTINGS_SAVE_FAILED_COPY,
+      verdict: "unconfirmed",
+      // @ts-expect-error the old boolean pair is gone; `{ unconfirmed: true,
+      // unreadable: true }` was the fourth state and has no spelling left.
+      unreadable: true,
+    }));
+    void ((): SettingsSaveResult => ({
+      status: "error",
+      message: SETTINGS_SAVE_FAILED_COPY,
+      // @ts-expect-error a verdict must be one of the three the union names.
+      verdict: "unknown",
+    }));
   });
 
   it("sends the seeded version as `If-Match` (DW-63)", async () => {
@@ -3341,12 +3522,11 @@ describe("the settings client", () => {
     ).resolves.toEqual({
       status: "error",
       message: CONFIG_UNREADABLE_COPY,
-      unconfirmed: false,
-      // And NOT `unreadable`: that verdict is about a 2xx whose body yielded no
-      // payload. This is a refusal status the route chose, arrived and read,
-      // over a write it declined before merging anything — so the version the
-      // caller is holding is still current and must survive.
-      unreadable: false,
+      // `"refused"`, and NOT `"unreadable"`: that verdict is about a 2xx whose
+      // body yielded no payload. This is a refusal status the route chose,
+      // arrived and read, over a write it declined before merging anything — so
+      // the version the caller is holding is still current and must survive.
+      verdict: "refused",
     });
   });
 
@@ -3364,9 +3544,8 @@ describe("the settings client", () => {
     ).resolves.toEqual({
       status: "error",
       message: WRITE_CONFLICT_COPY,
-      unconfirmed: false,
       // An arrived refusal applied nothing, so the held version is still current.
-      unreadable: false,
+      verdict: "refused",
     });
 
     // …and the 428 the route answers a missing precondition with, the same way.
@@ -3378,8 +3557,7 @@ describe("the settings client", () => {
     await expect(saveWorkbenchSettings({}, { fetchImpl: missing })).resolves.toEqual({
       status: "error",
       message: WRITE_PRECONDITION_REQUIRED_COPY,
-      unconfirmed: false,
-      unreadable: false,
+      verdict: "refused",
     });
   });
 

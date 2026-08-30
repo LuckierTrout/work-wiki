@@ -40,6 +40,7 @@ import {
   refusedWriteFailure,
   thrownWriteFailure,
   unconfirmedCause,
+  type WriteFailure,
 } from "./workbench-request";
 import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
 
@@ -3218,42 +3219,145 @@ export async function fetchWorkbenchSettings(
   }
 }
 
+/**
+ * WHICH of the three failures a save was, in ONE field (DW-558).
+ *
+ * Three states, and exactly three: a pair of independent booleans could spell a
+ * fourth that nothing produces and nothing means. Each name states a different
+ * FACT about what is known, and each carries its own instruction about the
+ * version the caller is holding — which is the only thing on that surface that
+ * can silently become a lie. {@link verdictClearsHeldVersion} is that
+ * instruction, in code rather than in prose.
+ *
+ * THREE names here where `PreviewSaveResult` (in `workbench-preview.ts`) has a
+ * single `unconfirmed` boolean. Deliberate on both sides, and not an unfinished
+ * migration in either: that client has exactly ONE legal error state to tell
+ * apart, because a 2xx whose body will not parse is still a landed save there.
+ * This one re-seeds its draft from the answered payload, so an arrived-but-
+ * unusable 2xx is a third fact with a duty of its own.
+ */
+export type SettingsSaveVerdict =
+  /**
+   * NOTHING WAS APPLIED, as far as this client can tell: an arrived refusal —
+   * including this route's own 503, which declines before merging anything —
+   * or a thrown cause that is not an unconfirmed one.
+   *
+   * The caller KEEPS the version it was holding: no write landed, so it is
+   * still current, and dropping it would buy a precondition refusal on the next
+   * save for nothing.
+   */
+  | "refused"
+  /**
+   * NOTHING IS KNOWN about this save — see `WriteFailure.unconfirmed`. The
+   * caller must keep every edit on screen AND clear the version it was
+   * holding, because the stored config may already have moved past it; it
+   * must never tell the owner the settings were not saved.
+   */
+  | "unconfirmed"
+  /**
+   * The answer ARRIVED and its body yielded no payload — a 2xx that failed
+   * to parse, or that parsed to something shapeless. One fact, one branch.
+   *
+   * The caller must clear the version it was holding, exactly as it does
+   * for `unconfirmed` and for the same reason: a 2xx is no proof the route
+   * did NOT run, so the stored config may already have moved past it and the
+   * next save would be refused as a conflict. That refusal flatly states the
+   * save was not applied and attributes the change to somewhere else —
+   * when the change it is describing may be the owner's own save, one
+   * moment earlier. Clearing it re-seeds instead.
+   *
+   * Two things it is NOT. Not the UNKNOWN outcome: the status line came
+   * back, so this claims nothing about whether the patch landed, only that
+   * nothing usable came back to re-seed from. And not this route's own 503,
+   * which is an arrived refusal that applied nothing and whose held version
+   * is therefore still current.
+   */
+  | "unreadable";
+
 export type SettingsSaveResult =
   | { status: "ok"; payload: WorkbenchSettingsPayload }
   | {
       status: "error";
       message: string;
       /**
-       * NOTHING IS KNOWN about this save — see `WriteFailure.unconfirmed`. The
-       * caller must keep every edit on screen AND clear the version it was
-       * holding, because the stored config may already have moved past it; it
-       * must never tell the owner the settings were not saved. REQUIRED rather
-       * than optional, so a future construction site cannot forget the verdict
-       * into a silent false.
-       */
-      unconfirmed: boolean;
-      /**
-       * The answer ARRIVED and its body yielded no payload — a 2xx that failed
-       * to parse, or that parsed to something shapeless. One fact, one branch.
+       * Which failure this is. `"refused"` — nothing was applied, so KEEP the
+       * held version. `"unconfirmed"` — nothing came back, so CLEAR it.
+       * `"unreadable"` — a 2xx yielded no payload, so CLEAR it.
        *
-       * The caller must clear the version it was holding, exactly as it does
-       * for `unconfirmed` and for the same reason: a 2xx is no proof the route
-       * did NOT run, so the stored config may already have moved past it and the
-       * next save would be refused as a conflict. That refusal flatly states the
-       * save was not applied and attributes the change to somewhere else —
-       * when the change it is describing may be the owner's own save, one
-       * moment earlier. Clearing it re-seeds instead. REQUIRED for the
-       * same reason `unconfirmed` is — a future construction site must not be
-       * able to forget the verdict into a silent false.
+       * {@link SettingsSaveVerdict} states each one's fact in full and
+       * {@link verdictClearsHeldVersion} is the rule a caller runs rather than
+       * re-derives. Repeated here because per-member documentation on a
+       * string-literal union does not reach a caller's hover.
        *
-       * Two things it is NOT. Not the UNKNOWN outcome: the status line came
-       * back, so this claims nothing about whether the patch landed, only that
-       * nothing usable came back to re-seed from. And not this route's own 503,
-       * which is an arrived refusal that applied nothing and whose held version
-       * is therefore still current.
+       * REQUIRED and singular: a construction site must NAME one of the three,
+       * so no verdict can be forgotten into a silent default and no combination
+       * of fields is left that spells a fourth state.
        */
-      unreadable: boolean;
+      verdict: SettingsSaveVerdict;
     };
+
+/**
+ * Does this verdict oblige the caller to CLEAR the version it is holding?
+ *
+ * The rule lives beside the type it is about, and is an exhaustive `switch` on
+ * purpose: the `never` default fails to COMPILE the moment a fourth verdict is
+ * added without answering this question. A caller that tests two names by hand
+ * — or negates `"refused"` — cannot fail that way. It hands a new verdict one
+ * of the two answers silently, and whichever way it is written one of those
+ * answers is the dangerous one: keeping a version the store may have moved past
+ * buys a 412 that flatly denies a save that landed.
+ *
+ * WHAT it does not decide: the sentence. The two clearing verdicts say
+ * different things to the owner, which is why they stay two names rather than
+ * becoming one boolean here — see {@link SettingsSaveVerdict}.
+ */
+export function verdictClearsHeldVersion(verdict: SettingsSaveVerdict): boolean {
+  switch (verdict) {
+    case "refused":
+      // Nothing was applied — an arrived refusal, this route's own 503, or a
+      // thrown cause that is not an unconfirmed one — so the held version is
+      // still current and dropping it would buy a precondition refusal for
+      // nothing.
+      return false;
+    case "unconfirmed":
+    case "unreadable":
+      // TWO different facts, one action (DW-427): either way the stored config
+      // may already have moved past the held version, and a 2xx from an
+      // intermediary is no proof the route did not run.
+      return true;
+    default: {
+      // Not reachable, and that is the point: a member added to the union with
+      // no `case` of its own lands here and fails to type-check, so the new
+      // verdict must state its own answer instead of inheriting one.
+      const _exhaustive: never = verdict;
+      return _exhaustive;
+    }
+  }
+}
+
+/** A save that FAILED — the error member of {@link SettingsSaveResult}. */
+type SettingsSaveFailure = Extract<SettingsSaveResult, { status: "error" }>;
+
+/**
+ * The error result a {@link WriteFailure} produces — the ONE place its
+ * `unconfirmed` flag becomes a verdict.
+ *
+ * A helper rather than a ternary typed twice because "which branch produced it"
+ * is exactly the wrong thing to key on: {@link refusedWriteFailure} itself
+ * answers `unconfirmed: true` on a gateway status, so the refusal branch and
+ * the outer catch can each yield either verdict. The verdict follows the
+ * failure, and this is where that stays true.
+ *
+ * `"unreadable"` is not among its answers: it belongs to the one branch that
+ * read a 2xx through to an empty payload, and that branch states it directly.
+ */
+function failedSave(failure: WriteFailure): SettingsSaveFailure {
+  return {
+    status: "error",
+    message: failure.message,
+    verdict: failure.unconfirmed ? "unconfirmed" : "refused",
+  };
+}
 
 /**
  * Write one `workbench` patch.
@@ -3265,8 +3369,8 @@ export type SettingsSaveResult =
  *
  * …EXCEPT when nothing answered at all (DW-376). A fired deadline, a dropped
  * connection and a gateway status ({@link UNCONFIRMED_STATUSES}) are not
- * refusals: the patch may have landed, so they answer `unconfirmed: true` and
- * the ONE sentence `workbench-request` owns, composed from `action`. The
+ * refusals: the patch may have landed, so they answer `verdict: "unconfirmed"`
+ * and the ONE sentence `workbench-request` owns, composed from `action`. The
  * fallback is not shown there: it says the settings were NOT saved, which
  * nobody knows.
  *
@@ -3278,9 +3382,10 @@ export type SettingsSaveResult =
  * A 200 whose body carries no usable `workbench` object is an ERROR, not a
  * success: the caller re-seeds its draft from that object, and treating a
  * shapeless 200 as landed would clear the dirty flag over values nobody
- * confirmed were stored. It is the ONE branch that answers `unreadable: true`
- * (DW-427), which is how the caller learns that the held version — not the
- * outcome — is the thing that can no longer be relied on.
+ * confirmed were stored. It is the ONE branch that answers
+ * `verdict: "unreadable"` (DW-427), which is how the caller learns that the
+ * held version — not the outcome — is the thing that can no longer be relied
+ * on.
  */
 export async function saveWorkbenchSettings(
   patch: WorkbenchSettingsPatch,
@@ -3318,20 +3423,21 @@ export async function saveWorkbenchSettings(
         error?: unknown;
       } | null;
       const served = typeof body?.error === "string" ? body.error.trim() : "";
-      // The verdict has ONE owner, in `workbench-request`: a gateway's status
+      // The message has ONE owner, in `workbench-request`: a gateway's status
       // wins over whatever it put in the body, and every other status relays the
-      // server's sentence exactly as before.
-      return {
-        status: "error",
-        ...refusedWriteFailure(response.status, served, action, fallback),
-        // A refusal STATUS arrived, so nothing was applied and the held version
-        // is untouched — including on this route's own 503, which refuses before
-        // merging anything. Says nothing about the body: the parse above is
-        // unguarded, so a refusal body that dies mid-read lands here too, with
-        // `served` empty and the fallback shown. Either way no 2xx payload was
-        // lost, which is the only thing this verdict is about.
-        unreadable: false,
-      };
+      // server's sentence exactly as before. {@link failedSave} turns that same
+      // failure into the verdict, so a gateway status still reads as unknown
+      // here rather than as a refusal.
+      //
+      // What this branch never answers is `"unreadable"`. A refusal STATUS
+      // arrived, so nothing was applied and the held version is untouched —
+      // including on this route's own 503, which refuses before merging
+      // anything. That says nothing about the body: the parse above is
+      // deliberately unguarded, so a refusal body that dies mid-read lands here
+      // too, with `served` empty and the fallback shown (pinned since DW-557).
+      // Either way no 2xx payload was lost, which is the only thing
+      // `"unreadable"` is about.
+      return failedSave(refusedWriteFailure(response.status, served, action, fallback));
     }
     // Two different failures hide behind one `response.json()`, and they get
     // opposite verdicts (DW-408).
@@ -3351,15 +3457,18 @@ export async function saveWorkbenchSettings(
     // outcome is what `unconfirmed` composes and a status line that arrived must
     // never be described as silence.
     //
-    // What the two halves SHARE is the held version, and that is the second
-    // verdict (DW-427). Either way nothing usable came back, and a 2xx from an
-    // intermediary is no proof the route did NOT run — so keeping the version
-    // risks a 412 on the next save, which asserts outright that it was not
-    // applied and attributes the change to somewhere else, when the change it
-    // is describing may be the owner's own. Clearing it yields the 428 instead,
-    // which claims only that the save could not be checked — true either way.
-    // The arrived half therefore answers `unreadable: true` below, and
-    // `SettingsCanvas.save` clears on either verdict.
+    // What the two halves SHARE is the held version, and that is what the
+    // third verdict says (DW-427). Either way nothing usable came back, and a
+    // 2xx from an intermediary is no proof the route did NOT run — so keeping
+    // the version risks a 412 on the next save, which asserts outright that it
+    // was not applied and attributes the change to somewhere else, when the
+    // change it is describing may be the owner's own. Clearing it yields the
+    // 428 instead, which claims only that the save could not be checked — true
+    // either way. The arrived half therefore answers `verdict: "unreadable"`
+    // below, and `SettingsCanvas.save` clears on it and on `"unconfirmed"`
+    // alike — through {@link verdictClearsHeldVersion}, which is where that
+    // "either verdict" now lives as a rule rather than as a pair of names
+    // typed at the call site.
     const body: unknown = await response.json().catch((cause: unknown) => {
       if (unconfirmedCause(cause)) throw cause;
       return null;
@@ -3369,21 +3478,17 @@ export async function saveWorkbenchSettings(
     // is known: a status line came back, so the owner must not be told the
     // outcome is unknown. Whether the ROUTE itself ran — and rotated the version
     // this caller is holding — is precisely what the missing payload leaves
-    // open, which is why the verdict below is `unreadable` rather than `ok`.
+    // open, which is why the verdict below is `"unreadable"` rather than `ok`.
     return payload
       ? { status: "ok", payload }
-      : { status: "error", message: fallback, unconfirmed: false, unreadable: true };
+      : { status: "error", message: fallback, verdict: "unreadable" };
   } catch (cause) {
     // Deliberately discards the cause's message — see the docblock — but not the
     // FACT it carries: an abort and a `TypeError` mean the patch may have landed.
     // No 2xx body was READ THROUGH to a verdict on any path that reaches here —
     // the guarded `.catch` above keeps the arrived-but-unreadable ones on their
-    // own branch — so the second verdict is stated as false rather than left to
-    // a default.
-    return {
-      status: "error",
-      ...thrownWriteFailure(cause, action, fallback),
-      unreadable: false,
-    };
+    // own branch — so `"unreadable"` is not among the verdicts this return
+    // gives, and {@link failedSave} has no way to produce it.
+    return failedSave(thrownWriteFailure(cause, action, fallback));
   }
 }

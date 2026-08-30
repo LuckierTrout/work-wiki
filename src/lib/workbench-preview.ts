@@ -14,6 +14,7 @@ import type { TreeSelection } from "./workbench-tree";
 import {
   refusedWriteFailure,
   thrownWriteFailure,
+  unconfirmedCause,
   unconfirmedStatus,
 } from "./workbench-request";
 import { IF_MATCH_HEADER, formatIfMatch } from "./write-precondition";
@@ -1370,9 +1371,14 @@ export async function fetchPreview(
  *
  * `version` is the version of the bytes the write LANDED, answered by both write
  * routes so a surface that stays open can save again without a reload
- * (DW-38/51/56). Optional so a 200 from an older deployment, or a body that will
- * not parse, is still a landed save rather than an error — the next save then
- * refuses rather than clobbering, which is the safe direction.
+ * (DW-38/51/56). Optional so a 200 from an older deployment, or a body that
+ * FAILS TO PARSE, is still a landed save rather than an error — the next save
+ * then refuses rather than clobbering, which is the safe direction.
+ *
+ * A parse failure ONLY, since DW-556. A body read that DIES mid-stream — an
+ * abort, a dropped socket — is no longer a landed save with the version
+ * missing: nothing confirms the write at all, so it answers `unconfirmed: true`
+ * instead. The two used to share this sentence; they no longer share a verdict.
  */
 export type PreviewSaveResult =
   | { status: "ok"; version?: string }
@@ -1385,6 +1391,20 @@ export type PreviewSaveResult =
        * longer trust, and ask the shell to re-check `dataVersion`; it must never
        * tell the owner the save failed. REQUIRED rather than optional, so a
        * future construction site cannot forget the verdict into a silent false.
+       *
+       * FOUR ways in, not the three `WriteFailure` lists: a fired deadline, a
+       * dropped connection, a gateway status — and, since DW-556, a 2xx whose
+       * body read DIED mid-stream, which is the same silence arriving one step
+       * later. {@link savePreviewBody} states that fourth in full.
+       *
+       * ONE boolean, where the Settings client's `SettingsSaveResult` carries a
+       * three-value `verdict`. Deliberate, and not an unfinished migration:
+       * this result has exactly one legal error state to distinguish, because a
+       * 2xx whose body merely fails to PARSE is still a landed save here (see
+       * `version` above) and so never needs an `unreadable`-style third name.
+       * `SettingsCanvas` re-seeds its draft from the answered payload, which is
+       * what gives that surface a third fact to tell apart; this column has no
+       * such duty.
        */
       unconfirmed: boolean;
     };
@@ -1424,6 +1444,13 @@ export type PreviewSaveResult =
  * `workbench-request` owns, composed from `action`. `fallback` is not shown
  * there: "This page couldn’t be saved." is a claim about the server that this
  * client is in no position to make.
+ *
+ * …AND A FOURTH WAY IN since DW-556: a 2xx whose body read dies mid-stream. The
+ * status line arrived, but the body never finished, so nothing came back to
+ * confirm what landed — the same missing confirmation as the three above,
+ * reached one step later, and answered the same way. A body that merely fails
+ * to PARSE is NOT one of them: that is the route's own arrived answer and stays
+ * a landed save with no version (see {@link PreviewSaveResult.version}).
  */
 export async function savePreviewBody(
   url: string,
@@ -1467,10 +1494,18 @@ export async function savePreviewBody(
       ...(options.signal ? { signal: options.signal } : {}),
     });
     if (response.ok) {
-      // The landed version, so the surface can save again without a reload. A
-      // body that will not parse or carries none leaves it absent — the save
-      // still landed, and the NEXT one is refused rather than blind.
-      const landed = (await response.json().catch(() => null)) as {
+      // The landed version, so the surface can save again without a reload.
+      //
+      // The guard splits the two failures hiding behind this one
+      // `response.json()` (DW-556): a body that will not PARSE is the route's
+      // arrived answer, so it returns `null` and leaves the version absent,
+      // while a read that DIES is an unconfirmed cause like any other and is
+      // rethrown to the outer catch. Same three lines and the same argument as
+      // {@link saveWorkbenchSettings}, which is where it is set out in full.
+      const landed = (await response.json().catch((cause: unknown) => {
+        if (unconfirmedCause(cause)) throw cause;
+        return null;
+      })) as {
         version?: unknown;
       } | null;
       return typeof landed?.version === "string" && landed.version.length > 0

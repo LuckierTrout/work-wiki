@@ -707,6 +707,47 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     expect(ifMatchOf(2)).toBe(`"${SEEDED}"`);
   });
 
+  it("KEEPS the version when a REFUSAL's body read dies mid-stream (DW-557)", async () => {
+    // The third verdict at this seam, beside the `UNCONFIRMED` and `UNREADABLE`
+    // tables above and the 503 case beside it. A refusal STATUS arrived, so the
+    // route ran and declined and nothing was applied — whatever then happened to
+    // the body. The held version is therefore still current, exactly as on the
+    // 503, and the next save must still carry it.
+    //
+    // The one that has to stay off screen is the unknown-outcome sentence: the
+    // same dead socket answers it when it kills a 2xx body read, and the status
+    // line is the whole difference. `saveWorkbenchSettings` pins the returned
+    // verdict; only a mounted canvas can show what it does with it.
+    await mountWritable([
+      read(SEEDED),
+      () => ({
+        ok: false,
+        status: 400,
+        json: async () => {
+          throw new TypeError("Failed to fetch");
+        },
+      }),
+      saved(LANDED),
+    ]);
+
+    typeChatModel("gpt-4.1");
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+
+    // Nothing was read out of that body, so the fallback is shown — never the
+    // transport's own words, and never the claim that the outcome is unknown.
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+    expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+    expect(screen.queryByText(/Failed to fetch/)).toBeNull();
+    // A refused save must never be the thing that loses the edit.
+    expect((screen.getByLabelText("Chat model") as HTMLInputElement).value).toBe("gpt-4.1");
+
+    // THE difference from the two clearing verdicts: the next save still carries
+    // the seeded version, because this refusal proves the store did not move.
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(ifMatchOf(2)).toBe(`"${SEEDED}"`);
+  });
+
   it("keeps every edit on screen and shows the SERVER's conflict sentence", async () => {
     await mountWritable([
       read(SEEDED),

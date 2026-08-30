@@ -4203,7 +4203,9 @@ location: src/lib/workbench-preview.ts (savePreviewBody success-body parse)
 source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
 severity: medium
 reason: That is the exact misclassification DW-408 fixed for Settings, still live on the sibling write client: `workbench-preview.ts` parses the success body without the `unconfirmedCause` rethrow that `saveWorkbenchSettings` now has, so an abort or a dropped socket during the body read is indistinguishable from a clean save. Out of scope here — this bundle's intent names the Settings client only — but nothing else records it.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-save-verdict-shape
+resolution-undo: 767f82478d968c4df48c9d522d07cb841eed608792f8c167449df57b42c12e27 2026-08-30 7374617475733a206f70656e
 
 ### DW-557: The refusal branch's body parse in `saveWorkbenchSettings` is unguarded, so a refusal body read that dies mid-stream is classified as an arrived, fully read refusal.
 origin: spec-deferred fd171f2e691e
@@ -4211,7 +4213,9 @@ location: src/lib/workbench-settings.ts:3179-3183
 source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
 severity: low
 reason: `const body = (await response.json().catch(() => null))` on the `!response.ok` path has no `unconfirmedCause` rethrow, unlike the success parse twenty lines below. An aborted or dropped refusal body therefore yields `served === ""` and the fallback sentence, with the held version kept. That is defensible — a refusal status arrived and nothing was applied — but it is decided by omission rather than stated, and the asymmetry with the guarded success parse is invisible.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-save-verdict-shape
+resolution-undo: 767f82478d968c4df48c9d522d07cb841eed608792f8c167449df57b42c12e27 2026-08-30 7374617475733a206f70656e
 
 ### DW-558: `SettingsSaveResult`'s two booleans can express four states when only three are legal; nothing forbids `{ unconfirmed: true, unreadable: true }`.
 origin: spec-deferred e475024c9518
@@ -4219,7 +4223,9 @@ location: src/lib/workbench-settings.ts:3087-3120
 source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
 severity: low
 reason: The Design Notes enumerate exactly three verdicts, and `saveWorkbenchSettings` cannot currently construct the fourth — but the type permits it, no test pins that the two are never both true, and a future construction site could produce it silently. A single discriminated `verdict: "refused" | "unconfirmed" | "unreadable"` would make it unconstructible; changing the shape now would touch every call site and every assertion.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-save-verdict-shape
+resolution-undo: 767f82478d968c4df48c9d522d07cb841eed608792f8c167449df57b42c12e27 2026-08-30 7374617475733a206f70656e
 
 ### DW-559: Both model hints instruct the owner to empty a box that the env-locked branch renders as a non-editable div.
 origin: spec-deferred 244ab0dbc5d6
@@ -4768,4 +4774,20 @@ location: src/lib/config.ts (applyWorkbenchSettings -> setText)
 source_spec: `spec-dw-328-372-settings-route-write-semantics.md`
 severity: low
 reason: DW-328 named only the route's four flat text fields, and the spec's Never list kept `setText` out on the grounds that its parameter is typed `string | null | undefined` and `validateWorkbenchSettingsPatch` runs above it, so the arm is unreachable by construction. That is still true. What changed is the symmetry: a flat `embeddingModel` carrying a non-string now leaves the stored key untouched, while `workbench.embeddingModel` carrying one would delete it. `config.ts` already imports from `workbench-settings.ts`, so `flatTextFieldAction` is importable there and the collapse is available.
+status: open
+
+### DW-624: The DW-556 misclassification is still live on three sibling write paths: a 2xx body read that dies mid-stream is swallowed and the write is reported as LANDED.
+origin: spec-deferred 2d2d9d53df50
+location: src/hooks/useSettings.ts:356, src/components/WikiEditor.tsx:282, src/lib/workbench-request.ts:66
+source_spec: `spec-dw-556-557-558-settings-save-verdict-shape.md`
+severity: medium
+reason: `savePreviewBody` and `saveWorkbenchSettings` now rethrow an `unconfirmedCause` out of their 2xx body parse. Three siblings do not. `useSettings.ts:356` reads `PUT /api/settings`'s answer with a bare `.catch(() => null)` and then shows "Settings saved."; `WikiEditor.tsx:282` does the same on `PUT /api/wiki/[slug]` and adopts the pre-save version before navigating away; `send` and `sendForm` (`workbench-request.ts:66,98`) swallow it into `{}`, so the destructure that follows can report a landed create, rename or delete as a failure. The same abort or dropped socket therefore still reaches the owner as a settled outcome on all three. Out of scope here — this bundle's intent names the two Workbench write clients only.
+status: open
+
+### DW-625: `SkillsCanvas.toggle` shows the unknown-outcome sentence for a toggle that may have landed and never re-scans, so the rail can keep showing the pre-toggle state.
+origin: spec-deferred 644532dc68c4
+location: src/components/workbench/SkillsCanvas.tsx:106-118
+source_spec: `spec-dw-556-557-558-settings-save-verdict-shape.md`
+severity: low
+reason: `SkillsCanvas.tsx:106-118` calls `saveWorkbenchSettings` and re-scans only on `result.status === "ok"`; every error path sets the message and returns. A `"unconfirmed"` verdict means the enablement flip may already be stored, so the list it renders can disagree with the sidecar until something else triggers a scan. Pre-existing since DW-376 — the verdict collapse only made the state readable by name — and this is the one `saveWorkbenchSettings` call site the intent deliberately left untouched.
 status: open

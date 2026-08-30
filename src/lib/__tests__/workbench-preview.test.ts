@@ -2658,11 +2658,60 @@ describe("savePreviewBody", () => {
   it("still reports a landed save when the answer carries no version", async () => {
     // The next save is then refused rather than blind, which is the safe
     // direction: a 200 that cannot be parsed is still a write that happened.
+    //
+    // The `undefined` body is the load-bearing one since DW-556: `jsonResponse`
+    // makes its `json` reject with a `SyntaxError`, and a `SyntaxError` is NOT
+    // an `unconfirmedCause` — so the guard added below returns `null` for it and
+    // this landed-save answer survives. The two halves of one `.catch`, from the
+    // side that must not move.
     for (const body of [{ ok: true }, undefined, { ok: true, version: "" }]) {
       const { fetchImpl } = stubFetch(() => jsonResponse(200, body));
       await expect(
         savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl }),
       ).resolves.toEqual({ status: "ok" });
+    }
+  });
+
+  it("calls a 200 whose body read DIED mid-stream unconfirmed (DW-556)", async () => {
+    // The other half of that same `.catch`. These three ARE unconfirmed causes,
+    // and thrown from `json()` they arrive AFTER a 200 status line — so an
+    // unguarded `.catch(() => null)` reported a LANDED save over a write nobody
+    // can vouch for: the column closed the editor and the next save carried an
+    // `If-Match` this client has no business trusting.
+    //
+    // A `SyntaxError` is deliberately not in this list. A body that will not
+    // PARSE is still the route's arrived answer, so it stays a landed save with
+    // no version — that is `PreviewSaveResult.version`'s stated contract, and it
+    // is pinned by the "no version" case above.
+    //
+    // A bare literal rather than `jsonResponse`, whose `json` can only reject
+    // with a `SyntaxError`.
+    for (const cause of [
+      abortError("TimeoutError"),
+      abortError("AbortError"),
+      new TypeError("Failed to fetch"),
+    ]) {
+      const { fetchImpl } = stubFetch(() => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw cause;
+        },
+      }));
+      const result = await savePreviewBody(pageWriteUrl("alpha"), "x", { fetchImpl });
+      expect([cause.name, result]).toEqual([
+        cause.name,
+        {
+          status: "error",
+          message: unconfirmedWriteMessage(PREVIEW_SAVE_ACTION),
+          unconfirmed: true,
+        },
+      ]);
+      // Never the transport's own words, and never the claim that the save
+      // failed — `This page couldn’t be saved.` is the one sentence nobody is in
+      // a position to say here.
+      expect(result.status === "error" && result.message).not.toContain(cause.message);
+      expect(result).not.toMatchObject({ message: PREVIEW_SAVE_FAILED_COPY });
     }
   });
 
