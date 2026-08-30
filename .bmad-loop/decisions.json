@@ -395,6 +395,15 @@
     "label": "Persist rebuild state and re-arm from it",
     "resolution": ""
   },
+  "DW-600": {
+    "answered_at": "2026-08-29",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Move the spec's status from `in-review` to `withdrawn` with a note recording that DW-404 and DW-405 were settled by the 2026-08-22 decision and closed by later sweeps, and that its prescribed predicate contradicts that decision. Name the commits that closed them so a reader can find the shipped behaviour. Leave DW-406 to be re-filed on its own terms if it is still wanted.",
+    "key": "1",
+    "label": "Withdraw the spec",
+    "resolution": ""
+  },
   "DW-67": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
