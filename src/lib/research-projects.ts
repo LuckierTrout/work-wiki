@@ -7,6 +7,49 @@ import { hasResearchSlot } from "./research-concurrency";
 
 const CAS_ATTEMPTS = 8;
 
+/**
+ * The two research-project faults a route has to tell apart from a server
+ * fault: the row is GONE, and the row is BUSY.
+ *
+ * Typed rather than left as sentences for `POST /api/research/[id]/run` to
+ * match with `/not found/i` and `/already running/i` — that ladder reported any
+ * storage fault whose message happened to carry those words as the caller's
+ * 404/409, the same mislabelling DW-296 deleted from `POST /api/research`.
+ * Same idiom as `ClientInputError` here and `ResearchLeaseError` in
+ * `research-concurrency.ts`: a plain `extends Error` with `this.name` set, so
+ * the door classifies by `instanceof` and the message is only ever echoed.
+ *
+ * Two classes rather than one carrying a `kind`, because the door branches on
+ * exactly two outcomes — the shape `ResearchProviderUnconfiguredError` and
+ * `ResearchProviderOverrideError` already have in that same catch.
+ */
+export class ResearchProjectNotFoundError extends Error {
+  constructor(message = "Research project not found") {
+    super(message);
+    this.name = "ResearchProjectNotFoundError";
+  }
+}
+
+/**
+ * The one in-flight-run refusal: a project whose status is already `queued`,
+ * `collecting` or `ready` cannot be started again — a 409, not a 404 and not a
+ * server fault.
+ *
+ * DELIBERATELY NARROW. Other refusals have the same shape and are NOT this
+ * type: `"Research project is retired"`, `"…completion is still being
+ * delivered"`, the rerun-baseline race, `ResearchLeaseError` and
+ * `applyResearchProjectMutation`'s `"Research projects were busy; retry the
+ * request."` all stay plain `Error` → 500, because that is the status they
+ * already answered with and re-labelling them is a behaviour change nobody
+ * asked for. Do not read this class as "every conflict".
+ */
+export class ResearchProjectConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResearchProjectConflictError";
+  }
+}
+
 export type ResearchProjectStatus =
   | "draft"
   | "queued"

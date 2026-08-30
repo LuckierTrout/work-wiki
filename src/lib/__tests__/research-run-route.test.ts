@@ -1,12 +1,14 @@
 /**
- * The Deep Research mutate doors: `POST /api/research/[id]/run`, and the PATCH
- * and DELETE beside it.
+ * The Deep Research project doors: `POST /api/research/[id]/run` and the `GET`
+ * the panel polls it with, plus the PATCH and DELETE beside them.
  *
  * Handlers imported directly with the store mocked (the `research-route.test.ts`
  * recipe). What is pinned here is the DOOR, not the run: the read-only refusal
  * and its ordering behind the 401, the 202-and-poll contract that replaced
- * "run the whole job inside the POST", and the 400 that names a provider the
- * deployment has not configured.
+ * "run the whole job inside the POST", the 400 that names a provider the
+ * deployment has not configured, and — for both verbs — that every fault leaves
+ * by a JSON `{ error }` body with a status decided by TYPE, never by matching
+ * the message.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,7 +19,13 @@ vi.mock("@/lib/research-runtime", () => ({
   cancelResearchProject: vi.fn(),
   retireResearchProject: vi.fn(),
 }));
-vi.mock("@/lib/research-projects", () => ({
+// PARTIAL mock — the spread is load-bearing, not tidiness. The run route now
+// imports `ResearchProjectNotFoundError` / `ResearchProjectConflictError` from
+// this module to classify its catch by `instanceof`; under a bare factory those
+// bindings would be `undefined` and every `instanceof` in the catch would throw
+// at runtime. Only the four store functions are stubbed.
+vi.mock("@/lib/research-projects", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/research-projects")>()),
   deleteResearchProject: vi.fn(),
   updateResearchProject: vi.fn(),
   updateResearchProjectIf: vi.fn(),
@@ -25,7 +33,7 @@ vi.mock("@/lib/research-projects", () => ({
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
 
-import { POST } from "@/app/api/research/[id]/run/route";
+import { GET, POST } from "@/app/api/research/[id]/run/route";
 import { DELETE, PATCH } from "@/app/api/research/[id]/route";
 import { getPrincipal } from "@/lib/auth";
 import { ClientInputError } from "@/lib/errors";
@@ -34,7 +42,13 @@ import {
   ResearchProviderOverrideError,
   ResearchProviderUnconfiguredError,
 } from "@/lib/research-providers";
-import { getResearchProject, updateResearchProject, updateResearchProjectIf } from "@/lib/research-projects";
+import {
+  getResearchProject,
+  ResearchProjectConflictError,
+  ResearchProjectNotFoundError,
+  updateResearchProject,
+  updateResearchProjectIf,
+} from "@/lib/research-projects";
 import {
   cancelResearchProject,
   queueResearchProject,
@@ -166,11 +180,51 @@ describe("POST /api/research/[id]/run", () => {
   });
 
   it("404s a project that is not there and 409s one already running", async () => {
-    mockedQueue.mockRejectedValue(new Error("Research project not found"));
+    mockedQueue.mockRejectedValue(new ResearchProjectNotFoundError());
     expect((await POST(runRequest(), ctx())).status).toBe(404);
 
-    mockedQueue.mockRejectedValue(new Error("Research project is already running"));
+    mockedQueue.mockRejectedValue(
+      new ResearchProjectConflictError("Research project is already running"),
+    );
     expect((await POST(runRequest(), ctx())).status).toBe(409);
+  });
+
+  it("400s a store refusal of the caller's own input", async () => {
+    // The `POST /api/research` branch this door was missing entirely: a
+    // `ClientInputError` is the caller's fault by construction and used to fall
+    // through to 500 here.
+    mockedQueue.mockRejectedValue(new ClientInputError("Research question is required"));
+
+    const response = await POST(runRequest(), ctx());
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: "Research question is required",
+      availableProviders: expect.anything(),
+    });
+  });
+
+  /**
+   * DW-480/DW-577. The catch used to decide 404/409 by running `/not found/i`
+   * and `/already running/i` over the MESSAGE, so a storage fault whose
+   * sentence happened to carry those words was handed to the caller as their
+   * own mistake — a 404 invites "the project is gone", a 409 invites "retry
+   * later", and both hide a store that is broken. Classification is by TYPE
+   * now, so an untyped `Error` is a 500 no matter what it says.
+   */
+  it.each([
+    ["says not found", new Error("R2 object not found for research-projects.json")],
+    ["says already running", new Error("lock already running for research-projects.json")],
+  ])("500s a storage fault whose message %s", async (_label, fault) => {
+    mockedQueue.mockRejectedValue(fault);
+
+    const response = await POST(runRequest(), ctx());
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: fault.message,
+      availableProviders: expect.anything(),
+    });
   });
 
   it("cancels through the same door", async () => {
@@ -360,5 +414,62 @@ describe("POST /api/research/[id]/run — owner lifecycle only", () => {
       error: "The search provider is chosen in Settings, not on the run.",
     });
     expect(mockedQueue).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/research/[id]/run", () => {
+  const getRequest = () => new Request("http://localhost/api/research/p1/run");
+
+  it("401s an unauthenticated caller", async () => {
+    mockedPrincipal.mockResolvedValue(null);
+
+    expect((await GET(getRequest(), ctx())).status).toBe(401);
+    expect(mockedGet).not.toHaveBeenCalled();
+  });
+
+  it("returns the project the panel polls for", async () => {
+    mockedGet.mockResolvedValue({ id: "p1", status: "collecting" } as Awaited<
+      ReturnType<typeof getResearchProject>
+    >);
+
+    const response = await GET(getRequest(), ctx());
+
+    expect(response.status).toBe(200);
+    // `availableProviders` is half this response's contract — the panel reads it
+    // to say what the deployment can switch to.
+    expect(await response.json()).toMatchObject({
+      project: { id: "p1", status: "collecting" },
+      availableProviders: expect.anything(),
+    });
+  });
+
+  it.each([
+    ["absent", null],
+    ["retired", { id: "p1", status: "cancelled", deleteRequested: true }],
+  ])("404s a project that is %s", async (_label, project) => {
+    mockedGet.mockResolvedValue(project as Awaited<ReturnType<typeof getResearchProject>>);
+
+    const response = await GET(getRequest(), ctx());
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Research project not found." });
+  });
+
+  /**
+   * DW-576. `parseRegistry` refuses a registry that is not a list (DW-297,
+   * widened by DW-476), and the handler ran entirely outside a `try` — so the
+   * refusal escaped as a framework error page with NO body. What is pinned is
+   * the SHAPE: this door answers the same `{ error }` JSON every sibling door
+   * returns, carrying the store's own sentence, so any client that reads the
+   * body gets one. (The Studio's Research poll discards it — `catch {}` — which
+   * is why the missing body went unnoticed.)
+   */
+  it("500s a refused registry with a real JSON body", async () => {
+    mockedGet.mockRejectedValue(new Error("Research projects file is not a list."));
+
+    const response = await GET(getRequest(), ctx());
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Research projects file is not a list." });
   });
 });

@@ -87,6 +87,8 @@ import {
   getResearchProject,
   listResearchProjects,
   mutateResearchProject,
+  ResearchProjectConflictError,
+  ResearchProjectNotFoundError,
   updateResearchProject,
 } from "../research-projects";
 import {
@@ -709,9 +711,33 @@ describe("deep research — one run per project", () => {
       const created = await project();
       await updateResearchProject("alice", created.id, { status });
 
-      await expect(queueResearchProject("alice", created.id)).rejects.toThrow(/already running/i);
+      const error = await queueResearchProject("alice", created.id).catch((e: unknown) => e);
+
+      // BOTH halves are contract. The TYPE is what `POST /api/research/[id]/run`
+      // classifies on (409); a throw site reverted to a plain `Error` would
+      // degrade that to a 500 with the message assertion still green. The
+      // MESSAGE stays asserted because it is echoed in the response body.
+      expect(error).toBeInstanceOf(ResearchProjectConflictError);
+      expect((error as Error).message).toMatch(/already running/i);
     },
   );
+
+  /**
+   * The other half of the runtime→route seam. The door decides 404 by
+   * `instanceof ResearchProjectNotFoundError` alone, so an untyped throw here
+   * silently becomes a 500 — and the route suite cannot catch that, because it
+   * mocks this module wholesale. The message is asserted alongside the type
+   * because `POST /api/tasks/run` still poisons a task by `/not found/i`.
+   */
+  it("throws a typed not-found from queue and from cancel, not a bare Error", async () => {
+    const queued = await queueResearchProject("alice", "missing").catch((e: unknown) => e);
+    expect(queued).toBeInstanceOf(ResearchProjectNotFoundError);
+    expect((queued as Error).message).toMatch(/not found/i);
+
+    const cancelled = await cancelResearchProject("alice", "missing").catch((e: unknown) => e);
+    expect(cancelled).toBeInstanceOf(ResearchProjectNotFoundError);
+    expect((cancelled as Error).message).toMatch(/not found/i);
+  });
 
   it("queues a finished project again, because that is an explicit new start", async () => {
     // `complete` is deliberately NOT refused: the only caller is the owner's own

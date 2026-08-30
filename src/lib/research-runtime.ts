@@ -30,6 +30,8 @@ import {
   getResearchProject,
   listResearchProjects,
   mutateResearchProject,
+  ResearchProjectConflictError,
+  ResearchProjectNotFoundError,
   updateResearchProject,
   updateResearchProjectIf,
   withResearchProjectLifecycleFence,
@@ -316,7 +318,7 @@ export async function queueResearchProject(
   id: string,
 ): Promise<ResearchProject> {
   const project = await getResearchProject(owner, id);
-  if (!project) throw new Error("Research project not found");
+  if (!project) throw new ResearchProjectNotFoundError();
   if (project.deleteRequested) throw new Error("Research project is retired");
   if (project.completion && project.completion.phase !== "done") {
     if (!project.deliveryBlocked) {
@@ -382,7 +384,7 @@ export async function queueResearchProject(
   }
   const updated = await mutateResearchProject(owner, id, (current) => {
     if (RESEARCH_IN_FLIGHT_STATUSES.includes(current.status)) {
-      throw new Error("Research project is already running");
+      throw new ResearchProjectConflictError("Research project is already running");
     }
     if (current.completion && current.completion.phase !== "done") {
       throw new Error("Research project completion is still being delivered");
@@ -408,7 +410,7 @@ export async function queueResearchProject(
     };
     return current;
   });
-  if (!updated) throw new Error("Research project not found");
+  if (!updated) throw new ResearchProjectNotFoundError();
   return updated;
 }
 
@@ -432,7 +434,7 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
     };
     return project;
   });
-  if (!updated) throw new Error("Research project not found");
+  if (!updated) throw new ResearchProjectNotFoundError();
   // Only a queued project never started a worker. Releasing a `ready` slot
   // here is what let a fourth run in while synthesis was still running.
   if (updated.status === "cancelled" && !updated.completion) {
@@ -1298,7 +1300,7 @@ async function researchEvidenceForSynthesis(
 
 export async function runResearchProject(owner: string, id: string): Promise<ResearchProject> {
   let initial = await getResearchProject(owner, id);
-  if (!initial) throw new Error("Research project not found");
+  if (!initial) throw new ResearchProjectNotFoundError();
   if (initial.status === "cancelled" || initial.cancelRequested) return initial;
   if (initial.completion && initial.completion.phase !== "done") {
     if (initial.deliveryBlocked) return initial;
@@ -1486,7 +1488,7 @@ export async function runResearchProject(owner: string, id: string): Promise<Res
   }
   if (admission.kind !== "claimed") {
     if (admission.project) return admission.project;
-    throw new Error("Research project not found");
+    throw new ResearchProjectNotFoundError();
   }
   const { project: claimed, attemptId } = admission;
   initial = claimed;

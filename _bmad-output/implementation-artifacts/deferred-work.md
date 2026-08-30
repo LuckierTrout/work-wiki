@@ -3577,7 +3577,9 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/app/api/research/[id]/run/route.ts:93
 severity: low
 reason: `/not found/i` -> 404 and `/already running/i` -> 409 at `src/app/api/research/[id]/run/route.ts:93-99` — the exact idiom DW-296 retired on the create route, in the same feature.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-run-route-error-typing
+resolution-undo: 17fc47581e89988766b4bf51ab5b234bd3c8e4474e8e477ca08cb273685072bd 2026-08-30 7374617475733a206f70656e
 
 ### DW-481: Sibling `/required|invalid/i` status regexes remain on three other routes.
 origin: spec-deferred 5dbcff19cdef
@@ -4419,7 +4421,9 @@ location: src/app/api/research/[id]/run/route.ts:105
 source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
 severity: low
 reason: The handler calls `getResearchProject` outside any try block. Since DW-297 that call throws on a wrong-shaped registry, and DW-476 widens which registries throw, so this door answers a bare framework error rather than the JSON error body every sibling door returns. Pre-existing hole opened by DW-297, not by this change.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-run-route-error-typing
+resolution-undo: 17fc47581e89988766b4bf51ab5b234bd3c8e4474e8e477ca08cb273685072bd 2026-08-30 7374617475733a206f70656e
 
 ### DW-577: `POST /api/research/[id]/run` still classifies by message regex and has no `ClientInputError` branch.
 origin: spec-deferred 0bb1680d33f8
@@ -4427,7 +4431,9 @@ location: src/app/api/research/[id]/run/route.ts:88
 source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
 severity: low
 reason: The catch decides 404/409/500 with `/not found/i` and `/already running/i` against the error message — the exact anti-pattern DW-296 deleted from `POST /api/research`, where a storage `EINVAL: invalid argument` was mislabelled as the caller's fault. This door is not named by the DW-478 intent, so it was left alone; the regex is pre-existing.
-status: open
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-research-run-route-error-typing
+resolution-undo: 17fc47581e89988766b4bf51ab5b234bd3c8e4474e8e477ca08cb273685072bd 2026-08-30 7374617475733a206f70656e
 
 ### DW-578: `ClientInputError` is classified by `instanceof` at ~16 route sites, the mechanism `read-only.ts` documents as unreliable across a duplicated module graph.
 origin: spec-deferred af2f5b90fa56
@@ -5018,4 +5024,20 @@ location: src/app/api/agents/[id]/route.ts:268
 source_spec: `spec-dw-268-388-read-only-operator-docs.md`
 severity: low
 reason: `src/app/api/agents/[id]/route.ts:268-272` says `updateAgent` "writes the agent's identity PAGE through the kernel before it persists the profile with `registerAgent`". In `src/lib/agents.ts:772-846` that `writeWikiPageWithSideEffects` call sits inside `if (options.addPages && options.addPages.length > 0)`; a name, description, trigger, instructions, `defaultVault` or `removePages` edit reaches only `registerAgent`, a bare `storage.writeFile`, and returns 200 on a read-only deployment. DEPLOY.md now documents the split correctly, so the comment is the remaining wrong statement.
+status: open
+
+### DW-650: `POST /api/tasks/run` still decides a task's poison-vs-retry by `/not found/i` over the message, and it is the consumer of `runResearchProject`'s newly typed not-found throw.
+origin: spec-deferred 6e4bccef92b7
+location: src/app/api/tasks/run/route.ts:918
+source_spec: `spec-dw-480-576-577-research-run-route-error-typing.md`
+severity: low
+reason: `src/app/api/tasks/run/route.ts:918` returns 422 (permanent, poison the task) when the message matches `/not found/i`, and `:883` uses the same regex for the Graphify terminal decision. `runResearchProject` now throws `ResearchProjectNotFoundError` at `src/lib/research-runtime.ts:1303` and `:1491`, and the `run-research` task lands in exactly that catch. Nothing breaks today only because this bundle preserved the message verbatim — the poison decision is now silently coupled to the class's DEFAULT message string, with no test pinning the coupling. It is the same anti-pattern DW-480/DW-577 retired, one door over, and out of this bundle's named scope.
+status: open
+
+### DW-651: Same-shaped refusals at `POST /api/research/[id]/run` still answer 500, including one retired project that the GET on the same path answers 404 for.
+origin: spec-deferred a81ed2c6e1d2
+location: src/lib/research-runtime.ts:322
+source_spec: `spec-dw-480-576-577-research-run-route-error-typing.md`
+severity: low
+reason: `"Research project is retired"` (`src/lib/research-runtime.ts:322`), `"Research project completion is still being delivered"` (`:325`, `:390`), the rerun-baseline race (`:393`) and `applyResearchProjectMutation`'s `"Research projects were busy; retry the request."` (`src/lib/research-projects.ts:387`) all stay plain `Error` and so keep the 500 the old regex ladder also gave them. Two are genuinely caller-visible states: a retired project is a 404 on `GET /api/research/[id]/run` and a 500 on the POST, and a CAS exhaustion is transient contention reported as a permanent server fault with no retry signal. Deliberately excluded here — the bundle intent authorises typing not-found and conflict, not remapping statuses — and now documented as excluded in `ResearchProjectConflictError`'s docblock.
 status: open

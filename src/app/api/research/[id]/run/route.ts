@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { getErrorMessage } from "@/lib/errors";
+import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { enqueueTask } from "@/lib/tasks";
 import {
@@ -14,6 +14,10 @@ import {
   ResearchProviderOverrideError,
   ResearchProviderUnconfiguredError,
 } from "@/lib/research-providers";
+import {
+  ResearchProjectConflictError,
+  ResearchProjectNotFoundError,
+} from "@/lib/research-projects";
 
 interface RouteContext { params: Promise<{ id: string }> }
 
@@ -82,17 +86,31 @@ export async function POST(request: Request, { params }: RouteContext) {
     return NextResponse.json({ project, enqueued }, { status: 202 });
   } catch (error) {
     const message = getErrorMessage(error);
+    // Classification is by TYPE alone — the `POST /api/research` idiom.
+    //
     // A missing credential for the SELECTED provider is the caller's
     // configuration, not a server fault, and it is reported with the list of
     // providers that ARE configured so the surface can say what to switch to —
-    // without ever silently switching. 400 by TYPE rather than by matching the
-    // sentence, the `ClientInputError` idiom from the create route.
+    // without ever silently switching. Every class in this ladder extends
+    // `Error` directly and none subclasses another, so the branches are
+    // disjoint and the order is presentation, not precedence.
+    //
+    // The 404 and 409 used to be decided by `/not found/i` and
+    // `/already running/i` over the message, which handed a storage fault whose
+    // sentence happened to contain those words to the caller as their own
+    // mistake — "R2 object not found for research-projects.json" is a 500. The
+    // runtime now throws `ResearchProjectNotFoundError` /
+    // `ResearchProjectConflictError` for exactly those two faults; every other
+    // fault, including `ResearchLeaseError`, "…is retired" and the rerun
+    // baseline race, keeps the 500 it already had.
     const status =
-      error instanceof ResearchProviderUnconfiguredError || error instanceof ResearchProviderOverrideError
+      error instanceof ResearchProviderUnconfiguredError
+        || error instanceof ResearchProviderOverrideError
+        || error instanceof ClientInputError
         ? 400
-        : /not found/i.test(message)
+        : error instanceof ResearchProjectNotFoundError
           ? 404
-          : /already running/i.test(message)
+          : error instanceof ResearchProjectConflictError
             ? 409
             : 500;
     return NextResponse.json(
@@ -105,10 +123,25 @@ export async function POST(request: Request, { params }: RouteContext) {
 export async function GET(_request: Request, { params }: RouteContext) {
   const principal = await getPrincipal();
   if (!principal) return NextResponse.json({ error: "Sign in required." }, { status: 401 });
-  const { id } = await params;
-  const { getResearchProject } = await import("@/lib/research-projects");
-  const project = await getResearchProject(principal.handle, id);
-  return project && !project.deleteRequested
-    ? NextResponse.json({ project, availableProviders: availableResearchProviders() })
-    : NextResponse.json({ error: "Research project not found." }, { status: 404 });
+  // Wrapped because the read itself can REFUSE: `parseRegistry` throws on a
+  // registry that is not a list, or that holds a row the shape guard rejects,
+  // and an unreadable store is a server fault (500), never an empty one.
+  //
+  // Left uncaught that refusal escaped as a framework error page with no body.
+  // The gain is SHAPE, not a fixed screen: this door now answers the same
+  // `{ error }` JSON every sibling door returns, so any client that reads the
+  // body gets the store's own sentence instead of nothing. The Studio's
+  // 3-second Research poll happens to discard it (`catch {}` — the visible
+  // status holds until the next refresh), which is exactly why the body was
+  // free to be missing for so long.
+  try {
+    const { id } = await params;
+    const { getResearchProject } = await import("@/lib/research-projects");
+    const project = await getResearchProject(principal.handle, id);
+    return project && !project.deleteRequested
+      ? NextResponse.json({ project, availableProviders: availableResearchProviders() })
+      : NextResponse.json({ error: "Research project not found." }, { status: 404 });
+  } catch (error) {
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
+  }
 }
