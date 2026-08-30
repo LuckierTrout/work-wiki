@@ -1001,6 +1001,25 @@ export function detectEnvProvider(): {
   return { provider: null, apiKey: null };
 }
 
+/**
+ * The `LLM_CUSTOM_API_KEY` half of the custom provider's credential, or `null`.
+ *
+ * ONE door for the variable (DW-66). Three places need this answer — the
+ * resolver below, the flat page's source badge in `getEffectiveSettings`, and
+ * the Settings payload's `envCustomApiKey` boolean — and before this helper the
+ * first two spelled the read themselves. A fourth spelling on the payload would
+ * have been a rule stated four times, which is four rules that agree today: the
+ * moment one of them dropped the `nonEmpty` trim, the row would announce an env
+ * credential the resolver refuses.
+ *
+ * Truthiness, not nullishness: `LLM_CUSTOM_API_KEY=""` is set-but-empty, and an
+ * empty string is not a credential — `getModel()` refuses it as missing, so it
+ * must not mask a key the owner stored either.
+ */
+function envCustomApiKey(): string | null {
+  return nonEmpty(process.env.LLM_CUSTOM_API_KEY);
+}
+
 /** Return the server-side credential for a specific provider. */
 export function apiKeyForProvider(provider: string | null): string | null {
   switch (provider) {
@@ -1021,8 +1040,10 @@ export function apiKeyForProvider(provider: string | null): string | null {
       // deployment that sets it keeps the secret out of the config JSON.
       // Truthiness, not nullishness: `LLM_CUSTOM_API_KEY=""` is set-but-empty,
       // and a `??` chain would hand back `""` — a value `providerIsConfigured`
-      // reads as a credential while `getModel()` refuses it as missing.
-      return nonEmpty(process.env.LLM_CUSTOM_API_KEY) ?? nonEmpty(loadConfigSync().customApiKey);
+      // reads as a credential while `getModel()` refuses it as missing. That
+      // reading lives in {@link envCustomApiKey}, which the Settings payload
+      // reads too, so the surface and this resolver cannot drift.
+      return envCustomApiKey() ?? nonEmpty(loadConfigSync().customApiKey);
     default:
       return null;
   }
@@ -1508,7 +1529,31 @@ export function llmTimeoutOption(): { abortSignal?: AbortSignal } {
 }
 
 export interface FirecrawlSettings {
+  /**
+   * Is there a Firecrawl credential AT ALL — the unchanged OR of the two halves
+   * below, with env first.
+   *
+   * NO PRODUCTION READER as of DW-66: the Settings row used to be it, and the
+   * row now reads the halves instead. Retained rather than deleted because it
+   * is the answer to a question that outlives this one caller — "is Capture
+   * credentialled" — and because removing it would fold the env-wins precedence
+   * into whichever caller asks next. Kept in step with the halves by
+   * construction: all three come off the same two reads below.
+   */
   hasKey: boolean;
+  /**
+   * The two halves of {@link FirecrawlSettings.hasKey}, apart (DW-66).
+   *
+   * The OR above answers "is there a credential"; the Settings row asks a
+   * different question, because `Remove` deletes the STORED key and nothing
+   * else — so offering it for an env-only credential is an affordance that
+   * clears nothing and leaves the sentence unchanged. Splitting here rather
+   * than in `getWorkbenchSettings` keeps the one `FIRECRAWL_API_KEY` read in
+   * one place, the same shape `envEmbeddingApiKeyProviders` /
+   * `hasEmbeddingApiKey` already use.
+   */
+  hasEnvKey: boolean;
+  hasStoredKey: boolean;
   baseUrl: string | null;
 }
 
@@ -1518,12 +1563,15 @@ export interface FirecrawlSettings {
  */
 export function getFirecrawlSettings(): FirecrawlSettings {
   const cfg = loadConfigSync();
+  // Truthiness, not nullishness, on BOTH halves: `FIRECRAWL_API_KEY=""` is
+  // set-but-empty, so it is not a credential and must not mask a key the owner
+  // stored through Settings.
+  const fromEnv = nonEmpty(process.env.FIRECRAWL_API_KEY);
+  const fromStore = nonEmpty(cfg.firecrawlApiKey);
   return {
-    // Truthiness, not nullishness: `FIRECRAWL_API_KEY=""` must not mask a key
-    // the owner stored through Settings.
-    hasKey: Boolean(
-      nonEmpty(process.env.FIRECRAWL_API_KEY) ?? nonEmpty(cfg.firecrawlApiKey),
-    ),
+    hasKey: Boolean(fromEnv ?? fromStore),
+    hasEnvKey: fromEnv !== null,
+    hasStoredKey: fromStore !== null,
     baseUrl: nonEmpty(cfg.firecrawlBaseUrl),
   };
 }
@@ -1734,7 +1782,17 @@ export function getWorkbenchSettings(
     ingestProvider: cfg.ingestProvider ?? null,
     ingestModel: cfg.ingestModel ?? null,
     customBaseUrl: nonEmpty(cfg.customBaseUrl),
-    hasCustomApiKey: apiKeyForProvider("custom") !== null,
+    // The STORED key only, exactly as `hasEmbeddingApiKey` below is. An env
+    // credential is reported by `envCustomApiKey` beside it, because `Remove`
+    // must not be offered for a key this route cannot delete: it used to be the
+    // OR of the two, so `LLM_CUSTOM_API_KEY` alone read as "A key is stored."
+    // beside a Remove button that cleared nothing and left the sentence saying
+    // the same thing afterwards (DW-66).
+    hasCustomApiKey: nonEmpty(cfg.customApiKey) !== null,
+    // The env half, through the ONE door `apiKeyForProvider` resolves it with —
+    // so the row and the runtime cannot disagree about whether the variable is
+    // a credential. A BOOLEAN, never the value (AD-23).
+    envCustomApiKey: envCustomApiKey() !== null,
     llmTimeoutSeconds:
       typeof cfg.llmTimeoutSeconds === "number" ? cfg.llmTimeoutSeconds : null,
     // The owner's STORED decision, NOT `getVectorSearchSettings().enabled`. The
@@ -1780,7 +1838,13 @@ export function getWorkbenchSettings(
     // The RUNTIME fact the browser cannot ask for, passed in by the route.
     hasWorkersAiBinding,
     firecrawlBaseUrl: firecrawl.baseUrl,
-    hasFirecrawlApiKey: firecrawl.hasKey,
+    // The STORED half and the ENV half apart, for the reason `hasCustomApiKey`
+    // splits above (DW-66). This row used to read `firecrawl.hasKey` — the OR —
+    // which is what made an env-only deployment say "A key is stored." beside a
+    // `Remove` that deletes nothing. The OR itself is unchanged and still
+    // computed from the same two reads; nothing in production reads it now.
+    hasFirecrawlApiKey: firecrawl.hasStoredKey,
+    envFirecrawlApiKey: firecrawl.hasEnvKey,
     // Deep Research. The STORED select rides in `researchProvider` and the env
     // override rides beside it, the same split the embedding pair uses and for
     // the same reason: `RESEARCH_PROVIDER` wins at run time, so folding it into
@@ -2041,7 +2105,7 @@ export function getEffectiveSettings(): EffectiveSettings {
   const resolvedApiKey = apiKeyForProvider(provider);
   const apiKeySource: SettingSource = !resolvedApiKey
     ? "none"
-    : provider === "custom" && !nonEmpty(process.env.LLM_CUSTOM_API_KEY)
+    : provider === "custom" && !envCustomApiKey()
       ? "config"
       : "env";
 

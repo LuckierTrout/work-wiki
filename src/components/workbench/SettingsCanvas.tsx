@@ -112,6 +112,7 @@ import {
   settingsDraftAfterEmbeddingProvider,
   settingsDraftFromPayload,
   settingsEnvKeyCopy,
+  settingsEnvKeyVariableCopy,
   settingsEnvOverrideCopy,
   settingsEnvProviderInvalidCopy,
   settingsEnvProviderPinCopy,
@@ -808,7 +809,21 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
                 ? settingsEnvOverrideCopy("customBaseUrl", stored.envCustomBaseUrl)
                 : undefined,
             )}
-            {secretRow("customApiKey", "Custom API key", stored.hasCustomApiKey)}
+            {/* The STORED boolean, with the env fact said beside it (DW-66).
+                `secretRow` gates `Remove` on the boolean it is handed, so a
+                stored-only flag takes the button off an env-only row by
+                construction — it used to be offered for a credential this route
+                cannot delete, and pressing it cleared nothing and left the same
+                sentence on screen. The variable is NAMED because there is only
+                one it can be. */}
+            {secretRow(
+              "customApiKey",
+              "Custom API key",
+              stored.hasCustomApiKey,
+              stored.envCustomApiKey
+                ? settingsEnvKeyVariableCopy("customApiKey", stored.hasCustomApiKey)
+                : undefined,
+            )}
             <h3 className="wb-set-heading">Timeout</h3>
             {textRow("llmTimeoutSeconds", "LLM timeout (seconds)", SETTINGS_TIMEOUT_HINT_COPY)}
           </>
@@ -1251,10 +1266,17 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
             <h3 className="wb-set-heading">Capture</h3>
             <p className="wb-set-note">{SETTINGS_FIRECRAWL_COPY}</p>
             {textRow("firecrawlBaseUrl", "Firecrawl base URL")}
+            {/* Same split as the Custom API key row above (DW-66). */}
             {secretRow(
               "firecrawlApiKey",
               "Firecrawl API key",
               stored.hasFirecrawlApiKey,
+              stored.envFirecrawlApiKey
+                ? settingsEnvKeyVariableCopy(
+                    "firecrawlApiKey",
+                    stored.hasFirecrawlApiKey,
+                  )
+                : undefined,
             )}
           </>
         );

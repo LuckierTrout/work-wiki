@@ -82,9 +82,11 @@ vi.mock("@/lib/auth", () => ({
 import {
   _resetConfigCache,
   _resetConfigWarnings,
+  apiKeyForProvider,
   getChatModelSettings,
   getEffectiveProvider,
   getEffectiveSettings,
+  getFirecrawlSettings,
   getVectorSearchSettings,
   getWorkbenchSettings,
   llmTimeoutOption,
@@ -144,6 +146,10 @@ const ENV_KEYS = [
   "EMBEDDING_MODEL",
   "EMBEDDING_PROVIDER",
   "STORAGE_PROVIDER",
+  // Capture's optional credential (DW-66). Cleared per case for the same reason
+  // as the rest: a value exported in a developer's shell would decide whether
+  // the Firecrawl key row below reports an env credential.
+  "FIRECRAWL_API_KEY",
   // Deep Research (AD-18). Cleared per case for the same reason as the rest: a
   // value exported in a developer's shell would decide the provider the
   // research cases below are asserting.
@@ -833,6 +839,72 @@ describe("the stored embedding credential and endpoint are read", () => {
 
     await store({ embeddingProvider: "openai", embeddingApiKey: "sk-stored" });
     expect(getWorkbenchSettings(false).hasEmbeddingApiKey).toBe(true);
+  });
+
+  it("splits the CUSTOM key into a stored half and an env half (DW-66)", async () => {
+    // The row that was wrong: `hasCustomApiKey` used to be
+    // `apiKeyForProvider("custom") !== null` — the OR of the two — so an
+    // env-only deployment read "A key is stored." and got a `Remove` that
+    // deletes nothing from the store and cannot touch the variable. Pressing it
+    // changed neither the credential nor the sentence.
+    await store({});
+    expect(getWorkbenchSettings(false).hasCustomApiKey).toBe(false);
+    expect(getWorkbenchSettings(false).envCustomApiKey).toBe(false);
+
+    // Env only: no `Remove`, and the row says where the key comes from.
+    process.env.LLM_CUSTOM_API_KEY = "sk-env";
+    _resetConfigCache();
+    await loadConfig();
+    expect(getWorkbenchSettings(false).hasCustomApiKey).toBe(false);
+    expect(getWorkbenchSettings(false).envCustomApiKey).toBe(true);
+    // …and the RESOLVER is untouched. This is a reporting split, not a
+    // precedence change: env still wins at runtime.
+    expect(apiKeyForProvider("custom")).toBe("sk-env");
+
+    // Both halves: `Remove` is offered again, because there IS a stored key for
+    // it to delete — and the env sentence still applies.
+    await store({ customApiKey: "sk-stored" });
+    expect(getWorkbenchSettings(false).hasCustomApiKey).toBe(true);
+    expect(getWorkbenchSettings(false).envCustomApiKey).toBe(true);
+    expect(apiKeyForProvider("custom")).toBe("sk-env");
+
+    // Set-but-empty is not a credential, and must not mask the stored key.
+    process.env.LLM_CUSTOM_API_KEY = "";
+    _resetConfigCache();
+    await loadConfig();
+    expect(getWorkbenchSettings(false).hasCustomApiKey).toBe(true);
+    expect(getWorkbenchSettings(false).envCustomApiKey).toBe(false);
+    expect(apiKeyForProvider("custom")).toBe("sk-stored");
+  });
+
+  it("splits the FIRECRAWL key the same way, and leaves the OR alone (DW-66)", async () => {
+    await store({});
+    expect(getWorkbenchSettings(false).hasFirecrawlApiKey).toBe(false);
+    expect(getWorkbenchSettings(false).envFirecrawlApiKey).toBe(false);
+
+    process.env.FIRECRAWL_API_KEY = "fc-env";
+    _resetConfigCache();
+    await loadConfig();
+    expect(getWorkbenchSettings(false).hasFirecrawlApiKey).toBe(false);
+    expect(getWorkbenchSettings(false).envFirecrawlApiKey).toBe(true);
+    // The OR is unchanged — there IS a credential, which is what `hasKey` has
+    // always answered. Nothing in production reads it since this row stopped
+    // (DW-66); it is asserted here so a later edit to the halves cannot quietly
+    // change the answer it still computes from the same two reads.
+    expect(getFirecrawlSettings().hasKey).toBe(true);
+
+    await store({ firecrawlApiKey: "fc-stored" });
+    expect(getWorkbenchSettings(false).hasFirecrawlApiKey).toBe(true);
+    expect(getWorkbenchSettings(false).envFirecrawlApiKey).toBe(true);
+
+    // `FIRECRAWL_API_KEY=""` is set-but-empty: not a credential, and it must not
+    // mask the key the owner stored through Settings.
+    process.env.FIRECRAWL_API_KEY = "";
+    _resetConfigCache();
+    await loadConfig();
+    expect(getWorkbenchSettings(false).hasFirecrawlApiKey).toBe(true);
+    expect(getWorkbenchSettings(false).envFirecrawlApiKey).toBe(false);
+    expect(getFirecrawlSettings().hasKey).toBe(true);
   });
 
   it("reports the Cloudflare AI binding as the route reads it (DW-225)", () => {

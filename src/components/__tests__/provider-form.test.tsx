@@ -625,6 +625,19 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
    * unconditional.
    */
   const HINT_COPY = "Leave empty to use the default model for the selected provider.";
+  /**
+   * What the LOCKED branch says instead (DW-559).
+   *
+   * `HINT_COPY` is advice the env branch cannot take: there is no box to empty,
+   * the `<div>` accepts no keystroke, and a save would not move what pinned the
+   * value. The closed SET of variables is named rather than one of them, because
+   * `getEffectiveSettings` reports `modelSource: "env"` for `LLM_MODEL` and, on
+   * an Ollama provider with nothing stored, for `OLLAMA_MODEL` — and the browser
+   * is handed only the source.
+   */
+  const ENV_HINT_COPY =
+    "The environment sets LLM_MODEL (or OLLAMA_MODEL on an Ollama provider), " +
+    "and that wins at runtime. This box is fixed until that variable is unset.";
 
   function hint(): HTMLElement | null {
     return document.getElementById("providerModelHint");
@@ -686,7 +699,28 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
     expect(document.getElementById("model")).toBeNull();
     const box = screen.getByText("gpt-4o");
     expect(box.getAttribute("aria-describedby")).toBeNull();
-    expect(hint()!.textContent).toBe(HINT_COPY);
+    // The SENTENCE branches with the control (DW-559). It used to read "Leave
+    // empty to use the default model for the selected provider." beside a
+    // non-editable `<div>` — a hint pointing at an affordance the box refuses.
+    expect(hint()!.textContent).toBe(ENV_HINT_COPY);
+    expect(hint()!.textContent).not.toContain("Leave empty");
+  });
+
+  it("keeps the editable branch's advice unchanged on every non-env source", () => {
+    // The other half of the branch: `config`, `default` and `none` all render a
+    // real input, so the original sentence is still the true one — and still
+    // announced, which is what DW-506 landed.
+    for (const source of ["config", "default", "none"] as const) {
+      cleanup();
+      render(
+        <ProviderForm
+          {...props({ settings: settings({ modelSource: source, model: "gpt-4o" }) })}
+        />,
+      );
+      const input = screen.getByLabelText(/^Model/) as HTMLInputElement;
+      expect(input.getAttribute("aria-describedby")).toBe("providerModelHint");
+      expect(hint()!.textContent, source).toBe(HINT_COPY);
+    }
   });
 
   it("resolves every id the model box announces, on both deployments", () => {

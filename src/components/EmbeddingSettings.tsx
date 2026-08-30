@@ -116,8 +116,9 @@ const VECTOR_NOTICE_ID = "embeddingVectorNotice";
  * The id the default-model hint is announced under (DW-506).
  *
  * The sentence below the field — "Leave empty to use the embedding provider
- * default.", or the Workers AI dimensions note on the locked branch — sat
- * beside the input with nothing tying the two together, which is the gap
+ * default.", or the `EMBEDDING_MODEL` pin (plus the Workers AI dimensions note)
+ * on the locked branch — sat beside the input with nothing tying the two
+ * together, which is the gap
  * `SettingsCanvas.tsx:561,614` states the convention against: a hint merely
  * adjacent to a control is invisible to a screen reader, so the owner heard the
  * label and never what an empty box would do.
@@ -282,8 +283,28 @@ export function EmbeddingSettings({
         {@link MODEL_HINT_ID} is in the document.
       */}
       <p id={MODEL_HINT_ID} className="mt-1 text-xs text-foreground/40">
-        {modelSource === "env" && effectiveModel === "@cf/baai/bge-m3"
-          ? "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index."
+        {modelSource === "env"
+          ? // The locked branch has no box to empty (DW-559): it is a plain
+            // `<div>`, it takes no keystroke, and a save would not move what
+            // pinned the value — so "Leave empty to use the embedding provider
+            // default." was advice the control refuses. The pin is what is
+            // true, said in the shape every other env row on this surface uses
+            // (`settingsEnvOverrideCopy` / `settingsEnvProviderPinCopy`).
+            //
+            // It NAMES the variable, unlike `ProviderForm`'s twin: `source ===
+            // "env"` here comes from `embeddingModelAnswer`, whose only env leg
+            // is `getEmbeddingModelOverride()`, which reads `EMBEDDING_MODEL`
+            // and nothing else. There is no second candidate to guess between.
+            //
+            // The Workers AI dimensions sentence COMPOSES rather than being
+            // replaced: it answers a different question — what an index built
+            // here has to match — and it was the only sentence this branch had,
+            // so dropping it would trade one gap for another.
+            "The environment sets EMBEDDING_MODEL, and that wins at runtime. " +
+            "This box is fixed until that variable is unset." +
+            (effectiveModel === "@cf/baai/bge-m3"
+              ? " This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index."
+              : "")
           : "Leave empty to use the embedding provider default."}
       </p>
       <div className="mt-3 flex items-center gap-3">

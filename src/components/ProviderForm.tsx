@@ -373,8 +373,28 @@ export function ProviderForm({
           the composition reads so the attribute and the node can never name
           different strings.
         */}
+        {/*
+          …and the SENTENCE branches with the control (DW-559). "Leave empty to
+          use the default model" is advice the locked branch above cannot take:
+          there is no box to empty, the `<div>` accepts no keystroke, and a save
+          would not move what pinned the value anyway. So the env branch says
+          what pinned it instead, in the shape every other env row on this
+          surface uses — `settingsEnvOverrideCopy` /
+          `settingsEnvProviderPinCopy`'s "the environment sets X, and that wins
+          at runtime", with the pin's honest second half.
+
+          The closed SET rather than one name, deliberately.
+          `getEffectiveSettings` reports `modelSource: "env"` for `LLM_MODEL`
+          and, on an Ollama provider with nothing stored, for `OLLAMA_MODEL`.
+          The browser is handed only the source, so picking one would be a
+          client-side re-derivation of a server rule — a rule stated twice is
+          two rules that agree today. Naming both is honest and still
+          actionable.
+        */}
         <p id={modelHintId} className="mt-1 text-xs text-foreground/40">
-          Leave empty to use the default model for the selected provider.
+          {settings?.modelSource === "env"
+            ? "The environment sets LLM_MODEL (or OLLAMA_MODEL on an Ollama provider), and that wins at runtime. This box is fixed until that variable is unset."
+            : "Leave empty to use the default model for the selected provider."}
         </p>
       </div>
 

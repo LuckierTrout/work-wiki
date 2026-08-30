@@ -47,6 +47,10 @@ export function settingsPayload(
     ingestModel: "claude-sonnet-4-20250514",
     customBaseUrl: null,
     hasCustomApiKey: false,
+    // No env-supplied credential either: `LLM_CUSTOM_API_KEY` and
+    // `FIRECRAWL_API_KEY` are both unset on a fresh deployment, so both key
+    // rows read as stored-only and keep their `Remove` (DW-66).
+    envCustomApiKey: false,
     llmTimeoutSeconds: null,
     vectorSearchEnabled: false,
     embeddingProvider: "openai",
@@ -71,6 +75,7 @@ export function settingsPayload(
     hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
+    envFirecrawlApiKey: false,
     // Deep Research, fresh.
     researchProvider: null,
     envResearchProvider: null,

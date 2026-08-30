@@ -302,6 +302,17 @@ describe("EmbeddingSettings — the default-model hint", () => {
   }
 
   const DEFAULT_COPY = "Leave empty to use the embedding provider default.";
+  /**
+   * The `EMBEDDING_MODEL` pin the LOCKED branch says instead (DW-559).
+   *
+   * It NAMES the variable, unlike `ProviderForm`'s twin: `modelSource === "env"`
+   * here comes from `embeddingModelAnswer`, whose only env leg is
+   * `getEmbeddingModelOverride()`, which reads `EMBEDDING_MODEL` and nothing
+   * else. There is no second candidate to guess between.
+   */
+  const ENV_PIN_COPY =
+    "The environment sets EMBEDDING_MODEL, and that wins at runtime. " +
+    "This box is fixed until that variable is unset.";
   const WORKERS_AI_COPY =
     "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.";
 
@@ -394,6 +405,49 @@ describe("EmbeddingSettings — the default-model hint", () => {
     expect(screen.queryByLabelText(/Embedding Model/)).toBeNull();
     const box = screen.getByText("@cf/baai/bge-m3");
     expect(box.getAttribute("aria-describedby")).toBeNull();
-    expect(hint()!.textContent).toBe(WORKERS_AI_COPY);
+    // The dimensions sentence COMPOSES with the pin rather than replacing it
+    // (DW-559): the pin says why the box is locked, the dimensions sentence says
+    // what an index built here has to match. Both are true and neither alone is
+    // the answer.
+    expect(hint()!.textContent).toBe(`${ENV_PIN_COPY} ${WORKERS_AI_COPY}`);
+    expect(hint()!.textContent).not.toContain("Leave empty");
+  });
+
+  it("states the EMBEDDING_MODEL pin on an env model that is not Workers AI's", () => {
+    // The state DW-559 names, and the one no case reached before: the box is
+    // locked for a model with no dimensions note of its own, so the branch used
+    // to fall through to "Leave empty to use the embedding provider default." —
+    // advice for a control with no box to empty and no save that could move it.
+    render(
+      <EmbeddingSettings
+        {...props({ modelSource: "env", effectiveModel: "text-embedding-3-small" })}
+      />,
+    );
+
+    expect(screen.queryByLabelText(/Embedding Model/)).toBeNull();
+    expect(hint()!.textContent).toBe(ENV_PIN_COPY);
+    expect(hint()!.textContent).not.toContain("Leave empty");
+    expect(hint()!.textContent).not.toContain("Vectorize");
+  });
+
+  it("keeps the editable branch's advice unchanged on every non-env source", () => {
+    // The other half of the branch: `config`, `default` and `none` all render a
+    // real input, so the original sentence is still the true one and this case
+    // is the net that DW-559 did not widen the env branch over them. The
+    // effective model is deliberately `@cf/baai/bge-m3` — the value that DOES
+    // change the sentence under the pin — so a branch that dropped the
+    // `modelSource` half of its condition would fail here rather than pass on a
+    // model that never reaches the special case anyway.
+    for (const source of ["config", "default", "none"] as const) {
+      cleanup();
+      render(
+        <EmbeddingSettings
+          {...props({ modelSource: source, effectiveModel: "@cf/baai/bge-m3" })}
+        />,
+      );
+      const input = screen.getByLabelText(/Embedding Model/) as HTMLInputElement;
+      expect(input.getAttribute("aria-describedby")).toBe("embeddingModelHint");
+      expect(hint()!.textContent, source).toBe(DEFAULT_COPY);
+    }
   });
 });

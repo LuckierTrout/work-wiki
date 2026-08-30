@@ -294,6 +294,9 @@ function emptyPayload(): WorkbenchSettingsPayload {
     ingestModel: null,
     customBaseUrl: null,
     hasCustomApiKey: false,
+    // Nothing in the environment either, so both key rows are stored-only
+    // and `Remove` is on the page for a key that is actually there (DW-66).
+    envCustomApiKey: false,
     llmTimeoutSeconds: null,
     vectorSearchEnabled: false,
     embeddingProvider: null,
@@ -315,6 +318,7 @@ function emptyPayload(): WorkbenchSettingsPayload {
     hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
+    envFirecrawlApiKey: false,
     // Deep Research on a fresh deployment: nothing chosen (which READS as
     // Tavily), no credential for any of the three, no env override.
     researchProvider: null,
@@ -3350,6 +3354,40 @@ describe("the settings client", () => {
     }
   });
 
+  it("REQUIRES both ENV-KEY halves, on the same argument (DW-66)", () => {
+    // The env half is not decoration beside the stored half. A payload carrying
+    // `hasCustomApiKey: false` without `envCustomApiKey` renders "No key is
+    // stored." beside a working `LLM_CUSTOM_API_KEY` — a WRONG answer, not a
+    // degraded one — and defaulting the env flag the other way announces a
+    // variable nobody set. So absence is refused and the surface shows its
+    // failed-read sentence instead of guessing.
+    //
+    // Worth its own case because every fixture in this file carries both
+    // fields, so nothing else here exercises the refusal: each existing case
+    // only proves the ACCEPTING half of the guard.
+    const { envCustomApiKey: _custom, ...withoutCustom } = emptyPayload();
+    expect(isWorkbenchSettingsPayload(withoutCustom)).toBe(false);
+    const { envFirecrawlApiKey: _firecrawl, ...withoutFirecrawl } = emptyPayload();
+    expect(isWorkbenchSettingsPayload(withoutFirecrawl)).toBe(false);
+
+    for (const field of ["envCustomApiKey", "envFirecrawlApiKey"] as const) {
+      for (const value of [null, "false", 0, 1]) {
+        expect(
+          isWorkbenchSettingsPayload({ ...emptyPayload(), [field]: value }),
+          `${field}=${String(value)}`,
+        ).toBe(false);
+      }
+      // Both booleans are accepted: the guard is about TYPE, not about which
+      // deployment this is — an unset variable is a legitimate `false`.
+      for (const value of [true, false]) {
+        expect(
+          isWorkbenchSettingsPayload({ ...emptyPayload(), [field]: value }),
+          `${field}=${String(value)}`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it("REQUIRES the substitution pair on the same argument (DW-312)", () => {
     // The canvas guards its note on BOTH fields, and neither absence has a safe
     // reading: a flag defaulted to `false` silences a substitution that IS
@@ -4636,6 +4674,12 @@ describe("the workload resolvers", () => {
     expect(getFirecrawlSettings()).toEqual({
       baseUrl: "https://fc.example",
       hasKey: true,
+      // The two halves ride beside the OR (DW-66). The OR is unchanged — env
+      // first, then the store — while the Settings row, which used to be its
+      // only reader, now needs to know which SIDE the credential came from:
+      // `Remove` deletes the stored one and cannot touch the variable.
+      hasEnvKey: false,
+      hasStoredKey: true,
     });
     // The resolver reports presence; it does not hand the key back.
     expect(JSON.stringify(getWorkbenchSettings(false))).not.toContain("fc-1");

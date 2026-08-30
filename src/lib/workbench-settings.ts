@@ -551,6 +551,55 @@ export function settingsEnvKeyCopy(providerName: string): string {
 }
 
 /**
+ * The two credentials whose env var the payload knows UNAMBIGUOUSLY (DW-66).
+ *
+ * {@link settingsEnvKeyCopy} is provider-shaped because the embedding key row
+ * genuinely has a vendor to name and several variables it could have come from
+ * — `envEmbeddingApiKeyProviders` answers WHICH vendor, not which variable.
+ * These two have the opposite shape: one variable each, belonging to one row,
+ * so naming it is the actionable half. An owner told "the environment supplies
+ * this" still has to go find out from where.
+ */
+const ENV_KEY_VARIABLES = {
+  customApiKey: "LLM_CUSTOM_API_KEY",
+  firecrawlApiKey: "FIRECRAWL_API_KEY",
+} as const;
+
+/**
+ * Said on a key row the ENVIRONMENT supplies (DW-66).
+ *
+ * First half shared with {@link settingsEnvOverrideCopy} and
+ * {@link settingsEnvProviderPinCopy} — one wording across every row that has to
+ * say "the environment set this and it wins at runtime". It does NOT borrow
+ * `settingsEnvProviderPinCopy`'s "this box is fixed": the box beside it is not
+ * fixed at all. A stored key is still accepted, still saved, and still the one
+ * that applies the moment the variable is unset.
+ *
+ * The SECOND half branches on `hasStoredKey`, because `secretRow` APPENDS this
+ * to the row's own state sentence and the two have to agree. With nothing
+ * stored the row reads "No key is stored." and "nothing needs to be stored
+ * here" completes it. With a key stored it reads "A key is stored." — after
+ * which "nothing needs to be stored here" contradicts the sentence it was just
+ * appended to and, worse, misdescribes what that stored key is for: it is not
+ * surplus, it is what applies the moment the variable is unset. So that case
+ * borrows {@link settingsEnvOverrideCopy}'s second half instead, which says
+ * exactly that.
+ *
+ * NEVER carries the value, unlike `settingsEnvOverrideCopy`: this is a secret,
+ * and AD-23 keeps it off the wire in both directions.
+ */
+export function settingsEnvKeyVariableCopy(
+  kind: keyof typeof ENV_KEY_VARIABLES,
+  hasStoredKey: boolean,
+): string {
+  const variable = ENV_KEY_VARIABLES[kind];
+  const second = hasStoredKey
+    ? "What you save here applies only once that variable is unset."
+    : "Nothing needs to be stored here.";
+  return `The environment sets ${variable}, and that wins at runtime. ${second}`;
+}
+
+/**
  * External Sources: the optional Capture credential.
  *
  * REWORDED for Epic 6. It used to say the key was "stored for Deep Research",
@@ -1020,7 +1069,32 @@ export interface WorkbenchSettingsPayload {
   ingestProvider: ProviderValue | null;
   ingestModel: string | null;
   customBaseUrl: string | null;
+  /**
+   * Does the STORE hold a custom-endpoint key — never "is there a credential".
+   *
+   * The two used to be one boolean, the OR of `LLM_CUSTOM_API_KEY` and the
+   * stored value, and that made the row lie in a way pressing a button could
+   * not fix (DW-66): an env-only deployment read "A key is stored." and got a
+   * `Remove` that deletes nothing from the store, leaves the env var where it
+   * is, and comes back to the same sentence. `Remove` is gated on THIS boolean,
+   * so a stored-only field suppresses the control by construction — the split
+   * `hasEmbeddingApiKey` / `envEmbeddingApiKeyProviders` already runs on.
+   */
   hasCustomApiKey: boolean;
+  /**
+   * Is `LLM_CUSTOM_API_KEY` set to something non-blank? (DW-66)
+   *
+   * Rides APART from the stored half above rather than folding into it, because
+   * the two answer different questions and only one of them has a `Remove`. A
+   * BOOLEAN, never the value (AD-23) — and unlike
+   * {@link WorkbenchSettingsPayload.envEmbeddingApiKeyProviders} it needs no
+   * vendor list: `LLM_CUSTOM_API_KEY` belongs to exactly one provider, the
+   * custom endpoint the owner pointed this deployment at.
+   *
+   * Env still WINS at runtime; `apiKeyForProvider("custom")` is unchanged. This
+   * pair is what the surface REPORTS, not what the resolver applies.
+   */
+  envCustomApiKey: boolean;
   /** `null` means "no deadline", which is today's behaviour exactly. */
   llmTimeoutSeconds: number | null;
   /**
@@ -1105,8 +1179,11 @@ export interface WorkbenchSettingsPayload {
    * and persist it on the next save; leaving it out entirely is what let an
    * owner type an endpoint, save it successfully, and change nothing.
    *
-   * Not a secret: an endpoint is not a credential, and `LLM_CUSTOM_API_KEY` is
-   * still reported as the `hasCustomApiKey` boolean and nothing else.
+   * Not a secret: an endpoint is not a credential, and `LLM_CUSTOM_API_KEY`
+   * never crosses this boundary as a value — it is reported as the
+   * {@link WorkbenchSettingsPayload.hasCustomApiKey} /
+   * {@link WorkbenchSettingsPayload.envCustomApiKey} boolean pair and nothing
+   * else (DW-66).
    */
   envCustomBaseUrl: string | null;
   /**
@@ -1129,7 +1206,14 @@ export interface WorkbenchSettingsPayload {
    */
   hasWorkersAiBinding: boolean;
   firecrawlBaseUrl: string | null;
+  /**
+   * Does the STORE hold a Firecrawl key — the same split, for the same reason
+   * (DW-66). `getFirecrawlSettings().hasKey` still ORs the two halves, and is
+   * unchanged; this pair is what the row is allowed to say and to offer.
+   */
   hasFirecrawlApiKey: boolean;
+  /** Is `FIRECRAWL_API_KEY` set to something non-blank? A boolean, not the key. */
+  envFirecrawlApiKey: boolean;
   /**
    * The STORED Deep Research provider — `null` means nothing was chosen, which
    * reads as {@link DEFAULT_RESEARCH_PROVIDER} everywhere it is resolved.
@@ -1354,6 +1438,14 @@ export function isWorkbenchSettingsPayload(
       typeof payload.llmTimeoutSeconds === "number") &&
     typeof payload.vectorSearchEnabled === "boolean" &&
     typeof payload.hasCustomApiKey === "boolean" &&
+    // REQUIRED, both of them, on the `hasWorkersAiBinding` argument (DW-66).
+    // The env half is not decoration beside the stored half: a payload carrying
+    // `hasCustomApiKey: false` without it renders "No key is stored." beside a
+    // working `LLM_CUSTOM_API_KEY`, which is a WRONG answer rather than a
+    // degraded one — and defaulting the env flag to `true` would announce a
+    // variable nobody set. The route always sends both, so absence means the
+    // payload is not one.
+    typeof payload.envCustomApiKey === "boolean" &&
     typeof payload.hasEmbeddingApiKey === "boolean" &&
     typeof payload.embeddingModelOverridden === "boolean" &&
     // REQUIRED as a boolean, unlike `version`: this one feeds the vector rule,
@@ -1365,6 +1457,7 @@ export function isWorkbenchSettingsPayload(
     Array.isArray(payload.envEmbeddingApiKeyProviders) &&
     payload.envEmbeddingApiKeyProviders.every((p) => typeof p === "string") &&
     typeof payload.hasFirecrawlApiKey === "boolean" &&
+    typeof payload.envFirecrawlApiKey === "boolean" &&
     typeof payload.hasTavilyApiKey === "boolean" &&
     typeof payload.hasSerpApiKey === "boolean" &&
     Array.isArray(payload.envResearchProviders) &&

@@ -60,6 +60,7 @@ function workbench(
     ingestModel: null,
     customBaseUrl: null,
     hasCustomApiKey: false,
+    envCustomApiKey: false,
     llmTimeoutSeconds: null,
     vectorSearchEnabled: false,
     embeddingProvider: null,
@@ -75,6 +76,7 @@ function workbench(
     hasWorkersAiBinding: false,
     firecrawlBaseUrl: null,
     hasFirecrawlApiKey: false,
+    envFirecrawlApiKey: false,
     // Deep Research, fresh: nothing chosen, nothing configured. This file is
     // about the FLAT page, which renders none of these — they are here because
     // the payload type is one type.

@@ -465,7 +465,9 @@ location: src/lib/config.ts (getWorkbenchSettings), src/components/workbench/Set
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `apiKeyForProvider("custom")` and `getFirecrawlSettings().hasKey` both count `LLM_CUSTOM_API_KEY` / `FIRECRAWL_API_KEY` alongside the stored value, and the surface renders "A key is stored." plus a `Remove` button from that one boolean. Pressing Remove on an env-supplied key clears nothing and the sentence does not change. The embeddings half of this was closed in the patch pass (`hasEnvEmbeddingApiKey` rides separately); the same split for the other two was left out to keep the payload from growing again.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-env-locked-credential-affordances
+resolution-undo: a2bc3f517016d00b840c4497974d90581053315b9d7eac5a37d8febc1b69824d 2026-08-29 7374617475733a206f70656e
 
 ### DW-67: Edits typed while a save is in flight are discarded when the response re-seeds the draft.
 origin: spec-deferred 7fd1f35ba122
@@ -4211,7 +4213,9 @@ location: src/components/ProviderForm.tsx:368 and src/components/EmbeddingSettin
 source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
 severity: medium
 reason: `ProviderForm.tsx` renders "Leave empty to use the default model for the selected provider." below the model control on BOTH branches of the env/editable ternary, and `EmbeddingSettings.tsx`'s hint only swaps copy for `modelSource === "env" && effectiveModel === "@cf/baai/bge-m3"` — any other env-pinned embedding model falls through to "Leave empty to use the embedding provider default.". On an `LLM_MODEL`/`EMBEDDING_MODEL` deployment there is no input to empty, so the sentence is advice the control refuses. Pre-existing: the copy and its placement both predate this change, which only gave the node an id. Not fixed here because the intent scopes this bundle to ASSOCIATING the existing sentences, not to rewording them.
-status: open
+status: done 2026-08-29
+resolution: resolved by sweep bundle dw-env-locked-credential-affordances
+resolution-undo: a2bc3f517016d00b840c4497974d90581053315b9d7eac5a37d8febc1b69824d 2026-08-29 7374617475733a206f70656e
 
 ### DW-560: The page's one read-only sentence is announced in opposite positions on the two model boxes of the same `/settings` page.
 origin: spec-deferred 5dbca5767630
@@ -4683,3 +4687,11 @@ severity: medium
 reason: `npx vitest run` reports 233 failing tests across 13 `src/components/workbench/__tests__/*.tsx` files, every one of them the same `TypeError: Cannot read properties of undefined (reading 'clear')` raised from a `beforeEach` calling `window.localStorage.clear()`. Confirmed pre-existing: with every `src/` change from this story stashed, the same file fails 29/29 at baseline revision 249fc694. The failure count is identical before and after this story, so nothing here caused or worsened it — but the suite is red on this branch and any spec asserting "`pnpm test` passes" cannot be met until it is fixed.
 status: done 2026-08-29
 resolution: already resolved: Resolved by commit c95483f2: vitest.setup.dom.ts:438-492 defines MemoryStorage and window/globalThis localStorage and sessionStorage, so window.localStorage.clear() is defined in workbench-split-wiring.test.tsx:97 and the other 12 dom suites.
+
+### DW-616: The Workers AI dimensions sentence on the flat page's embedding model hint is selected by model NAME alone, so an `EMBEDDING_MODEL=@cf/baai/bge-m3` pin on a non-Workers-AI provider claims the deployme
+origin: spec-deferred 601986049e42
+location: src/components/EmbeddingSettings.tsx:303
+source_spec: `spec-dw-66-559-env-locked-credential-affordances.md`
+severity: low
+reason: `EmbeddingSettings.tsx`'s hint appends the sentence on `effectiveModel === "@cf/baai/bge-m3"` with no provider term, and the component is never handed the embedding provider. Pre-existing: the same name-only condition selected the same sentence before this change, which only added the pin sentence in front of it. Reaching the state needs `EMBEDDING_MODEL` pinned to the Workers AI model while `embeddingProvider` is something else, where the resolver substitutes and the override note already fires — so the dimensions claim is the one sentence still wrong.
+status: open
