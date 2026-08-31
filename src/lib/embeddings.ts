@@ -63,8 +63,8 @@ import { logger } from "./logger";
  * fixable IN-process, so "it is still broken" has to be askable again.
  *
  *   - `drift:<active model>` (DW-332). Drift is cleared by `rebuildVectorStore`
- *     with no restart involved — and `searchByVector` already computes the
- *     closest signal a per-QUERY door has that a rebuild has landed: a
+ *     with no restart involved — and a per-read door already computes the
+ *     closest signal such a door has that a rebuild has landed: a
  *     WHOLE-WINDOW model match that POSITIVELY holds an active-model-labelled
  *     vector — `kept.length === matches.length && kept.some((m) =>
  *     m.metadata.model === currentModel)`, in the same branch chain that
@@ -114,13 +114,46 @@ import { logger } from "./logger";
  *     branch never fires and the key is never burnt in the first place — but
  *     permanent if the key was burnt before the labels went missing.
  *
+ *     TWO doors share this key (DW-406): `searchByVector`, the query path, and
+ *     `relatedByVector`, the page-render path behind `findSimilarPages`. They
+ *     warn on the same condition and re-arm on the same gate, and key on the
+ *     ACTIVE MODEL and nothing else, so drift is ONE piece of news however it
+ *     is found — a deployment whose only vector traffic is related-page
+ *     lookups still hears it, and a rebuild proven out through either door
+ *     re-arms the key the other burnt. `relatedByVector` reads BOTH branches
+ *     off the window with the anchor's own vector already dropped: the anchor
+ *     was vetted by that door's stale-anchor early return, so counting it as
+ *     proof would let a page vouch for a corpus it is the only current member
+ *     of. That early return warns too — on a fully drifted corpus every anchor
+ *     is stale, so control never reaches the window and the door would
+ *     otherwise be mute in precisely the case the second door exists for.
+ *
+ *     Sharing one key costs one accepted FALSE POSITIVE, which only the render
+ *     door can produce. A stale ORPHAN anchor — a renamed or re-embedded page
+ *     whose old vector `rebuildVectorStore` never deletes — is a stale anchor
+ *     on an otherwise healthy corpus, so its early return burns the
+ *     process-wide key on ONE page's evidence and suppresses the line a later
+ *     genuine drift would have spoken. `searchByVector` cannot produce it: its
+ *     warn requires the filter to have dropped the WHOLE window. This is the
+ *     mirror of DW-599's cost and is accepted deliberately — a burnt key costs
+ *     a suppressed line, not a wrong answer, and giving the two doors separate
+ *     keys would cost drift being one piece of news.
+ *
  *     What is NOT a case here: a null active model. `currentModel` is typed
  *     `string | null`, but past `searchByVector`'s `if (!queryEmbedding)`
  *     guard it cannot BE null — `embedText` and `getEmbeddingModelName` read
  *     the same `cfg` snapshot and both refuse only on a missing provider
  *     (`resolveEmbeddingModelName` returns `string`, never null), so a null
  *     model has already returned `[]` before this branch chain runs. Neither
- *     branch needs a null case; do not add one.
+ *     branch needs a null case; do not add one. In `relatedByVector` null IS
+ *     reachable — it embeds nothing, so no guard refuses first — and needs no
+ *     case either, because every branch there is already false on it:
+ *     `modelMatches` is true against a null model, so the stale-anchor return
+ *     never fires and `kept` is `others` elementwise; the re-arm's proof
+ *     conjunct compares a stored `string | undefined` against null and cannot
+ *     hold; and the warn's `kept.length === 0` then implies an empty `others`,
+ *     which its own second conjunct rejects. `drift:null` is structurally
+ *     unspeakable — do not add a branch to say so.
  *   - `ollama-endpoint:sdk-default` (DW-401). The endpoint ladder's STORE leg
  *     (`cfg.ollamaBaseUrl`) is moved by a save, so an owner who reads the line
  *     and fixes the endpoint changes the answer without restarting anything —
@@ -1074,6 +1107,14 @@ export async function searchByVector(
  * array if there's no store, the page has no stored vector, or the store was
  * built with a different model (stale embeddings → meaningless scores). Does NOT
  * enforce visibility — callers must filter to readable pages.
+ *
+ * The second door onto `drift:<active model>` (DW-406). What it RETURNS is
+ * untouched by that — a model mismatch is still a cache miss the caller falls
+ * back from — but a deployment whose only vector traffic is page renders would
+ * otherwise observe neither drift nor its recovery. The gate, what it buys,
+ * what it costs, and the one false positive this door alone can produce are
+ * stated once on {@link warnedMisconfigurations}; the branches below point
+ * there rather than restating it.
  */
 export async function relatedByVector(
   slug: string,
@@ -1083,7 +1124,20 @@ export async function relatedByVector(
   if (!self) return [];
 
   const currentModel = getEmbeddingModelName();
-  if (!modelMatches(self.metadata, currentModel)) return [];
+  if (!modelMatches(self.metadata, currentModel)) {
+    // On a fully drifted corpus EVERY anchor is stale, so control never reaches
+    // the window below — without this line the render path stays mute in
+    // exactly the case that made it worth wiring up (DW-406). Keyed on the
+    // ACTIVE MODEL, the same identity `searchByVector` uses, so drift is one
+    // piece of news whichever door finds it; see `warnedMisconfigurations`.
+    warnOnceAbout(
+      `drift:${currentModel}`,
+      "relatedByVector: the anchor's own vector is from another model " +
+        `(active="${currentModel}") — likely embedding-model drift; ` +
+        "rebuild embeddings.",
+    );
+    return [];
+  }
 
   // Over-fetch by one to absorb the page's own vector, then drop it. A query can
   // throw on a dimension mismatch (mixed-dimension store mid model-migration);
@@ -1091,10 +1145,28 @@ export async function relatedByVector(
   // degrade to "no related pages" rather than failing the page.
   try {
     const matches = await getStorage().queryEmbeddings(self.vector, topK + 1);
-    return matches
-      .filter((m) => m.id !== slug && modelMatches(m.metadata, currentModel))
-      .slice(0, topK)
-      .map((m) => ({ slug: m.id, score: m.score }));
+    // Split what used to be one combined filter, because the drift gate has to
+    // be read off the window MINUS the anchor. The anchor was already vetted by
+    // the early return above, so counting it as proof of a landed rebuild would
+    // let a page vouch for a corpus it is the only current member of.
+    const others = matches.filter((m) => m.id !== slug);
+    const kept = others.filter((m) => modelMatches(m.metadata, currentModel));
+    if (kept.length === others.length && kept.some((m) => m.metadata.model === currentModel)) {
+      // The canonical gate, copied predicate-for-predicate from
+      // `searchByVector` (DW-332, narrowed by DW-404 then DW-405). What each
+      // conjunct buys and costs is stated once on `warnedMisconfigurations`;
+      // both doors re-arm the SAME key, so a rebuild proven out on a page
+      // render un-burns the line a search would otherwise never say again.
+      rearmWarningAbout(`drift:${currentModel}`);
+    } else if (kept.length === 0 && others.length > 0) {
+      warnOnceAbout(
+        `drift:${currentModel}`,
+        "relatedByVector: the model filter dropped every match " +
+          `(active="${currentModel}") — likely embedding-model drift; ` +
+          "rebuild embeddings.",
+      );
+    }
+    return kept.slice(0, topK).map((m) => ({ slug: m.id, score: m.score }));
   } catch (err) {
     logVectorQueryFailure("relatedByVector", err);
     return [];

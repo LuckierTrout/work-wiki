@@ -107,6 +107,12 @@ vi.mock("@/lib/review-queue", async (orig) => ({
   enqueueReviewAfterIngest: vi.fn(async () => {}),
   rememberReviewOutbox: vi.fn(async () => {}),
 }));
+// DW-482: the `run-research` arm was unreachable from this suite because the
+// runtime was never mocked, so the classifier's handling of a corrupt-registry
+// refusal had no row at the TASK surface at all.
+vi.mock("@/lib/research-runtime", () => ({
+  runResearchProject: vi.fn(),
+}));
 vi.mock("@/lib/ingest-analysis", async (orig) => ({
   ...(await orig<typeof import("@/lib/ingest-analysis")>()),
   loadIngestAnalysis: vi.fn(async () => null),
@@ -134,6 +140,8 @@ import {
   startGraphifyPage,
 } from "@/lib/graphify-jobs";
 import { deliverMonitorDigest } from "@/lib/monitor-digests";
+import { runResearchProject } from "@/lib/research-runtime";
+import { StoreFaultError } from "@/lib/errors";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedEnqueueTask = vi.mocked(enqueueTask);
@@ -163,6 +171,7 @@ const mockedCompleteGraphify = vi.mocked(completeGraphifyPage);
 const mockedFailGraphify = vi.mocked(failGraphifyPages);
 const mockedStartGraphify = vi.mocked(startGraphifyPage);
 const mockedDeliverMonitorDigest = vi.mocked(deliverMonitorDigest);
+const mockedRunResearch = vi.mocked(runResearchProject);
 
 import { addToVault } from "@/lib/vault";
 const mockedAddToVault = vi.mocked(addToVault);
@@ -790,6 +799,83 @@ describe("POST /api/tasks/run", () => {
 
     mockedReingest.mockRejectedValueOnce(new Error("LLM timeout"));
     expect((await run({ kind: "maintain", op: "staleness", slug: "x" })).status).toBe(500);
+  });
+
+  /**
+   * DW-482. `parseRegistry` refuses a corrupt research registry (DW-297) and
+   * that refusal used to reach the final 500 by FALL-THROUGH: past
+   * `/not found/i`, past `ClientInputError`, past the ingest cap, landing on
+   * the default. Bounded queue retry to the DLQ is the right answer for a
+   * fault we can repair in place — but nothing said so, and one whose
+   * sentence happened to read "not found" would have been poisoned at 422
+   * instead. The store-fault row now decides it, ahead of the ladder.
+   */
+  describe("a run-research task whose project store refuses", () => {
+    const RESEARCH_TASK = {
+      kind: "run-research",
+      owner: "alice",
+      projectId: "11111111-1111-4111-8111-111111111111",
+    };
+
+    it("500s a StoreFaultError so the queue retries within its bound", async () => {
+      mockedRunResearch.mockRejectedValueOnce(
+        new StoreFaultError("Research projects file is not a list."),
+      );
+
+      const res = await run(RESEARCH_TASK);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({
+        error: "Research projects file is not a list.",
+      });
+    });
+
+    it("500s a store fault worded like a miss — never the 422 poison", async () => {
+      // The store-fault row runs BEFORE `/not found/i`, which is the whole
+      // point: an unreadable file is not a missing page.
+      mockedRunResearch.mockRejectedValueOnce(
+        new StoreFaultError("Research projects file not found on this volume."),
+      );
+
+      expect((await run(RESEARCH_TASK)).status).toBe(500);
+    });
+
+    it("500s a Node errno fault off the filesystem", async () => {
+      mockedRunResearch.mockRejectedValueOnce(
+        Object.assign(new Error("EINVAL: invalid argument, open '/data/alice/research.json'"), {
+          code: "EINVAL",
+        }),
+      );
+
+      expect((await run(RESEARCH_TASK)).status).toBe(500);
+    });
+
+    it("still 422s a genuine miss that is not a store fault", async () => {
+      mockedRunResearch.mockRejectedValueOnce(new Error('research project "x" not found'));
+
+      expect((await run(RESEARCH_TASK)).status).toBe(422);
+    });
+  });
+
+  it("keeps the ingest auto-retry cap at 422 even for a store fault", async () => {
+    // Block-if: this bundle pins `run-research`, it does not re-decide ingest.
+    // At the cap the ingest 422 wins whatever the failure was.
+    mockedIngestUrl.mockRejectedValueOnce(
+      Object.assign(new Error("EINVAL: invalid argument, open '/data/staging'"), {
+        code: "EINVAL",
+      }),
+    );
+
+    const res = await run(
+      { kind: "ingest", url: "https://example.com", owner: "alice", jobId: "job-cap" },
+      { "X-Yopedia-Queue-Attempt": "3" },
+    );
+
+    expect(res.status).toBe(422);
+    expect(mockedUpdateJob).toHaveBeenCalledWith("job-cap", {
+      status: "failed",
+      error: "EINVAL: invalid argument, open '/data/staging'",
+    });
   });
 
   it("files into vault when ingest task carries vaultId", async () => {

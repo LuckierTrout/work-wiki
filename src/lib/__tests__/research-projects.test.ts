@@ -14,7 +14,7 @@ import {
   updateResearchProject,
   updateResearchProjectIf,
 } from "../research-projects";
-import { ClientInputError } from "../errors";
+import { ClientInputError, StoreFaultError } from "../errors";
 import { _resetLocks } from "../lock";
 import { _resetStorage, getStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
@@ -390,11 +390,15 @@ describe("research projects", () => {
     ])("rejects reads when the stored registry is %s", async (_label, raw) => {
       await seedRawRegistry("alice", raw);
 
-      // A plain Error, NOT a ClientInputError: a wrong-shaped stored file is a
-      // server fault (500), not something the caller sent.
+      // A StoreFaultError, NOT a ClientInputError: a wrong-shaped stored file
+      // is a server fault (500), not something the caller sent. The POSITIVE
+      // assertion is the load-bearing one — `not.toBeInstanceOf` alone is
+      // satisfied by a plain `Error`, so it would not notice the type going
+      // away, and the route classifiers now read this type to answer 500.
       await expect(listResearchProjects("alice")).rejects.toThrow(
         "Research projects file is not a list.",
       );
+      await expect(listResearchProjects("alice")).rejects.toBeInstanceOf(StoreFaultError);
       await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(ClientInputError);
       await expect(getResearchProject("alice", "seed-0")).rejects.toThrow(
         "Research projects file is not a list.",
@@ -496,13 +500,14 @@ describe("research projects", () => {
     it.each(badRegistries)("rejects reads when the registry is %s", async (_label, raw) => {
       await seedRawRegistry("alice", raw);
 
-      // A plain Error, NOT a ClientInputError: a wrong-shaped stored file is a
-      // server fault (500), the same rule the non-array throw already states.
+      // A StoreFaultError, NOT a ClientInputError: a wrong-shaped stored file
+      // is a server fault (500), the same rule the non-array throw states.
       // The INDEX is part of the contract: with no repair route, it is the
       // operator's only handle on a registry that refuses every door.
       await expect(listResearchProjects("alice")).rejects.toThrow(
         "Research project entry 0 is invalid.",
       );
+      await expect(listResearchProjects("alice")).rejects.toBeInstanceOf(StoreFaultError);
       await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(ClientInputError);
       await expect(getResearchProject("alice", "seed-0")).rejects.toThrow(
         "Research project entry 0 is invalid.",
@@ -527,7 +532,7 @@ describe("research projects", () => {
             createResearchProject("alice", { title: "Overwrite", question: "Lands?" });
           await expect(create()).rejects.toThrow("Research project entry 0 is invalid.");
           // A SERVER fault at this door too, not just at the read doors: the
-          // whole point of the plain `Error` is that every door answers 500.
+          // whole point of `StoreFaultError` is that every door answers 500.
           await expect(create()).rejects.not.toBeInstanceOf(ClientInputError);
           for (const spy of spies) expect(spy).not.toHaveBeenCalled();
         } finally {
@@ -603,12 +608,13 @@ describe("research projects", () => {
     it.each(unreadable)("rejects reads when the registry holds %s", async (_label, raw) => {
       await seedRawRegistry("alice", raw);
 
-      // A plain Error, NOT a ClientInputError: unreadable stored bytes are a
-      // server fault (500). The message names the FILE — a `SyntaxError`'s
+      // A StoreFaultError, NOT a ClientInputError: unreadable stored bytes are
+      // a server fault (500). The message names the FILE — a `SyntaxError`'s
       // "Unexpected token … at position 41" names only an offset.
       await expect(listResearchProjects("alice")).rejects.toThrow(
         "Research projects file is unreadable.",
       );
+      await expect(listResearchProjects("alice")).rejects.toBeInstanceOf(StoreFaultError);
       await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(ClientInputError);
       await expect(listResearchProjects("alice")).rejects.not.toBeInstanceOf(SyntaxError);
       await expect(getResearchProject("alice", "seed-0")).rejects.toThrow(

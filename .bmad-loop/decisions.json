@@ -170,6 +170,15 @@
     "label": "Bounded per-page read fallback",
     "resolution": ""
   },
+  "DW-439": {
+    "answered_at": "2026-08-31",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Raise the client `REQUEST_TIMEOUT_MS` above `FETCH_TIMEOUT_MS` by a margin that covers request and response overhead, so the server's own timeout always fires first and the client reports a real refusal instead of an unconfirmed write. Add a comment at both constants naming the required ordering, and pin the ordering in a test so the two cannot silently converge again.",
+    "key": "1",
+    "label": "Raise the client deadline above the server's",
+    "resolution": ""
+  },
   "DW-441": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -420,6 +429,15 @@
     "intent": "Disable the Settings form's inputs for the duration of the save request so nothing can be typed into the window whose contents would be discarded, with a test pinning that the fields are inert while the PUT is in flight.",
     "key": "1",
     "label": "Freeze the form while saving",
+    "resolution": ""
+  },
+  "DW-676": {
+    "answered_at": "2026-08-31",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give the divergence a reconciler in the maintenance scan, following the `sweepOrphanWikiDirectories` precedent: detect a registry entry whose scenario disagrees with the artifacts on disk and re-derive one from the other, reporting what it repaired. Leave the failure response as it is once the scan closes the window, and pin the repair.",
+    "key": "1",
+    "label": "Repair it in the maintenance scan",
     "resolution": ""
   },
   "DW-68": {

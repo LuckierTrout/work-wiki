@@ -3227,6 +3227,7 @@ origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upl
 location: src/lib/workbench-request.ts:33
 reason: `send` / `sendForm` time out at 15s, and the server URL-intake path it calls is itself budgeted at 15s. A slow but ultimately successful HTML fetch can therefore trip the client deadline and be reported as an unconfirmed write while the route completes and stores the source anyway. Deferred because fixing it means renegotiating the two budgets rather than a local change.
 status: open
+decision: 2026-08-31 Raise the client deadline above the server's — Raise the client `REQUEST_TIMEOUT_MS` above `FETCH_TIMEOUT_MS` by a margin that covers request and response overhead, so the server's own timeout always fires first and the client reports a real refusal instead of an unconfirmed write. Add a comment at both constants naming the required ordering, and pin the ordering in a test so the two cannot silently converge again.
 
 ### DW-440: When store succeeds but enqueue returns `queued: false`, the batch sentence still claims "Ingest is queued."
 
@@ -3573,7 +3574,9 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/app/api/monitors/route.ts:53
 severity: low
 reason: `src/app/api/monitors/route.ts:53`, `src/app/api/system/evaluations/route.ts:58` and `src/app/api/review/proposals/route.ts:78` each 400 any message matching `/required|invalid|.../i`, so a storage `EINVAL` is reported as the caller's fault there for the same reason DW-296 named.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-store-fault-status-classification
+resolution-undo: ecd678bb69e1aee9ec59fdf681c8cfbab068953218fa2141f628b2a97d6aa1ff 2026-08-31 7374617475733a206f70656e
 
 ### DW-482: A corrupt registry now makes a `run-research` task retry to the DLQ instead of poisoning on first delivery, and the task classifier has no row for a store fault.
 origin: spec-deferred c27d0a0a7d14
@@ -3581,7 +3584,9 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/app/api/tasks/run/route.ts:932
 severity: low
 reason: Before DW-297 a non-list registry made `getResearchProject` return null, so `runResearchProject` threw "Research project not found", which `src/app/api/tasks/run/route.ts:918` poisons at 422. The new throw matches neither `/not found/i` nor `ClientInputError`, so it falls to the 500 at `:932` and the queue re-delivers up to `max_retries: 3` before the DLQ. Bounded and arguably the correct classification for a repairable server fault, but it is an unpinned behaviour change with no test at the task surface.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-store-fault-status-classification
+resolution-undo: ecd678bb69e1aee9ec59fdf681c8cfbab068953218fa2141f628b2a97d6aa1ff 2026-08-31 7374617475733a206f70656e
 
 ### DW-483: The DW-290 future-dated-mtime warn fires on every sweep pass for as long as the clock has not caught up, with no dedupe or rate limit.
 
@@ -5238,6 +5243,7 @@ source_spec: `spec-dw-381-484-scenario-template-failure-truth.md`
 severity: low
 reason: `registryNamesScenario` is documented "DETECTS, DOES NOT RECONCILE", which is what the intent asked for, but the state it detects is left standing: `POST /api/wikis/[id]/template` still answers a bare 500 with the original error, `WikiWorkbench.applyTemplate`'s catch calls `router.refresh()` only on an `unconfirmed` failure, and the switcher row silently re-labels itself with the new scenario once the 10s `DATA_VERSION_POLL_MS` watcher picks the bump up. So the owner is told the re-template failed while the surface goes on to say it succeeded. The module already has `sweepOrphanWikiDirectories` as precedent for a maintenance-scan repair; no owner exists for this one.
 status: open
+decision: 2026-08-31 Repair it in the maintenance scan — Give the divergence a reconciler in the maintenance scan, following the `sweepOrphanWikiDirectories` precedent: detect a registry entry whose scenario disagrees with the artifacts on disk and re-derive one from the other, reporting what it repaired. Leave the failure response as it is once the scan closes the window, and pin the repair.
 
 ### DW-677: The backup copy loop still materialises every file that DOES fit, in full, and holds it through `sha256`, so one large-but-fitting object can exhaust the Workers isolate long before the 2 GiB total ce
 origin: spec-deferred e8197b7f615b
@@ -5301,4 +5307,20 @@ location: src/app/api/research/route.ts:156
 source_spec: `spec-dw-651-665-research-run-typed-errors.md`
 severity: low
 reason: `applyResearchProjectMutation` is the shared mutation primitive, and its exhausted-CAS refusal is now `ResearchProjectBusyError` (`src/lib/research-projects.ts`). `POST /api/research` (`src/app/api/research/route.ts:156`), `PATCH` and `DELETE /api/research/[id]` (`src/app/api/research/[id]/route.ts:99`, `:132`) all still classify with `error instanceof ClientInputError ? 400 : 500`, so the identical transient contention — whose own sentence says "retry the request." — is a retryable 503 at one door and a permanent server fault at three. DW-651 names only `POST /api/research/[id]/run`, so the siblings were out of this bundle's scope; the split is now recorded in `ResearchProjectBusyError`'s docblock but nothing pins it as intended.
+status: open
+
+- source_spec: `spec-dw-406-related-by-vector-drift-parity.md`
+  summary: The related-pages render path calls `relatedByVector` unconditionally, ignoring the `vectorSearchEnabled` setting that gates `searchByVector`, so vector-backed related pages keep running on a deployment that turned vector search off.
+  evidence: `mergeVectorHits` (src/lib/wiki-retrieve.ts:317) early-returns on `!enabled` so `searchByVector` is unreachable with the setting off, but `findSimilarPages` (src/lib/search.ts:299) and its caller `ArticleView.tsx:168` consult no such gate. Pre-existing and untouched by DW-406, which only added logging to that door — but DW-406 makes it visible, since such a deployment can now be told to "rebuild embeddings" for a feature it believes is off. The line is accurate for the door it sits on (related pages genuinely does use vectors there); the question is whether the door should be running at all.
+
+- source_spec: `spec-dw-406-related-by-vector-drift-parity.md`
+  summary: The render door is a high-frequency writer to the process-global drift key, so on a partially rebuilt corpus different anchors can alternate warn and re-arm per page render, and its re-arm evidence is a topically-clustered neighbour window rather than a query window.
+  evidence: `findSimilarPages` passes `limit + 10` and runs on every article render, so where `searchByVector` wrote to `drift:<model>` once per distinct query, page A's wholly-stale window can warn while page B's wholly-current window re-arms, repeatedly. The neighbour window is also clustered by construction, so a rebuild that landed for one topic can re-arm the process-wide key on evidence local to that cluster — strictly weaker than DW-598's already-open query-window case. Same residue family as DW-598 and DW-599; closing it needs the corpus-level rebuild-epoch signal both entries name, which spec-dw-406's Never list forbids reaching for here.
+
+### DW-685: `isStoreFault`'s `/^E[A-Z0-9]+$/` errno probe matches any errno-shaped code, so non-storage failures (network `ECONNREFUSED`, `ETIMEDOUT`, `ECONNRESET`) classify and log as "store fault", while Node's
+origin: spec-deferred d73affa2aca5
+location: src/lib/errors.ts:41
+source_spec: `spec-dw-481-482-store-fault-status-classification.md`
+severity: low
+reason: The predicate keys on the SHAPE of `code`, not on a storage errno set. No status outcome changes today: at `POST /api/tasks/run` a network errno reached the same 500 by fall-through before this change, and its message ("getaddrinfo ENOTFOUND host") never matched `/not found/i`. What is wrong today is the NAME and the log line `task "<kind>" hit a store fault`, which sends an operator to the disk for an outbound-network fault. An allowlist was considered and not taken here: it would have to enumerate storage errnos, and it would still miss the `ERR_FS_*` family, so it trades one wrong answer for another without the intent to say which is preferred.
 status: open

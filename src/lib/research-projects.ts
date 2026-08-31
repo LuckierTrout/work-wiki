@@ -1,5 +1,5 @@
 import { isReadOnly } from "./config";
-import { ClientInputError, isEnoent } from "./errors";
+import { ClientInputError, isEnoent, StoreFaultError } from "./errors";
 import { withDurableLock, withFileLock } from "./lock";
 import { READ_ONLY_REFUSAL, ReadOnlyError, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
@@ -361,10 +361,20 @@ function isResearchProject(value: unknown): value is ResearchProject {
  * operator's only handle on a registry that now refuses every read and every
  * write for the tenant.
  *
- * The throw is a plain `Error` on purpose — a wrong-shaped stored file is a
- * server fault (500), never a `ClientInputError`. Matches `parseSlots` in
- * `research-concurrency.ts`, which refuses a non-array lease file and an
- * invalid lease entry the same way.
+ * All three throws are `StoreFaultError` on purpose — a wrong-shaped stored
+ * file is a server fault (500), never a `ClientInputError`. They used to be
+ * plain `Error`s, which said the same thing to an `instanceof` ladder but
+ * nothing at all to a route that classifies by MESSAGE: "…is not a list." has
+ * no marker a regex can read, so a store fault could be reported as the
+ * caller's own 4xx and retried forever (DW-481). The type carries the verdict
+ * instead, and `POST /api/tasks/run` now has an explicit store-fault row
+ * (DW-482) so this refusal reaches its 500 by decision rather than by
+ * fall-through. `StoreFaultError` extends `Error` directly, so every ladder
+ * that ended in a bare 500 for these throws still does. What `parseSlots` in
+ * `research-concurrency.ts` shares is the REFUSAL, not the type: it fails
+ * closed on a non-array lease file and an invalid lease entry for the same
+ * reason, but it still throws plain `Error`s — retyping it is out of scope
+ * here, and nothing classifies a lease fault by type yet.
  *
  * The BYTES-ARE-NOT-JSON fault is typed like the other two for that same
  * reason. A bare `JSON.parse` let truncated or non-JSON registry bytes escape
@@ -385,14 +395,14 @@ function parseRegistry(raw: string): ResearchProject[] {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error("Research projects file is unreadable.", { cause: error });
+    throw new StoreFaultError("Research projects file is unreadable.", { cause: error });
   }
   if (!Array.isArray(parsed)) {
-    throw new Error("Research projects file is not a list.");
+    throw new StoreFaultError("Research projects file is not a list.");
   }
   const bad = parsed.findIndex((entry) => !isResearchProject(entry));
   if (bad !== -1) {
-    throw new Error(`Research project entry ${bad} is invalid.`);
+    throw new StoreFaultError(`Research project entry ${bad} is invalid.`);
   }
   return parsed;
 }

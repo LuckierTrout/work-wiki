@@ -23,7 +23,7 @@ import {
 } from "@/lib/agents";
 import { hasIngestAnalysis } from "@/lib/ingest-analysis";
 import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "@/lib/review-queue";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { ClientInputError, getErrorMessage, isStoreFault } from "@/lib/errors";
 import { getVectorSearchSettings, isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
@@ -859,16 +859,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, cancelled: true });
     }
     const message = getErrorMessage(err);
+    // One predicate, read twice: the ingest auto-retry cap. It decides both
+    // how the tracked job is recorded here and the 422 at the bottom, and it
+    // is hoisted so the store-fault row in between can step around ingest
+    // without a third copy drifting from these two.
+    const ingestRetriesExhausted =
+      task.kind === "ingest" && Number.isFinite(queueAttempt) && queueAttempt >= 3;
     // Record the failure on a tracked async job so the user sees the reason
     // (a later retry that succeeds will overwrite this back to "done"). Guarded:
     // a storage error here must not mask the original failure or skip the
     // status mapping below.
     if (task.kind === "ingest" && task.jobId) {
-      const exhausted =
-        Number.isFinite(queueAttempt) && queueAttempt >= 3;
       try {
         await updateIngestJob(task.jobId, {
-          status: exhausted ? "failed" : "retrying",
+          status: ingestRetriesExhausted ? "failed" : "retrying",
           error: message,
         });
       } catch (writeErr) {
@@ -914,6 +918,18 @@ export async function POST(req: Request) {
         detail: message,
       });
     }
+    // A store fault is OURS and repairable in place, so it gets the transient
+    // 500 and the queue's bounded retry to the DLQ — never the 422 poison.
+    // Ahead of `/not found/i` on purpose (DW-482): the corrupt-registry
+    // refusals in `research-projects.ts` reached this 500 only by falling all
+    // the way through, and a store fault whose sentence happens to say "not
+    // found" would have been poisoned as a missing page instead. Ingest at its
+    // auto-retry cap is excluded so the 422 below still wins for it — this row
+    // pins `run-research`, it does not re-decide ingest.
+    if (isStoreFault(err) && !ingestRetriesExhausted) {
+      logger.error("tasks", `task "${task.kind}" hit a store fault`, err);
+      return NextResponse.json({ error: message }, { status: 500 });
+    }
     // A missing page/thread is permanent → poison (4xx), don't retry forever.
     if (/not found/i.test(message)) {
       logger.warn("tasks", `task "${task.kind}" permanently failed: ${message}`);
@@ -926,7 +942,7 @@ export async function POST(req: Request) {
     }
     // Otherwise transient (LLM hiccup, lock contention) → retry.
     // Ingest auto-retries at most 3 times, then stays failed for manual retry.
-    if (task.kind === "ingest" && Number.isFinite(queueAttempt) && queueAttempt >= 3) {
+    if (ingestRetriesExhausted) {
       logger.warn("tasks", `ingest exhausted auto-retry (${queueAttempt}): ${message}`);
       return NextResponse.json({ error: message }, { status: 422 });
     }

@@ -534,12 +534,25 @@ describe("relatedByVector", () => {
     expect(await relatedByVector("ghost", 10)).toEqual([]);
   });
 
-  it("returns [] when the anchor's vector is from a different model (stale)", async () => {
+  it("returns [] AUDIBLY when the anchor's vector is from a different model (stale)", async () => {
     await seedAnchorSet("text-embedding-3-small");
     process.env.EMBEDDING_MODEL = "text-embedding-3-large"; // current model differs
     process.env.OPENAI_API_KEY = "sk-test";
 
-    expect(await relatedByVector("anchor", 10)).toEqual([]);
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    expect(result).toEqual([]);
+    // …and the breadcrumb that makes that diagnosable rather than looking like
+    // "this page has no neighbours" (DW-406). `[]` alone was satisfied by a
+    // silent return, which is what left a render-only deployment blind.
+    expect(warnings).toHaveLength(1);
+    // The sentence has to identify the BRANCH, not just the family: "likely
+    // embedding-model drift" is emitted by BOTH of this door's warn branches,
+    // so asserting it alone passes if the window branch fired instead of the
+    // early return — which cannot even be reached on a stale anchor.
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(warnings[0]).toContain("embedding-model drift");
+    expect(warnings[0]).toContain('active="text-embedding-3-large"');
   });
 
   it("returns [] (never throws) on a mixed-dimension store", async () => {
@@ -552,6 +565,371 @@ describe("relatedByVector", () => {
     process.env.OPENAI_API_KEY = "sk-test";
 
     await expect(relatedByVector("anchor", 10)).resolves.toEqual([]);
+  });
+
+  it("says NOTHING about drift on a mixed-dimension store, and does not re-arm", async () => {
+    // The other half of degrading (DW-406): a read that THREW reached neither
+    // branch, so it is evidence of nothing in either direction. Both live
+    // inside the try, so this holds structurally — pinned because "structurally"
+    // is exactly what a later refactor that hoists them out would break, and
+    // re-arming here would un-burn the key on a read that never saw a window.
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: a search burns `drift:…-3-small`.
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      await seedVector("page-b", [0, 1, 0], "old-model", "b");
+      await searchByVector("one", 10);
+      // 2. A render whose anchor is CURRENT (so the stale-anchor return is not
+      //    what answers) over a store that has gone mixed-dimension. The cosine
+      //    scan throws before either branch runs.
+      await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "c");
+      await seedVector("short", [1, 0], DEFAULT_TEST_MODEL, "d"); // 2-dim
+      const related = await relatedByVector("anchor", 10);
+      // 3. Back to a drifted, dimension-consistent corpus under the SAME active
+      //    model. Silence here means step 2 left the key burnt.
+      for (const slug of ["anchor", "short"]) await removeEmbedding(slug);
+      await searchByVector("two", 10);
+      return related;
+    });
+
+    // Asserted OUT here, not inside the spy callback: a throw in there escapes
+    // before `withWarnSpy` collects, and the captured lines — the whole point
+    // of this test — would be discarded with it.
+    expect(result).toEqual([]);
+
+    // ONE drift line, from step 1, and it is the SEARCH door's. Identifying the
+    // speaker is what rules the render door out: because the two doors share
+    // one key, a drift line from the throwing read would be SUPPRESSED rather
+    // than counted, so "how many" cannot tell them apart on its own.
+    const drift = warnings.filter((w) => w.includes("embedding-model drift"));
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain("searchByVector");
+    // Silence about DRIFT is not silence: the benign dimension-mismatch line is
+    // the one thing a degraded render still owes an operator, and nothing else
+    // in this file pins that it survives.
+    const failures = warnings.filter((w) => w.includes("query failed"));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("relatedByVector");
+  });
+
+  it("says the stale-anchor line ONCE however many page renders run", async () => {
+    // DW-406's named case. On a fully drifted corpus EVERY anchor is stale, so
+    // the stale-anchor early return is the only branch that ever runs — and
+    // `findSimilarPages` is on the article render path, so an unthrottled line
+    // would repeat for every page anyone opened.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await relatedByVector("anchor", 10),
+      await relatedByVector("near", 10),
+      await relatedByVector("anchor", 10),
+    ]);
+
+    // Once for the process, not once per render and not once per PAGE — the
+    // identity is the active model, and the second render is a different page.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Suppression is of repetition only — every render still answered.
+    expect(result).toEqual([[], [], []]);
+  });
+
+  it("says the drift line when the model filter drops the WHOLE window", async () => {
+    // The other warn branch: the anchor itself is an UNLABELLED legacy vector,
+    // so it passes the early return, and every other vector in the window is
+    // stale. Nothing is left to return and nothing else would say why.
+    await getStorage().upsertEmbedding("anchor", [1, 0, 0], { contentHash: "a" });
+    await seedVector("near", [0.9, 0.1, 0], "old-model", "b");
+    await seedVector("far", [0, 1, 0], "old-model", "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(async () => [
+      await relatedByVector("anchor", 10),
+      await relatedByVector("anchor", 10),
+    ]);
+
+    expect(result).toEqual([[], []]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("dropped every match");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+  });
+
+  it("RE-ARMS a key searchByVector burnt, so a later drift speaks again", async () => {
+    // The second half of DW-406, and the sharper one. Since DW-332 drift is
+    // CLEARABLE state; before this door re-armed, a rebuild proven out only
+    // through page renders never cleared `drift:M`, so a later genuine drift
+    // shipped silent for the rest of the process. The two doors share one key
+    // precisely so either can carry that news.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const reseed = async (model: string) => {
+      for (const slug of ["anchor", "near", "mid", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet(model);
+    };
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: a search burns `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. The rebuild lands, and the ONLY traffic that observes it is a page
+      //    render. Its window (anchor dropped) matches WHOLLY and positively
+      //    holds an active-model vector → re-arm.
+      await reseed(DEFAULT_TEST_MODEL);
+      const related = await relatedByVector("anchor", 10);
+      // 3. Drift again under the SAME active model.
+      await reseed("old-model");
+      const two = await searchByVector("two", 10);
+      return [one, related, two];
+    });
+
+    // Twice, not once: without the render door's re-arm the second outage is
+    // the one an operator has no breadcrumb for.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[0]).toContain("searchByVector");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Pin the CAUSE too: the middle read is the render whose window matched
+    // wholly, and it answered rather than warning.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm — or warn — on a partially rebuilt (MIXED) window", async () => {
+    // DW-404's line, held at this door too: `rebuildVectorStore` upserts page
+    // by page with no bulk swap, so mid-rebuild a window holds stale and
+    // re-tagged vectors together. A window the filter demonstrably DROPPED
+    // something from is not evidence the rebuild landed — and it is not
+    // evidence of total drift either, since it still returned results.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: a search burns `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. A rebuild gets PARTWAY: `anchor` and `near` are re-tagged, `mid` and
+      //    `far` are not. The render's window is mixed.
+      await removeEmbedding("anchor");
+      await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      await removeEmbedding("near");
+      await seedVector("near", [0.9, 0.1, 0], DEFAULT_TEST_MODEL, "b");
+      const related = await relatedByVector("anchor", 10);
+      // 3. The corpus drifts fully again under the SAME active model.
+      for (const slug of ["anchor", "near", "mid", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet("old-model");
+      const two = await searchByVector("two", 10);
+      return [one, related, two];
+    });
+
+    // Still ONE line: the mixed render neither warned nor re-armed. A gate
+    // loosened to `kept.length > 0` re-arms here and this test hears two.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("searchByVector");
+    // And the door still ANSWERED, with exactly what it answered before.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm on an all-UNLABELLED window, and stays silent", async () => {
+    // DW-405's proof conjunct, held here. `modelMatches` deliberately KEEPS
+    // unlabelled legacy vectors, so a window carried entirely by them matches
+    // WHOLLY while proving nothing about the active model. Nothing was dropped
+    // either, so there is nothing to warn about.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: a search burns `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+      // 2. The ANCHOR is re-tagged under the active model and every OTHER
+      //    vector loses its label. This is the window the gate has to read off
+      //    `others` for: the anchor is the corpus's only current member, and
+      //    it was already vetted by the stale-anchor return, so letting it
+      //    supply the proof would be a page vouching for itself.
+      await removeEmbedding("mid");
+      await removeEmbedding("anchor");
+      await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+      for (const [slug, vec] of [
+        ["near", [0.9, 0.1, 0]],
+        ["far", [0, 1, 0]],
+      ] as Array<[string, number[]]>) {
+        await removeEmbedding(slug);
+        await getStorage().upsertEmbedding(slug, vec, { contentHash: "x" });
+      }
+      const related = await relatedByVector("anchor", 10);
+      // 3. Drifted again under the SAME active model.
+      for (const slug of ["anchor", "near", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet("old-model");
+      const two = await searchByVector("two", 10);
+      return [one, related, two];
+    });
+
+    // Still ONE line. Dropping the `kept.some(...)` conjunct re-arms here and
+    // this test hears two — and so does reading the gate off `matches` rather
+    // than `others`, which lets the anchor's own label be the proof.
+    expect(warnings).toHaveLength(1);
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near", "far"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("says nothing on a healthy, never-drifted corpus", async () => {
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    // The re-arm is SILENT — it deletes a key nobody burnt, which is a no-op.
+    expect(warnings).toEqual([]);
+    expect(result.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+  });
+
+  it("says nothing on a LONE page — an empty window is not evidence", async () => {
+    await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    // `others` is empty: nothing was dropped, so the warn's second conjunct
+    // rejects it — a bare `else` would say "the filter dropped every match"
+    // about a corpus of one page.
+    expect(result).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("shares ONE key with searchByVector — the search door stays silent after it", async () => {
+    // The key both doors write is `drift:<active model>` and nothing else, so
+    // drift is ONE piece of news however it is discovered. Nothing else in this
+    // file pins the KEY: give this door its own namespace and every other test
+    // here still passes, while a drifted deployment starts saying the same
+    // thing twice — once per door — for the rest of the process.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // The render door speaks first — the drifted corpus makes every anchor
+      // stale — and burns the shared key.
+      const related = await relatedByVector("anchor", 10);
+      // The search door then finds the SAME drift under the SAME active model.
+      // It is the same fact, so it must not be reported a second time.
+      const searched = await searchByVector("q", 10);
+      return [related, searched];
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // Both doors still ANSWERED — suppression is of repetition, never of work.
+    expect(result).toEqual([[], []]);
+  });
+
+  it("completes a warn/re-arm cycle through THIS door alone", async () => {
+    // A deployment whose only vector traffic is page renders (`findSimilarPages`)
+    // has to be able to hear drift, hear nothing while it is standing, and hear
+    // it AGAIN after a rebuild and a second drift — with no search ever running.
+    // This is the only test that ties this door's warn key to its own re-arm
+    // key: point the two at different namespaces and the third render below
+    // goes mute, exactly as the render-only deployment did before DW-406.
+    await seedAnchorSet("old-model");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const reseed = async (model: string) => {
+      for (const slug of ["anchor", "near", "mid", "far"]) await removeEmbedding(slug);
+      await seedAnchorSet(model);
+    };
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: every anchor is stale, so the early return speaks.
+      const one = await relatedByVector("anchor", 10);
+      // 2. The rebuild lands. This render's window matches WHOLLY and holds an
+      //    active-model vector → re-arm, silently.
+      await reseed(DEFAULT_TEST_MODEL);
+      const two = await relatedByVector("anchor", 10);
+      // 3. Drift again under the SAME active model.
+      await reseed("old-model");
+      const three = await relatedByVector("anchor", 10);
+      return [one, two, three];
+    });
+
+    // Twice, and byte-identical: the identity that drifted is the same one, and
+    // step 2's re-arm is the only reason the second line exists.
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(warnings[1]).toContain("relatedByVector: the anchor's own vector is from another model");
+    // Pin the CAUSE: step 2 is the render that ANSWERED, which is what makes it
+    // evidence of a landed rebuild rather than of more drift.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("lets a stale ORPHAN anchor burn the key on a healthy corpus (accepted cost)", async () => {
+    // NOT a defect — the accepted false positive recorded on
+    // `warnedMisconfigurations`, pinned so a later "fix" cannot delete
+    // deliberate behaviour without this test arguing back. `rebuildVectorStore`
+    // never DELETES, so a renamed or re-embedded page leaves its old vector
+    // behind; rendering it makes the stale-anchor return fire on an otherwise
+    // healthy corpus and burn the PROCESS-WIDE key on one page's evidence.
+    // `searchByVector` cannot produce this — its warn needs the filter to have
+    // dropped the WHOLE window. The cost is a suppressed line, never a wrong
+    // answer, and it is the price of the two doors sharing one piece of news.
+    await seedAnchorSet();
+    await seedVector("orphan", [1, 0, 0], "old-model", "z"); // renamed page's leftover
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. The orphan is rendered. One stale page, corpus otherwise current —
+      //    and `drift:…-3-small` is burnt anyway.
+      const orphan = await relatedByVector("orphan", 10);
+      // 2. The corpus GENUINELY drifts later, under the same active model.
+      for (const slug of ["anchor", "near", "mid", "far", "orphan"]) {
+        await removeEmbedding(slug);
+      }
+      await seedAnchorSet("old-model");
+      const searched = await searchByVector("q", 10);
+      return [orphan, searched];
+    });
+
+    // ONE line, and it is the orphan's. The real drift at step 2 is SILENT.
+    // That is the accepted cost stated plainly: asserting it is how a future
+    // change that alters the trade-off is forced to be deliberate about it.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("relatedByVector: the anchor's own vector is from another model");
+    expect(result).toEqual([[], []]);
+  });
+
+  it("says nothing when NO active model resolves", async () => {
+    // No provider keys → `getEmbeddingModelName()` is null, and every branch is
+    // already false on it: `modelMatches` keeps everything, so the stale-anchor
+    // return never fires, the re-arm's proof conjunct compares a stored label
+    // against null, and the warn needs a non-empty `others` it kept nothing
+    // from. `drift:null` is structurally unspeakable — no null branch needed.
+    await seedAnchorSet();
+
+    const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
+
+    expect(warnings).toEqual([]);
+    expect(result.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
   });
 });
 
