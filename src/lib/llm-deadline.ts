@@ -3,15 +3,17 @@ import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
 
 /**
  * Why a streamed answer stopped early — every sentence, and every predicate
- * that licenses one (DW-64, DW-544, DW-545, DW-547).
+ * that licenses one (DW-64, DW-544, DW-545, DW-547, DW-663, DW-664).
  *
  * The deadline was the first reason and named the file; it is no longer the
- * only one. A streamed answer can also end because the model ran into
- * `QUERY_MAX_OUTPUT_TOKENS`, or because the stream was cut with no deadline
- * configured at all. All three share one failure — a half answer that reads as
- * a whole one — so they share one home, and callers import the sentence rather
- * than each keeping a copy of it. The FILENAME stays: `./llm` and DW-64's spec
- * both name it, and renaming it would buy nothing this docblock does not say.
+ * only one. A streamed answer can also end because the model ran into an output
+ * cap — `QUERY_MAX_OUTPUT_TOKENS` on the query route, the synthesis budget on a
+ * research run — because the stream was cut with no deadline configured at all,
+ * or because a provider `error` part ended a research brief. All five sentences
+ * share one failure — a half answer, or half a brief, that reads as a whole one
+ * — so they share one home, and callers import the sentence rather than each
+ * keeping a copy of it. The FILENAME stays: `./llm` and DW-64's spec both name
+ * it, and renaming it would buy nothing this docblock does not say.
  *
  * A SEPARATE, dependency-light module rather than another export on `llm.ts`,
  * for two reasons that both have to hold at once:
@@ -33,10 +35,16 @@ import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
  *
  * The Settings pointer is the dividing line. A sentence gets one only when it
  * names a control the owner actually has: the LLM timeout, which they filled in
- * and can raise or clear. {@link LLM_LENGTH_CAP_COPY} and
+ * and can raise or clear. {@link LLM_LENGTH_CAP_COPY},
+ * {@link LLM_RESEARCH_LENGTH_CAP_COPY} and
  * {@link LLM_RESEARCH_STREAM_CUT_SHORT_COPY} get none, because there is no field behind
- * either of them — the output cap is a source constant, and a stream cut with
- * no deadline configured was cut by something this repo did not install.
+ * any of them. Neither output cap is settable: the query route's is the named
+ * constant `QUERY_MAX_OUTPUT_TOKENS` in `./constants`, and the research budget
+ * is a bare literal passed at the synthesis call sites in
+ * `research-runtime.ts` — different shapes, but both in source, and neither
+ * written by anything on the Settings surface. A stream cut with no deadline
+ * configured, or ended by a provider error, was cut by something this repo did
+ * not install at all.
  *
  * The deadline's MECHANISM is deliberately not here and is not changing — see
  * the frozen-decision note on `callLLMStream` in `./llm`.
@@ -96,7 +104,21 @@ export const LLM_DEADLINE_RESEARCH_COPY =
 
 /**
  * A RESEARCH synthesis stream that ended early with NO deadline configured
- * (DW-544).
+ * (DW-544), or on an `error` part that was not a deadline at all (DW-664).
+ *
+ * TWO USES, and only the first is gated. DW-544's use is the far side of
+ * {@link llmDeadlineConfigured} for an abort. DW-664's is UNGATED: when an
+ * `error` part that {@link isLlmDeadlineAbort} does not recognise ends the
+ * synthesis brief — nothing after it but `ai@6`'s own teardown, which carries
+ * `finishReason: "error"` — the `for await` ends normally and half a brief used
+ * to flow on into the page write. The words
+ * below fit that ending as they stand — they name no field, no limit and no
+ * cause, only that the response stopped and the wiki is untouched — so they
+ * stay true whether or not a deadline is configured. {@link
+ * LLM_DEADLINE_RESEARCH_COPY} could NOT be shown there even with a deadline
+ * set: blaming the owner's timeout for an unrelated provider error would send
+ * them to raise a limit that had nothing to do with it. The SDK's own error
+ * goes to `logger.warn` instead, where diagnostics belong.
  *
  * RESEARCH-SCOPED, and named for it. The text says "this research run" and
  * "nothing was written to the wiki", both of which would be false on either
@@ -143,6 +165,41 @@ export const LLM_RESEARCH_STREAM_CUT_SHORT_COPY =
 export const LLM_LENGTH_CAP_COPY =
   `This answer is incomplete: it reached the maximum length a single answer ` +
   `can be. Ask again for a narrower part of the question to see the rest.`;
+
+/**
+ * The same cap, read by the owner of a Deep Research run (DW-663).
+ *
+ * `finishReason: "length"` on the synthesis stream's `finish` part means the
+ * brief was CUT at the output budget `synthesizeResearchBrief` passes on every
+ * call — not that it fit under it. Before DW-663 that part fell through the
+ * loop's bookkeeping tail and the half brief was committed as a finished wiki
+ * page, which is the same silent truncation DW-544 closed for the deadline,
+ * from a different cause.
+ *
+ * A SECOND sentence rather than {@link LLM_LENGTH_CAP_COPY} reused, for the
+ * reason {@link LLM_DEADLINE_RESEARCH_COPY} is a second sentence too: that one
+ * is query-scoped and says "Ask again for a narrower part of the question to
+ * see the rest", which promises the REST of an answer that is already on
+ * screen. A research run that hits the cap writes NOTHING — the run fails
+ * closed — so there is no rest to see, and the sentence has to say the wiki is
+ * untouched or the owner goes looking for a page that is not there.
+ *
+ * UNGATED, exactly as {@link LLM_LENGTH_CAP_COPY} is: the cap is passed on
+ * every synthesis call, so a `length` finish is always this repo's own and
+ * there is no state in which it could belong to someone else.
+ * {@link llmDeadlineConfigured} has no bearing on it — a configured deadline
+ * did not cut this stream, the cap did.
+ *
+ * NO Settings pointer, and none may be added. The synthesis budget is a source
+ * literal in `research-runtime.ts`; nothing on the Settings surface writes it,
+ * so pointing the owner at Settings would send them looking for a control that
+ * is not there. What they CAN do is ask a narrower research question, which is
+ * what this says instead.
+ */
+export const LLM_RESEARCH_LENGTH_CAP_COPY =
+  `This research run is incomplete: the brief reached the maximum length a ` +
+  `single run can produce. Nothing was written to the wiki. Ask a narrower ` +
+  `research question and run it again.`;
 
 /**
  * Is there a deadline for an abort to BE?

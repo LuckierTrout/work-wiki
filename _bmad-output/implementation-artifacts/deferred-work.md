@@ -5125,7 +5125,9 @@ location: src/lib/research-runtime.ts:1239
 source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
 severity: medium
 reason: `synthesizeResearchBrief` (`src/lib/research-runtime.ts:1239`) ignores the `finish` part, so `finishReason: "length"` — which means the brief was CUT at the budget `callLLMStream` was given, not that it fit — falls through and `raw` commits. Same owner-visible failure as DW-544 (half a brief published as a whole one) from the cap rather than the deadline. Left as it was because the intent scopes research to "an abort or deadline error part"; the code comment and the covering test now say so explicitly instead of claiming the brief finished under its budget.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-synthesis-truncation-truth
+resolution-undo: 870eae26d3846c71ae6c841fe343e771637229641273c5a90b0ad3bd0ea0a52d 2026-08-31 7374617475733a206f70656e
 
 ### DW-664: A non-deadline `error` part that ENDS the synthesis stream still commits a truncated research brief.
 origin: spec-deferred 57cdfe8e1b86
@@ -5133,7 +5135,9 @@ location: src/lib/research-runtime.ts:1217
 source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
 severity: medium
 reason: `src/lib/research-runtime.ts:1217` fails only on an `error` part `isLlmDeadlineAbort` accepts; every other one is skipped as "warning-shaped". `ai@6` closes the source after an `error` part (the same SDK fact DW-64 relied on for its iterator argument), so an error part that terminates the stream ends the `for await` normally and the partial `raw` flows into `commitResearchPage`. The new suite only models an `error` part followed by more deltas and a `finish`. Pre-existing — `textStream` dropped those parts too — and outside an intent naming abort and deadline error parts only.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-synthesis-truncation-truth
+resolution-undo: 870eae26d3846c71ae6c841fe343e771637229641273c5a90b0ad3bd0ea0a52d 2026-08-31 7374617475733a206f70656e
 
 ### DW-665: The research run's other `callLLM` calls still put SDK transport vocabulary in the owner-visible `project.error`.
 origin: spec-deferred 4e4bfd7b67f0
@@ -5277,4 +5281,12 @@ location: src/lib/research-completion.ts:570
 source_spec: `spec-dw-652-653-654-research-completion-source-shape.md`
 severity: low
 reason: Before this change a `cancelRequested` row carrying a wrong-shaped completion at `phase: "page"` flowed past the `(cancelRequested || cancelled) && !completion` early return into the claim CAS, whose `authorized` mutator declined and dropped into the cancel-finalize branch (src/lib/research-completion.ts ~636-651): completion deleted, status `cancelled`, outbox removed. The new pre-claim shape guard throws first, so that teardown is unreachable and the row stays `cancelRequested`. Teardown never dereferences `sources` - it deletes the whole completion - so this door now refuses for a value it would not have touched. Not stranded: the `deleteRequested` branch sits above the guard, so deleting the project still works, and refusing loudly is this module's declared fail-closed discipline. Closing it means deciding whether teardown paths should be exempt from the shape guard.
+status: open
+
+### DW-683: The non-streamed `callLLM` synthesis fallback passes the same 7,000-token cap but cannot see `finishReason`, so a fallback brief cut by that cap is still committed as a finished wiki page.
+origin: spec-deferred 1f5ffc7edfac
+location: src/lib/research-runtime.ts:1451
+source_spec: `spec-dw-663-664-research-synthesis-truncation-truth.md`
+severity: low
+reason: `synthesizeResearchBrief`'s catch takes the `callLLM` fallback whenever the stream ended before producing text (`receivedStreamContent === false`), including on the two endings DW-663/DW-664 just made fatal. That call passes the identical `{ maxOutputTokens: 7_000 }`, and `callLLM` (`src/lib/llm.ts:513-537`) destructures only `{ text }` from `generateText`, discarding `finishReason` — so a fallback brief cut at the cap is indistinguishable from a whole one and commits. Pinned by the two boundary tests added in this pass, which assert the fallback path completes and writes a page. Closing it means surfacing `finishReason` from `callLLM`, which this spec's Never list rules out.
 status: open

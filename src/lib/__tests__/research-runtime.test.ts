@@ -82,6 +82,8 @@ import { getLlmTimeoutMs } from "../config";
 import { callLLM, callLLMStream } from "../llm";
 import {
   LLM_DEADLINE_RESEARCH_COPY,
+  LLM_LENGTH_CAP_COPY,
+  LLM_RESEARCH_LENGTH_CAP_COPY,
   LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
 } from "../llm-deadline";
 import { SETTINGS_LABEL, settingsPointer } from "../workbench-settings";
@@ -2307,8 +2309,15 @@ describe("research slugs", () => {
 // which stays silent with no deadline configured. That route's fallback is
 // silence — what it did before DW-64. Research's fallback is a truncated page,
 // which is the bug. So only the WORDS turn on the field here.
+//
+// DW-663 and DW-664 add the two endings the loop still fell through: a
+// `finish` carrying `finishReason: "length"` (the output cap CUT the brief) and
+// an `error` part that nothing follows (`ai@6` closed the source, so the
+// `for await` ended normally). Both were committing a fragment as a finished
+// page. An `error` the stream carries on PAST is still warning-shaped and still
+// commits — that distinction is what the after-the-loop check exists for.
 // ---------------------------------------------------------------------------
-describe("deep research — a synthesis stream that stopped early (DW-544)", () => {
+describe("deep research — a synthesis stream that stopped early (DW-544, DW-663, DW-664)", () => {
   it("fails the run and writes nothing when the deadline aborts mid-synthesis", async () => {
     mockedTimeout.mockReturnValue(30_000);
     fakeStream([delta("# Half a brie"), { type: "abort", reason: "timeout" }]);
@@ -2419,14 +2428,17 @@ describe("deep research — a synthesis stream that stopped early (DW-544)", () 
     );
   });
 
-  it("still commits a brief its own output cap CUT, which is a known gap", async () => {
-    // `finish`/`length` means this brief was cut at the 7,000-token budget the
-    // synthesis call passes — not that it fit under it. It commits anyway, and
-    // that is deliberate rather than safe: DW-544's intent scopes research to
-    // the abort and deadline-`error` parts, so widening it to the cap would
-    // change which briefs reach the wiki. Pinned here so the gap is visible and
-    // deferred, not silently assumed closed. (DW-547 closes the same ending on
-    // the query route, where the answer is not written anywhere.)
+  it("fails the run when its own output cap CUT the brief (DW-663)", async () => {
+    // `finish`/`length` means this brief was cut at the output budget the
+    // synthesis call passes — not that it fit under it. Before DW-663 the part
+    // fell through the loop's bookkeeping tail and the fragment was committed
+    // as a finished wiki page: the same silent truncation DW-544 closed for the
+    // deadline, from a different cause. A brief that looks whole is the whole
+    // point, so `GOOD_BRIEF` here would have passed every downstream gate.
+    //
+    // A deadline is configured on purpose: the cap sentence does NOT turn on
+    // that field, unlike the abort branch, because the cap is passed on every
+    // call and is always this repo's own.
     mockedTimeout.mockReturnValue(30_000);
     fakeStream([
       delta(GOOD_BRIEF),
@@ -2434,9 +2446,245 @@ describe("deep research — a synthesis stream that stopped early (DW-544)", () 
     ]);
     const created = await project();
 
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+    );
+
+    // Nothing reached the wiki, and no second synthesis was bought to paper
+    // over the first.
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.includes("evidence-first private research brief"),
+    )).toHaveLength(0);
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe(LLM_RESEARCH_LENGTH_CAP_COPY);
+  });
+
+  it("uses the same cap sentence with NO deadline configured (DW-663)", async () => {
+    // `mockedTimeout` is already `null`. The gate that picks between the two
+    // DW-544 sentences has no bearing here — a blank timeout field did not cut
+    // this brief, the cap did — so the words are identical either way.
+    fakeStream([
+      delta(GOOD_BRIEF),
+      { type: "finish", finishReason: "length" },
+    ]);
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+    );
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect((await getResearchProject("alice", created.id))?.error).toBe(
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+    );
+  });
+
+  it("reports a run cancelled as the cap lands as CANCELLED, not failed", async () => {
+    // Same rule as the abort branch: the owner's own action outranks the
+    // failure sentence, so someone who pressed Cancel is not told their brief
+    // was too long.
+    mockedTimeout.mockReturnValue(30_000);
+    const created = await project();
+    fakeStream([
+      delta(GOOD_BRIEF),
+      async () => {
+        await cancelResearchProject("alice", created.id);
+      },
+      { type: "finish", finishReason: "length" },
+    ]);
+
+    const finished = await runResearchProject("alice", created.id);
+
+    // Mirrors the sibling DW-544 cancel assertion: the cancel PROGRESS line,
+    // and no failure sentence at all — `not.toBe(...)` alone would pass on any
+    // other failure sentence sitting in `error`.
+    expect(finished.status).toBe("cancelled");
+    expect(finished.progress?.message).toBe("Cancelled.");
+    for (const sentence of [
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+      LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+      LLM_DEADLINE_RESEARCH_COPY,
+    ]) {
+      expect(finished.error).not.toBe(sentence);
+    }
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  it("fails the run when a non-deadline `error` part ENDS the stream (DW-664)", async () => {
+    // `ai@6` CLOSES the source on an `error` part, so with nothing after it the
+    // `for await` ends normally and the half brief used to flow straight into
+    // `commitResearchPage`. Indistinguishable from the warning-shaped part
+    // below at the moment it arrives — only what follows tells them apart.
+    const cause = new Error("provider connection reset");
+    fakeStream([delta(GOOD_BRIEF), { type: "error", error: cause }]);
+    const created = await project();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let causes: unknown[] = [];
+    try {
+      await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+        LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+      );
+    } finally {
+      // BEFORE `mockRestore`, which resets the recorded calls with the
+      // implementation.
+      causes = warn.mock.calls.map((call) => call[2]);
+      warn.mockRestore();
+    }
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+    // The SDK's own words are logged, never rendered in the research panel —
+    // and the log is the ONLY place the real cause survives, so pin that it
+    // actually arrives there rather than being swallowed with the fragment.
+    expect(failed?.error).not.toContain("provider connection reset");
+    expect(causes).toContain(cause);
+  });
+
+  it("keeps the cut-short words for that ending even WITH a deadline set (DW-664)", async () => {
+    // NOT `LLM_DEADLINE_RESEARCH_COPY`. This error is not a deadline — the
+    // deadline branch already claimed those shapes — so blaming the owner's
+    // timeout would send them to raise a limit that had nothing to do with it.
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([
+      delta(GOOD_BRIEF),
+      { type: "error", error: new Error("provider connection reset") },
+    ]);
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+    );
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.error).toBe(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+    expect(failed?.error).not.toBe(LLM_DEADLINE_RESEARCH_COPY);
+    expect(failed?.error).not.toContain("provider connection reset");
+  });
+
+  it("reports a run cancelled as that ending lands as CANCELLED, not failed", async () => {
+    mockedTimeout.mockReturnValue(30_000);
+    const created = await project();
+    fakeStream([
+      delta(GOOD_BRIEF),
+      { type: "error", error: new Error("provider connection reset") },
+      async () => {
+        await cancelResearchProject("alice", created.id);
+      },
+    ]);
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("cancelled");
+    expect(finished.progress?.message).toBe("Cancelled.");
+    for (const sentence of [
+      LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+      LLM_DEADLINE_RESEARCH_COPY,
+    ]) {
+      expect(finished.error).not.toBe(sentence);
+    }
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  it("is not defeated by the bookkeeping `ai@6` emits after a provider error (DW-664)", async () => {
+    // THE REAL SDK SHAPE, and the one a naive "any following part clears it"
+    // rule waves through. A provider `error` chunk does not close the stream on
+    // the spot: `ai@6` enqueues the error part, sets the step's finish reason
+    // to `"error"`, then emits `finish-step` and `finish` BOTH carrying
+    // `finishReason: "error"` before closing. That trailing pair is teardown,
+    // not brief, so it must not count as the stream carrying on.
+    const cause = new Error("provider connection reset");
+    fakeStream([
+      delta(GOOD_BRIEF),
+      { type: "error", error: cause },
+      { type: "finish-step", finishReason: "error" },
+      { type: "finish", finishReason: "error" },
+    ]);
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+    );
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+  });
+
+  it("commits when the model reports a CLEAN finish after an error part", async () => {
+    // `finishReason: "stop"` is the model saying it finished, which no teardown
+    // after a provider error ever says. A pending error dies on it.
+    fakeStream([
+      delta(GOOD_BRIEF),
+      { type: "error", error: new Error("a warning-shaped part") },
+      { type: "finish", finishReason: "stop" },
+    ]);
+    const created = await project();
+
     const finished = await runResearchProject("alice", created.id);
 
     expect(finished.status).toBe("complete");
+    expect(mockedWritePage).toHaveBeenCalled();
+  });
+
+  it("commits when a stray error part arrives AFTER a clean finish", async () => {
+    // Teardown noise on a brief the model already completed. The clean `finish`
+    // is remembered precisely so a late error cannot destroy a whole brief.
+    fakeStream([
+      delta(GOOD_BRIEF),
+      { type: "finish", finishReason: "stop" },
+      { type: "error", error: new Error("teardown noise") },
+    ]);
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("complete");
+    expect(mockedWritePage).toHaveBeenCalled();
+    expect(mockedWritePage.mock.calls[0][0].content).toContain(
+      "# Launch evidence",
+    );
+  });
+
+  it("takes the fallback, not the cap failure, when `length` beats the first token", async () => {
+    // THE BOUNDARY of DW-663, stated rather than assumed. Both new throws sit
+    // inside the `try`, so they meet `receivedStreamContent` in the catch —
+    // and with no deltas at all there is no partial brief to protect, only a
+    // stream that never started. That is the pre-existing fallback for a stream
+    // that died before saying anything, which this change does not remove.
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([{ type: "finish", finishReason: "length" }]);
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("complete");
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.includes("evidence-first private research brief"),
+    )).toHaveLength(1);
+    expect(mockedWritePage).toHaveBeenCalled();
+  });
+
+  it("takes the fallback, not the cut-short failure, when an error beats the first token", async () => {
+    // The same boundary for DW-664's ending. Nothing was truncated, so nothing
+    // is being published as whole.
+    fakeStream([{ type: "error", error: new Error("provider connection reset") }]);
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("complete");
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.includes("evidence-first private research brief"),
+    )).toHaveLength(1);
     expect(mockedWritePage).toHaveBeenCalled();
   });
 
@@ -2505,7 +2753,7 @@ describe("deep research — a synthesis stream that stopped early (DW-544)", () 
   });
 });
 
-describe("the research sentences (DW-544)", () => {
+describe("the research sentences (DW-544, DW-663)", () => {
   it("composes the Settings destination rather than spelling it out", () => {
     // DW-369: renaming the `llm-models` category must move this sentence with
     // it rather than orphan it. Composed even to ASSERT, never typed.
@@ -2514,22 +2762,49 @@ describe("the research sentences (DW-544)", () => {
     );
   });
 
-  it("points the no-deadline sentence at no control at all", () => {
-    expect(LLM_RESEARCH_STREAM_CUT_SHORT_COPY).not.toContain(
-      settingsPointer("llm-models", SETTINGS_LABEL),
-    );
-    expect(LLM_RESEARCH_STREAM_CUT_SHORT_COPY).not.toContain(SETTINGS_LABEL);
-  });
+  it.each([LLM_RESEARCH_STREAM_CUT_SHORT_COPY, LLM_RESEARCH_LENGTH_CAP_COPY])(
+    "points the ungated sentences at no control at all (%#)",
+    (copy) => {
+      // Neither has a field behind it: the timeout was never set in the one
+      // case, and the output cap is a source literal in the other. A Settings
+      // pointer would send the owner looking for a control that is not there.
+      expect(copy).not.toContain(settingsPointer("llm-models", SETTINGS_LABEL));
+      expect(copy).not.toContain(SETTINGS_LABEL);
+    },
+  );
 
-  it.each([LLM_DEADLINE_RESEARCH_COPY, LLM_RESEARCH_STREAM_CUT_SHORT_COPY])(
+  it.each([
+    LLM_DEADLINE_RESEARCH_COPY,
+    LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+    LLM_RESEARCH_LENGTH_CAP_COPY,
+  ])(
     "carries no transport vocabulary and says nothing was written (%#)",
     (copy) => {
-      for (const word of ["aborted", "signal", "TimeoutError", "AbortError"]) {
+      for (const word of [
+        "aborted",
+        "signal",
+        "TimeoutError",
+        "AbortError",
+        "finishReason",
+        "token",
+        "maxOutputTokens",
+      ]) {
         expect(copy).not.toContain(word);
       }
       expect(copy).toContain("Nothing was written");
     },
   );
+
+  it("does not reuse the query-scoped cap sentence for research", () => {
+    // `LLM_LENGTH_CAP_COPY` promises "the rest" of an answer already on screen.
+    // A research run that hits the cap writes nothing, so there is no rest to
+    // see — and its owner has to be told the wiki is untouched.
+    expect(LLM_RESEARCH_LENGTH_CAP_COPY).not.toBe(LLM_LENGTH_CAP_COPY);
+    expect(LLM_RESEARCH_LENGTH_CAP_COPY).not.toContain(
+      "narrower part of the question",
+    );
+    expect(LLM_LENGTH_CAP_COPY).not.toContain("Nothing was written");
+  });
 });
 
 

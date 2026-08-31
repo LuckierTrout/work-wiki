@@ -1,6 +1,7 @@
 import { callLLM, callLLMStream, hasLLMKey } from "./llm";
 import {
   LLM_DEADLINE_RESEARCH_COPY,
+  LLM_RESEARCH_LENGTH_CAP_COPY,
   LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
   isLlmDeadlineAbort,
   llmDeadlineConfigured,
@@ -1284,7 +1285,23 @@ function streamCutShortMessage(): string {
 }
 
 /**
- * Stream the brief, and FAIL the run if the stream ended early (DW-544).
+ * Stream the brief, and FAIL the run if the stream ended early (DW-544,
+ * DW-663, DW-664).
+ *
+ * FOUR endings are early, not one. The deadline `abort` and the deadline
+ * `error` are DW-544's. A `finish` carrying `finishReason: "length"` is the
+ * output cap CUTTING the brief (DW-663). An `error` part that only teardown
+ * follows is the brief ending on a provider failure (DW-664) — the `for await`
+ * finishes normally afterwards, so the fragment looked like a finished brief.
+ *
+ * ALL FOUR FAIL CLOSED ONCE THE STREAM HAS PRODUCED TEXT, and that boundary is
+ * exact rather than absolute. Every throw sits inside the `try`, so it meets
+ * `receivedStreamContent` in the catch: with text in hand the run dies and no
+ * page is written, which is the failure being closed. With NO text at all,
+ * these endings still take the pre-existing `callLLM` fallback for a stream
+ * that died before saying anything — that fallback can complete and commit,
+ * and this change deliberately does not remove it. Nothing is truncated in
+ * that case: there was no partial brief, only a stream that never started.
  *
  * Reads `fullStream`, not `textStream`. `textStream` enqueues `text-delta`
  * parts and silently drops everything else — including the `{ type: "abort" }`
@@ -1327,6 +1344,10 @@ async function synthesizeResearchBrief(
     const stream = await callLLMStream(system, user, { maxOutputTokens: 7_000 });
     let raw = "";
     let lastFlush = 0;
+    // The last `error` part not yet proven survivable, and whether the model
+    // ever reported a clean ending (DW-664). See the discriminator below.
+    let pendingStreamError: { error: unknown } | null = null;
+    let sawCleanFinish = false;
     for await (const part of stream.fullStream) {
       if (
         part.type === "abort" ||
@@ -1341,18 +1362,58 @@ async function synthesizeResearchBrief(
         await requireResearchActive(owner, id, attemptId);
         throw new Error(streamCutShortMessage());
       }
-      // A non-deadline `error` part goes on being ignored exactly as it was
-      // when `textStream` dropped it — those are warning-shaped, and a brief
-      // that completes after one still commits. Every other part (`start`,
-      // `finish`, step and text markers) is bookkeeping.
-      //
-      // A `finish`/`length` cap is deliberately NOT fatal here, and that is a
-      // KNOWN GAP rather than a claim of safety: `length` means this brief was
-      // CUT at the 7,000-token budget above, and it still commits. DW-544's
-      // intent scopes research to the abort and deadline-`error` parts only,
-      // and widening it to the cap would change which briefs reach the wiki.
-      // Recorded as deferred; DW-547 covers the same ending on the query route.
+      // A non-deadline `error` part is REMEMBERED, not acted on (DW-664). Two
+      // different endings arrive in the identical shape and only what follows
+      // tells them apart: a warning-shaped part the stream carries on past —
+      // those were dropped when `textStream` did the reading, and a brief that
+      // completes after one still commits, unchanged — versus one that ENDS the
+      // brief, after which half of it used to flow into the page write.
+      if (part.type === "error") {
+        pendingStreamError = { error: part.error };
+        continue;
+      }
+      if (part.type === "finish") {
+        // The cap CUT this brief (DW-663). `length` means the model stopped at
+        // the output budget the call above passes, so the text in `raw` is a
+        // fragment; committing it publishes a truncated brief as a finished
+        // wiki page. UNGATED by `llmDeadlineConfigured()`: the cap is passed on
+        // every call, so a `length` finish is always this repo's own.
+        // Cancellation still outranks it, as on the abort branch above.
+        if (part.finishReason === "length") {
+          await requireResearchActive(owner, id, attemptId);
+          throw new Error(LLM_RESEARCH_LENGTH_CAP_COPY);
+        }
+        // ANY OTHER REASON IS A CLEAN ENDING, and clears a pending error. Not
+        // `"error"`, though — and that exclusion is the whole of DW-664. A
+        // provider error does NOT close `ai@6`'s stream on the spot: it
+        // enqueues the `error` part, sets the step's finish reason to
+        // `"error"`, and then emits `finish-step` and `finish` BOTH carrying
+        // `finishReason: "error"` before closing (`ai@6` index.mjs :7415,
+        // :7473, :7573). That trailing bookkeeping is teardown, not brief — so
+        // letting it clear the pending error would wave through the commonest
+        // form of the very fragment this closes. The other SDK path, a thrown
+        // pipeline error (:7595), emits the `error` part and closes with no
+        // bookkeeping at all; leaving both intact catches the two together.
+        //
+        // No `finish` reason is fatal on its own: `length` above is keyed on
+        // the cap, and `"error"` here merely declines to clear.
+        if (part.finishReason !== "error") {
+          pendingStreamError = null;
+          // Remembered so a stray `error` part arriving AFTER a clean finish —
+          // teardown noise — cannot destroy a brief the model already
+          // completed.
+          sawCleanFinish = true;
+        }
+        continue;
+      }
+      // Everything left (`start`, `start-step`, `finish-step`, text markers) is
+      // bookkeeping, and none of it is evidence the brief carried on, so none
+      // of it clears a pending error either.
       if (part.type !== "text-delta") continue;
+      // A delta IS that evidence: the stream went on producing the brief, so
+      // the error before it was warning-shaped. This is the case that must
+      // keep committing.
+      pendingStreamError = null;
       await requireResearchActive(owner, id, attemptId);
       if (part.text.length > 0) receivedStreamContent = true;
       raw += part.text;
@@ -1371,12 +1432,39 @@ async function synthesizeResearchBrief(
         );
       }
     }
+    if (pendingStreamError && !sawCleanFinish) {
+      // Nothing but teardown followed that `error`, so it was the ending
+      // (DW-664). The SDK's own words go to the log, where an operator can read
+      // them; the owner reads the constant, because `runResearchProject`'s
+      // catch stores what is thrown here as `project.error` and the research
+      // panel renders it.
+      //
+      // The CUT-SHORT sentence, ungated — not the deadline one even when a
+      // deadline is configured. This error is not a deadline (the branch above
+      // already claimed those), so naming the timeout would send the owner to
+      // raise a limit that had nothing to do with it. Those words name no
+      // field, so they stay true either way.
+      logger.warn(
+        "research",
+        `synthesis stream for ${id} ended on an error part`,
+        pendingStreamError.error,
+      );
+      await requireResearchActive(owner, id, attemptId);
+      throw new Error(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+    }
     return raw || await stream.text;
   } catch (error) {
     if (error instanceof ResearchCancelledError) throw error;
-    // A stream that produced text and then died is NOT retried — including the
-    // abort thrown above, which is why a mid-synthesis deadline reaches the
-    // owner as the sentence rather than buying a second synthesis.
+    // A stream that produced text and then died is NOT retried — including all
+    // four early endings thrown above, which is why a mid-synthesis deadline,
+    // cap or provider error reaches the owner as the sentence rather than
+    // buying a second synthesis over a fragment.
+    //
+    // THIS IS ALSO THE BOUNDARY of those endings. Below this line the stream
+    // produced no text at all, so there is no partial brief to protect and the
+    // fallback runs as it always has: one non-streamed call, which may complete
+    // and commit. A `length` finish or a stream-ending `error` with zero deltas
+    // therefore does NOT fail the run, and that is deliberate.
     if (receivedStreamContent) throw error;
     await requireResearchActive(owner, id, attemptId);
     try {
