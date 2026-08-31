@@ -240,6 +240,16 @@ function cleanInput(input: ResearchProjectInput) {
  * string would hide the row from its owner forever AND free a cap slot nothing
  * can reclaim. Requiring a real boolean turns that into a loud refusal.
  *
+ * WHERE THE NESTED `completion.sources` CHECK LIVES, since this guard is the
+ * place a reader looks for it and will not find it (DW-654): its ELEMENTS are
+ * validated at the consuming boundary, by `requireCompletionSources` in
+ * `research-completion.ts`, not here. Not an oversight — {@link parseRegistry}
+ * refuses the WHOLE file when one entry fails this guard, so checking a nested
+ * completion here would let a single half-written row make every project for
+ * that owner unreadable AND undeletable. Refusing at the door that dereferences
+ * the sources stops the one operation that would act on the bad value while the
+ * row stays listable and deletable. Keep this guard structural.
+ *
  * THE CAVEAT THIS ACCEPTS, NAMED: an extra field is forward-compatible but a
  * new `status` LITERAL is not, because the guard requires `STATUSES`
  * membership. During a rolling deploy or a rollback, a newer isolate that

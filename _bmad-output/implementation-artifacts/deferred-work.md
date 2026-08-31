@@ -5019,7 +5019,9 @@ location: src/lib/research-completion.ts:536
 source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
 severity: low
 reason: `src/lib/research-completion.ts:536` writes `sources: project.completion?.sources?.length ? project.completion.sources : sources`, so a stored `completion: { phase: "page", sources: "https://example.com/a" }` is rewritten to `phase: "sources"` KEEPING the string, with `progress.message` reporting the string's character count as a source count ("Ingesting 21 sources."). Only the drain immediately after refuses it. The two lines cannot simply be routed through `requireCompletionSources`: a missing or empty list there is the ordinary first-commit path, so guarding them as written would refuse an ordinary commit. Closing this needs a "completion exists but its sources are not a list" test distinct from "no completion yet". Pre-existing; DW-579 named the `findIndex`/`map` dereferences, not this write. Now named accurately in the `requireCompletionSources` docblock.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-completion-source-shape
+resolution-undo: 1f9a4fa7559578c88819e37359f617dc72862d79ecff039b2f7084793a90c4b5 2026-08-31 7374617475733a206f70656e
 
 ### DW-653: The drain's follow-up mutator guard is defense-in-depth that no test can reach.
 origin: spec-deferred db1d294b915f
@@ -5027,7 +5029,9 @@ location: src/lib/research-completion.ts:921
 source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
 severity: low
 reason: `requireCompletionSources(project.completion).map(...)` at `src/lib/research-completion.ts:921` re-reads the row inside the post-ingest CAS, so it fires only when a concurrent writer corrupts `completion.sources` after the loop guard at `:908` has already read it AND after every `checkpointSource` in the loop has finished. An independent mutation check confirmed reverting it alone leaves all four research suites green. The sibling guard at `:692` is now pinned (a mid-drain corruption row added during review); this one still is not, and the window it protects is narrow enough that a later edit could strip it unnoticed.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-completion-source-shape
+resolution-undo: 1f9a4fa7559578c88819e37359f617dc72862d79ecff039b2f7084793a90c4b5 2026-08-31 7374617475733a206f70656e
 
 ### DW-654: `requireCompletionSources` validates only `Array.isArray`, so an array of wrong-shaped ELEMENTS reproduces DW-579's failure class one level down.
 origin: spec-deferred d18a4d5b9054
@@ -5035,7 +5039,9 @@ location: src/lib/research-completion.ts:89
 source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
 severity: low
 reason: `["https://example.com/a"]`, `[null]` and `[{}]` all pass the guard and then reach `source.url === url` in `checkpointSource` and `meta.url` / `meta.slug` in the drain loop — undefined-keyed `byUrl` lookups and the same opaque `TypeError` class DW-579 set out to remove, one level in. The limit is deliberate and now named in the helper's docblock: a per-element notion of "valid completion source" belongs beside `isResearchProject`, not as a second divergent one here. Closing it means deciding whether the registry guard should start validating nested optional structures, which its own docblock currently declines to do.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-completion-source-shape
+resolution-undo: 1f9a4fa7559578c88819e37359f617dc72862d79ecff039b2f7084793a90c4b5 2026-08-31 7374617475733a206f70656e
 
 ### DW-655: `cleanUrls`' 2000-character slice and its slice-before-dedupe order are silent data loss, now pinned as expected behaviour by characterization tests.
 origin: spec-deferred d77a9c6122e5
@@ -5263,4 +5269,12 @@ location: src/lib/research-completion.ts:991
 source_spec: `spec-dw-656-659-660-research-readonly-door-copy.md`
 severity: low
 reason: `reconcileResearchProjects`' orphan loop calls `drainResearchOutbox`, which for a missing project row calls `drainOrphanOutbox` (src/lib/research-completion.ts:991-994). When `outbox.claimed !== true` that path calls `deleteResearchOutbox` and returns — and `deleteResearchOutbox` (research-completion.ts:314-321) is an ungated `clearResearchStaging` + `getStorage().deleteFile`, so it destroys the outbox on a deployment that has refused every other write. The gated writer DW-660 branches on is only reached for a CLAIMED outbox, so the new `isReadOnlyError` branch does not cover this shape at all. Reachable today only by a direct library caller: `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses, the same caveat DW-528's per-project branch carries.
+status: open
+
+### DW-682: A cancel that lands on a project whose stored completion is malformed can no longer finalize: `commitResearchPage` now refuses before the cancel-teardown branch that used to delete the completion and
+origin: spec-deferred 275568ef7f5b
+location: src/lib/research-completion.ts:570
+source_spec: `spec-dw-652-653-654-research-completion-source-shape.md`
+severity: low
+reason: Before this change a `cancelRequested` row carrying a wrong-shaped completion at `phase: "page"` flowed past the `(cancelRequested || cancelled) && !completion` early return into the claim CAS, whose `authorized` mutator declined and dropped into the cancel-finalize branch (src/lib/research-completion.ts ~636-651): completion deleted, status `cancelled`, outbox removed. The new pre-claim shape guard throws first, so that teardown is unreachable and the row stays `cancelRequested`. Teardown never dereferences `sources` - it deletes the whole completion - so this door now refuses for a value it would not have touched. Not stranded: the `deleteRequested` branch sits above the guard, so deleting the project still works, and refusing loudly is this module's declared fail-closed discipline. Closing it means deciding whether teardown paths should be exempt from the shape guard.
 status: open

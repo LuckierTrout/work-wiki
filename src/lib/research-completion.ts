@@ -50,7 +50,16 @@ export interface FetchedSource {
 }
 
 /**
- * A stored `completion` whose `sources` is not a list.
+ * A stored `completion.sources` this module refuses to act on — EITHER not a
+ * list at all, OR a list holding a malformed element.
+ *
+ * One class for both, deliberately: to every caller they are the same fault
+ * with the same remedy (a wrong-shaped stored row, no repair route, refuse and
+ * surface it), and splitting them would ask every door to catch two things to
+ * mean one. The MESSAGE is what distinguishes them — the default names the
+ * list, {@link requireCompletionSources} throws an index-named one for a bad
+ * element — so an operator gets the specific handle without callers having to
+ * discriminate types to find it.
  *
  * A plain `extends Error` with `this.name` set, the same idiom as
  * `ResearchProjectNotFoundError` and `ResearchLeaseError`, so a duplicated
@@ -62,6 +71,22 @@ export class ResearchCompletionShapeError extends Error {
     super(message);
     this.name = "ResearchCompletionShapeError";
   }
+}
+
+/** One stored source entry, checked for exactly the fields this module dereferences. */
+function isCompletionSource(value: unknown): value is ResearchCompletionSource {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const source = value as Record<string, unknown>;
+  const optionalString = (v: unknown) => v === undefined || typeof v === "string";
+  return (
+    typeof source.url === "string" &&
+    typeof source.title === "string" &&
+    typeof source.slug === "string" &&
+    typeof source.sha === "string" &&
+    optionalString(source.jobId) &&
+    optionalString(source.error) &&
+    (source.ingested === undefined || typeof source.ingested === "boolean")
+  );
 }
 
 /**
@@ -81,30 +106,47 @@ export class ResearchCompletionShapeError extends Error {
  * silently losing the sources: DW-297's "unreadable is not empty" mistake in a
  * different file. Same discipline as `parseSlots` on a lease file.
  *
- * WHAT IT CHECKS, AND THE LIMIT IT ACCEPTS. `Array.isArray` and nothing more,
- * so an array of WRONG-SHAPED ELEMENTS — `["https://…"]`, `[null]`, `[{}]` —
- * passes and then reaches `source.url === url` and `meta.slug`, reproducing
- * DW-579's failure class one level down. That is a knowing limit, not an
- * oversight: per-element validation belongs with the registry guard that
- * admitted the row, and adding it here would put a second, divergent notion of
- * a valid source in the module that only consumes them.
+ * WHAT IT CHECKS. The list, then every ELEMENT of it. `Array.isArray` alone
+ * let `["https://…"]`, `[null]` and `[{}]` through to `source.url === url` and
+ * `meta.slug`, reproducing DW-579's opaque `TypeError` one level down
+ * (DW-654), so each entry is now checked for exactly the fields THIS module
+ * dereferences: `url`, `title`, `slug` and `sha` must be strings, `jobId` and
+ * `error` a string or absent, `ingested` a boolean or absent. Unknown extra
+ * keys are accepted — forward-compatibility, the same bargain
+ * `isResearchProject` strikes. A bad element refuses by INDEX, because with no
+ * repair route that index is the operator's only handle on which entry is
+ * wrong.
+ *
+ * WHY THE ELEMENT CHECK LIVES HERE AND NOT WITH THE REGISTRY GUARD.
+ * `isResearchProject` is deliberately structural-only about `completion`:
+ * `parseRegistry` refuses the WHOLE file when one entry fails that guard, so
+ * validating a nested `completion.sources` there would turn one half-written
+ * row into "this owner has no readable projects" — every research door 500s,
+ * and the row cannot even be deleted. Refusing at the consuming boundary stops
+ * the one operation that would act on the bad value while the row stays
+ * listable and deletable. The two notions of a valid source are not divergent:
+ * this one is exactly the set of fields dereferenced below it.
  *
  * WHAT IS NOT ROUTED THROUGH IT. `checkpointSource` returns
  * `updated?.completion?.sources.find(…)` unguarded — it reads back exactly
  * what the guarded mutator one line above just wrote, so the shape is already
- * established. The `completion?.sources?.length ? … : …` fallbacks in
- * {@link commitResearchPage} stay unguarded because a missing or empty list
- * there is the ORDINARY first-commit path — guarding them would refuse a
- * perfectly normal commit. The cost is real and worth naming: a truthy
- * non-array is truthy, so that fallback PERSISTS the bad value forward — it
- * writes the string into the stored `completion.sources`, moves the row
- * `phase: "page"` → `"sources"` and records a `progress.message` counting the
- * string's CHARACTERS as sources — and only then does the drain immediately
- * after refuse here. The refusal is not prevention; it stops the bad value at
- * the first door that would act on it.
+ * established. Everything else that iterates or indexes a STORED
+ * `completion.sources` comes through here, {@link commitResearchPage}'s two
+ * reads included (DW-652). Those two used to be `completion?.sources?.length ?
+ * … : …`, which treated a truthy non-array as a usable list and so PERSISTED
+ * it forward — writing the string into the stored completion, moving the row
+ * `phase: "page"` → `"sources"` and recording a `progress.message` that
+ * counted the string's CHARACTERS as sources — leaving only the drain
+ * immediately after to refuse. They now guard first and fall back second, so
+ * the ordinary first-commit path is the one thing the fallback still means: no
+ * `completion` on the row at all, or a completion holding an empty list.
  */
 function requireCompletionSources(completion: ResearchCompletion): ResearchCompletionSource[] {
   if (!Array.isArray(completion.sources)) throw new ResearchCompletionShapeError();
+  const bad = completion.sources.findIndex((source) => !isCompletionSource(source));
+  if (bad !== -1) {
+    throw new ResearchCompletionShapeError(`Research completion source ${bad} is invalid.`);
+  }
   return completion.sources;
 }
 
@@ -530,8 +572,15 @@ export async function commitResearchPage(
     return afterSave;
   }
 
-  const sources = afterSave.completion?.sources?.length
-    ? afterSave.completion.sources
+  // Guard FIRST, fall back second. `null` here means the row carries no
+  // completion at all — the ordinary first commit — and an empty stored list
+  // falls back the same way. Anything present but wrong-shaped refuses now,
+  // before it can be written forward (DW-652).
+  const storedSources = afterSave.completion
+    ? requireCompletionSources(afterSave.completion)
+    : null;
+  const sources = storedSources?.length
+    ? storedSources
     : await completionSourcesFromOutbox(outbox);
 
   const claimId = crypto.randomUUID();
@@ -545,12 +594,17 @@ export async function commitResearchPage(
       return null;
     }
     if (researchWriteClaimIsFresh(project.completion?.writeClaimedAt)) return null;
+    // Re-read under the CAS, guarded the same way as above: this is the write
+    // that would otherwise persist a truthy non-array forward. It stays BELOW
+    // the phase and claim-freshness guards so a row this mutator would decline
+    // to touch is still declined rather than refused.
+    const ownSources = project.completion ? requireCompletionSources(project.completion) : null;
     if (!project.deliveryAttemptId) project.deliveryAttemptId = crypto.randomUUID();
     project.completion = {
       phase: "page",
       pageSlug: outbox.pageSlug,
       ...(outbox.wikiId ? { wikiId: outbox.wikiId } : {}),
-      sources: project.completion?.sources?.length ? project.completion.sources : sources,
+      sources: ownSources?.length ? ownSources : sources,
       writeClaimedAt: new Date().toISOString(),
       writeClaimId: claimId,
     };

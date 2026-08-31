@@ -837,10 +837,13 @@ describe("a stored completion whose sources are not a list", () => {
 
   it.each([
     ["missing entirely", { phase: "sources", pageSlug: OUTBOX.pageSlug }],
-    // `null` and a string are both non-arrays but not interchangeable: a FALSY
-    // non-array fails `completion?.sources?.length` in `commitResearchPage`'s
-    // fallbacks the way a missing list does, while a truthy one passes it and
-    // is persisted forward. Both must still refuse here.
+    // Falsy and truthy non-arrays are both here on purpose. They used to take
+    // different routes — `commitResearchPage` tested `completion?.sources?.length`,
+    // so a falsy one fell back like a missing list while a truthy one passed
+    // and was persisted forward. Since DW-652 every read of a stored
+    // `completion.sources` is guarded before any truthiness test, so the two
+    // are now indistinguishable: both refuse, at the same door, by the same
+    // name. These rows are what keeps that true.
     ["null", { phase: "sources", pageSlug: OUTBOX.pageSlug, sources: null }],
     ["a string", { phase: "sources", pageSlug: OUTBOX.pageSlug, sources: "https://example.com/a" }],
     ["an object", { phase: "sources", pageSlug: OUTBOX.pageSlug, sources: { url: "x" } }],
@@ -974,7 +977,83 @@ describe("a stored completion whose sources are not a list", () => {
     expect(after?.completion?.phase).toBe("sources");
   });
 
-  it("still drains a completion whose sources are a proper list", async () => {
+  /**
+   * DW-654. `Array.isArray` alone admitted an array of WRONG-SHAPED elements,
+   * which then reached `source.url === url` and `meta.slug` as the same opaque
+   * `TypeError` one level down. Each row below is a list the old guard passed.
+   */
+  it.each([
+    ["a bare string", ["https://example.com/a"], 0],
+    ["null", [null], 0],
+    ["an empty object", [{}], 0],
+    // A nested array: `typeof "object"` and non-null, so it reaches the field
+    // tests. What this row pins is the OUTCOME — a list of lists is refused.
+    // The `Array.isArray(value)` early return in `isCompletionSource` is not
+    // what does the refusing here (a bare `[]` has no `url` either, so it
+    // fails regardless); it is there to make the refusal deliberate rather
+    // than incidental, mirroring `isResearchProject`'s own first line.
+    ["an array", [[]], 0],
+    // A wrong-typed REQUIRED field, not just a missing one: `sha: 123` reaches
+    // `meta.sha` as the raw-source filename and the ingest job's content hash.
+    ["a wrong-typed required field", [{
+      url: OUTBOX.sources[0].url,
+      title: OUTBOX.sources[0].title,
+      slug: "research-example-com-launch-brief",
+      sha: 123,
+    }], 0],
+    // Not just the required fields: an optional one with the wrong type is a
+    // shape this module dereferences (`meta.ingested` decides whether a source
+    // is re-dispatched), and `"yes"` is truthy, so accepting it would silently
+    // mark an un-ingested source delivered.
+    ["a wrong-typed optional field", [{
+      url: OUTBOX.sources[0].url,
+      title: OUTBOX.sources[0].title,
+      slug: "research-example-com-launch-brief",
+      sha: "abc",
+      ingested: "yes",
+    }], 0],
+    // The row that makes the index load-bearing. Every case above names index
+    // 0, so a hard-coded `0` in place of the `findIndex` would satisfy them
+    // all; this one puts a GOOD source first and only refuses correctly if the
+    // reported index is really computed.
+    ["preceded by a well-shaped source", [
+      {
+      url: OUTBOX.sources[0].url,
+      title: OUTBOX.sources[0].title,
+      slug: "research-example-com-launch-brief",
+      sha: "abc",
+    },
+      { url: "https://example.com/launch/timeline" },
+    ], 1],
+  ])("refuses the drain by index when the bad element is %s", async (_label, sources, index) => {
+    const id = await seedBadCompletion({
+      phase: "sources",
+      pageSlug: OUTBOX.pageSlug,
+      sources,
+    });
+
+    const caught = await drainResearchOutbox("alice", id).then(
+      () => { throw new Error("drain resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+    // The INDEX is the message's whole job: there is no repair route, so it is
+    // the operator's only handle on WHICH entry is wrong.
+    expect((caught as Error).message).toBe(`Research completion source ${index} is invalid.`);
+    // Refused at the door, before anything acted on the bad element.
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  /**
+   * DW-652. `commitResearchPage`'s two `completion?.sources?.length ? … : …`
+   * fallbacks treated a TRUTHY non-array as a usable list, so the string was
+   * written forward — row moved to `phase: "sources"` with a progress message
+   * counting its 21 characters as sources — and only the drain immediately
+   * after refused. The commit is now the door that refuses.
+   */
+  it("refuses in commitResearchPage instead of persisting a truthy non-array forward", async () => {
     const created = await createResearchProject("alice", {
       title: "Launch evidence",
       question: "What supports the launch date?",
@@ -982,7 +1061,150 @@ describe("a stored completion whose sources are not a list", () => {
     await saveResearchOutbox("alice", created.id, OUTBOX);
     await updateResearchProject("alice", created.id, {
       completion: {
-        phase: "sources",
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: "https://example.com/a",
+      } as unknown as ResearchCompletion,
+    });
+
+    const caught = await commitResearchPage("alice", created.id, OUTBOX).then(
+      () => { throw new Error("commit resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+    // The non-array message stays verbatim — it is the same failure, caught a
+    // door earlier.
+    expect((caught as Error).message).toBe("Research completion sources are not a list.");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+
+    // The bad value never moved forward: same phase, byte-identical payload,
+    // and no `Ingesting 21 sources.` counting the string's characters.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.completion?.phase).toBe("page");
+    expect(after?.completion?.sources).toBe("https://example.com/a");
+    expect(after?.progress?.message ?? "").not.toContain("Ingesting");
+    // Refusing is not repairing, and it is not discarding either: the outbox
+    // still holds the bodies so an operator fix can drain them — the same
+    // contract the sibling drain refusal pins.
+    expect(await loadResearchOutbox("alice", created.id)).not.toBeNull();
+  });
+
+  /**
+   * The FALSY half of the same commit door. The old condition was
+   * `afterSave.completion?.sources?.length`, which a missing or `null`
+   * `sources` fails exactly the way a first commit does — so reverting to it
+   * would leave the truthy row above green while these two silently self-heal
+   * from the outbox, writing a completion the stored row never had. "No
+   * `completion` at all" is the first-commit path; "a completion whose
+   * `sources` is missing" is a half-written row, and the two must not be
+   * confused.
+   */
+  it.each([
+    ["missing entirely", { phase: "page", pageSlug: OUTBOX.pageSlug }],
+    ["null", { phase: "page", pageSlug: OUTBOX.pageSlug, sources: null }],
+  ])("refuses in commitResearchPage when a stored completion's sources are %s", async (
+    _label,
+    completion,
+  ) => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      completion: completion as unknown as ResearchCompletion,
+    });
+    const before = await getResearchProject("alice", created.id);
+
+    const caught = await commitResearchPage("alice", created.id, OUTBOX).then(
+      () => { throw new Error("commit resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+    expect((caught as Error).message).toBe("Research completion sources are not a list.");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+
+    // No outbox-derived self-heal: the half-written completion is left exactly
+    // as found rather than quietly back-filled from the outbox's sources.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.completion).toEqual(before?.completion);
+    expect(after?.completion?.phase).toBe("page");
+  });
+
+  /**
+   * The same falsy shape again, but arranged so ONLY the pre-claim read can
+   * refuse it — which is what makes that guard's own coverage real rather than
+   * borrowed from the CAS guard below it.
+   *
+   * The trick is the fresh foreign `writeClaimedAt`. The claim mutator checks
+   * `researchWriteClaimIsFresh` and DECLINES before it ever reads the sources
+   * (deliberately: the in-CAS guard sits below that check so a row this
+   * mutator would not touch is declined, not refused). So with the claim held
+   * elsewhere the CAS guard cannot fire, and a commit that reached it would
+   * return the row normally — "someone else is writing, nothing to do" — even
+   * though the stored completion is half-written. The pre-claim read is the
+   * only door left, and this is the row that proves it is a door.
+   */
+  it("refuses at the pre-claim read even when the write claim is held elsewhere", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        // No `sources` at all — a half-written row, NOT the first-commit path.
+        writeClaimedAt: new Date().toISOString(),
+        writeClaimId: "another-isolate",
+      } as unknown as ResearchCompletion,
+    });
+    const before = await getResearchProject("alice", created.id);
+
+    const caught = await commitResearchPage("alice", created.id, OUTBOX).then(
+      () => { throw new Error("commit resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+    expect((caught as Error).message).toBe("Research completion sources are not a list.");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+
+    // The other isolate's claim is untouched — refusing this commit does not
+    // steal or clear a live claim — and the half-written completion is neither
+    // repaired nor back-filled from the outbox.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.completion).toEqual(before?.completion);
+    expect(after?.completion?.writeClaimId).toBe("another-isolate");
+    expect(await loadResearchOutbox("alice", created.id)).not.toBeNull();
+  });
+
+  /**
+   * DW-652's second read, the one INSIDE the claim CAS. `commitResearchPage`
+   * reads the row twice — once before the claim and once again inside the
+   * mutator, under the compare-and-swap — and it is the second read that
+   * decides what gets WRITTEN. A guard on only the first one is the DW-653
+   * defect in a new place: a row that was well-shaped when the pre-claim read
+   * saw it, and corrupt by the time the CAS re-read it, would be persisted
+   * forward unchecked. This is the only test that reaches that guard.
+   */
+  it("refuses inside the claim CAS when the row is corrupted after the pre-claim read", async () => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    // Well-shaped, and still at `phase: "page"` so the commit proceeds to the
+    // claim rather than short-circuiting on an already-advanced phase.
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "page",
         pageSlug: OUTBOX.pageSlug,
         sources: [{
           url: OUTBOX.sources[0].url,
@@ -992,9 +1214,216 @@ describe("a stored completion whose sources are not a list", () => {
         }],
       },
     });
+    const before = await getResearchProject("alice", created.id);
+
+    // The seam, and it is exact rather than approximate. `getResearchProject`
+    // reads the registry with `readFile`; the ONLY caller that reads it with
+    // `readFileWithEtag` is the compare-and-swap in
+    // `applyResearchProjectMutation`. Installing the spy here — after all the
+    // setup writes — means the first such read is the claim CAS's own, so
+    // corrupting the file through the un-spied writer just before delegating
+    // lands strictly after the pre-claim read and strictly inside the CAS.
+    const storage = getStorage();
+    const registryPath = `tenants/${tenantForOwner("alice")}/research-projects.json`;
+    const readWithEtag = storage.readFileWithEtag.bind(storage);
+    let latched = false;
+    vi.spyOn(storage, "readFileWithEtag").mockImplementation(async (filePath: string) => {
+      if (!latched && filePath === registryPath) {
+        latched = true;
+        const rows = JSON.parse(await storage.readFile(registryPath)) as Array<
+          Record<string, unknown>
+        >;
+        const row = rows.find((entry) => entry.id === created.id);
+        (row!.completion as { sources: unknown }).sources = "https://example.com/a";
+        await storage.writeFile(registryPath, JSON.stringify(rows, null, 2));
+      }
+      return readWithEtag(filePath);
+    });
+
+    const caught = await commitResearchPage("alice", created.id, OUTBOX).then(
+      () => { throw new Error("commit resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    // The latch is asserted first: a seam that stopped firing would otherwise
+    // let this test pass vacuously, which is the failure mode it exists to
+    // prevent.
+    expect(latched).toBe(true);
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+    expect((caught as Error).message).toBe("Research completion sources are not a list.");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+
+    // Nothing was written forward: the claim never landed, so the phase is
+    // still `page`, no `writeClaimId` was stamped, and no progress message
+    // counts the string's 21 characters as sources.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.completion?.phase).toBe("page");
+    expect(after?.completion?.sources).toBe("https://example.com/a");
+    expect(after?.completion?.writeClaimId).toBeUndefined();
+    expect(after?.progress?.message ?? "").not.toContain("Ingesting");
+    expect(before?.completion?.writeClaimId).toBeUndefined();
+  });
+
+  /**
+   * DW-653. The post-ingest CAS re-reads the stored completion and maps it, so
+   * it needs its own guard — and until now no test reached it: every row above
+   * refuses at the loop guard or inside `checkpointSource`. This one corrupts
+   * the row in the one window that guard alone protects.
+   */
+  it("refuses at the post-ingest CAS when the row is corrupted after the last checkpoint", async () => {
+    const second = {
+      url: "https://example.com/launch/timeline",
+      title: "Launch timeline",
+      text: "THE SECOND BODY.",
+    };
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, {
+      ...OUTBOX,
+      sources: [OUTBOX.sources[0], second],
+    });
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [
+          {
+            url: OUTBOX.sources[0].url,
+            title: OUTBOX.sources[0].title,
+            slug: "research-example-com-launch-brief",
+            sha: "abc",
+          },
+          {
+            url: second.url,
+            title: second.title,
+            slug: "research-example-com-launch-timeline",
+            sha: "def",
+          },
+        ],
+      },
+    });
+
+    const before = await getResearchProject("alice", created.id);
+
+    // The seam. Registry writes go through `writeFileIfMatch` (the CAS), so
+    // that is what is wrapped. The write whose content shows EVERY stored
+    // source `ingested: true` is the last in-loop `checkpointSource`;
+    // corrupting the row through the captured original right after it lands
+    // is strictly after the loop's final write and strictly before the
+    // post-ingest CAS re-reads — the exact window that guard protects.
+    const storage = getStorage();
+    const registryPath = `tenants/${tenantForOwner("alice")}/research-projects.json`;
+    const writeIfMatch = storage.writeFileIfMatch.bind(storage);
+    let corrupted = false;
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (filePath: string, content: string, etag: string) => {
+        const wrote = await writeIfMatch(filePath, content, etag);
+        if (!wrote || corrupted || filePath !== registryPath) return wrote;
+        const rows = JSON.parse(content) as Array<Record<string, unknown>>;
+        const row = rows.find((entry) => entry.id === created.id);
+        const completion = row?.completion as { sources?: unknown } | undefined;
+        const stored = completion?.sources;
+        if (!Array.isArray(stored) || stored.length !== 2) return wrote;
+        if (!stored.every((source) => (source as { ingested?: unknown })?.ingested === true)) {
+          return wrote;
+        }
+        corrupted = true;
+        completion!.sources = "https://example.com/launch/brief";
+        await storage.writeFile(registryPath, JSON.stringify(rows, null, 2));
+        return wrote;
+      },
+    );
+
+    const caught = await drainResearchOutbox("alice", created.id).then(
+      () => { throw new Error("drain resolved instead of refusing"); },
+      (error: unknown) => error,
+    );
+
+    // The corruption really landed in the intended window, and both Ingests
+    // were dispatched BEFORE anything refused — which is what makes this row
+    // specific to the post-ingest CAS rather than the loop or checkpoint guard.
+    expect(corrupted).toBe(true);
+    expect((caught as Error).name).toBe("ResearchCompletionShapeError");
+    expect(caught).toBeInstanceOf(ResearchCompletionShapeError);
+    expect(mockedEnqueue).toHaveBeenCalledTimes(2);
+
+    // What the refusal left behind, stated positively rather than as a weak
+    // "not complete" that several different broken states would satisfy: the
+    // phase never advanced past `sources`, the status is exactly what it was
+    // before the drain, the corrupt value was not repaired, and the outbox
+    // still holds both bodies so an operator fix can drain them.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.completion?.phase).toBe("sources");
+    expect(after?.status).toBe(before?.status);
+    expect(after?.completion?.sources).toBe("https://example.com/launch/brief");
+    const outbox = await loadResearchOutbox("alice", created.id);
+    expect(outbox?.sources).toHaveLength(2);
+  });
+
+  /**
+   * The ACCEPTANCE side of the guard, which is the half a tightening would
+   * break silently. The docblock promises `jobId`/`error` may be a string or
+   * absent, `ingested` a boolean or absent, and that unknown extra keys are
+   * accepted for forward-compatibility — a row written by a newer build must
+   * still drain on this one. Source one carries every optional field ABSENT,
+   * source two carries all of them PRESENT plus a key this build never heard
+   * of; both must reach `done`.
+   */
+  it("still drains a completion whose sources are a proper list", async () => {
+    const second = {
+      url: "https://example.com/launch/timeline",
+      title: "Launch timeline",
+      text: "THE SECOND BODY.",
+    };
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, {
+      ...OUTBOX,
+      sources: [OUTBOX.sources[0], second],
+    });
+    await updateResearchProject("alice", created.id, {
+      completion: {
+        phase: "sources",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [
+          {
+            url: OUTBOX.sources[0].url,
+            title: OUTBOX.sources[0].title,
+            slug: "research-example-com-launch-brief",
+            sha: "abc",
+          },
+          {
+            url: second.url,
+            title: second.title,
+            slug: "research-example-com-launch-timeline",
+            sha: "def",
+            jobId: "research-ingest-timeline",
+            ingested: false,
+            error: "a previous attempt failed",
+            // Not a field this build knows. A guard that matched keys exactly
+            // would refuse a row a newer writer produced.
+            futureField: "written by a newer build",
+          },
+        ] as unknown as ResearchCompletion["sources"],
+      },
+    });
 
     // The guard adds refusals only for shapes that already failed: a real
     // list still drains to `done` exactly as before.
-    expect((await drainResearchOutbox("alice", created.id))?.completion?.phase).toBe("done");
+    const drained = await drainResearchOutbox("alice", created.id);
+    expect(drained?.completion?.phase).toBe("done");
+
+    // Accepted AND carried through — forward-compatibility that dropped the
+    // unknown key on the first write would not be forward-compatibility.
+    const stored = drained?.completion?.sources ?? [];
+    expect(stored).toHaveLength(2);
+    expect(stored.every((source) => source.ingested === true)).toBe(true);
+    expect((stored[1] as unknown as Record<string, unknown>).futureField)
+      .toBe("written by a newer build");
   });
 });
