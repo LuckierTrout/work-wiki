@@ -6,7 +6,7 @@ import { writeWikiPage, updateIndex, ensureDirectories, readLog } from "../wiki"
 import type { IndexEntry } from "../types";
 import { _resetStorage, getStorage } from "../storage";
 import { _resetLocks } from "../lock";
-import { createWiki } from "../wikis";
+import { createWiki, writeWikiArtifact } from "../wikis";
 import { loadPageConventions } from "../schema";
 
 // Mock the LLM module so lint never calls the real API
@@ -1642,6 +1642,7 @@ describe("lint dispatches the disputed-page check", () => {
 describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
   const OWNER = "alice";
   const WIKI_MARKER = "Preserve sequence when it matters";
+  const PURPOSE_MARKER = "Build a lasting understanding of long-form reading";
 
   async function seedActiveWiki() {
     process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER; // restored in afterEach
@@ -1674,6 +1675,7 @@ describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
     const systemPrompt = mockedCallLLM.mock.calls[0][0];
     expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
     expect(systemPrompt).toContain(WIKI_MARKER);
+    expect(systemPrompt).toContain(PURPOSE_MARKER);
   });
 
   it("checkMissingConceptPages prompts with the active Wiki's conventions", async () => {
@@ -1696,6 +1698,71 @@ describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
     const systemPrompt = mockedCallLLM.mock.calls[0][0];
     expect(systemPrompt).toContain("conventions (from SCHEMA.md)");
     expect(systemPrompt).toContain(WIKI_MARKER);
+    expect(systemPrompt).toContain(PURPOSE_MARKER);
+  });
+
+  it("checkIncompleteCoverage prompts with the active Wiki's Purpose", async () => {
+    await seedActiveWiki();
+    mockedHasLLMKey.mockResolvedValue(true);
+    mockedCallLLM.mockResolvedValue("[]");
+    await writeWikiPage("active-coverage", "# Active coverage\n\nA short distillation.");
+    await saveRawSource("active-coverage", "# Active coverage\n\nA much fuller source.");
+
+    await checkIncompleteCoverage(["active-coverage"]);
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    expect(mockedCallLLM.mock.calls[0][0]).toContain(PURPOSE_MARKER);
+  });
+
+  it("keeps one Purpose snapshot stable in flight and resolves the next lint fresh", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const wiki = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
+    const firstPurpose = "# Shelf\n\nFirst operation Purpose marker.\n";
+    const nextPurpose = "# Shelf\n\nNext operation Purpose marker.\n";
+    await writeWikiArtifact(OWNER, wiki.id, "purpose.md", firstPurpose);
+    mockedHasLLMKey.mockResolvedValue(true);
+    await writeWikiPage(
+      "cache-a",
+      "# Cache A\n\nShared topic. See [Cache B](cache-b.md).",
+    );
+    await writeWikiPage(
+      "cache-b",
+      "# Cache B\n\nShared topic. See [Cache A](cache-a.md).",
+    );
+    await updateIndex([
+      { slug: "cache-a", title: "Cache A", summary: "Shared topic" },
+      { slug: "cache-b", title: "Cache B", summary: "Shared topic" },
+    ]);
+    await saveRawSource("cache-a", "# Cache A\n\nFull source for the shared topic.");
+
+    let changed = false;
+    mockedCallLLM.mockImplementation(async () => {
+      if (!changed) {
+        changed = true;
+        await writeWikiArtifact(OWNER, wiki.id, "purpose.md", nextPurpose);
+      }
+      return "[]";
+    });
+    await lint({
+      checks: ["contradiction", "missing-concept-page", "incomplete-coverage"],
+    });
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(3);
+    for (const [systemPrompt] of mockedCallLLM.mock.calls) {
+      expect(systemPrompt).toContain("First operation Purpose marker.");
+      expect(systemPrompt).not.toContain("Next operation Purpose marker.");
+    }
+
+    mockedCallLLM.mockClear();
+    mockedCallLLM.mockResolvedValue("[]");
+    await lint({
+      checks: ["contradiction", "missing-concept-page", "incomplete-coverage"],
+    });
+    expect(mockedCallLLM).toHaveBeenCalledTimes(3);
+    for (const [systemPrompt] of mockedCallLLM.mock.calls) {
+      expect(systemPrompt).toContain("Next operation Purpose marker.");
+      expect(systemPrompt).not.toContain("First operation Purpose marker.");
+    }
   });
 
   it("the repo-root SCHEMA.md does NOT carry the marker", async () => {

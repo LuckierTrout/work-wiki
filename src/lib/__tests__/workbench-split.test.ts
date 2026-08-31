@@ -1362,28 +1362,27 @@ describe("the shell wires the split without spelling any of it", () => {
     // Discard hands the held pick through the SAME body the direct path uses, so
     // the two cannot announce different things.
     expect(source).toMatch(
-      /const next = pendingSelection;\s*\n\s*setPendingSelection\(null\);\s*\n\s*if \(next\) applySelection\(next\);/,
+      /const next = pendingSelection;\s*\n\s*const artifact = pendingArtifactNavigation;\s*\n\s*setPendingSelection\(null\);\s*\n\s*setPendingArtifactNavigation\(null\);[\s\S]*if \(next\) applySelection\(next\);/,
     );
     // One dialog implementation, and one wording owner: every sentence comes
     // from `workbench-preview`, none is typed into this JSX.
-    expect(source).toContain("open={pendingSelection !== null}");
+    expect(source).toContain(
+      "open={pendingSelection !== null || pendingArtifactNavigation !== null}",
+    );
     expect(source).toContain("title={PREVIEW_DISCARD_CONFIRM_TITLE}");
     expect(source).toContain("body={PREVIEW_DISCARD_CONFIRM_BODY}");
     expect(source).toContain("confirmLabel={PREVIEW_DISCARD_CONFIRM_LABEL}");
     expect(source).toContain("cancelLabel={PREVIEW_KEEP_EDITING_COPY}");
   });
 
-  it("gates only the tree-selection path on the dirty check", async () => {
-    // The ledger defers the LEAVE paths to whichever story gives the editor a
-    // lifecycle. `previewDirtyRef` reaching `applyMode`, `selectTreeTab`,
-    // `toggleSettings` or `openPage` would put this dialog in front of
-    // navigation it was not designed for — and `openPage` cannot fire at all
-    // while the editor is open, since the editor replaces the body the wikilink
-    // is rendered in.
+  it("gates tree picks and Settings artifact navigation on the dirty check", async () => {
+    // Settings' Purpose/Schema launchers leave the current Preview selection,
+    // so they share the same discard gate as tree picks. Other navigation
+    // remains outside this narrowly scoped guard.
     const source = await component("Workbench.tsx");
     const reads = source.match(/previewDirtyRef\.current/g) ?? [];
-    // Exactly two: the guard's read and the reporter's write.
-    expect(reads.length).toBe(2);
+    // Tree guard, Settings-artifact guard, and the reporter's write.
+    expect(reads.length).toBe(3);
   });
 
   it("spells no width, floor, step or breakpoint of its own", async () => {

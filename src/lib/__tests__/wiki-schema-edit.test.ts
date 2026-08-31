@@ -52,7 +52,6 @@ import {
   isEditableArtifactFile,
   renderSchemaMarkdown,
   scenarioTemplate,
-  type WikiArtifactFile,
 } from "../wiki-scenarios";
 import { listWikiArtifactRevisions } from "../wiki-artifact-revisions";
 import {
@@ -177,21 +176,17 @@ describe("hasPageConventions", () => {
 // ---------------------------------------------------------------------------
 
 describe("EDITABLE_ARTIFACT_FILES", () => {
-  it("is the Schema alone, and a strict subset of the seeded artifacts", () => {
-    expect(EDITABLE_ARTIFACT_FILES).toEqual(["schema.md"]);
+  it("contains the two canonical artifacts and no other seeded files", () => {
+    expect(EDITABLE_ARTIFACT_FILES).toEqual(["purpose.md", "schema.md"]);
     for (const file of EDITABLE_ARTIFACT_FILES) {
       expect(WIKI_ARTIFACT_FILES).toContain(file);
     }
-    // `purpose.md` is deliberately out of scope: it has no runtime reader and
-    // its content overlaps the tenant-global workspace profile, whose
-    // reconciliation this story does not own.
-    expect(EDITABLE_ARTIFACT_FILES).not.toContain("purpose.md");
   });
 
-  it("refuses everything that is not exactly that name", () => {
+  it("refuses everything that is not exactly a canonical artifact name", () => {
     expect(isEditableArtifactFile("schema.md")).toBe(true);
+    expect(isEditableArtifactFile("purpose.md")).toBe(true);
     for (const value of [
-      "purpose.md",
       "wiki/schema.md",
       "schema.MD",
       "../schema.md",
@@ -205,21 +200,9 @@ describe("EDITABLE_ARTIFACT_FILES", () => {
     }
   });
 
-  it("is carried by the writer's own TYPE, not by the route alone", async () => {
-    // The route is not the only thing that can reach `writeWikiArtifact`. If its
-    // parameter were the seeded set, a future caller could write `purpose.md`
-    // through the one writer without ever passing `isEditableArtifactFile` — and
-    // the log line, which names the Schema, would then be a lie.
-    const seededOnly = "purpose.md" as WikiArtifactFile;
-    const refused = () =>
-      // @ts-expect-error — `writeWikiArtifact` takes `EditableArtifactFile`, so
-      // the compiler refuses the wider seeded type. Widening the parameter back
-      // makes this directive unused and `npx tsc --noEmit` fails.
-      writeWikiArtifact(OWNER, "11111111-2222-4333-8444-555555555555", seededOnly, "x");
-    expect(typeof refused).toBe("function");
-
-    // …and the same guarantee pinned where `vitest` can see it, since a suite
-    // that never type-checks would stay green on the widened signature.
+  it("carries the editable artifact subset in the writer's own type", async () => {
+    expect(isEditableArtifactFile("purpose.md")).toBe(true);
+    expect(isEditableArtifactFile("schema.md")).toBe(true);
     const wikis = await fs.readFile(path.resolve(__dirname, "../wikis.ts"), "utf8");
     expect(wikis).toMatch(
       /export async function writeWikiArtifact\(\s*owner: string,\s*wikiId: string,\s*file: EditableArtifactFile,/,
@@ -373,9 +356,10 @@ describe("editing the Schema", () => {
   ): Promise<Response> {
     const { PUT } = await import("@/app/api/workbench/artifact/route");
     const wiki = (await getWikiRegistry(OWNER)).currentId;
+    const target = new URLSearchParams(query.replace(/^\?/, "")).get("path");
     const stored =
-      ifMatch === undefined && wiki
-        ? await readWikiArtifact(OWNER, wiki, "schema.md")
+      ifMatch === undefined && wiki && isEditableArtifactFile(target)
+        ? await readWikiArtifact(OWNER, wiki, target)
         : null;
     const version =
       ifMatch === undefined
@@ -523,6 +507,54 @@ describe("editing the Schema", () => {
     expect(await loadPageConventions()).toContain(
       "Every page names the meeting it came from.",
     );
+  });
+
+  it("saves Purpose with CAS, one revision, one labelled log entry, and one bump", async () => {
+    const wiki = await seed();
+    const before = (await readWikiArtifact(OWNER, wiki.id, "purpose.md")) ?? "";
+    const versionBefore = await readDataVersion();
+    const edited = "# Field notes\n\nCanonical Purpose unique to this owner.\n";
+
+    const response = await put("?path=purpose.md", { content: edited });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      version: scopedContentVersion(wiki.id, edited),
+    });
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toBe(edited);
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+    const revisions = await listWikiArtifactRevisions(OWNER, wiki.id, "purpose.md");
+    expect(revisions).toHaveLength(1);
+    expect((await readLog()) ?? "").toContain("Purpose — purpose.md");
+    expect(before).not.toBe(edited);
+  });
+
+  it("refuses missing and stale Purpose preconditions without a write tail", async () => {
+    const wiki = await seed();
+    const initial = (await readWikiArtifact(OWNER, wiki.id, "purpose.md")) ?? "";
+    const versionBefore = await readDataVersion();
+    const edited = "# Field notes\n\nA Purpose that must not land.\n";
+
+    const missing = await put("?path=purpose.md", { content: edited }, null);
+    expect(missing.status).toBe(428);
+    expect(await missing.json()).toEqual({ error: WRITE_PRECONDITION_REQUIRED_COPY });
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toBe(initial);
+    expect(await readDataVersion()).toBe(versionBefore);
+    expect(await readLog()).toBeNull();
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "purpose.md")).toEqual([]);
+
+    const stale = await put(
+      "?path=purpose.md",
+      { content: edited },
+      scopedContentVersion(wiki.id, `${initial}stale`),
+    );
+    expect(stale.status).toBe(412);
+    expect(await stale.json()).toEqual({ error: WRITE_CONFLICT_COPY });
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toBe(initial);
+    expect(await readDataVersion()).toBe(versionBefore);
+    expect(await readLog()).toBeNull();
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "purpose.md")).toEqual([]);
   });
 
   // -------------------------------------------------------------------------
@@ -931,14 +963,14 @@ describe("editing the Schema", () => {
     expect(await readSchema(wiki)).toBe(edited);
   });
 
-  it("answers ONE identical 400 for every path that is not the editable artifact", async () => {
+  it("answers ONE identical 400 for every path that is not an editable artifact", async () => {
     const wiki = await seed();
     const before = await readDataVersion();
     const seeded = await readSchema(wiki);
 
     const answers = await Promise.all(
       [
-        "?path=purpose.md",
+        "?path=index.md",
         "?path=wiki%2Falpha.md",
         "?path=..%2Fsecrets",
         "",
@@ -1238,24 +1270,20 @@ describe("the two routes", () => {
     // and a `not.toContain("}/wikis/")` guard sails straight past it. The
     // negative lookahead spares `wikiRegistryPath`'s `…}/wikis.json`, which
     // addresses the registry file rather than the artifact tree.
-    // The profile is a sibling of the artifacts: same directory, ONE helper —
-    // and now a NAMED one, because two modules need the full address rather
-    // than just the directory. `workspace-profile.ts` reads and writes the
-    // file; `wikis.ts` snapshots and restores it when a re-template fails
-    // (DW-143). A second literal is how a restore silently starts putting back
-    // a file nothing ever wrote.
+    // The preserved legacy profile is a sibling of the artifacts and has one
+    // named path helper. Re-template no longer snapshots or writes it: once
+    // canonical artifacts are authoritative, these bytes are evidence only.
     expect(paths).toContain("/workspace-profile.json`");
     for (const name of ["wikis.ts", "workspace-profile.ts"]) {
       const source = code(
         await fs.readFile(path.resolve(__dirname, `../${name}`), "utf8"),
       );
       expect(source).not.toMatch(/\}\/wikis(?!\.)/);
-      // …and BOTH modules reach the file through the promoted helper. `wikis.ts`
-      // is the module the promotion exists FOR: its snapshot and its restore
-      // have to address the same bytes `putWorkspaceProfile` writes, or a
-      // failed re-template puts a file back that nothing ever read. Matched as
-      // a SHAPE, so renaming the parameters is not a failure.
-      expect(source).toMatch(/wikiProfilePath\(\s*\w+\s*,\s*\w+\s*\)/);
+      if (name === "workspace-profile.ts") {
+        expect(source).toMatch(/wikiProfilePath\(\s*\w+\s*,\s*\w+\s*\)/);
+      } else {
+        expect(source).not.toMatch(/wikiProfilePath\(\s*\w+\s*,\s*\w+\s*\)/);
+      }
       // The per-Wiki profile address is not re-derived either — and the guard
       // is on the FILENAME rather than on one spelling of the interpolation,
       // because the realistic drift is a two-step derivation or a differently

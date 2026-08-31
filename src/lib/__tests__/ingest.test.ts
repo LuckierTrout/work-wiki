@@ -3885,9 +3885,8 @@ describe("mergeSourceEntry URL normalization", () => {
 import { createGuidanceCache } from "../guidance-cache";
 import { _resetLocks } from "../lock";
 import { createNamesTerm } from "../names-terms";
-import { wikiProfilePath } from "../wiki-paths";
-import { createWiki } from "../wikis";
-import { saveWorkspaceProfile } from "../workspace-profile";
+import { wikiArtifactPath } from "../wiki-paths";
+import { createWiki, writeWikiArtifact } from "../wikis";
 
 describe("ingest resolves workspace guidance once per document", () => {
   const OWNER = "alice";
@@ -3913,7 +3912,7 @@ describe("ingest resolves workspace guidance once per document", () => {
 
   beforeEach(async () => {
     // The outer `beforeEach` already made `tmpDir` and pointed WIKI_DIR/RAW_DIR
-    // at it; add DATA_DIR so the wiki registry and profile are real bytes too.
+    // at it; add DATA_DIR so the wiki registry and artifacts are real bytes too.
     originalDataDir = process.env.DATA_DIR;
     process.env.DATA_DIR = tmpDir;
     _resetLocks();
@@ -3923,15 +3922,12 @@ describe("ingest resolves workspace guidance once per document", () => {
 
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     wikiId = wiki.id;
-    await saveWorkspaceProfile(OWNER, wiki.id, {
-      scenario: "custom",
-      purpose: PURPOSE,
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
+    await writeWikiArtifact(
+      OWNER,
+      wiki.id,
+      "purpose.md",
+      `# Ops\n\n${PURPOSE}\n`,
+    );
 
     mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue(
@@ -3974,9 +3970,9 @@ describe("ingest resolves workspace guidance once per document", () => {
     return mockedCallLLM.mock.calls.map((call) => String(call[0]));
   }
 
-  it("reads the active wiki's profile once across synthesis and map/reduce", async () => {
+  it("reads the active wiki's Purpose once across synthesis and map/reduce", async () => {
     // Two guidance calls today: `buildIngestSystemPrompt` and the REDUCE step.
-    // One cache handle per `ingest()` collapses them to a single profile read,
+    // One cache handle per `ingest()` collapses them to a single artifact read,
     // and the Purpose must still reach the prompt that goes to the model.
     const reads = countReads();
 
@@ -3987,7 +3983,7 @@ describe("ingest resolves workspace guidance once per document", () => {
 
     // More than one LLM call ⇒ the map/reduce branch really ran.
     expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
-    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
     expect(systemPrompts().some((prompt) => prompt.includes(PURPOSE))).toBe(true);
   });
 
@@ -4016,7 +4012,7 @@ describe("ingest resolves workspace guidance once per document", () => {
     // More than one LLM call ⇒ the map/reduce branch really ran.
     expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
     expect(reads(DICTIONARY_PATH)).toBe(1);
-    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
     const prompts = systemPrompts();
     expect(prompts.some((prompt) => prompt.includes("WORKSPACE NAMES & TERMS")))
       .toBe(true);
@@ -4052,7 +4048,7 @@ describe("ingest resolves workspace guidance once per document", () => {
     });
 
     expect(reads(DICTIONARY_PATH)).toBe(1);
-    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
     // The guidance still reached the model on both documents.
     const prompts = systemPrompts();
     expect(prompts.some((prompt) => prompt.includes("WORKSPACE NAMES & TERMS")))
@@ -4109,7 +4105,7 @@ describe("ingest resolves workspace guidance once per document", () => {
         prompt.includes("You are a wiki editor maintaining a single canonical page"),
       ),
     ).toBe(true);
-    expect(reads(wikiProfilePath(OWNER, wikiId))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
     expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(true);
   });
 
@@ -4120,15 +4116,12 @@ describe("ingest resolves workspace guidance once per document", () => {
       owner: OWNER,
     });
 
-    await saveWorkspaceProfile(OWNER, wikiId, {
-      scenario: "custom",
-      purpose: "Track the Phoenix reading shelf.",
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
+    await writeWikiArtifact(
+      OWNER,
+      wikiId,
+      "purpose.md",
+      "# Ops\n\nTrack the Phoenix reading shelf.\n",
+    );
     mockedCallLLM.mockClear();
 
     await ingest("Lighthouse Two", `${LONG_CONTENT} Different tail.`, {

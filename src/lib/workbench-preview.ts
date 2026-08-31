@@ -920,26 +920,6 @@ export const PREVIEW_HISTORY_REVERT_CONFIRM_LABEL = "Restore this version";
 export const PREVIEW_HISTORY_REVERTED_COPY = "Schema restored to an earlier version";
 
 /**
- * Why Revert refuses on a read-only deployment (DW-149).
- *
- * DELIBERATELY NARROWER THAN THE SERVER'S SENTENCE, the same divergence
- * `REVERT_READ_ONLY_COPY` records for pages. `POST
- * /api/workbench/artifact/revisions` refuses with
- * `READ_ONLY_REFUSAL.artifactEdit` — "The Schema cannot be edited…" — which is
- * the honest sentence for a door that also carries the editor's save, and a
- * confusing one beside a control labelled Revert over a version the owner did
- * not type. So the surface says what they were about to do; the server keeps the
- * sentence that is true of every caller, and
- * `read-only-copy-parity.test.ts` records the difference rather than leaving it
- * to be found as a bug.
- *
- * Duplicated rather than imported for the reason every client refusal constant
- * is: `read-only.ts` pulls `./config` and `process.env` into the bundle with it.
- */
-export const PREVIEW_HISTORY_READ_ONLY_COPY =
-  "The Schema cannot be reverted to an earlier version while this deployment is read-only.";
-
-/**
  * One entry's line: when it was recorded, how big it is, who by and why.
  *
  * A function rather than a template in the list's `map`, so the ORDER and the

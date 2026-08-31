@@ -17,7 +17,9 @@ import { tenantForOwner } from "../wiki";
 import {
   applyScenarioTemplate,
   createWiki,
+  readWikiArtifact,
   setCurrentWiki,
+  writeWikiArtifact,
   wikiRegistryPath,
 } from "../wikis";
 import { withWikiLock } from "../wiki-lock";
@@ -114,7 +116,7 @@ describe("workspace purpose profile", () => {
     expect(await getWorkspaceProfile(OWNER, wiki.id)).toEqual(emptyWorkspaceProfile());
   });
 
-  it("lets a re-template overwrite a corrupt own profile (DW-144)", async () => {
+  it("leaves corrupt legacy profile evidence untouched during re-template", async () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const perWiki = abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json");
     await fs.writeFile(perWiki, "{ not json");
@@ -123,12 +125,10 @@ describe("workspace purpose profile", () => {
       applyScenarioTemplate(OWNER, wiki.id, "reading"),
     ).resolves.toBeTruthy();
 
-    const repaired = await getWorkspaceProfile(OWNER, wiki.id);
-    expect(repaired.scenario).toBe("reading");
-    expect(repaired.purpose).toBe(WORKSPACE_SCENARIO_TEMPLATES.reading.purpose);
-    // `createdAt` was unknowable, so it is stamped fresh rather than left null.
-    expect(repaired.createdAt).toBeTruthy();
-    expect(Date.parse(repaired.createdAt!)).toBeGreaterThan(Date.parse("2024-01-01"));
+    expect(await fs.readFile(perWiki, "utf8")).toBe("{ not json");
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain(
+      WORKSPACE_SCENARIO_TEMPLATES.reading.purpose,
+    );
   });
 
   it("lets a Settings save overwrite a corrupt own profile (DW-144)", async () => {
@@ -477,27 +477,21 @@ describe("guidance follows the active wiki", () => {
     expect(await buildWorkspaceGuidance(OWNER)).toBe("");
   });
 
-  it("swaps which profile reaches the prompt when the pointer moves", async () => {
+  it("swaps which canonical Purpose reaches the prompt when the pointer moves", async () => {
     const first = await createWiki(OWNER, { name: "One", scenario: "business" });
     const second = await createWiki(OWNER, { name: "Two", scenario: "reading" });
-    await saveWorkspaceProfile(OWNER, first.id, {
-      scenario: "custom",
-      purpose: "Track Project Lighthouse decisions.",
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
-    await saveWorkspaceProfile(OWNER, second.id, {
-      scenario: "custom",
-      purpose: "Track the Phoenix reading shelf.",
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
+    await writeWikiArtifact(
+      OWNER,
+      first.id,
+      "purpose.md",
+      "# One\n\nTrack Project Lighthouse decisions.\n",
+    );
+    await writeWikiArtifact(
+      OWNER,
+      second.id,
+      "purpose.md",
+      "# Two\n\nTrack the Phoenix reading shelf.\n",
+    );
 
     expect(await buildWorkspaceGuidance(OWNER)).toContain("Phoenix reading shelf");
 
@@ -548,17 +542,14 @@ describe("guidance follows the active wiki", () => {
     );
   });
 
-  it("injects the active wiki's saved purpose into ingest and query prompts", async () => {
+  it("injects the active wiki's Purpose artifact into ingest and query prompts", async () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    await saveWorkspaceProfile(OWNER, wiki.id, {
-      scenario: "business",
-      purpose: "Keep a source-backed record of Project Lighthouse decisions.",
-      keyQuestions: ["What was approved?"],
-      inScope: ["Decisions"],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "Preserve named owners.",
-    });
+    await writeWikiArtifact(
+      OWNER,
+      wiki.id,
+      "purpose.md",
+      "# Ops\n\nKeep a source-backed record of Project Lighthouse decisions.\n",
+    );
 
     expect(await buildWorkspaceGuidance(OWNER)).toContain("Project Lighthouse");
     expect(await buildIngestSystemPrompt(OWNER)).toContain("Project Lighthouse");

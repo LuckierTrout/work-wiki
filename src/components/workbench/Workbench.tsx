@@ -1018,6 +1018,14 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // same target preserves the mounted editor and its draft.
     applySurface("wiki", false);
     pushSurface("wiki", false);
+    if (treeTab !== "files") {
+      // The layout reset effect clears selections whenever the visible tree
+      // changes. This navigation intentionally changes the tab and installs a
+      // row in the same transaction, so arm the same one-commit exemption the
+      // mount restore uses; otherwise the Files commit immediately erases the
+      // Purpose/Schema selection it just received.
+      restoreSignatureRef.current = layoutSignature("wiki", currentWikiId, "files");
+    }
     setTreeTab("files");
     writeStoredTreeTab("files");
     ownerPickedRef.current = true;
@@ -1027,7 +1035,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       setSelection(next);
     }
     bumpCanvasFocus();
-  }, [announce, applySurface, bumpCanvasFocus, pushSurface]);
+  }, [announce, applySurface, bumpCanvasFocus, currentWikiId, pushSurface, treeTab]);
 
   const openSettingsArtifact = useCallback((file: EditableArtifactFile) => {
     const next: TreeSelection = { kind: "file", path: file };

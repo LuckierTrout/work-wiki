@@ -38,7 +38,7 @@ export async function GET() {
 }
 
 /** Structured profile writes are retired; Purpose has one Markdown writer. */
-export async function PUT() {
+export async function PUT(_request: Request) {
   const principal = await getPrincipal();
   if (!principal) {
     return NextResponse.json({ error: "Sign in required." }, { status: 401 });

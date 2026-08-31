@@ -2,17 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../wikis", () => ({
   getWikiRegistry: vi.fn(),
-  readWikiArtifact: vi.fn(),
-}));
-vi.mock("../workspace-profile", () => ({
-  getWorkspaceProfile: vi.fn(),
+  readEffectiveWikiArtifact: vi.fn(),
 }));
 vi.mock("../wiki", () => ({
   readWikiPage: vi.fn(),
 }));
 
-import { getWikiRegistry, readWikiArtifact } from "../wikis";
-import { getWorkspaceProfile } from "../workspace-profile";
+import { getWikiRegistry, readEffectiveWikiArtifact } from "../wikis";
 import { readWikiPage } from "../wiki";
 import {
   RESEARCH_PREFILL_LIMIT,
@@ -24,8 +20,7 @@ import {
 } from "../research-prefill";
 
 const mockedRegistry = vi.mocked(getWikiRegistry);
-const mockedArtifact = vi.mocked(readWikiArtifact);
-const mockedProfile = vi.mocked(getWorkspaceProfile);
+const mockedArtifact = vi.mocked(readEffectiveWikiArtifact);
 const mockedRead = vi.mocked(readWikiPage);
 
 describe("buildResearchPrefill", () => {
@@ -35,10 +30,6 @@ describe("buildResearchPrefill", () => {
     mockedArtifact.mockResolvedValue(
       "# Purpose\n\nThis wiki exists to track hiring decisions for the current search.",
     );
-    mockedProfile.mockResolvedValue({
-      purpose: "Hire a staff engineer.",
-      keyQuestions: ["What is the bar?"],
-    } as never);
     mockedRead.mockImplementation(async (slug: string) => {
       if (slug === "overview") {
         return {
@@ -60,46 +51,40 @@ describe("buildResearchPrefill", () => {
     });
   });
 
-  it("reads the current Wiki Purpose and profile instead of a leftover purpose page", async () => {
+  it("reads the current Wiki's effective canonical Purpose", async () => {
     const prefill = await buildResearchPrefill(["isolated"], "Fallback", "alice");
     expect(mockedRegistry).toHaveBeenCalledWith("alice");
     expect(mockedArtifact).toHaveBeenCalledWith("alice", "wiki-1", "purpose.md");
     expect(prefill.queries[0]).toContain("hiring decisions");
-    expect(prefill.queries).toEqual(
-      expect.arrayContaining([
-        "Hire a staff engineer.",
-        "What is the bar?",
-        "The overview of this workspace is long enough to prefill.",
-        "This Insight page explains a gap that needs specific research.",
-      ]),
-    );
+    expect(prefill.queries).toEqual(expect.arrayContaining([
+      "The overview of this workspace is long enough to prefill.",
+      "This Insight page explains a gap that needs specific research.",
+    ]));
     expect(RESEARCH_PREFILL_LIMIT).toBe(12);
   });
 
-  it("preserves the available Purpose source when its paired read fails", async () => {
+  it("omits Purpose when its single canonical read fails", async () => {
     mockedArtifact.mockRejectedValue(new Error("artifact unavailable"));
     const context = await loadResearchPrefillContext("alice");
-    expect(context.purposeQueries).toEqual(["Hire a staff engineer.", "What is the bar?"]);
+    expect(context.purposeQueries).toEqual([]);
 
     mockedArtifact.mockResolvedValue(
-      "# Purpose\n\nThe artifact purpose remains available if the profile read fails.",
+      "# Purpose\n\nThe canonical artifact purpose remains available.",
     );
-    mockedProfile.mockRejectedValue(new Error("profile unavailable"));
     const artifactContext = await loadResearchPrefillContext("alice");
     expect(artifactContext.purposeQueries).toEqual([
-      "The artifact purpose remains available if the profile read fails.",
+      "The canonical artifact purpose remains available.",
     ]);
   });
 
   it("reserves Overview and Insight-page context before Purpose extras", async () => {
-    mockedProfile.mockResolvedValue({
-      purpose: "Purpose one is long enough to occupy a research query slot.",
-      keyQuestions: Array.from({ length: 12 }, (_, index) => `Purpose question ${index} is long enough.`),
-    } as never);
+    mockedArtifact.mockResolvedValue(
+      "# Purpose\n\nPurpose one is long enough to occupy a research query slot.",
+    );
     const prefill = await buildResearchPrefill(["isolated"], "Fallback", "alice");
     expect(prefill.queries).toContain("The overview of this workspace is long enough to prefill.");
     expect(prefill.queries).toContain("This Insight page explains a gap that needs specific research.");
-    expect(prefill.queries).toHaveLength(8);
+    expect(prefill.queries).toHaveLength(3);
   });
 
   it("prefills from the current Wiki, not a sibling Wiki's Purpose", async () => {
@@ -109,17 +94,10 @@ describe("buildResearchPrefill", () => {
         ? "# Purpose\n\nWiki B purpose sentence is long enough to prefill."
         : "# Purpose\n\nWiki A purpose sentence is long enough to prefill.",
     );
-    mockedProfile.mockResolvedValue({
-      purpose: "Wiki B profile purpose.",
-      keyQuestions: ["What does Wiki B need?"],
-    } as never);
     const prefill = await buildResearchPrefill(["isolated"], "Fallback", "alice");
     expect(mockedArtifact).toHaveBeenCalledWith("alice", "wiki-b", "purpose.md");
     expect(prefill.queries[0]).toContain("Wiki B purpose");
     expect(prefill.queries.join("\n")).not.toContain("Wiki A purpose");
-    expect(prefill.queries).toEqual(
-      expect.arrayContaining(["Wiki B profile purpose.", "What does Wiki B need?"]),
-    );
   });
 
   it("deduplicates and bounds request-local Insight Page reads", async () => {

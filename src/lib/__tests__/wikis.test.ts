@@ -19,7 +19,7 @@ import { _resetStorage, getStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
 import { wikiDirPath, wikiLockKey } from "../wiki-paths";
 import { buildWorkspaceGuidance } from "../workspace-guidance";
-import { getWorkspaceProfile, saveWorkspaceProfile } from "../workspace-profile";
+import { getWorkspaceProfile } from "../workspace-profile";
 import { WORKSPACE_SCENARIO_TEMPLATES } from "../workspace-profile-schema";
 import {
   MAX_WIKIS,
@@ -42,6 +42,7 @@ import {
   sweepOrphanWikiDirectories,
   wikiArtifactPath,
   wikiRegistryPath,
+  writeWikiArtifact,
   type WikiRecord,
 } from "../wikis";
 
@@ -639,10 +640,11 @@ describe("create, re-template and rename move the refresh signal (DW-49, DW-57, 
 });
 
 describe("applying a different scenario template", () => {
-  it("rewrites purpose, Schema and the profile while leaving Pages and Sources byte-identical", async () => {
+  it("rewrites Purpose and Schema while preserving profile evidence, Pages and Sources", async () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const businessPurpose = await readWikiArtifact(OWNER, wiki.id, "purpose.md");
     const businessSchema = await readWikiArtifact(OWNER, wiki.id, "schema.md");
+    const profileBefore = await profileBytes(wiki.id);
 
     // Pre-seed the two trees this operation must never touch.
     await fs.mkdir(abs("tenants", TENANT, "wiki"), { recursive: true });
@@ -658,7 +660,8 @@ describe("applying a different scenario template", () => {
     expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
       "## Page conventions",
     );
-    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("reading");
+    expect(await profileBytes(wiki.id)).toBe(profileBefore);
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
 
     expect(
       await fs.readFile(abs("tenants", TENANT, "wiki", "existing-page.md"), "utf8"),
@@ -698,32 +701,34 @@ describe("the active wiki pointer", () => {
     expect((await getCurrentWiki(OWNER))?.id).toBe(first.id);
   });
 
-  it("writes only wikis.json — a switch overwrites no profile (DW-21)", async () => {
-    // The switch used to re-seed a tenant-global profile from the newly active
-    // wiki's template, so an unguarded <select> silently discarded whatever the
-    // owner had authored in Settings. The profile is per-wiki now: moving the
-    // pointer swaps which one is live and rewrites nothing.
+  it("writes only wikis.json — a switch overwrites no Purpose or profile (DW-21)", async () => {
     const business = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const reading = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
 
-    // Hand-author the business wiki's purpose, the way Settings would.
-    await saveWorkspaceProfile(OWNER, business.id, {
-      scenario: "custom",
-      purpose: "Hand-authored: the Phoenix decision record.",
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
+    await writeWikiArtifact(
+      OWNER,
+      business.id,
+      "purpose.md",
+      "# Ops\n\nHand-authored: the Phoenix decision record.\n",
+    );
     const before = await Promise.all(
-      [business.id, reading.id].map((id) => profileBytes(id)),
+      [business.id, reading.id].map(async (id) => ({
+        profile: await profileBytes(id),
+        purpose: await readWikiArtifact(OWNER, id, "purpose.md"),
+      })),
     );
     const registryBefore = await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8");
 
     await setCurrentWiki(OWNER, business.id);
 
-    expect(await Promise.all([business.id, reading.id].map(profileBytes))).toEqual(before);
+    expect(
+      await Promise.all(
+        [business.id, reading.id].map(async (id) => ({
+          profile: await profileBytes(id),
+          purpose: await readWikiArtifact(OWNER, id, "purpose.md"),
+        })),
+      ),
+    ).toEqual(before);
     expect(await fs.readFile(abs(wikiRegistryPath(OWNER)), "utf8")).not.toBe(
       registryBefore,
     );
@@ -736,33 +741,31 @@ describe("the active wiki pointer", () => {
 
   it("keeps a hand-authored purpose when another wiki is created or re-templated (DW-14)", async () => {
     const first = await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    await saveWorkspaceProfile(OWNER, first.id, {
-      scenario: "custom",
-      purpose: "Hand-authored: the Phoenix decision record.",
-      keyQuestions: ["Who signed off?"],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
-    const authored = await profileBytes(first.id);
+    await writeWikiArtifact(
+      OWNER,
+      first.id,
+      "purpose.md",
+      "# Ops\n\nHand-authored: the Phoenix decision record.\n",
+    );
+    const authored = await readWikiArtifact(OWNER, first.id, "purpose.md");
 
     const second = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
-    expect(await profileBytes(first.id)).toBe(authored);
+    expect(await readWikiArtifact(OWNER, first.id, "purpose.md")).toBe(authored);
     expect((await getWorkspaceProfile(OWNER, second.id)).scenario).toBe("reading");
 
     await applyScenarioTemplate(OWNER, second.id, "research");
-    expect(await profileBytes(first.id)).toBe(authored);
-    expect((await getWorkspaceProfile(OWNER, second.id)).scenario).toBe("research");
+    expect(await readWikiArtifact(OWNER, first.id, "purpose.md")).toBe(authored);
+    expect((await getWorkspaceProfile(OWNER, second.id)).scenario).toBe("reading");
+    expect(await readWikiArtifact(OWNER, second.id, "purpose.md")).toContain(
+      "Scenario Template: Research",
+    );
 
     // And it is still what Settings would show once that wiki is active again.
     await setCurrentWiki(OWNER, first.id);
-    expect((await getWorkspaceProfile(OWNER, first.id)).purpose).toContain(
-      "Hand-authored",
-    );
+    expect(await buildWorkspaceGuidance(OWNER)).toContain("Hand-authored");
   });
 
-  it("makes a Settings save wait on the Wiki lock, not a second key (DW-22)", async () => {
+  it("makes a Purpose save wait on the Wiki lock, not a second key (DW-22)", async () => {
     // THE DISCRIMINATOR. Firing the two operations concurrently proves nothing:
     // they enqueue synchronously in call order, and neither one tears a single
     // `writeFile`, so that shape passes under the OLD two-key arrangement too.
@@ -778,15 +781,12 @@ describe("the active wiki pointer", () => {
     const gate = withFileLock(wikiLockKey(OWNER), () => held);
 
     let saved = false;
-    const save = saveWorkspaceProfile(OWNER, wiki.id, {
-      scenario: "custom",
-      purpose: "Settings save racing the re-template.",
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    }).then(() => {
+    const save = writeWikiArtifact(
+      OWNER,
+      wiki.id,
+      "purpose.md",
+      "# Ops\n\nPurpose save racing the re-template.\n",
+    ).then(() => {
       saved = true;
     });
     let retemplated = false;
@@ -804,18 +804,15 @@ describe("the active wiki pointer", () => {
 
     // And each file is wholly ONE writer's bytes — never a blend. The save
     // queued first, so the re-template's template bytes are what landed last.
-    const profile = await getWorkspaceProfile(OWNER, wiki.id);
-    expect(profile.scenario).toBe("reading");
-    expect(profile.purpose).toBe(WORKSPACE_SCENARIO_TEMPLATES.reading.purpose);
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain(
+      WORKSPACE_SCENARIO_TEMPLATES.reading.purpose,
+    );
     expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toContain(
       "### Scenario conventions — Reading",
     );
-    // Deliberately NOT asserted: that the profile's `scenario` and `schema.md`
-    // name the same template. Within one wiki they can still diverge — a
-    // Settings save sets `scenario: "custom"` and rewrites no artifact — and
-    // reconciling the two representations is Story 1.8's, explicitly out of
-    // scope here. What DW-22 buys is that they cannot come from two different
-    // wikis, and that neither file is ever half-written by the other operation.
+    // The profile is intentionally non-live evidence; the two canonical files
+    // are wholly from the later template operation, never a blend.
   });
 
   it("takes no `workspace-profile:` lock key anywhere in src (DW-22)", async () => {
@@ -2811,10 +2808,9 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
   for (const suffix of [
     "purpose.md",
     "schema.md",
-    "workspace-profile.json",
     "wikis.json",
   ]) {
-    it(`restores all three files when a re-template faults on ${suffix}`, async () => {
+    it(`restores canonical files and preserves profile evidence when a re-template faults on ${suffix}`, async () => {
       // A bystander wiki (created FIRST, so the target stays current) and the
       // two tenant-wide trees are the blast-radius controls: this is the first
       // code on the seed path that DELETES files, and the compensation must
@@ -3509,10 +3505,10 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
 
   it("re-throws the registry error, not the restore error, when the restore also fails", async () => {
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
-    await fs.rm(path.join(wikiDir(wiki.id), "workspace-profile.json"));
+    await fs.rm(path.join(wikiDir(wiki.id), "purpose.md"));
 
     const write = failWritesTo("wikis.json", "the registry store is unavailable");
-    // The profile's undo is a delete, so this is the restore step failing with
+    // The absent Purpose's undo is a delete, so this is the restore step failing with
     // something other than the ENOENT the restore already tolerates.
     const remove = vi
       .spyOn(getStorage(), "deleteFile")

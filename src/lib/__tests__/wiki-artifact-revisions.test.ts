@@ -35,6 +35,7 @@ import {
 } from "../schema-source";
 import { _resetStorage, getStorage } from "../storage";
 import { readLog } from "../wiki-log";
+import { buildWorkspaceGuidance } from "../workspace-guidance";
 import {
   MAX_ARTIFACT_REVISIONS,
   listWikiArtifactRevisions,
@@ -560,15 +561,14 @@ describe("per-Wiki artifact revisions", () => {
     expect(await readSchema(wiki)).toBe(FIRST_EDIT);
   });
 
-  it("records only schema.md — purpose.md has no surface to reach a revision through", async () => {
+  it("records both canonical artifacts before re-template replaces them", async () => {
     const wiki = await seed();
     await applyScenarioTemplate(OWNER, wiki.id, "reading");
 
-    // `EDITABLE_ARTIFACT_FILES` is the set the revisions route can list and
-    // revert; a `purpose.md` revision would be bytes nothing can open.
     await expect(
       fs.stat(path.join(tmpDir, wikiArtifactRevisionsDir(OWNER, wiki.id, "purpose.md"))),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+    ).resolves.toBeTruthy();
+    expect(await listWikiArtifactRevisions(OWNER, wiki.id, "purpose.md")).toHaveLength(1);
     expect(await listWikiArtifactRevisions(OWNER, wiki.id, "schema.md")).toHaveLength(1);
   });
 
@@ -748,10 +748,10 @@ describe("per-Wiki artifact revisions", () => {
     ).toBe(400);
   });
 
-  it("GET refuses any path that is not the editable artifact, with ONE body", async () => {
+  it("GET refuses any path that is not an editable artifact, with ONE body", async () => {
     await seed();
     const bodies = new Set<string>();
-    for (const query of ["path=purpose.md", "path=wiki/alpha.md", "path=../secrets", ""]) {
+    for (const query of ["path=index.md", "path=wiki/alpha.md", "path=../secrets", ""]) {
       const res = await get(query);
       expect(res.status).toBe(400);
       bodies.add(JSON.stringify(await res.json()));
@@ -776,13 +776,13 @@ describe("per-Wiki artifact revisions", () => {
     await seed();
     const { PUT } = await import("@/app/api/workbench/artifact/route");
     const parent = await PUT(
-      new Request("http://localhost/api/workbench/artifact?path=purpose.md", {
+      new Request("http://localhost/api/workbench/artifact?path=index.md", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: "anything" }),
       }),
     );
-    const child = await get("path=purpose.md");
+    const child = await get("path=index.md");
 
     // The docblock claims this route carries the parent's `NOT_EDITABLE` copy
     // "unchanged", and the two are independent literals in two files — so
@@ -897,6 +897,35 @@ describe("per-Wiki artifact revisions", () => {
     expect(await readDataVersion()).toBe(before + 1);
   });
 
+  it("reverts Purpose and makes the restored text the next operation's guidance", async () => {
+    const wiki = await seed();
+    const seeded = (await readWikiArtifact(OWNER, wiki.id, "purpose.md")) ?? "";
+    const edited = "# Field notes\n\nA unique canonical Purpose edit.\n";
+    await writeWikiArtifact(OWNER, wiki.id, "purpose.md", edited);
+    expect(await buildWorkspaceGuidance(OWNER)).toContain("A unique canonical Purpose edit.");
+    const [seedRevision] = await listWikiArtifactRevisions(OWNER, wiki.id, "purpose.md");
+    const before = await readDataVersion();
+
+    const res = await post("path=purpose.md", {
+      action: "revert",
+      timestamp: seedRevision.timestamp,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      version: scopedContentVersion(wiki.id, seeded),
+    });
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toBe(seeded);
+    expect(await buildWorkspaceGuidance(OWNER)).toContain(seeded.trim());
+    expect(await buildWorkspaceGuidance(OWNER)).not.toContain("A unique canonical Purpose edit.");
+    const after = await listWikiArtifactRevisions(OWNER, wiki.id, "purpose.md");
+    expect(after).toHaveLength(2);
+    expect(await readWikiArtifactRevision(OWNER, wiki.id, "purpose.md", after[0].timestamp)).toBe(edited);
+    expect(after[0].reason).toContain("reverted to revision");
+    expect(await readDataVersion()).toBe(before + 1);
+  });
+
   it("refuses a revert to a conventions-less revision, writing nothing", async () => {
     const wiki = await seed();
     // A snapshot taken before the guard existed: no `## Page conventions`.
@@ -947,7 +976,7 @@ describe("per-Wiki artifact revisions", () => {
     expect((await post("path=schema.md", { action: "revert" })).status).toBe(400);
     expect((await post("path=schema.md", { action: "revert", timestamp: "1" })).status).toBe(400);
     expect((await post("path=schema.md", { action: "revert", timestamp: 1 })).status).toBe(404);
-    expect((await post("path=purpose.md", { action: "revert", timestamp: 1 })).status).toBe(400);
+    expect((await post("path=purpose.md", { action: "revert", timestamp: 1 })).status).toBe(404);
   });
 
   it("answers a revert whose artifact write rejects with 500, and moves nothing", async () => {

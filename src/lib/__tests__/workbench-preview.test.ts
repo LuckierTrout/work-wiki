@@ -47,7 +47,6 @@ import {
   PREVIEW_FAILED_COPY,
   PREVIEW_HISTORY_EMPTY_COPY,
   PREVIEW_HISTORY_FAILED_COPY,
-  PREVIEW_HISTORY_READ_ONLY_COPY,
   PREVIEW_HISTORY_REVERTED_COPY,
   PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE,
   PREVIEW_HISTORY_REVERT_ACTION,
@@ -58,6 +57,7 @@ import {
   PREVIEW_REMOVED_COPY,
   PREVIEW_RETRY_COPY,
   PREVIEW_RETRYING_COPY,
+  previewArtifactHistoryCopy,
   PREVIEW_ROUTE,
   PREVIEW_SAVE_ACTION,
   PREVIEW_SAVE_FAILED_COPY,
@@ -578,12 +578,13 @@ describe("canEditPreview", () => {
     // prefix over an executable Schema is the same mistake as over a page.
     expect(canEditPreview(showing({ ...schema, editable: false }))).toBe(false);
     expect(canEditPreview(showing({ ...schema, truncated: true }))).toBe(false);
-    // The allowlist is the gate, not "any string in `artifact`".
+    // Purpose shares the same one editor; the allowlist still gates arbitrary
+    // strings rather than treating every artifact-looking value as writable.
     expect(
       canEditPreview(
         showing({ ...base, artifact: "purpose.md" } as unknown as PreviewPayload),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("refuses everything a 404 replaced, however editable the kept payload is", () => {
@@ -798,6 +799,7 @@ describe("previewWriteTarget", () => {
       previewWriteTarget({ ...base, artifact: "schema.md" } as PreviewPayload),
     ).toEqual({
       kind: "artifact",
+      file: "schema.md",
       key: "artifact:schema.md",
       url: "/api/workbench/artifact?path=schema.md",
     });
@@ -1838,9 +1840,7 @@ describe("GET /api/workbench/preview", () => {
         path: "purpose.md",
         format: "markdown",
         body: "# Purpose\n\nwhy this Wiki exists\n",
-        // Schema editing is Story 1.8: an artifact has no write path through
-        // `/api/wiki/[slug]`, so it is readable and nothing more.
-        editable: false,
+        editable: true,
       });
       // The other seeded artifact was never written, and a missing artifact is
       // the same 404 as one outside the caller's reach.
@@ -1851,7 +1851,7 @@ describe("GET /api/workbench/preview", () => {
     }
   });
 
-  it("offers schema.md for editing and keeps purpose.md read-only", async () => {
+  it("offers both canonical artifacts through the same editor", async () => {
     // Story 1.8. The SERVER decides what may be written: the column only asks.
     // Both artifacts resolve through the same `currentId`, so the pair proves
     // the allowlist rather than the presence of a Wiki.
@@ -1907,14 +1907,13 @@ describe("GET /api/workbench/preview", () => {
       expect(schema.version).not.toBe(contentVersion(schemaBytes));
 
       const purpose = await (await get("kind=file&path=purpose.md")).json();
-      expect(purpose).toMatchObject({ format: "markdown", editable: false });
-      expect(purpose.artifact).toBeUndefined();
+      expect(purpose).toMatchObject({
+        format: "markdown",
+        artifact: "purpose.md",
+        editable: true,
+      });
       expect(purpose.slug).toBeUndefined();
-      // Everything that is NOT the editable artifact keeps the unscoped
-      // version, which is what `PUT /api/wiki/[slug]` compares. `purpose.md`
-      // has no write path at all, so nothing compares its version and it is
-      // versioned like the tenant-global files it sits beside.
-      expect(purpose.version).toBe(contentVersion("# Purpose\n"));
+      expect(purpose.version).toBe(scopedContentVersion(WIKI_ID, "# Purpose\n"));
 
       // An artifact is WHOLE-FILE: the write route stores `content` verbatim and
       // owns no frontmatter for it, so a leading `---` block must survive the
@@ -3409,7 +3408,7 @@ describe("the History panel's copy", () => {
       PREVIEW_HISTORY_FAILED_COPY,
       PREVIEW_HISTORY_VIEW_FAILED_COPY,
       PREVIEW_HISTORY_REVERT_FAILED_COPY,
-      PREVIEW_HISTORY_READ_ONLY_COPY,
+      previewArtifactHistoryCopy("schema.md").readOnly,
     ]) {
       expect(sentence).toMatch(/^[A-Z].*\.$/);
     }

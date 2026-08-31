@@ -601,14 +601,13 @@ describe("the conflict sentence has exactly one owner", () => {
   });
 
   it("is reached only through this module, on every write route", async () => {
-    // THE THREE ROUTES THAT READ THEIR OWN MERGE BASE run the whole guard in
+    // THE TWO ROUTES THAT READ THEIR OWN MERGE BASE run the whole guard in
     // place. The check is the shared function, never a comparison typed at the
     // route — two expressions of "does this match" is how one route starts
     // accepting what another refuses.
     for (const route of [
       "app/api/wiki/[slug]/route.ts",
       "app/api/settings/route.ts",
-      "app/api/workspace-profile/route.ts",
     ]) {
       const source = await read(route);
       expect([route, source.includes('from "@/lib/write-precondition"')]).toEqual([

@@ -1139,7 +1139,7 @@ describe("the bump lives at the exact write-owner tails", () => {
     ]);
   });
 
-  it("has one bump helper inside wikis.ts, called from five writers outside the tenant lock", async () => {
+  it("has one bump helper inside wikis.ts, called from six writers outside the tenant lock", async () => {
     // The list above is FILE-granular, so allowlisting `lib/wikis.ts` would
     // otherwise buy a blanket exemption for a module with seven exported
     // writers in it. This pins WHICH of them bump, the way the `lifecycle.ts`
@@ -1206,11 +1206,11 @@ describe("the bump lives at the exact write-owner tails", () => {
       /try \{\s*await bumpDataVersion\(\);\s*\} catch \(error\) \{[\s\S]{0,160}logger\.warn\(\s*"wikis"/,
     );
 
-    // SIX calls: one apiece for four writers, two for `applyScenarioTemplate`,
+    // SEVEN calls: one apiece for five writers, two for `applyScenarioTemplate`,
     // whose failure path bumps as well when the rollback could not put every
     // file back (DW-210). Counted over the whole module first, so a call from a
     // body this loop does not name cannot hide inside the per-body totals.
-    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(6);
+    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(7);
 
     let counted = 0;
     for (const [name, calls] of [
@@ -1219,6 +1219,7 @@ describe("the bump lives at the exact write-owner tails", () => {
       ["applyScenarioTemplate", 2],
       ["renameWiki", 1],
       ["deleteWiki", 1],
+      ["canonicalizeWikiPurpose", 1],
     ] as const) {
       const body = topLevelFunctionBody(raw, `export async function ${name}(`);
       const sites = body.match(/await bumpRefreshSignal\(/g) ?? [];
@@ -1262,13 +1263,13 @@ describe("the bump lives at the exact write-owner tails", () => {
         from = bump + 1;
       }
     }
-    // The six counted over the module are accounted for one apiece by five
+    // The seven counted over the module are accounted for by six
     // DISJOINT bodies, so no other function in the module has one — including
     // `seedWikiArtifacts`, which is the whole reason the tails live at the
     // callers: it always runs while `wikis:<tenant>` is held. Asserted directly
     // as well, because that is the refactor this guard exists to catch and a
     // count mismatch names no function.
-    expect(counted).toBe(6);
+    expect(counted).toBe(7);
     const seeder = topLevelFunctionBody(raw, "async function seedWikiArtifacts(");
     expect(seeder).not.toContain("bumpDataVersion");
     expect(seeder).not.toContain("bumpRefreshSignal");

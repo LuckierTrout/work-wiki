@@ -2461,10 +2461,12 @@ export async function readEffectiveWikiArtifact(
   owner: string,
   wikiId: string,
   file: WikiArtifactFile,
+  knownWiki?: WikiRecord,
 ): Promise<string | null> {
   if (file !== "purpose.md") return readWikiArtifact(owner, wikiId, file);
-  const registry = await readRegistry(owner);
-  const wiki = registry.wikis.find((item) => item.id === wikiId);
+  const wiki = knownWiki?.id === wikiId
+    ? knownWiki
+    : (await readRegistry(owner)).wikis.find((item) => item.id === wikiId);
   if (!wiki) return null;
   if (wiki.artifactAuthority === ARTIFACT_AUTHORITY_VERSION) {
     return readWikiArtifact(owner, wikiId, file);
@@ -2493,7 +2495,12 @@ export async function effectivePurposeOverrides(
   const registry = await readRegistry(owner);
   const entries = await Promise.all(
     registry.wikis.map(async (wiki) => {
-      const content = await readEffectiveWikiArtifact(owner, wiki.id, "purpose.md");
+      const content = await readEffectiveWikiArtifact(
+        owner,
+        wiki.id,
+        "purpose.md",
+        wiki,
+      );
       return content === null
         ? null
         : ([wikiArtifactPath(owner, wiki.id, "purpose.md"), content] as const);

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Workbench } from "@/components/workbench/Workbench";
+import { CANVAS_ID } from "@/components/workbench/ModeCanvas";
+import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
   WorkbenchDataProvider,
   type WorkbenchData,
@@ -15,6 +17,7 @@ import {
   PREVIEW_SAVE_COPY,
   PREVIEW_SAVE_FAILED_COPY,
 } from "@/lib/workbench-preview";
+import { SETTINGS_GENERAL_NO_WIKI_COPY } from "@/lib/workbench-settings";
 import { subscribeDataVersionCheck } from "@/lib/workbench-data-version";
 import { announcementSentence } from "@/lib/live-region";
 import { WRITE_CONFLICT_COPY } from "@/lib/write-precondition";
@@ -24,6 +27,7 @@ import {
   writeStoredSelection,
   writeStoredTreeTab,
 } from "@/lib/workbench-state";
+import { settingsPayload } from "./settings-harness";
 
 /**
  * DW-36 and DW-46 — the two ways the tree selection mishandled a pick, observed
@@ -189,6 +193,160 @@ async function typeIntoEditor(text: string) {
   fireEvent.change(textarea!, { target: { value: text } });
   await act(async () => {});
 }
+
+function stubSettingsAndPurpose(options: { editable?: boolean } = {}) {
+  const editable = options.editable ?? true;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: unknown) => {
+      const href = String(url);
+      if (href === "/api/settings") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ workbench: settingsPayload({ readOnly: !editable }) }),
+        } as unknown as Response;
+      }
+      if (href.includes("/api/workbench/preview")) {
+        const request = new URL(href, "http://localhost");
+        const file = request.searchParams.get("path");
+        if (file === "purpose.md") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              name: "purpose.md",
+              path: "purpose.md",
+              artifact: "purpose.md",
+              format: "markdown",
+              body: "# Purpose\n\nCanonical launcher target.\n",
+              truncated: false,
+              editable,
+              version: "w1s:wiki-1:1-0123456789abcdef",
+            }),
+          } as unknown as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => payload("Alpha", "# Alpha"),
+        } as unknown as Response;
+      }
+      if (href.includes("/api/workbench/artifact/revisions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ revisions: [] }),
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        text: async () => "",
+      } as unknown as Response;
+    }),
+  );
+}
+
+describe("Settings launches the canonical artifact editor", () => {
+  const ARTIFACT_DATA: WorkbenchData = {
+    ...DATA,
+    files: buildFileTree([
+      "purpose.md",
+      "schema.md",
+      "wiki/alpha.md",
+      "raw/",
+      "raw/x.md",
+    ]),
+  };
+
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/?mode=wiki");
+  });
+
+  it("holds the whole Settings-to-Purpose navigation behind the dirty guard", async () => {
+    stubSettingsAndPurpose();
+    await renderShell(ARTIFACT_DATA);
+    fireEvent.click(row("Alpha"));
+    await act(async () => {});
+    await typeIntoEditor("# Alpha\n\nUnsaved draft.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await act(async () => {});
+    fireEvent.click(await screen.findByRole("button", { name: "Open Purpose" }));
+    await act(async () => {});
+
+    expect(dialog()).toBeTruthy();
+    expect(screen.getByText(PREVIEW_DISCARD_CONFIRM_TITLE)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_KEEP_EDITING_COPY }));
+    await act(async () => {});
+    expect(dialog()).toBeNull();
+    expect(screen.getByRole("button", { name: "Open Purpose" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Purpose" }));
+    fireEvent.click(screen.getByRole("button", { name: PREVIEW_DISCARD_CONFIRM_LABEL }));
+    await act(async () => {});
+
+    expect(screen.queryByRole("button", { name: "Open Purpose" })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Files" }).getAttribute("aria-selected")).toBe("true");
+    expect(currentRow()).toBe("purpose.md");
+    expect(document.querySelector(".wb-preview-body")?.textContent).toContain(
+      "Canonical launcher target.",
+    );
+    expect(document.activeElement).toBe(document.getElementById(CANVAS_ID));
+  });
+
+  it("preserves a dirty draft when Settings reopens the same Purpose target", async () => {
+    writeStoredTreeTab("files");
+    writeStoredSelection(WIKI_ID, { kind: "file", path: "purpose.md" });
+    stubSettingsAndPurpose();
+    await renderShell(ARTIFACT_DATA);
+    await act(async () => {});
+    await typeIntoEditor("# Purpose\n\nStill the owner’s draft.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await act(async () => {});
+    fireEvent.click(await screen.findByRole("button", { name: "Open Purpose" }));
+    await act(async () => {});
+
+    expect(dialog()).toBeNull();
+    expect(editor()?.value).toBe("# Purpose\n\nStill the owner’s draft.");
+    expect(currentRow()).toBe("purpose.md");
+  });
+
+  it("explains no-Wiki state and disables both launchers", async () => {
+    stubSettingsAndPurpose();
+    render(
+      <SettingsCanvas
+        category="general"
+        headingId="settings-purpose-test"
+        hasWiki={false}
+      />,
+    );
+    expect(await screen.findByText(SETTINGS_GENERAL_NO_WIKI_COPY)).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Open Purpose" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole("button", { name: "Open Schema" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("opens Purpose for reading on a read-only deployment without offering Edit", async () => {
+    stubSettingsAndPurpose({ editable: false });
+    await renderShell({ ...ARTIFACT_DATA, readOnly: true });
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await act(async () => {});
+    fireEvent.click(await screen.findByRole("button", { name: "Open Purpose" }));
+    await act(async () => {});
+
+    expect(document.querySelector(".wb-preview-body")?.textContent).toContain(
+      "Canonical launcher target.",
+    );
+    expect(screen.queryByRole("button", { name: PREVIEW_EDIT_COPY })).toBeNull();
+  });
+});
 
 describe("a pick made while the editor is dirty is held (DW-36)", () => {
   it("changes nothing at all and opens the discard confirm", async () => {

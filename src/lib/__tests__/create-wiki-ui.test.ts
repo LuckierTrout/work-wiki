@@ -352,13 +352,11 @@ describe("WikiWorkbench empty state and preview copy", () => {
 });
 
 describe("one label map", () => {
-  it("is the only scenario-label source the Settings form uses", async () => {
+  it("has no second scenario form after structured Purpose editing is retired", async () => {
     const source = await read("WorkspacePurposeSettings.tsx");
-    expect(source).toContain('import { SCENARIO_LABELS } from "@/lib/wiki-scenarios"');
-    expect(source).not.toMatch(/const SCENARIO_LABELS/);
-    // The draft-loaded feedback names the same label as the <select>, rather
-    // than the template's own `name` ("General knowledge" vs "General").
-    expect(source).toContain("SCENARIO_LABELS[selectedTemplate.scenario]");
-    expect(source).not.toContain("${selectedTemplate.name}");
+    expect(source).not.toContain("SCENARIO_LABELS");
+    expect(source).not.toMatch(/<select|<textarea|<form/);
+    expect(source).not.toContain("/api/workspace-profile");
+    expect(source).toContain("Purpose has one editor now");
   });
 });

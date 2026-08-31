@@ -15,7 +15,6 @@ import {
   PREVIEW_HISTORY_FAILED_COPY,
   PREVIEW_HISTORY_HIDE_COPY,
   PREVIEW_HISTORY_LOADING_COPY,
-  PREVIEW_HISTORY_READ_ONLY_COPY,
   PREVIEW_HISTORY_REVERTED_COPY,
   PREVIEW_HISTORY_REVERTING_COPY,
   PREVIEW_HISTORY_REVERT_CONFIRM_LABEL,
@@ -24,6 +23,7 @@ import {
   PREVIEW_HISTORY_REVERT_FAILED_COPY,
   PREVIEW_HISTORY_VIEW_COPY,
   PREVIEW_SAVE_COPY,
+  previewArtifactHistoryCopy,
   artifactRevisionDate,
   artifactRevisionLabel,
   artifactRevisionSize,
@@ -633,7 +633,7 @@ describe("a read-only deployment refuses BEFORE the confirm (DW-149)", () => {
     expect(listings()).toBe(1);
     expect(screen.getAllByRole("button", { name: PREVIEW_HISTORY_VIEW_COPY })).toHaveLength(2);
     // Hiding the list would tell the owner nothing except that they cannot look.
-    expect(screen.getByText(PREVIEW_HISTORY_READ_ONLY_COPY)).toBeTruthy();
+    expect(screen.getByText(previewArtifactHistoryCopy("schema.md").readOnly)).toBeTruthy();
   });
 
   it("opens no dialog and sends no request when Revert is pressed", async () => {
@@ -649,7 +649,7 @@ describe("a read-only deployment refuses BEFORE the confirm (DW-149)", () => {
     const describedBy = revert.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
     expect(document.getElementById(describedBy!)?.textContent).toBe(
-      PREVIEW_HISTORY_READ_ONLY_COPY,
+      previewArtifactHistoryCopy("schema.md").readOnly,
     );
 
     fireEvent.click(revert);

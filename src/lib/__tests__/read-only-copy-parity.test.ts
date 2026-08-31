@@ -29,10 +29,9 @@ import {
 import { DELETE_PAGE_READ_ONLY_COPY } from "@/components/DeletePageButton";
 import { REINGEST_READ_ONLY_COPY } from "@/components/ReingestButton";
 import { REVERT_READ_ONLY_COPY } from "@/components/RevisionHistory";
-import { WORKSPACE_PURPOSE_READ_ONLY_COPY } from "@/components/WorkspacePurposeSettings";
 import { BULK_DELETE_READ_ONLY_COPY } from "@/components/RecentIngests";
 import { CREATE_PAGE_READ_ONLY_COPY } from "@/app/wiki/new/NewWikiForm";
-import { PREVIEW_HISTORY_READ_ONLY_COPY } from "../workbench-preview";
+import { previewArtifactHistoryCopy } from "../workbench-preview";
 import { NAMES_TERMS_READ_ONLY_COPY } from "@/components/NamesTermsSettings";
 import { EMAIL_INGEST_READ_ONLY_COPY } from "@/components/EmailIngestSettings";
 import { EMBEDDING_REBUILD_READ_ONLY_COPY } from "@/components/EmbeddingSettings";
@@ -130,7 +129,7 @@ describe("client refusal copy mirrors the server's", () => {
     expect(REVERT_READ_ONLY_COPY).toContain("read-only");
   });
 
-  it("the Preview's Revert is narrower than the artifact sentence behind it, on purpose", () => {
+  it("the Preview's file-specific Revert copy is narrower than the artifact sentence", () => {
     // DW-214 gave `GET/POST /api/workbench/artifact/revisions` its first client.
     // The POST refuses with `READ_ONLY_REFUSAL.artifactEdit` — "The Schema
     // cannot be edited…" — which is the honest sentence for a door that also
@@ -138,21 +137,26 @@ describe("client refusal copy mirrors the server's", () => {
     // Revert over a version the owner did not type. So the panel narrows it, and
     // the difference is recorded here rather than left to look like the
     // re-ingest bug above.
-    expect(PREVIEW_HISTORY_READ_ONLY_COPY).not.toBe(READ_ONLY_REFUSAL.artifactEdit);
-    expect(PREVIEW_HISTORY_READ_ONLY_COPY).toContain("reverted");
-    // Both name the SCHEMA — the narrowing is about the verb, not the subject:
-    // a sentence that stopped saying which file it was about would leave the
-    // owner guessing which of the column's two surfaces refused.
-    expect(READ_ONLY_REFUSAL.artifactEdit).toContain("Schema");
-    expect(PREVIEW_HISTORY_READ_ONLY_COPY).toContain("Schema");
+    const schema = previewArtifactHistoryCopy("schema.md").readOnly;
+    const purpose = previewArtifactHistoryCopy("purpose.md").readOnly;
+    expect(schema).not.toBe(READ_ONLY_REFUSAL.artifactEdit);
+    expect(purpose).not.toBe(READ_ONLY_REFUSAL.artifactEdit);
+    expect(schema).toContain("reverted");
+    expect(purpose).toContain("reverted");
+    // The server covers the family; the client labels the selected file.
+    expect(READ_ONLY_REFUSAL.artifactEdit).toContain("Wiki artifacts");
+    expect(schema).toContain("Schema");
+    expect(purpose).toContain("Purpose");
     // …and both still name the deployment state, which is the property that
     // makes either sentence actionable.
     expect(READ_ONLY_REFUSAL.artifactEdit).toContain("read-only");
-    expect(PREVIEW_HISTORY_READ_ONLY_COPY).toContain("read-only");
+    expect(schema).toContain("read-only");
+    expect(purpose).toContain("read-only");
     // Narrower than the PAGE revert's sentence too, and distinct from it: the
     // two live on different surfaces refusing different writers, and one string
     // reused for both is how a re-point goes unnoticed.
-    expect(PREVIEW_HISTORY_READ_ONLY_COPY).not.toBe(REVERT_READ_ONLY_COPY);
+    expect(schema).not.toBe(REVERT_READ_ONLY_COPY);
+    expect(purpose).not.toBe(REVERT_READ_ONLY_COPY);
   });
 
   it("Change template says exactly what POST /api/wikis/[id]/template answers", async () => {
@@ -171,27 +175,11 @@ describe("client refusal copy mirrors the server's", () => {
     expect(route).toContain(servedAs(WIKI_CREATE_READ_ONLY_COPY));
   });
 
-  it("Workspace Purpose is narrower than the Settings sentence behind it, on purpose", async () => {
-    // `PUT /api/workspace-profile` refuses with a sentence about SETTINGS —
-    // true of every field that surface owns, and unhelpful beside a form that
-    // edits one thing. Recorded as a difference rather than left to look like
-    // the re-ingest bug above.
-    //
-    // OF THE AT-ARRIVAL GATE, precisely (DW-319). A flag that flips MID-request
-    // is answered by the route's backstop with the kernel's own
-    // `wikiFileWrite`, so this is not the only sentence the door can serve —
-    // see "the Settings route and the kernel behind it answer DIFFERENT
-    // sentences" below. What is asserted here is unaffected: the gate's literal
-    // is still narrower than the client constant beside the form.
+  it("the retired structured profile route exposes no write-time refusal", async () => {
     const route = await routeSource("workspace-profile/route.ts");
-    const served = "Settings are read-only in this deployment.";
-    expect(route).toContain(servedAs(served));
-    expect(WORKSPACE_PURPOSE_READ_ONLY_COPY).not.toBe(served);
-    expect(WORKSPACE_PURPOSE_READ_ONLY_COPY).toContain("Workspace Purpose");
-    // Both still name the deployment state, which is what makes either
-    // sentence actionable.
-    expect(served).toContain("read-only");
-    expect(WORKSPACE_PURPOSE_READ_ONLY_COPY).toContain("read-only");
+    expect(route).toContain('{ status: 405, headers: { Allow: "GET" } }');
+    expect(route).not.toContain("checkWritePrecondition(");
+    expect(route).not.toContain("saveWorkspaceProfile(");
   });
 
   it("the wiki-lifecycle kernel sentences equal the literals their routes serve", async () => {
@@ -214,36 +202,6 @@ describe("client refusal copy mirrors the server's", () => {
     // canvas controls: three copies, one wording, one test.
     expect(READ_ONLY_REFUSAL.wikiCreate).toBe(WIKI_CREATE_READ_ONLY_COPY);
     expect(READ_ONLY_REFUSAL.wikiTemplate).toBe(WIKI_TEMPLATE_READ_ONLY_COPY);
-  });
-
-  it("the Settings route and the kernel behind it answer DIFFERENT sentences", async () => {
-    // `wikiFileWrite` covers the two unlocked byte putters under
-    // `tenants/<t>/wikis/<id>/` and `saveWorkspaceProfile`. Unlike the three
-    // wiki-lifecycle keys above it deliberately does NOT mirror its route:
-    // `PUT /api/workspace-profile` gates first with a sentence about SETTINGS —
-    // narrower, and the one an HTTP caller reads on a deployment that was
-    // already read-only when the request arrived — while a direct library caller
-    // reaching `saveWorkspaceProfile` gets the kernel's. Two sentences for one
-    // door, recorded as a difference so it does not look like the re-ingest bug
-    // above.
-    //
-    // NOT "the only one an HTTP caller ever reads" any more (DW-319). The route
-    // now carries the `isReadOnlyError` backstop on its write, so a flag that
-    // flips MID-REQUEST — writable at the gate, refused by the kernel — answers
-    // 403 with `wikiFileWrite` verbatim. Which sentence a caller meets tells
-    // them WHEN the deployment turned read-only; that is the point of carrying
-    // the kernel's own rather than re-serving the route's literal.
-    const route = await routeSource("workspace-profile/route.ts");
-    const served = "Settings are read-only in this deployment.";
-    expect(route).toContain(servedAs(served));
-    expect(READ_ONLY_REFUSAL.wikiFileWrite).not.toBe(served);
-    // And the kernel's is the WIDER of the two: it names the file, because the
-    // putters behind it are reached by create, re-template and rename alike.
-    expect(READ_ONLY_REFUSAL.wikiFileWrite).toContain("Wiki files");
-    // Both still name the deployment state, which is what makes either
-    // sentence actionable.
-    expect(served).toContain("read-only");
-    expect(READ_ONLY_REFUSAL.wikiFileWrite).toContain("read-only");
   });
 
   it("the bulk delete says exactly what DELETE /api/ingest/history answers", () => {

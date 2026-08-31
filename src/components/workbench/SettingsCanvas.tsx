@@ -145,15 +145,15 @@ export interface SettingsCanvasProps {
   category: SettingsCategoryId;
   /** The shell's id for the surface heading, so `aria-labelledby` has a target. */
   headingId: string;
-  hasWiki: boolean;
-  onOpenArtifact: (file: EditableArtifactFile) => void;
+  hasWiki?: boolean;
+  onOpenArtifact?: (file: EditableArtifactFile) => void;
 }
 
 export function SettingsCanvas({
   category,
   headingId,
-  hasWiki,
-  onOpenArtifact,
+  hasWiki = true,
+  onOpenArtifact = () => {},
 }: SettingsCanvasProps) {
   const [payload, setPayload] = useState<WorkbenchSettingsPayload | null>(null);
   const [draft, setDraft] = useState<SettingsDraft | null>(null);

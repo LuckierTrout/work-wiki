@@ -1094,8 +1094,7 @@ import { _resetLocks } from "../lock";
 import { createNamesTerm } from "../names-terms";
 import { tenantForOwner } from "../wiki";
 import { wikiProfilePath } from "../wiki-paths";
-import { createWiki } from "../wikis";
-import { saveWorkspaceProfile } from "../workspace-profile";
+import { createWiki, writeWikiArtifact } from "../wikis";
 
 describe("mergePages guides the fold with the survivor owner's workspace standards", () => {
   const SURVIVOR_OWNER = "alice";
@@ -1156,15 +1155,7 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
     alias: string,
   ): Promise<string> {
     const wiki = await createWiki(owner, { name: `${owner} Ops`, scenario: "business" });
-    await saveWorkspaceProfile(owner, wiki.id, {
-      scenario: "custom",
-      purpose,
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
+    await writeWikiArtifact(owner, wiki.id, "purpose.md", `# ${owner} Ops\n\n${purpose}\n`);
     await createNamesTerm(owner, { kind: "project", canonical, aliases: [alias] });
     return wiki.id;
   }
@@ -1368,15 +1359,12 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
       name: "Ops",
       scenario: "business",
     });
-    await saveWorkspaceProfile(SURVIVOR_OWNER, wiki.id, {
-      scenario: "custom",
-      purpose: ALICE_PURPOSE,
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
+    await writeWikiArtifact(
+      SURVIVOR_OWNER,
+      wiki.id,
+      "purpose.md",
+      `# Ops\n\n${ALICE_PURPOSE}\n`,
+    );
     await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
 
     await mergePages({
@@ -1425,7 +1413,7 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
     expect(prompt).not.toContain(DEFAULT_TENANT_TERM);
   });
 
-  it("still folds — with the dictionary, without the Purpose — when the workspace profile is unreadable", async () => {
+  it("still folds with canonical Purpose when the legacy workspace profile is unreadable", async () => {
     const wikiId = await seedGuidance(
       SURVIVOR_OWNER,
       ALICE_PURPOSE,
@@ -1456,9 +1444,10 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
 
     const prompt = reconcileSystemPrompt();
     expect(await survivorBody()).toContain(FOLDED_MARKER);
-    // `buildWorkspaceGuidance` fail-softs to "" on its own, so only the Purpose
-    // is lost; the dictionary still reaches the fold.
-    expect(prompt).not.toContain("WORKSPACE PURPOSE");
+    // The profile is migration evidence only once this Wiki is marked. A bad
+    // legacy file cannot suppress the canonical artifact.
+    expect(prompt).toContain("WORKSPACE PURPOSE");
+    expect(prompt).toContain(ALICE_PURPOSE);
     expect(prompt).toContain("WORKSPACE NAMES & TERMS");
     expect(prompt).toContain(ALICE_TERM);
   });
@@ -1501,15 +1490,12 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
     });
     expect(String(mockedCallLLM.mock.calls[0][0])).toContain(ALICE_PURPOSE);
 
-    await saveWorkspaceProfile(SURVIVOR_OWNER, wikiId, {
-      scenario: "custom",
-      purpose: REVISED_PURPOSE,
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    });
+    await writeWikiArtifact(
+      SURVIVOR_OWNER,
+      wikiId,
+      "purpose.md",
+      `# alice Ops\n\n${REVISED_PURPOSE}\n`,
+    );
 
     await mergePages({
       from: SECOND_ABSORBED_SLUG,

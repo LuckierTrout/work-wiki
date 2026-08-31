@@ -306,10 +306,8 @@ describe("the legacy Workspace Purpose backfill (DW-137)", () => {
     );
   });
 
-  it("renders no guidance for an owner holding a legacy file and no wiki", async () => {
-    // The read paths do not know this address any more, backfill or no
-    // backfill — so an owner in the state the migration is FOR gets nothing in
-    // their prompts until a scan relocates the file onto a wiki they created.
+  it("never lets a copied legacy profile override a marked Wiki's Purpose", async () => {
+    // With no Wiki there is no canonical artifact to guide a prompt.
     await writeLegacy();
 
     expect(await buildWorkspaceGuidance(OWNER)).toBe("");
@@ -317,12 +315,13 @@ describe("the legacy Workspace Purpose backfill (DW-137)", () => {
 
     const wiki = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     await fs.rm(ownPath(wiki.id));
-    expect(await buildWorkspaceGuidance(OWNER)).toBe("");
+    const canonical = await buildWorkspaceGuidance(OWNER);
+    expect(canonical).toContain("Maintain an accountable operating memory");
+    expect(canonical).not.toContain("Hand-authored before the split.");
 
-    // …and after the scan, the relocated purpose is what the prompt renders.
+    // Backfill preserves the old bytes as evidence, but the authority marker
+    // means neither a late copy nor a later profile mutation becomes live.
     expect(await backfillLegacyWorkspaceProfiles(OWNER)).toBe(1);
-    expect(await buildWorkspaceGuidance(OWNER)).toContain(
-      "Hand-authored before the split.",
-    );
+    expect(await buildWorkspaceGuidance(OWNER)).toBe(canonical);
   });
 });

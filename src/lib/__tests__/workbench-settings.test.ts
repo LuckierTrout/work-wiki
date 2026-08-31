@@ -5409,11 +5409,12 @@ describe("the Settings components stay inside the shell", () => {
     // attribute it is meant to forbid.
     expect(canvas).not.toMatch(/(?<![-\w])disabled=\{stored\.readOnly/);
     expect(canvas).not.toMatch(/(?<![-\w])disabled=\{vectorRefused/);
-    // The ONLY `disabled` left in the component is Save's — which is a
-    // deliberate exception, because `SETTINGS_READ_ONLY_COPY` already ships
-    // beside it and says why.
+    // Purpose and Schema use ordinary disabled buttons only when there is no
+    // current Wiki, plus Save's existing deliberate exception. Read-only
+    // provider controls remain focusable and explanatory.
     const disabledProps = [...canvas.matchAll(/(?<![-\w])disabled=\{/g)];
-    expect(disabledProps).toHaveLength(1);
+    expect(disabledProps).toHaveLength(3);
+    expect(canvas.match(/disabled=\{!hasWiki\}/g)).toHaveLength(2);
     expect(canvas).toContain("disabled={saving || payload.readOnly || !dirty}");
 
     // Every control the read-only flag ALONE refuses carries the attribute: the
@@ -5715,7 +5716,9 @@ describe("the Settings components stay inside the shell", () => {
     const shell = await readComponent("Workbench.tsx");
     expect(shell).toMatch(/<ModeCanvas[^>]*hidden=\{settingsOpen\}/);
     expect(shell).toMatch(/\{settingsOpen && \(\s*<SettingsCanvas/);
-    expect(shell).toContain("<SettingsCanvas category={settingsCategoryId}");
+    expect(shell).toMatch(
+      /<SettingsCanvas\s+category=\{settingsCategoryId\}\s+headingId=\{headingId\}\s+hasWiki=\{currentWikiId !== null\}\s+onOpenArtifact=\{openSettingsArtifact\}/,
+    );
   });
 
   it("makes the shell own which surface is showing, and undocks the Preview", async () => {

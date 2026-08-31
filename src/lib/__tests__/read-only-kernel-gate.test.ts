@@ -352,9 +352,8 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
       READ_ONLY_REFUSAL.wikiTemplate,
     );
 
-    // The re-template overwrites purpose.md, schema.md AND the wiki's own
-    // workspace-profile.json; all three are inside the snapshot below, and the
-    // Schema is called out because it is the EXECUTABLE one.
+    // The re-template overwrites only the two canonical artifacts. The legacy
+    // profile is retained as byte-for-byte migration evidence.
     expect(await readWikiArtifact(OWNER, wiki.id, "schema.md")).toBe(seededSchema);
     expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("research");
     expect(await snapshot()).toEqual(before);
@@ -488,7 +487,10 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
 
     const applied = await applyScenarioTemplate(OWNER, wiki.id, "business");
     expect(applied?.scenario).toBe("business");
-    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("business");
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe("research");
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain(
+      "Scenario Template: Business",
+    );
 
     const saved = await saveWorkspaceProfile(OWNER, wiki.id, {
       scenario: "custom",

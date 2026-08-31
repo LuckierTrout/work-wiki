@@ -76,7 +76,12 @@ async function resolveWorkspaceGuidance(owner: string): Promise<string> {
     // name, and inventing one from a retired file is exactly the behaviour that
     // had no end date.
     if (!wiki) return "";
-    const purpose = await readEffectiveWikiArtifact(owner, wiki.id, "purpose.md");
+    const purpose = await readEffectiveWikiArtifact(
+      owner,
+      wiki.id,
+      "purpose.md",
+      wiki,
+    );
     return purpose ? renderPurposeGuidance(purpose) : "";
   } catch (error) {
     // Fail soft. Guidance is an ADDITION to a prompt — losing it degrades the

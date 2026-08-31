@@ -16,9 +16,9 @@ import path from "path";
 import { _resetLocks } from "../lock";
 import { logger } from "../logger";
 import { _resetStorage, getStorage } from "../storage";
-import { wikiProfilePath } from "../wiki-paths";
+import { wikiArtifactPath } from "../wiki-paths";
 import { createWiki, wikiRegistryPath } from "../wikis";
-import { saveWorkspaceProfile } from "../workspace-profile";
+import type { WorkspaceProfileInput } from "../workspace-profile-schema";
 import {
   buildWorkspaceGuidance,
   createWorkspaceGuidanceCache,
@@ -57,21 +57,17 @@ async function writeProfileBytes(
   wikiId: string,
   purpose: string,
 ): Promise<void> {
-  const relative = wikiProfilePath(owner, wikiId);
+  const relative = wikiArtifactPath(owner, wikiId, "purpose.md");
   await fs.mkdir(path.dirname(abs(relative)), { recursive: true });
-  await fs.writeFile(
-    abs(relative),
-    JSON.stringify({
-      version: 1,
-      scenario: "custom",
-      purpose,
-      keyQuestions: [],
-      inScope: [],
-      outOfScope: [],
-      outputLanguage: "English",
-      pageConventions: "",
-    }),
-  );
+  await fs.writeFile(abs(relative), `# Purpose\n\n${purpose}\n`);
+}
+
+async function saveWorkspaceProfile(
+  owner: string,
+  wikiId: string,
+  input: WorkspaceProfileInput,
+): Promise<void> {
+  await writeProfileBytes(owner, wikiId, input.purpose);
 }
 
 /**
@@ -117,7 +113,7 @@ describe("buildWorkspaceGuidance caching", () => {
     expect(second).not.toContain("Phoenix reading shelf");
 
     expect(reads(wikiRegistryPath(OWNER))).toBe(1);
-    expect(reads(wikiProfilePath(OWNER, wiki.id))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wiki.id, "purpose.md"))).toBe(1);
   });
 
   it("shares one in-flight resolution between concurrent callers", async () => {
@@ -147,7 +143,7 @@ describe("buildWorkspaceGuidance caching", () => {
     expect(b).toBe(a);
     expect(c).toBe(a);
     expect(reads(wikiRegistryPath(OWNER))).toBe(1);
-    expect(reads(wikiProfilePath(OWNER, wiki.id))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wiki.id, "purpose.md"))).toBe(1);
   });
 
   it("re-reads on every call when NO cache handle is passed", async () => {
@@ -171,7 +167,7 @@ describe("buildWorkspaceGuidance caching", () => {
     expect(second).toContain("Phoenix reading shelf");
     expect(second).not.toContain("Project Lighthouse");
     expect(reads(wikiRegistryPath(OWNER))).toBe(2);
-    expect(reads(wikiProfilePath(OWNER, wiki.id))).toBe(2);
+    expect(reads(wikiArtifactPath(OWNER, wiki.id, "purpose.md"))).toBe(2);
   });
 
   it("caches the no-wiki answer without ever reading a profile", async () => {
@@ -185,7 +181,7 @@ describe("buildWorkspaceGuidance caching", () => {
     // No wiki id exists to key a profile read on, so nothing under `wikis/`
     // was touched at all.
     expect(
-      reads(wikiProfilePath(OWNER, "00000000-0000-4000-8000-000000000042")),
+      reads(wikiArtifactPath(OWNER, "00000000-0000-4000-8000-000000000042", "purpose.md")),
     ).toBe(0);
   });
 
@@ -255,9 +251,9 @@ describe("buildWorkspaceGuidance caching", () => {
     expect(await buildWorkspaceGuidance(OTHER_OWNER, cache)).toBe(bob);
 
     expect(reads(wikiRegistryPath(OWNER))).toBe(1);
-    expect(reads(wikiProfilePath(OWNER, aliceWiki.id))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, aliceWiki.id, "purpose.md"))).toBe(1);
     expect(reads(wikiRegistryPath(OTHER_OWNER))).toBe(1);
-    expect(reads(wikiProfilePath(OTHER_OWNER, bobWiki.id))).toBe(1);
+    expect(reads(wikiArtifactPath(OTHER_OWNER, bobWiki.id, "purpose.md"))).toBe(1);
   });
 
   it("collapses two owner casings of one tenant onto a single resolution", async () => {
@@ -291,7 +287,7 @@ describe("buildWorkspaceGuidance caching", () => {
 
     expect(cache.size).toBe(1);
     expect(reads(wikiRegistryPath(OWNER))).toBe(1);
-    expect(reads(wikiProfilePath(OWNER, wiki.id))).toBe(1);
+    expect(reads(wikiArtifactPath(OWNER, wiki.id, "purpose.md"))).toBe(1);
   });
 
   it("hands out a FRESH handle each time, so a new one re-reads", async () => {
@@ -325,6 +321,6 @@ describe("buildWorkspaceGuidance caching", () => {
     expect(afterNewHandle).toContain("Phoenix reading shelf");
     expect(afterNewHandle).not.toContain("Project Lighthouse");
     expect(reads(wikiRegistryPath(OWNER))).toBe(2);
-    expect(reads(wikiProfilePath(OWNER, wiki.id))).toBe(2);
+    expect(reads(wikiArtifactPath(OWNER, wiki.id, "purpose.md"))).toBe(2);
   });
 });
