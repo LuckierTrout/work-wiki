@@ -11,6 +11,8 @@ import {
   RESEARCH_POLL_MS,
   parseResearchQueries,
   researchIsPolling,
+  researchOffersCancel,
+  researchOffersRun,
   researchStatusLabel,
   researchTaskLine,
 } from "../research-panel";
@@ -89,6 +91,78 @@ describe("research panel vocabulary", () => {
     expect(researchTaskLine(project({ status: "cancelled" }))).toBe("Cancelled.");
     expect(researchTaskLine(project({ status: "complete" }))).toMatch(/0 sources cited/);
     expect(researchTaskLine(project({ status: "collecting" }))).toMatch(/In progress/);
+  });
+
+  it("offers Cancel exactly while the run is going somewhere", () => {
+    // DW-644. The canvas's Cancel row control AND the read-only note that
+    // describes it read this one rule, so the note cannot appear beside a
+    // control that is not there.
+    //
+    // LITERAL LISTS, not `RESEARCH_ACTIVE_STATUSES.includes(status)` — that is
+    // the function's own body restated, and a reword of the constant would
+    // carry this row along with it rather than failing here.
+    const offered: ResearchProjectStatus[] = ["queued", "collecting", "ready"];
+    const withheld: ResearchProjectStatus[] = ["draft", "complete", "failed", "cancelled"];
+    for (const status of offered) {
+      expect(researchOffersCancel(project({ status })), status).toBe(true);
+    }
+    for (const status of withheld) {
+      expect(researchOffersCancel(project({ status })), status).toBe(false);
+    }
+    // A cancellable row is never also restartable: the two controls partition.
+    for (const status of [...offered, ...withheld]) {
+      const row = project({ status });
+      expect(researchOffersCancel(row) && researchOffersRun(row), status).toBe(false);
+    }
+  });
+
+  it("offers Start/Retry only where there is a run left to make", () => {
+    const offered: ResearchProjectStatus[] = ["draft", "failed", "cancelled"];
+    const withheld: ResearchProjectStatus[] = ["queued", "collecting", "ready", "complete"];
+    for (const status of offered) {
+      expect(researchOffersRun(project({ status })), status).toBe(true);
+    }
+    for (const status of withheld) {
+      expect(researchOffersRun(project({ status })), status).toBe(false);
+    }
+  });
+
+  it("withholds Retry from a row whose completion was DELIVERED, and keeps it for one that was blocked", () => {
+    // The split that decides Retry. A delivered completion means the Page is
+    // written and there is nothing to re-run; a `deliveryBlocked` one means the
+    // delivery never landed, which is precisely what a retry is for.
+    const completion = { phase: "done" as const, pageSlug: "research-x", sources: [] };
+    expect(researchOffersRun(project({ status: "failed", completion }))).toBe(false);
+    expect(researchOffersRun(project({
+      status: "failed",
+      completion,
+      deliveryBlocked: true,
+    }))).toBe(true);
+    expect(researchOffersRun(project({
+      status: "failed",
+      completion,
+      deliveryBlocked: false,
+    }))).toBe(false);
+    // No completion at all is the ordinary draft/failed row.
+    expect(researchOffersRun(project({ status: "draft" }))).toBe(true);
+  });
+
+  it("withholds Retry from a row whose completion is still DRAINING", () => {
+    // The branch a polling row actually sits in, and the one every other
+    // completion fixture here misses by using `phase: "done"`. A completion
+    // mid-delivery is still a completion — `!project.completion` is false —
+    // so the row is offered nothing while the outbox drains, and `researchIsPolling`
+    // keeps re-reading it rather than the owner re-running it by hand.
+    const draining = { phase: "sources" as const, pageSlug: "research-x", sources: [] };
+    expect(researchIsPolling(project({ status: "complete", completion: draining }))).toBe(true);
+    expect(researchOffersRun(project({ status: "failed", completion: draining }))).toBe(false);
+    // …until that delivery is declared blocked, which is exactly what a retry
+    // is for.
+    expect(researchOffersRun(project({
+      status: "failed",
+      completion: draining,
+      deliveryBlocked: true,
+    }))).toBe(true);
   });
 
   it("counts the queries a Start button is about to send, not the textarea's lines", () => {

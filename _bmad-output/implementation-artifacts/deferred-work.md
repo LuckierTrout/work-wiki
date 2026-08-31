@@ -4911,7 +4911,9 @@ location: src/app/api/research/[id]/route.ts:103
 source_spec: `spec-dw-316-319-526-read-only-lifecycle-route-status.md`
 severity: low
 reason: `retireResearchProject` opens with `assertWritable(READ_ONLY_REFUSAL.researchMutate)` (src/lib/research-runtime.ts:463), and the DELETE handler's catch is the unchanged `error instanceof ClientInputError ? 400 : 500` shape, so a flag that flips between the route's `isReadOnly()` gate and the writer is reported as a server fault. Not named by DW-316, DW-319 or DW-526, whose intent enumerates the doors to fix, so it was left out of this bundle rather than swept in. Its suite (`research-run-route.test.ts:305`) pins the 400-vs-500 classification with a plain Error and a ClientInputError only, so nothing there would surface it. PATCH on the same file is NOT affected: `updateResearchProjectIf` reaches no `assertWritable`; the only two in `research-projects.ts` are at :442 and :656.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-refusal-voice
+resolution-undo: d9280ca728025e6e9e089519d77381fd9c531c6935fbefe138797ad0a1c3f0f1 2026-08-31 7374617475733a206f70656e
 
 ### DW-640: No source scan enforces the read-only treatment on the wiki-lifecycle, workspace-profile, Names & Terms, email-settings or research writers, so the next door added repeats the defect with the suite gr
 origin: spec-deferred 58b7385a8d66
@@ -4951,7 +4953,9 @@ location: src/components/workbench/ResearchCanvas.tsx:403
 source_spec: `spec-dw-529-530-531-read-only-client-refusal-parity.md`
 severity: low
 reason: `src/components/workbench/ResearchCanvas.tsx:403,409` render Cancel and Start/Retry only when `!readOnly`, so on a read-only deployment the controls vanish rather than standing refused with a reason — a third shape beside `disabled` and `aria-disabled`, and the one that explains least. Their door is `POST /api/research/[id]/run`, whose sentence `RESEARCH_MUTATE_READ_ONLY_COPY` this change moved into `src/lib/research-panel.ts` for the canvases and which still has exactly one consumer, the Studio. DW-531 named only the five `disabled=` controls in Graph and Review, and the bundle intent excluded ResearchCanvas, so the hidden rows were left as they are.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-refusal-voice
+resolution-undo: d9280ca728025e6e9e089519d77381fd9c531c6935fbefe138797ad0a1c3f0f1 2026-08-31 7374617475733a206f70656e
 
 ### DW-645: Three in-repo sites assert the wrong queue semantics for a read-only 403 — the code is right and the comments are wrong, and DEPLOY.md now contradicts them.
 origin: spec-deferred ca7d934d9456

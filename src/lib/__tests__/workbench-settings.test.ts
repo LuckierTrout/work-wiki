@@ -5487,6 +5487,23 @@ describe("the Settings components stay inside the shell", () => {
     expect(css).toMatch(
       /\.wb-todos-btn\[aria-disabled="true"\] \{[^}]*cursor: default;/,
     );
+    // DW-644's two: the Deep Research canvas's row controls, which are
+    // `.wb-set-action` rather than `.wb-todos-btn`. They RENDER under
+    // `readOnly` now instead of vanishing, so the same face is needed — and
+    // the create form's Start Deep Research keeps a real `disabled` (DW-529),
+    // so the hover rule has to exclude BOTH selectors.
+    expect(css).toMatch(
+      /\.wb-set-action\[aria-disabled="true"\] \{[^}]*cursor: default;/,
+    );
+    // …and `[disabled]` alongside it, the same pair `.wb-todos-btn` carries.
+    // Start Deep Research is disabled on every load until a topic and a query
+    // are typed, and the hover background the exclusion below takes away was
+    // the only feedback that state had.
+    expect(css).toMatch(/\.wb-set-action\[disabled\] \{[^}]*cursor: default;/);
+    expect(css).toContain(
+      '.wb-set-action:hover:not([disabled]):not([aria-disabled="true"])',
+    );
+    expect(css).not.toMatch(/\.wb-set-action:hover \{/);
   });
 
   it("labels the embedding provider that is not an LLM provider", async () => {

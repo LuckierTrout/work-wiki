@@ -536,6 +536,11 @@ describe("client refusal copy mirrors the server's", () => {
     // The sentence arrives by NAME, so a reword of the constant reaches the
     // canvas without anyone editing it.
     expect(canvas).toContain("RESEARCH_CREATE_READ_ONLY_COPY");
+    // TWO doors now (DW-644). The form's Start Deep Research meets
+    // `POST /api/research`; the rows' Cancel and Start/Retry meet
+    // `POST /api/research/[id]/run`, and their note mirrors THAT door's
+    // sentence — by name, for the same reason.
+    expect(canvas).toContain("RESEARCH_MUTATE_READ_ONLY_COPY");
     // The retired literal is gone — not merely unused, absent.
     expect(canvas).not.toContain(
       "Deep Research cannot start while this deployment is read-only.",

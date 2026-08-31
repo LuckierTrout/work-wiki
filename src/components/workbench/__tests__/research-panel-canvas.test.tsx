@@ -23,6 +23,7 @@ vi.mock("@/lib/workbench-request", () => ({
 import { ResearchCanvas } from "../ResearchCanvas";
 import {
   RESEARCH_CREATE_READ_ONLY_COPY,
+  RESEARCH_MUTATE_READ_ONLY_COPY,
   RESEARCH_POLL_MS,
 } from "@/lib/research-panel";
 import { workbenchMode } from "@/lib/workbench-modes";
@@ -604,7 +605,7 @@ describe("Research Panel — starting a run", () => {
 });
 
 describe("Research Panel — read-only", () => {
-  it("refuses the start control and offers no Cancel", async () => {
+  it("refuses the start control and REFUSES Cancel rather than hiding it", async () => {
     send.mockResolvedValue({ projects: [project({ status: "collecting" })] });
 
     render(<ResearchCanvas wikiId="current" readOnly />);
@@ -620,7 +621,20 @@ describe("Research Panel — read-only", () => {
     // a test that retyped it would keep passing against copy that no longer
     // matched what `POST /api/research` answers.
     expect(screen.getByText(RESEARCH_CREATE_READ_ONLY_COPY)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    // DW-644. Cancel used to be absent entirely — `{live && !readOnly ? … }` —
+    // and this row pinned that absence. A hidden control is the refusal that
+    // explains least: the owner met a card with no controls and no reason, and
+    // the sentence `POST /api/research/[id]/run` answers had no voice here at
+    // all. It is now RENDERED, focusable, `aria-disabled`, and describes the
+    // run door's own sentence. The shape itself is pinned in
+    // `canvas-read-only-refusal.test.tsx` beside Graph's and Review's.
+    const cancel = screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(false);
+    expect(cancel.getAttribute("aria-disabled")).toBe("true");
+    const noteId = cancel.getAttribute("aria-describedby");
+    expect(noteId).toBeTruthy();
+    expect(document.getElementById(noteId!)?.textContent)
+      .toBe(RESEARCH_MUTATE_READ_ONLY_COPY);
     expect((screen.getByLabelText("Topic") as HTMLInputElement).readOnly).toBe(true);
   });
 });

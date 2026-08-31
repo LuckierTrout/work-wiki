@@ -42,6 +42,50 @@ export function researchIsPolling(project: ResearchProject): boolean {
 }
 
 /**
+ * The statuses a row can be RE-started from.
+ *
+ * A run that is going somewhere is not restartable (it is cancellable), and a
+ * `complete` row has nothing left to start — so the three that remain are the
+ * ones a Start/Retry control is offered for.
+ */
+const RESEARCH_RESTARTABLE_STATUSES: readonly ResearchProjectStatus[] = [
+  "draft",
+  "failed",
+  "cancelled",
+];
+
+/**
+ * Whether the canvas offers this row a **Cancel** (DW-644).
+ *
+ * The door is `POST /api/research/[id]/run` with `{action:"cancel"}`, which
+ * answers `READ_ONLY_REFUSAL.researchMutate` — the same door
+ * {@link researchOffersRun} meets, which is why one note describes both.
+ *
+ * A PREDICATE RATHER THAN AN INLINE CONDITION because the row and the
+ * list-level read-only note now read the SAME rule: two copies is how a note
+ * appears beside a control that is not on screen, describing the refusal of an
+ * operation the owner was never offered.
+ */
+export function researchOffersCancel(project: ResearchProject): boolean {
+  return RESEARCH_ACTIVE_STATUSES.includes(project.status);
+}
+
+/**
+ * Whether the canvas offers this row a **Start** / **Retry** (DW-644).
+ *
+ * The same door as {@link researchOffersCancel}, `POST /api/research/[id]/run`,
+ * without a body. A row that already carries a DELIVERED completion is offered
+ * nothing: the research is done and the Page is written. A `deliveryBlocked`
+ * completion is the exception — that delivery never landed, so the run is
+ * still worth retrying.
+ */
+export function researchOffersRun(project: ResearchProject): boolean {
+  if (researchOffersCancel(project)) return false;
+  if (!RESEARCH_RESTARTABLE_STATUSES.includes(project.status)) return false;
+  return !project.completion || project.deliveryBlocked === true;
+}
+
+/**
  * How often the panel re-reads while something is active.
  *
  * Fast enough that a query-to-query transition is visible as a transition

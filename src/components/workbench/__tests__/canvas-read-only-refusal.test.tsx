@@ -1,11 +1,16 @@
 /**
- * The Graph and Review canvases on a read-only deployment, MOUNTED (DW-531).
+ * The Graph, Review and Deep Research canvases on a read-only deployment,
+ * MOUNTED (DW-531, DW-644).
  *
- * Both canvases used to pass `readOnly` straight into `disabled`. A `disabled`
- * button is out of the tab order and carries no accessible description, so the
- * standing refusal could never be reached OR announced: the owner met a dead
- * control and no reason — the exact defect DW-191/DW-299 removed from the Wiki
- * switcher and DW-386 from Names & Terms and Email ingestion.
+ * Graph and Review used to pass `readOnly` straight into `disabled`. A
+ * `disabled` button is out of the tab order and carries no accessible
+ * description, so the standing refusal could never be reached OR announced: the
+ * owner met a dead control and no reason — the exact defect DW-191/DW-299
+ * removed from the Wiki switcher and DW-386 from Names & Terms and Email
+ * ingestion. The Deep Research canvas (DW-644) had a THIRD shape, the one that
+ * explains least: its two row controls were not rendered at all under
+ * `readOnly`, so the card carried no control, no reason, and no voice for the
+ * sentence `POST /api/research/[id]/run` answers.
  *
  * What is pinned here is the shipped shape: `disabled` for TRANSIENT state
  * only, YIELDING to the standing refusal; `aria-disabled` for the standing one;
@@ -68,7 +73,11 @@ import {
   REVIEW_QUEUE_READ_ONLY_COPY,
   ReviewCanvas,
 } from "@/components/workbench/ReviewCanvas";
-import { RESEARCH_CREATE_READ_ONLY_COPY } from "@/lib/research-panel";
+import { ResearchCanvas } from "@/components/workbench/ResearchCanvas";
+import {
+  RESEARCH_CREATE_READ_ONLY_COPY,
+  RESEARCH_MUTATE_READ_ONLY_COPY,
+} from "@/lib/research-panel";
 
 /** The sentence a control actually ANNOUNCES, resolved through its own id. */
 function describedBy(control: HTMLElement): string {
@@ -114,6 +123,20 @@ const isolatedInsight = {
   topic: "Alone",
   queries: ["What belongs with Alone?"],
 };
+
+/** A stored research project, with only the fields the canvas reads. */
+const researchProject = (extra: Record<string, unknown>) => ({
+  id: "p1",
+  title: "Launch evidence",
+  question: "What supports the launch date?",
+  queries: ["launch evidence"],
+  sourceUrls: [],
+  pageSlugs: [],
+  status: "draft",
+  createdAt: "2026-08-24T00:00:00.000Z",
+  updatedAt: "2026-08-24T00:00:00.000Z",
+  ...extra,
+});
 
 function graphBody(insights: unknown[]) {
   return { nodes: NODES, edges: [], insights, communities: [], types: [] };
@@ -392,5 +415,148 @@ describe("Review canvas — read-only", () => {
         expect.objectContaining({ method: "POST" }),
       ),
     );
+  });
+});
+
+describe("Research canvas — read-only", () => {
+  it("renders Cancel refused and announced instead of hiding it", async () => {
+    // DW-644's defect, stated as its fix. `{live && !readOnly ? … : null}` is
+    // why the read-only owner met a card with no controls at all.
+    send.mockResolvedValue({ projects: [researchProject({ status: "collecting" })] });
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    const cancel = await screen.findByRole("button", { name: "Cancel" });
+    expectStandingRefusal(cancel);
+    expect(describedBy(cancel)).toBe(RESEARCH_MUTATE_READ_ONLY_COPY);
+  });
+
+  it("renders Start on a draft row with the same shape", async () => {
+    send.mockResolvedValue({ projects: [researchProject({ status: "draft" })] });
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    const start = await screen.findByRole("button", { name: "Start" });
+    expectStandingRefusal(start);
+    expect(describedBy(start)).toBe(RESEARCH_MUTATE_READ_ONLY_COPY);
+    // …and NOT the create door's sentence, which the form's hint above owns.
+    // Two doors stand behind this one canvas: `POST /api/research` for the
+    // form, `POST /api/research/[id]/run` for the row.
+    expect(describedBy(start)).not.toBe(RESEARCH_CREATE_READ_ONLY_COPY);
+    expect(screen.getByText(RESEARCH_CREATE_READ_ONLY_COPY)).toBeTruthy();
+  });
+
+  it("renders Retry on a failed row with the same shape", async () => {
+    send.mockResolvedValue({ projects: [researchProject({ status: "failed" })] });
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expectStandingRefusal(retry);
+    expect(describedBy(retry)).toBe(RESEARCH_MUTATE_READ_ONLY_COPY);
+  });
+
+  it("states the sentence ONCE for the whole list, however many rows there are", async () => {
+    // The Research half of the rule. The note is minted with a single `useId()`
+    // in the parent and rendered after the list: moved inside the `.map()` it
+    // would mint one id per card, and the second row's control would resolve to
+    // the first row's node.
+    send.mockResolvedValue({
+      projects: [
+        researchProject({ id: "a", title: "Alpha", status: "collecting" }),
+        researchProject({ id: "b", title: "Beta", status: "collecting" }),
+      ],
+    });
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    await screen.findByRole("heading", { name: "Beta" });
+    const cancels = screen.getAllByRole("button", { name: "Cancel" });
+    expect(cancels).toHaveLength(2);
+    expect(screen.getAllByText(RESEARCH_MUTATE_READ_ONLY_COPY)).toHaveLength(1);
+    expect(cancels[0].getAttribute("aria-describedby")).toBe(
+      cancels[1].getAttribute("aria-describedby"),
+    );
+    expect(describedBy(cancels[1])).toBe(RESEARCH_MUTATE_READ_ONLY_COPY);
+  });
+
+  it("renders no mutate note for a row that offers neither control", async () => {
+    // A `complete` row with a DELIVERED completion is offered nothing: the
+    // research is done and the Page is written. A sentence here would announce
+    // the refusal of an operation the owner was never offered.
+    send.mockResolvedValue({
+      projects: [researchProject({
+        status: "complete",
+        completion: { phase: "done", pageSlug: "research-x", sources: [] },
+      })],
+    });
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    await screen.findByRole("heading", { name: "Launch evidence" });
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByText(RESEARCH_MUTATE_READ_ONLY_COPY)).toBeNull();
+    // The CREATE hint is not the mutate note and stays: that door is still
+    // standing in front of the form above.
+    expect(screen.getByText(RESEARCH_CREATE_READ_ONLY_COPY)).toBeTruthy();
+  });
+
+  it("renders no mutate note for an empty list", async () => {
+    send.mockResolvedValue({ projects: [] });
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    expect(screen.queryByText(RESEARCH_MUTATE_READ_ONLY_COPY)).toBeNull();
+    expect(screen.getByText(RESEARCH_CREATE_READ_ONLY_COPY)).toBeTruthy();
+  });
+
+  it("issues no request when either row control is activated", async () => {
+    send.mockResolvedValue({
+      projects: [
+        researchProject({ id: "a", title: "Alpha", status: "collecting" }),
+        researchProject({ id: "b", title: "Beta", status: "draft" }),
+      ],
+    });
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    await screen.findByRole("heading", { name: "Beta" });
+    const reads = send.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    // A focusable control is a REACHABLE one, so the handler is what refuses.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(send.mock.calls.length).toBe(reads);
+  });
+
+  it("renders nothing and still reaches the run door when writable", async () => {
+    send.mockResolvedValue({ projects: [researchProject({ status: "draft" })] });
+    render(<ResearchCanvas wikiId="current" />);
+
+    const start = (await screen.findByRole("button", { name: "Start" })) as HTMLButtonElement;
+    expect(start.disabled).toBe(false);
+    expect(start.getAttribute("aria-disabled")).toBeNull();
+    expect(start.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText(RESEARCH_MUTATE_READ_ONLY_COPY)).toBeNull();
+    expect(screen.queryByText(RESEARCH_CREATE_READ_ONLY_COPY)).toBeNull();
+    fireEvent.click(start);
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        "/api/research/p1/run",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+
+  it("keeps Cancel reaching its own door when writable", async () => {
+    send.mockResolvedValue({ projects: [researchProject({ status: "collecting" })] });
+    render(<ResearchCanvas wikiId="current" />);
+
+    const cancel = (await screen.findByRole("button", { name: "Cancel" })) as HTMLButtonElement;
+    expect(cancel.disabled).toBe(false);
+    expect(cancel.getAttribute("aria-disabled")).toBeNull();
+    expect(cancel.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText(RESEARCH_MUTATE_READ_ONLY_COPY)).toBeNull();
+    fireEvent.click(cancel);
+    await waitFor(() => {
+      const call = send.mock.calls.find(([url]) => String(url).includes("/run"));
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ action: "cancel" });
+    });
   });
 });

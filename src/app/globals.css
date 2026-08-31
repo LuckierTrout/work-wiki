@@ -4950,7 +4950,31 @@ body:has(.wb-shell) {
   color: var(--wb-foreground);
   cursor: pointer;
 }
-.wb-set-action:hover {
+/* The read-only deployment's face on a row control (DW-644), the same
+   precedent `.wb-todos-btn[aria-disabled="true"]` set above for the Graph and
+   Review cards. The Deep Research canvas's Cancel and Start/Retry now RENDER
+   under `readOnly` carrying `aria-disabled` rather than vanishing, and
+   `aria-disabled` gets none of the browser's own disabled treatment — without
+   this they would sit at full opacity, show the pointer cursor `.wb-set-action`
+   sets above, and light up on hover while refusing every click. No mounted test
+   can see it: jsdom applies no stylesheet. The create form's Start Deep
+   Research keeps a real `disabled` (DW-529), so the hover face has to exclude
+   BOTH selectors, as `.wb-wiki-switch-action:hover` does — and `[disabled]`
+   needs the dimmed face too, in the `.wb-todos-btn[disabled]` /
+   `.wb-todos-btn[aria-disabled="true"]` pair's shape. Start Deep Research is
+   disabled on EVERY load until a topic and a query are typed, and the hover
+   background was the only thing that state had ever said about itself; taking
+   it off the hover face without giving it one of its own would leave the
+   commonest disabled control on this canvas looking live. */
+.wb-set-action[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+.wb-set-action[aria-disabled="true"] {
+  opacity: 0.6;
+  cursor: default;
+}
+.wb-set-action:hover:not([disabled]):not([aria-disabled="true"]) {
   background: var(--wb-rail-hover);
 }
 

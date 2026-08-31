@@ -1,14 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { readStoredResearchFill } from "@/lib/workbench-state";
 import {
   RESEARCH_ACTIVE_STATUSES,
   RESEARCH_CREATE_READ_ONLY_COPY,
+  RESEARCH_MUTATE_READ_ONLY_COPY,
   RESEARCH_POLL_MS,
   researchIsPolling,
+  researchOffersCancel,
+  researchOffersRun,
   researchStatusLabel,
   researchTaskLine,
   researchWikiId,
@@ -53,6 +56,14 @@ function reducedMotion(): boolean {
  * reused, and no research SSE route exists — a poll that reads the SAME record
  * the panel would render anyway cannot miss a line, because the line is stored
  * rather than emitted.
+ *
+ * TWO DOORS, TWO SENTENCES on a read-only deployment (DW-529, DW-644). The
+ * create form meets `POST /api/research` and names
+ * {@link RESEARCH_CREATE_READ_ONLY_COPY} in the hint under its button; the two
+ * row controls, Cancel and Start/Retry, meet `POST /api/research/[id]/run` and
+ * name {@link RESEARCH_MUTATE_READ_ONLY_COPY} in one list-level note they share
+ * through `aria-describedby`. Both are the CLIENT mirrors of what those doors
+ * answer, pinned by `read-only-copy-parity.test.ts`.
  */
 export function ResearchCanvas({
   wikiId,
@@ -68,6 +79,10 @@ export function ResearchCanvas({
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [openThinking, setOpenThinking] = useState<Record<string, boolean>>({});
+  // ONE id for the WHOLE list, minted here rather than inside the `.map()`
+  // below: a `useId()` per card would mint a duplicate note per row, and
+  // `aria-describedby` would resolve to whichever node the browser found first.
+  const mutateNoteId = useId();
   const loadSeq = useRef(0);
   const startSeq = useRef(0);
   const wikiScope = useRef(wikiId);
@@ -287,6 +302,7 @@ export function ResearchCanvas({
                 project={project}
                 highlighted={project.id === highlight}
                 readOnly={readOnly}
+                mutateNoteId={mutateNoteId}
                 thinkingOpen={openThinking[project.id] === true}
                 onToggleThinking={(open) =>
                   setOpenThinking((current) => ({ ...current, [project.id]: open }))
@@ -298,6 +314,21 @@ export function ResearchCanvas({
           ))}
         </ul>
       )}
+      {/* ONE note for the DOOR, rendered once for the whole list (DW-644).
+          Cancel and Start/Retry both meet `POST /api/research/[id]/run`, which
+          answers `READ_ONLY_REFUSAL.researchMutate`, so one sentence describes
+          both — and it rides on some shown row actually OFFERING one of them,
+          read through the same predicates the rows render through. A note for a
+          control the owner was never offered would announce the refusal of an
+          operation that is not on screen, and `aria-describedby` would resolve
+          to nothing. Not `role="alert"` — nothing failed; it is the
+          deployment's standing state. */}
+      {readOnly
+        && shown.some((project) => researchOffersCancel(project) || researchOffersRun(project)) ? (
+        <p id={mutateNoteId} className="wb-todos-meta">
+          {RESEARCH_MUTATE_READ_ONLY_COPY}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -306,6 +337,8 @@ interface ResearchTaskProps {
   project: ResearchProject;
   highlighted: boolean;
   readOnly: boolean;
+  /** The list-level mutate note's id — see `ResearchCanvas`. */
+  mutateNoteId: string;
   thinkingOpen: boolean;
   onToggleThinking: (open: boolean) => void;
   onCancel: () => void;
@@ -325,6 +358,7 @@ function ResearchTask({
   project,
   highlighted,
   readOnly,
+  mutateNoteId,
   thinkingOpen,
   onToggleThinking,
   onCancel,
@@ -407,16 +441,34 @@ function ResearchTask({
         </details>
       ) : null}
 
-      {live && !readOnly ? (
-        <button type="button" className="wb-set-action" onClick={onCancel}>
+      {/* RENDERED, NOT HIDDEN, on a read-only deployment (DW-644) — the shape
+          DW-531 set at the Graph and Review canvases. These two used to vanish
+          under `readOnly`, which is the refusal that explains least: the owner
+          met a card with no controls and no reason. `aria-disabled` keeps them
+          focusable and announced, `aria-describedby` names the door's own
+          sentence, and `cancel`/`runExisting` are what refuse. Neither control
+          has any TRANSIENT state of its own, so nothing is left in `disabled`
+          here. The visibility rules themselves are unchanged — they are simply
+          read from the predicates the note above shares. */}
+      {researchOffersCancel(project) ? (
+        <button
+          type="button"
+          className="wb-set-action"
+          aria-disabled={readOnly || undefined}
+          aria-describedby={readOnly ? mutateNoteId : undefined}
+          onClick={onCancel}
+        >
           Cancel
         </button>
       ) : null}
-      {!live
-        && !readOnly
-        && ["draft", "failed", "cancelled"].includes(project.status)
-        && (!project.completion || project.deliveryBlocked) ? (
-        <button type="button" className="wb-set-action" onClick={onRun}>
+      {researchOffersRun(project) ? (
+        <button
+          type="button"
+          className="wb-set-action"
+          aria-disabled={readOnly || undefined}
+          aria-describedby={readOnly ? mutateNoteId : undefined}
+          onClick={onRun}
+        >
           {project.status === "draft" ? "Start" : "Retry"}
         </button>
       ) : null}
