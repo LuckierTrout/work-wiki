@@ -587,8 +587,17 @@ export async function createResearchProject(
   // primitive refuses with a VALUE so the runtime's fail-soft callers are not
   // stranded by a throw; this entry point's contract is to throw, so the
   // sentinel is converted rather than handed back as a fake project.
+  //
+  // ONE DOOR, ONE SENTENCE (DW-659): the same `researchCreate` the gate above
+  // serves, not `researchMutate`. Both refusals leave this function by the
+  // same `throw`, and the caller cannot tell which read of the flag lost — so
+  // a create that never happened must not be reported with "cannot be
+  // changed", which sends the owner looking for the project it thinks it
+  // edited. `researchCreate` is the only sentence here that says the thing
+  // that matters: nothing was created. `deleteResearchProject` converts to
+  // `researchMutate` for the same reason — its own gate's sentence.
   if (isResearchWriteRefused(created)) {
-    throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+    throw new ReadOnlyError(READ_ONLY_REFUSAL.researchCreate);
   }
   return created;
 }

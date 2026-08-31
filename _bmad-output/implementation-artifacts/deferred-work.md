@@ -5047,7 +5047,9 @@ location: src/lib/research-runtime.ts:246
 source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
 severity: low
 reason: `src/lib/research-runtime.ts:246-270` writes `progress.message: "Research delivery is blocked. Repair the reported lock, then retry."` and surfaces the caught message as `error`. Both drain call sites (`:606-613`, `:1310-1314`) route through it, so the new `Research completion sources are not a list.` refusal is presented under an instruction naming a lock that is not involved, pointing at a Retry that re-enters the same refusal. Separately `:498` and `:500` swallow drain faults with `.catch(() => undefined)`, so cancel and retire silently no-op against a corrupt completion. Pre-existing for every fault class this path already carried; the shape refusal only makes the mismatch easier to hit.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-door-copy
+resolution-undo: 29a632c1ea181e185ada6accb74536744b733b4fbc46bd814f83b101a119807e 2026-08-31 7374617475733a206f70656e
 
 ### DW-657: The runtime's gated entry points report a mid-request read-only refusal as "Research project not found." instead of a refusal.
 origin: spec-deferred 26f2c8480da4
@@ -5075,7 +5077,9 @@ location: src/lib/research-projects.ts:571
 source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
 severity: low
 reason: src/lib/research-projects.ts:571 throws `new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate)` on the sentinel, three lines below a gate that throws `READ_ONLY_REFUSAL.researchCreate`. One door, two sentences — and `researchCreate` exists precisely because it says the thing `researchMutate` cannot: that nothing was created. The wording was pinned by this spec's own I/O matrix, so the code is correct as specified; the matrix row is what should have said `researchCreate`.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-door-copy
+resolution-undo: 29a632c1ea181e185ada6accb74536744b733b4fbc46bd814f83b101a119807e 2026-08-31 7374617475733a206f70656e
 
 ### DW-660: Reconcile's orphan-outbox catch still calls a read-only refusal a damaged outbox — the sibling of the line DW-528 fixed.
 origin: spec-deferred 348e7e8f6ccb
@@ -5083,7 +5087,9 @@ location: src/lib/research-runtime.ts:843
 source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
 severity: low
 reason: src/lib/research-runtime.ts:843 logs `reconcile skipped damaged orphan outbox <id>` for every fault, and `drainResearchOutbox` reaches the gated kernel page writers, so a `ReadOnlyError` lands there exactly as it lands in the per-project catch one loop above. DW-528's intent names the per-project catch only, so the orphan loop was left alone rather than swept in.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-door-copy
+resolution-undo: 29a632c1ea181e185ada6accb74536744b733b4fbc46bd814f83b101a119807e 2026-08-31 7374617475733a206f70656e
 
 ### DW-661: The read-only sentinel is distinguishable only at the CAS primitive; every fail-soft runtime caller still sees a plain `null`.
 origin: spec-deferred a9fa661e1eb6
@@ -5245,4 +5251,12 @@ location: src/lib/research-runtime.ts:412
 source_spec: `spec-dw-657-658-661-research-readonly-cas-sentinel.md`
 severity: low
 reason: `queueResearchProject` calls `releaseResearchSlotAndConfirmGone` (src/lib/research-runtime.ts:412) ahead of the CAS, and `research-concurrency.ts` carries no `isReadOnly`/`assertWritable` gate of its own. Demonstrated during review: with a project holding a real lease and the flag set, the call throws `ReadOnlyError` as intended, but `research-leases.json` goes from `[{projectId, attemptId, ...}]` to `[]` while the row still records that `runAttemptId`. Pre-existing — the same release ran before this change, which merely relabelled what the CAS then threw — so it is out of this bundle's scope, but it is a write on a deployment that refused the request, which is the invariant the research read-only work exists to hold. `read-only-store-gate.test.ts`'s queue case now excludes the lease file from its byte comparison and says why, rather than seeding the lease to manufacture a green whole-tree snapshot.
+status: open
+
+### DW-681: Reconcile's orphan-outbox loop deletes an UNCLAIMED orphan outbox on a read-only deployment, writing where the deployment promises to write nothing.
+origin: spec-deferred dbfaa9d6f88f
+location: src/lib/research-completion.ts:991
+source_spec: `spec-dw-656-659-660-research-readonly-door-copy.md`
+severity: low
+reason: `reconcileResearchProjects`' orphan loop calls `drainResearchOutbox`, which for a missing project row calls `drainOrphanOutbox` (src/lib/research-completion.ts:991-994). When `outbox.claimed !== true` that path calls `deleteResearchOutbox` and returns — and `deleteResearchOutbox` (research-completion.ts:314-321) is an ungated `clearResearchStaging` + `getStorage().deleteFile`, so it destroys the outbox on a deployment that has refused every other write. The gated writer DW-660 branches on is only reached for a CLAIMED outbox, so the new `isReadOnlyError` branch does not cover this shape at all. Reachable today only by a direct library caller: `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses, the same caveat DW-528's per-project branch carries.
 status: open

@@ -614,10 +614,19 @@ describe("the read-only gate precedes the store's lock", () => {
         READ_ONLY_REFUSAL.researchMutate,
       );
       reads = 0;
+      // `researchCreate`, NOT the delete's `researchMutate` (DW-659). The
+      // caller cannot tell which read of the flag lost, so both refusals out of
+      // the create door have to carry the sentence its own gate serves — a
+      // project that was never stored must not be reported as one that "cannot
+      // be changed".
       await expectRefusal(
         () => createResearchProject(OWNER, { ...RESEARCH_INPUT, title: "Second" }),
-        READ_ONLY_REFUSAL.researchMutate,
+        READ_ONLY_REFUSAL.researchCreate,
       );
+      // Both halves are pinned, which is the point: a future "these two are
+      // nearly the same, unify them" edit re-merges the doors and passes every
+      // assertion above unless the strings are asserted DISTINCT here.
+      expect(READ_ONLY_REFUSAL.researchCreate).not.toBe(READ_ONLY_REFUSAL.researchMutate);
       // The owner's edit is the third: its CAS returns `null` here, which the
       // route would serve as 409 "cannot be edited" — the wrong reason. It
       // re-reads the flag on that null path so the window stays a refusal.

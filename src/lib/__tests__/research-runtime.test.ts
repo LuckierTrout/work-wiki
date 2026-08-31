@@ -125,7 +125,7 @@ import {
   retireResearchProject,
   runResearchProject,
 } from "../research-runtime";
-import { READ_ONLY_REFUSAL, isReadOnlyError } from "../read-only";
+import { READ_ONLY_REFUSAL, ReadOnlyError, isReadOnlyError } from "../read-only";
 import { loadPageConventions } from "../schema";
 import { _resetStorage, getStorage } from "../storage";
 import { enqueueTask, parseTask } from "../tasks";
@@ -1989,6 +1989,86 @@ describe("deep research — remediations", () => {
     expect(await loadResearchOutbox("alice", created.id)).toBeNull();
   });
 
+  it("logs a read-only skip, not damage, when an ORPHAN outbox drain is refused", async () => {
+    // DW-660. DW-528 gave the per-project catch its `isReadOnlyError` branch
+    // and left the orphan loop three lines below it still calling every fault
+    // damage. The orphan drain reaches `writeResearchPage` ->
+    // `writeWikiPageWithSideEffects`, which is gated, so a read-only deployment
+    // lands a `ReadOnlyError` in exactly this catch — and "damaged orphan
+    // outbox" told an operator their queued Page was corrupt when nothing was
+    // wrong with it.
+    const ids: string[] = [];
+    for (const title of ["Orphan one", "Orphan two"]) {
+      const created = await project({ title });
+      await saveResearchOutbox("alice", created.id, {
+        pageSlug: "research-launch-evidence",
+        title: "Launch evidence",
+        synthesis: "# Launch evidence\n\nA brief.",
+        thinking: [],
+        sources: [],
+        evidence: [],
+        claimed: true,
+      });
+      expect(await deleteResearchProject("alice", created.id)).toBe(true);
+      ids.push(created.id);
+    }
+    mockedWritePage.mockRejectedValue(new ReadOnlyError(READ_ONLY_REFUSAL.pageWrite));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let lines: string[] = [];
+    try {
+      await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    } finally {
+      // BEFORE `mockRestore`, which resets the recorded calls along with the
+      // implementation — reading them afterwards yields an empty list and every
+      // assertion below would pass vacuously.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+    }
+
+    // BOTH orphans, which is also how the loop's continuation is pinned: a
+    // catch that rethrew would have logged only the first.
+    for (const id of ids) {
+      expect(lines).toContain(`reconcile skipped read-only orphan outbox ${id}`);
+    }
+    expect(lines.some((line) => line.includes("damaged orphan outbox"))).toBe(false);
+    // And the refusal was real: neither outbox was drained away.
+    for (const id of ids) {
+      expect(await loadResearchOutbox("alice", id)).not.toBeNull();
+    }
+  });
+
+  it("still names a DAMAGED orphan outbox when the fault is not a refusal", async () => {
+    // The control for the case above (DW-660). A catch that logged the
+    // read-only line for EVERY fault would satisfy it and hide every real one,
+    // so this walks the same catch with an ordinary storage fault.
+    const created = await project();
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [],
+      evidence: [],
+      claimed: true,
+    });
+    expect(await deleteResearchProject("alice", created.id)).toBe(true);
+    mockedWritePage.mockRejectedValue(new Error("EIO: page store unreadable"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let lines: string[] = [];
+    try {
+      await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    } finally {
+      // BEFORE `mockRestore`, which clears the recorded calls with it.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+    }
+
+    expect(lines).toContain(`reconcile skipped damaged orphan outbox ${created.id}`);
+    expect(lines.some((line) => line.includes("read-only orphan outbox"))).toBe(false);
+  });
+
   it("reconcile drains an outbox even when the project has no completion pointer", async () => {
     const created = await project();
     await saveResearchOutbox("alice", created.id, {
@@ -2029,11 +2109,114 @@ describe("deep research — remediations", () => {
     const blocked = await getResearchProject("alice", created.id);
     expect(blocked).toMatchObject({ status: "failed", deliveryBlocked: true });
     expect(blocked?.error).toMatch(/operator recovery required/i);
-    expect(blocked?.progress?.message).toMatch(/repair.*lock.*retry/i);
+    // DW-656. The sentence used to tell the operator to repair a reported lock
+    // — a literal this comment deliberately does not spell, so the repo-wide
+    // grep for it stays clean. But the expired durable lock is only ONE of the
+    // faults that reaches this fence, and the row's own `error` field already
+    // carries whichever it was, so the sentence points at that field instead of
+    // at a lock that may not be involved at all.
+    expect(blocked?.progress?.message).toMatch(/resolve.*error.*retry/i);
+    // Anchored at the START of a word only: "blocked" carries the substring, so
+    // an unanchored /lock/i would fail on the sentence's own first clause. The
+    // tail is deliberately open — "locks", "locking", "lockfile" and
+    // "lock-holder" are exactly the rewordings that would bring the regression
+    // back, and a trailing \b would wave all four through.
+    expect(blocked?.progress?.message).not.toMatch(/(?:^|\W)lock\w*/i);
 
     const retrying = await queueResearchProject("alice", created.id);
     expect(retrying.deliveryBlocked).toBe(false);
     expect(retrying.completion?.phase).not.toBe("done");
+  });
+
+  it("does NOT fence the row when the delivery drain is REFUSED, not broken", async () => {
+    // DW-656. The fence is for a fault an operator must go and resolve, and it
+    // costs the owner an explicit Retry to clear. A read-only refusal is
+    // neither: nothing is wrong with the row and the drain succeeds unchanged
+    // the moment the deployment is writable. The write was silent only BY
+    // ACCIDENT before — `updateResearchProjectIf` collapses the CAS sentinel to
+    // `null`, so the fence refused ITSELF — which left the real hole this pins:
+    // the flag flipping back to writable between the drain's throw and the
+    // fence write, storing `deliveryBlocked: true` with a read-only sentence as
+    // `error`. That is the shape here: the store is writable throughout and only
+    // the Page write refuses.
+    const created = await project();
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [],
+      evidence: [],
+    });
+    mockedWritePage.mockRejectedValueOnce(new ReadOnlyError(READ_ONLY_REFUSAL.pageWrite));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let lines: string[] = [];
+    try {
+      await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    } finally {
+      // BEFORE `mockRestore`, which clears the recorded calls with it.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+    }
+
+    // Skipped OUT LOUD, not silently: the fence is the operator's signal that a
+    // delivery stopped, so declining to raise one has to leave a line behind.
+    expect(lines).toContain(`skipped read-only delivery block for ${created.id}`);
+
+    // Every field an operator reads is untouched by the refusal.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.deliveryBlocked).not.toBe(true);
+    expect(after?.status).not.toBe("failed");
+    expect(after?.error).toBeUndefined();
+    expect(after?.progress?.message ?? "").not.toMatch(/delivery is blocked/i);
+
+    // …and the next writable pass drains it on its own. The fence is exactly
+    // what would have gated this behind a Retry the owner never had to make.
+    await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    const delivered = await getResearchProject("alice", created.id);
+    expect(delivered?.status).toBe("complete");
+    expect(delivered?.completion?.phase).toBe("done");
+  });
+
+  it("rethrows that refusal from runResearchProject, still without fencing", async () => {
+    // The fence's OTHER caller (DW-656). Both cases above drive reconcile,
+    // which swallows what the fence returns; `runResearchProject` rethrows the
+    // drain's own error on the line after it, so the early return has to leave
+    // that rethrow — and the row — exactly as it found them. A fence that
+    // started throwing, or one that wrote on a refusal, shows up here and
+    // nowhere else.
+    //
+    // The first, ORDINARY failure is setup, not the subject: it is what leaves
+    // a pending `phase: "page"` completion and a minted `deliveryAttemptId`
+    // behind, which is the shape that actually reaches the drain — a project
+    // with no attempt id yet never gets past `ensureResearchDeliveryAttempt`.
+    mockedWritePage.mockRejectedValueOnce(new Error("registry down"));
+    const created = await project();
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(/registry down/);
+    const pending = await getResearchProject("alice", created.id);
+    expect(pending?.completion?.phase).toBe("page");
+    expect(pending?.deliveryAttemptId).toBeTruthy();
+    expect(pending?.deliveryBlocked).not.toBe(true);
+
+    mockedWritePage.mockRejectedValueOnce(new ReadOnlyError(READ_ONLY_REFUSAL.pageWrite));
+    const error = await runResearchProject("alice", created.id).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    // The caller's own rethrow, unchanged: the refusal leaves by the door every
+    // read-only path leaves by, classified on `name` the way each one is.
+    expect(isReadOnlyError(error)).toBe(true);
+    expect((error as Error).message).toBe(READ_ONLY_REFUSAL.pageWrite);
+    // And nothing was fenced on the way out. `error` is the tell: the fence
+    // overwrites it with the refusal sentence, so the ordinary fault from the
+    // setup run still standing there is proof the write never happened.
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.deliveryBlocked).not.toBe(true);
+    expect(after?.status).not.toBe("failed");
+    expect(after?.error).toBe("registry down");
+    expect(after?.progress?.message ?? "").not.toMatch(/delivery is blocked/i);
   });
 
   it("resolves the current Settings provider on retry, not a stale project pin", async () => {

@@ -275,12 +275,61 @@ async function note(
   }
 }
 
+/**
+ * Fences a project whose delivery drain threw, so a poll-driven reconcile
+ * cannot retry it forever: the row goes `failed` + `deliveryBlocked`, and only
+ * an explicit Retry clears it.
+ *
+ * A READ-ONLY REFUSAL IS NOT A BLOCKED DELIVERY (DW-656), so it returns before
+ * it writes. The fence is for a fault an operator must go and resolve — an
+ * expired durable lock, a storage the writer cannot reach — and it costs the
+ * owner an explicit Retry to clear. A refusal is neither: nothing is wrong with
+ * the row, the drain will succeed unchanged the moment the deployment is
+ * writable again, and on a read-only deployment nothing may be written at all.
+ * Until now this path was silent only BY ACCIDENT — `updateResearchProjectIf`
+ * collapses the CAS sentinel to `null`, so the write refused itself — which
+ * left a real hole: a flag that flipped back to writable between the drain's
+ * throw and this write would have stored `deliveryBlocked: true` carrying a
+ * read-only sentence as `error`, an operator-cleared fence for a fault that was
+ * never about the row. Returning early makes "read-only wrote nothing" a
+ * property of this function rather than a side effect of the funnel.
+ *
+ * IT STILL DOES NOT THROW. `reconcileResearchProjects` calls this from its
+ * per-project drain catch and then runs `outboxIds.delete(project.id)` itself;
+ * a throw from here would skip that delete and re-drain a live project through
+ * the orphan loop below. The other caller, `runResearchProject`, rethrows the
+ * drain's own error right after calling this — also unchanged.
+ *
+ * WHICH PROJECTS ACTUALLY REACH THE EARLY RETURN. Both callers go through
+ * `ensureResearchDeliveryAttempt` first, and it mints a missing
+ * `deliveryAttemptId` through the collapsing `mutateResearchProject` — so on a
+ * store-wide read-only deployment a project that has no attempt id yet gets a
+ * `null` there and its caller returns or `continue`s before the drain is even
+ * attempted. The branch below therefore fires for a project that ALREADY
+ * carries a `deliveryAttemptId` (the ordinary case once a first drain has run),
+ * and for the mid-flip shape where the store is writable and only the gated
+ * Page writer refuses.
+ *
+ * THE PROGRESS SENTENCE NAMES NO LOCK (DW-656). It used to tell the owner to
+ * repair a reported lock, for EVERY fault that reaches here — though the
+ * expired durable lock is only one of them, and the row's own `error` field
+ * already carries whichever fault it actually was. The sentence points at that
+ * field instead, so it cannot name a lock that is not involved.
+ */
 async function markResearchDeliveryBlocked(
   owner: string,
   projectId: string,
   deliveryAttemptId: string,
   error: unknown,
 ): Promise<void> {
+  if (isReadOnlyError(error)) {
+    logger.warn(
+      "research",
+      `skipped read-only delivery block for ${projectId}`,
+      error,
+    );
+    return;
+  }
   const message = error instanceof Error ? error.message : String(error);
   const latest = await getResearchProject(owner, projectId);
   if (!latest) return;
@@ -299,7 +348,7 @@ async function markResearchDeliveryBlocked(
     progress: {
       completedQueries: latest.progress?.completedQueries ?? 0,
       totalQueries: latest.progress?.totalQueries ?? Math.max(1, latest.queries.length),
-      message: "Research delivery is blocked. Repair the reported lock, then retry.",
+      message: "Research delivery is blocked. Resolve the reported error, then retry.",
     },
   });
 }
@@ -906,7 +955,24 @@ export async function reconcileResearchProjects(
         await drainResearchOutbox(owner, orphanId);
         changed = true;
       } catch (error) {
-        logger.warn("research", `reconcile skipped damaged orphan outbox ${orphanId}`, error);
+        // DW-528's branch, applied to the loop it did not name (DW-660). For a
+        // CLAIMED outbox the drain reaches `writeResearchPage` ->
+        // `writeWikiPageWithSideEffects`, which is gated, so a read-only
+        // deployment raises a `ReadOnlyError` here — and calling that "damaged
+        // orphan outbox" told an operator their outbox was corrupt when nothing
+        // was wrong with it. (An UNCLAIMED one never reaches a gated writer:
+        // `drainOrphanOutbox` deletes it and returns.) Same shape and same
+        // channel as the per-project catch above; either way the loop continues
+        // to the next orphan.
+        if (isReadOnlyError(error)) {
+          logger.warn(
+            "research",
+            `reconcile skipped read-only orphan outbox ${orphanId}`,
+            error,
+          );
+        } else {
+          logger.warn("research", `reconcile skipped damaged orphan outbox ${orphanId}`, error);
+        }
       }
     }
     const currentProjects = await listResearchProjects(owner);

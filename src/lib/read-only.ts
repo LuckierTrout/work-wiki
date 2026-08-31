@@ -128,6 +128,20 @@
  * is closed to a direct library caller in every case; what differs is whether
  * the refusal arrives as a value or as a throw.
  *
+ * EACH CONVERSION CARRIES THE SENTENCE ITS OWN GATE ALREADY SERVES (DW-659):
+ * create {@link READ_ONLY_REFUSAL.researchCreate}, delete
+ * {@link READ_ONLY_REFUSAL.researchMutate}. That the two are DIFFERENT sentences
+ * is just the two doors being two doors; what DW-659 is about is agreement
+ * WITHIN one door. Each of those entry points refuses twice — once at its own
+ * `assertWritable`, once by converting the sentinel — and the caller cannot tell
+ * which of the two flag reads lost, so both paths out of one door have to answer
+ * with the same sentence. Create's conversion carried `researchMutate` until
+ * DW-659, reporting a project that was never stored as one that "cannot be
+ * changed". The mismatch hid because a conversion sits well below the gate it
+ * has to match, with the whole body of the write in between; the comment at
+ * create's conversion now names the gate it must agree with, and this note
+ * records both pairings in one place.
+ *
  * COLLAPSING IS NOW A CHOICE, NOT THE ONLY OPTION (DW-661). While the funnel
  * was the only way up from the primitive, "refused" and "lost the race" were
  * one answer to every runtime caller, and five entry points in
