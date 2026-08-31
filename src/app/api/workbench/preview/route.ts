@@ -12,7 +12,7 @@ import {
   isEditableArtifactFile,
   type EditableArtifactFile,
 } from "@/lib/wiki-scenarios";
-import { getWikiRegistry } from "@/lib/wikis";
+import { getWikiRegistry, readEffectiveWikiArtifact } from "@/lib/wikis";
 import { contentVersion, scopedContentVersion } from "@/lib/write-precondition";
 import {
   readWorkbenchFile,
@@ -253,9 +253,19 @@ async function handle(request: Request) {
       return notFound();
     }
   } else {
-    const file = await readWorkbenchFile(principal.handle, currentId, displayPath, gate);
-    if (!file) return notFound();
-    content = file.content;
+    if (displayPath === "purpose.md" && currentId !== null) {
+      const effective = await readEffectiveWikiArtifact(
+        principal.handle,
+        currentId,
+        "purpose.md",
+      );
+      if (effective === null) return notFound();
+      content = effective;
+    } else {
+      const file = await readWorkbenchFile(principal.handle, currentId, displayPath, gate);
+      if (!file) return notFound();
+      content = file.content;
+    }
   }
 
   const segments = displayPath.split("/");

@@ -397,10 +397,15 @@ export async function backfillWorkspaceProfiles(): Promise<number> {
   try {
     const owner = getOwnerHandle();
     if (!owner) return 0;
-    const { backfillLegacyWorkspaceProfiles } = await import(
+    const {
+      backfillLegacyWorkspaceProfiles,
+      canonicalizeWorkspacePurposes,
+    } = await import(
       "./workspace-profile-backfill"
     );
-    return await backfillLegacyWorkspaceProfiles(owner);
+    const relocated = await backfillLegacyWorkspaceProfiles(owner);
+    const canonicalized = await canonicalizeWorkspacePurposes(owner);
+    return relocated + canonicalized;
   } catch (err) {
     logger.error("maintenance", "workspace-profile backfill failed:", err);
     return 0;

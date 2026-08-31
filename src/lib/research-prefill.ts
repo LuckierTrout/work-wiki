@@ -4,8 +4,7 @@
  */
 
 import { readWikiPage } from "./wiki";
-import { getWikiRegistry, readWikiArtifact } from "./wikis";
-import { getWorkspaceProfile } from "./workspace-profile";
+import { getWikiRegistry, readEffectiveWikiArtifact } from "./wikis";
 import { mapWithConcurrency } from "./concurrency";
 
 export interface ResearchPrefill {
@@ -75,21 +74,15 @@ export async function loadResearchPrefillContext(
     const registry = await getWikiRegistry(owner).catch(() => null);
     const wikiId = registry?.currentId;
     if (wikiId) {
-      const [artifactResult, profileResult] = await Promise.allSettled([
-        readWikiArtifact(owner, wikiId, "purpose.md"),
-        getWorkspaceProfile(owner, wikiId),
-      ]);
+      const artifactResult = await Promise.resolve(
+        readEffectiveWikiArtifact(owner, wikiId, "purpose.md"),
+      ).then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason) => ({ status: "rejected" as const, reason }),
+      );
       if (artifactResult.status === "fulfilled" && artifactResult.value) {
         const sentence = firstSentence(artifactResult.value);
         if (sentence) purposeQueries.push(sentence);
-      }
-      if (profileResult.status === "fulfilled") {
-        const purpose = profileResult.value.purpose.trim();
-        if (purpose) purposeQueries.push(purpose.slice(0, 200));
-        for (const question of profileResult.value.keyQuestions) {
-          const trimmed = question.trim();
-          if (trimmed) purposeQueries.push(trimmed.slice(0, 200));
-        }
       }
     }
   }

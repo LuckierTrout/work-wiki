@@ -256,7 +256,13 @@ export const SETTINGS_KEY_PLACEHOLDER = "Leave blank to keep the stored key";
 
 /** General points at the Schema editor; it writes nothing itself (DW-58). */
 export const SETTINGS_GENERAL_SCHEMA_COPY =
-  "Edit this Wiki’s Schema from the Files tab in the Wiki mode — select schema.md and press Edit.";
+  "Open Schema in the Wiki Files Preview. Its Page conventions guide generated pages.";
+
+export const SETTINGS_GENERAL_PURPOSE_COPY =
+  "Open Purpose in the Wiki Files Preview. It is the canonical owner-authored guidance for new generated work.";
+
+export const SETTINGS_GENERAL_NO_WIKI_COPY =
+  "Create or select a Wiki before opening its Purpose or Schema.";
 
 /** The one workload-inheritance sentence, shown under both model pickers. */
 export const SETTINGS_MODEL_INHERIT_COPY =

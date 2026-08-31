@@ -8,7 +8,11 @@
  * is spelled twice across the client/server boundary.
  */
 
-import { isEditableArtifactFile, type EditableArtifactFile } from "./wiki-scenarios";
+import {
+  artifactDisplayName,
+  isEditableArtifactFile,
+  type EditableArtifactFile,
+} from "./wiki-scenarios";
 import { INTAKE_MEDIA_EXTENSIONS } from "./workbench-intake";
 import type { TreeSelection } from "./workbench-tree";
 import {
@@ -482,7 +486,7 @@ export function artifactRevisionsUrl(
  */
 export type PreviewWriteTarget =
   | { kind: "page"; key: string; url: string }
-  | { kind: "artifact"; key: string; url: string };
+  | { kind: "artifact"; file: EditableArtifactFile; key: string; url: string };
 
 /**
  * Decide the write target for a payload, or `null` when there is none.
@@ -509,6 +513,7 @@ export function previewWriteTarget(
   if (isEditableArtifactFile(payload.artifact)) {
     return {
       kind: "artifact",
+      file: payload.artifact,
       key: `artifact:${payload.artifact}`,
       url: artifactWriteUrl(payload.artifact),
     };
@@ -720,6 +725,10 @@ export const PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE = "Edit this Wiki’s Schema?";
 export const PREVIEW_EDIT_SCHEMA_CONFIRM_BODY =
   "Preview is view-first. Editing opens the raw markdown — there is no rich-text editor. The Schema is executable: its Page conventions section is read by every ingest, chat and lint that runs after you save.";
 
+export const PREVIEW_EDIT_PURPOSE_CONFIRM_TITLE = "Edit this Wiki’s Purpose?";
+export const PREVIEW_EDIT_PURPOSE_CONFIRM_BODY =
+  "Preview is view-first. Editing opens the raw markdown — there is no rich-text editor. Purpose guides new ingest, chat, query, lint, extraction, monitoring, and agent runs after you save.";
+
 /**
  * The OTHER gate, and the mirror image of the one above (DW-36): editing is a
  * decision, so leaving an edit unsaved is a decision too.
@@ -758,6 +767,7 @@ export const PREVIEW_SAVE_FAILED_COPY = "This page couldn’t be saved.";
 
 /** The same fallback for the Schema, which is not a page. */
 export const PREVIEW_SCHEMA_SAVE_FAILED_COPY = "This Schema couldn’t be saved.";
+export const PREVIEW_PURPOSE_SAVE_FAILED_COPY = "This Purpose couldn’t be saved.";
 
 /**
  * The ACTION phrase, for the one sentence `workbench-request` composes when the
@@ -773,6 +783,7 @@ export const PREVIEW_SAVE_ACTION = "save this page";
 
 /** …and the same phrase for the Schema. */
 export const PREVIEW_SCHEMA_SAVE_ACTION = "save the Schema";
+export const PREVIEW_PURPOSE_SAVE_ACTION = "save the Purpose";
 
 // ---------------------------------------------------------------------------
 // The History panel's vocabulary (DW-214)
@@ -858,9 +869,35 @@ export const PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE =
  */
 export function previewHistoryRevertConfirmBody(
   revision: ArtifactRevisionSummary | null,
+  file: EditableArtifactFile = "schema.md",
 ): string {
-  if (revision === null) return PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE;
-  return `Restoring the version from ${artifactRevisionLabel(revision)}. ${PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE}`;
+  const label = artifactDisplayName(file);
+  const consequence = file === "purpose.md"
+    ? "Purpose guides new ingest, chat, query, lint, extraction, monitoring, and agent runs after this. What Purpose holds now is saved as an earlier version first, so this can be undone."
+    : PREVIEW_HISTORY_REVERT_CONFIRM_CONSEQUENCE;
+  if (revision === null) return consequence;
+  return `Restoring the version from ${artifactRevisionLabel(revision)}. ${consequence.replace("The Schema", `The ${label}`)}`;
+}
+
+export interface PreviewArtifactHistoryCopy {
+  revertFallback: string;
+  revertAction: string;
+  confirmTitle: string;
+  reverted: string;
+  readOnly: string;
+}
+
+export function previewArtifactHistoryCopy(
+  file: EditableArtifactFile,
+): PreviewArtifactHistoryCopy {
+  const label = artifactDisplayName(file);
+  return {
+    revertFallback: `This ${label} couldn’t be reverted.`,
+    revertAction: `revert the ${label}`,
+    confirmTitle: `Restore this earlier ${label}?`,
+    reverted: `${label} restored to an earlier version`,
+    readOnly: `The ${label} cannot be reverted to an earlier version while this deployment is read-only.`,
+  };
 }
 
 export const PREVIEW_HISTORY_REVERT_CONFIRM_LABEL = "Restore this version";
@@ -994,6 +1031,14 @@ export interface PreviewEditCopy {
  */
 export function previewEditCopy(target: PreviewWriteTarget | null): PreviewEditCopy {
   if (target?.kind === "artifact") {
+    if (target.file === "purpose.md") {
+      return {
+        confirmTitle: PREVIEW_EDIT_PURPOSE_CONFIRM_TITLE,
+        confirmBody: PREVIEW_EDIT_PURPOSE_CONFIRM_BODY,
+        saveFallback: PREVIEW_PURPOSE_SAVE_FAILED_COPY,
+        saveAction: PREVIEW_PURPOSE_SAVE_ACTION,
+      };
+    }
     return {
       confirmTitle: PREVIEW_EDIT_SCHEMA_CONFIRM_TITLE,
       confirmBody: PREVIEW_EDIT_SCHEMA_CONFIRM_BODY,
@@ -1765,10 +1810,11 @@ export async function revertArtifactRevision(
    * lives HERE rather than on {@link ArtifactRevisionsOptions}: the three read
    * helpers share that shape, and a read has no outcome to be unknown about.
    */
-  options: ArtifactRevisionsOptions & { action?: string } = {},
+  options: ArtifactRevisionsOptions & { action?: string; fallback?: string } = {},
 ): Promise<ArtifactRevertResult> {
   const send = options.fetchImpl ?? fetch;
   const action = options.action ?? PREVIEW_HISTORY_REVERT_ACTION;
+  const fallback = options.fallback ?? PREVIEW_HISTORY_REVERT_FAILED_COPY;
   try {
     const response = await send(artifactRevisionsUrl(file), {
       method: "POST",
@@ -1788,7 +1834,7 @@ export async function revertArtifactRevision(
           response.status,
           served,
           action,
-          PREVIEW_HISTORY_REVERT_FAILED_COPY,
+          fallback,
         ),
       };
     }
@@ -1796,7 +1842,7 @@ export async function revertArtifactRevision(
   } catch (cause) {
     return {
       status: "error",
-      ...thrownWriteFailure(cause, action, PREVIEW_HISTORY_REVERT_FAILED_COPY),
+      ...thrownWriteFailure(cause, action, fallback),
     };
   }
 }

@@ -3313,7 +3313,9 @@ source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
 location: workers/email-ingest/index.ts (inlineAttachment)
 severity: low
 reason: The predicate is `attachment.disposition === "inline"`, and its comment records the deliberate choice to treat a `null` disposition as a real attachment rather than risk dropping a file the sender really sent. postal-mime also exposes `contentId` and a `related` flag, and DW-359's own text describes the noisy parts as having `disposition: "inline"` AND a `contentId`. A client that emits `Content-ID` without a disposition header therefore keeps the behaviour the entry was filed against. Widening the predicate is a separate decision about which signal to trust.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-inline-part-eligibility
+resolution-undo: ca6a99e4053222951e4d8167e59176aefdde374e63efe44589a9fd964c207ee9 2026-08-31 7374617475733a206f70656e
 decision: 2026-08-28 Trust Content-ID too — Widen inlineAttachment to treat a part carrying a contentId that the HTML body references as inline even when disposition is absent, leaving a bare null disposition with no contentId as a real attachment, and pin both shapes with fixtures.
 
 ### DW-451: The Worker computes the trimmed site URL twice, so the two copies can still drift; hoisting one const would remove the drift class the new link tests guard against.
@@ -4308,7 +4310,9 @@ location: workers/email-ingest/index.ts (eligibleAttachments, and the acknowledg
 source_spec: `spec-dw-446-email-inline-part-eligibility.md`
 severity: medium
 reason: DW-446's recorded 2026-08-28 decision is "never forwarded", and this change implements it: an inline part leaves eligibility, so it is not forwarded, not named in `attachmentName`, and contributes to none of the four loss terms. A message whose only part is an inline `.md` is therefore answered with "work-wiki found no email text to ingest." — a document arrived and no sentence in the reply mentions it. Apple Mail and Outlook are reported to mark PDFs and images rendered in the message body as inline, so the false-positive population is not empty. Two readings were raised by review and both were rejected by the recorded decision rather than by evidence: forward-but-count (make the accounting honest instead of eligibility narrower), and drop-but-report (one "not queued" line naming inline documents). Revisiting means re-opening a decision a human already made, which is why it is deferred rather than patched.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-inline-part-eligibility
+resolution-undo: ca6a99e4053222951e4d8167e59176aefdde374e63efe44589a9fd964c207ee9 2026-08-31 7374617475733a206f70656e
 decision: 2026-08-29 Drop, but report — Keep inline parts out of eligibility exactly as DW-446 decided, and add one acknowledgement line naming supported documents that were not queued because they were labelled inline, so a message is never answered as if nothing arrived. Count them in a fifth loss term rather than reshaping the existing four. Pin the reply for a message whose only part is an inline supported document.
 decision: 2026-08-29 Drop, but report — Keep inline parts out of eligibility exactly as DW-446 decided, and add one acknowledgement line naming supported documents that were not queued because they were labelled inline, so a message is never answered as if nothing arrived. Count them in a fifth loss term rather than reshaping the existing four. Pin the reply for a message whose only part is an inline supported document.
 
@@ -4318,7 +4322,9 @@ location: workers/email-ingest/index.ts (inlineAttachment)
 source_spec: `spec-dw-446-email-inline-part-eligibility.md`
 severity: medium
 reason: `inlineAttachment` reads `disposition` and nothing else, and DW-450 carries a 2026-08-28 decision to treat a part with a `Content-ID` and no `Content-Disposition` as inline. Under DW-359 that predicate governed only which parts were COUNTED, so widening it could at worst suppress a reply sentence. After DW-446 the same predicate governs whether a part is forwarded at all, so widening it silently discards every supported document a client tags with a Content-ID. Neither entry records the interaction, and whichever lands second inherits a blast radius its own reason never described.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-inline-part-eligibility
+resolution-undo: ca6a99e4053222951e4d8167e59176aefdde374e63efe44589a9fd964c207ee9 2026-08-31 7374617475733a206f70656e
 decision: 2026-08-29 Split the predicate in two — Separate the counting predicate from the forwarding predicate: let the counting one trust `Content-ID` (which is what DW-450 was filed to fix — the phantom skipped-attachment line) while the forwarding one keeps reading `disposition` only, so no document is dropped on a Content-ID alone. Record the interaction in both call sites. Pin a Content-ID-only signature logo (no phantom line, not forwarded) and a Content-ID-only supported document (still handled).
 decision: 2026-08-29 Split the predicate in two — Separate the counting predicate from the forwarding predicate: let the counting one trust `Content-ID` (which is what DW-450 was filed to fix — the phantom skipped-attachment line) while the forwarding one keeps reading `disposition` only, so no document is dropped on a Content-ID alone. Record the interaction in both call sites. Pin a Content-ID-only signature logo (no phantom line, not forwarded) and a Content-ID-only supported document (still handled).
 

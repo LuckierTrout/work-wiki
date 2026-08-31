@@ -16,6 +16,20 @@ import {
 } from "./raw";
 import { getPageIndex } from "./page-index";
 import { disputedClearGuidance } from "./lint-types";
+import { getOwnerHandle } from "./owner";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
+
+async function lintWorkspaceGuidance(provided?: string): Promise<string> {
+  if (provided !== undefined) return provided;
+  const owner = getOwnerHandle();
+  return owner ? buildWorkspaceGuidance(owner) : "";
+}
+
+function withPurposeGuidance(systemPrompt: string, guidance: string): string {
+  return guidance
+    ? `${systemPrompt}\n\n${guidance}`
+    : systemPrompt;
+}
 
 /**
  * All known lint check types (const tuple for Zod enum compatibility).
@@ -365,6 +379,7 @@ export function parseContradictionResponse(
  */
 export async function checkContradictions(
   diskSlugs: string[],
+  workspaceGuidance?: string,
 ): Promise<LintIssue[]> {
   if (!(await hasLLMKey())) {
     return [
@@ -415,6 +430,10 @@ export async function checkContradictions(
   if (conventions) {
     systemPrompt += `\n\nThe wiki follows these conventions (from SCHEMA.md):\n\n${conventions}`;
   }
+  systemPrompt = withPurposeGuidance(
+    systemPrompt,
+    await lintWorkspaceGuidance(workspaceGuidance),
+  );
 
   for (const cluster of clusters) {
     // Build the user message with all pages in this cluster
@@ -512,6 +531,7 @@ export function parseMissingConceptResponse(
  */
 export async function checkMissingConceptPages(
   diskSlugs: string[],
+  workspaceGuidance?: string,
 ): Promise<LintIssue[]> {
   if (!(await hasLLMKey())) {
     return [
@@ -571,6 +591,10 @@ export async function checkMissingConceptPages(
   if (conventions) {
     systemPrompt += `\n\nThe wiki follows these conventions (from SCHEMA.md):\n\n${conventions}`;
   }
+  systemPrompt = withPurposeGuidance(
+    systemPrompt,
+    await lintWorkspaceGuidance(workspaceGuidance),
+  );
 
   try {
     const response = await callLLM(systemPrompt, userMessage);
@@ -955,6 +979,7 @@ export const MAX_COVERAGE_CHECKS = 20;
  */
 export async function checkIncompleteCoverage(
   diskSlugs: string[],
+  workspaceGuidance?: string,
 ): Promise<LintIssue[]> {
   if (!(await hasLLMKey())) {
     return [
@@ -1017,6 +1042,10 @@ export async function checkIncompleteCoverage(
   const sample = shuffled.slice(0, MAX_COVERAGE_CHECKS);
 
   const issues: LintIssue[] = [];
+  const systemPrompt = withPurposeGuidance(
+    INCOMPLETE_COVERAGE_SYSTEM_PROMPT,
+    await lintWorkspaceGuidance(workspaceGuidance),
+  );
   const MAX_RAW_CHARS = 8000;
   const MAX_WIKI_CHARS = 8000;
 
@@ -1050,7 +1079,7 @@ export async function checkIncompleteCoverage(
 
     try {
       const response = await callLLM(
-        INCOMPLETE_COVERAGE_SYSTEM_PROMPT,
+        systemPrompt,
         userMessage,
       );
       const gaps = parseIncompleteCoverageResponse(response);

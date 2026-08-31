@@ -28,6 +28,8 @@ import {
   parseMissingConceptResponse,
   parseIncompleteCoverageResponse,
 } from "./lint-checks";
+import { getOwnerHandle } from "./owner";
+import { buildWorkspaceGuidance } from "./workspace-guidance";
 
 /** Severity ordering from most to least severe. */
 const SEVERITY_RANK: Record<LintIssue["severity"], number> = {
@@ -131,15 +133,20 @@ export async function lint(options?: LintOptions): Promise<LintResult> {
 
     // Contradiction + missing-concept + incomplete-coverage detection all require
     // LLM calls but are independent read-only checks, so run them in parallel.
+    // Resolve Purpose ONCE for this lint operation. All three LLM-backed checks
+    // receive the same immutable string even if purpose.md is edited while the
+    // checks are in flight; the next lint run resolves fresh.
+    const owner = getOwnerHandle();
+    const workspaceGuidance = owner ? await buildWorkspaceGuidance(owner) : "";
     const [contradictions, missingConcepts, incompleteCoverage] = await Promise.all([
       enabledChecks.has("contradiction")
-        ? checkContradictions(diskSlugs)
+        ? checkContradictions(diskSlugs, workspaceGuidance)
         : [],
       enabledChecks.has("missing-concept-page")
-        ? checkMissingConceptPages(diskSlugs)
+        ? checkMissingConceptPages(diskSlugs, workspaceGuidance)
         : [],
       enabledChecks.has("incomplete-coverage")
-        ? checkIncompleteCoverage(diskSlugs)
+        ? checkIncompleteCoverage(diskSlugs, workspaceGuidance)
         : [],
     ]);
 

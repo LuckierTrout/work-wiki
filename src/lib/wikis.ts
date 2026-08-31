@@ -86,7 +86,6 @@ import {
   WIKI_ID_RE,
   wikiArtifactPath,
   wikiDirPath,
-  wikiProfilePath,
   wikisRootPath,
 } from "./wiki-paths";
 import { saveWikiArtifactRevision } from "./wiki-artifact-revisions";
@@ -96,8 +95,19 @@ import {
   checkVersionPrecondition,
   scopedContentVersion,
 } from "./write-precondition";
-import { putWorkspaceProfile } from "./workspace-profile";
-import type { WorkspaceProfileInput } from "./workspace-profile-schema";
+import {
+  putWorkspaceProfile,
+  readWorkspaceProfileEvidence,
+} from "./workspace-profile";
+import {
+  workspaceProfileHasGuidance,
+  type WorkspaceProfileInput,
+} from "./workspace-profile-schema";
+import {
+  ARTIFACT_AUTHORITY_VERSION,
+  appendLegacyPageConventions,
+  renderCanonicalPurposeMarkdown,
+} from "./workspace-purpose";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -109,6 +119,8 @@ export interface WikiRecord {
   scenario: CreatableScenario;
   createdAt: string;
   updatedAt: string;
+  /** Present only after purpose.md/schema.md become the sole guidance source. */
+  artifactAuthority?: typeof ARTIFACT_AUTHORITY_VERSION;
 }
 
 export interface WikiRegistry {
@@ -406,6 +418,7 @@ async function seedWikiArtifacts(
   held: WikiLockHeld,
   owner: string,
   wiki: WikiRecord,
+  options: { seedProfile: boolean },
 ): Promise<void> {
   const template = scenarioTemplate(wiki.scenario);
   // The seeded Schema embeds the engine's own page conventions ahead of the
@@ -424,7 +437,9 @@ async function seedWikiArtifacts(
     "schema.md",
     renderSchemaMarkdown(template, engineConventions),
   );
-  await putWorkspaceProfile(held, owner, wiki.id, templateProfile(wiki.scenario));
+  if (options.seedProfile) {
+    await putWorkspaceProfile(held, owner, wiki.id, templateProfile(wiki.scenario));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -483,10 +498,7 @@ interface SeededFileSnapshot {
  * files — that drift would silently make the restore a no-op.
  */
 function seededFilePaths(owner: string, wikiId: string): string[] {
-  return [
-    ...WIKI_ARTIFACT_FILES.map((file) => wikiArtifactPath(owner, wikiId, file)),
-    wikiProfilePath(owner, wikiId),
-  ];
+  return WIKI_ARTIFACT_FILES.map((file) => wikiArtifactPath(owner, wikiId, file));
 }
 
 /**
@@ -975,6 +987,31 @@ export async function writeWikiArtifact(
       );
     }
 
+    // Purpose has one transitional read shape: before the authority marker, a
+    // valid profile is projected as the bytes the owner saw. The precondition
+    // must compare against THAT effective body, while history still snapshots
+    // the raw artifact bytes this save is actually replacing.
+    let versionContent = existing;
+    let registryToMark: WikiRegistry | null = null;
+    let wikiToMark: WikiRecord | null = null;
+    if (file === "purpose.md") {
+      const registry = await readRegistry(owner);
+      const wiki = registry.wikis.find((item) => item.id === wikiId) ?? null;
+      if (wiki && wiki.artifactAuthority !== ARTIFACT_AUTHORITY_VERSION) {
+        try {
+          const evidence = await readWorkspaceProfileEvidence(owner, wikiId);
+          if (evidence && workspaceProfileHasGuidance(evidence.profile)) {
+            versionContent = renderCanonicalPurposeMarkdown(wiki.name, evidence.profile);
+          }
+        } catch {
+          // The effective reader falls back to raw purpose.md for unusable
+          // evidence, so the writer compares against the same raw bytes.
+        }
+        registryToMark = registry;
+        wikiToMark = wiki;
+      }
+    }
+
     // THE COMPARISON, above the snapshot and above the put, so a refusal writes
     // NOTHING. The version is scoped by `wikiId` (DW-200): two Wikis seeded
     // from one template hold byte-identical artifacts, and an unscoped token
@@ -985,7 +1022,9 @@ export async function writeWikiArtifact(
     if (expectedVersion !== undefined) {
       const outcome = checkVersionPrecondition(
         expectedVersion,
-        existing === null ? null : scopedContentVersion(wikiId, existing),
+        versionContent === null
+          ? null
+          : scopedContentVersion(wikiId, versionContent),
       );
       if (!outcome.ok) {
         // THE OUTCOME IS ASSERTED, NOT COLLAPSED. `checkVersionPrecondition`
@@ -1025,6 +1064,35 @@ export async function writeWikiArtifact(
       }
     }
     await putWikiArtifact(owner, wikiId, file, content);
+
+    if (registryToMark && wikiToMark) {
+      wikiToMark.artifactAuthority = ARTIFACT_AUTHORITY_VERSION;
+      try {
+        // Marker LAST: only after the canonical bytes landed may profile
+        // evidence become permanently non-live.
+        await writeRegistry(owner, registryToMark);
+      } catch (error) {
+        // The marker did not commit, so put the raw artifact back. Effective
+        // reads then keep serving the legacy projection and a retry is safe.
+        try {
+          if (existing === null) {
+            await getStorage().deleteFile(wikiArtifactPath(owner, wikiId, file));
+          } else {
+            await getStorage().writeFile(
+              wikiArtifactPath(owner, wikiId, file),
+              existing,
+            );
+          }
+        } catch (restoreError) {
+          logger.warn(
+            "workspace-purpose",
+            `restoring purpose.md after its authority marker failed for wiki "${wikiId}"`,
+            restoreError,
+          );
+        }
+        throw error;
+      }
+    }
   });
 
   try {
@@ -1038,9 +1106,10 @@ export async function writeWikiArtifact(
     // edit — it snapshots what it replaces and moves the same counter — so what
     // the trail needs is the sentence that tells the two apart, not a new
     // operation the log's readers would have to learn.
+    const artifactLabel = file === "purpose.md" ? "Purpose" : "Schema";
     await appendToLog(
       "edit",
-      `Schema — ${file}`,
+      `${artifactLabel} — ${file}`,
       editReason === undefined
         ? `Wiki: ${wikiId}`
         : `Wiki: ${wikiId} · ${editReason}`,
@@ -1113,11 +1182,12 @@ export async function createWiki(
       scenario,
       createdAt: now,
       updatedAt: now,
+      artifactAuthority: ARTIFACT_AUTHORITY_VERSION,
     };
     // The cap check above throws BEFORE this point on purpose: it writes
     // nothing, so it must not be inside the compensation.
     try {
-      await seedWikiArtifacts(held, owner, wiki);
+      await seedWikiArtifacts(held, owner, wiki, { seedProfile: true });
       registry.wikis.push(wiki);
       registry.currentId = wiki.id;
       await writeRegistry(owner, registry);
@@ -1349,6 +1419,9 @@ export async function applyScenarioTemplate(
     const snapshot = await snapshotSeededFiles(owner, wiki.id);
     wiki.scenario = scenario;
     wiki.updatedAt = new Date().toISOString();
+    // The registry write below is the semantic commit. Until it lands, an old
+    // unmarked Wiki still resolves its valid legacy profile as effective.
+    wiki.artifactAuthority = ARTIFACT_AUTHORITY_VERSION;
     // Set IMMEDIATELY BEFORE the write, so a throw from the write itself still
     // counts as attempted while a seed that faulted first does not. Control
     // flow answers this exactly — it is not a heuristic about which error came
@@ -1356,7 +1429,10 @@ export async function applyScenarioTemplate(
     // with `writeRegistry` never called and therefore nothing to read back.
     let registryWriteAttempted = false;
     try {
-      await seedWikiArtifacts(held, owner, wiki);
+      // Re-template replaces the two canonical artifacts and leaves the legacy
+      // profile bytes untouched as rollback evidence. The marker makes those
+      // bytes permanently non-live once the registry write commits.
+      await seedWikiArtifacts(held, owner, wiki, { seedProfile: false });
       registryWriteAttempted = true;
       await writeRegistry(owner, registry);
     } catch (error) {
@@ -2371,6 +2447,171 @@ export async function readWikiArtifact(
     if (isEnoent(error)) return null;
     throw error;
   }
+}
+
+/**
+ * Read an artifact through the Wiki's authority boundary.
+ *
+ * Only Purpose has a compatibility projection. An unmarked Wiki keeps using a
+ * valid legacy profile until migration commits its registry marker; after the
+ * marker, a missing or corrupt purpose.md is returned as missing and the
+ * profile can never become live again.
+ */
+export async function readEffectiveWikiArtifact(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+): Promise<string | null> {
+  if (file !== "purpose.md") return readWikiArtifact(owner, wikiId, file);
+  const registry = await readRegistry(owner);
+  const wiki = registry.wikis.find((item) => item.id === wikiId);
+  if (!wiki) return null;
+  if (wiki.artifactAuthority === ARTIFACT_AUTHORITY_VERSION) {
+    return readWikiArtifact(owner, wikiId, file);
+  }
+  try {
+    const evidence = await readWorkspaceProfileEvidence(owner, wikiId);
+    if (evidence && workspaceProfileHasGuidance(evidence.profile)) {
+      return renderCanonicalPurposeMarkdown(wiki.name, evidence.profile);
+    }
+  } catch (error) {
+    // Corrupt legacy evidence must not block reading recoverable artifact bytes.
+    // The migration logs and remains unmarked when it encounters the same file.
+    logger.warn(
+      "workspace-purpose",
+      `the legacy profile for wiki "${wikiId}" is unusable — serving its stored purpose.md until migration can be repaired`,
+      error,
+    );
+  }
+  return readWikiArtifact(owner, wikiId, file);
+}
+
+/** Effective purpose.md bytes keyed by their tenant-relative storage path. */
+export async function effectivePurposeOverrides(
+  owner: string,
+): Promise<Map<string, string>> {
+  const registry = await readRegistry(owner);
+  const entries = await Promise.all(
+    registry.wikis.map(async (wiki) => {
+      const content = await readEffectiveWikiArtifact(owner, wiki.id, "purpose.md");
+      return content === null
+        ? null
+        : ([wikiArtifactPath(owner, wiki.id, "purpose.md"), content] as const);
+    }),
+  );
+  return new Map(entries.filter((entry): entry is readonly [string, string] => entry !== null));
+}
+
+/** Outcome of one idempotent artifact-authority migration. */
+export type PurposeCanonicalizationResult =
+  | "migrated"
+  | "already-authoritative"
+  | "missing-wiki";
+
+/**
+ * Project one unmarked Wiki's supported legacy profile into its artifacts and
+ * commit the authority marker last, under the existing process-local Wiki lock.
+ *
+ * Every overwritten artifact is snapshotted before the first write. A failure
+ * restores the prior artifact bytes best-effort and leaves the registry
+ * unmarked, so effective reads keep serving the valid legacy profile and the
+ * next maintenance pass can retry. The profile file itself is never written or
+ * deleted. This is compensation, not a durable multi-object transaction.
+ */
+export async function canonicalizeWikiPurpose(
+  owner: string,
+  wikiId: string,
+): Promise<PurposeCanonicalizationResult> {
+  assertWritable(READ_ONLY_REFUSAL.wikiFileWrite);
+  const result = await withWikiLock(owner, async (): Promise<PurposeCanonicalizationResult> => {
+    const registry = await readRegistry(owner);
+    const wiki = registry.wikis.find((item) => item.id === wikiId);
+    if (!wiki) return "missing-wiki";
+    if (wiki.artifactAuthority === ARTIFACT_AUTHORITY_VERSION) {
+      return "already-authoritative";
+    }
+
+    // Strict on purpose: invalid/unreadable bytes abort before an artifact or
+    // marker moves. Missing evidence is allowed; in that case existing artifact
+    // bytes become authoritative without a synthetic profile projection.
+    const evidence = await readWorkspaceProfileEvidence(owner, wikiId);
+    const currentPurpose = await readWikiArtifact(owner, wikiId, "purpose.md");
+    const currentSchema = await readWikiArtifact(owner, wikiId, "schema.md");
+    const desiredPurpose = evidence && workspaceProfileHasGuidance(evidence.profile)
+      ? renderCanonicalPurposeMarkdown(wiki.name, evidence.profile)
+      : currentPurpose;
+    const desiredSchema = evidence && currentSchema !== null
+      ? appendLegacyPageConventions(
+          currentSchema,
+          evidence.profile.pageConventions,
+        )
+      : currentSchema;
+
+    if (desiredPurpose === null) {
+      throw new Error(`cannot canonicalize wiki "${wikiId}" without purpose.md`);
+    }
+    if (desiredSchema === null) {
+      throw new Error(`cannot canonicalize wiki "${wikiId}" without schema.md`);
+    }
+
+    const changes: Array<{
+      file: WikiArtifactFile;
+      before: string;
+      after: string;
+    }> = [];
+    if (currentPurpose !== desiredPurpose) {
+      changes.push({ file: "purpose.md", before: currentPurpose ?? "", after: desiredPurpose });
+    }
+    if (currentSchema !== desiredSchema) {
+      changes.push({ file: "schema.md", before: currentSchema ?? "", after: desiredSchema });
+    }
+
+    // Snapshot ALL changed artifacts before the first canonical byte lands.
+    for (const change of changes) {
+      await saveWikiArtifactRevision(
+        owner,
+        wikiId,
+        change.file,
+        change.before,
+        owner,
+        "migrated legacy Workspace Purpose guidance",
+      );
+    }
+
+    const written: typeof changes = [];
+    try {
+      for (const change of changes) {
+        await putWikiArtifact(owner, wikiId, change.file, change.after);
+        written.push(change);
+      }
+      wiki.artifactAuthority = ARTIFACT_AUTHORITY_VERSION;
+      // This write is deliberately last: it is the irreversible semantic
+      // boundary after which no profile byte can guide runtime behavior.
+      await writeRegistry(owner, registry);
+    } catch (error) {
+      for (const change of [...written].reverse()) {
+        try {
+          await getStorage().writeFile(
+            wikiArtifactPath(owner, wikiId, change.file),
+            change.before,
+          );
+        } catch (restoreError) {
+          logger.warn(
+            "workspace-purpose",
+            `restoring "${change.file}" after a failed canonicalization of wiki "${wikiId}" failed`,
+            restoreError,
+          );
+        }
+      }
+      throw error;
+    }
+    return "migrated";
+  });
+
+  if (result === "migrated") {
+    await bumpRefreshSignal(`canonicalizing Workspace Purpose for wiki "${wikiId}"`);
+  }
+  return result;
 }
 
 /**

@@ -21,11 +21,8 @@
 
 import { ownerToTenant } from "./links";
 import { logger } from "./logger";
-import { getCurrentWiki } from "./wikis";
-import {
-  getWorkspaceProfile,
-  renderWorkspaceGuidance,
-} from "./workspace-profile";
+import { getCurrentWiki, readEffectiveWikiArtifact } from "./wikis";
+import { renderPurposeGuidance } from "./workspace-purpose";
 
 /**
  * A caller-owned memo of resolved guidance, keyed by TENANT.
@@ -79,7 +76,8 @@ async function resolveWorkspaceGuidance(owner: string): Promise<string> {
     // name, and inventing one from a retired file is exactly the behaviour that
     // had no end date.
     if (!wiki) return "";
-    return renderWorkspaceGuidance(await getWorkspaceProfile(owner, wiki.id));
+    const purpose = await readEffectiveWikiArtifact(owner, wiki.id, "purpose.md");
+    return purpose ? renderPurposeGuidance(purpose) : "";
   } catch (error) {
     // Fail soft. Guidance is an ADDITION to a prompt — losing it degrades the
     // answer, while throwing would fail the whole ingest or chat turn over a

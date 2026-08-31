@@ -124,6 +124,7 @@ import { WikiSwitcher } from "./WikiSwitcher";
 import { WorkspacePreview } from "./WorkspacePreview";
 import { useWorkbenchData } from "./WorkbenchData";
 import { useReviewBadge } from "./useReviewBadge";
+import type { EditableArtifactFile } from "@/lib/wiki-scenarios";
 
 /**
  * The Workbench shell — rail, left column, canvas, and the Preview column that
@@ -238,6 +239,8 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // held pick changes nothing else — no announcement, no `ownerPickedRef` write,
   // no storage write — so cancelling leaves the shell byte-identical.
   const [pendingSelection, setPendingSelection] = useState<TreeSelection | null>(null);
+  const [pendingArtifactNavigation, setPendingArtifactNavigation] =
+    useState<EditableArtifactFile | null>(null);
   // Story 2.1's Intake state, all three pieces owned HERE rather than in
   // `IntakeControls`: the same submit path is reached from the control and from
   // this shell's own drop handler, and a control that owned the flag, the
@@ -1008,14 +1011,50 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // because the column's own fetch effect resets on a new row — the shell says
   // nothing about the editor, which is the whole reason the report travels up as
   // a boolean and the state stays down there.
+  const applyArtifactNavigation = useCallback((file: EditableArtifactFile) => {
+    const next: TreeSelection = { kind: "file", path: file };
+    // Apply the whole destination together: Settings closes, Wiki/Files becomes
+    // the visible tree, and Preview points at the artifact. Re-selecting the
+    // same target preserves the mounted editor and its draft.
+    applySurface("wiki", false);
+    pushSurface("wiki", false);
+    setTreeTab("files");
+    writeStoredTreeTab("files");
+    ownerPickedRef.current = true;
+    if (!isSameSelection(liveRef.current.selection, next)) {
+      const { knowledge: groups, files: nodes } = latestRef.current;
+      announce(previewDockAnnouncement(selectionName(next, groups, nodes)));
+      setSelection(next);
+    }
+    bumpCanvasFocus();
+  }, [announce, applySurface, bumpCanvasFocus, pushSurface]);
+
+  const openSettingsArtifact = useCallback((file: EditableArtifactFile) => {
+    const next: TreeSelection = { kind: "file", path: file };
+    if (previewDirtyRef.current && !isSameSelection(liveRef.current.selection, next)) {
+      setPendingArtifactNavigation(file);
+      return;
+    }
+    applyArtifactNavigation(file);
+  }, [applyArtifactNavigation]);
+
   const confirmDiscard = useCallback(() => {
     const next = pendingSelection;
+    const artifact = pendingArtifactNavigation;
     setPendingSelection(null);
+    setPendingArtifactNavigation(null);
+    if (artifact) {
+      applyArtifactNavigation(artifact);
+      return;
+    }
     if (next) applySelection(next);
-  }, [applySelection, pendingSelection]);
+  }, [applyArtifactNavigation, applySelection, pendingArtifactNavigation, pendingSelection]);
 
   /** Keep editing — Cancel, Esc and the backdrop all land here. The pick is dropped. */
-  const cancelDiscard = useCallback(() => setPendingSelection(null), []);
+  const cancelDiscard = useCallback(() => {
+    setPendingSelection(null);
+    setPendingArtifactNavigation(null);
+  }, []);
 
   // Following a `[[wikilink]]` in the Preview. Deliberately NOT `selectRow`:
   // that one toggles, so a link pointing at the page already showing would
@@ -1821,7 +1860,12 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
         {children}
       </ModeCanvas>
       {settingsOpen && (
-        <SettingsCanvas category={settingsCategoryId} headingId={headingId} />
+        <SettingsCanvas
+          category={settingsCategoryId}
+          headingId={headingId}
+          hasWiki={currentWikiId !== null}
+          onOpenArtifact={openSettingsArtifact}
+        />
       )}
 
       {showSplitHandle("preview", mounted, layout) && (
@@ -1907,7 +1951,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
           which is still mounted on both outcomes, so `useDialogA11y`'s own
           restore puts focus back where they left it either way. */}
       <ConfirmDialog
-        open={pendingSelection !== null}
+        open={pendingSelection !== null || pendingArtifactNavigation !== null}
         title={PREVIEW_DISCARD_CONFIRM_TITLE}
         body={PREVIEW_DISCARD_CONFIRM_BODY}
         confirmLabel={PREVIEW_DISCARD_CONFIRM_LABEL}

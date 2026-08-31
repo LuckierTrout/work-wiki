@@ -38,7 +38,7 @@ import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { withWikiLock } from "./wiki-lock";
-import { listWikis } from "./wikis";
+import { canonicalizeWikiPurpose, listWikis } from "./wikis";
 import {
   copyWorkspaceProfileIfAbsent,
   parseStoredWorkspaceProfile,
@@ -210,4 +210,38 @@ export async function backfillLegacyWorkspaceProfiles(
     }
     return copied;
   });
+}
+
+/**
+ * Canonicalize every unmarked Wiki independently. One failure never prevents a
+ * sibling Wiki from migrating; the failed Wiki remains unmarked and therefore
+ * keeps serving its valid profile projection until a later retry succeeds.
+ */
+export async function canonicalizeWorkspacePurposes(owner: string): Promise<number> {
+  let migrated = 0;
+  let wikis: Awaited<ReturnType<typeof listWikis>>;
+  try {
+    wikis = await listWikis(owner);
+  } catch (error) {
+    logger.warn(
+      "workspace-purpose",
+      `listing Wikis for canonical Purpose migration failed for "${owner}"`,
+      error,
+    );
+    return 0;
+  }
+  for (const wiki of wikis) {
+    try {
+      if ((await canonicalizeWikiPurpose(owner, wiki.id)) === "migrated") {
+        migrated += 1;
+      }
+    } catch (error) {
+      logger.warn(
+        "workspace-purpose",
+        `canonicalizing Purpose for wiki "${wiki.id}" failed — it remains unmarked and retryable`,
+        error,
+      );
+    }
+  }
+  return migrated;
 }

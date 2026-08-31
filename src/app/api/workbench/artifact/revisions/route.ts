@@ -117,7 +117,7 @@ async function gate(
   if (!isOwnerPrincipal(principal)) {
     return {
       ok: false,
-      response: json({ error: "Only the workspace owner can edit the Schema." }, 403),
+      response: json({ error: "Only the workspace owner can edit Wiki artifacts." }, 403),
     };
   }
   if (options.refuseWhenReadOnly && isReadOnly()) {
@@ -258,7 +258,7 @@ export async function POST(request: Request) {
     // The guard the direct write enforces, re-run on bytes that may predate it.
     // Refused ABOVE the writer, so nothing is written: no snapshot, no log line,
     // no `dataVersion` bump.
-    if (!hasPageConventions(content)) {
+    if (file === "schema.md" && !hasPageConventions(content)) {
       return json({ error: PAGE_CONVENTIONS_REQUIRED_COPY }, 400);
     }
 

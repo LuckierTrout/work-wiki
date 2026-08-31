@@ -169,6 +169,33 @@ async function readOwnProfile(
 }
 
 /**
+ * The untouched legacy profile bytes plus their strict decoded value.
+ *
+ * Canonicalization uses this instead of {@link getWorkspaceProfile}: missing
+ * bytes are a legitimate "nothing to project" result, while corrupt bytes must
+ * throw so the migration can warn and leave the Wiki unmarked and retryable.
+ * The raw string is returned to make preservation explicit — migration never
+ * serializes it back or deletes it.
+ */
+export async function readWorkspaceProfileEvidence(
+  owner: string,
+  wikiId: string,
+): Promise<{ raw: string; profile: WorkspaceProfile } | null> {
+  let raw: string;
+  try {
+    raw = await getStorage().readFile(wikiProfilePath(owner, wikiId));
+  } catch (error) {
+    if (isEnoent(error)) return null;
+    throw error;
+  }
+  const decoded: unknown = JSON.parse(raw);
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new TypeError("the workspace profile does not decode to a JSON object");
+  }
+  return { raw, profile: parseStoredWorkspaceProfile(raw) };
+}
+
+/**
  * This Wiki's stored profile, or an empty one when it has never been saved.
  *
  * THIS WIKI'S FILE AND NOTHING ELSE (DW-137). There was a second link in this

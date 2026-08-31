@@ -338,15 +338,18 @@ export function supportedAttachment(filename: string | null, mimeType: string): 
 }
 
 /**
- * Whether a parsed MIME part is an INLINE one — a signature logo, an embedded
- * image — rather than a file the sender chose to attach.
+ * The FORWARDING predicate (eligibility): whether the sending client labelled
+ * this part inline — a signature logo, an embedded screenshot — rather than
+ * attaching it.
  *
- * Reads `disposition` and nothing else. `Attachment` also carries a
- * `contentId`, and a `cid:`-referenced graphic is the archetypal inline part,
- * but a part is treated as inline here ONLY because its own
- * `Content-Disposition` says so — never because some body happens to reference
- * it. Widening to `contentId` would be a separate decision with a separate
- * failure mode.
+ * Reads `disposition` and NOTHING else, and is never widened. Its counting
+ * counterpart `decorativePart` below ALSO trusts a `Content-ID` the HTML body
+ * references, and the two must stay separate predicates: this one decides what
+ * is DROPPED. A `.md` that arrives carrying `Content-ID: <notes@x>` and no
+ * `Content-Disposition` is still a document the sender sent, and a predicate
+ * that both trusted Content-ID and gated forwarding would discard it in silence
+ * (DW-566). A Content-ID may cost a part its place in the counts; it may never
+ * cost the sender the file.
  *
  * `postal-mime` surfaces every such part in `parsed.attachments`, so the loss
  * accounting used to report a branded email footer back to its own sender as an
@@ -356,8 +359,7 @@ export function supportedAttachment(filename: string | null, mimeType: string): 
  * `disposition` is `"attachment" | "inline" | null`. Only the explicit `"inline"`
  * is treated as inline: a `null` disposition is an unlabelled part, which is far
  * likelier to be a real attachment whose header the sending client omitted than
- * a decoration, and guessing wrong there would silently drop a file the sender
- * really did send from the count.
+ * a decoration, and guessing wrong HERE drops a file the sender really did send.
  *
  * This is an ELIGIBILITY filter, not merely an accounting one (DW-446). An
  * inline part is removed before the allowlist runs, so it can never spend a
@@ -366,9 +368,143 @@ export function supportedAttachment(filename: string | null, mimeType: string): 
  * while excluding it from every reported loss is how a sender who attached nine
  * files was told they had exceeded a ten-attachment limit: the slot was spent,
  * and the sentence explaining where it went was suppressed.
+ *
+ * What it is NOT allowed to do is lose the part silently: a supported document
+ * dropped here gets its own loss term and its own named sentence (DW-565),
+ * because a document must never arrive and go unmentioned.
  */
-function inlineAttachment(attachment: { disposition: "attachment" | "inline" | null }): boolean {
+function inlineByDisposition(attachment: {
+  disposition: "attachment" | "inline" | null;
+}): boolean {
   return attachment.disposition === "inline";
+}
+
+/**
+ * One `Content-ID` value, in the shape a body's `cid:` reference is written in.
+ *
+ * `contentId` arrives angle-bracketed (`<logo@example.com>`) and a body
+ * references it bare (`cid:logo@example.com`), so the brackets have to come off
+ * before the two can be compared at all. Lower-cased because the left-hand side
+ * of a Content-ID is nominally case-sensitive but is round-tripped through
+ * clients that do not preserve case, and a case mismatch puts the phantom
+ * "unsupported attachment ... recorded but skipped" line back in front of a
+ * sender who attached nothing (DW-359).
+ *
+ * Matching too eagerly never loses a FILE — eligibility does not read any of
+ * this (DW-566) — but it is not free either. An over-eager match on a real
+ * UNSUPPORTED attachment takes it out of `countableAttachments`, and so out of
+ * `attachmentNames`, out of `unsupportedCount` and out of every sentence: the
+ * sender is told nothing at all about a file they really did attach. That is
+ * the cost being traded against the phantom line, and it is why the reference
+ * scan below errs towards under-matching.
+ */
+function normalizeCid(value: string): string {
+  return value.trim().replace(/^</, "").replace(/>$/, "").trim().toLowerCase();
+}
+
+/**
+ * How many distinct `cid:` references one body may contribute.
+ *
+ * `parsed.html` can be tens of megabytes, and every distinct token in it would
+ * otherwise become a `Set` entry — a body of millions of one-character
+ * references amplifies into far more memory than the parsed message that
+ * carried it, in the same worker isolate the aggregate byte budget exists to
+ * protect. Well past what any real client emits: a signature has a handful of
+ * embedded images, and a rich newsletter tens.
+ *
+ * Hitting the cap costs nothing but a phantom line. References past it are not
+ * collected, so a decoration they would have matched is merely counted as the
+ * unlabelled real attachment it appears to be — the pre-DW-450 behaviour, on a
+ * message no real client sends.
+ */
+const MAX_HTML_CID_REFERENCES = 512;
+
+/**
+ * Every `cid:` target the HTML body references from a URL-bearing position.
+ *
+ * This is the evidence that turns an unlabelled part into a decoration: a part
+ * is embedded IN the message only if some body points at it. A `Content-ID`
+ * alone proves nothing — clients stamp one on real attachments too — so an
+ * unreferenced one leaves the part a real attachment (DW-450).
+ *
+ * `parsed.related` is deliberately not the signal: `multipart/related` marks a
+ * whole subtree, including parts nothing references, and the recorded decision
+ * names a Content-ID plus a body reference.
+ *
+ * Deliberately narrow, in two ways, because the two errors are not the same
+ * size. UNDER-matching costs at worst the phantom "unsupported attachment ...
+ * recorded but skipped" line DW-450 is about — a sentence about a decoration.
+ * OVER-matching takes a file the sender really attached out of the counts, the
+ * recorded names and every sentence, so they are told nothing about it at all.
+ * When in doubt, do not match:
+ *
+ * 1. `<script>`, `<style>` and comments are stripped first, mirroring
+ *    `htmlToText`'s own first step. A `cid:` inside a script string, a CSS
+ *    rule or a commented-out draft is not the body pointing at a part.
+ * 2. Only URL-bearing positions are read — `src`/`href`/`background`/`poster`
+ *    attributes and CSS `url(...)` in an inline `style`. Scanning the whole
+ *    document would let a quoted reply that merely MENTIONS `cid:something`
+ *    in prose delete an attachment from the accounting.
+ *
+ * All three attribute spellings are matched (double-quoted, single-quoted and
+ * bare), since the delimiter is the sending client's choice, not the sender's.
+ */
+function htmlCidReferences(html: string): ReadonlySet<string> {
+  const references = new Set<string>();
+  const scannable = html
+    .replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+  const patterns = [
+    /(?:src|href|background|poster)\s*=\s*(?:"\s*cid:([^"]*)"|'\s*cid:([^']*)'|cid:([^\s"'>]+))/gi,
+    /url\(\s*(?:"\s*cid:([^"]*)"|'\s*cid:([^']*)'|cid:([^\s"')]+))\s*\)/gi,
+  ];
+  for (const pattern of patterns) {
+    for (const match of scannable.matchAll(pattern)) {
+      const reference = normalizeCid(match[1] ?? match[2] ?? match[3] ?? "");
+      if (reference) references.add(reference);
+      if (references.size >= MAX_HTML_CID_REFERENCES) return references;
+    }
+  }
+  return references;
+}
+
+/**
+ * The COUNTING predicate: whether a part is a decoration for the purposes of
+ * the recorded name list and the loss terms.
+ *
+ * Strictly wider than the forwarding predicate `inlineByDisposition` above, and
+ * wider in exactly one place — where the `Content-Disposition` header is ABSENT.
+ * A part a client labelled nothing at all, but whose `Content-ID` the HTML body
+ * references, is an embedded graphic by construction: the body points at it
+ * (DW-450). An explicit `disposition: "attachment"` stays a real attachment
+ * however it is referenced, and a bare `null` with no referenced `contentId`
+ * stays one too — that is the unlabelled real attachment the widening must not
+ * swallow.
+ *
+ * The two predicates differ because the two mistakes are not the same size.
+ * Being miscounted costs the sender a sentence; being dropped costs them a file.
+ * This predicate may be wrong about a signature logo and nothing is lost; the
+ * forwarding one may not be (DW-566).
+ */
+function decorativePart(
+  attachment: {
+    disposition: "attachment" | "inline" | null;
+    contentId?: string;
+  },
+  referencedCids: ReadonlySet<string>,
+): boolean {
+  if (inlineByDisposition(attachment)) return true;
+  // A TRUTHY check, not `!== null`. `disposition` is typed
+  // `"attachment" | "inline" | null`, but "absent" reaches this Worker as
+  // `undefined` too — from a parser upgrade, or from a caller building the
+  // shape by hand — and `inlineByDisposition` already treats `undefined` and
+  // `null` alike. A strict `!== null` here would make the two predicates
+  // disagree about what "unlabelled" means, and the Content-ID branch
+  // unreachable for the very shape it exists for. Any non-empty value that is
+  // not `"inline"` stays a real attachment, which is the safe direction.
+  if (attachment.disposition) return false;
+  const cid = attachment.contentId ? normalizeCid(attachment.contentId) : "";
+  return cid.length > 0 && referencedCids.has(cid);
 }
 
 /**
@@ -442,10 +578,17 @@ function replyAttachmentName(filename: string | null): string {
  * name every one of them at up to 200 characters each. The COUNT the sentence
  * opens with stays the true total; only the naming is truncated.
  *
- * Every list that reaches here is inline-free by construction: inline parts are
- * dropped at eligibility, upstream of the sizing partition and the selection
- * loop (DW-446), so nothing this function is handed can contain one and no
- * re-filtering is kept here as decoration.
+ * The lists that reach here are no longer inline-free. THREE lists are passed
+ * in — oversized, over-budget and inline-dropped; the over-cap and unsupported
+ * sentences are counts with no names. Two of the three are inline-free, because
+ * inline parts are dropped at eligibility upstream of the sizing partition and
+ * the selection loop (DW-446). The third is precisely the inline-labelled
+ * supported documents eligibility dropped, whose names have to reach the sender
+ * or a document arrives and no sentence anywhere mentions it (DW-565).
+ *
+ * So this function filters nothing, and must not start to: the CALLER decides
+ * which parts a sentence is about, and one caller's parts are all inline. What
+ * these names must never do is reach `attachmentNames` — see the comment there.
  */
 function replyLossNames(
   attachments: readonly { filename: string | null }[],
@@ -584,15 +727,43 @@ export default {
     // cap-truncated *supported* file "unsupported", and understated the loss
     // entirely once a sender attached more than 20 files (DW-247).
     //
-    // ...and from the COUNTABLE parts of it: inline parts are decorations the
-    // sender never chose to attach, so they are excluded from every loss the
-    // acknowledgement reports and from the recorded name list (DW-359).
+    // ...and from the COUNTABLE parts of it: decorations the sender never chose
+    // to attach are excluded from every loss the acknowledgement reports and
+    // from the recorded name list (DW-359).
+    //
+    // The body's `cid:` targets, collected once. They are the evidence that
+    // turns an UNLABELLED part into a decoration for counting purposes: a
+    // `Content-ID` alone proves nothing, a referenced one means the body embeds
+    // the part (DW-450).
+    const referencedCids = htmlCidReferences(parsed.html || "");
+    // TWO predicates, and this is the call site where the difference shows.
+    // COUNTING asks `decorativePart`, which also trusts a referenced
+    // `Content-ID`; FORWARDING (the `eligibleAttachments` filter below and
+    // everything it feeds) asks `inlineByDisposition`, which never does. A part
+    // whose only inline signal is a referenced Content-ID therefore leaves the
+    // COUNTS but never leaves ELIGIBILITY — a Content-ID must not cost the
+    // sender a file (DW-566).
+    //
+    // The `supportedAttachment(...) ||` disjunct is what keeps the two lists a
+    // superset/subset pair over one order-preserving pass. A supported document
+    // carrying a referenced Content-ID is decorative by the counting predicate
+    // yet still eligible, so it has to stay countable too: dropping it here
+    // while it stayed eligible would make
+    // `countableAttachments.length - eligibleAttachments.length` under-report,
+    // and could drive it negative.
     const countableAttachments = parsed.attachments.filter(
-      (attachment) => !inlineAttachment(attachment),
+      (attachment) =>
+        !inlineByDisposition(attachment) &&
+        (supportedAttachment(attachment.filename, attachment.mimeType) ||
+          !decorativePart(attachment, referencedCids)),
     );
     // Eligibility is derived from the COUNTABLE list, not from
     // `parsed.attachments`: excluding an inline part is now about what may be
-    // FORWARDED, not only about what is counted (DW-446). Filtering here —
+    // FORWARDED, not only about what is counted (DW-446). Intersecting the
+    // countable list with the allowlist yields exactly
+    // "not inline by disposition AND supported" — the counting predicate's
+    // extra Content-ID reach cannot subtract from it, because the disjunct
+    // above readmits every supported part. Filtering here —
     // ahead of sizing, the per-document partition and the selection loop — is
     // what stops an inline part from spending a `MAX_EMAIL_ATTACHMENTS` slot or
     // a byte of `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` that a real attachment then
@@ -668,10 +839,39 @@ export default {
       aggregateBytes += size;
       supportedAttachments.push(attachment);
     }
+    // The FIFTH loss term (DW-565): supported documents eligibility dropped
+    // because the sending client labelled them inline. Before this they left
+    // eligibility and contributed to none of the four terms, so a message whose
+    // only part was an inline `.md` was answered "work-wiki found no email text
+    // to ingest." — a document arrived and no sentence mentioned it.
+    //
+    // `inlineByDisposition` again, NOT `decorativePart`: this term is exactly
+    // the parts the FORWARDING predicate dropped, so it has to read the same
+    // predicate the forwarding filter read. Widening it to the counting one
+    // would name a document that was forwarded perfectly well -- a supported
+    // part carrying only a referenced Content-ID is decorative for counting and
+    // eligible for forwarding (DW-566), and reporting that as "not queued"
+    // contradicts the queued sentence one line above it.
+    //
+    // Read straight off `parsed.attachments`, and disjoint from the other four
+    // by construction: every one of those is derived from
+    // `countableAttachments`, which `inlineByDisposition` excluded these from.
+    // No other partition can contain them, and they can contain nothing any
+    // other partition holds.
+    //
+    // Only SUPPORTED parts qualify. An inline logo appears in no count and no
+    // sentence (DW-359) — it was never ingestible, so there is nothing to tell
+    // the sender they might have had.
+    const inlineDroppedAttachments = parsed.attachments.filter(
+      (attachment) =>
+        inlineByDisposition(attachment) &&
+        supportedAttachment(attachment.filename, attachment.mimeType),
+    );
     const unsupportedCount = countableAttachments.length - eligibleAttachments.length;
     const oversizedCount = oversizedAttachments.length;
     const overBudgetCount = overBudgetAttachments.length;
-    // The residue, so the four terms stay disjoint: an oversized part never
+    const inlineDroppedCount = inlineDroppedAttachments.length;
+    // The residue, so the five terms stay disjoint: an oversized part never
     // entered the selection loop, so it must be subtracted here or it would be
     // re-reported as an over-cap casualty — telling the sender to send fewer
     // files, which would not have helped.
@@ -681,7 +881,11 @@ export default {
       oversizedCount -
       overBudgetCount;
     const skippedAttachmentCount =
-      unsupportedCount + oversizedCount + overBudgetCount + overCapCount;
+      unsupportedCount +
+      oversizedCount +
+      overBudgetCount +
+      overCapCount +
+      inlineDroppedCount;
     // Built once and used by BOTH exits: a sender has to be told which file was
     // left behind whether or not anything else survived to be ingested. DW-360
     // created a new way for `supportedAttachments` to be empty while every part
@@ -713,6 +917,28 @@ export default {
           oversizedCount === 1 ? "it is" : "they are"
         } larger than ${MAX_EMAIL_DOCUMENT_MB} MB: ${replyLossNames(oversizedAttachments)}.`
       : "";
+    // The inline loss, in the same shape as the two above — count, reason,
+    // names — and shared by both exits for the same reason (DW-565). A document
+    // that arrived and was not queued has to be named whichever exit the
+    // message takes, and the no-content exit is the one that needed it most: it
+    // is reached precisely when the inline document was the ONLY thing in the
+    // message.
+    //
+    // Named HERE and nowhere else. `attachmentNames` must not carry these names
+    // — the route derives a `localSkipped` FLOOR from
+    // `attachmentNames.length - attachments.length`, so a recorded name with no
+    // forwarded file behind it re-creates the phantom skip DW-359 removed. The
+    // names reach the SENDER, who can re-send the file; the recorded list stays
+    // a list of files that travelled.
+    const inlineDroppedLine = inlineDroppedCount
+      ? `${inlineDroppedCount} supported attachment${
+          inlineDroppedCount === 1 ? " was" : "s were"
+        } not queued because ${
+          inlineDroppedCount === 1 ? "it was" : "they were"
+        } marked inline by the sending client: ${replyLossNames(
+          inlineDroppedAttachments,
+        )}.`
+      : "";
     if (!rawContent && supportedAttachments.length === 0) {
       await reply(
         message,
@@ -728,7 +954,22 @@ export default {
           // the plain no-text sentence rather than being told to fix a format
           // problem it does not have (DW-359). When something really did fail
           // the allowlist, the format list is still the useful answer, verbatim.
-          unsupportedCount
+          //
+          // ...and suppressed again by `!inlineDroppedCount`, for exactly the
+          // reason recorded above (DW-565). A message carrying an unsupported
+          // file AND an inline-labelled supported one would otherwise open with
+          // the format branch below — "found no ... supported document
+          // attachment", then the allowlist — two lines above a sentence naming
+          // a Markdown file that arrived. The same contradiction, in the shape
+          // where the format list is not even the useful advice: what that
+          // sender has to change is their client's inline labelling, which the
+          // line below tells them, and a format list would send them to convert
+          // a file already in a supported format.
+          //
+          // (The allowlist is spelled out ONCE in this module. A second copy in
+          // this comment would break the prose-inventory parity anchor that
+          // keeps the sentence honest — see `prose-inventory-parity.test.ts`.)
+          unsupportedCount && !inlineDroppedCount
             ? "work-wiki found no email text or supported document attachment. Supported attachments: Markdown, TXT, HTML, PDF, DOCX, PPTX, XLSX/XLS, CSV, ZIP, ODT/ODS/ODP, EPUB, MOBI, Org, and RTF."
             : "work-wiki found no email text to ingest.",
           oversizedLine,
@@ -740,6 +981,10 @@ export default {
           // loss. Kept so the sentence survives if that relationship ever
           // changes; the reachable over-budget report is in the acknowledgement.
           overBudgetLine,
+          // Reachable, and the reason this exit needed a fifth sentence: an
+          // inline-labelled `.md` with no body reaches exactly here, and used
+          // to be answered with the no-text sentence alone (DW-565).
+          inlineDroppedLine,
         ]
           .filter(Boolean)
           .join("\n\n"),
@@ -753,8 +998,16 @@ export default {
         : rawContent;
     // Countable parts only. `src/app/api/email/ingest/route.ts` derives a
     // `localSkipped` FLOOR from `attachmentNames.length - attachments.length`,
-    // so an inline part named here but never forwarded would be re-reported as a
+    // so a part named here but never forwarded would be re-reported as a
     // skipped attachment downstream, undoing DW-359 one surface below this one.
+    //
+    // Which is why an inline-dropped DOCUMENT is COUNTED but not NAMED here: it
+    // is in `skippedAttachmentCount` (the route takes the larger of the two
+    // figures, so a worker total above the local floor is safe) and it is named
+    // to the sender in `inlineDroppedLine`, but adding it to this list would
+    // add a phantom skip on top of the real one it already contributes. The two
+    // surfaces answer different questions — this one records what travelled,
+    // the reply explains what did not.
     const attachmentNames = countableAttachments
       .map((attachment) => attachment.filename || "unnamed attachment")
       .slice(0, MAX_EMAIL_ATTACHMENT_NAMES_RECORDED);
@@ -839,6 +1092,7 @@ export default {
         : "",
       oversizedLine,
       overBudgetLine,
+      inlineDroppedLine,
       overCapCount
         ? `${overCapCount} supported attachment${overCapCount === 1 ? " was" : "s were"} not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`
         : "",

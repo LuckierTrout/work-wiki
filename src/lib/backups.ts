@@ -3,6 +3,7 @@ import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { recordOperationSafe } from "./operation-ledger";
 import { withFileLock } from "./lock";
+import { effectivePurposeOverrides } from "./wikis";
 
 export interface BackupFileEntry {
   path: string;
@@ -146,6 +147,7 @@ async function createOwnerBackupUnlocked(
   const sourceRoot = `tenants/${tenant}`;
   const root = backupRoot(owner, id);
   const walked = await walkFiles(sourceRoot, limits.maxFiles);
+  const purposeOverrides = await effectivePurposeOverrides(owner);
   const entries: BackupFileEntry[] = [];
   let totalBytes = 0;
   let truncationReason: BackupTruncationReason | null = walked.truncated
@@ -171,7 +173,10 @@ async function createOwnerBackupUnlocked(
       truncationReason = "total-bytes";
       break;
     }
-    const data = await getStorage().readAsset(sourcePath);
+    const effectivePurpose = purposeOverrides.get(sourcePath);
+    const data = effectivePurpose === undefined
+      ? await getStorage().readAsset(sourcePath)
+      : new TextEncoder().encode(effectivePurpose).buffer;
     // The check above is the optimisation; this one owns the invariant. `stat`
     // gates and never accounts — `totalBytes`, the entry's `size` and its
     // `sha256` all come from these bytes — so re-testing the ceiling here is

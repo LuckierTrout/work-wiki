@@ -43,6 +43,8 @@ import {
   SETTINGS_CUSTOM_ENDPOINT_COPY,
   SETTINGS_FIRECRAWL_COPY,
   SETTINGS_GENERAL_SCHEMA_COPY,
+  SETTINGS_GENERAL_PURPOSE_COPY,
+  SETTINGS_GENERAL_NO_WIKI_COPY,
   SETTINGS_RESEARCH_COPY,
   SETTINGS_RESEARCH_PROVIDER_LABEL,
   draftResearchProvider,
@@ -98,6 +100,7 @@ import {
 } from "@/lib/workbench-settings";
 import { CANVAS_ID } from "./ModeCanvas";
 import { SettingsApiMcpPane } from "./SettingsApiMcpPane";
+import type { EditableArtifactFile } from "@/lib/wiki-scenarios";
 
 /**
  * The Settings detail column — the canvas while the Settings surface is open.
@@ -142,9 +145,16 @@ export interface SettingsCanvasProps {
   category: SettingsCategoryId;
   /** The shell's id for the surface heading, so `aria-labelledby` has a target. */
   headingId: string;
+  hasWiki: boolean;
+  onOpenArtifact: (file: EditableArtifactFile) => void;
 }
 
-export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
+export function SettingsCanvas({
+  category,
+  headingId,
+  hasWiki,
+  onOpenArtifact,
+}: SettingsCanvasProps) {
   const [payload, setPayload] = useState<WorkbenchSettingsPayload | null>(null);
   const [draft, setDraft] = useState<SettingsDraft | null>(null);
   const [loading, setLoading] = useState(true);
@@ -808,9 +818,33 @@ export function SettingsCanvas({ category, headingId }: SettingsCanvasProps) {
     }
     switch (category) {
       case "general":
-        // Points at the Schema editor and writes nothing (Story 1.8 shipped the
-        // ONE confirm-gated editor; `purpose.md` stays shut per DW-58).
-        return <p className="wb-set-note">{SETTINGS_GENERAL_SCHEMA_COPY}</p>;
+        return (
+          <>
+            {!hasWiki && (
+              <p className="wb-set-note">{SETTINGS_GENERAL_NO_WIKI_COPY}</p>
+            )}
+            <h3 className="wb-set-heading">Purpose</h3>
+            <p className="wb-set-note">{SETTINGS_GENERAL_PURPOSE_COPY}</p>
+            <button
+              type="button"
+              className="wb-set-action"
+              disabled={!hasWiki}
+              onClick={() => onOpenArtifact("purpose.md")}
+            >
+              Open Purpose
+            </button>
+            <h3 className="wb-set-heading">Schema</h3>
+            <p className="wb-set-note">{SETTINGS_GENERAL_SCHEMA_COPY}</p>
+            <button
+              type="button"
+              className="wb-set-action"
+              disabled={!hasWiki}
+              onClick={() => onOpenArtifact("schema.md")}
+            >
+              Open Schema
+            </button>
+          </>
+        );
       case "llm-models":
         return (
           <>

@@ -227,7 +227,7 @@ export const READ_ONLY_REFUSAL = {
     "Page metadata cannot be changed while this deployment is read-only.",
   /** `writeWikiArtifact` and the two Workbench artifact routes. */
   artifactEdit:
-    "The Schema cannot be edited while this deployment is read-only.",
+    "Wiki artifacts cannot be edited while this deployment is read-only.",
   /**
    * `createWiki` and `POST /api/wikis`. Character-identical to the sentence the
    * route already serves inline — see the module note on the wiki-lifecycle

@@ -10,6 +10,7 @@ import { rawRelPath, wikiRelPath } from "./wiki";
 import { enrichEntry, listWikiPages, updateIndexUnsafe, validateSlug } from "./wiki";
 import { parseFrontmatter } from "./frontmatter";
 import type { IndexEntry } from "./types";
+import { effectivePurposeOverrides } from "./wikis";
 
 export interface PortableArchiveManifest {
   format: "workwiki-portable-archive";
@@ -76,6 +77,7 @@ export async function buildPortableArchive(owner: string): Promise<{
   // The index is rebuilt after import and the log is append-only global audit
   // infrastructure. Neither is a portable Page payload.
   const paths = (await walk(root)).filter((path) => !ARCHIVE_INFRASTRUCTURE_PATHS.has(path));
+  const purposeOverrides = await effectivePurposeOverrides(owner);
   const archiveFiles: Record<string, Uint8Array> = {};
   const manifest: PortableArchiveManifest = {
     format: "workwiki-portable-archive",
@@ -87,7 +89,11 @@ export async function buildPortableArchive(owner: string): Promise<{
   };
   let totalBytes = 0;
   for (const path of paths.sort()) {
-    const data = await getStorage().readAsset(`${root}/${path}`);
+    const sourcePath = `${root}/${path}`;
+    const effectivePurpose = purposeOverrides.get(sourcePath);
+    const data = effectivePurpose === undefined
+      ? await getStorage().readAsset(sourcePath)
+      : new TextEncoder().encode(effectivePurpose).buffer;
     totalBytes += data.byteLength;
     if (totalBytes > MAX_BYTES) throw new Error("Archive exceeds the 500 MB safety limit");
     const bytes = new Uint8Array(data);

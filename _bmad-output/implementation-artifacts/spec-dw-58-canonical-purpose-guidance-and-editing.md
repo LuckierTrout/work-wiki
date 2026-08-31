@@ -2,7 +2,8 @@
 title: 'DW-58 canonical Purpose guidance and editing'
 type: 'feature'
 created: '2026-08-31'
-status: 'draft'
+status: 'in-progress'
+baseline_commit: 'ffc99a2f2b50f1d2d09be5fbecd854bfb1561f46'
 review_loop_iteration: 0
 context: []
 ---

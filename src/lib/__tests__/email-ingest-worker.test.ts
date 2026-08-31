@@ -472,8 +472,21 @@ function multipartEmail(
      * `filename`. The only way to write a name the quoted-string form cannot
      * hold -- RFC 2231 percent-encoding smuggles bytes (CR/LF included) that a
      * `filename="..."` parameter could not carry without breaking the header.
+     *
+     * `null` OMITS the header entirely, which no earlier fixture could do: a
+     * part carrying a `Content-ID` and no `Content-Disposition` is the whole
+     * shape DW-450 is about, and it is unreachable while every part is forced
+     * to declare a disposition. Such a part gets its name from the
+     * `Content-Type` `name=` parameter instead, since the `filename` normally
+     * comes off the line being omitted.
      */
-    disposition?: string;
+    disposition?: string | null;
+    /**
+     * Extra part headers, written verbatim after `Content-Type` and the
+     * disposition. `Content-ID: <logo@example.com>` is the only current use --
+     * there was no way to give a part a header this helper does not derive.
+     */
+    headers?: readonly string[];
     /**
      * Transfer encoding for the part body. Defaults to base64, the encoding
      * every fixture used before DW-358; `quoted-printable` is the worst-case
@@ -481,7 +494,19 @@ function multipartEmail(
      */
     encoding?: "base64" | "quoted-printable";
   })[],
-  options: { subject: string; messageId: string; body: string },
+  options: {
+    subject: string;
+    messageId: string;
+    body: string;
+    /**
+     * A `text/html` sibling body part. Without one `parsed.html` is empty and
+     * no `cid:` reference exists to be matched, so the whole DW-450 widening is
+     * unreachable from a fixture. PostalMime folds the `text/plain` sibling
+     * into `parsed.html` as well, so `parsed.text` stays the merged body text
+     * rather than exactly `options.body`.
+     */
+    html?: string;
+  },
 ): string {
   const lines = [
     "From: owner@example.com",
@@ -497,19 +522,41 @@ function multipartEmail(
     options.body,
     "",
   ];
+  if (options.html !== undefined) {
+    lines.push(
+      "--work-wiki-boundary",
+      "Content-Type: text/html; charset=utf-8",
+      "",
+      options.html,
+      "",
+    );
+  }
   parts.forEach((part, index) => {
     const encoding = part.encoding ?? "base64";
     const payload = partBytes(index, part.bytes ?? 96);
-    lines.push(
-      "--work-wiki-boundary",
-      `Content-Type: ${part.mime}`,
-      part.disposition ??
-        (part.filename
+    // `filename` is written into the `Content-Disposition` line and NOWHERE
+    // else, so omitting that line silently discards it -- a fixture asking for
+    // both would test a nameless part while reading as though it named one.
+    // Throw rather than drop it: the name has to travel on `Content-Type`
+    // instead, and a fixture that got this wrong would be asserting against a
+    // differently-shaped part than its author wrote.
+    if (part.disposition === null && part.filename !== null) {
+      throw new Error(
+        `multipartEmail: part "${part.filename}" omits Content-Disposition, which is the only header carrying \`filename\`. Pass \`filename: null\` and put the name in the Content-Type \`name=\` parameter instead.`,
+      );
+    }
+    // `undefined` derives the header, an explicit `null` omits it, a string
+    // replaces it. `??` cannot express the middle case.
+    const disposition =
+      part.disposition === undefined
+        ? part.filename
           ? `Content-Disposition: attachment; filename="${part.filename}"`
-          : "Content-Disposition: attachment"),
-      `Content-Transfer-Encoding: ${encoding}`,
-      "",
-    );
+          : "Content-Disposition: attachment"
+        : part.disposition;
+    lines.push("--work-wiki-boundary", `Content-Type: ${part.mime}`);
+    if (disposition !== null) lines.push(disposition);
+    for (const header of part.headers ?? []) lines.push(header);
+    lines.push(`Content-Transfer-Encoding: ${encoding}`, "");
     if (encoding === "base64") {
       lines.push(base64Lines(payload), "");
     } else {
@@ -871,11 +918,17 @@ describe("email-ingest oversized attachments", () => {
   });
 
   /**
-   * Oversized, over-cap and unsupported in one acknowledgement, with the inline
-   * exclusion (DW-359) live throughout. No other fixture drives those three
-   * together, so the plural oversize wording, the `"unnamed attachment"`
-   * fallback and the CR/LF scrubbing were all unobserved -- and a dropped term
-   * in `overCapCount` would pass on every case that drives only two of them.
+   * Oversized, over-cap, unsupported and inline-document losses in one
+   * acknowledgement, with the inline-DECORATION exclusion (DW-359) live
+   * throughout. No other fixture drives those together, so the plural oversize
+   * wording, the `"unnamed attachment"` fallback and the CR/LF scrubbing were
+   * all unobserved -- and a dropped term in `overCapCount` would pass on every
+   * case that drives only two of them.
+   *
+   * Four of the five terms, and the disjointness that matters most: the fifth
+   * (DW-565) is the only one not derived from `countableAttachments`, so a
+   * fixture driving it beside the others is what proves it neither
+   * double-counts nor absorbs any of them.
    *
    * The aggregate budget (DW-360) is deliberately NOT in play: the oversized
    * pair never reaches the selection loop, and eleven 96-byte parts cannot spend
@@ -908,6 +961,15 @@ describe("email-ingest oversized attachments", () => {
           mime: "image/png",
           disposition: 'Content-Disposition: inline; filename="logo.png"',
         },
+        // Inline and a SUPPORTED format: the fifth loss term (DW-565), which
+        // has to coexist with the other three here rather than only alone. The
+        // asymmetry with the logo above is the whole rule -- a document the
+        // sender could have had ingested is named, a decoration is not.
+        {
+          filename: "notes.md",
+          mime: "text/markdown",
+          disposition: 'Content-Disposition: inline; filename="notes.md"',
+        },
         ...Array.from({ length: MAX_EMAIL_ATTACHMENTS + 1 }, (_unused, index) => ({
           filename: `small-${index + 1}.pdf`,
           mime: "application/pdf",
@@ -928,10 +990,16 @@ describe("email-ingest oversized attachments", () => {
     // Ten forwarded: the oversized pair never competed for a slot, so the cap
     // cut exactly one within-ceiling file.
     expect(form.getAll("attachments")).toHaveLength(MAX_EMAIL_ATTACHMENTS);
-    // 2 oversized + 2 unsupported + 1 over-cap, as one number. The inline logo
-    // is in none of them.
-    expect(form.get("skippedAttachmentCount")).toBe("5");
+    // 2 oversized + 2 unsupported + 1 over-cap + 1 inline document, as one
+    // number: the four terms in play are disjoint and sum to it. The inline
+    // LOGO is in none of them.
+    expect(form.get("skippedAttachmentCount")).toBe("6");
     expect(form.getAll("attachmentName")).not.toContain("logo.png");
+    // ...and neither inline part is a recorded NAME, document or not: the route
+    // derives a `localSkipped` floor from `attachmentNames.length -
+    // attachments.length`, so `notes.md` recorded here would be counted a
+    // second time downstream on top of the term it already contributes.
+    expect(form.getAll("attachmentName")).not.toContain("notes.md");
 
     expect(reply.text).toContain(
       `${MAX_EMAIL_ATTACHMENTS} supported attachments were queued for ingestion.`,
@@ -946,7 +1014,13 @@ describe("email-ingest oversized attachments", () => {
       `1 supported attachment was not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`,
     );
     expect(reply.text).toContain("2 unsupported attachments were recorded but skipped.");
+    expect(reply.text).toContain(
+      "1 supported attachment was not queued because it was marked inline by the sending client: notes.md.",
+    );
     expect(reply.text).not.toContain("total attachment budget");
+    // The logo is named nowhere, on the fixture that carries both kinds of
+    // inline part (DW-359).
+    expect(reply.text).not.toContain("logo.png");
 
     // The CR/LF is gone, not merely rendered harmlessly: the sentence naming the
     // dropped files must stay ONE line.
@@ -1019,6 +1093,19 @@ describe("email-ingest body with only unsupported attachments", () => {
  * explain where they went. DW-446 moves the exclusion up to eligibility, so an
  * inline part costs the sender nothing at all — the cases below pin both halves.
  *
+ * DW-565 then closes the hole DW-446 opened at the other end: an inline part of
+ * a supported format left eligibility and contributed to none of the four loss
+ * terms, so a `.md` a client labelled inline arrived and NO sentence anywhere
+ * mentioned it. It now has a fifth term of its own, named in both the
+ * acknowledgement and the no-content exit — a document must never arrive and go
+ * unmentioned. Note the asymmetry the cases below pin: an unsupported inline
+ * part (a logo) is still silent, because there was never anything to ingest.
+ *
+ * DW-450/DW-566 split the predicate that decides all of this in two. A part
+ * carrying only a body-referenced `Content-ID` is a decoration for COUNTING and
+ * a real file for FORWARDING, which is why `describe("email-ingest Content-ID
+ * parts")` below exists as its own suite.
+ *
  * Built from real fixtures rather than a mocked parser: whether a
  * `Content-Disposition: inline` header actually reaches the Worker as
  * `disposition === "inline"` is a fact about PostalMime, and a stub would assert
@@ -1087,13 +1174,15 @@ describe("email-ingest inline parts", () => {
     expect(text).not.toContain("Markdown, TXT, HTML");
   });
 
-  it("does not forward an inline part that is itself a supported document", async () => {
-    // The case DW-446 reverses. This used to be forwarded on the theory that a
-    // `.md` a client marked inline is still a document the sender meant to send
-    // -- but the same part was then excluded from every loss sentence, so it
-    // spent a slot and budget bytes that no reply could account for. Excluding
-    // it entirely is the only reading under which the counts the sender is shown
-    // describe the message the sender actually sent.
+  it("names an inline supported document as a loss when it is the only part", async () => {
+    // The case DW-446 reverses and DW-565 completes. It used to be forwarded on
+    // the theory that a `.md` a client marked inline is still a document the
+    // sender meant to send -- but the same part was then excluded from every
+    // loss sentence, so it spent a slot and budget bytes that no reply could
+    // account for. DW-446 stopped forwarding it; the sender was then told
+    // "work-wiki found no email text to ingest." and NOTHING else, which is the
+    // defect DW-565 is about: a document arrived and no sentence mentioned it.
+    // Both halves are asserted below -- not forwarded, and named.
     //
     // Nothing forwardable and no body, so this exits before the forward and
     // `forwardedForm` -- which asserts a forward happened -- cannot be used.
@@ -1116,16 +1205,68 @@ describe("email-ingest inline parts", () => {
 
     expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
     const text = msg.reply.mock.calls[0][0].text;
-    // Not forwarded, not named, and not reported as a loss either: the sender
-    // is told their message was empty, which it was. Nothing countable failed
-    // the allowlist here, so `unsupportedCount` is zero and the branch keyed on
-    // it stays the plain no-text sentence rather than the supported-formats
-    // list, which would tell them to convert a file already in a supported
-    // format.
-    expect(text).toBe("work-wiki found no email text to ingest.");
+    // The no-text sentence is still first and still the plain one: nothing
+    // countable failed the allowlist here, so `unsupportedCount` is zero and
+    // the branch keyed on it must not answer with the supported-formats list,
+    // which would tell the sender to convert a file already in a supported
+    // format (DW-359).
+    //
+    // ...and then the fifth loss sentence, naming the document. The exact
+    // string, so a regression cannot pass by reporting the part under one of
+    // the other four terms -- each of which would tell the sender to make a
+    // change (shrink it, send fewer, convert it) that would not have helped.
+    expect(text).toBe(
+      [
+        "work-wiki found no email text to ingest.",
+        "1 supported attachment was not queued because it was marked inline by the sending client: notes.md.",
+      ].join("\n\n"),
+    );
     expect(text).not.toContain("recorded but skipped");
     expect(text).not.toContain("queued for ingestion");
     expect(text).not.toContain("Markdown, TXT, HTML");
+    expect(text).not.toContain("larger than");
+    expect(text).not.toContain("attachment limit");
+  });
+
+  it("does not offer the supported-formats list beside an inline document loss", async () => {
+    // The contradiction the no-content exit's own comment warns about, in the
+    // shape DW-565 created. An unsupported file makes `unsupportedCount`
+    // non-zero, which used to open the reply with "found no email text or
+    // supported document attachment. Supported attachments: Markdown, ..." --
+    // directly above a sentence naming a MARKDOWN file that arrived. Both
+    // sentences cannot be true, and the format list is not even the useful
+    // advice here: what this sender has to change is their client's inline
+    // labelling, which the line below tells them.
+    const raw = multipartEmail(
+      [
+        { filename: "program.exe", mime: "application/octet-stream" },
+        {
+          filename: "notes.md",
+          mime: "text/markdown",
+          disposition: 'Content-Disposition: inline; filename="notes.md"',
+        },
+      ],
+      { subject: "Dud and a preview", messageId: "message-inline-and-unsupported", body: "" },
+    );
+    const msg = message(raw, "Dud and a preview");
+    const bindings = env(Response.json({ ok: true, slug: "unused" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    const text = msg.reply.mock.calls[0][0].text;
+    expect(text).toBe(
+      [
+        "work-wiki found no email text to ingest.",
+        "1 supported attachment was not queued because it was marked inline by the sending client: notes.md.",
+      ].join("\n\n"),
+    );
+    // Named explicitly so a regression cannot pass by rewording the headline:
+    // the format list must not appear beside a named supported document.
+    expect(text).not.toContain("Markdown, TXT, HTML");
+    expect(text).not.toContain("supported document attachment");
   });
 
   it("spends no attachment slot on inline parts of a supported format", async () => {
@@ -1186,7 +1327,11 @@ describe("email-ingest inline parts", () => {
     expect(form.getAll("attachmentName")).toEqual(
       Array.from({ length: REAL_PDFS }, (_unused, index) => `real-${index + 1}.pdf`),
     );
-    expect(form.get("skippedAttachmentCount")).toBe("0");
+    // The three previews are supported documents that were not queued, so they
+    // are the fifth loss term (DW-565) -- not zero, as they were while an
+    // inline document could vanish without a sentence. The two logos are not:
+    // `image/png` is not a format the door would ever have taken.
+    expect(form.get("skippedAttachmentCount")).toBe(String(INLINE_PREVIEWS));
 
     expect(reply.text).toContain(
       `${REAL_PDFS} supported attachments were queued for ingestion.`,
@@ -1194,10 +1339,18 @@ describe("email-ingest inline parts", () => {
     // The exact lie this entry exists to remove.
     expect(reply.text).not.toContain("attachment limit");
     expect(reply.text).not.toContain("recorded but skipped");
-    // Every count and name the sender sees describes the nine files they
-    // actually attached -- no decoration of either kind appears anywhere.
+    // The counts and names the sender sees describe the nine files they
+    // attached -- plus the three documents their client marked inline, named so
+    // they can re-send them as attachments. The logos stay invisible (DW-359):
+    // the asymmetry is the point, and a fifth term that keyed on "inline"
+    // rather than on "inline AND supported" would name them here.
     expect(reply.text).not.toContain("logo-1.png");
-    expect(reply.text).not.toContain("preview-1.md");
+    expect(reply.text).toContain(
+      `${INLINE_PREVIEWS} supported attachments were not queued because they were marked inline by the sending client: ${Array.from(
+        { length: INLINE_PREVIEWS },
+        (_unused, index) => `preview-${index + 1}.md`,
+      ).join(", ")}.`,
+    );
   });
 
   it("spends no aggregate budget on an inline part of a supported format", async () => {
@@ -1268,8 +1421,18 @@ describe("email-ingest inline parts", () => {
     expect(forwardedBytes).toBe(2 * REAL_BYTES);
 
     expect(form.getAll("attachmentName")).toEqual(["real-1.pdf", "real-2.pdf"]);
-    expect(form.get("skippedAttachmentCount")).toBe("0");
+    // One: `preview.pdf` is a supported document that was not queued (DW-565).
+    // Its name reaches the SENDER only -- `attachmentName` above stays the list
+    // of files that travelled, because the route derives a `localSkipped` floor
+    // from `attachmentNames.length - attachments.length` and a name with no file
+    // behind it would be counted twice.
+    expect(form.get("skippedAttachmentCount")).toBe("1");
     expect(reply.text).toContain("2 supported attachments were queued for ingestion.");
+    expect(reply.text).toContain(
+      "1 supported attachment was not queued because it was marked inline by the sending client: preview.pdf.",
+    );
+    // ...under its OWN reason. It was not refused for the budget it no longer
+    // spends, and it is not over the per-document ceiling.
     expect(reply.text).not.toContain("total attachment budget");
     expect(reply.text).not.toContain("larger than");
   });
@@ -1283,7 +1446,11 @@ describe("email-ingest inline parts", () => {
     // part" and "the part was forwarded anyway" would have shipped green.
     //
     // The forward must happen, because there is text to ingest, and it must
-    // carry no attachment and no attachment sentence of any kind.
+    // carry no attachment -- but it does now carry an attachment SENTENCE. This
+    // is the acknowledgement half of DW-565: the no-body sibling above pins the
+    // no-content exit, and a fifth line built only at that exit would leave this
+    // shape -- the likelier one, since most senders write something -- still
+    // dropping a document in silence.
     const raw = multipartEmail(
       [
         {
@@ -1302,19 +1469,331 @@ describe("email-ingest inline parts", () => {
 
     expect(form.get("content")).toBe("The decision is recorded in this body.");
     expect(form.getAll("attachments")).toHaveLength(0);
+    // Still not a recorded NAME -- that list is the files that travelled, and a
+    // name with nothing behind it re-creates the phantom skip downstream -- but
+    // it IS a counted loss.
     expect(form.getAll("attachmentName")).toEqual([]);
-    expect(form.get("skippedAttachmentCount")).toBe("0");
+    expect(form.get("skippedAttachmentCount")).toBe("1");
 
-    // Not one attachment sentence, of any kind: the sender attached nothing, so
-    // there is nothing to report queued and nothing to report lost. All four
-    // loss terms are named so a regression cannot pass by picking a different
-    // one of them.
+    // Exactly one attachment sentence, and it is the fifth term naming the
+    // document. The other four are named so a regression cannot pass by
+    // reporting the part under one of them: each would tell the sender to make
+    // a change -- shrink it, send fewer, convert it -- that would not have
+    // helped.
+    expect(reply.text).toContain(
+      "1 supported attachment was not queued because it was marked inline by the sending client: preview.md.",
+    );
     expect(reply.text).not.toContain("queued for ingestion");
     expect(reply.text).not.toContain("recorded but skipped");
     expect(reply.text).not.toContain("attachment limit");
     expect(reply.text).not.toContain("larger than");
     expect(reply.text).not.toContain("total attachment budget");
-    expect(reply.text).not.toContain("preview.md");
+  });
+});
+
+/**
+ * Parts carrying a `Content-ID` and NO `Content-Disposition` (DW-450, DW-566).
+ *
+ * The archetypal embedded graphic is written this way: a client drops the
+ * disposition header, stamps a `Content-ID` on the part and points the HTML
+ * body at it with `src="cid:..."`. `postal-mime` reports such a part as
+ * `disposition: null`, which the loss accounting reads as an unlabelled real
+ * attachment -- so the sender's own signature logo came back to them as "1
+ * unsupported attachment was recorded but skipped", exactly the DW-359 lie in a
+ * shape the disposition-only predicate cannot see.
+ *
+ * DW-450 widens the COUNTING predicate to trust that pairing, and DW-566 is the
+ * reason it is a second predicate rather than a widening of the one that was
+ * there: the same widening applied to ELIGIBILITY would silently discard every
+ * supported document a client happens to tag with a Content-ID. Both halves are
+ * pinned below -- a referenced logo disappears from the counts, a referenced
+ * `.md` is still forwarded.
+ *
+ * Real fixtures, not the mocked parser, and deliberately so: whether a
+ * `Content-ID` header with no `Content-Disposition` reaches the Worker as
+ * `contentId` set with `disposition === null`, and whether a `text/html`
+ * sibling part reaches it as a populated `parsed.html`, are facts about
+ * PostalMime. A stub would assert the Worker's half of the contract while
+ * assuming the half that can fail.
+ */
+describe("email-ingest Content-ID parts", () => {
+  /** Referenced by `CID_BODY_HTML` below. The disposition header is absent. */
+  const CID_LOGO = {
+    filename: null,
+    // The name has to travel on `Content-Type`: `filename` normally comes off
+    // the `Content-Disposition` line this part deliberately omits.
+    mime: 'image/png; name="logo.png"',
+    disposition: null,
+    headers: ["Content-ID: <logo@example.com>"],
+  } as const;
+  const CID_BODY_HTML = '<p>See <img src="cid:logo@example.com"> below.</p>';
+
+  it("does not count a Content-ID-only logo the body references", async () => {
+    const raw = multipartEmail([CID_LOGO, { filename: "report.pdf", mime: "application/pdf" }], {
+      subject: "Signed off",
+      messageId: "message-cid-logo",
+      body: "The report is attached.",
+      html: CID_BODY_HTML,
+    });
+    const { form, reply } = await forwardedForm(raw, "Signed off", "signed-off");
+
+    // Only the real attachment travels, and it is the only recorded name. The
+    // logo is a decoration: no count, no name, no sentence (DW-359).
+    expect((form.getAll("attachments") as File[]).map((part) => part.name)).toEqual([
+      "report.pdf",
+    ]);
+    expect(form.getAll("attachmentName")).toEqual(["report.pdf"]);
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+
+    expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
+    // The exact sentence the sender used to get about their own footer, named so
+    // a regression cannot pass by rewording it.
+    expect(reply.text).not.toContain("1 unsupported attachment was recorded but skipped.");
+    expect(reply.text).not.toContain("recorded but skipped");
+    expect(reply.text).not.toContain("logo.png");
+    // And not the fifth term either: the logo was never inline BY DISPOSITION,
+    // and it is not a supported format, so neither half of that term applies.
+    expect(reply.text).not.toContain("marked inline");
+  });
+
+  it("still forwards a Content-ID-only document the body references", async () => {
+    // The DW-566 half, and the reason the predicate had to be split rather than
+    // widened. This part is decorative by every counting signal -- no
+    // disposition, a Content-ID, referenced by the body -- and it is STILL a
+    // `.md` the sender sent. A single widened predicate gating eligibility
+    // discards it, forwards nothing, and reports no loss: the file vanishes
+    // between two clients with no sentence anywhere.
+    const raw = multipartEmail(
+      [
+        {
+          filename: null,
+          mime: 'text/markdown; name="notes.md"',
+          disposition: null,
+          headers: ["Content-ID: <notes@example.com>"],
+        },
+      ],
+      {
+        subject: "Embedded notes",
+        messageId: "message-cid-document",
+        body: "Notes below.",
+        html: '<p>Notes: <a href="cid:notes@example.com">here</a></p>',
+      },
+    );
+    const { form, reply } = await forwardedForm(raw, "Embedded notes", "embedded-notes");
+
+    // Forwarded WITH ITS BYTES -- not merely named. Dropping the content while
+    // keeping the name would ingest an empty document.
+    const parts = form.getAll("attachments") as File[];
+    expect(parts.map((part) => part.name)).toEqual(["notes.md"]);
+    expect(new Uint8Array(await parts[0].arrayBuffer())).toEqual(partBytes(0));
+    expect(form.getAll("attachmentName")).toEqual(["notes.md"]);
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+
+    expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
+    expect(reply.text).not.toContain("recorded but skipped");
+    expect(reply.text).not.toContain("marked inline");
+  });
+
+  it("treats an UNREFERENCED Content-ID as a real attachment", async () => {
+    // The bound on the widening. A `Content-ID` alone proves nothing -- clients
+    // stamp one on ordinary attachments -- so it is the body's REFERENCE that
+    // makes a part a decoration. The fixture carries an HTML body pointing at a
+    // different `cid:`, so what is being pinned is the match, not the mere
+    // presence of a body: a predicate that widened on `contentId` alone, or that
+    // treated any HTML body as blanket permission, passes without this.
+    const raw = multipartEmail([CID_LOGO], {
+      subject: "Stray content id",
+      messageId: "message-cid-unreferenced",
+      body: "One file attached.",
+      html: '<p>See <img src="cid:elsewhere@example.com"> below.</p>',
+    });
+    const { form, reply } = await forwardedForm(raw, "Stray content id", "stray-content-id");
+
+    // Nothing forwardable -- `image/png` is not on the allowlist -- but it is
+    // counted and named, which is what a real unlabelled attachment gets.
+    expect(form.getAll("attachments")).toHaveLength(0);
+    expect(form.getAll("attachmentName")).toEqual(["logo.png"]);
+    expect(form.get("skippedAttachmentCount")).toBe("1");
+    expect(reply.text).toContain("1 unsupported attachment was recorded but skipped.");
+  });
+
+  it("treats an explicitly ATTACHED part as one however the body references it", async () => {
+    // The other bound. The widening applies ONLY where the disposition header is
+    // absent: a client that said `attachment` said so, and a `cid:` reference
+    // must not overrule it. Without this the sender who attached a chart AND
+    // embedded a preview of it is told they attached nothing.
+    const raw = multipartEmail(
+      [
+        {
+          filename: "chart.png",
+          mime: 'image/png; name="chart.png"',
+          headers: ["Content-ID: <logo@example.com>"],
+        },
+      ],
+      {
+        subject: "Attached and embedded",
+        messageId: "message-cid-attachment",
+        body: "The chart is attached.",
+        html: CID_BODY_HTML,
+      },
+    );
+    const { form, reply } = await forwardedForm(
+      raw,
+      "Attached and embedded",
+      "attached-and-embedded",
+    );
+
+    expect(form.getAll("attachmentName")).toEqual(["chart.png"]);
+    expect(form.get("skippedAttachmentCount")).toBe("1");
+    expect(reply.text).toContain("1 unsupported attachment was recorded but skipped.");
+  });
+
+  it("matches a Content-ID against the body reference case-insensitively", async () => {
+    // Two no-ops until something varies case: `normalizeCid`'s `.toLowerCase()`
+    // and the `/i` on the reference scanner. Every other fixture here writes
+    // both sides in the same lower case, so deleting either leaves the suite
+    // green -- and a client that round-trips Content-ID case, or emits
+    // upper-case markup, gets the DW-359 phantom line back.
+    //
+    // Both halves vary at once, in opposite directions: the HEADER carries
+    // mixed case (which only `.toLowerCase()` reconciles) and the MARKUP is
+    // upper-case in both the attribute name and the scheme (which only `/i`
+    // reaches).
+    const raw = multipartEmail(
+      [
+        {
+          filename: null,
+          mime: 'image/png; name="logo.png"',
+          disposition: null,
+          headers: ["Content-ID: <Logo@Example.COM>"],
+        },
+        { filename: "report.pdf", mime: "application/pdf" },
+      ],
+      {
+        subject: "Shouty markup",
+        messageId: "message-cid-case",
+        body: "The report is attached.",
+        html: '<P>See <IMG SRC="CID:logo@example.com"> below.</P>',
+      },
+    );
+    const { form, reply } = await forwardedForm(raw, "Shouty markup", "shouty-markup");
+
+    expect(form.getAll("attachmentName")).toEqual(["report.pdf"]);
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+    expect(reply.text).not.toContain("recorded but skipped");
+    expect(reply.text).not.toContain("logo.png");
+  });
+
+  it("matches a single-quoted cid reference", async () => {
+    // The delimiter is the sending CLIENT's choice, not the sender's, and every
+    // other fixture in this suite double-quotes. The scanner reads three
+    // spellings -- double-quoted, single-quoted, bare -- and two of them were
+    // unobserved, so a pattern that handled only `"cid:..."` would ship green
+    // and half the clients in the world would keep getting the phantom line.
+    const raw = multipartEmail(
+      [
+        {
+          filename: null,
+          mime: 'image/png; name="logo.png"',
+          disposition: null,
+          headers: ["Content-ID: <logo@example.com>"],
+        },
+        { filename: "report.pdf", mime: "application/pdf" },
+      ],
+      {
+        subject: "Single quotes",
+        messageId: "message-cid-single-quoted",
+        body: "The report is attached.",
+        html: "<p>See <img src='cid:logo@example.com'> below.</p>",
+      },
+    );
+    const { form, reply } = await forwardedForm(raw, "Single quotes", "single-quotes");
+
+    expect(form.getAll("attachmentName")).toEqual(["report.pdf"]);
+    expect(form.get("skippedAttachmentCount")).toBe("0");
+    expect(reply.text).not.toContain("recorded but skipped");
+    expect(reply.text).not.toContain("logo.png");
+  });
+
+  it("ignores a cid mention that is not a URL-bearing reference", async () => {
+    // The bound on the SCAN, and the asymmetry that sets it. Under-matching
+    // costs at worst the phantom "recorded but skipped" line DW-450 removes --
+    // a sentence about a decoration. Over-matching takes a file the sender
+    // really attached out of the counts, out of the recorded names and out of
+    // every sentence, so they are told nothing about it at all.
+    //
+    // Three ways a `cid:` token appears without the body pointing at anything:
+    // a commented-out draft, a script string, and a quoted reply that merely
+    // mentions the URL in prose. A scanner reading the whole document -- which
+    // is what this started as -- treats all three as proof the part is
+    // embedded, and deletes a real attachment from the accounting on the
+    // strength of someone TALKING about it.
+    const raw = multipartEmail([CID_LOGO], {
+      subject: "Talking about a cid",
+      messageId: "message-cid-prose",
+      body: "",
+      html: [
+        "<!-- <img src=\"cid:logo@example.com\"> -->",
+        "<script>var embedded = \"cid:logo@example.com\";</script>",
+        "<style>.sig { background: url(cid:logo@example.com); }</style>",
+        "<p>The broken image was cid:logo@example.com in the last mail.</p>",
+      ].join("\n"),
+    });
+    const { form, reply } = await forwardedForm(
+      raw,
+      "Talking about a cid",
+      "talking-about-a-cid",
+    );
+
+    // Nothing points AT the part, so it is the unlabelled real attachment it
+    // appears to be: counted, named, and reported.
+    expect(form.getAll("attachmentName")).toEqual(["logo.png"]);
+    expect(form.get("skippedAttachmentCount")).toBe("1");
+    expect(reply.text).toContain("1 unsupported attachment was recorded but skipped.");
+  });
+
+  it("tells a sender whose only part was a referenced decoration that there was no text", async () => {
+    // The exit where the DW-359 lie was loudest, in the Content-ID shape: a
+    // message that is nothing but a signature. No fixture reached it -- every
+    // Content-ID case above carries a real attachment beside the decoration --
+    // and it IS reachable, because an HTML body consisting only of the `<img>`
+    // reduces to empty `rawContent` once the tags are stripped.
+    //
+    // Before DW-450 this sender was told "work-wiki found no email text or
+    // supported document attachment. Supported attachments: Markdown, ...":
+    // asked to convert a logo they did not attach, in a message they meant to
+    // be read as text.
+    const raw = multipartEmail(
+      [
+        {
+          filename: null,
+          mime: 'image/png; name="logo.png"',
+          disposition: null,
+          headers: ["Content-ID: <logo@example.com>"],
+        },
+      ],
+      {
+        subject: "Just a signature",
+        messageId: "message-cid-only-part",
+        body: "",
+        html: '<p><img src="cid:logo@example.com"></p>',
+      },
+    );
+    const msg = message(raw, "Just a signature");
+    const bindings = env(Response.json({ ok: true, slug: "unused" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+
+    // The premise: the body really does reduce to nothing, so this is the
+    // no-content exit and not the forward.
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    const text = msg.reply.mock.calls[0][0].text;
+    expect(text).toBe("work-wiki found no email text to ingest.");
+    expect(text).not.toContain("supported document attachment");
+    expect(text).not.toContain("Markdown, TXT, HTML");
+    expect(text).not.toContain("logo.png");
   });
 });
 
@@ -1695,18 +2174,24 @@ describe("email-ingest aggregate decoded budget", () => {
     // never consumed a cap slot.
     expect(form.getAll("attachments")).toHaveLength(MAX_EMAIL_ATTACHMENTS);
     expect((form.getAll("attachments")[1] as File).name).toBe("lead-2.pdf");
-    // 1 unsupported + 2 over budget + 3 over cap. The two inline parts are in
-    // neither the count nor the names.
-    expect(form.get("skippedAttachmentCount")).toBe(String(1 + 2 + OVER_CAP_EXTRAS));
+    // 1 unsupported + 2 over budget + 3 over cap + 1 inline document: four
+    // disjoint terms summing to the number on the wire. `notes.md` is a
+    // supported document that was not queued, so it is the fifth term (DW-565);
+    // `logo.png` is a decoration and is in no term at all (DW-359).
+    expect(form.get("skippedAttachmentCount")).toBe(String(1 + 2 + OVER_CAP_EXTRAS + 1));
+    // Neither inline part is a recorded NAME. The route derives a
+    // `localSkipped` floor from `attachmentNames.length - attachments.length`,
+    // so naming `notes.md` here would count it twice -- once in the term above
+    // and once again downstream.
     expect(form.getAll("attachmentName")).not.toContain("logo.png");
     expect(form.getAll("attachmentName")).not.toContain("notes.md");
-    // ...and neither name reaches the REPLY either. Deleting `replyLossNames`'
-    // own inline filter (DW-446) left that guarantee resting on a construction
-    // argument -- every list handed to it is inline-free because eligibility
-    // filtered first -- with nothing observing it. These two lines are the
-    // observation, on the one fixture that carries both kinds of inline part.
+    // The logo's name reaches no reply line either. It is the DECORATION half
+    // of the asymmetry, asserted on the one fixture carrying both kinds: the
+    // document is named to the sender, the logo never is.
     expect(reply.text).not.toContain("logo.png");
-    expect(reply.text).not.toContain("notes.md");
+    expect(reply.text).toContain(
+      "1 supported attachment was not queued because it was marked inline by the sending client: notes.md.",
+    );
 
     // All three loss sentences together, each with its own plural form and its
     // own reason -- an over-budget file is not an over-cap casualty and is not
@@ -1718,9 +2203,9 @@ describe("email-ingest aggregate decoded budget", () => {
       `${OVER_CAP_EXTRAS} supported attachments were not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`,
     );
     expect(reply.text).toContain("1 unsupported attachment was recorded but skipped.");
-    // And NOT the fourth: every part here is within the per-document ceiling, so
-    // re-labelling an over-budget file as an oversized one would tell the sender
-    // to shrink a file that was never too big (DW-253).
+    // And NOT the oversize one: every part here is within the per-document
+    // ceiling, so re-labelling an over-budget file as an oversized one would
+    // tell the sender to shrink a file that was never too big (DW-253).
     expect(reply.text).not.toContain("larger than");
 
     // The CR/LF is gone, not merely rendered harmlessly: the sentence naming the

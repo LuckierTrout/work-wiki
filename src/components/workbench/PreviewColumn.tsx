@@ -25,11 +25,8 @@ import {
   PREVIEW_HISTORY_EMPTY_COPY,
   PREVIEW_HISTORY_HIDE_COPY,
   PREVIEW_HISTORY_LOADING_COPY,
-  PREVIEW_HISTORY_READ_ONLY_COPY,
-  PREVIEW_HISTORY_REVERTED_COPY,
   PREVIEW_HISTORY_REVERTING_COPY,
   PREVIEW_HISTORY_REVERT_CONFIRM_LABEL,
-  PREVIEW_HISTORY_REVERT_CONFIRM_TITLE,
   PREVIEW_HISTORY_REVERT_COPY,
   PREVIEW_HISTORY_VIEW_COPY,
   PREVIEW_LOADING_COPY,
@@ -53,6 +50,7 @@ import {
   previewDraftDirty,
   previewEditCopy,
   previewEditTarget,
+  previewArtifactHistoryCopy,
   previewHistoryRevertConfirmBody,
   previewHistoryTarget,
   previewLightboxJump,
@@ -865,6 +863,7 @@ function PreviewPane({
   // list, the view and the revert alike. A `gone` or `editing` term typed beside
   // the button would withdraw the panel and leave the three requests reachable.
   const historyTarget = previewHistoryTarget({ gone, payload, editing });
+  const historyCopy = previewArtifactHistoryCopy(historyTarget ?? "schema.md");
 
   /**
    * (Re-)read the list. Called on the first expand, after a landed revert, and
@@ -994,6 +993,8 @@ function PreviewPane({
       // settles leaves every Revert control disabled and the panel reporting a
       // write that is not happening, with no way back but a reload.
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      action: historyCopy.revertAction,
+      fallback: historyCopy.revertFallback,
     });
     // The owner left this row while the write was in flight. The write itself is
     // done either way and the shell will notice it through `dataVersion`; what
@@ -1051,7 +1052,7 @@ function PreviewPane({
     // region beside `Preview updated`, and through `nextAnnouncement` so a
     // second revert is heard as a second revert (DW-182).
     setRefreshAnnouncement((current) =>
-      nextAnnouncement(current, PREVIEW_HISTORY_REVERTED_COPY),
+      nextAnnouncement(current, historyCopy.reverted),
     );
     // The SAME signal a landed save fires. The revert bumped `dataVersion` at
     // the kernel's one tail, so this asks the watcher to look NOW and the new
@@ -1464,7 +1465,7 @@ function PreviewPane({
                   is the one sentence every Revert control points at. */}
               {readOnly && revisions !== null && revisions.length > 0 && (
                 <p id={readOnlyNoteId} className="wb-preview-history-note">
-                  {PREVIEW_HISTORY_READ_ONLY_COPY}
+                  {historyCopy.readOnly}
                 </p>
               )}
 
@@ -1589,12 +1590,13 @@ function PreviewPane({
           case where a landed revert re-lists into a shorter list. */}
       <ConfirmDialog
         open={pendingRevert !== null}
-        title={PREVIEW_HISTORY_REVERT_CONFIRM_TITLE}
+        title={historyCopy.confirmTitle}
         // NAMES the entry it is about. Every row's control opens the same
         // dialog, so a static sentence would be a destructive confirm that
         // never says which of them the owner pressed.
         body={previewHistoryRevertConfirmBody(
           revisions?.find((revision) => revision.timestamp === pendingRevert) ?? null,
+          historyTarget ?? "schema.md",
         )}
         confirmLabel={PREVIEW_HISTORY_REVERT_CONFIRM_LABEL}
         cancelLabel={PREVIEW_CANCEL_COPY}

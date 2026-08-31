@@ -26,8 +26,17 @@ interface FakeAttachment {
   content: string | ArrayBuffer | Uint8Array;
   /**
    * What `postal-mime` reports for `Content-Disposition`. Omitted by every
-   * fixture that predates DW-359, and `undefined` reads as "not inline" exactly
-   * as `null` does.
+   * fixture that predates DW-359, and `undefined` reads as "not inline"
+   * exactly as `null` does.
+   *
+   * That equivalence is about the FORWARDING predicate only. The counting
+   * predicate reads an absent disposition together with a body-referenced
+   * `contentId` (DW-450), and no fixture here carries either -- `parsedEmail`
+   * pins `html: ""`, so no reference exists to match and every part is a real
+   * attachment whatever its disposition field holds. The Content-ID behaviour
+   * is pinned against REAL PostalMime next door, in
+   * `email-ingest-worker.test.ts`, because whether such a part arrives with
+   * `contentId` set and `disposition` absent is a fact about the parser.
    */
   disposition?: "attachment" | "inline" | null;
 }
@@ -300,7 +309,14 @@ describe("email-ingest attachment content normalization", () => {
  * sibling suite carries an inline part that is ALSO over the ceiling, so
  * deriving `eligibleAttachments` from `parsed.attachments` again would leave the
  * whole repo green while a sender's signature banner, oversized or not, was
- * reported back to them as a file they had to shrink -- and named in the reply.
+ * reported back to them as a file they had to shrink.
+ *
+ * `banner.pdf` is a supported DOCUMENT, so since DW-565 it is also the fifth
+ * loss term: dropped at eligibility, and therefore named to the sender under
+ * its own reason -- inline, not oversized. That distinction is the point of
+ * running it here at all. Reporting it as oversized would tell the sender to
+ * shrink a file whose size was never what stopped it, and reporting it not at
+ * all would drop a document in silence.
  *
  * It lives HERE, against the mocked parser, for cost: a 10 MiB `Uint8Array` is
  * one allocation, whereas the same part written into a real MIME fixture is
@@ -325,21 +341,24 @@ describe("email-ingest oversized inline parts", () => {
       { filename: "report.pdf", mimeType: "application/pdf", content: bytes(3, 64).slice().buffer },
     ]);
 
-    // Eligibility is unchanged: the ceiling drops it, so only the small file
-    // travels.
+    // Eligibility is unchanged: the inline filter drops it, so only the small
+    // file travels.
     expect((form.getAll("attachments") as File[]).map((part) => part.name)).toEqual([
       "report.pdf",
     ]);
-    // Not a loss, and not a name the sender listed -- the same treatment an
-    // inline part gets everywhere else.
+    // Not a recorded name -- that list is the files that travelled, and a name
+    // with nothing behind it re-creates a phantom skip downstream -- but it IS
+    // a counted loss, under the inline term (DW-565).
     expect(form.getAll("attachmentName")).toEqual(["report.pdf"]);
-    expect(form.get("skippedAttachmentCount")).toBe("0");
+    expect(form.get("skippedAttachmentCount")).toBe("1");
 
     expect(reply.text).toContain("1 supported attachment was queued for ingestion.");
-    // The whole point: no oversize sentence at all, and specifically not one
-    // naming a part the sender never attached.
+    // The whole point: no OVERSIZE sentence, because size is not why it was
+    // dropped. It is named under the inline reason instead.
     expect(reply.text).not.toContain("larger than");
-    expect(reply.text).not.toContain("banner.pdf");
+    expect(reply.text).toContain(
+      "1 supported attachment was not queued because it was marked inline by the sending client: banner.pdf.",
+    );
   });
 
   it("still names an oversized ATTACHMENT part alongside an oversized inline one", async () => {
@@ -366,15 +385,25 @@ describe("email-ingest oversized inline parts", () => {
     expect((form.getAll("attachments") as File[]).map((part) => part.name)).toEqual([
       "report.pdf",
     ]);
-    // ONE, not two: the inline part is in neither the count nor the names.
-    expect(form.get("skippedAttachmentCount")).toBe("1");
+    // TWO, under two different reasons: `huge.pdf` is oversized, `banner.pdf`
+    // is inline. An eligibility filter that let inline parts through would
+    // report both as oversized instead -- one number, one sentence, two names --
+    // which is what these assertions discriminate.
+    expect(form.get("skippedAttachmentCount")).toBe("2");
     expect(form.getAll("attachmentName")).toEqual(["huge.pdf", "report.pdf"]);
     expect(reply.text).toContain(
       `1 attachment was not queued because it is larger than ${
         MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024
       } MB: huge.pdf.`,
     );
-    expect(reply.text).not.toContain("banner.pdf");
+    expect(reply.text).toContain(
+      "1 supported attachment was not queued because it was marked inline by the sending client: banner.pdf.",
+    );
+    // The oversize sentence names ONE file: the banner must not appear in it.
+    expect(
+      reply.text.split("\n").filter((line) => line.includes("larger than")),
+    ).toHaveLength(1);
+    expect(reply.text).not.toContain("MB: huge.pdf, banner.pdf");
   });
 });
 

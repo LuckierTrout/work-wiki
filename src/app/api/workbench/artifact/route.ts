@@ -6,7 +6,7 @@ import { ClientInputError, getErrorMessage } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isOwnerPrincipal } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
-import { isEditableArtifactFile } from "@/lib/wiki-scenarios";
+import { artifactDisplayName, isEditableArtifactFile } from "@/lib/wiki-scenarios";
 import { getWikiRegistry, writeWikiArtifact } from "@/lib/wikis";
 import { PREVIEW_MAX_CHARS } from "@/lib/workbench-preview";
 import {
@@ -110,7 +110,7 @@ async function handle(request: Request) {
   // the request on, so a drifted username cannot 403 the owner here after the
   // deployment gate let them in.
   if (!isOwnerPrincipal(principal)) {
-    return json({ error: "Only the workspace owner can edit the Schema." }, 403);
+    return json({ error: "Only the workspace owner can edit Wiki artifacts." }, 403);
   }
   if (isReadOnly()) {
     return json(
@@ -131,8 +131,9 @@ async function handle(request: Request) {
     return json({ error: "Invalid JSON body." }, 400);
   }
   const content = (body as { content?: unknown } | null)?.content;
+  const label = artifactDisplayName(target);
   if (typeof content !== "string" || content.trim().length === 0) {
-    return json({ error: "The Schema must be text, and cannot be empty." }, 400);
+    return json({ error: `The ${label} must be text, and cannot be empty.` }, 400);
   }
   // The same cap the Preview reads under. Above it the route would serve back a
   // PREFIX marked `truncated`, and `previewWriteTarget` refuses to edit a
@@ -141,7 +142,7 @@ async function handle(request: Request) {
   if (content.length > PREVIEW_MAX_CHARS) {
     return json(
       {
-        error: `A Schema must be ${new Intl.NumberFormat("en-US").format(
+        error: `The ${label} must be ${new Intl.NumberFormat("en-US").format(
           PREVIEW_MAX_CHARS,
         )} characters or fewer.`,
       },
@@ -152,7 +153,7 @@ async function handle(request: Request) {
   // Schema saved without that section is INERT: `loadPageConventions()` falls
   // back to the repo-root `SCHEMA.md`, so the owner would be told the save
   // succeeded while their Schema stopped steering anything.
-  if (!hasPageConventions(content)) {
+  if (target === "schema.md" && !hasPageConventions(content)) {
     return json({ error: PAGE_CONVENTIONS_REQUIRED_COPY }, 400);
   }
 

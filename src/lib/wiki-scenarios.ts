@@ -74,7 +74,7 @@ export type WikiArtifactFile = (typeof WIKI_ARTIFACT_FILES)[number];
  * route have to name it, and `wikis.ts` would drag the storage provider into
  * the client chunk.
  */
-export const EDITABLE_ARTIFACT_FILES = ["schema.md"] as const;
+export const EDITABLE_ARTIFACT_FILES = ["purpose.md", "schema.md"] as const;
 export type EditableArtifactFile = (typeof EDITABLE_ARTIFACT_FILES)[number];
 
 /**
@@ -89,6 +89,10 @@ export function isEditableArtifactFile(value: unknown): value is EditableArtifac
     typeof value === "string" &&
     (EDITABLE_ARTIFACT_FILES as readonly string[]).includes(value)
   );
+}
+
+export function artifactDisplayName(file: EditableArtifactFile): "Purpose" | "Schema" {
+  return file === "purpose.md" ? "Purpose" : "Schema";
 }
 
 /** Longest accepted Wiki name — shared by the input parser and the dialog. */
