@@ -404,6 +404,15 @@
     "label": "Canonical tenant for id-owners",
     "resolution": ""
   },
+  "DW-613": {
+    "answered_at": "2026-08-31",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Compute isOwner on the server and pass it as a prop down to NavHeader, ArticleActions and RevisionHistory, so the client gate is the server's answer rather than an independent re-derivation, and reparameterize the harness to drive the two sides from different facts so a divergence is visible.",
+    "key": "1",
+    "label": "Pass a server-computed flag",
+    "resolution": ""
+  },
   "DW-67": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
