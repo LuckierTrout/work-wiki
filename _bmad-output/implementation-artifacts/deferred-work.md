@@ -3741,6 +3741,7 @@ location: src/lib/names-terms.ts:16
 severity: low
 reason: DW-397 was closed with `Object.freeze` plus tests, and the spec put `readonly` types explicitly out of scope as a ripple beyond the fix. The residual asymmetry is real: `createNamesTerm` / `updateNamesTerm` return UNFROZEN entries of the same declared type, and both shapes reach `src/app/api/names-terms/route.ts` as `NamesTermEntry`, so a consumer reasoning from the type is right only half the time. A readonly return type (e.g. `Readonly<Omit<NamesTermEntry, "aliases">> & { readonly aliases: readonly string[] }`) would move the failure to compile time.
 status: open
+decision: 2026-08-31 Split the read type — Give listNamesTerms a distinct FrozenNamesTermEntry (Readonly<NamesTermEntry>) return type while NamesTermEntry itself stays mutable for the create and update paths, so the freeze is expressed in the type of the read without rippling into the write surface. Update the five read-only consumers to the new type and pin that a write through a read result fails to compile.
 
 ### DW-499: A corrupt `names-terms.json` holding a non-object element alongside real entries still throws out of the sort comparator in `resolveSortedEntries`, so the read fails rather than degrading.
 origin: spec-deferred 3df66eaf3804

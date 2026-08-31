@@ -233,6 +233,15 @@
     "label": "Write to the object that was read",
     "resolution": ""
   },
+  "DW-498": {
+    "answered_at": "2026-08-31",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give listNamesTerms a distinct FrozenNamesTermEntry (Readonly<NamesTermEntry>) return type while NamesTermEntry itself stays mutable for the create and update paths, so the freeze is expressed in the type of the read without rippling into the write surface. Update the five read-only consumers to the new type and pin that a write through a read result fails to compile.",
+    "key": "1",
+    "label": "Split the read type",
+    "resolution": ""
+  },
   "DW-512": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
