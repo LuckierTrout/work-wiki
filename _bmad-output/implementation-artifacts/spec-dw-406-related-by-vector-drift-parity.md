@@ -4,7 +4,7 @@ type: 'bugfix'
 created: '2026-08-31'
 baseline_revision: '63f09c4092ddee40feaa4780f3dd79d48fc22566'
 baseline_commit: '63f09c4092ddee40feaa4780f3dd79d48fc22566'
-status: 'in-review'
+status: 'done'
 review_loop_iteration: 0
 context: []
 warnings: ['oversized']
@@ -106,3 +106,52 @@ return kept.slice(0, topK).map((m) => ({ slug: m.id, score: m.score }));
 - `npx tsc --noEmit` -- expected: clean.
 - `npx eslint src/lib/embeddings.ts src/lib/__tests__/embeddings.test.ts` -- expected: clean.
 - Mutation checks (run, then revert): deleting the stale-anchor `warnOnceAbout` must fail the stale-anchor pins; loosening the re-arm gate to `kept.length > 0` must fail the mixed-window pin; dropping the `kept.some(...)` conjunct must fail the all-unlabelled pin; re-arming off `matches` instead of `others` must fail the all-unlabelled pin.
+
+## Suggested Review Order
+
+**The design decision (start here)**
+
+- The whole change in one paragraph: why a second door exists and what it shares.
+  [`embeddings.ts:117`](../../src/lib/embeddings.ts#L117)
+
+- The accepted cost. Read before judging the stale-anchor warn below.
+  [`embeddings.ts:131`](../../src/lib/embeddings.ts#L131)
+
+- Why null needs no branch here even though it IS reachable at this door.
+  [`embeddings.ts:148`](../../src/lib/embeddings.ts#L148)
+
+**The behaviour**
+
+- The stale-anchor warn — DW-406's named case, and the only branch a fully drifted corpus reaches.
+  [`embeddings.ts:1128`](../../src/lib/embeddings.ts#L1128)
+
+- The filter split into `others`, so the anchor cannot supply its own proof.
+  [`embeddings.ts:1152`](../../src/lib/embeddings.ts#L1152)
+
+- The gate, copied predicate-for-predicate from `searchByVector` rather than re-derived.
+  [`embeddings.ts:1155`](../../src/lib/embeddings.ts#L1155)
+
+- The door's own docblock, pointing at the canonical statement instead of restating it.
+  [`embeddings.ts:1111`](../../src/lib/embeddings.ts#L1111)
+
+**The pins that hold the design (added under review)**
+
+- The shared key, cross-door: a render warn silences the search door.
+  [`embeddings.test.ts:815`](../../src/lib/__tests__/embeddings.test.ts#L815)
+
+- The render-only deployment, end to end: warn, rebuild, re-arm, drift, warn again.
+  [`embeddings.test.ts:843`](../../src/lib/__tests__/embeddings.test.ts#L843)
+
+- The accepted false positive, pinned so a later "fix" cannot delete it silently.
+  [`embeddings.test.ts:884`](../../src/lib/__tests__/embeddings.test.ts#L884)
+
+**Supporting tests**
+
+- DW-405's proof conjunct held at this door; also catches reading the gate off `matches`.
+  [`embeddings.test.ts:744`](../../src/lib/__tests__/embeddings.test.ts#L744)
+
+- The re-arm that makes rebuild-then-re-drift audible a second time.
+  [`embeddings.test.ts:663`](../../src/lib/__tests__/embeddings.test.ts#L663)
+
+- The pre-existing stale-anchor test, now asserting the branch-distinguishing line.
+  [`embeddings.test.ts:537`](../../src/lib/__tests__/embeddings.test.ts#L537)
