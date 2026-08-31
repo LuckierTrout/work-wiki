@@ -104,10 +104,14 @@ export const LLM_DEADLINE_RESEARCH_COPY =
 
 /**
  * A RESEARCH synthesis stream that ended early with NO deadline configured
- * (DW-544), or on an `error` part that was not a deadline at all (DW-664).
+ * (DW-544), or on an `error` part that was not a deadline at all (DW-664), or
+ * a NON-STREAMED research `callLLM` that rejected with an abort
+ * {@link isLlmDeadlineAbort} recognises, again with no deadline configured
+ * (DW-665).
  *
- * TWO USES, and only the first is gated. DW-544's use is the far side of
- * {@link llmDeadlineConfigured} for an abort. DW-664's is UNGATED: when an
+ * THREE USES, TWO GATINGS. DW-544's and DW-665's sit on the same far side of
+ * {@link llmDeadlineConfigured}: these words when the field is blank,
+ * {@link LLM_DEADLINE_RESEARCH_COPY} when it is not. DW-664's is UNGATED: when an
  * `error` part that {@link isLlmDeadlineAbort} does not recognise ends the
  * synthesis brief — nothing after it but `ai@6`'s own teardown, which carries
  * `finishReason: "error"` — the `for await` ends normally and half a brief used
@@ -119,6 +123,17 @@ export const LLM_DEADLINE_RESEARCH_COPY =
  * set: blaming the owner's timeout for an unrelated provider error would send
  * them to raise a limit that had nothing to do with it. The SDK's own error
  * goes to `logger.warn` instead, where diagnostics belong.
+ *
+ * DW-665's use is DW-544's gate reached from a different call:
+ * `research-runtime`'s `callResearchLLM` wraps evidence condensation,
+ * hierarchical reduction and the synthesis fallback, so an abort on any
+ * NON-STREAMED research call reaches `project.error` as these words — or as
+ * {@link LLM_DEADLINE_RESEARCH_COPY} where a deadline IS set — rather than as
+ * the SDK's own "The operation was aborted due to timeout". They stay true
+ * there: the page write happens only after synthesis commits, so a run cut
+ * during condensation has written nothing to the wiki either. That helper logs
+ * the SDK's error before it throws, keeping the property the DW-664 branch
+ * states above.
  *
  * RESEARCH-SCOPED, and named for it. The text says "this research run" and
  * "nothing was written to the wiki", both of which would be false on either

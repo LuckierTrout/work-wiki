@@ -5011,7 +5011,9 @@ location: src/lib/research-runtime.ts:322
 source_spec: `spec-dw-480-576-577-research-run-route-error-typing.md`
 severity: low
 reason: `"Research project is retired"` (`src/lib/research-runtime.ts:322`), `"Research project completion is still being delivered"` (`:325`, `:390`), the rerun-baseline race (`:393`) and `applyResearchProjectMutation`'s `"Research projects were busy; retry the request."` (`src/lib/research-projects.ts:387`) all stay plain `Error` and so keep the 500 the old regex ladder also gave them. Two are genuinely caller-visible states: a retired project is a 404 on `GET /api/research/[id]/run` and a 500 on the POST, and a CAS exhaustion is transient contention reported as a permanent server fault with no retry signal. Deliberately excluded here — the bundle intent authorises typing not-found and conflict, not remapping statuses — and now documented as excluded in `ResearchProjectConflictError`'s docblock.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-run-typed-errors
+resolution-undo: 30d111d96d511fffe5331db6b138a1f0750cd84436b648ab84a37e7156aa4720 2026-08-31 7374617475733a206f70656e
 
 ### DW-652: `commitResearchPage`'s `completion?.sources?.length` fallbacks persist a truthy non-array `sources` forward before the drain guard can refuse it.
 origin: spec-deferred bca3a66d4ead
@@ -5145,7 +5147,9 @@ location: src/lib/research-runtime.ts:1335
 source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
 severity: medium
 reason: Evidence condensation (`src/lib/research-runtime.ts:1335`) and hierarchical reduction (`:1397`) run under the same `llmTimeoutOption()`, and `retryWithBackoff` rethrows the original error unwrapped, so a fired deadline there reaches `runResearchProject`'s catch as "The operation was aborted due to timeout" and `src/components/workbench/ResearchCanvas.tsx:374` renders it verbatim. Only the synthesis stream and its fallback were in DW-544's scope, so the "no transport vocabulary in the research panel" property is true of the synthesis, not of the run.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-run-typed-errors
+resolution-undo: 30d111d96d511fffe5331db6b138a1f0750cd84436b648ab84a37e7156aa4720 2026-08-31 7374617475733a206f70656e
 
 ### DW-666: The stream route still closes silently for a `finish` whose reason is `content-filter`, `error` or `other`.
 origin: spec-deferred f8c182c122de
@@ -5289,4 +5293,12 @@ location: src/lib/research-runtime.ts:1451
 source_spec: `spec-dw-663-664-research-synthesis-truncation-truth.md`
 severity: low
 reason: `synthesizeResearchBrief`'s catch takes the `callLLM` fallback whenever the stream ended before producing text (`receivedStreamContent === false`), including on the two endings DW-663/DW-664 just made fatal. That call passes the identical `{ maxOutputTokens: 7_000 }`, and `callLLM` (`src/lib/llm.ts:513-537`) destructures only `{ text }` from `generateText`, discarding `finishReason` — so a fallback brief cut at the cap is indistinguishable from a whole one and commits. Pinned by the two boundary tests added in this pass, which assert the fallback path completes and writes a page. Closing it means surfacing `finishReason` from `callLLM`, which this spec's Never list rules out.
+status: open
+
+### DW-684: The three sibling research doors still answer 500 for the contended-store fault this bundle made a 503 at the run door.
+origin: spec-deferred f7d67f62ac0a
+location: src/app/api/research/route.ts:156
+source_spec: `spec-dw-651-665-research-run-typed-errors.md`
+severity: low
+reason: `applyResearchProjectMutation` is the shared mutation primitive, and its exhausted-CAS refusal is now `ResearchProjectBusyError` (`src/lib/research-projects.ts`). `POST /api/research` (`src/app/api/research/route.ts:156`), `PATCH` and `DELETE /api/research/[id]` (`src/app/api/research/[id]/route.ts:99`, `:132`) all still classify with `error instanceof ClientInputError ? 400 : 500`, so the identical transient contention — whose own sentence says "retry the request." — is a retryable 503 at one door and a permanent server fault at three. DW-651 names only `POST /api/research/[id]/run`, so the siblings were out of this bundle's scope; the split is now recorded in `ResearchProjectBusyError`'s docblock but nothing pins it as intended.
 status: open

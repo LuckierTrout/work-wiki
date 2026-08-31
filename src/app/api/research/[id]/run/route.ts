@@ -15,6 +15,7 @@ import {
   ResearchProviderUnconfiguredError,
 } from "@/lib/research-providers";
 import {
+  ResearchProjectBusyError,
   ResearchProjectConflictError,
   ResearchProjectNotFoundError,
 } from "@/lib/research-projects";
@@ -110,10 +111,16 @@ export async function POST(request: Request, { params }: RouteContext) {
     // `/already running/i` over the message, which handed a storage fault whose
     // sentence happened to contain those words to the caller as their own
     // mistake — "R2 object not found for research-projects.json" is a 500. The
-    // runtime now throws `ResearchProjectNotFoundError` /
-    // `ResearchProjectConflictError` for exactly those two faults; every other
-    // fault, including `ResearchLeaseError`, "…is retired" and the rerun
-    // baseline race, keeps the 500 it already had.
+    // runtime throws the typed class for each of those faults instead.
+    //
+    // THREE CLASSES, THREE STATUSES since DW-651. "…is retired" is a
+    // `ResearchProjectNotFoundError` (404), agreeing with the GET on this same
+    // path for that same row. A completion still being delivered joins "already
+    // running" as a `ResearchProjectConflictError` (409) — a state the caller
+    // can read back and wait out. A lost or exhausted compare-and-swap is a
+    // `ResearchProjectBusyError` (503): transient contention, which as a 500
+    // read as a permanent server fault and gave the caller no retry signal.
+    // Every OTHER fault, `ResearchLeaseError` included, keeps the 500 it had.
     const status =
       error instanceof ResearchProviderUnconfiguredError
         || error instanceof ResearchProviderOverrideError
@@ -123,7 +130,9 @@ export async function POST(request: Request, { params }: RouteContext) {
           ? 404
           : error instanceof ResearchProjectConflictError
             ? 409
-            : 500;
+            : error instanceof ResearchProjectBusyError
+              ? 503
+              : 500;
     return NextResponse.json(
       { error: message, availableProviders: availableResearchProviders() },
       { status },

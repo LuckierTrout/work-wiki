@@ -105,6 +105,7 @@ import {
   getResearchProject,
   listResearchProjects,
   mutateResearchProject,
+  ResearchProjectBusyError,
   ResearchProjectConflictError,
   ResearchProjectNotFoundError,
   updateResearchProject,
@@ -511,6 +512,136 @@ describe("deep research run — success", () => {
       system.startsWith("Reduce these evidence notes")).length).toBeLessThanOrEqual(8);
   });
 
+  /**
+   * DW-665. Condensation and hierarchical reduction call the LLM under the same
+   * `llmTimeoutOption()` as synthesis, and their rejections travel straight to
+   * `runResearchProject`'s catch, which writes the message onto `project.error`
+   * — which `ResearchCanvas` renders verbatim. Unwrapped, a fired deadline
+   * showed the owner the SDK's own "The operation was aborted due to timeout".
+   *
+   * Both sentences are true here even though neither mentions condensation: the
+   * page write happens only after synthesis commits, so a run cut this early
+   * has written nothing to the wiki, which is what they promise.
+   */
+  it("reports a deadline during evidence condensation as the gated sentence", async () => {
+    mockedTimeout.mockReturnValue(30_000);
+    mockedSearch.mockResolvedValue([{
+      title: "Large source",
+      url: "https://example.com/large",
+      snippet: "s",
+      content: `BEGIN-${"x".repeat(600_000)}-END`,
+    }]);
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) throw abortError("TimeoutError");
+      return "# should not synthesize";
+    });
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_DEADLINE_RESEARCH_COPY,
+    );
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe(LLM_DEADLINE_RESEARCH_COPY);
+    for (const word of ["aborted", "signal", "TimeoutError", "AbortError"]) {
+      expect(failed?.error).not.toContain(word);
+    }
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("reports a deadline during hierarchical reduction with no deadline set", async () => {
+    // The ungated half, mirroring the synthesis fallback. Nothing the owner set
+    // caused this, so the sentence names no field, and it names no limit for
+    // them to go raise either. `null` is SET here rather than inherited from
+    // the suite `beforeEach`: which sentence this row is about is the whole
+    // point of it, and a changed default must not quietly reverse that.
+    mockedTimeout.mockReturnValue(null);
+    mockedSearch.mockResolvedValue([{
+      title: "Large source",
+      url: "https://example.com/large",
+      snippet: "s",
+      content: `BEGIN-${"x".repeat(600_000)}-END`,
+    }]);
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) {
+        return `condensed evidence ${"m".repeat(24_000)}`;
+      }
+      if (system.startsWith("Reduce these evidence notes")) throw abortError("TimeoutError");
+      return "# should not synthesize";
+    });
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_STREAM_CUT_SHORT_COPY,
+    );
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+    for (const word of ["aborted", "signal", "TimeoutError", "AbortError", "timeout"]) {
+      expect(failed?.error).not.toContain(word);
+    }
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("reports a run cancelled DURING a condensation call as cancelled, not failed", async () => {
+    // The cancel window is the CALL, and `researchEvidenceForSynthesis` checks
+    // only BEFORE each one. An owner who pressed Cancel while the model was
+    // thinking, and whose deadline then fired on the way out, must not be
+    // relabelled `failed` under a sentence about a timeout they did not cause —
+    // the same guarantee the synthesis stream's early endings already carry.
+    mockedTimeout.mockReturnValue(30_000);
+    mockedSearch.mockResolvedValue([{
+      title: "Large source",
+      url: "https://example.com/large",
+      snippet: "s",
+      content: `BEGIN-${"x".repeat(300_000)}-END`,
+    }]);
+    const created = await project();
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) {
+        await cancelResearchProject("alice", created.id);
+        throw abortError("TimeoutError");
+      }
+      return "# should not synthesize";
+    });
+
+    const stopped = await runResearchProject("alice", created.id);
+
+    expect(stopped.status).toBe("cancelled");
+    const latest = await getResearchProject("alice", created.id);
+    expect(latest?.status).toBe("cancelled");
+    expect(latest?.error).not.toBe(LLM_DEADLINE_RESEARCH_COPY);
+    expect(latest?.error).not.toBe(LLM_RESEARCH_STREAM_CUT_SHORT_COPY);
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  }, 15_000);
+
+  it("leaves a NON-deadline condensation failure carrying its own message", async () => {
+    // THE BOUNDARY of the wrap. A provider fault is the diagnostic whoever
+    // reads the failure needs; replacing it with "the model's response stopped"
+    // would hide a broken provider behind a sentence about a timeout.
+    mockedTimeout.mockReturnValue(30_000);
+    mockedSearch.mockResolvedValue([{
+      title: "Large source",
+      url: "https://example.com/large",
+      snippet: "s",
+      content: `BEGIN-${"x".repeat(600_000)}-END`,
+    }]);
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) throw new Error("provider 500");
+      return "# should not synthesize";
+    });
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow("provider 500");
+
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    expect(failed?.error).toBe("provider 500");
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("gives its slot back", async () => {
     const created = await project();
     await runResearchProject("alice", created.id);
@@ -797,6 +928,106 @@ describe("deep research — one run per project", () => {
     const cancelled = await cancelResearchProject("alice", "missing").catch((e: unknown) => e);
     expect(cancelled).toBeInstanceOf(ResearchProjectNotFoundError);
     expect((cancelled as Error).message).toMatch(/not found/i);
+  });
+
+  /**
+   * DW-651, the rest of that seam. Four more refusals in `queueResearchProject`
+   * were plain `Error`, so `POST /api/research/[id]/run` answered 500 for all
+   * of them — transient store contention reported as a permanent server fault
+   * with no retry signal, and a completion mid-delivery reported the same way.
+   * (The fifth, the RETIRED row, is pinned where the DELETE tombstone that
+   * retains it is built — a draft with no live lease is deleted outright, so
+   * `queueResearchProject` never reaches that line for one.) The route suite
+   * mocks this module wholesale and so cannot see a revert to `new Error(...)`;
+   * these rows can. Every MESSAGE is asserted beside its type because the
+   * response body echoes it verbatim.
+   */
+  it("throws a typed conflict while a completion is still being delivered", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      completion: { phase: "page", pageSlug: "research-launch-evidence", sources: [] },
+    });
+
+    const error = await queueResearchProject("alice", created.id).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ResearchProjectConflictError);
+    expect((error as Error).message).toBe(
+      "Research project completion is still being delivered",
+    );
+  });
+
+  it("throws a typed conflict when the completion appears INSIDE the mutation", async () => {
+    // The second copy of that refusal, in the `mutateResearchProjectOrRefusal`
+    // mutator — reachable only when a completion lands between the read and the
+    // compare-and-swap, which is what the stale read below stands in for.
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      completion: { phase: "page", pageSlug: "research-launch-evidence", sources: [] },
+    });
+    const stored = await getResearchProject("alice", created.id);
+    const stale = { ...stored! };
+    delete stale.completion;
+    const spy = vi
+      .spyOn(projectsModule, "getResearchProject")
+      .mockResolvedValue(stale);
+
+    try {
+      const error = await queueResearchProject("alice", created.id).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResearchProjectConflictError);
+      expect((error as Error).message).toBe(
+        "Research project completion is still being delivered",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("throws a typed busy error when the delivery-retry CAS is lost", async () => {
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "failed",
+      deliveryBlocked: true,
+      completion: { phase: "page", pageSlug: "research-launch-evidence", sources: [] },
+    });
+    // The conditional update whose predicate another writer already broke.
+    // `null`, NOT the read-only sentinel: that branch takes the
+    // refusal-preserving sibling, so only a genuinely lost predicate is
+    // contention (the refusal is pinned in `read-only-store-gate.test.ts`).
+    const spy = vi
+      .spyOn(projectsModule, "updateResearchProjectIfOrRefusal")
+      .mockResolvedValue(null);
+
+    try {
+      const error = await queueResearchProject("alice", created.id).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResearchProjectBusyError);
+      expect((error as Error).message).toBe(
+        "Research project changed while delivery retry started",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("throws a typed busy error when the rerun baseline lost its race", async () => {
+    // `current.updatedAt !== project.updatedAt` inside the mutator: the row
+    // moved under the read that captured the baseline.
+    const created = await project();
+    const stored = await getResearchProject("alice", created.id);
+    const spy = vi
+      .spyOn(projectsModule, "getResearchProject")
+      .mockResolvedValue({ ...stored!, updatedAt: "2020-01-01T00:00:00.000Z" });
+
+    try {
+      const error = await queueResearchProject("alice", created.id).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ResearchProjectBusyError);
+      expect((error as Error).message).toBe(
+        "Research project changed while the rerun baseline was captured; retry",
+      );
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("queues a finished project again, because that is an explicit new start", async () => {
@@ -1591,7 +1822,11 @@ describe("deep research — remediations", () => {
     });
     expect(await retireResearchProject("alice", created.id)).toBe(true);
 
-    await expect(queueResearchProject("alice", created.id)).rejects.toThrow(/retired/i);
+    const refusal = await queueResearchProject("alice", created.id).catch((e: unknown) => e);
+    // TYPE and message both: the door decides 404 by `instanceof` alone, and
+    // the body echoes the sentence (DW-651).
+    expect(refusal).toBeInstanceOf(ResearchProjectNotFoundError);
+    expect((refusal as Error).message).toMatch(/retired/i);
 
     expect(await getResearchProject("alice", created.id)).toMatchObject({
       deleteRequested: true,

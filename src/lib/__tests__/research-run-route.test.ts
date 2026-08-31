@@ -43,9 +43,11 @@ import {
   ResearchProviderOverrideError,
   ResearchProviderUnconfiguredError,
 } from "@/lib/research-providers";
+import { ResearchLeaseError } from "@/lib/research-concurrency";
 import {
   editResearchProject,
   getResearchProject,
+  ResearchProjectBusyError,
   ResearchProjectConflictError,
   ResearchProjectNotFoundError,
   updateResearchProject,
@@ -190,6 +192,81 @@ describe("POST /api/research/[id]/run", () => {
     expect((await POST(runRequest(), ctx())).status).toBe(409);
   });
 
+  /**
+   * DW-651, every refusal `queueResearchProject` can raise and the status its
+   * owner reads for it — decided by the CLASS alone, with the sentence echoed
+   * verbatim beside `availableProviders` on every one of them.
+   *
+   * The RETIRED row is a 404 because the GET on this very path already answers
+   * 404 for it; a 500 told the owner the store was broken about a project that
+   * was simply gone. CONTENTION is a 503 because it is transient and every one
+   * of those sentences already says `retry` — as a 500 it read as permanent and
+   * carried no retry signal at all. `ResearchLeaseError` and a plain `Error`
+   * carrying the very same words stay 500, which is what makes this a TYPE
+   * ladder rather than the message-matching one DW-480 deleted.
+   */
+  it.each([
+    [
+      "a retired project",
+      new ResearchProjectNotFoundError("Research project is retired"),
+      404,
+    ],
+    [
+      "a completion still being delivered",
+      new ResearchProjectConflictError(
+        "Research project completion is still being delivered",
+      ),
+      409,
+    ],
+    [
+      "a lost delivery-retry CAS",
+      new ResearchProjectBusyError(
+        "Research project changed while delivery retry started",
+      ),
+      503,
+    ],
+    [
+      "a lost rerun-baseline CAS",
+      new ResearchProjectBusyError(
+        "Research project changed while the rerun baseline was captured; retry",
+      ),
+      503,
+    ],
+    [
+      "an exhausted store CAS ladder",
+      new ResearchProjectBusyError("Research projects were busy; retry the request."),
+      503,
+    ],
+    [
+      "a lease that could not be retired",
+      new ResearchLeaseError(
+        "The previous research lease could not be retired; retry after storage recovers.",
+      ),
+      500,
+    ],
+    [
+      "an untyped fault saying the project is retired",
+      new Error("Research project is retired"),
+      500,
+    ],
+    [
+      "an untyped fault saying the projects were busy",
+      new Error("Research projects were busy; retry the request."),
+      500,
+    ],
+  ])("answers %s with the status its type decides", async (_label, fault, status) => {
+    mockedQueue.mockRejectedValue(fault);
+
+    const response = await POST(runRequest(), ctx());
+
+    expect(response.status).toBe(status);
+    expect(await response.json()).toMatchObject({
+      error: (fault as Error).message,
+      availableProviders: expect.anything(),
+    });
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
   it("400s a store refusal of the caller's own input", async () => {
     // The `POST /api/research` branch this door was missing entirely: a
     // `ClientInputError` is the caller's fault by construction and used to fall
@@ -224,6 +301,24 @@ describe("POST /api/research/[id]/run", () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({
       error: fault.message,
+      availableProviders: expect.anything(),
+    });
+  });
+
+  it("503s a CANCEL whose registry CAS was contended too", async () => {
+    // `cancelResearchProject` reaches the same compare-and-swap and can raise
+    // the same class. The ladder is verb-independent — the read-only tables
+    // below run over both verbs for exactly this reason — so a 500 here would
+    // strand a cancel with no retry signal while the run beside it got one.
+    mockedCancel.mockRejectedValueOnce(
+      new ResearchProjectBusyError("Research projects were busy; retry the request."),
+    );
+
+    const response = await POST(runRequest({ action: "cancel" }), ctx());
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: "Research projects were busy; retry the request.",
       availableProviders: expect.anything(),
     });
   });
@@ -582,6 +677,31 @@ describe("POST /api/research/[id]/run — a writer that refuses mid-request", ()
     expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.pageWrite });
   });
 
+  it("answers the delivery-retry branch's two outcomes with two different statuses", async () => {
+    // DW-651 + DW-657. That branch's conditional update returns the read-only
+    // SENTINEL for a refused deployment and `null` for a lost predicate;
+    // `queueResearchProject` converts them to a `ReadOnlyError` and a
+    // `ResearchProjectBusyError`. Collapsed back into one, the owner of a
+    // read-only deployment would be told to retry in a moment a write that will
+    // never be accepted. WHICH condition yields which class is pinned in the
+    // runtime and read-only-gate suites, since this one mocks that module
+    // wholesale; what is pinned here is that the door keeps them apart.
+    mockedQueue.mockRejectedValueOnce(new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate));
+    const refused = await POST(runRequest(), ctx());
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toEqual({ error: READ_ONLY_REFUSAL.researchMutate });
+
+    mockedQueue.mockRejectedValueOnce(
+      new ResearchProjectBusyError("Research project changed while delivery retry started"),
+    );
+    const contended = await POST(runRequest(), ctx());
+    expect(contended.status).toBe(503);
+    expect(await contended.json()).toMatchObject({
+      error: "Research project changed while delivery retry started",
+      availableProviders: expect.anything(),
+    });
+  });
+
   it("does not swallow the other run outcomes", async () => {
     // The control for the branch above, walking the whole ladder behind it: a
     // check that matched too widely would turn every one of these into a 403.
@@ -590,6 +710,13 @@ describe("POST /api/research/[id]/run — a writer that refuses mid-request", ()
 
     mockedQueue.mockRejectedValue(new ResearchProjectConflictError("already running"));
     expect((await POST(runRequest(), ctx())).status).toBe(409);
+
+    // The class DW-651 added, walked by the same control: an `isReadOnlyError`
+    // check that matched too widely would answer 403 for this one too.
+    mockedQueue.mockRejectedValue(
+      new ResearchProjectBusyError("Research projects were busy; retry the request."),
+    );
+    expect((await POST(runRequest(), ctx())).status).toBe(503);
 
     mockedQueue.mockRejectedValue(new ClientInputError("Research question is required"));
     expect((await POST(runRequest(), ctx())).status).toBe(400);

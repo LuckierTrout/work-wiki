@@ -869,6 +869,45 @@ describe("the read-only gate precedes the store's lock", () => {
     expect(stored?.runAttemptId).toBe(grant.attemptId);
   });
 
+  it("queueResearchProject refuses the DELIVERY-RETRY branch with that sentence too", async () => {
+    // DW-651/DW-657 together. `queueResearchProject` has a SECOND write, taken
+    // when the owner presses Run on a project whose delivery is blocked: it
+    // flips the row back to `complete` with a fresh delivery fence and returns
+    // without ever reaching the branch the case above covers.
+    //
+    // That write used to go through the sentinel-COLLAPSING
+    // `updateResearchProjectIf`, so a read-only deployment arrived as `null` —
+    // indistinguishable from a lost predicate, and since DW-651 that `null` is
+    // a `ResearchProjectBusyError` → 503. The owner would be told to retry in a
+    // moment a write this deployment will never accept, and the route's 403
+    // would never be reached at all. It takes the refusal-preserving sibling
+    // now, so contention and a refusal stay two different answers.
+    //
+    // WHOLE-TREE byte-identity here, unlike the case above: this branch returns
+    // before `releaseResearchSlotAndConfirmGone`, so no lease is touched and
+    // nothing needs excluding.
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    await updateResearchProject(OWNER, project.id, {
+      status: "failed",
+      deliveryBlocked: true,
+      completion: { phase: "page", pageSlug: "research-competitor-pricing", sources: [] },
+    });
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => queueResearchProject(OWNER, project.id),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    expect(await snapshot()).toEqual(before);
+    // The retry generation was NOT opened: still blocked, still no new fence.
+    const stored = await getResearchProject(OWNER, project.id);
+    expect(stored?.deliveryBlocked).toBe(true);
+    expect(stored?.status).toBe("failed");
+    expect(stored?.deliveryAttemptId).toBeUndefined();
+  });
+
   it("the research CAS primitives carry no THROWING gate in their own source", async () => {
     // Still meaningful after DW-527, with a NEW rationale: these four must
     // refuse by RETURNING the sentinel, never by throwing, because a throw

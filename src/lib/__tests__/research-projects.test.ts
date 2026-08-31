@@ -10,6 +10,7 @@ import {
   filterResearchProjects,
   getResearchProject,
   listResearchProjects,
+  ResearchProjectBusyError,
   updateResearchProject,
   updateResearchProjectIf,
 } from "../research-projects";
@@ -775,5 +776,46 @@ describe("research projects", () => {
     const [first, second] = await Promise.all([claim(), claim()]);
     expect([first, second].filter(Boolean)).toHaveLength(1);
     expect((await listResearchProjects("alice"))[0]?.status).toBe("collecting");
+  });
+
+  it("throws a typed busy error when the CAS ladder is exhausted", async () => {
+    // DW-651. `POST /api/research/[id]/run` classifies its catch by TYPE, so
+    // this refusal being a plain `Error` made contention indistinguishable from
+    // a broken store: 503-with-a-retry-signal reported as a permanent 500. The
+    // sentence is asserted alongside the class because the response body echoes
+    // it verbatim.
+    await createResearchProject("alice", { title: "Contended", question: "Lands?" });
+    const storage = getStorage();
+    // Every compare-and-swap loses, which is what an infinitely contended
+    // registry looks like from inside the loop. The registry is the ONLY file
+    // this mutation writes, so any other target means the test has drifted from
+    // the code it pins rather than that a second write is legitimate.
+    const spy = vi
+      .spyOn(storage, "writeFileIfMatch")
+      .mockImplementation(async (target: string) => {
+        if (!target.endsWith("research-projects.json")) {
+          throw new Error(`unexpected registry-mutation write to ${target}`);
+        }
+        return false;
+      });
+
+    try {
+      const error = await applyResearchProjectMutation("alice", (projects) => ({
+        projects,
+        result: null,
+      })).then(() => null, (e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ResearchProjectBusyError);
+      expect((error as Error).message).toBe(
+        "Research projects were busy; retry the request.",
+      );
+      // The whole LADDER ran, not one attempt that gave up. Without this a loop
+      // cut to a single try would still throw the same class with the same
+      // sentence, and a contended-but-recoverable write would start failing.
+      // 8 is `CAS_ATTEMPTS`, module-private and so spelled out here.
+      expect(spy).toHaveBeenCalledTimes(8);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

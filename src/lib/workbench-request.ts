@@ -119,10 +119,14 @@ export async function sendForm<T>(url: string, body: FormData): Promise<T> {
  * `PUT /api/settings` answers 503 with `CONFIG_UNREADABLE_COPY` when the
  * store cannot be read, and refuses BEFORE merging anything, so nothing was
  * written (`src/app/api/settings/route.ts`'s `configUnreadable`); the batch
- * ingest route answers 503 the same way. Reading those as silence would discard
- * an arrived, actionable sentence, tell the owner the outcome is unknown, and
- * send `SettingsCanvas` to clear the version it was holding — all for a write
- * that provably did not land. A status this codebase itself uses as a verdict
+ * ingest route answers 503 the same way; and since DW-651
+ * `POST /api/research/[id]/run` answers 503 for a `ResearchProjectBusyError` —
+ * a compare-and-swap that lost or ran out of attempts, which means the registry
+ * write it guards provably never landed, so that status is a verdict that
+ * NOTHING changed and the owner's move is simply to run it again. Reading those
+ * as silence would discard an arrived, actionable sentence, tell the owner the
+ * outcome is unknown, and send `SettingsCanvas` to clear the version it was
+ * holding — all for a write that provably did not land. A status this codebase itself uses as a verdict
  * cannot also be read as the absence of one.
  *
  * Deliberately NOT 4xx and NOT a plain 500 either: those are the route's OWN

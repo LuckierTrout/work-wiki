@@ -9,8 +9,9 @@ import { hasResearchSlot } from "./research-concurrency";
 const CAS_ATTEMPTS = 8;
 
 /**
- * The two research-project faults a route has to tell apart from a server
- * fault: the row is GONE, and the row is BUSY.
+ * The three research-project faults a route has to tell apart from a server
+ * fault: the row is GONE, the row's OWN STATE refuses the transition, and the
+ * STORE was busy.
  *
  * Typed rather than left as sentences for `POST /api/research/[id]/run` to
  * match with `/not found/i` and `/already running/i` — that ladder reported any
@@ -20,9 +21,16 @@ const CAS_ATTEMPTS = 8;
  * `research-concurrency.ts`: a plain `extends Error` with `this.name` set, so
  * the door classifies by `instanceof` and the message is only ever echoed.
  *
- * Two classes rather than one carrying a `kind`, because the door branches on
- * exactly two outcomes — the shape `ResearchProviderUnconfiguredError` and
- * `ResearchProviderOverrideError` already have in that same catch.
+ * Three classes rather than one carrying a `kind`, because the door branches on
+ * three distinct statuses — 404, 409, 503 — and `instanceof` on three names
+ * reads at the call site without a second lookup: the shape
+ * `ResearchProviderUnconfiguredError` and `ResearchProviderOverrideError`
+ * already have in that same catch.
+ *
+ * NOT-FOUND COVERS THE RETIRED ROW TOO (DW-651). `deleteRequested` is a DELETE
+ * tombstone the panel already hides and the GET on the same path already
+ * answers 404 for; the POST beside it saying 500 for the same row told the
+ * owner their store was broken when their project was simply gone.
  */
 export class ResearchProjectNotFoundError extends Error {
   constructor(message = "Research project not found") {
@@ -32,22 +40,65 @@ export class ResearchProjectNotFoundError extends Error {
 }
 
 /**
- * The one in-flight-run refusal: a project whose status is already `queued`,
- * `collecting` or `ready` cannot be started again — a 409, not a 404 and not a
+ * The project's OWN STATE refuses the transition — a 409, not a 404 and not a
  * server fault.
  *
- * DELIBERATELY NARROW. Other refusals have the same shape and are NOT this
- * type: `"Research project is retired"`, `"…completion is still being
- * delivered"`, the rerun-baseline race, `ResearchLeaseError` and
+ * TWO REFUSALS, both about a run already under way: a status of `queued`,
+ * `collecting` or `ready` (`"Research project is already running"`), and a
+ * completion still being delivered (`"…completion is still being delivered"`,
+ * thrown both before the mutation and inside the rerun mutator). Each names a
+ * state the caller can read back through the GET and wait out, which is what
+ * 409 promises.
+ *
+ * STILL NARROW, but the boundary moved (DW-651). `"Research project is
+ * retired"` is now {@link ResearchProjectNotFoundError} → 404, matching the
+ * GET for the same row; the delivery-retry and rerun-baseline CAS losses and
  * `applyResearchProjectMutation`'s `"Research projects were busy; retry the
- * request."` all stay plain `Error` → 500, because that is the status they
- * already answered with and re-labelling them is a behaviour change nobody
- * asked for. Do not read this class as "every conflict".
+ * request."` are now {@link ResearchProjectBusyError} → 503, because they are
+ * contention rather than a state the caller can inspect. Do not read this class
+ * as "every conflict".
+ *
+ * `ResearchLeaseError` ALONE STAYS UNTYPED here, keeping its 500 deliberately:
+ * "The previous research lease could not be retired…" and "Research attempt for
+ * <id> was replaced." are storage/operator faults, not the caller's, and no
+ * ledger entry asked for them.
  */
 export class ResearchProjectConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ResearchProjectConflictError";
+  }
+}
+
+/**
+ * The STORE was busy — a lost or exhausted compare-and-swap (DW-651).
+ *
+ * THREE SITES: {@link applyResearchProjectMutation} exhausting `CAS_ATTEMPTS`,
+ * and `research-runtime`'s two conditional updates whose predicate lost the
+ * race — the delivery retry, and the rerun baseline. All three sentences
+ * already said `retry` while the run door reported them 500, which is exactly
+ * the mismatch this class closes.
+ *
+ * ONE DOOR READS IT SO FAR: `POST /api/research/[id]/run`, which answers 503 —
+ * a retry signal rather than a permanent server fault. The THREE SIBLINGS that
+ * reach the very same exhausted ladder through {@link createResearchProject},
+ * {@link editResearchProject} and {@link deleteResearchProject} —
+ * `POST /api/research`, `PATCH` and `DELETE /api/research/[id]` — still answer
+ * 500 for it, deliberately and only because DW-651 named the run door alone.
+ * Throwing this class does not change their status; adding the branch to them
+ * is recorded as separate work. Do not read "this class means 503" as true of
+ * every research route yet.
+ *
+ * 503 RATHER THAN 409 because nothing here is inspectable. A 409 tells the
+ * caller their request conflicts with a state they can go look at and resolve;
+ * a contended registry write offers no such state, only a moment to wait. See
+ * {@link ResearchProjectConflictError} for the refusals that ARE about the
+ * project's own state.
+ */
+export class ResearchProjectBusyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResearchProjectBusyError";
   }
 }
 
@@ -456,7 +507,9 @@ export async function applyResearchProjectMutation<T>(
   if (isReadOnly()) return RESEARCH_WRITE_REFUSED;
   const storage = getStorage();
   const path = projectPath(owner);
-  const lastError = new Error("Research projects were busy; retry the request.");
+  const lastError = new ResearchProjectBusyError(
+    "Research projects were busy; retry the request.",
+  );
   for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
     let etag: string | null = null;
     let projects: ResearchProject[] = [];
