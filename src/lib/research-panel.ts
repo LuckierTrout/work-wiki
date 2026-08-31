@@ -1,3 +1,4 @@
+import { URL_MAX_CHARS } from "./research-projects";
 import type { ResearchProject, ResearchProjectStatus } from "./research-projects";
 
 /**
@@ -150,6 +151,88 @@ export function researchTaskLine(project: ResearchProject): string {
     default:
       return counted ? `In progress (${counted}).` : "In progress.";
   }
+}
+
+/**
+ * What this run's collected URLs cost, or `null` when nothing was lost.
+ *
+ * `Collect N URLs` reports the SURVIVORS as if they were everything (DW-655):
+ * the store keeps 40 URLs of at most 2,000 characters each, and until now it
+ * discarded the rest, shortened the over-long ones and collapsed two URLs
+ * sharing a 2,000-character prefix into one with nothing said. The bounds are
+ * unchanged — this is the sentence that stops them being silent.
+ *
+ * TWO CLAUSES, JOINED BY A SPACE, because they are two different losses and a
+ * row can suffer both: a dropped URL was never stored, while a truncated one
+ * IS stored and is the more dangerous of the pair — it looks like a source and
+ * points somewhere else. `total` is reconstructed as `sourceUrls.length +
+ * dropped` rather than stored, so the count the owner reads always agrees with
+ * the list they can see.
+ *
+ * `null`, not `""`, so the caller renders no empty element for the ordinary
+ * lossless run.
+ *
+ * THE COUNTS ARE VALIDATED HERE, not by the registry guard. `isResearchProject`
+ * is deliberately structural and checks no optional field, so a stored
+ * `{dropped: "5"}` reaches this function — where `sourceUrls.length + dropped`
+ * would string-concatenate into "5 of the 405 URLs…", a wrong number stated
+ * with total confidence. Loosening the guard is the wrong fix (it refuses the
+ * WHOLE registry for one bad row, which is a far worse failure than a missing
+ * note), so the defence sits at the consumer: a count counts only when it is a
+ * positive integer, and a clause with an unusable count is simply not said.
+ */
+export function researchSourceUrlNote(project: ResearchProject): string | null {
+  const loss = project.sourceUrlLoss;
+  if (!loss) return null;
+  const dropped = positiveCount(loss.dropped);
+  const truncated = positiveCount(loss.truncated);
+  const clauses: string[] = [];
+  if (dropped !== null) {
+    // Through the shared derivation, so the sentence and the Studio's evidence
+    // drawer cannot state two different totals for one card.
+    const total = researchSourceUrlTotal(project);
+    clauses.push(
+      `${dropped} of the ${total} URLs this run collected ` +
+        `${dropped === 1 ? "was" : "were"} not stored.`,
+    );
+  }
+  if (truncated !== null) {
+    clauses.push(
+      `${truncated} stored URL${truncated === 1 ? " was" : "s were"} shortened to ` +
+        // Interpolated, never re-typed: this sentence is the store's cap shown
+        // to an owner, and a literal here would go on claiming 2,000 after the
+        // cap changed. `en-US` is pinned so the grouping does not follow the
+        // server's locale.
+        `${URL_MAX_CHARS.toLocaleString("en-US")} characters and may no longer resolve.`,
+    );
+  }
+  // A stored `{dropped:0,truncated:0}` says nothing worth a sentence — the
+  // store deletes the key rather than writing that pair, but a row written by
+  // an older build must not render an empty note.
+  return clauses.length > 0 ? clauses.join(" ") : null;
+}
+
+/**
+ * The total this run collected, or `null` when nothing was dropped.
+ *
+ * The ONE derivation of "how many there really were", shared by the note above
+ * and the Studio's evidence drawer so the two surfaces on the same card cannot
+ * disagree about the number. Same positive-integer discipline as the note: an
+ * unusable stored count yields `null`, and the caller keeps its plain wording.
+ */
+export function researchSourceUrlTotal(project: ResearchProject): number | null {
+  const dropped = positiveCount(project.sourceUrlLoss?.dropped);
+  return dropped === null ? null : project.sourceUrls.length + dropped;
+}
+
+/**
+ * A stored count worth stating: really a number, whole, and above zero.
+ *
+ * The registry guard is structural by policy and validates no optional field,
+ * so this is where a `"5"` or a `NaN` stops.
+ */
+function positiveCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 /**

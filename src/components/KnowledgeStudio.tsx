@@ -10,6 +10,8 @@ import {
   RESEARCH_COLLECT_READ_ONLY_COPY,
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
+  researchSourceUrlNote,
+  researchSourceUrlTotal,
 } from "@/lib/research-panel";
 import type { AgentSkill } from "@/lib/agent-skills";
 import type { GraphInsight } from "@/lib/graph-insights";
@@ -767,6 +769,10 @@ function ResearchPanel({
   const createNoteId = useId();
   const mutateNoteId = useId();
   const collectNoteId = useId();
+  // ONE base, suffixed per row below. The loss note is PER PROJECT, and a hook
+  // cannot be called inside the map — so the row's id is derived from this
+  // stable base and the project's own id rather than minted in the loop.
+  const lossNoteBaseId = useId();
 
   useEffect(() => {
     const active = projects.filter((project) => ["queued", "collecting", "ready"].includes(project.status));
@@ -915,39 +921,68 @@ function ResearchPanel({
         </p>
       ) : null}
       <div className="studio-project-list">
-        {projects.map((project) => (
-          <article className="studio-project" key={project.id}>
-            <button type="button" className="studio-project-heading" onClick={() => onEvidence({
-              eyebrow: `Research · ${project.status}`,
-              title: project.title,
-              body: project.question,
-              signals: [`${project.sourceUrls.length} collected URLs`, `${project.pageSlugs.length} linked pages`, project.vaultId ? "vault scoped" : "all owner knowledge"],
-            })}>
-              <div><StatusPill>{project.status}</StatusPill><small>Updated {shortDate(project.updatedAt)}</small></div>
-              <h3>{project.title}</h3><p>{project.question}</p>
-            </button>
-            <div className="studio-project-actions">
-              {/* Every `disabled` here is TRANSIENT state — a run in flight, a
-                  provider that is not configured, a status that cannot be
-                  cancelled — and each YIELDS to the standing refusal, which is
-                  `aria-disabled`: a `disabled` button carries no description
-                  and is out of the tab order, so the sentence beside it would
-                  never be announced. */}
-              <button className="btn primary" type="button" onClick={() => void runAutomated(project)} disabled={!readOnly && (busy !== null || (providers.length === 0 && !project.deliveryBlocked) || ["queued", "collecting", "ready"].includes(project.status) || (!!project.completion && !project.deliveryBlocked))} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>{busy === `run:${project.id}` ? "Starting…" : project.status === "failed" || project.status === "cancelled" ? "Retry research" : "Run research"}</button>
-              {["queued", "collecting", "ready"].includes(project.status) ? <button className="btn ghost" type="button" onClick={() => void cancel(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>{busy === `cancel:${project.id}` ? "Cancelling…" : "Cancel"}</button> : null}
-              {/* Collect points at the INGEST sentence, not the research one:
-                  it pushes the brief's URLs into the ordinary ingest pipeline,
-                  and that is the door that answers. */}
-              <button className="btn ghost" type="button" onClick={() => void collect(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? collectNoteId : undefined}>{busy === `collect:${project.id}` ? "Collecting…" : `Collect ${project.sourceUrls.length} URLs`}</button>
-              <button className="studio-danger-button" type="button" onClick={() => void remove(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>Delete</button>
-            </div>
-            {project.progress ? <div className="studio-note"><strong>{project.progress.completedQueries}/{project.progress.totalQueries} searches</strong><span>{project.progress.message}</span></div> : null}
-            {project.error ? <div className="studio-feedback error">{project.error}</div> : null}
-            {project.results?.length ? <details className="studio-synthesis"><summary>{project.results.length} collected sources</summary><ol>{project.results.map((result) => <li key={result.url}><a href={result.url} target="_blank" rel="noreferrer">{result.title}</a><small>{result.query}</small></li>)}</ol></details> : null}
-            {project.proposalId ? <div className="studio-action-row"><Link className="btn primary" href="/review">Review research draft</Link></div> : null}
-            {project.synthesis ? <div className="studio-synthesis"><p className="receipt">Saved synthesis</p><MarkdownRenderer content={project.synthesis} slugTenants={slugTenants} /></div> : null}
-          </article>
-        ))}
+        {projects.map((project) => {
+          // What `Collect N URLs` cannot say on its own: N is the survivors
+          // (DW-655). `null` for the ordinary run that lost nothing.
+          const sourceUrlNote = researchSourceUrlNote(project);
+          const sourceUrlTotal = researchSourceUrlTotal(project);
+          const lossNoteId = `${lossNoteBaseId}-${project.id}`;
+          // Composed rather than either/or: a lossy row on a read-only
+          // deployment has TWO things to say about Collect — what the door
+          // refuses and what the count leaves out — and dropping one because
+          // the other applies is how a screen-reader user hears half of it.
+          const collectDescribedBy = [
+            readOnly ? collectNoteId : null,
+            sourceUrlNote ? lossNoteId : null,
+          ].filter(Boolean).join(" ") || undefined;
+          return (
+            <article className="studio-project" key={project.id}>
+              <button type="button" className="studio-project-heading" onClick={() => onEvidence({
+                eyebrow: `Research · ${project.status}`,
+                title: project.title,
+                body: project.question,
+                signals: [
+                  // The drawer is labelled EVIDENCE, so it must not repeat the
+                  // "N is everything" claim the note beside it exists to
+                  // correct (DW-655). A lossless row keeps today's wording.
+                  sourceUrlTotal === null
+                    ? `${project.sourceUrls.length} collected URLs`
+                    : `${project.sourceUrls.length} of ${sourceUrlTotal} collected URLs stored`,
+                  `${project.pageSlugs.length} linked pages`,
+                  project.vaultId ? "vault scoped" : "all owner knowledge",
+                ],
+              })}>
+                <div><StatusPill>{project.status}</StatusPill><small>Updated {shortDate(project.updatedAt)}</small></div>
+                <h3>{project.title}</h3><p>{project.question}</p>
+              </button>
+              <div className="studio-project-actions">
+                {/* Every `disabled` here is TRANSIENT state — a run in flight, a
+                    provider that is not configured, a status that cannot be
+                    cancelled — and each YIELDS to the standing refusal, which is
+                    `aria-disabled`: a `disabled` button carries no description
+                    and is out of the tab order, so the sentence beside it would
+                    never be announced. */}
+                <button className="btn primary" type="button" onClick={() => void runAutomated(project)} disabled={!readOnly && (busy !== null || (providers.length === 0 && !project.deliveryBlocked) || ["queued", "collecting", "ready"].includes(project.status) || (!!project.completion && !project.deliveryBlocked))} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>{busy === `run:${project.id}` ? "Starting…" : project.status === "failed" || project.status === "cancelled" ? "Retry research" : "Run research"}</button>
+                {["queued", "collecting", "ready"].includes(project.status) ? <button className="btn ghost" type="button" onClick={() => void cancel(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>{busy === `cancel:${project.id}` ? "Cancelling…" : "Cancel"}</button> : null}
+                {/* Collect points at the INGEST sentence, not the research one:
+                    it pushes the brief's URLs into the ordinary ingest pipeline,
+                    and that is the door that answers. */}
+                <button className="btn ghost" type="button" onClick={() => void collect(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={collectDescribedBy}>{busy === `collect:${project.id}` ? "Collecting…" : `Collect ${project.sourceUrls.length} URLs`}</button>
+                <button className="studio-danger-button" type="button" onClick={() => void remove(project)} disabled={!readOnly && busy !== null} aria-disabled={readOnly || undefined} aria-describedby={readOnly ? mutateNoteId : undefined}>Delete</button>
+              </div>
+              {/* No `role="status"`/`aria-live`: this list re-renders on the
+                  panel's poll, and a live region would re-announce the same
+                  sentence every few seconds. It is a static description the
+                  Collect button points at instead. */}
+              {sourceUrlNote ? <div id={lossNoteId} className="studio-note">{sourceUrlNote}</div> : null}
+              {project.progress ? <div className="studio-note"><strong>{project.progress.completedQueries}/{project.progress.totalQueries} searches</strong><span>{project.progress.message}</span></div> : null}
+              {project.error ? <div className="studio-feedback error">{project.error}</div> : null}
+              {project.results?.length ? <details className="studio-synthesis"><summary>{project.results.length} collected sources</summary><ol>{project.results.map((result) => <li key={result.url}><a href={result.url} target="_blank" rel="noreferrer">{result.title}</a><small>{result.query}</small></li>)}</ol></details> : null}
+              {project.proposalId ? <div className="studio-action-row"><Link className="btn primary" href="/review">Review research draft</Link></div> : null}
+              {project.synthesis ? <div className="studio-synthesis"><p className="receipt">Saved synthesis</p><MarkdownRenderer content={project.synthesis} slugTenants={slugTenants} /></div> : null}
+            </article>
+          );
+        })}
         {projects.length === 0 ? <EmptyState title="No research briefs" body="Create one here, or turn a graph insight into a prefilled investigation." /> : null}
       </div>
       {/* ONE note per DOOR, rendered once for the whole list. Both are guarded

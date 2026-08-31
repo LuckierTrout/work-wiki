@@ -513,6 +513,15 @@ export async function queueResearchProject(
     delete current.error;
     delete current.thinking;
     delete current.completion;
+    // A PER-RUN derived fact, like every other delete above it (DW-655). The
+    // panel's sentence says "this run", and the requeued run has collected
+    // nothing yet — leaving the previous run's record standing renders "5 of
+    // the 45 URLs this run collected were not stored." beside "Waiting for the
+    // research worker.", and the first recompute lands only when the new run's
+    // first provider query returns, which a queued project may wait out to the
+    // slot TTL. Cleared here so the row says nothing rather than something
+    // stale.
+    delete current.sourceUrlLoss;
     current.progress = {
       completedQueries: 0,
       totalQueries: Math.max(1, current.queries.length || 1),

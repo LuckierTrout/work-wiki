@@ -1041,6 +1041,35 @@ describe("deep research — one run per project", () => {
     expect(queued.status).toBe("queued");
   });
 
+  it("clears the previous run's source-URL loss when a project is requeued", async () => {
+    // DW-655. `sourceUrlLoss` is a PER-RUN derived fact, like `error`,
+    // `thinking` and `completion` beside it. Left standing, **Retry research**
+    // rendered "5 of the 45 URLs this run collected were not stored." beside
+    // "Waiting for the research worker." — about a run that has collected
+    // nothing — and the first recompute lands only when the new run's first
+    // provider query returns, which a queued project may wait out to the slot
+    // TTL.
+    const created = await project();
+    await updateResearchProject("alice", created.id, {
+      status: "complete",
+      sourceUrls: Array.from({ length: 45 }, (_, i) => `https://example.com/found/${i}`),
+    });
+    expect((await getResearchProject("alice", created.id))?.sourceUrlLoss)
+      .toEqual({ dropped: 5, truncated: 0 });
+
+    const queued = await queueResearchProject("alice", created.id);
+
+    expect(queued.status).toBe("queued");
+    expect(queued).not.toHaveProperty("sourceUrlLoss");
+    // Read back from the store, not just off the return value.
+    const stored = await getResearchProject("alice", created.id);
+    expect(stored).not.toHaveProperty("sourceUrlLoss");
+    // The collected URLs THEMSELVES are not cleared here — only the record of
+    // what the last run lost. Collect still has something to push until the
+    // new run overwrites the list.
+    expect(stored?.sourceUrls).toHaveLength(40);
+  });
+
   it("reruns a completed project with the same Page identity", async () => {
     const created = await project();
     const first = await runResearchProject("alice", created.id);

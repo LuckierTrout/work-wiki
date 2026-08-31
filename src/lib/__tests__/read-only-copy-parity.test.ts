@@ -394,6 +394,12 @@ describe("client refusal copy mirrors the server's", () => {
       // them to the sentence the owner would meet in the 403.
       ["graph/insights/route.ts", "graphInsightDismiss"],
       ["review-queue/[id]/route.ts", "reviewQueue"],
+      // DW-477 — the registry repair door. It reuses `researchMutate` rather
+      // than earning a sentence of its own: repairing IS "change my research"
+      // from where the owner stands, and a read-only deployment that rewrote a
+      // tenant's registry would be the one exception to the rule its siblings
+      // keep.
+      ["research/repair/route.ts", "researchMutate"],
     ] as const) {
       const source = await routeSource(route);
       expect(source, route).toContain(`error: READ_ONLY_REFUSAL.${key}`);

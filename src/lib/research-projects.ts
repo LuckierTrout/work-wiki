@@ -1,12 +1,25 @@
 import { isReadOnly } from "./config";
 import { ClientInputError, isEnoent, StoreFaultError } from "./errors";
 import { withDurableLock, withFileLock } from "./lock";
+import { logger } from "./logger";
 import { READ_ONLY_REFUSAL, ReadOnlyError, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { hasResearchSlot } from "./research-concurrency";
 
 const CAS_ATTEMPTS = 8;
+
+/**
+ * The suffix every {@link parseRegistry} refusal carries (DW-477).
+ *
+ * A 500 that only says the file is unreadable leaves the owner with a tenant
+ * whose every research door — the DELETEs that could shrink the file included
+ * — refuses, and no named way out. The hint is a SUFFIX so each refusal keeps
+ * its existing leading diagnosis verbatim: the element index and the parser's
+ * byte offset are still the first thing read, and the `toThrow(substring)`
+ * rows that pin those sentences are unaffected.
+ */
+const REPAIR_HINT = " Repair it with POST /api/research/repair, then retry.";
 
 /**
  * The three research-project faults a route has to tell apart from a server
@@ -126,6 +139,16 @@ export interface ResearchProject {
   question: string;
   queries: string[];
   sourceUrls: string[];
+  /**
+   * What the last run's collected URLs cost on the way into `sourceUrls`
+   * (DW-655) — absent when nothing was discarded or shortened.
+   *
+   * DERIVED BY THE STORE, never accepted from a patch: `cleanUrls` is the one
+   * writer, and it measures against the caller's own unbounded list. The panel
+   * reads it to say what `Collect N URLs` alone cannot — that N is the
+   * survivors, not the total.
+   */
+  sourceUrlLoss?: ResearchSourceUrlLoss;
   pageSlugs: string[];
   vaultId?: string;
   status: ResearchProjectStatus;
@@ -243,15 +266,86 @@ function cleanList(values: readonly string[] | undefined, maxItems: number, maxC
   return result;
 }
 
-function cleanUrls(values: readonly string[] | undefined): string[] {
-  return cleanList(values, 40, 2_000).filter((value) => {
-    try {
-      const parsed = new URL(value);
-      return parsed.protocol === "http:" || parsed.protocol === "https:";
-    } catch {
-      return false;
-    }
-  });
+/** The `cleanUrls` bounds, named so the counting below reads against the same
+ *  numbers the store actually applies rather than re-typing them. */
+const URL_MAX_ITEMS = 40;
+/**
+ * The per-URL character cap.
+ *
+ * EXPORTED for `research-panel.ts` alone, which names this number in the
+ * sentence it shows an owner ("shortened to 2,000 characters"). A re-typed
+ * literal there would go on saying 2,000 after this constant changed — the
+ * store telling the owner something false — which is the same re-typing these
+ * named constants exist to prevent one scope down.
+ */
+export const URL_MAX_CHARS = 2_000;
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What a run's collected URLs cost on the way into the row (DW-655).
+ *
+ * `dropped` counts URLs the caller collected that are NOT in the stored list —
+ * the cap's tail-drop, a slot an unusable entry consumed before the http/https
+ * filter ran, and the collapse of two distinct URLs that agree for their first
+ * {@link URL_MAX_CHARS} characters. A legitimate duplicate is NOT loss: the
+ * caller only ever wanted one of it.
+ *
+ * `truncated` counts STORED entries whose source was longer than
+ * {@link URL_MAX_CHARS} and so no longer points where the run found it.
+ *
+ * Both are DERIVED here and never accepted from a patch — see the one call
+ * site in {@link mutateProjectOrRefusal}.
+ */
+export interface ResearchSourceUrlLoss {
+  dropped: number;
+  truncated: number;
+}
+
+/**
+ * The run's collected URLs, bounded, PLUS what the bounding cost.
+ *
+ * The bounds themselves are untouched by DW-655 — the 40-item cap, the
+ * 2,000-character slice and the fact that the slice runs BEFORE the dedupe are
+ * all still exactly what {@link cleanList} does, and the characterization rows
+ * in `research-projects.test.ts` pin them. What is new is only that the
+ * discarding is COUNTED instead of silent.
+ *
+ * The counts are measured against a "wanted" set derived from the SAME inputs
+ * with no slice and no cap: trim, collapse whitespace, keep http/https, dedupe
+ * on the FULL value. That is the list a caller believes they handed over, so
+ * the difference is exactly what the store did not keep.
+ */
+function cleanUrls(values: readonly string[] | undefined): {
+  urls: string[];
+} & ResearchSourceUrlLoss {
+  const urls = cleanList(values, URL_MAX_ITEMS, URL_MAX_CHARS).filter(isHttpUrl);
+  // The unbounded read of the same inputs. Deduped on the full value, so two
+  // URLs sharing a 2,000-character prefix are two things wanted and one thing
+  // stored — a collapse the caller can be told about.
+  const wanted = new Set<string>();
+  // The first cleaned source that produced each stored key, mirroring
+  // `cleanList`'s first-seen dedupe: the entry that landed is the one whose
+  // length decides whether it was shortened.
+  const firstSource = new Map<string, string>();
+  for (const value of values ?? []) {
+    const cleaned = value.trim().replace(/\s+/g, " ");
+    if (!cleaned) continue;
+    if (isHttpUrl(cleaned)) wanted.add(cleaned);
+    const key = cleaned.slice(0, URL_MAX_CHARS);
+    if (!firstSource.has(key)) firstSource.set(key, cleaned);
+  }
+  const truncated = urls.filter(
+    (url) => (firstSource.get(url) ?? url).length > URL_MAX_CHARS,
+  ).length;
+  return { urls, dropped: Math.max(0, wanted.size - urls.length), truncated };
 }
 
 function cleanInput(input: ResearchProjectInput) {
@@ -357,9 +451,12 @@ function isResearchProject(value: unknown): value is ResearchProject {
  * serialize the survivors, silently dropping the skipped rows off disk for
  * good. Refusing loses nothing — the projects are not gone, they are
  * unreadable — so the message below carries the INDEX of the first bad row.
- * With no repair route (deliberately out of scope), that index is the
- * operator's only handle on a registry that now refuses every read and every
- * write for the tenant.
+ * That index is what an operator reads before deciding to reach for
+ * {@link repairResearchRegistry}, which since DW-477 is the way OUT of a
+ * registry that refuses every read and every write for the tenant — every
+ * refusal here names its route in {@link REPAIR_HINT}. The index still earns
+ * its place: the repair restarts empty, so it is the only account of what the
+ * quarantined bytes held.
  *
  * All three throws are `StoreFaultError` on purpose — a wrong-shaped stored
  * file is a server fault (500), never a `ClientInputError`. They used to be
@@ -385,24 +482,24 @@ function isResearchProject(value: unknown): value is ResearchProject {
  * `parseSlots` already wraps its own parse identically.
  *
  * The `SyntaxError` is kept as the `cause` rather than dropped. Same argument
- * as the element index above: with no repair route, the operator needs a
- * handle on WHERE the bytes went wrong, and the parser's byte offset is the
- * only one that exists. It rides along without reaching the caller, whose
- * message and 500 are unchanged.
+ * as the element index above: {@link repairResearchRegistry} quarantines the
+ * bytes and restarts empty, so the parser's byte offset is the operator's only
+ * handle on WHERE they went wrong. It rides along without reaching the caller,
+ * whose message — bar the {@link REPAIR_HINT} suffix — and 500 are unchanged.
  */
 function parseRegistry(raw: string): ResearchProject[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new StoreFaultError("Research projects file is unreadable.", { cause: error });
+    throw new StoreFaultError(`Research projects file is unreadable.${REPAIR_HINT}`, { cause: error });
   }
   if (!Array.isArray(parsed)) {
-    throw new StoreFaultError("Research projects file is not a list.");
+    throw new StoreFaultError(`Research projects file is not a list.${REPAIR_HINT}`);
   }
   const bad = parsed.findIndex((entry) => !isResearchProject(entry));
   if (bad !== -1) {
-    throw new StoreFaultError(`Research project entry ${bad} is invalid.`);
+    throw new StoreFaultError(`Research project entry ${bad} is invalid.${REPAIR_HINT}`);
   }
   return parsed;
 }
@@ -437,6 +534,155 @@ async function readProjects(owner: string): Promise<ResearchProject[]> {
  */
 function serializeProjects(projects: ResearchProject[]): string {
   return JSON.stringify(projects, null, 2);
+}
+
+/**
+ * What {@link repairResearchRegistry} did, as a discriminated union.
+ *
+ * A UNION rather than a message, because `POST /api/research/repair` has to
+ * tell a REFUSAL ("the file reads fine") from a FAULT, and DW-296 deleted
+ * message matching from these doors for exactly that reason. `quarantined:
+ * false` is the whole nothing-to-do case — a healthy registry and a missing
+ * one alike, because neither has bytes worth moving aside.
+ */
+export type ResearchRegistryRepair =
+  | { quarantined: false }
+  | { quarantined: true; path: string };
+
+/** How many keys {@link claimQuarantineKey} will try before giving up. */
+const QUARANTINE_KEY_ATTEMPTS = 8;
+
+/**
+ * Write `content` to a `.corrupt-*` key that was not already taken, and return
+ * the key it claimed.
+ *
+ * CREATE-ONLY, not `writeFile`. The key is stamped with `Date.now()`, and a
+ * plain write would let a second repair landing in the SAME millisecond
+ * silently overwrite the first rescue — destroying the only copy of bytes this
+ * function exists to preserve, and quietly contradicting the promise that
+ * nothing reaps a `.corrupt-*` sibling. `writeFileIfAbsent` reports the
+ * collision instead, and the suffix walks to the next free key.
+ *
+ * The ORDINARY case still produces the bare `${path}.corrupt-<ms>` shape that
+ * reads beside `review-queue.ts`'s `quarantine()`; the `-2`, `-3`, … tail
+ * appears only for a genuine same-millisecond collision.
+ *
+ * Bounded, and it THROWS rather than falling back to an overwrite: a repair
+ * that cannot secure a key must not proceed to replace the live file, because
+ * the whole safety of this operation is that the bytes are somewhere else
+ * first.
+ */
+async function claimQuarantineKey(path: string, content: string): Promise<string> {
+  const stamp = `${path}.corrupt-${Date.now()}`;
+  for (let attempt = 1; attempt <= QUARANTINE_KEY_ATTEMPTS; attempt += 1) {
+    const key = attempt === 1 ? stamp : `${stamp}-${attempt}`;
+    if (await getStorage().writeFileIfAbsent(key, content)) return key;
+  }
+  throw new StoreFaultError(
+    `Could not claim a quarantine key beside ${stamp}; the research projects file was left as it is.`,
+  );
+}
+
+/**
+ * Quarantine an unreadable registry and start the tenant a fresh empty one
+ * (DW-477).
+ *
+ * THE ONE WAY OUT. Until this existed, a registry {@link parseRegistry}
+ * refuses wedged every research door for its owner — the reads, the create,
+ * and the DELETEs that could have shrunk the file — with a 500 that named no
+ * remedy. Every one of those refusals now ends in {@link REPAIR_HINT}, and
+ * this is what it points at.
+ *
+ * IT RE-PARSES THROUGH `parseRegistry`, the same helper every read uses, and
+ * quarantines ONLY when that parse throws. A registry that reads — healthy,
+ * `[]`, or entirely tombstoned — leaves BYTE-IDENTICAL with nothing written at
+ * all: no `writeFile`, no `writeFileIfAbsent`, no `writeFileIfMatch`. The
+ * caller is told
+ * `quarantined: false` and the door turns that into a 409. Anything looser
+ * would make a mis-aimed repair a way to throw away a working registry.
+ *
+ * THE COPY IS WRITTEN FIRST and its failure propagates, so the live file is
+ * never replaced until the original bytes are safely somewhere else — and it
+ * is a CREATE-ONLY write ({@link claimQuarantineKey}), so a second repair in
+ * the same millisecond cannot overwrite the first rescue. Nothing prunes or
+ * reaps a `.corrupt-*` sibling — the same key shape and the same keep-forever
+ * policy as `review-queue.ts`'s `quarantine()`, and deliberately with no door
+ * to read one back: the operator has storage access, and a download route
+ * would be a way to read bytes the app itself refuses to parse.
+ *
+ * THE REPLACEMENT IS A CAS against the etag read in this same call, so a
+ * concurrent writer that already fixed the file is never blind-written over —
+ * that loses, loudly, as a {@link ResearchProjectBusyError} the door answers
+ * 503. A stranded quarantine copy is the harmless residue of that race.
+ *
+ * EMPTY RESTART, NOT A SELECTIVE SALVAGE. Keeping the rows that happen to
+ * parse would present a SHORT registry as the tenant's complete one — DW-297's
+ * "unreadable is not empty" mistake — and the next write would serialize the
+ * survivors, making the loss permanent and silent. Restarting empty is loud,
+ * and the bytes are still on disk under the returned key.
+ *
+ * READ-ONLY REFUSES HERE TOO, on {@link READ_ONLY_REFUSAL.researchMutate} and
+ * before any read: repairing is "change my research", and a read-only
+ * deployment that rewrote a tenant's registry would be the one exception to a
+ * rule every sibling door keeps. No exception is carved for it.
+ */
+export async function repairResearchRegistry(
+  owner: string,
+): Promise<ResearchRegistryRepair> {
+  // FIRST, ahead of the lock and the read — the `deleteResearchProject`
+  // discipline: the refusal must precede every read and every write.
+  assertWritable(READ_ONLY_REFUSAL.researchMutate);
+  const storage = getStorage();
+  const path = projectPath(owner);
+  return withFileLock(lockKey(owner), async () => {
+    let read;
+    try {
+      read = await storage.readFileWithEtag(path);
+    } catch (error) {
+      // ENOENT is "nothing to repair", not a fault and not a reason to create
+      // a file: a tenant with no registry already reads as an empty one.
+      if (isEnoent(error)) return { quarantined: false } as const;
+      throw error;
+    }
+    let diagnosis: string;
+    try {
+      parseRegistry(read.content);
+      return { quarantined: false } as const;
+    } catch (error) {
+      // The ONLY branch that writes. The refusal is not re-thrown — the caller
+      // asked for a repair, and this sentence already reached whoever met the
+      // 500 that sent them here — but it IS kept, because it is the one
+      // account of WHY the bytes were moved aside.
+      diagnosis = error instanceof Error ? error.message : String(error);
+    }
+    // BEFORE the replacement, and unguarded: a copy that failed silently would
+    // turn a repair into a delete.
+    const quarantinePath = await claimQuarantineKey(path, read.content);
+    // The one server-side record of a destructive operation (the registry is
+    // about to become `[]`). If the caller loses the HTTP response, this line
+    // is the only remaining handle on the key that holds their bytes — the
+    // same reason `review-queue.ts`'s `quarantine()` logs. The CONTENT is
+    // never logged: it is a tenant's data, and it is already safely on disk.
+    logger.warn(
+      "research-projects",
+      `quarantined unreadable registry ${path} to ${quarantinePath}:`,
+      diagnosis,
+    );
+    const wrote = await storage.writeFileIfMatch(
+      path,
+      serializeProjects([]),
+      read.etag,
+    );
+    if (!wrote) {
+      // Someone else wrote between the read and here — possibly the very fix
+      // this call was about to make. The existing typed class and its existing
+      // sentence, so the door answers the 503 the run door already answers.
+      throw new ResearchProjectBusyError(
+        "Research projects were busy; retry the request.",
+      );
+    }
+    return { quarantined: true, path: quarantinePath } as const;
+  });
 }
 
 /**
@@ -853,7 +1099,22 @@ async function mutateProjectOrRefusal(
     // URLs alongside `results`, and a patch that also carries `title` must still
     // land them (DW-442). `cleanInput` no longer returns the key, so the
     // `Object.assign` above cannot clobber what this line writes.
-    if (patch.sourceUrls !== undefined) project.sourceUrls = cleanUrls(patch.sourceUrls);
+    if (patch.sourceUrls !== undefined) {
+      const collected = cleanUrls(patch.sourceUrls);
+      project.sourceUrls = collected.urls;
+      // The counts are the STORE's, derived from what this patch actually
+      // carried — a caller cannot set `sourceUrlLoss`, and a run that lost
+      // nothing carries no key rather than a pair of zeroes the panel would
+      // have to special-case (DW-655).
+      if (collected.dropped > 0 || collected.truncated > 0) {
+        project.sourceUrlLoss = {
+          dropped: collected.dropped,
+          truncated: collected.truncated,
+        };
+      } else {
+        delete project.sourceUrlLoss;
+      }
+    }
     if (patch.status !== undefined) {
       if (!STATUSES.has(patch.status)) throw new ClientInputError("Invalid research status");
       project.status = patch.status;

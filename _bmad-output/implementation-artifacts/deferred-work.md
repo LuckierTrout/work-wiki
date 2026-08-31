@@ -3538,7 +3538,9 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 location: src/lib/research-projects.ts:184
 severity: medium
 reason: Every research operation for that owner refuses, including the deletes that could shrink the file, and the 500 body carries no remediation. The lease equivalent tells the operator what to do (`research-runtime.ts:886`: "Repair the lease state, then retry."). Refusing is the intended DW-297 behaviour; the missing half is a recovery route.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-registry-repair-and-urls
+resolution-undo: e8b9a10d3b9074e753b1f390284d92f6fbda87d9ef747da900adb55e0d9c41e1 2026-08-31 7374617475733a206f70656e
 decision: 2026-08-28 Quarantine-and-restart route — Add an owner-only repair route that moves an unparseable registry aside to a timestamped quarantine key, starts a fresh empty registry, and returns the quarantined path; have the refusing 500 body name that route, and pin that no readable registry is ever quarantined.
 
 ### DW-478: `PATCH`/`DELETE /api/research/[id]` and the v1 `deep_research` action still map `ClientInputError` to 500, the same misclassification DW-296 fixed one door over.
@@ -5056,7 +5058,9 @@ location: src/lib/research-projects.ts:181
 source_spec: `spec-dw-575-579-603-research-store-parse-and-guards.md`
 severity: low
 reason: The slice stores a DIFFERENT, still-parseable URL that resolves somewhere else than the one the provider returned, and because `cleanList` slices before it dedupes, two distinct URLs agreeing on their first 2000 characters collapse into one stored entry — two sources become one with nothing said. The new DW-603 rows (`src/lib/__tests__/research-projects.test.ts`) document both and say so in their own comments ("Documented, not desired"); this bundle's `Never` clause forbade changing the behaviour. The 40-item cap has the same silence and is the exposure DW-603's reason actually names: the Studio's "Collect N URLs" reports N with nothing saying the tail was dropped.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-registry-repair-and-urls
+resolution-undo: e8b9a10d3b9074e753b1f390284d92f6fbda87d9ef747da900adb55e0d9c41e1 2026-08-31 7374617475733a206f70656e
 
 ### DW-656: `markResearchDeliveryBlocked` tells the operator to "Repair the reported lock" for every drain fault, and its Retry re-hits a shape refusal forever.
 origin: spec-deferred 2aaff0311e76
@@ -5329,4 +5333,12 @@ location: src/lib/errors.ts:41
 source_spec: `spec-dw-481-482-store-fault-status-classification.md`
 severity: low
 reason: The predicate keys on the SHAPE of `code`, not on a storage errno set. No status outcome changes today: at `POST /api/tasks/run` a network errno reached the same 500 by fall-through before this change, and its message ("getaddrinfo ENOTFOUND host") never matched `/not found/i`. What is wrong today is the NAME and the log line `task "<kind>" hit a store fault`, which sends an operator to the disk for an outbound-network fault. An allowlist was considered and not taken here: it would have to enumerate storage errnos, and it would still miss the `ERR_FS_*` family, so it trades one wrong answer for another without the intent to say which is preferred.
+status: open
+
+### DW-688: A wedged tenant is told to issue `POST /api/research/repair` by hand; no control anywhere in the product performs it.
+origin: spec-deferred 3d0ce9242795
+location: src/components/KnowledgeStudio.tsx (research error banner), src/lib/research-projects.ts (REPAIR_HINT)
+source_spec: `spec-dw-477-655-research-registry-repair-and-urls.md`
+severity: medium
+reason: `REPAIR_HINT` now ends every `parseRegistry` refusal, and the Studio's research fetch surfaces the server's `error` sentence verbatim in its banner (`KnowledgeStudio.tsx`), so a non-technical owner meets "Research projects file is unreadable. Repair it with POST /api/research/repair, then retry." with nothing to press. Grepping `src` for `research/repair` finds only the route file and its test — no client fetch, no button, and the Workbench's `ResearchCanvas` shows the same sentence with the same absence. The recorded DW-477 decision names a route and a 500 body that names it, and both shipped; the ledger entry's own title says "no IN-PRODUCT repair path", and that half is still open. A Repair control on the research desk's error banner would close it.
 status: open

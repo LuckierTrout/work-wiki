@@ -10,11 +10,13 @@ import {
   filterResearchProjects,
   getResearchProject,
   listResearchProjects,
+  repairResearchRegistry,
   ResearchProjectBusyError,
   updateResearchProject,
   updateResearchProjectIf,
 } from "../research-projects";
 import { ClientInputError, StoreFaultError } from "../errors";
+import { READ_ONLY_REFUSAL, ReadOnlyError } from "../read-only";
 import { _resetLocks } from "../lock";
 import { _resetStorage, getStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
@@ -246,6 +248,142 @@ describe("research projects", () => {
       const stored = await patchUrls([`${prefix}?one`, `${prefix}?two`]);
 
       expect(stored).toEqual([prefix.slice(0, 2_000)]);
+    });
+  });
+
+  /**
+   * DW-655. The bounds above are unchanged — every characterization row in
+   * `the run patch's source-URL bounds` still passes unedited. What is new is
+   * that the discarding is RECORDED: `Collect N URLs` reported the survivors
+   * as if they were everything, and the row now carries what N left out.
+   */
+  describe("the run patch's recorded source-URL loss", () => {
+    async function patch(urls: readonly string[]) {
+      const project = await createResearchProject("alice", {
+        title: "Launch research",
+        question: "What evidence supports the launch date?",
+      });
+      return updateResearchProject("alice", project.id, { sourceUrls: urls });
+    }
+
+    it("records the tail the 40-item cap dropped", async () => {
+      const urls = Array.from({ length: 45 }, (_, i) => `https://example.com/found/${i}`);
+
+      const updated = await patch(urls);
+
+      // The stored list is EXACTLY what it was before this work.
+      expect(updated?.sourceUrls).toEqual(urls.slice(0, 40));
+      expect(updated?.sourceUrlLoss).toEqual({ dropped: 5, truncated: 0 });
+      // …and it SURVIVES a round trip. `isResearchProject` is structural and
+      // knows nothing about this field, so a serialization regression would
+      // never be caught by the returned value alone.
+      const stored = await getResearchProject("alice", updated!.id);
+      expect(stored?.sourceUrlLoss).toEqual({ dropped: 5, truncated: 0 });
+    });
+
+    it("records a truncation and the collapse it caused", async () => {
+      // Two distinct URLs sharing their first 2,000 characters: the slice runs
+      // before the dedupe, so one of them is stored — shortened — and the
+      // other vanishes into it. Two facts, both now said.
+      const prefix = `https://example.com/${"a".repeat(4_000)}`;
+
+      const updated = await patch([`${prefix}?one`, `${prefix}?two`]);
+
+      expect(updated?.sourceUrls).toEqual([prefix.slice(0, 2_000)]);
+      expect(updated?.sourceUrlLoss).toEqual({ dropped: 1, truncated: 1 });
+      const stored = await getResearchProject("alice", updated!.id);
+      expect(stored?.sourceUrlLoss).toEqual({ dropped: 1, truncated: 1 });
+    });
+
+    it("counts a slot an unusable entry consumed as loss", async () => {
+      // `cleanList` caps and `break`s BEFORE the http/https filter runs, so a
+      // `javascript:` entry costs a good URL its place. Characterized above;
+      // reported here.
+      const valid = Array.from({ length: 40 }, (_, i) => `https://example.com/found/${i}`);
+
+      const updated = await patch(["javascript:alert(1)", ...valid]);
+
+      expect(updated?.sourceUrls).toHaveLength(39);
+      expect(updated?.sourceUrlLoss).toEqual({ dropped: 1, truncated: 0 });
+    });
+
+    it("records nothing when a run lost nothing", async () => {
+      const a = "https://example.com/a";
+
+      const updated = await patch([a, "https://example.com/b", a, `  ${a}  `]);
+
+      // A repeated URL is NOT loss: the caller only ever wanted one of it.
+      expect(updated?.sourceUrls).toEqual([a, "https://example.com/b"]);
+      expect(updated).not.toHaveProperty("sourceUrlLoss");
+    });
+
+    it("clears the record when a later run stores everything it found", async () => {
+      const project = await createResearchProject("alice", {
+        title: "Launch research",
+        question: "What evidence supports the launch date?",
+      });
+      const lossy = await updateResearchProject("alice", project.id, {
+        sourceUrls: Array.from({ length: 45 }, (_, i) => `https://example.com/found/${i}`),
+      });
+      expect(lossy?.sourceUrlLoss).toEqual({ dropped: 5, truncated: 0 });
+
+      const clean = await updateResearchProject("alice", project.id, {
+        sourceUrls: ["https://example.com/one"],
+      });
+
+      // The key is DELETED rather than zeroed, so the panel has one shape to
+      // read and a stale note cannot outlive the run that earned it.
+      expect(clean).not.toHaveProperty("sourceUrlLoss");
+      const stored = await getResearchProject("alice", project.id);
+      expect(stored).not.toHaveProperty("sourceUrlLoss");
+    });
+
+    it("is never taken from a caller's patch", async () => {
+      const project = await createResearchProject("alice", {
+        title: "Launch research",
+        question: "What evidence supports the launch date?",
+      });
+
+      // Not on the patch type at all — so it arrives through a variable rather
+      // than a fresh literal, which is the only way a caller could smuggle it
+      // in. A future widening of that type has to come back and decide.
+      const smuggled = {
+        sourceUrls: ["https://example.com/one"],
+        sourceUrlLoss: { dropped: 99, truncated: 99 },
+      };
+      await updateResearchProject("alice", project.id, smuggled);
+
+      expect(await getResearchProject("alice", project.id)).not.toHaveProperty("sourceUrlLoss");
+
+      // THE LOAD-BEARING HALF: with no `sourceUrls` key the guard block does
+      // not run at all, so the `delete` above is not what refuses this. A
+      // blanket `Object.assign(project, patch)` would land it here and the
+      // case above would still be green.
+      await updateResearchProject("alice", project.id, {
+        status: "complete",
+        ...({ sourceUrlLoss: { dropped: 99, truncated: 99 } } as object),
+      });
+
+      expect(await getResearchProject("alice", project.id)).not.toHaveProperty("sourceUrlLoss");
+    });
+
+    it("keeps a recorded loss across an unrelated edit", async () => {
+      // The other direction: the field is per-RUN, not per-write. A title edit
+      // is not a new run and must not clear what the last run recorded — only
+      // a fresh `sourceUrls` patch (or a requeue) does.
+      const project = await createResearchProject("alice", {
+        title: "Launch research",
+        question: "What evidence supports the launch date?",
+      });
+      await updateResearchProject("alice", project.id, {
+        sourceUrls: Array.from({ length: 45 }, (_, i) => `https://example.com/found/${i}`),
+      });
+
+      await updateResearchProject("alice", project.id, { title: "Launch research (revised)" });
+
+      const stored = await getResearchProject("alice", project.id);
+      expect(stored?.title).toBe("Launch research (revised)");
+      expect(stored?.sourceUrlLoss).toEqual({ dropped: 5, truncated: 0 });
     });
   });
 
@@ -502,8 +640,9 @@ describe("research projects", () => {
 
       // A StoreFaultError, NOT a ClientInputError: a wrong-shaped stored file
       // is a server fault (500), the same rule the non-array throw states.
-      // The INDEX is part of the contract: with no repair route, it is the
-      // operator's only handle on a registry that refuses every door.
+      // The INDEX is part of the contract: the repair route restarts the
+      // registry EMPTY, so this is the operator's only account of what the
+      // quarantined bytes held.
       await expect(listResearchProjects("alice")).rejects.toThrow(
         "Research project entry 0 is invalid.",
       );
@@ -682,6 +821,286 @@ describe("research projects", () => {
     it("still reads a well-formed registry", async () => {
       await seedRawRegistry("alice", JSON.stringify([seedRow(0), seedRow(1)]));
       expect((await listResearchProjects("alice")).map((p) => p.id)).toEqual(["seed-1", "seed-0"]);
+    });
+  });
+
+  /**
+   * DW-477. A registry `parseRegistry` refuses wedges every research door for
+   * its owner — the DELETEs that could have shrunk the file included — and
+   * until now the 500 named no way out. `repairResearchRegistry` is that way
+   * out: quarantine the bytes, restart empty. These rows run against REAL
+   * stored bytes, so what they pin is the store's behaviour, not the door's
+   * status codes (`research-repair-route.test.ts` owns those).
+   */
+  describe("repairing a wedged registry", () => {
+    /** The one shape of write that must never happen on a healthy registry. */
+    function writeSpies() {
+      const storage = getStorage();
+      return [
+        vi.spyOn(storage, "writeFile"),
+        vi.spyOn(storage, "writeFileIfMatch"),
+        vi.spyOn(storage, "writeFileIfAbsent"),
+      ];
+    }
+
+    it.each([
+      ["a JSON object", '{"projects":[]}'],
+      ["truncated bytes", '[{"id":"seed-0"}'],
+      ["bytes that are not JSON at all", "not json at all"],
+      ["a list whose elements are not projects", JSON.stringify([{}])],
+    ])(
+      "quarantines %s verbatim and leaves the tenant a readable empty registry",
+      async (_label, raw) => {
+        await seedRawRegistry("alice", raw);
+        // The precondition the repair exists for: every door refuses.
+        await expect(listResearchProjects("alice")).rejects.toBeInstanceOf(StoreFaultError);
+
+        const repair = await repairResearchRegistry("alice");
+
+        expect(repair.quarantined).toBe(true);
+        const quarantinePath = (repair as { path: string }).path;
+        expect(quarantinePath).toMatch(
+          new RegExp(`^tenants/${tenantForOwner("alice")}/research-projects\\.json\\.corrupt-\\d+$`),
+        );
+        // VERBATIM. The bytes are unreadable, not worthless — they are the
+        // only record of what the tenant had, and nothing reaps them.
+        expect(await getStorage().readFile(quarantinePath)).toBe(raw);
+        // …and the doors answer again.
+        expect(await listResearchProjects("alice")).toEqual([]);
+        expect(await getResearchProject("alice", "seed-0")).toBeNull();
+        const created = await createResearchProject("alice", {
+          title: "After the repair",
+          question: "Does the store work again?",
+        });
+        expect((await listResearchProjects("alice")).map((p) => p.id)).toEqual([created.id]);
+      },
+    );
+
+    it.each([
+      ["a healthy registry", JSON.stringify([seedRow(0), seedRow(1)], null, 2)],
+      ["an empty list", "[]"],
+      // Every row tombstoned still PARSES, so there is nothing to repair — the
+      // panel showing no projects is not the same fact as the file being
+      // unreadable, and a repair that could not tell them apart would throw
+      // away a tenant's outstanding deletes.
+      ["a fully tombstoned registry", JSON.stringify([seedRow(0, { deleteRequested: true })], null, 2)],
+    ])("refuses to touch %s, writing nothing at all", async (_label, raw) => {
+      await seedRawRegistry("alice", raw);
+      const spies = writeSpies();
+
+      try {
+        expect(await repairResearchRegistry("alice")).toEqual({ quarantined: false });
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe(raw);
+    });
+
+    it("treats a missing registry as nothing to repair, and creates no file", async () => {
+      const spies = writeSpies();
+
+      try {
+        expect(await repairResearchRegistry("alice")).toEqual({ quarantined: false });
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+      }
+
+      await expect(fs.readFile(registryPath("alice"), "utf-8")).rejects.toThrow();
+    });
+
+    it("repairs only the owner's own tenant", async () => {
+      await seedRawRegistry("alice", "not json at all");
+      await seedRawRegistry("bob", JSON.stringify([seedRow(0)], null, 2));
+      const bobBefore = await fs.readFile(registryPath("bob"), "utf-8");
+
+      expect((await repairResearchRegistry("alice")).quarantined).toBe(true);
+
+      expect(await fs.readFile(registryPath("bob"), "utf-8")).toBe(bobBefore);
+      expect((await listResearchProjects("bob")).map((p) => p.id)).toEqual(["seed-0"]);
+    });
+
+    it("loses the compare-and-swap rather than blind-writing over a concurrent fix", async () => {
+      await seedRawRegistry("alice", "not json at all");
+      const storage = getStorage();
+      // The writer that got there first — possibly the very fix this call was
+      // about to make.
+      const spy = vi.spyOn(storage, "writeFileIfMatch").mockResolvedValue(false);
+
+      try {
+        const error = await repairResearchRegistry("alice").then(
+          () => null,
+          (e: unknown) => e,
+        );
+
+        // The EXISTING typed class and its existing sentence, so the door can
+        // answer the 503 `POST /api/research/[id]/run` already answers.
+        expect(error).toBeInstanceOf(ResearchProjectBusyError);
+        expect((error as Error).message).toBe(
+          "Research projects were busy; retry the request.",
+        );
+      } finally {
+        spy.mockRestore();
+      }
+
+      // The live file is untouched, and the quarantine copy — written first on
+      // purpose — is the harmless residue of the race.
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe("not json at all");
+    });
+
+    it("never replaces the live file when the quarantine copy fails", async () => {
+      await seedRawRegistry("alice", "not json at all");
+      const storage = getStorage();
+      const copy = vi.spyOn(storage, "writeFileIfAbsent").mockRejectedValue(
+        Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }),
+      );
+      const replace = vi.spyOn(storage, "writeFileIfMatch");
+
+      try {
+        await expect(repairResearchRegistry("alice")).rejects.toThrow("ENOSPC");
+        // Copy FIRST, and its failure propagates: a silently skipped copy
+        // would turn a repair into a delete.
+        expect(replace).not.toHaveBeenCalled();
+      } finally {
+        copy.mockRestore();
+        replace.mockRestore();
+      }
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe("not json at all");
+    });
+
+    it("rethrows a storage read fault untouched, writing nothing", async () => {
+      const storage = getStorage();
+      const fault = Object.assign(
+        new Error("EACCES: permission denied, open 'research-projects.json'"),
+        { code: "EACCES" },
+      );
+      const read = vi.spyOn(storage, "readFileWithEtag").mockRejectedValue(fault);
+      const spies = writeSpies();
+
+      try {
+        // Not swallowed as "nothing to repair": only ENOENT means that, and a
+        // permission fault reported as a 409 would send the operator looking
+        // for a file that reads fine.
+        await expect(repairResearchRegistry("alice")).rejects.toBe(fault);
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        read.mockRestore();
+        for (const spy of spies) spy.mockRestore();
+      }
+    });
+
+    it("refuses on a read-only deployment before reading anything", async () => {
+      await seedRawRegistry("alice", "not json at all");
+      const storage = getStorage();
+      const read = vi.spyOn(storage, "readFileWithEtag");
+      const spies = writeSpies();
+      process.env.YOPEDIA_READONLY = "1";
+
+      try {
+        // The kernel gate, not the door's: a direct library caller with no
+        // route in front meets the same refusal, and it precedes the read.
+        await expect(repairResearchRegistry("alice")).rejects.toBeInstanceOf(ReadOnlyError);
+        await expect(repairResearchRegistry("alice")).rejects.toThrow(
+          READ_ONLY_REFUSAL.researchMutate,
+        );
+        expect(read).not.toHaveBeenCalled();
+        for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.YOPEDIA_READONLY;
+        read.mockRestore();
+        for (const spy of spies) spy.mockRestore();
+      }
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe("not json at all");
+    });
+
+    it.each([
+      ["a JSON object", '{"projects":[]}', "Research projects file is not a list."],
+      ["bytes that are not JSON", "not json", "Research projects file is unreadable."],
+      ["a bad row", JSON.stringify([{}]), "Research project entry 0 is invalid."],
+    ])("names the repair route in the refusal for %s", async (_label, raw, diagnosis) => {
+      await seedRawRegistry("alice", raw);
+
+      // The SUFFIX shape: the existing diagnosis leads, verbatim, and the way
+      // out follows. A 500 that named no remedy is what DW-477 was.
+      await expect(listResearchProjects("alice")).rejects.toThrow(
+        `${diagnosis} Repair it with POST /api/research/repair, then retry.`,
+      );
+      await expect(listResearchProjects("alice")).rejects.toBeInstanceOf(StoreFaultError);
+    });
+
+    it("keeps a second quarantine beside the first", async () => {
+      // No sleep between the two: the key is CLAIMED create-only, so a
+      // same-millisecond second repair takes the next suffix rather than
+      // overwriting the first rescue.
+      await seedRawRegistry("alice", "first corruption");
+      const first = await repairResearchRegistry("alice");
+      await seedRawRegistry("alice", "second corruption");
+
+      const second = await repairResearchRegistry("alice");
+
+      const firstPath = (first as { path: string }).path;
+      const secondPath = (second as { path: string }).path;
+      expect(secondPath).not.toBe(firstPath);
+      // Nothing prunes or reaps a `.corrupt-*` sibling.
+      expect(await getStorage().readFile(firstPath)).toBe("first corruption");
+      expect(await getStorage().readFile(secondPath)).toBe("second corruption");
+    });
+
+    it("never overwrites a rescue whose key it would otherwise reuse", async () => {
+      // The collision the `Date.now()` stamp cannot rule out, forced: the
+      // timestamped key is already taken. A plain `writeFile` would destroy
+      // the bytes sitting there — the exact copy this operation exists to
+      // preserve — and report success.
+      await seedRawRegistry("alice", "second corruption");
+      const storage = getStorage();
+      // The clock is FROZEN, so the collision is the one the millisecond stamp
+      // genuinely cannot rule out rather than one this test raced for.
+      const clock = vi.spyOn(Date, "now").mockReturnValue(1_788_000_000_000);
+      const stamp = `tenants/${tenantForOwner("alice")}/research-projects.json.corrupt-1788000000000`;
+
+      try {
+        await storage.writeFile(stamp, "first corruption");
+
+        const repair = await repairResearchRegistry("alice");
+
+        const claimed = (repair as { path: string }).path;
+        expect(claimed).not.toBe(stamp);
+        // The occupied key still holds what it held.
+        expect(await storage.readFile(stamp)).toBe("first corruption");
+        expect(await storage.readFile(claimed)).toBe("second corruption");
+        // The ordinary shape is preserved for the ordinary case; only a real
+        // collision grows a suffix.
+        expect(claimed).toBe(`${stamp}-2`);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+
+    it("leaves the live file alone when no quarantine key can be claimed", async () => {
+      await seedRawRegistry("alice", "not json at all");
+      const storage = getStorage();
+      // Every key refused, which is the only case that must NOT fall back to
+      // an overwrite: the repair's whole safety is that the bytes are
+      // somewhere else first.
+      const claim = vi.spyOn(storage, "writeFileIfAbsent").mockResolvedValue(false);
+      const replace = vi.spyOn(storage, "writeFileIfMatch");
+
+      try {
+        await expect(repairResearchRegistry("alice")).rejects.toThrow(
+          /Could not claim a quarantine key/,
+        );
+        await expect(repairResearchRegistry("alice")).rejects.toBeInstanceOf(StoreFaultError);
+        expect(replace).not.toHaveBeenCalled();
+      } finally {
+        claim.mockRestore();
+        replace.mockRestore();
+      }
+
+      expect(await fs.readFile(registryPath("alice"), "utf-8")).toBe("not json at all");
     });
   });
 

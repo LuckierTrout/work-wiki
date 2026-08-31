@@ -429,3 +429,116 @@ describe("the Research desk no longer collects seed source URLs (DW-442)", () =>
     expect(writeCalls()).toEqual([]);
   });
 });
+
+/**
+ * DW-655. `Collect N URLs` reported the SURVIVORS as if they were everything:
+ * the store keeps 40 URLs of at most 2,000 characters, and until now it
+ * discarded the rest, shortened the over-long ones and collapsed two URLs
+ * sharing a 2,000-character prefix into one with nothing said. The bounds are
+ * unchanged — this is the surface that stops them being silent. The sentences
+ * themselves are pinned in `research-panel.test.ts`; what is pinned here is
+ * that they reach the owner, beside the control they are about.
+ */
+describe("the Research desk says what a run's collected URLs cost", () => {
+  /** 40 stored URLs, of the 45 the run actually collected. */
+  const LOSSY = {
+    ...PROJECT,
+    status: "complete",
+    sourceUrls: Array.from({ length: 40 }, (_, i) => `https://example.com/found/${i}`),
+    sourceUrlLoss: { dropped: 5, truncated: 0 },
+  };
+
+  const DROPPED_SENTENCE = "5 of the 45 URLs this run collected were not stored.";
+
+  it("renders the note in the same row as the Collect control", async () => {
+    stubFetch(false, { projects: [LOSSY] });
+    await openResearchDesk();
+
+    const note = await screen.findByText(DROPPED_SENTENCE);
+    // BESIDE Collect, not somewhere else on the desk: the button says 40, and
+    // the sentence that corrects it has to be readable from the same place.
+    expect(button(/Collect 40 URLs/).closest("article")).toBe(note.closest("article"));
+    expect(note.className).toContain("studio-note");
+  });
+
+  it("points the Collect control at the note, not merely near it", async () => {
+    stubFetch(false, { projects: [LOSSY] });
+    await openResearchDesk();
+
+    // Proximity in the DOM is nothing to a screen-reader user: without the
+    // association they hear "Collect 40 URLs" and no correction at all.
+    expect(announcedFor(button(/Collect 40 URLs/))).toBe(DROPPED_SENTENCE);
+    // Not a live region — the list re-renders on the panel's poll, and one
+    // would re-announce the same sentence every few seconds.
+    const note = await screen.findByText(DROPPED_SENTENCE);
+    expect(note.getAttribute("aria-live")).toBeNull();
+    expect(note.getAttribute("role")).toBeNull();
+  });
+
+  it("announces BOTH the refusal and the loss on a read-only deployment", async () => {
+    // This file's whole subject, crossed with the new note: a lossy row behind
+    // a refusing door has two things to say about Collect, and dropping either
+    // because the other applies is how half of it goes unheard.
+    stubFetch(true, { projects: [LOSSY] });
+    await openResearchDesk();
+
+    const announced = announcedFor(button(/Collect 40 URLs/));
+    expect(announced).toContain(RESEARCH_COLLECT_READ_ONLY_COPY);
+    expect(announced).toContain(DROPPED_SENTENCE);
+    // The read-only sentence still leads — it is the one that says the control
+    // will not act at all.
+    expect(announced).toBe(`${RESEARCH_COLLECT_READ_ONLY_COPY} ${DROPPED_SENTENCE}`);
+    expect(await screen.findByText(DROPPED_SENTENCE)).toBeTruthy();
+  });
+
+  it("states the total in the evidence drawer, not just the survivors", async () => {
+    // The drawer is one click away on the same card and is labelled EVIDENCE,
+    // so leaving "40 collected URLs" there restated the exact claim the note
+    // exists to correct.
+    stubFetch(false, { projects: [LOSSY] });
+    await openResearchDesk();
+
+    fireEvent.click(screen.getByRole("button", { name: /Vendor landscape/ }));
+
+    await screen.findByText("40 of 45 collected URLs stored");
+    expect(screen.queryByText("40 collected URLs")).toBeNull();
+  });
+
+  it("keeps the drawer's plain wording for a lossless row", async () => {
+    // Today's sentence, unchanged: a row that lost nothing has no total to
+    // reconcile and must not grow a second number.
+    stubFetch(false);
+    await openResearchDesk();
+
+    fireEvent.click(screen.getByRole("button", { name: /Vendor landscape/ }));
+
+    await screen.findByText("1 collected URLs");
+    expect(screen.queryByText(/collected URLs stored/)).toBeNull();
+  });
+
+  it("states both losses when a run suffered both", async () => {
+    stubFetch(false, {
+      projects: [{ ...LOSSY, sourceUrlLoss: { dropped: 5, truncated: 2 } }],
+    });
+    await openResearchDesk();
+
+    await screen.findByText(
+      `${DROPPED_SENTENCE} 2 stored URLs were shortened to 2,000 characters ` +
+      "and may no longer resolve.",
+    );
+  });
+
+  it("renders nothing for the ordinary run that lost nothing", async () => {
+    // The seeded brief carries one URL and no loss record — no empty note, and
+    // no zeroed sentence.
+    stubFetch(false);
+    await openResearchDesk();
+
+    expect(button(/Collect 1 URLs/)).toBeTruthy();
+    expect(screen.queryByText(/were not stored/)).toBeNull();
+    expect(screen.queryByText(/was not stored/)).toBeNull();
+    expect(screen.queryByText(/may no longer resolve/)).toBeNull();
+    // …and Collect describes nothing at all on a writable, lossless row.
+    expect(button(/Collect 1 URLs/).getAttribute("aria-describedby")).toBeNull();
+  });
+});
