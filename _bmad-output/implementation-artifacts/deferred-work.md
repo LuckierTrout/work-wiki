@@ -4529,6 +4529,7 @@ source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: `??` only substitutes on null/undefined. `sidecar/agent.mjs` and `sidecar/chat-transport.mjs` emit `citations: []` on the settle paths, so `OpenTurn.fallbackCitations` is effectively dead and such an answer is reduced to the coverage sentence. Moved verbatim from `ab263b98`, so the behaviour is unchanged by DW-444; deciding whether the assemble's citations should stand in for an empty array is a Chat-behaviour question, not a refactor one.
 status: open
+decision: 2026-08-31 Rescue an empty settle — Change the read to `frame.citations?.length ? frame.citations : turn.fallbackCitations` so a settle frame carrying no citations falls back to the ones assemble already resolved, and pin the rescue with a transport test that settles with an empty array and asserts the fallback citations reach the rendered turn.
 
 ### DW-586: Nothing asserts that pressing Stop, or unmounting, actually aborts an in-flight turn.
 origin: spec-deferred 4f9a3c88807a

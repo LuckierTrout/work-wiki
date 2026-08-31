@@ -350,6 +350,15 @@
     "label": "Wait for DW-14",
     "resolution": ""
   },
+  "DW-585": {
+    "answered_at": "2026-08-31",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Change the read to `frame.citations?.length ? frame.citations : turn.fallbackCitations` so a settle frame carrying no citations falls back to the ones assemble already resolved, and pin the rescue with a transport test that settles with an empty array and asserts the fallback citations reach the rendered turn.",
+    "key": "1",
+    "label": "Rescue an empty settle",
+    "resolution": ""
+  },
   "DW-595": {
     "answered_at": "2026-08-29",
     "bundle_name": "",
