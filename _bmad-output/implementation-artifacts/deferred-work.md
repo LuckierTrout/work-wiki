@@ -460,14 +460,13 @@ source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 archived: 2026-08-29
 
 ### DW-66: `hasCustomApiKey` / `hasFirecrawlApiKey` conflate an env-supplied key with a stored one, so `Remove` is offered for keys it cannot remove.
-origin: spec-deferred a152dc3b5b3f
-location: src/lib/config.ts (getWorkbenchSettings), src/components/workbench/SettingsCanvas.tsx
-source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
-severity: low
-reason: `apiKeyForProvider("custom")` and `getFirecrawlSettings().hasKey` both count `LLM_CUSTOM_API_KEY` / `FIRECRAWL_API_KEY` alongside the stored value, and the surface renders "A key is stored." plus a `Remove` button from that one boolean. Pressing Remove on an env-supplied key clears nothing and the sentence does not change. The embeddings half of this was closed in the patch pass (`hasEnvEmbeddingApiKey` rides separately); the same split for the other two was left out to keep the payload from growing again.
+
 status: done 2026-08-29
 resolution: resolved by sweep bundle dw-env-locked-credential-affordances
 resolution-undo: a2bc3f517016d00b840c4497974d90581053315b9d7eac5a37d8febc1b69824d 2026-08-29 7374617475733a206f70656e
+origin: spec-deferred a152dc3b5b3f
+source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
+archived: 2026-08-31
 
 ### DW-67: Edits typed while a save is in flight are discarded when the response re-seeds the draft.
 origin: spec-deferred 7fd1f35ba122
@@ -1938,14 +1937,13 @@ source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
 archived: 2026-08-29
 
 ### DW-268: `YOPEDIA_READONLY` has no operator-facing documentation, and this change materially redefines what it refuses.
-origin: spec-deferred 726f9f7ae0c5
-source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
-location: src/lib/config.ts:139
-severity: low
-reason: The flag appears only in code docstrings and spec artifacts — not in README.md and not under docs/. It now means "no page or artifact write through any caller, including MCP and the CLI", while settings, the wikis registry, vaults, agent profiles, tasks, monitors, structured knowledge, `raw/`, the ingest ledger and the revision store all still mutate. An operator setting the flag has nowhere to read that boundary; the new `isReadOnly()` docstring in src/lib/config.ts states it, but only to a reader already in the code.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-operator-docs
 resolution-undo: 3b09c8630704cd1ee6b9a953f6709b99d99347084c194b69f40f07e555f82e49 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 726f9f7ae0c5
+source_spec: `spec-dw-187-188-190-read-only-write-doors.md`
+archived: 2026-08-31
 
 ### DW-269: The Re-ingest and Revert client affordances are still offered where the same commons-realm gate refuses them — the exact shape DW-120 fixed for Delete.
 
@@ -2188,14 +2186,13 @@ source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
 archived: 2026-08-29
 
 ### DW-302: `WIKI_READ_ONLY_COPY` is the one client refusal sentence with no case in `read-only-copy-parity.test.ts`, and it demonstrably differs from its route.
-origin: spec-deferred c4e48f3e8686
-source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
-location: src/lib/__tests__/read-only-copy-parity.test.ts
-severity: low
-reason: This change added parity cases for `WIKI_TEMPLATE_READ_ONLY_COPY`, `WIKI_CREATE_READ_ONLY_COPY` and `WORKSPACE_PURPOSE_READ_ONLY_COPY`, and the second of those proves `POST /api/wikis` answers "Wikis cannot be created while this deployment is read-only." — so the switcher's four-verb `WIKI_READ_ONLY_COPY` (src/lib/workbench-tree.ts:120) does not match any single door it sits in front of. That is defensible (it covers four routes at once, like the Revert narrowing already recorded), but it is unrecorded: the suite's own header says every client constant is compared "CHARACTER-IDENTICAL where the door answers its own refusal, and explicitly recorded where it deliberately does not", and this one is neither. Pre-existing (DW-37 shipped it unpinned).
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-kernel-writer-coverage
 resolution-undo: 7babae5c1f979f9f9a279840f690171a0608302a7a14bc08597a783af1ca2015 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred c4e48f3e8686
+source_spec: `spec-dw-189-191-read-only-surface-affordances.md`
+archived: 2026-08-31
 
 ### DW-303: The flat branch can now be refused for vector legs no flat field can satisfy (endpoint, API key, Workers AI binding), and the legacy /settings page has no control for any of them.
 
@@ -2282,53 +2279,47 @@ source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
 archived: 2026-08-29
 
 ### DW-315: `read-only-door-coverage.test.ts` still registers four kernel writers, so the newly refusing wiki-lifecycle exports are invisible to the scan that guards tomorrow's doors.
+
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-read-only-kernel-writer-coverage
+resolution-undo: 7babae5c1f979f9f9a279840f690171a0608302a7a14bc08597a783af1ca2015 2026-08-30 7374617475733a206f70656e
 origin: spec-deferred 451eef2b76ed
 source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
-location: src/lib/__tests__/read-only-door-coverage.test.ts:36
-severity: low
-reason: `KERNEL_WRITERS` and `WRITER_EXPORTS` do not name `createWiki`, `applyScenarioTemplate`, `renameWiki` or `saveWorkspaceProfile`, and the file's staleness guard re-derives only from `KERNEL_WRITERS`. A future `route.ts` importing `createWiki` with neither treatment would serve the refusal as a 500 and the scan would not notice. Every route that reaches them today gates first, so nothing is broken now. Deliberately not fixed here: widening that registry re-derives a route-treatment map across the whole app.
-status: done 2026-08-30
-resolution: resolved by sweep bundle dw-read-only-kernel-writer-coverage
-resolution-undo: 7babae5c1f979f9f9a279840f690171a0608302a7a14bc08597a783af1ca2015 2026-08-30 7374617475733a206f70656e
+archived: 2026-08-31
 
 ### DW-316: The three wiki lifecycle routes classify a `ReadOnlyError` as 500 rather than mapping it to 403.
-origin: spec-deferred 56ea98b9ffae
-source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
-location: src/app/api/wikis/route.ts; src/app/api/wikis/[id]/route.ts; src/app/api/wikis/[id]/template/route.ts
-severity: low
-reason: `src/app/api/wikis/route.ts`, `src/app/api/wikis/[id]/route.ts` and `src/app/api/wikis/[id]/template/route.ts` branch only on `ClientInputError` (400) and answer 500 for everything else. Every other read-only-aware route carries an `isReadOnlyError(error) -> 403` branch beside its early gate (see `src/app/api/workbench/artifact/route.ts:68`). Reachable only if `YOPEDIA_READONLY` flips between the route's own `isReadOnly()` gate and the kernel call. Route files were fenced out of this change.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-lifecycle-route-status
 resolution-undo: 8d0d9d1b39fad0e0145b43bf523a8c44a01125170236b0b6b41ab2d01975abaf 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 56ea98b9ffae
+source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
+archived: 2026-08-31
 
 ### DW-317: The two putter backstop gates are unreachable through every current caller, so no test observes them firing.
-origin: spec-deferred 0b21a169fec9
-source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
-location: src/lib/wikis.ts (putWikiArtifact); src/lib/workspace-profile.ts (putWorkspaceProfile)
-severity: low
-reason: `putWikiArtifact`'s `assertWritable` is shadowed by `writeWikiArtifact`'s gate and by the three lifecycle entry gates; `putWorkspaceProfile`'s is shadowed by `saveWorkspaceProfile`'s. Deleting either leaves the whole suite green, so they are pinned by inspection only and could be removed as dead code by a future reader. A direct call with a held token under `YOPEDIA_READONLY=1` would pin each.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-kernel-writer-coverage
 resolution-undo: 7babae5c1f979f9f9a279840f690171a0608302a7a14bc08597a783af1ca2015 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 0b21a169fec9
+source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
+archived: 2026-08-31
 
 ### DW-318: Two sibling wiki doors own inline read-only literals with no constant and no parity assertion, and `wikiRename` has no client counterpart.
+
+status: done 2026-08-29
 origin: spec-deferred ad2cf2a1e9d1
 source_spec: `spec-dw-139-144-266-workspace-profile-store-hardening.md`
-location: src/app/api/wikis/[id]/route.ts:63; src/app/api/wikis/current/route.ts:19
-severity: low
-reason: `DELETE /api/wikis/[id]` ("Wikis cannot be deleted while this deployment is read-only.") and `PUT /api/wikis/current` ("The active wiki cannot be changed...") are spelled inline and compared against nothing, which is the drift `read-only-copy-parity.test.ts` exists to prevent. `wikiRename` also has no client constant beside a dimmed control, unlike `WIKI_CREATE_READ_ONLY_COPY` and `WIKI_TEMPLATE_READ_ONLY_COPY`.
-status: done 2026-08-29
-resolution: already resolved: Resolved by commit 2b5d20f8: READ_ONLY_REFUSAL.wikiDelete (src/lib/read-only.ts:154) and .wikiSwitch (:164) now own both literals, pinned at src/lib/__tests__/read-only-copy-parity.test.ts:233-245.
+archived: 2026-08-31
 
 ### DW-319: A storage failure inside `saveWorkspaceProfile` is still answered 400 by `PUT /api/workspace-profile`, telling the owner their edit was rejected when the write merely could not reach storage.
-origin: spec-deferred 926718bb8f18
-source_spec: `spec-dw-140-145-workspace-profile-route-preconditions.md`
-location: src/app/api/workspace-profile/route.ts
-severity: low
-reason: The route's own comment above the registry read states the rule: "a registry that cannot be READ is not the caller's input being wrong. GET answers 500 for that exact condition, and answering 400 here would tell the owner their edit was rejected when storage was merely unreadable." This pass gave the precondition READ its own 500 branch, but `saveWorkspaceProfile` still throws into the generic `catch` that returns 400 — so an unwritable store (an EACCES, a full disk, a lock timeout) surfaces as a raw machine-authored sentence at 400, the same class of message DW-140 removed from this route. Pre-existing: the write has thrown into that catch since the route was written, and this change did not move it.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-lifecycle-route-status
 resolution-undo: 8d0d9d1b39fad0e0145b43bf523a8c44a01125170236b0b6b41ab2d01975abaf 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 926718bb8f18
+source_spec: `spec-dw-140-145-workspace-profile-route-preconditions.md`
+archived: 2026-08-31
 
 ### DW-320: `save()` has no unmount guard, so a PUT that resolves after the form unmounts still writes state.
 
@@ -2392,14 +2383,13 @@ source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
 archived: 2026-08-29
 
 ### DW-328: All four flat text fields resolve a non-string to `""` before deciding the delete, so the belt-and-braces fallback points AT deletion rather than away from it.
-origin: spec-deferred f1908ff9cbf1
-source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
-location: src/app/api/settings/route.ts:321-395
-severity: low
-reason: `model`, `ollamaBaseUrl`, `embeddingModel` and now `structuredKnowledgeModel` all read `typeof x === "string" ? x.trim() : ""` and then treat `trimmed.length === 0` as DELETE. Each comment says the ternary "must never be what turns a malformed body into a delete", but `""` is exactly the delete arm — the only thing preventing it is the non-string 400 above the merge. Unreachable today and identical across all four, so fixing one alone would break the uniformity DW-305 was about; the fix is to make all four fall back to leaving the field untouched.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-route-write-semantics
 resolution-undo: 4a50281ffc8d83c599d317b0d37a2175e3c5f2ea1ce9fc6453047ba752f9814f 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred f1908ff9cbf1
+source_spec: `spec-dw-303-306-settings-flat-branch-uniformity.md`
+archived: 2026-08-31
 
 ### DW-329: Every refusal the legacy flat `/settings` path can now produce ends "Turn it off, or supply what is missing." — naming a switch that page does not render.
 
@@ -2441,14 +2431,13 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 archived: 2026-08-29
 
 ### DW-334: `getEffectiveSettings` still re-enters the 5 s config cache on its non-embedding legs, so only the embedding half of its answer is snapshot-consistent.
-origin: spec-deferred fbbe5abd3cc7
-source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
-location: src/lib/config.ts:getEffectiveSettings
-severity: low
-reason: After DW-313 the embedding legs all resolve against the `cfg` read at the top of the function, but `getStructuredKnowledgeModelSettings()`, `apiKeyForProvider`'s `custom` branch and `getCustomBaseUrl()` each call `loadConfigSync()` themselves. The intent's sentence — "give `getEffectiveSettings` one config snapshot" — reads broader than the ledger entry it came from, which names only `getEmbeddingModelName` and `hasEmbeddingSupport`. Closing the rest means `cfg`-taking doors on three more resolvers, which is a distinct piece of work from the one DW-313 described.
+
 status: done 2026-08-29
 resolution: resolved by sweep bundle dw-config-single-read-resolution
 resolution-undo: 918c9d4112f6248cfdcfe721ad357c3745c069bc57d18c4196811f896d74d7a7 2026-08-29 7374617475733a206f70656e
+origin: spec-deferred fbbe5abd3cc7
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+archived: 2026-08-31
 
 ### DW-335: `settings-vector-namespace.test.tsx`'s default fixture encodes a config whose real payload would carry the substitution note, so several exact-equality announcements pin a state the wire cannot produc
 origin: spec-deferred b09de8588471
@@ -2459,14 +2448,13 @@ reason: The fixture is `embeddingProvider: "workers-ai"` with `embeddingModel: "
 status: open
 
 ### DW-336: The substitution sentence exists as two hand-maintained twins — the flat page's JSX and the canvas's copy function — with nothing pinning that they keep saying the same thing.
-origin: spec-deferred 005b0025a4ed
-source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
-location: src/components/EmbeddingSettings.tsx with src/lib/workbench-settings.ts:settingsModelSubstitutedCopy
-severity: low
-reason: `EmbeddingSettings.tsx` renders "Not in effect. This deployment embeds with <mono/> — the embedding provider cannot serve the model above, …" while `settingsModelSubstitutedCopy` returns the same sentence with "the model that is set". The divergence is deliberate and argued (the canvas box is empty whenever `EMBEDDING_MODEL` owns the value, so it cannot point at a control), and both are separately tested — but a wording fix to one leaves the other stale with no failing test. DW-312 asked for the two surfaces to answer the same question; they now agree on the VALUES, through `embeddingModelAnswer`, and nothing holds the two sentences together.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-substitution-copy-parity
 resolution-undo: c833a8e8d47fb3752cd6e865237e548fd33822c4a7a78a59c80f20fa192a10a2 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 005b0025a4ed
+source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
+archived: 2026-08-31
 
 ### DW-337: The canvas substitution note is payload-derived while the two sentences beside it are draft-derived, so mid-edit the row can describe pre-edit server state.
 origin: spec-deferred 30c4576690ec
@@ -2720,14 +2708,13 @@ source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
 archived: 2026-08-29
 
 ### DW-372: A pre-DW-272 build reading the new single-object config carries `__settingsVersion` through as an ordinary key and writes it back, so the stamp stops rotating on a rollback.
-origin: spec-deferred 9589cff245eb
-source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
-location: src/lib/config.ts (CONFIG_VERSION_KEY)
-severity: low
-reason: The retired scheme's `readStoredConfig` returned the parsed object verbatim and `saveConfig` wrote whatever it was handed, so an older build round-trips the reserved key untouched while stamping its sibling file. The new build then keeps reading the same frozen token out of the object. The guard degrades to always-matching rather than losing data, and this fork deploys manually via wrangler with no rolling releases, so the window is a deliberate rollback. Namespacing the key per scheme, or refusing a token whose config predates the scheme, would close it.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-route-write-semantics
 resolution-undo: 4a50281ffc8d83c599d317b0d37a2175e3c5f2ea1ce9fc6453047ba752f9814f 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 9589cff245eb
+source_spec: `spec-dw-71-326-272-settings-config-resolution-hardening.md`
+archived: 2026-08-31
 
 ### DW-373: Opening the in-shell Settings surface still unmounts the whole mode canvas, so the Wiki subtree DW-26 keeps mounted across mode switches is destroyed — dialog, typed name and error — whenever Settings
 
@@ -2786,14 +2773,13 @@ source_spec: `spec-dw-193-194-195-200-write-precondition-and-version-freshness.m
 archived: 2026-08-29
 
 ### DW-381: The re-template confirm still presents the Schema overwrite as unrecoverable, which DW-213 has just made false.
-origin: spec-deferred 612a8939a001
-source_spec: `spec-dw-213-214-artifact-revision-recovery.md`
-location: src/components/WikiWorkbench.tsx:415-419
-severity: low
-reason: `src/components/WikiWorkbench.tsx:415-419` tells the owner "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki", and the comments at `:222` and `:348` call it "an irreversible rewrite" / "an irreversible overwrite". Since this story a committed re-template records the replaced `schema.md` as a revision the Preview's History panel can list and revert, so the confirm understates what the owner can get back. `purpose.md` and the Workspace Purpose are still unrecoverable, so the sentence is not simply wrong — it needs to separate the two halves. Copy only; no behaviour.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-scenario-template-failure-truth
 resolution-undo: 7d1542c4c2d4b1fa95833a726570cdeb403e73d0fc63131b28636e52d3b80b5d 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 612a8939a001
+source_spec: `spec-dw-213-214-artifact-revision-recovery.md`
+archived: 2026-08-31
 
 ### DW-382: `deleteWiki` removes a Wiki's `purpose.md` and `schema.md` outright and moves no `dataVersion`, so a Preview open on those artifacts in a second client keeps rendering bytes whose Wiki is gone.
 
@@ -2844,14 +2830,13 @@ source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md
 archived: 2026-08-29
 
 ### DW-388: Nothing outside code comments records that `POST /api/tasks/scan` now answers 403 on every cron pass of a read-only deployment.
-origin: spec-deferred 49c9a3138d42
-source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md`
-location: DEPLOY.md; src/app/api/tasks/scan/route.ts:62
-severity: low
-reason: The scan is the only trigger for the DW-137 workspace-profile backfill and the only scheduled trigger for the orphan-directory sweep, and a monitor that treats non-2xx as failure will now alert once per tick while `YOPEDIA_READONLY` is set. DEPLOY.md's read-only section documents the Workbench settings affordances and says nothing about the scan.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-operator-docs
 resolution-undo: 3b09c8630704cd1ee6b9a953f6709b99d99347084c194b69f40f07e555f82e49 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 49c9a3138d42
+source_spec: `spec-dw-264-265-294-299-300-314-read-only-doors-and-affordances.md`
+archived: 2026-08-31
 
 ### DW-389: The `disputed-page` lint guidance still tells the reader to clear the Disputed toggle with a PATCH that DW-121 now refuses for every non-admin.
 
@@ -3282,12 +3267,12 @@ origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-archi
 archived: 2026-08-29
 
 ### DW-445: Extract the API/MCP category from the generic Settings pair.
-origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
-location: src/components/workbench/SettingsCanvas.tsx, src/lib/workbench-settings.ts
-reason: Split out of epic-8-retro-architecture-follow-on so that run could cover only the `sidecar/server.mjs` provider and the Chat transport. Pulling the API/MCP category out of the generic SettingsCanvas / workbench-settings pair is an independent Settings extract and can land and merge without the sidecar change.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-api-mcp-category-extract
 resolution-undo: efd74897002ddbf6666e6d804364305806fd666f85c17f9f6ff37c11ab8de695 2026-08-30 7374617475733a206f70656e
+origin: migrated from legacy ledger ("Deferred from: split of epic-8-retro-architecture-follow-on (2026-08-26)"), 2026-08-26
+archived: 2026-08-31
 
 ### DW-446: Inline parts still consume attachment-count slots and aggregate-budget bytes while being excluded from every countable loss, so the over-cap sentence can quote a limit the sender never reached and an
 
@@ -3574,14 +3559,13 @@ source_spec: `spec-dw-296-297-298-research-store-hardening.md`
 archived: 2026-08-29
 
 ### DW-480: `POST /api/research/[id]/run` still classifies failures by message regex.
-origin: spec-deferred 1caab8b40809
-source_spec: `spec-dw-296-297-298-research-store-hardening.md`
-location: src/app/api/research/[id]/run/route.ts:93
-severity: low
-reason: `/not found/i` -> 404 and `/already running/i` -> 409 at `src/app/api/research/[id]/run/route.ts:93-99` — the exact idiom DW-296 retired on the create route, in the same feature.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-run-route-error-typing
 resolution-undo: 17fc47581e89988766b4bf51ab5b234bd3c8e4474e8e477ca08cb273685072bd 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 1caab8b40809
+source_spec: `spec-dw-296-297-298-research-store-hardening.md`
+archived: 2026-08-31
 
 ### DW-481: Sibling `/required|invalid/i` status regexes remain on three other routes.
 origin: spec-deferred 5dbcff19cdef
@@ -3600,34 +3584,31 @@ reason: Before DW-297 a non-list registry made `getResearchProject` return null,
 status: open
 
 ### DW-483: The DW-290 future-dated-mtime warn fires on every sweep pass for as long as the clock has not caught up, with no dedupe or rate limit.
-origin: spec-deferred 675f89601c07
-source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
-location: src/lib/wikis.ts (sweepOrphans, future-dated skip branch)
-severity: low
-reason: A future-dated directory stays a candidate on every pass, so the new warn repeats indefinitely — potentially for months after a restored archive. This is the same noise pattern the neighbouring `tombstonedOnly` comment in `sweepOrphans` argues against ("warning about it every few minutes would train the operator to ignore the line that matters"). Not caused by the escalation itself, which is correct; caused by pairing a per-pass warn with a condition that cannot clear on its own.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-wiki-sweep-warn-and-tombstones
 resolution-undo: 020b057c8448b3b983440c1987b281d5c8db0827df3245aef020dde13923241e 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 675f89601c07
+source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
+archived: 2026-08-31
 
 ### DW-484: A registry write that reports failure after its bytes actually landed leaves the registry on the new scenario and the artifacts on the old, with a "clean" rollback and therefore no bump.
-origin: spec-deferred c22cef649f92
-source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
-location: src/lib/wikis.ts (applyScenarioTemplate failure path)
-severity: low
-reason: `applyScenarioTemplate` decides to bump from `restoreSeededFiles`'s completeness alone. If `writeRegistry` throws after the store accepted the bytes, every restore succeeds, `rollbackIncomplete` is false, and no bump fires -- yet the registry now names a scenario the artifacts do not describe. Detecting it needs a registry read-back on the failure path, which neither DW-210 nor this spec's matrix asks for. Same family as the DW-291 "landed but reported failure" shape.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-scenario-template-failure-truth
 resolution-undo: 7d1542c4c2d4b1fa95833a726570cdeb403e73d0fc63131b28636e52d3b80b5d 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred c22cef649f92
+source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
+archived: 2026-08-31
 
 ### DW-485: The pre-existing DW-289 cap rows became calendar-dependent when the per-pass window started rotating on a UTC-day clock.
-origin: spec-deferred f8ca87e4f546
-source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
-location: src/lib/__tests__/wikis.test.ts (the orphan-directory sweep, DW-289 cap rows)
-severity: low
-reason: Those rows plant `cap + OVERFLOW` orphans against the real system clock, so WHICH window a pass takes now varies with the date the suite runs. They pass on any date today because every assertion is a count or spans all planted directories, but any future row in that `describe` that names a specific directory would be flaky by calendar. Pinning the clock for the whole `describe` is its own piece of work -- the block has ~20 rows that depend on real time for `ageDirectory` and the file lock's waits.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-wiki-sweep-warn-and-tombstones
 resolution-undo: 020b057c8448b3b983440c1987b281d5c8db0827df3245aef020dde13923241e 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred f8ca87e4f546
+source_spec: `spec-dw-210-290-291-382-383-wiki-sweep-and-lifecycle-tails.md`
+archived: 2026-08-31
 
 ### DW-486: The middleware admits the owner by stable Clerk id while every `isOwnerHandle` route gate refuses by handle, so the two owner identities can disagree and lock the real owner out.
 
@@ -3639,23 +3620,20 @@ source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
 archived: 2026-08-29
 
 ### DW-487: `requireOwnerPrincipal` is fail-OPEN when no owner handle is configured while the direct `isOwnerHandle` gates are fail-CLOSED, and nothing records the divergence.
+
+status: done 2026-08-29
 origin: spec-deferred 4a169ed4676e
 source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
-location: src/lib/owner-route.ts:8
-severity: low
-reason: `src/lib/owner-route.ts:8-14` reads "when no owner handle is configured (tests), any signed-in principal passes" and only refuses when `getOwnerHandle()` is truthy. The artifact route and now `POST /api/wikis` call `isOwnerHandle` directly, which answers false for everyone when the var is unset. A future Wiki route written through the helper would silently reopen creation on an unconfigured deployment. Pre-existing; surfaced by review of DW-159.
-status: done 2026-08-29
-resolution: already resolved: Resolved by commit 769e4d0a (DW-486): src/lib/owner-route.ts:14 now gates on isOwnerConfigured(), src/lib/owner.ts:88-95 documents requireOwnerPrincipal as the sole unconfigured escape, pinned at src/lib/__tests__/owner-gate-parity.test.ts:251-263.
+archived: 2026-08-31
 
 ### DW-488: Stale discard tombstones on pre-gate non-owner tenants are cleared by nothing, which is a second residual beyond the orphan directories the DW-288 scope note records.
-origin: spec-deferred 1ea21f891a70
-source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
-location: src/lib/maintenance.ts (sweepOrphanWikiDirs)
-severity: low
-reason: `clearStaleDiscardTombstones` (DW-291) runs only on the scheduled path, and the schedule resolves a single owner via `getOwnerHandle()`. `deleteWiki`'s inline sweep runs with `scheduled` unset, so for a tenant created before the DW-159 gate landed the tombstones have no clearer at all — unlike the orphan directories, which `deleteWiki` at least reclaims inline. The new SCOPE note in `maintenance.ts` accounts only for the directories.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-wiki-sweep-warn-and-tombstones
 resolution-undo: 020b057c8448b3b983440c1987b281d5c8db0827df3245aef020dde13923241e 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 1ea21f891a70
+source_spec: `spec-dw-159-288-wiki-ownership-gate-and-sweep-scope.md`
+archived: 2026-08-31
 
 ### DW-489: A `wiki/` display path asked for directly still previews one object and saves another: the read gate and the preview route's slug derivation were left at their old reach, so only the LISTING door was
 origin: spec-deferred 2bf03502f431
@@ -3777,24 +3755,22 @@ source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
 archived: 2026-08-29
 
 ### DW-503: `getConfiguredModel`'s pre-switch guard refuses a keyless Custom provider with no Settings destination, unlike its five sibling refusals.
+
+status: done 2026-08-30
+resolution: resolved by sweep bundle dw-settings-pointer-derivation
+resolution-undo: 3b9756105e36d2bdcec8197080dcb7f249c0fb81e9e5de622a3a05178883792b 2026-08-30 7374617475733a206f70656e
 origin: spec-deferred 13c8781cd594
 source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
-location: src/lib/llm.ts:404
-severity: low
-reason: `src/lib/llm.ts:404` throws "The custom provider is not configured on this server." - lowercase provider id, no remedy - where the five sites DW-369 covers now all end in the derived "Set it in Settings -> <category>." That guard is reached before the `custom` case, so some keyless calls get the un-pointed sentence. Pre-existing; outside the five literals the intent named.
-status: done 2026-08-30
-resolution: resolved by sweep bundle dw-settings-pointer-derivation
-resolution-undo: 3b9756105e36d2bdcec8197080dcb7f249c0fb81e9e5de622a3a05178883792b 2026-08-30 7374617475733a206f70656e
+archived: 2026-08-31
 
 ### DW-504: Three constants in `chat-agent.ts` hand-type "Settings -> API + MCP", the same drift class DW-369 removed from `llm.ts`.
-origin: spec-deferred c0bc147e9aef
-source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
-location: src/lib/chat-agent.ts:376, :490, :494
-severity: low
-reason: `SKILLS_SCAN_FAILED_COPY` (`src/lib/chat-agent.ts:376`), `CHAT_API_DISABLED_COPY` (`:490`) and `CHAT_API_UNAUTHORIZED_COPY` (`:494`) spell the `api-mcp` category label, whose owner is `src/lib/workbench-settings.ts:97`. They render through `SkillsCanvas` and `ChatCanvas`, and no test derives them, so renaming that category leaves three user-facing sentences naming a nav row the surface no longer shows. Pre-existing and outside this bundle's named sites; `settingsPointer` is now exported, so the fix is the same one-line derivation.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-pointer-derivation
 resolution-undo: 3b9756105e36d2bdcec8197080dcb7f249c0fb81e9e5de622a3a05178883792b 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred c0bc147e9aef
+source_spec: `spec-dw-369-417-418-provider-verdict-surfaces.md`
+archived: 2026-08-31
 
 ### DW-505: Selecting the blank "— Select provider —" option leaves the picker announcing the STORED provider's credential state.
 
@@ -3967,73 +3943,65 @@ reason: `TreePanel`'s restore (pre-existing) and `ModeCanvas`'s new one both ass
 status: open
 
 ### DW-525: The `dom` vitest project is red at BASELINE — 13 files / 229 tests fail with `TypeError: Cannot read properties of undefined (reading 'clear')` on `window.localStorage`. Unrelated to this change and o
-origin: spec-deferred 199a5cbc7479
-location: vitest dom project setup
-source_spec: `spec-dw-385-read-only-kernel-guards.md`
-severity: medium
-reason: `pnpm exec vitest run --project dom` reports 13 failed files / 229 failed tests both WITH this change and with the whole change stashed (`git stash push -u -- src _bmad-output`), at HEAD 9312ba420b3bd738a6bd52aede3261627c00db41. The `node` project is 277 files / 6843 pass / 0 fail with this change.
+
 status: done 2026-08-29
-resolution: already resolved: Resolved by commit c95483f2: MemoryStorage shim at vitest.setup.dom.ts:438 with defineStorage on window/globalThis at :485 and resetDomStorage in the afterEach at :32; the dom project runs green.
+origin: spec-deferred 199a5cbc7479
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+archived: 2026-08-31
 
 ### DW-526: The research, Names & Terms and email-ingest route catches now classify a mid-request-flip `ReadOnlyError` as 400 or 500 instead of 403.
-origin: spec-deferred d082697c56ec
-location: src/app/api/names-terms/route.ts:48
-source_spec: `spec-dw-385-read-only-kernel-guards.md`
-severity: low
-reason: Gating the kernel writers created a path these catches never saw before. `POST /api/names-terms` (route.ts:48-53) and `PUT /api/names-terms/[id]` ([id]/route.ts:39-46) map any thrown error to 400/409, so a refusal would be answered as a client-input error carrying the read-only sentence; `DELETE /api/names-terms/[id]`, `PUT /api/email/settings` and `POST /api/research` map it to 500. Reachable only if YOPEDIA_READONLY changes between the route's isReadOnly() gate and the kernel call, so the write is still refused and the copy is still right — only the status is wrong. The repo already has the fix shape at `src/app/api/ingest/reingest/route.ts:90` ("Backstop for a flag that flipped mid-request"). Same class: the Review-accept door (`src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts`) gates early with `reviewQueue` but its `isReadOnlyError` catch now surfaces `researchCreate`, so one door can state two sentences.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-lifecycle-route-status
 resolution-undo: 8d0d9d1b39fad0e0145b43bf523a8c44a01125170236b0b6b41ab2d01975abaf 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred d082697c56ec
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+archived: 2026-08-31
 
 ### DW-527: The research CAS primitives stay writable by a direct library caller, so DW-385's guarantee has a named hole at `PATCH /api/research/[id]`'s writer.
-origin: spec-deferred 9303b9f7d20e
-location: src/lib/research-projects.ts:228
-source_spec: `spec-dw-385-read-only-kernel-guards.md`
-severity: medium
-reason: `applyResearchProjectMutation`, `mutateResearchProject`, `updateResearchProjectIf` and `updateResearchProject` are deliberately ungated because several `research-runtime`/`research-completion` callers read a `null` return as "lost the CAS race" and compensate; a throw would strand a run. But `updateResearchProjectIf` is also what `src/app/api/research/[id]:58` calls to edit an owner's title, question and queries, so a CLI/MCP/agent-runtime caller can still patch a project's fields on a read-only deployment. Closing it needs a non-throwing refusal path for the fail-soft callers — a larger change than a gate. Recorded in the `applyResearchProjectMutation` docstring.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-read-only-gates
 resolution-undo: decad39e69a2c98280db3b6a268b2eed07cb4f509aa48fa266810968411b6482 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 9303b9f7d20e
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+archived: 2026-08-31
 
 ### DW-528: `reconcileResearchProjects` would relabel a read-only refusal as a damaged project.
-origin: spec-deferred 5c97dda65344
-location: src/lib/research-runtime.ts:578
-source_spec: `spec-dw-385-read-only-kernel-guards.md`
-severity: low
-reason: `src/lib/research-runtime.ts:578,648,662` call the newly gated `deleteResearchProject` inside a per-project try whose catch logs "reconcile skipped damaged project <id>". A `ReadOnlyError` arriving there is logged as data damage. Unreachable today — `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses — so no gate or catch was added, but the log line would mislead an operator if a future caller drives reconcile on a read-only deployment.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-read-only-gates
 resolution-undo: decad39e69a2c98280db3b6a268b2eed07cb4f509aa48fa266810968411b6482 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 5c97dda65344
+source_spec: `spec-dw-385-read-only-kernel-guards.md`
+archived: 2026-08-31
 
 ### DW-529: A fourth research refusal sentence lives one screen away, inline and unowned: the Workbench Deep Research canvas.
-origin: spec-deferred 03ea64393d30
-location: src/components/workbench/ResearchCanvas.tsx:265
-source_spec: `spec-dw-386-387-read-only-client-parity.md`
-severity: medium
-reason: `src/components/workbench/ResearchCanvas.tsx:265` renders the literal "Deep Research cannot start while this deployment is read-only." in front of `POST /api/research` and `POST /api/research/[id]/run` — the same two doors this change gave `RESEARCH_CREATE_READ_ONLY_COPY` and `RESEARCH_MUTATE_READ_ONLY_COPY`. It is not in `READ_ONLY_REFUSAL`, has no parity-suite entry, and is not character-identical to either sentence its doors answer, so the Workbench and the Studio now state one deployment state three ways. Pre-existing — the canvas is outside this bundle's surfaces — but it is the DW-387 shape on a surface DW-387 did not name.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-client-refusal-parity
 resolution-undo: 615600ac4e8f50e2aa5c551cc7c336110956d0d7909f068f2bbaf7e239cbff25 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 03ea64393d30
+source_spec: `spec-dw-386-387-read-only-client-parity.md`
+archived: 2026-08-31
 
 ### DW-530: The Knowledge Studio panels outside the Research desk still compose writes in front of doors that refuse, with no read-only term at all.
-origin: spec-deferred 879face3635e
-location: src/components/KnowledgeStudio.tsx:412
-source_spec: `spec-dw-386-387-read-only-client-parity.md`
-severity: medium
-reason: `SetupPanel` POSTs `/api/vaults` (`src/components/KnowledgeStudio.tsx:412`), `SkillsPanel` creates, patches and deletes agent skills (968, 986, 1004), and `PortabilityPanel` imports an archive (1049). None reads `readOnly`, which the Studio now has on hand, so each still submits and meets its refusal afterwards — the DW-386 shape, on the panels this bundle's intent did not name (it justified `KnowledgeStudio` solely with "posts to `/api/research`"). Recorded in the `KnowledgeStudio.tsx` module note rather than widened into this change.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-client-refusal-parity
 resolution-undo: 615600ac4e8f50e2aa5c551cc7c336110956d0d7909f068f2bbaf7e239cbff25 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 879face3635e
+source_spec: `spec-dw-386-387-read-only-client-parity.md`
+archived: 2026-08-31
 
 ### DW-531: Three Workbench canvases gate the read-only flag with plain `disabled=`, the DW-191/DW-299 shape the rest of the codebase argues against.
-origin: spec-deferred e6d35d1920b4
-location: src/components/workbench/ReviewCanvas.tsx:230
-source_spec: `spec-dw-386-387-read-only-client-parity.md`
-severity: low
-reason: `src/components/workbench/GraphCanvas.tsx:549,558` and `src/components/workbench/ReviewCanvas.tsx:230,242,250` pass `readOnly` straight into `disabled`, and `ResearchCanvas.tsx:259` folds it into `disabled={!canStart}`. A `disabled` control leaves the tab order, so the standing refusal cannot be reached or announced with its reason — the exact defect DW-191 and DW-299 removed from `/settings` and `WorkspacePurposeSettings`. Pre-existing; surfaced by this change only because its comments restate that rule as if it held everywhere.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-read-only-client-refusal-parity
 resolution-undo: 615600ac4e8f50e2aa5c551cc7c336110956d0d7909f068f2bbaf7e239cbff25 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred e6d35d1920b4
+source_spec: `spec-dw-386-387-read-only-client-parity.md`
+archived: 2026-08-31
 
 ### DW-532: `spec-dw-75-76-lint-check-parity-and-disputed-surface.md`'s golden example still quotes the pre-DW-389 `disputed-page` suggestion verbatim.
 origin: spec-deferred 2d89eeccb2ef
@@ -4094,13 +4062,11 @@ reason: `src/components/workbench/ModeCanvas.tsx` sets `hidden={mode !== "…" |
 status: open
 
 ### DW-539: On Node 26 the vitest dom project cannot run at all — `window.localStorage` is undefined, so 229 tests across 13 files die in `beforeEach`.
-origin: spec-deferred f743cf8764f7
-location: vitest.config.ts (dom project) / AGENTS.md "Test environments"
-source_spec: `spec-dw-433-hidden-attribute-css-specificity.md`
-severity: low
-reason: Every failure is `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Identical at `baseline_revision` 144767a4 and after this change (13 failed files / 229 failed tests both times, +3 passing from the new suite). On Node 22.16.0 — the version `.github/workflows/ci.yml` pins — the full suite is green: 337 files / 7731 passed, 1 skipped. Raw jsdom 30.0.1 with an http URL does provide `localStorage`, so the gap is in how the vitest jsdom environment exposes it under Node 26, not in jsdom itself. Not a repository defect and not caused by this change, but it makes local verification on a current Node look catastrophically broken, and `AGENTS.md` "Test environments" does not warn of it.
+
 status: done 2026-08-29
-resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
+origin: spec-deferred f743cf8764f7
+source_spec: `spec-dw-433-hidden-attribute-css-specificity.md`
+archived: 2026-08-31
 
 ### DW-540: A truncated backup keeps whatever the storage walk happened to reach first, so which of the owner's data survives the cut is arbitrary rather than prioritised.
 origin: spec-deferred a560134e9889
@@ -4121,14 +4087,13 @@ reason: The backup half carries its truncation all the way out (manifest -> `Bac
 status: open
 
 ### DW-542: The backup copy loop reads a file's whole contents before discovering it does not fit under the byte ceiling.
-origin: spec-deferred f22219934525
-location: src/lib/backups.ts:155-163
-source_spec: `spec-dw-215-artifact-revision-retention.md`
-severity: low
-reason: `createOwnerBackupUnlocked` calls `getStorage().readAsset(sourcePath)` and only then tests `totalBytes + data.byteLength > limits.maxBytes`, so at the production ceiling an oversized object is materialised in memory in full to copy zero bytes of it — on every backup run. Pre-existing (the throwing version read first too), and `StorageProvider` already exposes `stat(path)`, which could gate the read. Not caused by DW-215; surfaced by reviewing the same loop.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-backups-oversize-read-avoidance
 resolution-undo: 6d34716c3469f637fd2d9e86f29ec50257de069b2e0d7f30137bc03814cd184d 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred f22219934525
+source_spec: `spec-dw-215-artifact-revision-retention.md`
+archived: 2026-08-31
 
 ### DW-543: An agent handle owning the survivor resolves guidance against the agent's own tenant silo rather than the human's, so an agent-owned page folds with no Workspace Purpose and no dictionary.
 origin: spec-deferred 005cb3050e8f
@@ -4141,104 +4106,94 @@ decision: 2026-08-29 Guidance is addressed by human owner — Resolve guidance t
 decision: 2026-08-29 Guidance is addressed by human owner — Resolve guidance through `humanOf` everywhere it is looked up — the merge door's guidanceOwner resolution and the ingest door at src/lib/ingest.ts:1760 — so an agent handle reads its human's Workspace Purpose and dictionary. Leave `ownerToTenant` alone as the storage-addressing function it is, and name the distinction in both modules. Pin an agent-owned survivor folding with the human's guidance.
 
 ### DW-544: `synthesizeResearchBrief` still reads `textStream`, so a fired deadline commits a truncated research brief as a finished wiki page.
-origin: spec-deferred d3ff3aae961a
-location: src/lib/research-runtime.ts:1136
-source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
-severity: medium
-reason: `src/lib/research-runtime.ts:1136-1157` is the only other caller of `callLLMStream`. It iterates `stream.textStream`, which drops the `{ type: "abort" }` part, so the `for await` ends NORMALLY and `receivedStreamContent` suppresses the `callLLM` fallback at :1153. `raw` is the partial text and flows through `runResearchProject` (:1613) into `commitResearchPage` (:1645). Neither existing test models a short close: research-runtime.test.ts:842 ends normally with full content, :858 throws. Out of scope by the intent, which names only the query stream route.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-truncated-answer-honesty
 resolution-undo: ed6948179efc323971f746c3008e9ecc1fc40dcf2a83002ec2f1f340c86d00de 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred d3ff3aae961a
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+archived: 2026-08-31
 
 ### DW-545: `/api/query` still returns `getErrorMessage(error)` verbatim, so a fired deadline reaches the owner as raw transport vocabulary there.
-origin: spec-deferred f674f51728cf
-location: src/app/api/query/route.ts:74
-source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
-severity: medium
-reason: `src/app/api/query/route.ts:74-81`. It is also the streaming route's own fallback: `useStreamingQuery` (`src/hooks/useStreamingQuery.ts:129-155`) re-queries it on any non-2xx and PREFERS `fallbackData?.error` over the streaming route's sentence, so "The operation was aborted due to timeout" can still be what the owner reads after this change. Out of scope by the intent, which names only src/app/api/query/stream/route.ts.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-truncated-answer-honesty
 resolution-undo: ed6948179efc323971f746c3008e9ecc1fc40dcf2a83002ec2f1f340c86d00de 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred f674f51728cf
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+archived: 2026-08-31
 
 ### DW-546: `query-stream-route.test.ts`'s `callLLMStream` mock returns an async generator, so all three #413 filtering tests run through the route's 500 catch and prove nothing about a completing route.
-origin: spec-deferred 1fb55ed9ac95
-location: src/lib/__tests__/query-stream-route.test.ts:33
-source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
-severity: medium
-reason: `src/lib/__tests__/query-stream-route.test.ts:33` mocks `callLLMStream: vi.fn(async function* () {})`. That value has neither `toTextStreamResponse` (before this change) nor `fullStream` (after), so `POST` throws a TypeError and answers 500. The tests pass only because they assert on `selectPagesForQuery` arguments and never read a status or body. Pre-existing — the pre-change route was equally undefined on that mock — and left untouched so this story's "existing assertions untouched" acceptance stayed honest.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-query-stream-test-fidelity
 resolution-undo: 86011a6e06f073ca67735f2f1c7b8c3c0f00c2e9679b85f77684c5156ce44759 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 1fb55ed9ac95
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+archived: 2026-08-31
 
 ### DW-547: The `QUERY_MAX_OUTPUT_TOKENS` cap truncates a streamed answer as silently as the deadline used to.
-origin: spec-deferred 714ac53dacf9
-location: src/app/api/query/stream/route.ts:253
-source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
-severity: medium
-reason: `finishReason: "length"` arrives on the `finish` part and falls into the route's bookkeeping tail, so the body simply ends. Same owner-visible failure as DW-64 — a half answer that reads as a whole one — from a different cause, and the notice machinery this change adds is one branch away from covering it. Not the deadline, so outside an intent that names TimeoutError/AbortError only.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-truncated-answer-honesty
 resolution-undo: ed6948179efc323971f746c3008e9ecc1fc40dcf2a83002ec2f1f340c86d00de 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 714ac53dacf9
+source_spec: `spec-dw-64-stream-deadline-owner-copy.md`
+archived: 2026-08-31
 
 ### DW-548: `hasLLMKey()` reads `loadConfigSync()` for the two store-only providers, so a cold CLI or MCP process tells an owner who saved Ollama or Custom that no API key is configured.
-origin: spec-deferred 3903ad16168b
-location: src/lib/llm.ts:226-243
-source_spec: `spec-dw-502-cli-status-config-load.md`
-severity: medium
-reason: `src/lib/llm.ts:226-243` falls through to `loadConfigSync()` for `cfg.provider === "ollama"` (line 232) and `"custom"` (line 243). `callLLM` warms the cache (`src/lib/llm.ts:481`), but `hasLLMKey()` runs first and short-circuits: `src/lib/query.ts:330`, `src/lib/ingest.ts:1042` and `src/lib/ingest.ts:1562` all gate on it. On a cold process the store leg is `{}`, so `pnpm cli query` answers "No API key configured." and ingest degrades to the fallback page for a provider the owner did save. Same class as DW-502, at a call site DW-502's intent did not reach. `src/mcp.ts` exposes the same entry points and warms nothing either.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-cli-config-warm-and-status
 resolution-undo: a03d638ef5170f352ddfe9f8eca27752064289754188259e18a74eb976a43feb 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 3903ad16168b
+source_spec: `spec-dw-502-cli-status-config-load.md`
+archived: 2026-08-31
 
 ### DW-549: `yopedia status` prints "not configured" for a config object it could not read, which is the same sentence it prints when nothing was ever stored.
-origin: spec-deferred 28bf2339b3bc
-location: src/cli.ts:584
-source_spec: `spec-dw-502-cli-status-config-load.md`
-severity: medium
-reason: `runStatus` now warms through `loadConfig()` (`src/lib/config.ts:813-816`), which flattens `readStoredConfig`'s `unreadable` answer to `{}`. `readConfig()` (`src/lib/config.ts:782`) keeps that distinction. So malformed JSON, a non-object parse, or a storage read failure all surface as "nothing was ever set" on the one surface with no Settings screen to go and look at — the exact conflation DW-402 closed for the `Ollama endpoint:` row, one row above it. The intent named `loadConfig()` explicitly, so widening the row set was out of scope for DW-502.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-cli-config-warm-and-status
 resolution-undo: a03d638ef5170f352ddfe9f8eca27752064289754188259e18a74eb976a43feb 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 28bf2339b3bc
+source_spec: `spec-dw-502-cli-status-config-load.md`
+archived: 2026-08-31
 
 ### DW-550: `loadConfigSync()`'s doc comment still justifies its `{}` answer with a startup sequence that does not exist in this repo.
-origin: spec-deferred 6cf381b01ada
-location: src/lib/config.ts:930-937
-source_spec: `spec-dw-502-cli-status-config-load.md`
-severity: low
-reason: `src/lib/config.ts:930-937` says the cold-cache `{}` is safe because "The app's startup sequence calls `loadConfig()` before any LLM call". There is no startup hook: no `instrumentation.ts` anywhere in the repo, and neither `next.config.ts` nor `src/app/layout.tsx` calls `loadConfig`. Every surface warms at its own call site instead (`src/app/api/status/route.ts:6-8`, and now `src/cli.ts`). That comment is the premise DW-502's call site was written against; leaving it invites the next caller to make the same assumption.
+
 status: done 2026-08-29
 resolution: resolved by sweep bundle dw-config-single-read-resolution
 resolution-undo: 918c9d4112f6248cfdcfe721ad357c3745c069bc57d18c4196811f896d74d7a7 2026-08-29 7374617475733a206f70656e
+origin: spec-deferred 6cf381b01ada
+source_spec: `spec-dw-502-cli-status-config-load.md`
+archived: 2026-08-31
 
 ### DW-551: `src/cli.ts` calls `main()` unconditionally at module load, so every test that imports it runs a CLI command and could exit the vitest worker.
-origin: spec-deferred 86487c972526
-location: src/cli.ts:703
-source_spec: `spec-dw-502-cli-status-config-load.md`
-severity: low
-reason: There is no `require.main`/`import.meta` guard — `main().catch(...)` runs at `src/cli.ts:703`. Under vitest, argv parses to `help`, so importing the module prints the whole HELP block into the run's stdout (visible in `cli.test.ts` and `cli-status-config-load.test.ts` output today). The catch arm ends in `process.exit(1)`, so an argv that parsed to any other command would abort the worker mid-collection. Pre-existing; DW-502 added a second static importer of the module rather than creating the hazard.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-cli-config-warm-and-status
 resolution-undo: a03d638ef5170f352ddfe9f8eca27752064289754188259e18a74eb976a43feb 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 86487c972526
+source_spec: `spec-dw-502-cli-status-config-load.md`
+archived: 2026-08-31
 
 ### DW-552: DW-509 aligned only the RUNTIME gate on a junk EMBEDDING_PROVIDER, so the route's and the browser's halves of canEnableVectorSearch now disagree with it for that state.
-origin: spec-deferred dd238fd4fbbe
-location: src/lib/workbench-settings.ts:2411 (mergedVectorInputs) and :2935 (draftVectorInputs)
-source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
-severity: medium
-reason: `getVectorSearchSettings` now reads the raw variable and refuses `deepseek` (`enabled: false`), but `mergedVectorInputs` (src/lib/workbench-settings.ts:2411) and `draftVectorInputs` (:2935) still read the FILTERED `envEmbeddingProvider`, which is `null` for junk, and fall through to the stored provider. Verified end-to-end by the review: with `EMBEDDING_PROVIDER=deepseek` and a complete stored OpenAI configuration, the Workbench switch reads as satisfiable, `PUT /api/settings` answers 200 and stores `vectorSearchEnabled: true`, while `getVectorSearchSettings()` answers `{provider: "deepseek", enabled: false}`. The repo's own comments (src/app/api/settings/route.ts:546, src/lib/workbench-settings.ts:2199) and an existing test (workbench-settings.test.ts:2601) assert all three feeders answer identically. Not a functional regression — the backfill that 200 enqueues failed before this change too, on a different sentence — but the three feeders no longer agree, and the new `envEmbeddingProv
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-vector-provider-parity
 resolution-undo: 8702654b59a7343943e3c6868041bcb678e3cfc2b59cf167c6a6307a9c17901b 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred dd238fd4fbbe
+source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
+archived: 2026-08-31
 
 ### DW-553: A stale tab refused by the new route pin has no way forward: the draft keeps the blanked endpoint and key, so every retry re-sends the same move and gets the same 400.
-origin: spec-deferred 77772d2be117
-location: src/components/workbench/SettingsCanvas.tsx:341 (save result handling)
-source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
-severity: medium
-reason: `SettingsCanvas`'s save keeps the draft on any non-ok result (SettingsCanvas.tsx:341-343), and the draft that produced the refusal already had `embeddingBaseUrl` and `embeddingApiKey` blanked by `settingsDraftAfterEmbeddingProvider`. The owner of a tab opened before `EMBEDDING_PROVIDER` was set can only escape by reverting the select by hand or reloading, and the refusal sentence names neither. The same keep-the-draft behaviour applies to every other 400 on this surface, so re-seeding the draft from the answered payload for this refusal specifically — or saying "reload" in the copy — is a surface decision this bundle did not carry.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-save-refusal-recovery
 resolution-undo: 716f1e124d71c877be120780325383a2aebe3196b7bdc13ffbcd71d99803527f 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 77772d2be117
+source_spec: `spec-dw-507-508-509-510-embedding-provider-env-pin.md`
+archived: 2026-08-31
 
 ### DW-554: `SETTINGS_SAVE_FAILED_COPY` tells the owner their settings were not saved on the one branch whose whole justification is that nobody knows whether they were.
 origin: spec-deferred 9e310e9c443f
@@ -4251,64 +4206,58 @@ decision: 2026-08-29 Add a third sentence for the unknown outcome — Add a dist
 decision: 2026-08-29 Add a third sentence for the unknown outcome — Add a distinct copy constant for the `unreadable` verdict saying the outcome is unknown and what to do about it (reload to see what landed), matching the vocabulary the unconfirmed-write sentences already use elsewhere in the Workbench. Route `SettingsCanvas` onto it for that branch only, leave `SETTINGS_SAVE_FAILED_COPY` for real failures, and extend the existing `it.each` to assert each verdict's sentence.
 
 ### DW-555: Once the held version is cleared, the Settings canvas is a dead end: every later save is refused 428 and the only recovery is a reload that destroys the draft.
-origin: spec-deferred cd771655dc8e
-location: src/components/workbench/SettingsCanvas.tsx:343-372
-source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
-severity: medium
-reason: `SettingsCanvas.save` clears `payload.version` and nothing on this surface ever restores it — the read effect runs once on mount and there is no re-seed affordance. Every subsequent save therefore carries no `If-Match` and is answered 428, whose recovery half is "copy it, reload, and apply it to the current version". `SkillsCanvas.toggle` shows the available shape: re-read ONLY the version via `fetchWorkbenchSettings()` and leave the draft alone. Pre-existing since DW-376; DW-427 brings a second branch to the same dead end rather than creating it, and the one-call-site scan at `workbench-settings.test.ts:4661` means adding a re-seed is a deliberate decision.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-save-refusal-recovery
 resolution-undo: 716f1e124d71c877be120780325383a2aebe3196b7bdc13ffbcd71d99803527f 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred cd771655dc8e
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+archived: 2026-08-31
 
 ### DW-556: `savePreviewBody` reads its 2xx body with an unguarded `.catch(() => null)` and still answers `{ status: "ok" }`, so a body read that dies mid-stream is reported to Preview as a LANDED save.
-origin: spec-deferred c4281a7f973b
-location: src/lib/workbench-preview.ts (savePreviewBody success-body parse)
-source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
-severity: medium
-reason: That is the exact misclassification DW-408 fixed for Settings, still live on the sibling write client: `workbench-preview.ts` parses the success body without the `unconfirmedCause` rethrow that `saveWorkbenchSettings` now has, so an abort or a dropped socket during the body read is indistinguishable from a clean save. Out of scope here — this bundle's intent names the Settings client only — but nothing else records it.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-save-verdict-shape
 resolution-undo: 767f82478d968c4df48c9d522d07cb841eed608792f8c167449df57b42c12e27 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred c4281a7f973b
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+archived: 2026-08-31
 
 ### DW-557: The refusal branch's body parse in `saveWorkbenchSettings` is unguarded, so a refusal body read that dies mid-stream is classified as an arrived, fully read refusal.
-origin: spec-deferred fd171f2e691e
-location: src/lib/workbench-settings.ts:3179-3183
-source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
-severity: low
-reason: `const body = (await response.json().catch(() => null))` on the `!response.ok` path has no `unconfirmedCause` rethrow, unlike the success parse twenty lines below. An aborted or dropped refusal body therefore yields `served === ""` and the fallback sentence, with the held version kept. That is defensible — a refusal status arrived and nothing was applied — but it is decided by omission rather than stated, and the asymmetry with the guarded success parse is invisible.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-save-verdict-shape
 resolution-undo: 767f82478d968c4df48c9d522d07cb841eed608792f8c167449df57b42c12e27 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred fd171f2e691e
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+archived: 2026-08-31
 
 ### DW-558: `SettingsSaveResult`'s two booleans can express four states when only three are legal; nothing forbids `{ unconfirmed: true, unreadable: true }`.
-origin: spec-deferred e475024c9518
-location: src/lib/workbench-settings.ts:3087-3120
-source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
-severity: low
-reason: The Design Notes enumerate exactly three verdicts, and `saveWorkbenchSettings` cannot currently construct the fourth — but the type permits it, no test pins that the two are never both true, and a future construction site could produce it silently. A single discriminated `verdict: "refused" | "unconfirmed" | "unreadable"` would make it unconstructible; changing the shape now would touch every call site and every assertion.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-settings-save-verdict-shape
 resolution-undo: 767f82478d968c4df48c9d522d07cb841eed608792f8c167449df57b42c12e27 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred e475024c9518
+source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
+archived: 2026-08-31
 
 ### DW-559: Both model hints instruct the owner to empty a box that the env-locked branch renders as a non-editable div.
-origin: spec-deferred 244ab0dbc5d6
-location: src/components/ProviderForm.tsx:368 and src/components/EmbeddingSettings.tsx:284
-source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
-severity: medium
-reason: `ProviderForm.tsx` renders "Leave empty to use the default model for the selected provider." below the model control on BOTH branches of the env/editable ternary, and `EmbeddingSettings.tsx`'s hint only swaps copy for `modelSource === "env" && effectiveModel === "@cf/baai/bge-m3"` — any other env-pinned embedding model falls through to "Leave empty to use the embedding provider default.". On an `LLM_MODEL`/`EMBEDDING_MODEL` deployment there is no input to empty, so the sentence is advice the control refuses. Pre-existing: the copy and its placement both predate this change, which only gave the node an id. Not fixed here because the intent scopes this bundle to ASSOCIATING the existing sentences, not to rewording them.
+
 status: done 2026-08-29
 resolution: resolved by sweep bundle dw-env-locked-credential-affordances
 resolution-undo: a2bc3f517016d00b840c4497974d90581053315b9d7eac5a37d8febc1b69824d 2026-08-29 7374617475733a206f70656e
+origin: spec-deferred 244ab0dbc5d6
+source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
+archived: 2026-08-31
 
 ### DW-560: The page's one read-only sentence is announced in opposite positions on the two model boxes of the same `/settings` page.
-origin: spec-deferred 5dbca5767630
-location: src/components/EmbeddingSettings.tsx:190-200
-source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
-severity: medium
-reason: `ProviderForm`'s compositions put `describedBy` FIRST (DW-400/DW-402/ DW-419), while `EmbeddingSettings`' `notes` array puts `readOnlyNoteId` LAST. On a read-only deployment `#model` announces `readOnlyNote providerModelHint` and `#embeddingModel` announces `… embeddingModelHint readOnlyNote` — the same banner sentence, in two places. The divergence predates this change (the DW-402/DW-419 comments already claimed a page-wide ordering rule the embedding box never followed); this change only adds one more id after the banner there. The docstring at `ProviderForm.tsx:236` now scopes its claim and names the exception rather than asserting an invariant the page does not hold. Fixing it means moving `readOnlyNoteId` to the front of `EmbeddingSettings`' list, which is a change to a pre-existing ordering this bundle's Always clause forbade.
+
 status: done 2026-08-29
 resolution: resolved by sweep bundle dw-env-locked-model-box-a11y
 resolution-undo: 2da0f761c09c8f4d644476d18e47381a0defd84f8c642938b538355d9b71d9b2 2026-08-29 7374617475733a206f70656e
+origin: spec-deferred 5dbca5767630
+source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
+archived: 2026-08-31
 
 ### DW-561: On a blank pick the model placeholder still names the STORED provider's default model while the credential line beside it says nothing is selected.
 origin: spec-deferred ba44856607a4
@@ -4321,24 +4270,22 @@ decision: 2026-08-29 Blank the placeholder on a blank pick — Extend the blank-
 decision: 2026-08-29 Blank the placeholder on a blank pick — Extend the blank-pick rule from the credential line to the model placeholder, so a blank provider selection shows no model default rather than the stored provider's. Keep the stored-provider fallback everywhere the pick is not blank. Pin that the credential line and the model placeholder make the same statement for every pick state.
 
 ### DW-562: The env-locked model boxes have no accessible NAME — their `<label htmlFor>` points at an id no element carries.
-origin: spec-deferred 0af3363949ae
-location: src/components/ProviderForm.tsx:332 and src/components/EmbeddingSettings.tsx:210
-source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
-severity: medium
-reason: `ProviderForm.tsx` always renders `<label htmlFor="model">` and `EmbeddingSettings.tsx` always renders `<label htmlFor="embeddingModel">`, but on the `modelSource === "env"` branch the control is a plain `<div>` with no id, so both labels dangle and the locked value is announced with no name at all. Both files spend paragraphs arguing why a DESCRIPTION on a non-focusable div would be decoration; the missing NAME is a separate and larger gap and is argued nowhere. Pre-existing on both branches and untouched by this change.
+
 status: done 2026-08-29
 resolution: resolved by sweep bundle dw-env-locked-model-box-a11y
 resolution-undo: 2da0f761c09c8f4d644476d18e47381a0defd84f8c642938b538355d9b71d9b2 2026-08-29 7374617475733a206f70656e
+origin: spec-deferred 0af3363949ae
+source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
+archived: 2026-08-31
 
 ### DW-563: Every other `ToolDef.run` in `MCP_TOOLS` still spreads-and-casts `tools/call` arguments with no runtime check, because `dispatchMcp` validates nothing generically -- DW-455 closed this for `fix_lint_i
-origin: spec-deferred ee1aa179380d
-location: src/lib/mcp-http.ts (dispatchMcp + every ToolDef.run)
-source_spec: `spec-dw-395-455-456-457-mcp-rest-door-parity.md`
-severity: medium
-reason: `dispatchMcp` hands `params.arguments` to `tool.run` unvalidated, and roughly nine sibling handlers do `a as Parameters<typeof handler>[0]` (src/lib/mcp-http.ts lines ~370, 466, 576, 577, 629, 644, 667, 691, 704, 721). Concrete: `batch_ingest_urls` with `urls: "https://x"` reaches `handleBatchIngest`, where a string's `.length` and index access make it look array-like and it reports `Malformed URLs at indices 0, 1, 2...`; `urls: undefined` throws. The stdio door catches both at `z.array(z.string())`. Every `ToolDef` already declares a JSON Schema with a `required` list, so `dispatchMcp` could validate generically once. DW-455's title scopes it to `fix_lint_issue`, so the rest was left alone.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-mcp-door-hardening
 resolution-undo: 69668be5bc24c764633fb3e08e3c2a165cd7fed4b1be2c9451585feb8d1d19fb 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred ee1aa179380d
+source_spec: `spec-dw-395-455-456-457-mcp-rest-door-parity.md`
+archived: 2026-08-31
 
 ### DW-564: The REST lint-fix door names the field `targetSlug` while both MCP doors name it `target`, so an agent's request body is not portable between the two surfaces the bundle set out to bring to one contra
 origin: spec-deferred 8a6272c94a12
@@ -4435,34 +4382,31 @@ reason: `storage-fs-fault-identity.test.ts` pins that a failed publication leave
 status: open
 
 ### DW-575: `parseRegistry`'s bare `JSON.parse` still lets a raw `SyntaxError` escape, unlike the `parseSlots` it mirrors.
-origin: spec-deferred 7b7a597668da
-location: src/lib/research-projects.ts:221
-source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
-severity: low
-reason: `research-projects.ts` calls `JSON.parse(raw)` unwrapped, so truncated or non-JSON registry bytes surface as `Unexpected token } in JSON at position 41` — the same opaque-error-far-from-the-cause shape DW-476 existed to kill. The sibling `parseSlots` (`research-concurrency.ts:88-94`) wraps it and throws "Research lease file is unreadable." The per-element message was mirrored; this first one was not. Pre-existing since DW-297.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-store-parse-and-guards
 resolution-undo: 04528005c204bdaa752cc306b31fd1cc0c7aa3a7952ef6613b409978b94e6a61 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 7b7a597668da
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+archived: 2026-08-31
 
 ### DW-576: `GET /api/research/[id]/run` has no catch, so a refused registry escapes as a framework 500 with no `{ error }` body.
-origin: spec-deferred 5bac45c721bc
-location: src/app/api/research/[id]/run/route.ts:105
-source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
-severity: low
-reason: The handler calls `getResearchProject` outside any try block. Since DW-297 that call throws on a wrong-shaped registry, and DW-476 widens which registries throw, so this door answers a bare framework error rather than the JSON error body every sibling door returns. Pre-existing hole opened by DW-297, not by this change.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-run-route-error-typing
 resolution-undo: 17fc47581e89988766b4bf51ab5b234bd3c8e4474e8e477ca08cb273685072bd 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 5bac45c721bc
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+archived: 2026-08-31
 
 ### DW-577: `POST /api/research/[id]/run` still classifies by message regex and has no `ClientInputError` branch.
-origin: spec-deferred 0bb1680d33f8
-location: src/app/api/research/[id]/run/route.ts:88
-source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
-severity: low
-reason: The catch decides 404/409/500 with `/not found/i` and `/already running/i` against the error message — the exact anti-pattern DW-296 deleted from `POST /api/research`, where a storage `EINVAL: invalid argument` was mislabelled as the caller's fault. This door is not named by the DW-478 intent, so it was left alone; the regex is pre-existing.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-run-route-error-typing
 resolution-undo: 17fc47581e89988766b4bf51ab5b234bd3c8e4474e8e477ca08cb273685072bd 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 0bb1680d33f8
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+archived: 2026-08-31
 
 ### DW-578: `ClientInputError` is classified by `instanceof` at ~16 route sites, the mechanism `read-only.ts` documents as unreliable across a duplicated module graph.
 origin: spec-deferred af2f5b90fa56
@@ -4473,14 +4417,13 @@ reason: `src/lib/read-only.ts:20-22` states `isReadOnlyError` matches on `err.na
 status: open
 
 ### DW-579: `research-completion.ts` dereferences `project.completion.sources` after only a phase check, so a wrong-shaped `completion` still dies with an opaque TypeError.
-origin: spec-deferred 08eb77ec7c66
-location: src/lib/research-completion.ts:649
-source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
-severity: low
-reason: A stored `completion: { phase: "sources" }` with no `sources` array reaches `.findIndex(...)` / `.map(...)` and throws the same class of error DW-476 removed from the sort. `isResearchProject` deliberately does not validate nested optional structures, so the registry guard does not cover this path. Pre-existing.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-store-parse-and-guards
 resolution-undo: 04528005c204bdaa752cc306b31fd1cc0c7aa3a7952ef6613b409978b94e6a61 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 08eb77ec7c66
+source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
+archived: 2026-08-31
 
 ### DW-580: The v1 façade answers 4xx with machine tokens everywhere except the new `deep_research` 400, which emits an English sentence.
 origin: spec-deferred 1a77a9c8b8f4
@@ -4548,15 +4491,11 @@ reason: DW-444 named exactly two subjects and both are out, but the retro findin
 status: open
 
 ### DW-588: The whole vitest `dom` project is broken on Node 26: `window.localStorage` is undefined, so 13 files / 233 mounted tests fail before asserting anything.
-origin: spec-deferred cf14d367093b
-location: vitest.setup.dom.ts (and every mounted suite that reads window.localStorage)
-source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
-severity: high
-reason: `pnpm test` fails 233 tests across 13 dom-project files with `TypeError: Cannot read properties of undefined (reading 'clear')` at `window.localStorage.clear()`. Node prints `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided` — Node 26.8.1 ships its own `globalThis.localStorage` getter, which shadows the one vitest's jsdom environment would otherwise expose (jsdom 30.0.1 supplies it correctly when constructed directly). Confirmed pre-existing: stashing this whole change and re-running `src/components/workbench/__tests__/workbench-split-wiring.test.tsx` reproduces the identical 29/29 failure on baseline a34c4fee. Counts are identical with and without this bundle's new suite. The fix is a repo-level decision (pin Node, or shim Storage in `vitest.setup.dom.ts`), not something a test-pin bundle should make.
+
 status: done 2026-08-29
-resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
-decision: 2026-08-29 Shim Storage in vitest.setup.dom.ts — Add a real `Storage` implementation to vitest.setup.dom.ts and define `window.localStorage` (and `sessionStorage`) from it, matching that file's own stated convention that every capability jsdom lacks is shimmed there and never in `src/`. Reset it in the existing `afterEach` alongside the other shims, and expose it through `@/test/dom-helpers` the way the repo's other dom capabilities are. Verify by running the whole `dom` project to zero failures and pin the shim itself so a regression is visible.
-decision: 2026-08-29 Shim Storage in vitest.setup.dom.ts — Add a real `Storage` implementation to vitest.setup.dom.ts and define `window.localStorage` (and `sessionStorage`) from it, matching that file's own stated convention that every capability jsdom lacks is shimmed there and never in `src/`. Reset it in the existing `afterEach` alongside the other shims, and expose it through `@/test/dom-helpers` the way the repo's other dom capabilities are. Verify by running the whole `dom` project to zero failures and pin the shim itself so a regression is visible.
+origin: spec-deferred cf14d367093b
+source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
+archived: 2026-08-31
 
 ### DW-589: The DW-356 AGENTS.md parity test is per-PATTERN, so a member added to or dropped from a multi-member enumeration never has to be documented.
 origin: spec-deferred 250f5205735c
@@ -4575,13 +4514,11 @@ reason: This story's intent enumerated three components (RecentIngests, ActionIn
 status: open
 
 ### DW-591: On Node 26 the runtime's own localStorage global shadows jsdom's, so `window.localStorage` is undefined in the dom project and 13 workbench suites (233 tests) fail before any assertion.
-origin: spec-deferred 06d79b086f45
-location: vitest.setup.dom.ts
-source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
-severity: medium
-reason: Reproduced at the baseline revision with both of this story's files stashed: `pnpm exec vitest run --project dom` gives 13 failed files / 233 failed tests, every one `TypeError: Cannot read properties of undefined (reading 'clear')` (248 occurrences) or `(reading 'remove')` (18) from a `window.localStorage.clear()` in a suite's own setup -- e.g. `src/components/workbench/__tests__/icon-rail.test.tsx:62`, `activity-dock.test.tsx:27`, `workbench-split-wiring.test.tsx:97`. Node here is v26.8.1 and the run prints `ExperimentalWarning: localStorage is not available because --localstorage-file was not provided`. Pre-existing and unrelated to this change (the failing set is identical before and after it), but it means `pnpm test` cannot be green on a Node 26 machine, and the repo's own convention says a capability jsdom lacks belongs in `vitest.setup.dom.ts` behind `@/test/dom-helpers` rather than in each suite.
+
 status: done 2026-08-29
-resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
+origin: spec-deferred 06d79b086f45
+source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
+archived: 2026-08-31
 
 ### DW-592: DW-325 closed the flake class for one case; ~14 structurally identical `returnToTab()` + `waitFor` cases in the same describe keep the same millisecond-budget exposure.
 origin: spec-deferred bdd55ed0cf5a
@@ -4626,13 +4563,11 @@ reason: `graph-escape-hatch-mounted.test.tsx` stubs `useGraphSimulation`, and it
 status: open
 
 ### DW-597: Thirteen dom suites under src/components/workbench/__tests__/ fail at window.localStorage.clear() on Node 26, unrelated to any code change.
-origin: spec-deferred 8c924f9045ee
-location: src/components/workbench/__tests__/ (13 files); vitest.setup.dom.ts
-source_spec: `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md`
-severity: medium
-reason: 233 tests across 13 files die with "TypeError: Cannot read properties of undefined (reading 'clear')". Reproduced on a stashed tree at 34f1863d, so it is not a branch regression. Root cause confirmed by probe: Node 26.8.1's built-in `localStorage` global shadows jsdom's own and is `undefined` unless the process is started with `--localstorage-file` ("ExperimentalWarning: localStorage is not available because --localstorage-file was not provided"). Every other dom suite passes. Needs a repo-wide decision (pin Node, pass the flag, or shim the global in vitest.setup.dom.ts), so it was not fixed inside this bundle.
+
 status: done 2026-08-29
-resolution: already_resolved: MemoryStorage shim in vitest.setup.dom.ts defines window/globalThis localStorage and sessionStorage; resetDomStorage in afterEach; re-exported from @/test/dom-helpers. Verified: pnpm exec vitest run --project dom — 64 files / 947 passed.
+origin: spec-deferred 8c924f9045ee
+source_spec: `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md`
+archived: 2026-08-31
 
 ### DW-598: DW-404's own recorded reproduction (topK 1, one stale-tagged and one current-tagged vector, alternating queries) still emits four drift lines under the narrowed whole-window gate, so the entry's named
 origin: spec-deferred 13bb0e02d8ee
@@ -4665,13 +4600,11 @@ decision: 2026-08-29 Withdraw the spec — Move the spec's status from `in-revie
 decision: 2026-08-29 Withdraw the spec — Move the spec's status from `in-review` to `withdrawn` with a note recording that DW-404 and DW-405 were settled by the 2026-08-22 decision and closed by later sweeps, and that its prescribed predicate contradicts that decision. Name the commits that closed them so a reader can find the shipped behaviour. Leave DW-406 to be re-filed on its own terms if it is still wanted.
 
 ### DW-601: No test discriminates the permissive whole-window gate from the strict-label variant, so the DW-405 decision point rests on one code line with zero coverage in either direction.
-origin: spec-deferred 0e302255352d
-location: src/lib/__tests__/embeddings.test.ts (describe("searchByVector") drift suite)
-source_spec: `spec-dw-404-drift-rearm-whole-window.md`
-severity: low
-reason: Mutating the gate to `matches.every((m) => m.metadata?.model === currentModel)` leaves all 173 tests in `embeddings.test.ts` passing. This is deliberate — the intent forbids pinning the unlabelled-legacy case either way while DW-405 is open — but it means whichever way DW-405 is eventually decided, the change will be unguarded until that entry adds its own pin.
+
 status: done 2026-08-29
-resolution: already resolved: Resolved by DW-405: src/lib/__tests__/embeddings.test.ts:960 (re-arms on an active-model vector beside an unlabelled one, 2 warnings) and :913 (does not re-arm on an entirely unlabelled window, 1 warning) discriminate the permissive gate from the strict-label variant in both directions.
+origin: spec-deferred 0e302255352d
+source_spec: `spec-dw-404-drift-rearm-whole-window.md`
+archived: 2026-08-31
 
 ### DW-602: Two `searchByVector` calls in flight at once can interleave so that a window read BEFORE the drift key was burnt applies its re-arm AFTER, un-burning the key and letting the same standing drift speak
 origin: spec-deferred 66e879681741
@@ -4682,14 +4615,13 @@ reason: The gate, the `warnOnceAbout` burn and the `rearmWarningAbout` delete al
 status: open
 
 ### DW-603: `cleanUrls`' 40-item and 2000-character caps and its dedupe are untested on what is now the only write path for a project's source URLs.
-origin: spec-deferred 57ce341dfb77
-location: src/lib/research-projects.ts:140
-source_spec: `spec-dw-442-research-create-drops-source-urls.md`
-severity: low
-reason: Since DW-442 the run's patch is the sole writer of `project.sourceUrls` (`research-runtime.ts:1559` -> `updateResearchProject`). The store tests cover only the `javascript:` protocol filter. A run whose provider returns more than 40 unique results silently stores 40, and the Studio's "Collect N URLs" then ingests 40 of them with nothing saying so. The cap predates this change; only its exposure is new.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-research-store-parse-and-guards
 resolution-undo: 04528005c204bdaa752cc306b31fd1cc0c7aa3a7952ef6613b409978b94e6a61 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred 57ce341dfb77
+source_spec: `spec-dw-442-research-create-drops-source-urls.md`
+archived: 2026-08-31
 
 ### DW-604: No operator-facing surface documents WORKWIKI_SIDECAR_ALLOWED_ORIGINS, so an owner whose deployed page reports down has nowhere outside the source to learn the knob exists.
 origin: spec-deferred 709eca390daa
@@ -4774,23 +4706,20 @@ status: open
 decision: 2026-08-31 Pass a server-computed flag — Compute isOwner on the server and pass it as a prop down to NavHeader, ArticleActions and RevisionHistory, so the client gate is the server's answer rather than an independent re-derivation, and reparameterize the harness to drive the two sides from different facts so a divergence is visible.
 
 ### DW-614: `src/mcp.ts` mints `service:mcp` principal ids from a raw string literal rather than the shared `SERVICE_PRINCIPAL_ID_PREFIX`.
-origin: spec-deferred bf8b971590b0
-location: src/mcp.ts:296
-source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
-severity: low
-reason: Three sites (src/mcp.ts:296, :374, :398) write `{ id: "service:mcp", ... }` inline. `src/lib/principal-id.ts` was added precisely to give that prefix one definition shared by the module that mints it and the module that reads it; these mints predate the change and were outside its scope. Behaviour is correct today — `isSynthesizedPrincipalId` matches on the colon, not the prefix — so this is drift risk, not a live defect.
+
 status: done 2026-08-30
 resolution: resolved by sweep bundle dw-mcp-door-hardening
 resolution-undo: 69668be5bc24c764633fb3e08e3c2a165cd7fed4b1be2c9451585feb8d1d19fb 2026-08-30 7374617475733a206f70656e
+origin: spec-deferred bf8b971590b0
+source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
+archived: 2026-08-31
 
 ### DW-615: Pre-existing: 13 workbench DOM test files fail on this branch because `window.localStorage` is undefined under jsdom.
-origin: spec-deferred 6e6c028887b0
-location: src/components/workbench/__tests__/workbench-split-wiring.test.tsx:97
-source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
-severity: medium
-reason: `npx vitest run` reports 233 failing tests across 13 `src/components/workbench/__tests__/*.tsx` files, every one of them the same `TypeError: Cannot read properties of undefined (reading 'clear')` raised from a `beforeEach` calling `window.localStorage.clear()`. Confirmed pre-existing: with every `src/` change from this story stashed, the same file fails 29/29 at baseline revision 249fc694. The failure count is identical before and after this story, so nothing here caused or worsened it — but the suite is red on this branch and any spec asserting "`pnpm test` passes" cannot be met until it is fixed.
+
 status: done 2026-08-29
-resolution: already resolved: Resolved by commit c95483f2: vitest.setup.dom.ts:438-492 defines MemoryStorage and window/globalThis localStorage and sessionStorage, so window.localStorage.clear() is defined in workbench-split-wiring.test.tsx:97 and the other 12 dom suites.
+origin: spec-deferred 6e6c028887b0
+source_spec: `spec-dw-486-owner-identity-gate-on-stable-id.md`
+archived: 2026-08-31
 
 ### DW-616: The Workers AI dimensions sentence on the flat page's embedding model hint is selected by model NAME alone, so an `EMBEDDING_MODEL=@cf/baai/bge-m3` pin on a non-Workers-AI provider claims the deployme
 origin: spec-deferred 601986049e42
