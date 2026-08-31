@@ -34,12 +34,15 @@ import {
 import {
   deleteResearchProject,
   getResearchProject,
+  isResearchWriteRefused,
   listResearchProjects,
   mutateResearchProject,
+  mutateResearchProjectOrRefusal,
   ResearchProjectConflictError,
   ResearchProjectNotFoundError,
   updateResearchProject,
   updateResearchProjectIf,
+  updateResearchProjectIfOrRefusal,
   withResearchProjectLifecycleFence,
   type ResearchProject,
   type ResearchProjectResult,
@@ -53,7 +56,7 @@ import {
   type ResearchProvider,
   type ResearchSearchResult,
 } from "./research-providers";
-import { READ_ONLY_REFUSAL, assertWritable, isReadOnlyError } from "./read-only";
+import { READ_ONLY_REFUSAL, ReadOnlyError, assertWritable, isReadOnlyError } from "./read-only";
 import { researchPageSlug } from "./research-slug";
 import {
   extractThinking,
@@ -221,6 +224,14 @@ function uniqueResults(results: readonly ResearchProjectResult[]): ResearchProje
  *
  * Fail-soft because narration is not the run's product: a storage hiccup writing
  * a progress line must not fail a run that is otherwise working.
+ *
+ * WITH TWO EXCEPTIONS, both of which leave by a throw (DW-658). A lost attempt
+ * lease always did — the run no longer owns the row it is narrating. A
+ * READ-ONLY REFUSAL now does too: it is not a hiccup that retrying past would
+ * clear, and swallowed into a log line it would let the run carry on writing
+ * into a deployment that had already refused it. So "fail-soft" here means
+ * fail-soft about STORAGE, not about who owns the row or whether the
+ * deployment accepts writes at all.
  */
 async function note(
   owner: string,
@@ -233,18 +244,33 @@ async function note(
   try {
     const patch = { progress: { completedQueries: completed, totalQueries: total, message } };
     if (attemptId) {
-      const updated = await updateResearchProjectIf(
+      // The refusal-preserving sibling (DW-658). Collapsed to `null` this
+      // narration line reported a read-only deployment as "Research attempt
+      // for <id> was replaced." — a lease race the operator would go hunting
+      // for, about a row nothing had touched.
+      const updated = await updateResearchProjectIfOrRefusal(
         owner,
         id,
         (project) => project.runAttemptId === attemptId,
         patch,
       );
+      if (isResearchWriteRefused(updated)) {
+        throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+      }
       if (!updated) throw new ResearchLeaseError(`Research attempt for ${id} was replaced.`);
     } else {
+      // Deliberately still the fail-soft wrapper: a progress line with no
+      // attempt behind it has nothing to strand, and a throw here would fail a
+      // run over narration.
       await updateResearchProject(owner, id, patch);
     }
   } catch (error) {
     if (error instanceof ResearchLeaseError) throw error;
+    // A read-only refusal is not a storage hiccup, and this catch exists for
+    // storage hiccups. Logged and swallowed, the run would carry on writing
+    // into a deployment that had already refused it — so it leaves by the same
+    // door the lease error does.
+    if (isReadOnlyError(error)) throw error;
     logger.warn("research", `progress update failed for ${id}`, error);
   }
 }
@@ -309,12 +335,18 @@ async function updateResearchAttempt(
   attemptId: string,
   patch: Parameters<typeof updateResearchProject>[2],
 ): Promise<ResearchProject> {
-  const updated = await updateResearchProjectIf(
+  // Refusal-preserving (DW-658): a deployment that turned read-only mid-run
+  // must not be reported as a lost attempt lease. "Was replaced." sends the
+  // operator looking for a second worker that never existed.
+  const updated = await updateResearchProjectIfOrRefusal(
     owner,
     id,
     (project) => project.runAttemptId === attemptId,
     patch,
   );
+  if (isResearchWriteRefused(updated)) {
+    throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+  }
   if (!updated) throw new ResearchLeaseError(`Research attempt for ${id} was replaced.`);
   return updated;
 }
@@ -388,7 +420,7 @@ export async function queueResearchProject(
   if (!await releaseResearchSlotAndConfirmGone(owner, id, project.runAttemptId)) {
     throw new ResearchLeaseError("The previous research lease could not be retired; retry after storage recovers.");
   }
-  const updated = await mutateResearchProject(owner, id, (current) => {
+  const updated = await mutateResearchProjectOrRefusal(owner, id, (current) => {
     if (RESEARCH_IN_FLIGHT_STATUSES.includes(current.status)) {
       throw new ResearchProjectConflictError("Research project is already running");
     }
@@ -416,12 +448,18 @@ export async function queueResearchProject(
     };
     return current;
   });
+  // The deployment turned read-only after the route's gate (DW-657). Collapsed
+  // to `null` this left by `ResearchProjectNotFoundError` — a 404 telling the
+  // owner their project was gone, about a row still sitting there untouched.
+  if (isResearchWriteRefused(updated)) {
+    throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+  }
   if (!updated) throw new ResearchProjectNotFoundError();
   return updated;
 }
 
 export async function cancelResearchProject(owner: string, id: string): Promise<ResearchProject> {
-  const updated = await mutateResearchProject(owner, id, (project) => {
+  const updated = await mutateResearchProjectOrRefusal(owner, id, (project) => {
     if (project.completion?.phase === "page" && project.completion.writeAuthorizedAt) {
       project.progress = {
         completedQueries: project.progress?.completedQueries ?? 0,
@@ -440,6 +478,11 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
     };
     return project;
   });
+  // Same mid-request flip as the start above (DW-657): "not found" is the
+  // wrong sentence for a cancel a read-only deployment refused.
+  if (isResearchWriteRefused(updated)) {
+    throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+  }
   if (!updated) throw new ResearchProjectNotFoundError();
   // Only a queued project never started a worker. Releasing a `ready` slot
   // here is what let a fourth run in while synthesis was still running.
@@ -461,9 +504,9 @@ export async function cancelResearchProject(owner: string, id: string): Promise<
 /** Request retirement, but let an active worker release its own lease. */
 export async function retireResearchProject(owner: string, id: string): Promise<boolean> {
   // Deployment read-only (DW-385). THE ENTRY POINT gates rather than leaning on
-  // the CAS mutator it calls first — which since DW-527 refuses by returning
-  // `null` rather than by throwing: this function TOMBSTONES
-  // before it deletes — `mutateResearchProject` below sets `deleteRequested`,
+  // the CAS mutator it calls first — which since DW-527 refuses by returning a
+  // sentinel rather than by throwing: this function TOMBSTONES
+  // before it deletes — `mutateResearchProjectOrRefusal` below sets `deleteRequested`,
   // `cancelRequested`, `status: "cancelled"` and the progress message
   // "Deleted." — and only reaches the gated `deleteResearchProject` at its last
   // statement. Gating the delete alone would leave a caller with no route in
@@ -473,7 +516,7 @@ export async function retireResearchProject(owner: string, id: string): Promise<
   const project = await getResearchProject(owner, id);
   if (!project) return false;
   let workerStillRunning = false;
-  const retired = await mutateResearchProject(owner, id, (current) => {
+  const retired = await mutateResearchProjectOrRefusal(owner, id, (current) => {
     // Capture this INSIDE the locked mutation. A worker can move draft/queued
     // to collecting after the preliminary existence read above; using that
     // stale read would release the lease from under the worker DELETE just
@@ -494,6 +537,13 @@ export async function retireResearchProject(owner: string, id: string): Promise<
     };
     return current;
   });
+  // The flag flipped between the `assertWritable` above and this CAS (DW-657).
+  // A `false` here is the route's 404 "Research project not found." — which
+  // says the row is gone when nothing was written at all, and would have the
+  // owner stop looking for a project that is still there.
+  if (isResearchWriteRefused(retired)) {
+    throw new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate);
+  }
   if (!retired) return false;
   // A live worker owns both the row and attempt fence until its finally path,
   // or expiry-driven reconciliation, confirms the slot is gone.

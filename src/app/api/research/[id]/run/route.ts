@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { ClientInputError, getErrorMessage } from "@/lib/errors";
-import { READ_ONLY_REFUSAL } from "@/lib/read-only";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { enqueueTask } from "@/lib/tasks";
 import {
   cancelResearchProject,
@@ -86,6 +86,17 @@ export async function POST(request: Request, { params }: RouteContext) {
     return NextResponse.json({ project, enqueued }, { status: 202 });
   } catch (error) {
     const message = getErrorMessage(error);
+    // Read-only FIRST, ahead of the ladder (DW-657). The gate at the top of
+    // this handler answers a deployment that was already read-only; this is
+    // the flip that lands MID-request, refused by `queueResearchProject`'s or
+    // `cancelResearchProject`'s CAS. Collapsed, that refusal used to arrive as
+    // `ResearchProjectNotFoundError` and leave by the 404 below — the owner
+    // told their project was gone about a row nothing had written to. The
+    // caught message is echoed rather than the route's own literal, the
+    // backstop shape every sibling door uses.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: message }, { status: 403 });
+    }
     // Classification is by TYPE alone — the `POST /api/research` idiom.
     //
     // A missing credential for the SELECTED provider is the caller's

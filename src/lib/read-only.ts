@@ -118,8 +118,8 @@
  * sentinel before it reads, leases or writes anything, because its wrappers
  * are an in-flight run's own progress recorders and a throw there strands the
  * run — the reason DW-385 left them open at all. `mutateResearchProject`, the
- * single funnel, collapses the sentinel to the `null` those callers already
- * read as a lost CAS race; `createResearchProject` and
+ * single fail-soft funnel, collapses the sentinel to the `null` those callers
+ * already read as a lost CAS race; `createResearchProject` and
  * `deleteResearchProject` convert it to a `ReadOnlyError` so their gates still
  * hold when the flag flips underneath them. The OWNER's edit is a separate,
  * gated, throwing entry point — `editResearchProject`, which
@@ -128,10 +128,32 @@
  * is closed to a direct library caller in every case; what differs is whether
  * the refusal arrives as a value or as a throw.
  *
- * AND TEN OF THOSE DOORS NOW CARRY A BACKSTOP AS WELL (DW-316, DW-319,
- * DW-526, and DW-527's `PATCH /api/research/[id]`). The five wiki-lifecycle
- * writes, the three Names & Terms verbs, `PUT /api/email/settings`,
- * `POST /api/research`, `PATCH /api/research/[id]` and the
+ * COLLAPSING IS NOW A CHOICE, NOT THE ONLY OPTION (DW-661). While the funnel
+ * was the only way up from the primitive, "refused" and "lost the race" were
+ * one answer to every runtime caller, and five entry points in
+ * `research-runtime` reported a mid-request refusal as something it was not:
+ * `retireResearchProject` as 404 "Research project not found.",
+ * `queueResearchProject`/`cancelResearchProject` as
+ * `ResearchProjectNotFoundError`, and `note`/`updateResearchAttempt` as
+ * "Research attempt for <id> was replaced." — a lease race about a row nothing
+ * had touched. So each fail-soft wrapper now has a refusal-preserving sibling
+ * that carries the sentinel through — `mutateResearchProjectOrRefusal` and
+ * `updateResearchProjectIfOrRefusal` — and those five entry points, whose
+ * contract is to throw, take the sibling and convert the sentinel to a
+ * `ReadOnlyError` carrying {@link READ_ONLY_REFUSAL.researchMutate}. The
+ * collapsing wrappers are untouched and still serve the ~30 fail-soft call
+ * sites in `research-runtime`/`research-completion`, so the primitive still
+ * refuses by RETURNING and nothing in an in-flight run's recovery path
+ * acquired a throw. WHERE the sentinel becomes an error is a decision made at
+ * the entry point, where the contract is known — never in the CAS layer, which
+ * cannot tell one kind of caller from the other.
+ *
+ * AND FOURTEEN OF THOSE DOORS NOW CARRY A BACKSTOP AS WELL (DW-316, DW-319,
+ * DW-526, DW-527's `PATCH /api/research/[id]`, and DW-639/DW-657's
+ * `DELETE /api/research/[id]` and `POST /api/research/[id]/run`). The five
+ * wiki-lifecycle writes, the three Names & Terms verbs,
+ * `PUT /api/email/settings`, `POST /api/research`,
+ * `PATCH`/`DELETE /api/research/[id]`, `POST /api/research/[id]/run` and the
  * `PUT /api/workspace-profile` write each classify {@link isReadOnlyError} as
  * the FIRST branch of their catch — the shape `PUT /api/workbench/artifact` and
  * `POST /api/ingest/reingest` already used. Every early gate above is unchanged

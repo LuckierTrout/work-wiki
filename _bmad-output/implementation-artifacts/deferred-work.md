@@ -5055,7 +5055,9 @@ location: src/lib/research-runtime.ts:490
 source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
 severity: medium
 reason: DW-527 made the CAS return `null` when read-only, and `mutateResearchProject` collapses it for its fail-soft callers. Three GATED, throwing entry points read that `null` as "the row is gone": `retireResearchProject` (src/lib/research-runtime.ts:490) returns `false`, which `DELETE /api/research/[id]` serves as 404; `queueResearchProject` (:413) and `cancelResearchProject` (:437) raise `ResearchProjectNotFoundError`, which `POST /api/research/[id]/run` serves as 404. Only reachable when the flag flips between an entry point's own `assertWritable` and its CAS write, and nothing is written either way — but the owner is told a stored project does not exist. `editResearchProject`, `createResearchProject` and `deleteResearchProject` each convert that same window back into a `ReadOnlyError`; these three were left on the collapse because DW-527's intent names the owner-editing entry point only.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-cas-sentinel
+resolution-undo: 6db65d75791f16d07c198c524b8447e266052eee0cd9774c0e011f6242b92109 2026-08-31 7374617475733a206f70656e
 
 ### DW-658: A deployment that turns read-only mid-run aborts the run with "Research attempt was replaced" and leaves the row at `collecting`.
 origin: spec-deferred 5e5b20d7ebc8
@@ -5063,7 +5065,9 @@ location: src/lib/research-runtime.ts:236
 source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
 severity: medium
 reason: `note` (src/lib/research-runtime.ts:236) and `updateResearchAttempt` (:312) turn a `null` from the CAS into `ResearchLeaseError("Research attempt for <id> was replaced.")`. Since DW-527 that `null` is also how a read-only refusal arrives, so a mid-run flip reports lease replacement rather than the deployment state, and the failure-marking write that would follow is refused too — the row stays `collecting` until the deployment is writable again and reconcile reaps it. Nothing is written, so this is a labelling and recovery-latency cost, not damage. No test flips the flag during a run.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-cas-sentinel
+resolution-undo: 6db65d75791f16d07c198c524b8447e266052eee0cd9774c0e011f6242b92109 2026-08-31 7374617475733a206f70656e
 
 ### DW-659: `createResearchProject` answers a mid-flip refusal with `researchMutate` while its own gate answers `researchCreate`.
 origin: spec-deferred 93d5fb006b8c
@@ -5087,7 +5091,9 @@ location: src/lib/research-projects.ts:649
 source_spec: `spec-dw-527-528-research-store-read-only-refusal.md`
 severity: low
 reason: `mutateResearchProject` (src/lib/research-projects.ts:649) collapses `RESEARCH_WRITE_REFUSED` to `null`, which is what keeps the ~30 `research-runtime`/`research-completion` call sites unedited. So at the surface DW-527's intent named — "the fail-soft research-runtime callers can distinguish" — a refusal is still indistinguishable from a lost CAS race; only a direct caller of `applyResearchProjectMutation` can tell them apart, via `isResearchWriteRefused`. Closing that would mean editing the call sites one at a time, which is the larger change the ledger entry itself set aside.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-research-readonly-cas-sentinel
+resolution-undo: 6db65d75791f16d07c198c524b8447e266052eee0cd9774c0e011f6242b92109 2026-08-31 7374617475733a206f70656e
 
 ### DW-662: `/api/query` still returns a cap-truncated answer as a finished one — the silent truncation DW-547 closed for the streaming route only.
 origin: spec-deferred a75695c8b05a
@@ -5231,4 +5237,12 @@ location: src/lib/portable-archive.ts:89-92
 source_spec: `spec-dw-542-backup-oversize-read-avoidance.md`
 severity: low
 reason: It calls `readAsset` on each file, adds `data.byteLength` to `totalBytes`, and only then throws past `MAX_BYTES` — so the object that trips the 500 MB limit is pulled fully into memory before the failure. It throws rather than truncating, so its observable contract differs from the backup loop's, but the read-avoidance argument applies unchanged.
+status: open
+
+### DW-680: A read-only `queueResearchProject` releases the project's research slot before its CAS refuses, so a refused start still mutates the deployment.
+origin: spec-deferred 4cb96e41f86f
+location: src/lib/research-runtime.ts:412
+source_spec: `spec-dw-657-658-661-research-readonly-cas-sentinel.md`
+severity: low
+reason: `queueResearchProject` calls `releaseResearchSlotAndConfirmGone` (src/lib/research-runtime.ts:412) ahead of the CAS, and `research-concurrency.ts` carries no `isReadOnly`/`assertWritable` gate of its own. Demonstrated during review: with a project holding a real lease and the flag set, the call throws `ReadOnlyError` as intended, but `research-leases.json` goes from `[{projectId, attemptId, ...}]` to `[]` while the row still records that `runAttemptId`. Pre-existing — the same release ran before this change, which merely relabelled what the CAS then threw — so it is out of this bundle's scope, but it is a write on a deployment that refused the request, which is the invariant the research read-only work exists to hold. `read-only-store-gate.test.ts`'s queue case now excludes the lease file from its byte comparison and says why, rather than seeding the lease to manufacture a green whole-tree snapshot.
 status: open

@@ -116,6 +116,17 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
       ? NextResponse.json({ deleted: true })
       : NextResponse.json({ error: "Research project not found." }, { status: 404 });
   } catch (error) {
+    // Read-only FIRST, mirroring the PATCH branch above (DW-639, DW-657). The
+    // early `isReadOnly()` gate answers a deployment that was already read-only
+    // when the request arrived; this is the flip that lands MID-request,
+    // refused by `retireResearchProject`'s own `assertWritable` or by the CAS
+    // underneath it. Without this branch that refusal would have left by the
+    // 500 below — a server fault the owner would retry forever — and a
+    // `false`-returning writer would have left by the 404 above, which says the
+    // project is gone when nothing was touched at all.
+    if (isReadOnlyError(error)) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
+    }
     // Same classification as PATCH above: a store-side input refusal is the
     // caller's fault at every door, and a storage fault is still a 500.
     const status = error instanceof ClientInputError ? 400 : 500;

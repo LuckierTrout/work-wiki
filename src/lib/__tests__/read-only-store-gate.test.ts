@@ -26,11 +26,20 @@ import {
   getResearchProject,
   isResearchWriteRefused,
   listResearchProjects,
+  mutateResearchProject,
+  mutateResearchProjectOrRefusal,
   RESEARCH_WRITE_REFUSED,
+  updateResearchProject,
   updateResearchProjectIf,
+  updateResearchProjectIfOrRefusal,
   withResearchProjectLifecycleFence,
 } from "../research-projects";
-import { retireResearchProject } from "../research-runtime";
+import { acquireResearchSlot } from "../research-concurrency";
+import {
+  cancelResearchProject,
+  queueResearchProject,
+  retireResearchProject,
+} from "../research-runtime";
 import {
   createNamesTerm,
   deleteNamesTerm,
@@ -56,6 +65,11 @@ const ENV_KEYS = [
   "RAW_DIR",
   "NEXT_PUBLIC_OWNER_HANDLE",
   "YOPEDIA_READONLY",
+  // `queueResearchProject` resolves the provider BEFORE its CAS, and
+  // `resolveResearchProvider` reads this env credential AHEAD of any stored
+  // setting — so the refusal case below has to make one available or the run
+  // fails on the missing credential instead of on the flag.
+  "TAVILY_API_KEY",
 ] as const;
 
 beforeEach(async () => {
@@ -69,6 +83,10 @@ beforeEach(async () => {
   // start WRITABLE — and be cleared rather than inherited, or a value exported
   // in one developer's shell would turn the writable control cases red.
   delete process.env.YOPEDIA_READONLY;
+  // Same rule for the provider credential: the one case that needs it sets it
+  // for itself, so a key exported in a developer's shell cannot quietly change
+  // which fault the other cases exercise.
+  delete process.env.TAVILY_API_KEY;
   await fs.mkdir(process.env.WIKI_DIR, { recursive: true });
   await fs.mkdir(process.env.RAW_DIR, { recursive: true });
   _resetLocks();
@@ -160,6 +178,32 @@ async function seededSnapshot(): Promise<Record<string, string>> {
     "the seed wrote nothing — byte-identity would prove nothing",
   ).toBeGreaterThan(0);
   return before;
+}
+
+/**
+ * The research REGISTRY's one entry in a {@link snapshot}, asserted present.
+ *
+ * Matched by suffix rather than spelled out, because the path is composed from
+ * the owner's tenant. Asserting it was found is what stops a renamed store file
+ * from turning "the registry did not change" into a comparison of two
+ * `undefined`s.
+ */
+function registryEntry(tree: Record<string, string>): [string, string] {
+  const found = Object.entries(tree).filter(([key]) => key.endsWith("research-projects.json"));
+  expect(found.length, "no research registry in the tree").toBe(1);
+  return found[0];
+}
+
+/**
+ * A {@link snapshot} with the research LEASE file removed.
+ *
+ * For the one path whose pre-CAS behaviour is outside this suite's claim — see
+ * the `queueResearchProject` case, which explains why.
+ */
+function withoutLeases(tree: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(tree).filter(([key]) => !key.endsWith("research-leases.json")),
+  );
 }
 
 const RESEARCH_INPUT = {
@@ -454,7 +498,7 @@ describe("the read-only gate precedes the store's lock", () => {
       // through the deliberately ungated CAS mutator before it ever reaches the
       // gated delete, so the gate has to precede that call or the refusal
       // arrives after the damage.
-      ["research-runtime", "retireResearchProject", "mutateResearchProject(owner"],
+      ["research-runtime", "retireResearchProject", "mutateResearchProjectOrRefusal(owner"],
     ] as const) {
       const source = sources[module];
       const start = source.indexOf(`export async function ${fn}(`);
@@ -623,6 +667,199 @@ describe("the read-only gate precedes the store's lock", () => {
     expect(stored?.synthesis).toBe("an in-flight run's own progress");
   });
 
+  it("the *OrRefusal siblings hand back the sentinel their fail-soft pair collapses", async () => {
+    // DW-661. Until now the refusal was distinguishable ONLY at
+    // `applyResearchProjectMutation`: every wrapper above it folded
+    // `RESEARCH_WRITE_REFUSED` into the same `null` that means "gone, or the
+    // predicate said no", so no runtime caller could tell a read-only
+    // deployment from a lost CAS race. The siblings carry it through; the
+    // originals still collapse it, which is what keeps the ~30 fail-soft call
+    // sites in `research-runtime`/`research-completion` unedited.
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const mutated = await mutateResearchProjectOrRefusal(OWNER, project.id, (current) => {
+      current.status = "collecting";
+      return current;
+    });
+    const patched = await updateResearchProjectIfOrRefusal(
+      OWNER,
+      project.id,
+      (current) => current.id === project.id,
+      { status: "collecting", synthesis: "an in-flight run's own progress" },
+    );
+
+    // IDENTITY, not shape: `isResearchWriteRefused` compares against the one
+    // frozen instance, so a caller's look-alike object cannot pass for it.
+    expect(mutated).toBe(RESEARCH_WRITE_REFUSED);
+    expect(patched).toBe(RESEARCH_WRITE_REFUSED);
+    expect(isResearchWriteRefused(mutated)).toBe(true);
+    expect(isResearchWriteRefused(patched)).toBe(true);
+
+    // The collapsing originals, same arguments, same deployment: still `null`,
+    // still no throw. The control that proves the split changed nothing for
+    // the fail-soft half.
+    await expect(
+      mutateResearchProject(OWNER, project.id, (current) => {
+        current.status = "collecting";
+        return current;
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      updateResearchProjectIf(
+        OWNER,
+        project.id,
+        (current) => current.id === project.id,
+        { status: "collecting" },
+      ),
+    ).resolves.toBeNull();
+
+    // And none of the four touched a byte.
+    expect(await snapshot()).toEqual(before);
+    expect((await getResearchProject(OWNER, project.id))?.status).toBe("draft");
+  });
+
+  it("the *OrRefusal siblings answer a WRITABLE deployment exactly as their pair does", async () => {
+    // The control the refusal case above needs. Pinned only on the refusal
+    // branch, a sibling that returned the sentinel for a missing row or a
+    // false predicate would pass — and every caller that converts it would
+    // then report a read-only deployment for a project that simply is not
+    // there. All three non-refusal outcomes, on a writable deployment:
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+
+    // 1. A hit returns the project, and the write actually lands.
+    const hit = await mutateResearchProjectOrRefusal(OWNER, project.id, (current) => {
+      current.status = "collecting";
+      return current;
+    });
+    expect(isResearchWriteRefused(hit)).toBe(false);
+    expect((hit as typeof project).status).toBe("collecting");
+    expect((await getResearchProject(OWNER, project.id))?.status).toBe("collecting");
+
+    // 2. An id that is not there is `null` — "gone", never "refused".
+    const missing = await mutateResearchProjectOrRefusal(OWNER, "no-such-project", (current) => current);
+    expect(isResearchWriteRefused(missing)).toBe(false);
+    expect(missing).toBeNull();
+
+    // 3. A predicate that says no is `null` too, and writes nothing.
+    const rejected = await updateResearchProjectIfOrRefusal(
+      OWNER,
+      project.id,
+      () => false,
+      { synthesis: "never written" },
+    );
+    expect(isResearchWriteRefused(rejected)).toBe(false);
+    expect(rejected).toBeNull();
+    expect((await getResearchProject(OWNER, project.id))?.synthesis).toBeUndefined();
+
+    // 4. And a predicate that says yes still patches, so 3 is not vacuous.
+    const patched = await updateResearchProjectIfOrRefusal(
+      OWNER,
+      project.id,
+      (current) => current.id === project.id,
+      { synthesis: "written by the owner" },
+    );
+    expect(isResearchWriteRefused(patched)).toBe(false);
+    expect((patched as typeof project).synthesis).toBe("written by the owner");
+  });
+
+  it("retireResearchProject THROWS when the flag flips after its own gate", async () => {
+    // DW-657. `retireResearchProject` gates first, then TOMBSTONES through the
+    // CAS. A flip in between used to collapse to `null`, leave by
+    // `if (!retired) return false`, and reach the owner as
+    // `DELETE /api/research/[id]` 404 "Research project not found." — the row
+    // reported as gone when nothing had been written to it at all.
+    const seeded = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const before = await seededSnapshot();
+    let reads = 0;
+    const flag = vi.spyOn(config, "isReadOnly").mockImplementation(() => reads++ > 0);
+
+    try {
+      await expectRefusal(
+        () => retireResearchProject(OWNER, seeded.id),
+        READ_ONLY_REFUSAL.researchMutate,
+      );
+    } finally {
+      flag.mockRestore();
+    }
+
+    expect(await snapshot()).toEqual(before);
+    const stored = await getResearchProject(OWNER, seeded.id);
+    // No tombstone: the four fields the mutator would have written, and the
+    // "Deleted." label the panel renders from, are all still absent.
+    expect(stored?.deleteRequested).toBeUndefined();
+    expect(stored?.cancelRequested).toBeUndefined();
+    expect(stored?.status).toBe("draft");
+    expect(stored?.progress).toBeUndefined();
+  });
+
+  it("cancelResearchProject refuses with the deployment's own sentence", async () => {
+    // DW-657. The CAS is this function's FIRST statement, so a read-only
+    // deployment refuses before anything is read. Collapsed, that refusal left
+    // as `ResearchProjectNotFoundError` → `POST .../run` 404.
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => cancelResearchProject(OWNER, project.id),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    expect(await snapshot()).toEqual(before);
+    expect((await getResearchProject(OWNER, project.id))?.cancelRequested).toBeUndefined();
+  });
+
+  it("queueResearchProject refuses with the deployment's own sentence", async () => {
+    // DW-657, the other half of the run door.
+    //
+    // WHAT THIS CASE DOES NOT CLAIM. Unlike every other refusal here it cannot
+    // assert whole-tree byte-identity, and pretending otherwise would be
+    // worse than not asserting it: `queueResearchProject` retires the
+    // project's previous slot through `releaseResearchSlotAndConfirmGone`
+    // BEFORE it reaches the CAS, and `research-concurrency.ts` carries no
+    // read-only gate at all — so on a read-only deployment a project that
+    // holds a lease really does have it released, and `research-leases.json`
+    // really does change, before the registry write is refused. That ungated
+    // pre-CAS release is pre-existing behaviour outside this change's scope
+    // (this change moves the CAS onto the refusal-preserving sibling and
+    // nothing else), so the lease file is EXCLUDED from the comparison rather
+    // than seeded into looking unchanged, and its mutation is not pinned here
+    // as expected behaviour either way.
+    //
+    // The project therefore holds a REAL lease when the flag flips, which is
+    // the state that makes the exclusion honest — with an empty lease file
+    // there would be nothing for the release to change and the exclusion would
+    // be hiding nothing.
+    process.env.TAVILY_API_KEY = "test-key";
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const grant = await acquireResearchSlot(OWNER, project.id);
+    expect(grant.attemptId, "the seed took no slot").toBeTruthy();
+    await updateResearchProject(OWNER, project.id, { runAttemptId: grant.attemptId });
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => queueResearchProject(OWNER, project.id),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    const after = await snapshot();
+    // WHAT THIS CHANGE OWNS: the registry, byte for byte. The CAS refused, so
+    // not one field of the stored row moved.
+    expect(registryEntry(after)).toEqual(registryEntry(before));
+    // And nothing else in the tree moved either — the lease aside.
+    expect(withoutLeases(after)).toEqual(withoutLeases(before));
+    // Read back through the store as well as off the bytes: not queued, not
+    // handed a provider it never got to search with, and still carrying the
+    // attempt token the seed gave it.
+    const stored = await getResearchProject(OWNER, project.id);
+    expect(stored?.status).toBe("draft");
+    expect(stored?.provider).toBeUndefined();
+    expect(stored?.runAttemptId).toBe(grant.attemptId);
+  });
+
   it("the research CAS primitives carry no THROWING gate in their own source", async () => {
     // Still meaningful after DW-527, with a NEW rationale: these four must
     // refuse by RETURNING the sentinel, never by throwing, because a throw
@@ -637,13 +874,30 @@ describe("the read-only gate precedes the store's lock", () => {
     for (const fn of [
       "applyResearchProjectMutation",
       "mutateResearchProject",
+      // The refusal-preserving siblings (DW-661). They are the ones a THROWING
+      // entry point now calls, which makes an `assertWritable(` slipping into
+      // one of them the same in-flight-run hazard: the throw would land inside
+      // the CAS layer, where the fail-soft callers reach it too.
+      "mutateResearchProjectOrRefusal",
+      "updateResearchProjectIfOrRefusal",
+      // PRIVATE, and so invisible to this pin until the pattern below stopped
+      // requiring `export` (DW-661). `mutateProjectOrRefusal` is where the
+      // whole patch body moved, and `mutateProject` is the line that collapses
+      // its refusal — both reach the CAS, and neither is any safer to gate
+      // than the exported four.
+      "mutateProjectOrRefusal",
+      "mutateProject",
       "updateResearchProjectIf",
       "updateResearchProject",
     ]) {
       // `<T>` on the generic CAS helpers, `(` on the rest — matched together
-      // so `updateResearchProject` cannot land on `updateResearchProjectIf`.
+      // so `updateResearchProject` cannot land on `updateResearchProjectIf`,
+      // and `mutateProject` cannot land on `mutateProjectOrRefusal`. `export`
+      // is OPTIONAL: a hazard that moved into a private helper is the same
+      // hazard, and a pin that could not see it would report the move as a
+      // clean bill of health.
       const start = source.search(
-        new RegExp(`export async function ${fn}[(<]`),
+        new RegExp(`(?:export )?async function ${fn}[(<]`),
       );
       expect(start, `research-projects.ts: ${fn}`).toBeGreaterThan(-1);
       const close = source.indexOf("\n}\n", start);

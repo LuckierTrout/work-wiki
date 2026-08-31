@@ -408,7 +408,7 @@ export function isResearchWriteRefused(value: unknown): value is ResearchWriteRe
  * those callers read a `null` return as "lost the CAS race" and compensate; a
  * THROW here would turn that fail-soft path into a stranded run, which is the
  * reason DW-385 left the primitive open in the first place. So the refusal is
- * a value: {@link mutateResearchProject} — the one funnel all three fail-soft
+ * a value: {@link mutateResearchProject} — the funnel all three fail-soft
  * wrappers pass through — collapses it to the `null` those ~30 call sites
  * already handle, while {@link createResearchProject} and
  * {@link deleteResearchProject} convert it to a `ReadOnlyError` so their
@@ -416,6 +416,18 @@ export function isResearchWriteRefused(value: unknown): value is ResearchWriteRe
  * `assertWritable`. A sentinel rather than a bare `null` because at the
  * PRIMITIVE a refusal and a lost race are different facts, and
  * {@link isResearchWriteRefused} is how a direct caller tells them apart.
+ *
+ * AND NOT ONLY AT THE PRIMITIVE, SINCE DW-661. Every fail-soft wrapper now has
+ * a refusal-preserving sibling one line beneath it —
+ * {@link mutateResearchProjectOrRefusal} under {@link mutateResearchProject},
+ * {@link updateResearchProjectIfOrRefusal} under
+ * {@link updateResearchProjectIf} — so a caller whose contract is to THROW can
+ * tell the two facts apart without reaching past the wrappers to this
+ * function. `research-runtime`'s five throwing entry points
+ * (`retireResearchProject`, `queueResearchProject`, `cancelResearchProject`,
+ * `updateResearchAttempt` and `note`) take the siblings and convert the
+ * sentinel themselves; nothing else moved, and the collapse below is still
+ * what the ~30 fail-soft call sites get.
  *
  * WHAT THE OLD EXEMPTION COST, NOW CLOSED. `PATCH /api/research/[id]` used to
  * call {@link updateResearchProjectIf} to edit an owner's title, question and
@@ -460,8 +472,15 @@ export async function applyResearchProjectMutation<T>(
  *
  * Carries the {@link RESEARCH_WRITE_REFUSED} sentinel through rather than
  * collapsing it here, because the two kinds of caller want opposite things
- * from it: {@link mutateResearchProject} turns it into `null` (fail-soft), the
- * two gated lifecycle writers turn it into a throw.
+ * from it: the fail-soft wrappers ({@link mutateResearchProject},
+ * {@link updateResearchProjectIf}, {@link updateResearchProject}) turn it into
+ * `null`, while every caller whose contract is to THROW turns it into a
+ * `ReadOnlyError` — {@link createResearchProject} and
+ * {@link deleteResearchProject} directly, and since DW-661 the five
+ * `research-runtime` entry points that reach it through
+ * {@link mutateResearchProjectOrRefusal} /
+ * {@link updateResearchProjectIfOrRefusal}. Collapsing here would take that
+ * choice away from all of them.
  */
 async function lockedMutation<T>(
   owner: string,
@@ -621,23 +640,31 @@ export async function updateResearchProjectIf(
 }
 
 /**
- * Apply an in-place mutator under the same CAS as {@link updateResearchProjectIf}.
+ * Apply an in-place mutator under the same CAS as {@link updateResearchProjectIf},
+ * WITHOUT collapsing the read-only refusal.
  *
- * Returns `null` when the project is gone or `mutate` returns null (lost claim).
+ * Returns `null` when the project is gone or `mutate` returns null (lost claim),
+ * and {@link RESEARCH_WRITE_REFUSED} when the deployment refused the write —
+ * three outcomes the fail-soft sibling below folds into two.
  *
- * THE ONE FUNNEL, and so the one place the read-only refusal is collapsed
- * (DW-527). {@link updateResearchProject}, {@link updateResearchProjectIf} and
- * {@link mutateProject} all reach the CAS through here, so turning
- * {@link RESEARCH_WRITE_REFUSED} into `null` on this line covers every
- * fail-soft caller in `research-runtime`/`research-completion` without editing
- * one of them: they already treat `null` as a lost CAS race and compensate.
+ * WHY THE SPLIT (DW-661). {@link mutateResearchProject} collapses the sentinel
+ * to `null` for its ~30 fail-soft callers, which meant a refusal was
+ * distinguishable ONLY at {@link applyResearchProjectMutation} — no runtime
+ * caller could tell "refused" from "lost the CAS race", so five throwing entry
+ * points in `research-runtime` mislabelled a mid-request refusal as "not
+ * found" or "was replaced". This function holds the logic; the fail-soft name
+ * is one line over it. Callers whose contract is to THROW take this one and
+ * convert the sentinel; everyone else keeps the collapsing wrapper.
+ *
+ * Still refuses by RETURNING, never by throwing: converting the sentinel is
+ * the caller's decision, made where the contract is known.
  */
-export async function mutateResearchProject(
+export async function mutateResearchProjectOrRefusal(
   owner: string,
   id: string,
   mutate: (project: ResearchProject) => ResearchProject | null,
-): Promise<ResearchProject | null> {
-  const result = await lockedMutation(owner, (projects) => {
+): Promise<ResearchProject | ResearchWriteRefused | null> {
+  return lockedMutation(owner, (projects) => {
     const index = projects.findIndex((item) => item.id === id);
     if (index < 0) return { projects, result: null };
     const next = mutate(projects[index]);
@@ -646,6 +673,25 @@ export async function mutateResearchProject(
     projects[index] = next;
     return { projects, result: next };
   });
+}
+
+/**
+ * The fail-soft face of {@link mutateResearchProjectOrRefusal}.
+ *
+ * THE ONE FUNNEL for the quiet callers, and so the one place the read-only
+ * refusal is collapsed (DW-527). {@link updateResearchProject},
+ * {@link updateResearchProjectIf} and {@link mutateProject} all reach the CAS
+ * through here, so turning {@link RESEARCH_WRITE_REFUSED} into `null` on this
+ * line covers every fail-soft caller in
+ * `research-runtime`/`research-completion` without editing one of them: they
+ * already treat `null` as a lost CAS race and compensate.
+ */
+export async function mutateResearchProject(
+  owner: string,
+  id: string,
+  mutate: (project: ResearchProject) => ResearchProject | null,
+): Promise<ResearchProject | null> {
+  const result = await mutateResearchProjectOrRefusal(owner, id, mutate);
   return isResearchWriteRefused(result) ? null : result;
 }
 
@@ -688,13 +734,21 @@ export async function editResearchProject(
   return edited;
 }
 
-async function mutateProject(
+/**
+ * The shared patch-applying mutator, WITHOUT collapsing the read-only refusal.
+ *
+ * The {@link mutateResearchProjectOrRefusal} split one layer up (DW-661): this
+ * holds the patch logic, {@link mutateProject} below is the one collapsing line
+ * over it, and {@link updateResearchProjectIfOrRefusal} is the public door for
+ * a caller that must tell a refusal from a lost predicate.
+ */
+async function mutateProjectOrRefusal(
   owner: string,
   id: string,
   predicate: (project: ResearchProject) => boolean,
   patch: Parameters<typeof updateResearchProject>[2],
-): Promise<ResearchProject | null> {
-  return mutateResearchProject(owner, id, (project) => {
+): Promise<ResearchProject | ResearchWriteRefused | null> {
+  return mutateResearchProjectOrRefusal(owner, id, (project) => {
     if (!predicate(project)) return null;
     if (patch.title !== undefined || patch.question !== undefined) {
       const cleaned = cleanInput({
@@ -791,6 +845,35 @@ async function mutateProject(
     }
     return project;
   });
+}
+
+/** The fail-soft face of {@link mutateProjectOrRefusal}. */
+async function mutateProject(
+  owner: string,
+  id: string,
+  predicate: (project: ResearchProject) => boolean,
+  patch: Parameters<typeof updateResearchProject>[2],
+): Promise<ResearchProject | null> {
+  const result = await mutateProjectOrRefusal(owner, id, predicate, patch);
+  return isResearchWriteRefused(result) ? null : result;
+}
+
+/**
+ * {@link updateResearchProjectIf} for a caller whose contract is to THROW.
+ *
+ * Same CAS, same predicate, same patch — but a read-only refusal comes back as
+ * {@link RESEARCH_WRITE_REFUSED} instead of the `null` that also means "gone,
+ * or the predicate said no". `research-runtime`'s `updateResearchAttempt` and
+ * `note` use it so a deployment that flips mid-run stops reporting itself as
+ * "Research attempt for <id> was replaced." (DW-658, DW-661).
+ */
+export async function updateResearchProjectIfOrRefusal(
+  owner: string,
+  id: string,
+  predicate: (project: ResearchProject) => boolean,
+  patch: Parameters<typeof updateResearchProject>[2],
+): Promise<ResearchProject | ResearchWriteRefused | null> {
+  return mutateProjectOrRefusal(owner, id, predicate, patch);
 }
 
 export async function withResearchProjectLifecycleFence<T>(

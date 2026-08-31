@@ -125,6 +125,7 @@ import {
   retireResearchProject,
   runResearchProject,
 } from "../research-runtime";
+import { READ_ONLY_REFUSAL, isReadOnlyError } from "../read-only";
 import { loadPageConventions } from "../schema";
 import { _resetStorage, getStorage } from "../storage";
 import { enqueueTask, parseTask } from "../tasks";
@@ -2346,4 +2347,158 @@ describe("the research sentences (DW-544)", () => {
       expect(copy).toContain("Nothing was written");
     },
   );
+});
+
+
+/**
+ * The deployment turns read-only WHILE a run is in flight (DW-658).
+ *
+ * `research-runtime`'s two attempt-fenced writers used to reach the CAS through
+ * the fail-soft wrappers, which collapse the read-only sentinel to the same
+ * `null` a lost lease returns — so a flag flip mid-run surfaced as
+ * "Research attempt for <id> was replaced.", a lease race the operator would
+ * go hunting a second worker for. Both now carry the sentinel through and
+ * report the deployment instead.
+ *
+ * `research-completion` and `research-concurrency` carry no read-only gate, so
+ * staging and lease writes still succeed while the flag is set — which is what
+ * lets the run get as far as these two writers at all.
+ */
+describe("deep research run — the deployment flips read-only mid-run", () => {
+  let savedReadOnly: string | undefined;
+
+  beforeEach(() => {
+    savedReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.YOPEDIA_READONLY;
+  });
+
+  afterEach(() => {
+    if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = savedReadOnly;
+  });
+
+  /** The refusal a mid-run write must leave by, whichever writer saw it first. */
+  async function expectRunRefusal(id: string): Promise<void> {
+    const error = await runResearchProject("alice", id).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).not.toBeNull();
+    // `isReadOnlyError` matches on `name`, which is what every door classifies
+    // on — a plain `Error` carrying the right words would still be a 500.
+    expect(isReadOnlyError(error)).toBe(true);
+    expect((error as Error).message).toBe(READ_ONLY_REFUSAL.researchMutate);
+    // The mislabel this pins the absence of. "Was replaced." named a lease
+    // race that never happened.
+    expect((error as Error).message).not.toContain("was replaced");
+  }
+
+  it("reports the deployment, not a lost lease, when updateResearchAttempt is refused", async () => {
+    // The flip lands inside the SEARCH: the attempt's opening write and the
+    // first progress line have already landed, so the next write — the
+    // `updateResearchAttempt` that records the collected results — is the
+    // first one refused.
+    const created = await project();
+    mockedSearch.mockImplementation(async () => {
+      process.env.YOPEDIA_READONLY = "1";
+      return [{
+        title: "Launch brief",
+        url: "https://example.com/launch/brief",
+        snippet: "short excerpt",
+      }];
+    });
+
+    await expectRunRefusal(created.id);
+
+    // Nothing was written past the refusal: the row is still mid-run, not
+    // "failed" (the catch's own write is fail-soft and refused too) and not
+    // carrying a synthesis or a Page.
+    const stored = await getResearchProject("alice", created.id);
+    // The mirror of the `note` case below, and what makes that case's
+    // progress assertion a real discriminator rather than a restatement: this
+    // run stopped in the QUERY loop, before any source was read, so the
+    // standing line is the query narration and never "Reading source 1 of N."
+    expect(stored?.progress?.message).toBe("Query 1 of 1: launch evidence");
+    expect(stored?.progress?.message).not.toContain("Reading source");
+    expect(stored?.status).toBe("collecting");
+    expect(stored?.synthesis).toBeUndefined();
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  it("reports the deployment, not a lost lease, when a progress note is refused", async () => {
+    // Two fetch targets, and the flip lands inside the FIRST extract. The next
+    // attempt-fenced write is the second target's `note` — the narration line,
+    // whose catch used to log every fault as "progress update failed" and
+    // swallow it, so the run carried on writing into a deployment that had
+    // already refused it.
+    const created = await project();
+    mockedSearch.mockResolvedValue([
+      { title: "One", url: "https://example.com/1", snippet: "s" },
+      { title: "Two", url: "https://example.com/2", snippet: "s" },
+    ]);
+    let extracted = 0;
+    mockedExtract.mockImplementation(async () => {
+      if (extracted++ === 0) process.env.YOPEDIA_READONLY = "1";
+      return { title: "Body", content: "BODY" };
+    });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let lines: string[] = [];
+    try {
+      await expectRunRefusal(created.id);
+    } finally {
+      // BEFORE `mockRestore`, which clears the recorded calls with it.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+    }
+
+    // The catch did not swallow it into a log line, which is the half of
+    // DW-658 the thrown error alone cannot prove. On its own, though, that is
+    // a NEGATIVE that would also hold if `note` were never reached at all —
+    // and the error `note` throws is byte-identical to `updateResearchAttempt`'s,
+    // so the throw cannot say which writer saw the flag.
+    expect(lines.some((line) => line.includes("progress update failed"))).toBe(false);
+    const stored = await getResearchProject("alice", created.id);
+    // The POSITIVE pin. The last write that LANDED is the FIRST target's
+    // narration line, written by `note` before the flip — so the run got past
+    // every `updateResearchAttempt` and stopped at the second target's `note`.
+    // Had `updateResearchAttempt` been the refused writer, the collection line
+    // it writes after the search would still be standing here instead.
+    expect(stored?.progress).toEqual({
+      completedQueries: 1,
+      totalQueries: 2,
+      message: "Reading source 1 of 2.",
+    });
+    expect(stored?.status).toBe("collecting");
+    expect(stored?.synthesis).toBeUndefined();
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  it("still reports a genuine lost attempt as a lease race on a WRITABLE deployment", async () => {
+    // The control both cases above need: a refusal that fired unconditionally
+    // would satisfy them and hide every real lease race. The attempt token is
+    // replaced mid-search, so the same writer sees a genuine `null`.
+    const created = await project();
+    mockedSearch.mockImplementation(async () => {
+      await mutateResearchProject("alice", created.id, (current) => {
+        current.runAttemptId = "someone-else";
+        return current;
+      });
+      return [{
+        title: "Launch brief",
+        url: "https://example.com/launch/brief",
+        snippet: "short excerpt",
+      }];
+    });
+
+    const error = await runResearchProject("alice", created.id).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(isReadOnlyError(error)).toBe(false);
+    expect((error as Error).message).toBe(
+      `Research attempt for ${created.id} was replaced.`,
+    );
+  });
 });

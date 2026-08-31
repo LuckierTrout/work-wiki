@@ -413,6 +413,66 @@ describe("PATCH and DELETE /api/research/[id]", () => {
     });
   });
 
+  /**
+   * DW-657/DW-639. `retireResearchProject` gates, then TOMBSTONES through the
+   * CAS, and a flag that flips in between now leaves it as a `ReadOnlyError`.
+   * Before this branch that landed as the 500 below; before the runtime change
+   * behind it, the writer returned `false` and the owner got 404 "Research
+   * project not found." about a row nothing had touched.
+   */
+  it("403s a DELETE whose writer refuses mid-request", async () => {
+    mockedDelete.mockRejectedValue(new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate));
+
+    const response = await DELETE(new Request("http://localhost/api/research/p1", {
+      method: "DELETE",
+    }), { params });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.researchMutate });
+    // The gate did not fire — the writer WAS reached, which is what makes this
+    // the mid-request flip rather than the early refusal above.
+    expect(mockedDelete).toHaveBeenCalled();
+  });
+
+  it("403s a foreign ReadOnlyError on DELETE and echoes ITS sentence", async () => {
+    // `isReadOnlyError` matches `err.name`, not `instanceof` — a second copy of
+    // `read-only.ts` (vitest's two projects, a split server/edge bundle, the
+    // stdio MCP entry point) would otherwise turn this 403 into a 500 only in
+    // production.
+    //
+    // A DIFFERENT sentence on purpose. Carrying `researchMutate` here — the
+    // literal this door's own early gate serves — a handler that re-served its
+    // own constant instead of echoing the caught error would look identical,
+    // and the backstop's whole point is that WHICH sentence the caller reads
+    // records WHEN the deployment turned read-only.
+    const foreign = new Error(READ_ONLY_REFUSAL.pageWrite);
+    foreign.name = "ReadOnlyError";
+    mockedDelete.mockRejectedValue(foreign);
+
+    const response = await DELETE(new Request("http://localhost/api/research/p1", {
+      method: "DELETE",
+    }), { params });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.pageWrite });
+  });
+
+  it("does not swallow the other DELETE outcomes", async () => {
+    // The control for the branch above: an `isReadOnlyError` check that
+    // matched too widely would turn every one of these into a 403.
+    mockedDelete.mockResolvedValue(false);
+    const missing = await DELETE(new Request("http://localhost/api/research/p1", {
+      method: "DELETE",
+    }), { params });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({ error: "Research project not found." });
+
+    mockedDelete.mockResolvedValue(true);
+    expect((await DELETE(new Request("http://localhost/api/research/p1", {
+      method: "DELETE",
+    }), { params })).status).toBe(200);
+  });
+
   it.each([
     ["400s", new ClientInputError("Research question is required"), 400],
     ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
@@ -471,6 +531,87 @@ describe("POST /api/research/[id]/run — owner lifecycle only", () => {
       error: "The search provider is chosen in Settings, not on the run.",
     });
     expect(mockedQueue).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/research/[id]/run — a writer that refuses mid-request", () => {
+  /**
+   * DW-657. The gate at the top of the handler answers a deployment that was
+   * already read-only. This is the OTHER moment: the flag flips after the gate
+   * passed, so the refusal comes from the CAS inside `queueResearchProject` /
+   * `cancelResearchProject`. Collapsed to `null` that refusal used to leave
+   * both as `ResearchProjectNotFoundError` — a 404 telling the owner their
+   * project was gone, about a row nothing had written to.
+   */
+  it.each([
+    ["start", {}, () => mockedQueue],
+    ["cancel", { action: "cancel" }, () => mockedCancel],
+  ] as const)("403s a %s whose writer refuses mid-request", async (_label, body, writer) => {
+    writer().mockRejectedValueOnce(new ReadOnlyError(READ_ONLY_REFUSAL.researchMutate));
+
+    const response = await POST(runRequest(body), ctx());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.researchMutate });
+    // The gate did not fire — the writer WAS reached.
+    expect(writer()).toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(mockedRun).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["start", {}, () => mockedQueue],
+    ["cancel", { action: "cancel" }, () => mockedCancel],
+  ] as const)("403s a foreign ReadOnlyError from %s and echoes ITS sentence", async (_label, body, writer) => {
+    // `isReadOnlyError` matches `err.name`, not `instanceof` — a second copy of
+    // `read-only.ts` (vitest's two projects, a split server/edge bundle, the
+    // stdio MCP entry point) would otherwise turn this 403 into a 500 only in
+    // production.
+    //
+    // A DIFFERENT sentence on purpose, for the reason the DELETE case beside
+    // this one spells out: with `researchMutate` a handler that re-served the
+    // literal from its own early gate would be indistinguishable from one that
+    // echoes what the writer threw.
+    const foreign = new Error(READ_ONLY_REFUSAL.pageWrite);
+    foreign.name = "ReadOnlyError";
+    writer().mockRejectedValueOnce(foreign);
+
+    const response = await POST(runRequest(body), ctx());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.pageWrite });
+  });
+
+  it("does not swallow the other run outcomes", async () => {
+    // The control for the branch above, walking the whole ladder behind it: a
+    // check that matched too widely would turn every one of these into a 403.
+    mockedQueue.mockRejectedValue(new ResearchProjectNotFoundError());
+    expect((await POST(runRequest(), ctx())).status).toBe(404);
+
+    mockedQueue.mockRejectedValue(new ResearchProjectConflictError("already running"));
+    expect((await POST(runRequest(), ctx())).status).toBe(409);
+
+    mockedQueue.mockRejectedValue(new ClientInputError("Research question is required"));
+    expect((await POST(runRequest(), ctx())).status).toBe(400);
+
+    mockedQueue.mockRejectedValue(new Error("EIO: registry unreadable"));
+    expect((await POST(runRequest(), ctx())).status).toBe(500);
+
+    mockedCancel.mockRejectedValueOnce(new ResearchProjectNotFoundError());
+    expect((await POST(runRequest({ action: "cancel" }), ctx())).status).toBe(404);
+  });
+
+  afterEach(() => {
+    // The suite-wide `beforeEach` calls `vi.clearAllMocks()`, which clears
+    // recorded CALLS but leaves implementations standing, and it re-seeds only
+    // `mockedQueue`/`mockedEnqueue` — never `mockedCancel`. Every rejection in
+    // this block is therefore one-shot, and this is the belt to that braces:
+    // a cancel left rejecting would follow the cancel path into any block
+    // added after this one, failing it for a reason with no source in it.
+    // `mockedQueue` is reset too, since the ladder case above rejects it
+    // repeatedly; `beforeEach` re-seeds it before the next test runs.
+    mockedCancel.mockReset();
+    mockedQueue.mockReset();
   });
 });
 
