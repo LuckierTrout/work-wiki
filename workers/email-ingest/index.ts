@@ -259,6 +259,17 @@ export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
  * unchanged. What is NEW below it is the post-decode aggregate bound (DW-360),
  * which holds the bytes actually copied into the outbound `FormData` to the same
  * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` this cap is sized for.
+ *
+ * READ THIS BEFORE THE ARITHMETIC ABOVE: since DW-449 this constant gates
+ * nothing. It appears only inside the `Math.min` below, where
+ * `EMAIL_ROUTING_MAX_INBOUND_BYTES` wins, so `WORST_CASE_TRANSFER_ENCODING_FACTOR`
+ * and `MIME_ENVELOPE_HEADROOM_BYTES` are — today — arithmetic no message is ever
+ * measured against. It is kept for two reasons rather than inlined away: it is
+ * the record of what the aggregate budget NEEDS the door to be, which is the
+ * claim the parity suite still measures; and it is the term that binds again the
+ * moment the platform ceiling rises above it, at which point every figure above
+ * becomes live without anyone having to re-derive it. Treat the paragraphs above
+ * as that record, not as a description of what senders meet.
  */
 export const AGGREGATE_DERIVED_RAW_EMAIL_BYTES =
   Math.ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +

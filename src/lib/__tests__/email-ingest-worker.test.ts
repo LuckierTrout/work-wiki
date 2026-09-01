@@ -494,15 +494,22 @@ function partBytes(index: number, length = 96): Uint8Array {
   return bytes;
 }
 
-/** Wire line width for an unencoded part body, and for base64. */
-const PART_LINE_CHARS = 76;
+/**
+ * Payload bytes per line of an unencoded part, INCLUDING the `\n` that ends it:
+ * `asciiPartBytes` writes its marker at index 75, so a line carries 75
+ * characters and costs 77 bytes on the wire once the builder expands that
+ * marker to CRLF. Nothing else reads it -- `base64Lines` wraps at a 76 of its
+ * own, which is the RFC 2045 CHARACTER limit and a different number in a
+ * different unit.
+ */
+const ASCII_PART_LINE_STRIDE = 76;
 
 /**
  * The payload of a part written with NO transfer encoding (`7bit`), which is
  * the only shape that can still carry more decoded bytes than
  * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` while staying under the raw gate: since
  * DW-449 that gate is 25 MiB, and base64's ~1.37x puts 20 MiB of decoded
- * payload at ~28.7 MB on the wire, refused at the door. An unencoded part costs
+ * payload at ~27.4 MiB on the wire, refused at the door. An unencoded part costs
  * ~1x, so the DW-360 bound is reachable through it and through nothing else.
  *
  * Distinct per part and per offset for the same reason `partBytes` is, but
@@ -513,7 +520,7 @@ const PART_LINE_CHARS = 76;
  *   the part would decode to something the fixture never wrote. `partBytes`
  *   stays the generator for encoded parts, where the full 0-255 range is what
  *   proves base64 and quoted-printable really round-trip binary.
- * - A `\n` every `PART_LINE_CHARS` bytes, and one as the FINAL byte. The
+ * - A `\n` every `ASCII_PART_LINE_STRIDE` bytes, and one as the FINAL byte. The
  *   builder writes those as CRLF, and PostalMime hands an unencoded body back
  *   with its line endings normalised to LF -- so these bytes are the DECODED
  *   form, and the trailing one is the CRLF that opens the MIME boundary. Both
@@ -522,7 +529,7 @@ const PART_LINE_CHARS = 76;
 function asciiPartBytes(index: number, length = 96): Uint8Array {
   const bytes = new Uint8Array(length);
   for (let i = 0; i < length; i += 1) bytes[i] = ((index * 31 + i * 7 + 3) % 94) + 33;
-  for (let i = PART_LINE_CHARS - 1; i < length; i += PART_LINE_CHARS) bytes[i] = 10;
+  for (let i = ASCII_PART_LINE_STRIDE - 1; i < length; i += ASCII_PART_LINE_STRIDE) bytes[i] = 10;
   bytes[length - 1] = 10;
   return bytes;
 }
@@ -532,8 +539,18 @@ function asciiPartBytes(index: number, length = 96): Uint8Array {
  * is dropped because the CRLF preceding the boundary delimiter supplies it.
  * The inverse of what PostalMime returns for an unencoded part, so a part built
  * from `asciiPartBytes(i, n)` decodes back to exactly those `n` bytes.
+ *
+ * Takes `asciiPartBytes` output and nothing else, and that precondition is load
+ * bearing twice over. Every `\n` terminates a chunk, so a trailing run with no
+ * marker would emit a line the boundary's CRLF then swallows -- the part would
+ * decode one byte SHORT of what the fixture asked for, silently. And the marker
+ * stride caps each chunk at 75 characters, which is what makes the
+ * `String.fromCharCode(...chunk)` spread safe; spreading a marker-free array of
+ * megabytes would overflow the argument limit and throw `RangeError`. The
+ * assertion below states both rather than trusting the caller.
  */
 function literalLines(bytes: Uint8Array): string {
+  expect(bytes[bytes.length - 1]).toBe(10);
   const lines: string[] = [];
   let start = 0;
   for (let i = 0; i < bytes.length; i += 1) {
@@ -541,7 +558,6 @@ function literalLines(bytes: Uint8Array): string {
     lines.push(String.fromCharCode(...bytes.subarray(start, i)));
     start = i + 1;
   }
-  if (start < bytes.length) lines.push(String.fromCharCode(...bytes.subarray(start)));
   return lines.join("\r\n");
 }
 
@@ -741,7 +757,7 @@ const PART_BYTES = 7 * 1024 * 1024;
  * Written with NO transfer encoding (DW-449). Base64 was the original choice
  * because it is the encoding that makes the decoded-vs-wire gap reachable, but
  * once `MAX_RAW_EMAIL_BYTES` is clamped to Email Routing's 25 MiB inbound
- * ceiling, ~21 MiB of decoded payload is ~28.7 MB of base64 and is refused at
+ * ceiling, ~21 MiB of decoded payload is ~28.7 MiB of base64 and is refused at
  * the door -- which would test the raw gate instead of this bound. An unencoded
  * part costs ~1x, so it is now the only shape that carries an over-budget
  * decoded payload through a gate a real message could clear.
@@ -1365,7 +1381,7 @@ describe("email-ingest oversized attachments", () => {
           filename: null,
           mime: "application/pdf",
           bytes: OVERSIZED_BYTES,
-          // Unencoded: two 10 MiB parts are ~28.7 MB of base64, over the 25 MiB
+          // Unencoded: two 10 MiB parts are ~27.4 MiB of base64, over the 25 MiB
           // raw gate since DW-449, and this case is about the oversize loss
           // rather than about the door.
           encoding: "7bit",
@@ -1792,7 +1808,7 @@ describe("email-ingest inline parts", () => {
     // oversized inline parts")`): a mocked 10 MiB part is one allocation, this
     // is ~21 MB of message on every run. Written unencoded for the reason the
     // aggregate-budget suite records: at base64's ~1.37x the same decoded
-    // payload is ~28.7 MB and the 25 MiB raw gate refuses it (DW-449). That
+    // payload is ~27.4 MiB and the 25 MiB raw gate refuses it (DW-449). That
     // convention is about parts whose disposition is incidental to the case.
     // Here the disposition IS the case -- whether a `Content-Disposition:
     // inline` header survives PostalMime as `disposition === "inline"` is a
@@ -2239,9 +2255,19 @@ describe("email-ingest Content-ID parts", () => {
  * Unencoded (`7bit`) parts on purpose: they are what makes the gap reachable
  * now. Quoted-printable at ~3.12x was never a candidate, and base64 at ~1.37x
  * stopped being one when DW-449 clamped the raw gate to Email Routing's 25 MiB
- * ceiling -- 20 MiB of decoded payload is ~28.7 MB of base64, refused at the
+ * ceiling -- 20 MiB of decoded payload is ~27.4 MiB of base64, refused at the
  * door, which would test the raw gate rather than this bound. At ~1x the door
  * is clear and the budget is the only thing that can drop a part.
+ *
+ * Read the fixture shape as SYNTHETIC, not as evidence the budget is reachable
+ * in the field. `Content-Transfer-Encoding: 7bit` over printable-ASCII bodies
+ * labelled `application/pdf` is not something a real client emits for a binary
+ * format -- a real sender encodes a PDF, and once it does, the raw gate refuses
+ * the message long before this bound can drop a part. What these cases pin is
+ * the SELECTION LOGIC of DW-360: that the loop spends the budget in source
+ * order, skips rather than stops, and reports what it left behind. Whether any
+ * live message can still spend that budget is a question about the transport,
+ * answered by the raw-gate suite and by `workers/email-ingest/README.md`.
  */
 describe("email-ingest aggregate decoded budget", () => {
   it("stops appending parts once the decoded budget is spent", async () => {
@@ -2731,22 +2757,41 @@ describe("email-ingest misconfigured bindings", () => {
  * reach is pinned in `email-ingest-allowlist-parity.test.ts`.
  */
 /**
- * The refusal's only job beyond saying no: quote a size the sender can act on.
+ * The refusal's only job beyond saying no: quote the size the sender can resend
+ * under. Not a size -- THE size, which is a two-sided claim.
  *
- * Two bounds, not one. Against `MAX_RAW_EMAIL_BYTES` because a figure above the
- * enforced cap invites a resend this Worker would bounce again; against
- * `EMAIL_ROUTING_MAX_INBOUND_BYTES` because a figure above the PLATFORM ceiling
- * invites a resend that never reaches this Worker to be bounced by -- the sender
- * gets a transport rejection instead, with no explanation from work-wiki at all
- * (DW-449). The second is the one that fails if the `Math.min` is ever replaced
+ * The upper bounds are why DW-449 exists. Against `MAX_RAW_EMAIL_BYTES` because
+ * a figure above the enforced cap invites a resend this Worker would bounce
+ * again; against `EMAIL_ROUTING_MAX_INBOUND_BYTES` because a figure above the
+ * PLATFORM ceiling invites a resend that never reaches this Worker to be bounced
+ * by -- the sender's own provider returns a delivery failure and work-wiki never
+ * explains anything. The second is what fails if the `Math.min` is ever replaced
  * by the derived term alone.
+ *
+ * The LOWER bound is the same defect inverted, and upper bounds alone cannot see
+ * it: a stray `/ 1024`, or an edit that quoted what base64 actually carries,
+ * would produce "larger than 0.0 MB" or "18.2 MB" and satisfy every `<=` here
+ * while telling senders to shrink messages this Worker would have accepted --
+ * and contradicting the 25.0 MB `workers/email-ingest/README.md` documents. So
+ * the figure has to sit within ONE displayed step of the cap: `MAX_RAW_EMAIL_MB`
+ * rounds DOWN to a tenth, which is the whole permitted gap.
+ *
+ * Anchored to the raw-gate sentence rather than to "larger than" anywhere in the
+ * reply. The acknowledgement writes a second such phrase for per-document
+ * oversize (`larger than ${MAX_EMAIL_DOCUMENT_MB} MB`); no case here drives both
+ * today, but an unanchored match would start measuring the document ceiling the
+ * moment one did, and pass while measuring the wrong number.
  */
+const DISPLAYED_MB_STEP_BYTES = 0.1 * 1024 * 1024;
+
 function expectResendableRefusal(text: string): void {
-  expect(text).toContain("larger than");
-  const quoted = Number(/larger than ([\d.]+) MB/.exec(text)?.[1]);
+  const quoted = Number(
+    /did not process this message because it is larger than ([\d.]+) MB\./.exec(text)?.[1],
+  );
   expect(Number.isFinite(quoted)).toBe(true);
   expect(quoted * 1024 * 1024).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
   expect(quoted * 1024 * 1024).toBeLessThanOrEqual(EMAIL_ROUTING_MAX_INBOUND_BYTES);
+  expect(quoted * 1024 * 1024).toBeGreaterThan(MAX_RAW_EMAIL_BYTES - DISPLAYED_MB_STEP_BYTES);
 }
 
 describe("email-ingest raw message cap", () => {
@@ -2948,6 +2993,32 @@ describe("email-ingest raw message cap", () => {
     );
     expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
     expectResendableRefusal(msg.reply.mock.calls[0][0].text);
+  });
+
+  it("forwards a quoted-printable document at a size the clamp still admits", async () => {
+    // The positive half of the quoted-printable story, which inverting the
+    // full-size case above would otherwise have left unpinned: the clamp did not
+    // shut worst-case quoted-printable OUT, it narrowed how much of it fits.
+    // Roughly 8 MiB of decoded payload still arrives, and a mid-size document at
+    // `AGGREGATE_DOCUMENT_AVERAGE_BYTES` is inside that -- so a `.csv` or `.txt`
+    // sent with every octet escaped is still ingested, which is the DW-358
+    // admission the enforced cap has to keep.
+    //
+    // Derived through the same helper the refusals measure with, never a
+    // hand-typed byte count: it tracks the real RFC 2045 arithmetic, and if the
+    // cap or the average ever moves the premise below fails loudly rather than
+    // this case quietly becoming a test of something smaller.
+    const rawSize = quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
+    expect(rawSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+
+    const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
+    const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
   });
 
   it("forwards a message sitting exactly on the cap", async () => {

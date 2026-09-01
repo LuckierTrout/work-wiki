@@ -440,6 +440,252 @@ describe("backups that hit a limit", () => {
     expect(summary.fileCount).toBe(created.files.length);
     expect("files" in summary).toBe(false);
   });
+
+  // -------------------------------------------------------------------------
+  // DW-540 / DW-677 / DW-678 — priority order, a per-file bound, and cleanup
+  // -------------------------------------------------------------------------
+  //
+  // Truncating instead of throwing (DW-215) made a partial backup possible; it
+  // said nothing about WHICH half survived. `walkFiles` recursed in raw
+  // `listFiles` order, so one oversized `revisions/` silo could consume the
+  // whole budget and drop every `wiki/` page — the one thing an owner cannot
+  // reconstruct. The copy loop had no per-file bound either, so a single large
+  // object OOM'd the isolate long before the 2 GiB total ceiling, and a throw
+  // mid-loop stranded everything already written under `backups/<t>/<id>/`
+  // with no manifest and no ledger line at all.
+
+  describe("walk order, the per-file bound, and a failed copy", () => {
+    const WHEN = new Date("2026-08-03T08:00:00.000Z");
+
+    /** `count` files in the ARTIFACT history silo, `wikis/<id>/revisions/`. */
+    async function seedArtifactHistory(count: number): Promise<void> {
+      for (let index = 0; index < count; index += 1) {
+        await getStorage().writeFile(
+          `${ROOT}/wikis/w1/revisions/schema.md/${1_000 + index}.md`,
+          `# artifact rev ${index}`,
+        );
+      }
+    }
+
+    /**
+     * `count` files in the PAGE history silo, `wiki/.revisions/`.
+     *
+     * The interesting one: it lives INSIDE `wiki/`, so a walk that decided
+     * priority by top-level prefix would call these pages.
+     */
+    async function seedPageHistory(count: number): Promise<void> {
+      for (let index = 0; index < count; index += 1) {
+        await getStorage().writeFile(
+          `${ROOT}/wiki/.revisions/plan/${1_000 + index}.md`,
+          `# page rev ${index}`,
+        );
+      }
+    }
+
+    const isHistory = (path: string): boolean =>
+      path.includes("/.revisions/") || path.includes("/revisions/");
+
+    it("keeps every `wiki/` page when a history silo alone blows the file cap", async () => {
+      await seedExtras(2);
+      await seedArtifactHistory(8);
+      const { count: total } = await measureTenant();
+      const pages = [
+        `${ROOT}/wiki/deep/extra-0.md`,
+        `${ROOT}/wiki/deep/extra-1.md`,
+        `${ROOT}/wiki/plan.md`,
+      ];
+      // Room for the pages and one more file, against a tenant that holds far
+      // more — so the cap is reached inside the history silo, every time.
+      const maxFiles = pages.length + 1;
+      expect(maxFiles).toBeLessThan(total);
+
+      const created = await createOwnerBackup("alice", WHEN, {
+        maxFiles,
+        maxBytes: 1024 * 1024,
+      });
+
+      const copied = created.files.map((file) => file.path);
+      // The whole point: the silo lost, the pages did not.
+      for (const page of pages) expect(copied).toContain(page);
+      expect(copied.some(isHistory)).toBe(false);
+      expect(created.truncated).toBe(true);
+      expect(created.truncationReason).toBe("file-count");
+      const [operation] = await listOperations("alice", 10);
+      expect(operation.status).toBe("succeeded");
+      expect(operation.detail).toContain("partial");
+    });
+
+    it("yields the same order twice, name-sorted inside each directory", async () => {
+      await getStorage().writeFile(`${ROOT}/wiki/deep/c.md`, "c");
+      await getStorage().writeFile(`${ROOT}/wiki/deep/a.md`, "a");
+      await getStorage().writeFile(`${ROOT}/wiki/deep/b.md`, "b");
+      // Hand every listing back REVERSED. Without this the case proves nothing
+      // portable: `readdir` on the machine that runs it may already answer in
+      // name order, so an unsorted walk would pass and the sort could be
+      // deleted unnoticed. An R2 listing is a different order again, which is
+      // the order this whole guarantee exists for.
+      const storage = getStorage();
+      const originalList = storage.listFiles.bind(storage);
+      vi.spyOn(storage, "listFiles").mockImplementation(async (prefix) =>
+        (await originalList(prefix)).reverse());
+      // Warm-up run. The ledger line a backup records lives INSIDE the tree the
+      // next one walks, so the FIRST backup is what creates it; comparing runs
+      // one and two would be comparing two different trees.
+      await createOwnerBackup("alice", WHEN, { maxFiles: 100, maxBytes: 1024 * 1024 });
+
+      const first = await createOwnerBackup("alice", new Date("2026-08-03T09:00:00.000Z"), {
+        maxFiles: 100,
+        maxBytes: 1024 * 1024,
+      });
+      const second = await createOwnerBackup("alice", new Date("2026-08-03T10:00:00.000Z"), {
+        maxFiles: 100,
+        maxBytes: 1024 * 1024,
+      });
+
+      const order = first.files.map((file) => file.path);
+      expect(second.files.map((file) => file.path)).toEqual(order);
+      expect(order.filter((path) => path.startsWith(`${ROOT}/wiki/deep/`))).toEqual([
+        `${ROOT}/wiki/deep/a.md`,
+        `${ROOT}/wiki/deep/b.md`,
+        `${ROOT}/wiki/deep/c.md`,
+      ]);
+    });
+
+    it("treats `wiki/.revisions/` as history even though it sits inside `wiki/`", async () => {
+      await seedPageHistory(4);
+      const { count: total } = await measureTenant();
+
+      const created = await createOwnerBackup("alice", WHEN, {
+        maxFiles: total - 2,
+        maxBytes: 1024 * 1024,
+      });
+
+      const copied = created.files.map((file) => file.path);
+      // Priority is decided by directory NAME anywhere in the path: the page
+      // itself outranks its own history, which lives one level below it.
+      expect(copied).toContain(`${ROOT}/wiki/plan.md`);
+      const firstHistory = copied.findIndex(isHistory);
+      expect(firstHistory).toBeGreaterThan(0);
+      expect(copied.slice(0, firstHistory).some(isHistory)).toBe(false);
+      expect(copied.slice(firstHistory).every(isHistory)).toBe(true);
+      // Three passes over one tree, and `wiki/` is walked by two of them, so
+      // "exactly once" is the invariant that keeps the copy loop honest.
+      expect(new Set(copied).size).toBe(copied.length);
+      expect(created.truncationReason).toBe("file-count");
+    });
+
+    it("skips a file over the per-file bound without reading it, and copies the rest", async () => {
+      // `huge.md` sorts BEFORE `plan.md`, so the files that still have to land
+      // are the ones queued behind the skip.
+      await getStorage().writeFile(`${ROOT}/wiki/huge.md`, "x".repeat(4_096));
+      const { count: total } = await measureTenant();
+      const { read } = spyOnStorage({
+        refuseRead: (target) => target.endsWith("/wiki/huge.md"),
+      });
+
+      const created = await createOwnerBackup("alice", WHEN, {
+        maxFiles: 100,
+        maxBytes: 1024 * 1024,
+        maxFileBytes: 1_024,
+      });
+
+      // Never materialised — the whole of DW-677 is that this read does not
+      // happen, not that its result is discarded afterwards.
+      expect(read.some((target) => target.endsWith("/wiki/huge.md"))).toBe(false);
+      expect(created.files.some((file) => file.path.endsWith("huge.md"))).toBe(false);
+      // Skipped, not fatal, and not a stop: everything else is still here.
+      expect(created.files).toHaveLength(total - 1);
+      expect(created.truncated).toBe(true);
+      expect(created.truncationReason).toBe("file-size");
+    });
+
+    it("lets the ceiling that STOPPED the copy outrank a file it merely skipped", async () => {
+      // `a-huge.md` is walked first, so `file-size` is recorded BEFORE the byte
+      // ceiling fires — the precedence is real, not an artefact of ordering.
+      await getStorage().writeFile(`${ROOT}/wiki/a-huge.md`, "x".repeat(4_096));
+      await getStorage().writeFile(`${ROOT}/wiki/z-later.md`, "x".repeat(512));
+
+      const created = await createOwnerBackup("alice", WHEN, {
+        maxFiles: 100,
+        maxBytes: 100,
+        maxFileBytes: 1_024,
+      });
+
+      expect(created.files.some((file) => file.path.endsWith("a-huge.md"))).toBe(false);
+      expect(created.files.some((file) => file.path.endsWith("z-later.md"))).toBe(false);
+      expect(created.truncationReason).toBe("total-bytes");
+    });
+
+    it("keeps `file-count` when the walk truncated and a file was also skipped", async () => {
+      await getStorage().writeFile(`${ROOT}/wiki/a-huge.md`, "x".repeat(4_096));
+      await seedExtras(2);
+      const { count: total } = await measureTenant();
+
+      const created = await createOwnerBackup("alice", WHEN, {
+        maxFiles: total - 1,
+        maxBytes: 1024 * 1024,
+        maxFileBytes: 1_024,
+      });
+
+      // The other half of the precedence rule: a file stepped over never
+      // displaces the limit that actually cut the tenant short.
+      expect(created.truncationReason).toBe("file-count");
+    });
+
+    it("deletes the orphaned prefix and records a failed create when the copy throws", async () => {
+      await seedExtras(3);
+      const storage = getStorage();
+      const originalRead = storage.readAsset.bind(storage);
+      const boom = new Error("read exploded");
+      let reads = 0;
+      vi.spyOn(storage, "readAsset").mockImplementation(async (target) => {
+        reads += 1;
+        // The SECOND file, so the first one is already written under the backup
+        // prefix when the throw lands — there really are orphans to clean up.
+        if (reads === 2) throw boom;
+        return originalRead(target);
+      });
+
+      const error = await createOwnerBackup("alice", WHEN)
+        .then(() => null, (caught: unknown) => caught);
+
+      // The original object, not a wrapper: callers identify failures by what
+      // the error IS (`isEnoent`, `.path`), and re-throwing a new one would
+      // turn every recognised failure into an unrecognised one.
+      expect(error).toBe(boom);
+      // Nothing half-written survives, and nothing points at it.
+      expect(await listBackupManifests("alice")).toHaveLength(0);
+      const remaining = (await getStorage().listFiles(`backups/${tenantForOwner("alice")}`))
+        .filter((entry) => /^bak_/.test(entry.name));
+      expect(remaining).toHaveLength(0);
+      // And the failure is visible in the same ledger the verify pass writes
+      // to, which before DW-678 recorded nothing at all for this path.
+      const [operation] = await listOperations("alice", 10);
+      expect(operation.kind).toBe("backup");
+      expect(operation.operation).toBe("create");
+      expect(operation.status).toBe("failed");
+      expect(operation.detail).toContain("read exploded");
+    });
+
+    it("backs a tenant that fits up in full, across both history families", async () => {
+      await seedExtras(2);
+      await seedPageHistory(2);
+      await seedArtifactHistory(2);
+      const { count: total } = await measureTenant();
+
+      const created = await createOwnerBackup("alice", WHEN, {
+        maxFiles: 100,
+        maxBytes: 1024 * 1024,
+      });
+
+      // Three passes must partition the tree, not sample it: every file once,
+      // and no flag — the mirror of every truncation case above.
+      expect(created.files).toHaveLength(total);
+      expect(new Set(created.files.map((file) => file.path)).size).toBe(total);
+      expect("truncated" in created).toBe(false);
+      expect("truncationReason" in created).toBe(false);
+    });
+  });
 });
 
 describe("the partial-backup label", () => {
@@ -451,6 +697,10 @@ describe("the partial-backup label", () => {
       .toBe("partial — stopped at the file-count limit");
     expect(backupTruncationLabel({ truncated: true, truncationReason: "total-bytes" }))
       .toBe("partial — stopped at the total-bytes limit");
+    // Worded differently because it IS different: the copy did not stop, it
+    // stepped over one object it could not hold and carried on.
+    expect(backupTruncationLabel({ truncated: true, truncationReason: "file-size" }))
+      .toBe("partial — skipped a file over the file-size limit");
   });
 
   it("still says partial when the reason is absent or unknown", () => {

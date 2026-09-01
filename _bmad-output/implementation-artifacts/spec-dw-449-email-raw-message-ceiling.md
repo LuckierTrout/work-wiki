@@ -2,12 +2,33 @@
 title: 'Clamp the raw-email cap to Cloudflare Email Routing''s verified inbound ceiling'
 type: 'bugfix'
 created: '2026-08-31'
-status: 'in-progress'
+status: 'done'
 review_loop_iteration: 0
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      The 20 MB aggregate attachment budget quoted to accepted senders is itself
+      unreachable over Email Routing, so the same defect DW-449 fixed for the
+      refusal copy survives at the acknowledgement.
+    evidence: |-
+      `MAX_EMAIL_AGGREGATE_DOCUMENT_MB` is quoted in the over-budget
+      acknowledgement (`workers/email-ingest/index.ts`, "the 20 MB total
+      attachment budget"), but 20 MiB of decoded payload is ~27.4 MiB of base64
+      and ~62 MiB of quoted-printable — both above the 25 MiB inbound ceiling
+      this bundle just recorded. It is reachable only from a client sending
+      unencoded (`7bit`/`8bit`) parts, which is not a shape any mainstream client
+      emits for the PDF/DOCX/XLSX formats the Worker advertises. `README.md`
+      records the arithmetic honestly, but the sender-facing sentence still names
+      a budget no real message can spend, and the DW-360 selection loop it
+      guards is correspondingly unreachable in the field — the suite now has to
+      build synthetic `7bit` PDF fixtures to exercise it at all. Out of scope
+      here: the recorded decision named only `MAX_RAW_EMAIL_BYTES`, and lowering
+      the budget moves constants this spec's Block If holds back.
+    location: >-
+      workers/email-ingest/index.ts (MAX_EMAIL_AGGREGATE_DOCUMENT_MB acknowledgement copy)
+    severity: low
 baseline_revision: '7cfc9d0b562a88be600e4b67e6063fb2512b8f85'
 ---
 
@@ -86,6 +107,23 @@ baseline_revision: '7cfc9d0b562a88be600e4b67e6063fb2512b8f85'
 
 ## Review Triage Log
 
+### 2026-08-31 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 9: (high 0, medium 1, low 8)
+- defer: 1: (high 0, medium 0, low 1)
+- reject: 7: (high 0, medium 0, low 7)
+- addressed_findings:
+  - `[medium]` `[patch]` `expectResendableRefusal` bounded the quoted figure only from ABOVE, so a regression shrinking `MAX_RAW_EMAIL_MB` to "0.0 MB" or "18.2 MB" passed every refusal case — the exact DW-449 defect inverted, and silently contradicting the 25.0 MB the README documents. The helper now pins the figure to within one displayed step (0.1 MB) of the enforced cap, so it says "the figure IS the cap, rounded down".
+  - `[low]` `[patch]` The helper's `/larger than ([\d.]+) MB/` matched the first such phrase anywhere in the reply and could drift onto the Worker's per-document `larger than 10 MB` sentence — anchored to the raw-gate sentence.
+  - `[low]` `[patch]` `PART_LINE_CHARS = 76` was wrong twice: `asciiPartBytes` marks lines at 75 payload characters, and the "and for base64" claim was false since `base64Lines` never reads it — renamed `ASCII_PART_LINE_STRIDE` and re-documented.
+  - `[low]` `[patch]` `literalLines`' tail branch was unreachable and would have decoded one byte short if reached, and its `String.fromCharCode(...)` spread is only safe because markers cap chunks at 75 — branch dropped, both preconditions asserted and documented.
+  - `[low]` `[patch]` README mixed decimal MB and MiB across one bullet list and misdescribed the operator-facing symptom as a "silent bounce" — units committed to MiB and labelled, figures corrected (~13.7 MiB, ~27.4 MiB), and the real symptom stated: an SMTP-time rejection whose delivery-failure notice comes from the sender's own provider, with nothing logged by work-wiki.
+  - `[low]` `[patch]` The aggregate-budget suite's doc explained why base64 stopped working but not that the surviving `7bit` printable-ASCII PDF shape is synthetic — recorded, so the suite is not read as evidence the budget is reachable in the field.
+  - `[low]` `[patch]` `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` gates nothing today, leaving `WORST_CASE_TRANSFER_ENCODING_FACTOR` and `MIME_ENVELOPE_HEADROOM_BYTES` as unreachable arithmetic — its comment now says so plainly and states what would make it bind again.
+  - `[low]` `[patch]` Two renamed parity cases asserted a refusal their titles did not mention — titles now cover both halves.
+  - `[low]` `[patch]` Inverting the two quoted-printable gate cases left no POSITIVE quoted-printable coverage at a gate-relevant size — added a forward case derived through `quotedPrintablePartWireSize`, pinning the ~8 MiB of QP payload the clamp still admits.
+
 ## Design Notes
 
 The clamp is a ceiling, not a re-derivation. Both terms stay exported so each keeps its own tests:
@@ -110,3 +148,31 @@ What the clamp costs, stated rather than discovered later: a maximally-escaped q
 - `pnpm test` -- expected: no new failures against the pre-change baseline
 - `pnpm lint` -- expected: clean
 - `git status --porcelain src/app/api/email/ingest/route.ts workers/email-ingest/wrangler.jsonc` -- expected: empty
+
+## Auto Run Result
+
+Status: done
+
+**Implemented change.** Cloudflare Email Routing's inbound per-message ceiling was verified at **25 MiB** against two independent Cloudflare doc pages — the Email Routing limits page ("Inbound message size: 25 MiB. Messages larger than this are rejected.") and the Email Workers guide, whose own size-check example reads `message.rawSize > 25 * 1024 * 1024`. That figure is now an exported constant, and the enforced raw cap is `Math.min` of it and the aggregate derivation, so the refusal quotes 25.0 MB instead of a 62.4 MB the transport had already rejected.
+
+**Files changed**
+- `workers/email-ingest/index.ts` — added `EMAIL_ROUTING_MAX_INBOUND_BYTES`, renamed the derivation to `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, clamped `MAX_RAW_EMAIL_BYTES` with `Math.min`, and corrected every comment that stated 62.4 MB / 65,496,679 as the enforced gate.
+- `workers/email-ingest/README.md` — records the 25 MiB ceiling, its source URL and verification date, the per-encoding consequence for each advertised figure, and the operator-facing symptom of an upstream rejection.
+- `src/lib/__tests__/email-ingest-allowlist-parity.test.ts` — derivation assertions re-pointed at the derived constant; new case pinning the clamp itself.
+- `src/lib/__tests__/email-ingest-worker.test.ts` — the two quoted-printable gate cases inverted to refusals with a shared `expectResendableRefusal`, a positive QP case added, and the over-budget fixtures moved to unencoded (`7bit`) parts so DW-360's bound stays reachable under a 25 MiB gate.
+
+**Review findings.** 9 patched (1 medium, 8 low), 1 deferred (low), 7 rejected. Follow-up review recommended: **true** — score 11 (3 x 1 medium + 1 x 8 low), at or above the threshold of 5.
+
+**Verification**
+- `npx vitest run` on the three email-ingest suites: 101 passed.
+- Full suite: 357 files / 8556 passed, 1 skipped, 0 failed. (An earlier full run showed 82 failures — all 5s timeouts and `ENOTEMPTY` temp-dir races from a concurrent session; that run took 275s against this one's 139s, and the failures did not recur.)
+- `npx tsc --noEmit` clean; `npx eslint` clean on the touched test files.
+- Mutation A — `Math.min` replaced by the derived term alone: 5 failures, including `expected 65431142.4 to be less than or equal to 26214400`. The clamp is load-bearing.
+- Mutation B — a stray `/1024` in `MAX_RAW_EMAIL_MB`: 3 failures on the new lower bound, which the pre-review helper passed.
+- Forbidden files (`src/app/api/email/ingest/route.ts`, `workers/email-ingest/wrangler.jsonc`, `deferred-work.md`) unmodified.
+
+**Residual risks**
+- The 25 MiB figure is documentation-sourced, not probed against a live Email Routing address. The constant and the README both name the source so it can be re-verified.
+- Clamping to exactly the platform ceiling makes the Worker's own gate effectively unreachable in production: anything above 25 MiB is refused upstream, so the corrected refusal copy is defence-in-depth rather than a message senders will routinely see. Keeping a band below the ceiling in which the Worker could refuse and explain was not what the recorded decision asked for.
+- DW-360's decoded-budget selection loop is now exercised only through synthetic unencoded (`7bit`) `application/pdf` fixtures — the only shape that can carry an over-budget payload through a 25 MiB gate. The suite records this; the underlying reachability question is the deferred finding above.
+- A concurrent `bmad-loop` session shares this working copy. It rewrote history and absorbed this run's first-pass commit into its own sweep commit; its in-flight files (`src/lib/ingest.ts`, `src/lib/__tests__/ingest.test.ts`, `src/lib/__tests__/tasks-route.test.ts`, `spec-dw-427-ingest-fresh-merge-bases.md`) were left untouched and uncommitted by this session.

@@ -802,6 +802,30 @@ describe("POST /api/tasks/run", () => {
   });
 
   /**
+   * DW-427. `reingest`'s merge base now reads `{ fresh: true, strict: true }`,
+   * so a provider blip arrives here as the STORAGE error rather than as
+   * `Cannot re-ingest: page "x" not found`. This row pins the shape that error
+   * takes against the classifier the fix depends on: the store-fault row runs
+   * ahead of `/not found/i`, so even a store fault whose sentence reads like a
+   * miss gets the transient 500 and the queue's bounded retry — never the 422
+   * poison, which is permanent and would strand a repairable page.
+   */
+  it("500s an errno-coded store fault out of reingest, even worded like a miss", async () => {
+    mockedReingest.mockRejectedValueOnce(
+      Object.assign(new Error("EIO: i/o error, page \"x\" not found on this volume"), {
+        code: "EIO",
+      }),
+    );
+
+    const res = await run({ kind: "maintain", op: "staleness", slug: "x" });
+
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({
+      error: 'EIO: i/o error, page "x" not found on this volume',
+    });
+  });
+
+  /**
    * DW-482. `parseRegistry` refuses a corrupt research registry (DW-297) and
    * that refusal used to reach the final 500 by FALL-THROUGH: past
    * `/not found/i`, past `ClientInputError`, past the ingest cap, landing on

@@ -171,7 +171,7 @@ describe("email-ingest allowlist parity", () => {
    * it. Re-pointed rather than deleted, so the derivation's reach stays observed
    * and the clamp is measurably a CEILING rather than a re-derivation.
    */
-  it("derives a cap wide enough for a full-size document under the worst-case transfer encoding", () => {
+  it("derives room for a worst-case-encoded full-size document, which the enforced cap then refuses", () => {
     const wireSize = quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE);
     expect(wireSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
     // ...and over what the transport carries, which is the fact the enforced cap
@@ -233,7 +233,7 @@ describe("email-ingest allowlist parity", () => {
    * Cloudflare Email Routing at all; the gate case in
    * `email-ingest-worker.test.ts` pins that refusal and the figure it quotes.
    */
-  it("derives a cap wide enough for MAX_EMAIL_ATTACHMENTS mid-size documents at the stated average", () => {
+  it("derives room for MAX_EMAIL_ATTACHMENTS mid-size documents, which the enforced cap then refuses", () => {
     // Measured PER PART, never by scaling one measurement. Ten separate 2 MiB
     // parts cost slightly more than one 20 MiB part -- each pays its own short
     // final line, a soft break and a CRLF -- and it is the ten-part figure the

@@ -3306,7 +3306,9 @@ source_spec: `spec-dw-358-362-email-worker-caps-and-aggregate-budget.md`
 location: workers/email-ingest/index.ts (MAX_RAW_EMAIL_MB refusal copy)
 severity: low
 reason: Email Routing is reported to enforce an inbound per-message limit of roughly 25 MiB. Nothing in `wrangler.jsonc`, `workers/email-ingest/README.md` or this repo records that figure, and it could not be verified offline, so nothing was clamped. If the premise holds, the shapes this derivation was widened to admit — ten byte-dense quoted-printable parts at 65,431,170 bytes — never reach the Worker at all, and the refusal copy invites a resend under a ceiling the transport rejects first.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-raw-message-ceiling
+resolution-undo: 941783c3125f5f8699b110a7b68b54a08e8cf1ae9522ffaf4bf93696e37c16ae 2026-08-31 7374617475733a206f70656e
 decision: 2026-08-28 Verify and clamp — Verify Email Routing's current inbound per-message limit, record it in workers/email-ingest/README.md and beside the constant, and clamp MAX_RAW_EMAIL_BYTES to it so MAX_RAW_EMAIL_MB quotes a figure a sender can actually reach.
 
 ### DW-450: `inlineAttachment` reads only `disposition`, so a signature logo sent with a Content-ID but no Content-Disposition header still produces the phantom skipped- attachment line DW-359 exists to remove.
@@ -5423,4 +5425,20 @@ location: _bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-s
 source_spec: `spec-dw-425-create-conflict-fresh-reads.md`
 severity: low
 reason: `_bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-strict-reads.md` (`status: in-review`, another session's in-flight bundle) groups `src/cli.ts:366` with `src/cli.ts:279` and `:327` under "Do not convert reads that do not authorize a write and do not serve an existence answer -- the pure display reads ... stay exactly as they are." `:366` is neither: it is `runCreate`'s conflict guard, whose `null` is the sole authorization for the create below, and DW-496's own `reason` (`deferred-work.md:3717`) names the create-conflict guards as the mirror case in scope. That same spec also plans to convert `src/cli.ts:431` -- the SAME site this bundle converted -- and prescribes the opposite handling there ("A rethrow reaches `main().catch` ... correct already, no repair needed"), where this bundle's intent explicitly requires a distinct "could not read" exit message. If the stale Never clause is later acted on, the create guard reverts to a cached-negative read and a create can
+status: open
+
+### DW-697: The 20 MB aggregate attachment budget quoted to accepted senders is itself unreachable over Email Routing, so the same defect DW-449 fixed for the refusal copy survives at the acknowledgement.
+origin: spec-deferred 76510c3ef8c7
+location: workers/email-ingest/index.ts (MAX_EMAIL_AGGREGATE_DOCUMENT_MB acknowledgement copy)
+source_spec: `spec-dw-449-email-raw-message-ceiling.md`
+severity: low
+reason: `MAX_EMAIL_AGGREGATE_DOCUMENT_MB` is quoted in the over-budget acknowledgement (`workers/email-ingest/index.ts`, "the 20 MB total attachment budget"), but 20 MiB of decoded payload is ~27.4 MiB of base64 and ~62 MiB of quoted-printable — both above the 25 MiB inbound ceiling this bundle just recorded. It is reachable only from a client sending unencoded (`7bit`/`8bit`) parts, which is not a shape any mainstream client emits for the PDF/DOCX/XLSX formats the Worker advertises. `README.md` records the arithmetic honestly, but the sender-facing sentence still names a budget no real message can spend, and the DW-360 selection loop it guards is correspondingly unreachable in the field — the suite now has to build synthetic `7bit` PDF fixtures to exercise it at all. Out of scope here: the recorded decision named only `MAX_RAW_EMAIL_BYTES`, and lowering the budget moves constants this spec's Block If holds back.
+status: open
+
+### DW-698: The realm-fork guard at src/lib/ingest.ts:1952 reads through `pageCache` and flattens a non-ENOENT storage failure to `null`, so a provider blip skips the fork and lets a non-owner's ingest overwrite
+origin: spec-deferred fdc2ba92f626
+location: src/lib/ingest.ts:1952
+source_spec: `spec-dw-427-ingest-fresh-merge-bases.md`
+severity: low
+reason: Traced during the DW-427 review (not executed). `const resolvedExisting = await readWikiPageWithFrontmatter(slug)` at src/lib/ingest.ts:1952 is the only gate that forks to a free slug when the resolved slug landed on another owner's PRIVATE page. Without `strict` a blip answers `null`, the guard is skipped, and the ingest proceeds to the merge base at :2068 — which DOES find the private page, preserves its `owner`/`visibility` (:2140-2146) and writes the actor's body over it. `writeWikiPageWithSideEffects` in lifecycle.ts carries no authorization of its own, so nothing downstream re-decides the fork. The DW-427 bundle named this line only as one of the "roughly eight pure existence probes" to leave alone; it did not name this harm, and the intent's Never clause kept it out of scope for this session.
 status: open

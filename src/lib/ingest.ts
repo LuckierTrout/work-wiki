@@ -530,7 +530,20 @@ export async function ingestDocument(
  * Reads the page's frontmatter to find the original URL, fetches fresh content,
  * and runs the standard ingest pipeline to update the page.
  *
- * @throws {Error} When the page doesn't exist or has no `source_url` in its frontmatter.
+ * @throws {Error} When the page doesn't exist or has no `source_url` in its
+ * frontmatter. A non-ENOENT storage failure on the merge base is rethrown AS
+ * ITSELF (`{ strict: true }`) rather than flattened into "no such page".
+ *
+ * What that buys is the removal of the BOGUS `not found` sentence — the one
+ * `POST /api/tasks/run` poisons at 422, a permanent verdict on a page that is
+ * fine. Where the rethrown error lands instead depends on its SHAPE, and only
+ * two shapes reach the store-fault row: a `StoreFaultError`, or an `Error`
+ * carrying an errno `code` (see `isStoreFault` in `./errors`). Those get a
+ * transient 500 and the queue's bounded retry. Anything else — an R2 provider
+ * failure carries neither, `./storage/r2` propagates non-miss failures raw —
+ * falls through to the generic transient 500 at the bottom of the same ladder.
+ * Both are retried; neither is the 422 poison, unless the provider's own
+ * sentence happens to contain "not found".
  */
 export async function reingest(
   slug: string,
@@ -540,8 +553,14 @@ export async function reingest(
     triggeredBy?: string;
   },
 ): Promise<IngestResult> {
-  const page = await readWikiPageWithFrontmatter(slug);
+  // Write base (DW-195/DW-379). The whole re-ingest rewrites from the
+  // `source_url` this read returns, so it must see the STORED bytes — not an
+  // entry the module-global `pageCache` is holding open for a concurrent bulk
+  // scan — and a provider blip must not read as an absence, which would raise
+  // the bogus `not found` below and poison the queued task at 422.
+  const page = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
   if (!page) {
+    // ENOENT only — a storage fault throws above.
     throw new Error(`Cannot re-ingest: page "${slug}" not found`);
   }
 
@@ -1429,8 +1448,15 @@ async function attachIngestTrigger(
     actorOwner?: string;
   },
 ): Promise<IngestResult | null> {
-  const existing = await readWikiPageWithFrontmatter(slug);
-  if (!existing) return null; // index drifted — let the caller ingest normally
+  // Write base (DW-195/DW-379): the frontmatter merged below and the
+  // `expectedContent` CAS precondition must describe the STORED bytes, so this
+  // read bypasses `pageCache` and refuses to flatten a provider blip into an
+  // absence — that fall-through would mint a DUPLICATE page and precondition
+  // the write on bytes nobody stored.
+  const existing = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+  // ENOENT only — the index drifted, so let the caller ingest normally. A
+  // storage fault throws above rather than arriving here as a `null`.
+  if (!existing) return null;
 
   // Realm-aware dedup: private content is owner-only, so a caller who isn't the
   // owner (or their agent) must NOT dedup into a private page — no write, no
