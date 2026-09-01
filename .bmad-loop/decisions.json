@@ -161,24 +161,6 @@
     "label": "Pause while withdrawn",
     "resolution": ""
   },
-  "DW-432": {
-    "answered_at": "2026-08-22",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.",
-    "key": "1",
-    "label": "Bounded per-page read fallback",
-    "resolution": ""
-  },
-  "DW-439": {
-    "answered_at": "2026-08-31",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Raise the client `REQUEST_TIMEOUT_MS` above `FETCH_TIMEOUT_MS` by a margin that covers request and response overhead, so the server's own timeout always fires first and the client reports a real refusal instead of an unconfirmed write. Add a comment at both constants naming the required ordering, and pin the ordering in a test so the two cannot silently converge again.",
-    "key": "1",
-    "label": "Raise the client deadline above the server's",
-    "resolution": ""
-  },
   "DW-441": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
@@ -195,33 +177,6 @@
     "intent": "Make validateUrlSafety async, add a Node implementation that resolves DNS and pins the resolved address through to connect time, and a Workers implementation that relies on an egress proxy or allowlist; document which protection each target actually has.",
     "key": "1",
     "label": "Per-runtime guard",
-    "resolution": ""
-  },
-  "DW-449": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Verify Email Routing's current inbound per-message limit, record it in workers/email-ingest/README.md and beside the constant, and clamp MAX_RAW_EMAIL_BYTES to it so MAX_RAW_EMAIL_MB quotes a figure a sender can actually reach.",
-    "key": "1",
-    "label": "Verify and clamp",
-    "resolution": ""
-  },
-  "DW-450": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Widen inlineAttachment to treat a part carrying a contentId that the HTML body references as inline even when disposition is absent, leaving a bare null disposition with no contentId as a real attachment, and pin both shapes with fixtures.",
-    "key": "1",
-    "label": "Trust Content-ID too",
-    "resolution": ""
-  },
-  "DW-477": {
-    "answered_at": "2026-08-28",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Add an owner-only repair route that moves an unparseable registry aside to a timestamped quarantine key, starts a fresh empty registry, and returns the quarantined path; have the refusing 500 body name that route, and pin that no readable registry is ever quarantined.",
-    "key": "1",
-    "label": "Quarantine-and-restart route",
     "resolution": ""
   },
   "DW-489": {
@@ -321,24 +276,6 @@
     "intent": "Extend the blank-pick rule from the credential line to the model placeholder, so a blank provider selection shows no model default rather than the stored provider's. Keep the stored-provider fallback everywhere the pick is not blank. Pin that the credential line and the model placeholder make the same statement for every pick state.",
     "key": "1",
     "label": "Blank the placeholder on a blank pick",
-    "resolution": ""
-  },
-  "DW-565": {
-    "answered_at": "2026-08-29",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Keep inline parts out of eligibility exactly as DW-446 decided, and add one acknowledgement line naming supported documents that were not queued because they were labelled inline, so a message is never answered as if nothing arrived. Count them in a fifth loss term rather than reshaping the existing four. Pin the reply for a message whose only part is an inline supported document.",
-    "key": "1",
-    "label": "Drop, but report",
-    "resolution": ""
-  },
-  "DW-566": {
-    "answered_at": "2026-08-29",
-    "bundle_name": "",
-    "effect": "build",
-    "intent": "Separate the counting predicate from the forwarding predicate: let the counting one trust `Content-ID` (which is what DW-450 was filed to fix \u2014 the phantom skipped-attachment line) while the forwarding one keeps reading `disposition` only, so no document is dropped on a Content-ID alone. Record the interaction in both call sites. Pin a Content-ID-only signature logo (no phantom line, not forwarded) and a Content-ID-only supported document (still handled).",
-    "key": "1",
-    "label": "Split the predicate in two",
     "resolution": ""
   },
   "DW-569": {
