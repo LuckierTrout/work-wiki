@@ -5478,3 +5478,11 @@ source_spec: `spec-c3-merge-empty-reconcile-guard.md`
 severity: medium
 reason: The new `emptyFallback: "throw"` guard only fires when the parsed body trims to empty. Two shapes slip past it and produce the same destruction this bundle set out to stop: `parseDisputedMarker` only matches `(yes|true)`, so a response of exactly "DISPUTED: no\n" is returned verbatim as the merged body (verified against the regex at src/lib/ingest.ts:1183); and a heading-only fold such as "# Agent Harness\n" is likewise non-empty. Either becomes `mergedBody`, is written over the survivor, lands in `MergeOperationReceipt.mergedContent` (replayed verbatim by Retry), and the absorbed page is hard-deleted with its revisions. Pre-existing — not introduced by this change, and outside this bundle's intent, which names only the empty-response fallback.
 status: open
+
+### DW-703: A `PATCH` whose `fetch` REJECTS after the body `PUT` landed still shows a bare transport message, so the exact harm DW-428 exists to prevent is live on that one branch.
+origin: spec-deferred 8ec100877273
+location: src/components/WikiEditor.tsx (handleSave outer catch) and src/components/__tests__/page-write-read-only.test.tsx
+source_spec: `spec-dw-428-editor-per-leg-save-reporting.md`
+severity: medium
+reason: `handleSave`'s prefix sits inside the metadata leg's `!res.ok` branch, so a dropped or aborted `PATCH` falls straight to the outer `catch` and the owner reads only "Failed to fetch" over a body that is already on disk — and retypes or reloads over it, which is the whole harm the change exists to remove. The omission is deliberate and argued (`partialSaveMessage`'s docblock, and the case `makes no claim about a metadata leg whose fetch never came back`): the decision's frozen sentence asserts "the metadata change was not", which nobody can claim about a request that never came back, and it interpolates a `<served error>` that branch does not have. Saying only the provable half — that the text was saved, and that the metadata outcome is unknown — needs a SECOND owner-facing sentence, which is an intent-level copy decision the 2026-08-22 decision did not open.
+status: open

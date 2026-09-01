@@ -30,6 +30,29 @@ export interface MetadataValues {
 export const EDIT_PAGE_READ_ONLY_COPY =
   "This page cannot be saved while this deployment is read-only. Your edits here will not be stored.";
 
+/**
+ * THE partial-save sentence, for the save that half landed (DW-428).
+ *
+ * States two facts and relays a third: the body leg was answered `ok`, the
+ * metadata leg was REFUSED, and here — verbatim, after the dash — is what the
+ * server said about that refusal.
+ *
+ * It cannot be a server sentence. Each route handled ONE request and can only
+ * speak about that one; a metadata refusal is written as "nothing was changed",
+ * which is true of the metadata and false of the page whose body this form
+ * already stored a moment earlier. Only this form knows a save was two writes,
+ * so only this form can say which half survived — and without it the owner
+ * reads a bare refusal, assumes the save did nothing, and retypes or reloads
+ * over a body that is already on disk.
+ *
+ * NOT for a metadata leg whose outcome is UNKNOWN. A `fetch` that rejected —
+ * dropped connection, aborted request — leaves nobody able to say the metadata
+ * change "was not" applied; that branch keeps the thrown message alone.
+ */
+export function partialSaveMessage(served: string): string {
+  return `Your text was saved; the metadata change was not — ${served}`;
+}
+
 interface WikiEditorProps {
   slug: string;
   /** The page's tenant — where to navigate after a successful save. */
@@ -255,6 +278,12 @@ export function WikiEditor({
     setBusy(true);
     setError(null);
 
+    // Whether the body leg of THIS attempt was answered `ok` — the same
+    // predicate that already lets execution reach the `PATCH` and that already
+    // re-stamps `version` below. A plain local, so it starts false on every
+    // attempt and cannot leak into a later one.
+    let bodyLanded = false;
+
     try {
       // 1. Save body if changed (PUT)
       if (bodyDirty) {
@@ -274,6 +303,7 @@ export function WikiEditor({
           };
           throw new Error(body.error ?? `body save failed (${res.status})`);
         }
+        bodyLanded = true;
         // The version of what LANDED, adopted before the PATCH leg can fail —
         // otherwise a retry after a failed PATCH re-sends a version this very
         // request superseded. Parsed with the same guard the error branch
@@ -298,9 +328,23 @@ export function WikiEditor({
           const body = (await res.json().catch(() => ({}))) as {
             error?: string;
           };
-          throw new Error(
-            body.error ?? `metadata save failed (${res.status})`,
-          );
+          // Every refusal that can reach here — the 403 read-only sentence, the
+          // 400 field shapes, a 403 NOT_OWNER, a 404 — reads as "nothing was
+          // changed". That is true of the METADATA and false of the page: the
+          // `PUT` above already landed the body, which is the fact the version
+          // docblock records and the fact the owner has no other way to learn.
+          //
+          // `served` is a non-empty STRING or nothing: the cast above is
+          // unchecked and `??` only catches null/undefined, so a refusal
+          // answering `{"error": ""}` would end the sentence on a dangling dash
+          // and a non-string `error` would splice `[object Object]` into it.
+          // The status fallback carries all three cases — it still proves the
+          // metadata was not applied — and is prefixed for the same reason.
+          const served =
+            typeof body.error === "string" && body.error.length > 0
+              ? body.error
+              : `metadata save failed (${res.status})`;
+          throw new Error(bodyLanded ? partialSaveMessage(served) : served);
         }
       }
 

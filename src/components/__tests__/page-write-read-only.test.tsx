@@ -4,7 +4,11 @@ import {
   DELETE_PAGE_READ_ONLY_COPY,
   DeletePageButton,
 } from "@/components/DeletePageButton";
-import { EDIT_PAGE_READ_ONLY_COPY, WikiEditor } from "@/components/WikiEditor";
+import {
+  EDIT_PAGE_READ_ONLY_COPY,
+  partialSaveMessage,
+  WikiEditor,
+} from "@/components/WikiEditor";
 import {
   REINGEST_READ_ONLY_COPY,
   ReingestButton,
@@ -13,6 +17,7 @@ import {
   REVERT_READ_ONLY_COPY,
   RevisionHistory,
 } from "@/components/RevisionHistory";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
@@ -348,9 +353,12 @@ describe("Edit page — the write precondition", () => {
     touchMetadata();
     fireEvent.click(save());
 
-    // The PATCH failed, so the form stayed open and said why.
+    // The PATCH failed, so the form stayed open and said why — and since the
+    // PUT had already landed, said which half of the save survived (DW-428).
     await waitFor(() =>
-      expect(screen.getByText("confidence must be a number")).toBeTruthy(),
+      expect(
+        screen.getByText(partialSaveMessage("confidence must be a number")),
+      ).toBeTruthy(),
     );
     expect(router.push).not.toHaveBeenCalled();
     expect(headersOf(0)["If-Match"]).toBe(`"${SEEDED_VERSION}"`);
@@ -367,6 +375,15 @@ describe("Edit page — the write precondition", () => {
   it("keeps the seeded version when a landed save answers no version at all", async () => {
     // The next save is then refused rather than blind, which is the safe
     // direction — and the form must not have crashed on the unparseable body.
+    //
+    // It is also the ONLY case anywhere that pins how "landed" is read for the
+    // DW-428 sentence: `bodyLanded` is set on the `PUT`'s `res.ok` alone, one
+    // line BEFORE its body is read, so a 200 whose payload will not parse still
+    // reports "Your text was saved" below. That is deliberate — `res.ok` is
+    // already what lets the `PATCH` fire at all, and a stricter notion used only
+    // by the sentence would let one save be landed for the version it holds and
+    // not landed for what it tells the owner. Move the assignment after the
+    // parse and this case is what fails.
     fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
       if (init?.method === "PUT") {
         return {
@@ -388,7 +405,9 @@ describe("Edit page — the write precondition", () => {
     rewriteBody();
     touchMetadata();
     fireEvent.click(save());
-    await waitFor(() => expect(screen.getByText("nope")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(partialSaveMessage("nope"))).toBeTruthy(),
+    );
 
     fireEvent.click(save());
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3));
@@ -466,6 +485,280 @@ describe("Edit page — the write precondition", () => {
       REWRITTEN,
     );
     expect(screen.queryByText(/428/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which half of a two-leg save survived (DW-428)
+// ---------------------------------------------------------------------------
+//
+// Save is TWO writes — `PUT` for the body, then `PATCH` for the metadata — and
+// before this it reported only the served sentence of whichever leg failed.
+// Every `PATCH` refusal is worded as "nothing was changed", so a save whose
+// body was already stored read as a save that did nothing, and the owner's
+// natural response — retype, or reload — throws away the body that landed.
+//
+// Only this form knows there were two writes, so the assertions are made on
+// what the owner reads, through the component's own helper rather than a second
+// copy of the wording.
+
+describe("Edit page — a save that half landed", () => {
+  const METADATA = {
+    confidence: null,
+    disputed: false,
+    tags: [],
+    aliases: [],
+    expiry: "",
+    valid_from: "",
+    supersedes: "",
+  };
+
+  const REWRITTEN = "# Alpha\n\nan entire page, retyped\n";
+
+  function mountEditor() {
+    return render(
+      <WikiEditor
+        slug="alpha"
+        tenant="alice"
+        initialContent={"# Alpha\n\noriginal body\n"}
+        initialVersion={SEEDED_VERSION}
+        initialMetadata={METADATA}
+      />,
+    );
+  }
+
+  function save(): HTMLButtonElement {
+    return screen.getByRole("button", { name: "Save" }) as HTMLButtonElement;
+  }
+
+  function rewriteBody(text = REWRITTEN) {
+    fireEvent.change(screen.getByLabelText(/Markdown/), { target: { value: text } });
+  }
+
+  function touchMetadata() {
+    fireEvent.click(screen.getByRole("switch", { name: /Disputed/i }));
+  }
+
+  /** The `PUT` lands; the `PATCH` is refused with a served sentence. */
+  function landThePutRefuseThePatch(
+    status: number,
+    patchBody: () => Promise<{ error?: string }>,
+  ) {
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ slug: "alpha", version: SEEDED_VERSION }),
+        } as unknown as Response;
+      }
+      return { ok: false, status, json: patchBody } as unknown as Response;
+    });
+  }
+
+  /**
+   * The error alert as an ELEMENT rather than as its text.
+   *
+   * `Alert variant="error"` renders a plain styled `div` with no ARIA role, so
+   * `queryByRole("alert")` would be null whether or not a sentence is on
+   * screen — an absence assertion that can never fail. Matching the node lets
+   * "no alert at all" be asserted without re-typing a fragment of the wording,
+   * and it is used in BOTH directions below, so a selector that stopped
+   * matching fails the cases expecting a sentence instead of quietly excusing
+   * the ones expecting none.
+   */
+  function errorAlert(container: HTMLElement): HTMLElement | null {
+    return container.querySelector<HTMLElement>(".bg-red-50");
+  }
+
+  /**
+   * The composed sentence, typed out ONCE — the only literal of it anywhere.
+   *
+   * Every other assertion in this block builds its expectation by calling
+   * `partialSaveMessage`, which compares the helper against itself: a helper
+   * rewritten to drop the `served` relay, or reworded outright, would leave all
+   * of them green. This is the fixed point they are anchored to. The server's
+   * half is the imported constant rather than a second copy of server copy, so
+   * only the client-owned prefix is spelled here.
+   */
+  const PREFIXED_READ_ONLY =
+    "Your text was saved; the metadata change was not — " +
+    READ_ONLY_REFUSAL.pageMetadata;
+
+  it("says nothing at all when both legs land", async () => {
+    // The default mock answers every call `ok: true`, so this is the shape the
+    // prefix must stay off: two writes, both applied, and the owner sent to the
+    // page rather than left reading about halves.
+    const { container } = mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith("/u/alice/alpha"));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(router.refresh).toHaveBeenCalled();
+    // No alert of any kind — not the prefix, and not a bare served sentence.
+    // Asserted on the NODE, so a bare served sentence fails here too.
+    expect(errorAlert(container)).toBeNull();
+  });
+
+  it("names both legs, relays the server's sentence, and keeps the draft", async () => {
+    // The read-only 403 is the sharpest case: its own wording says metadata
+    // "cannot be changed", which is true — and says nothing about the body this
+    // deployment nonetheless stored a moment earlier.
+    landThePutRefuseThePatch(403, async () => ({
+      error: READ_ONLY_REFUSAL.pageMetadata,
+    }));
+
+    const { container } = mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    // The second leg went where it was meant to. `landThePutRefuseThePatch`
+    // refuses everything that is not a `PUT`, so without this a save whose
+    // metadata leg used the wrong verb or the wrong route would still be
+    // reported as a metadata refusal.
+    const [patchUrl, patchInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(patchUrl).toBe("/api/wiki/alpha");
+    expect(patchInit.method).toBe("PATCH");
+
+    // THE anchor, and the only assertion here that does not route through the
+    // helper: the sentence on screen equals the literal above, character for
+    // character. A reworded prefix fails, and so does a helper that stopped
+    // relaying `served`.
+    await waitFor(() => expect(errorAlert(container)).not.toBeNull());
+    const alert = errorAlert(container)!;
+    expect(alert.textContent).toBe(PREFIXED_READ_ONLY);
+    // …and the server's own sentence is the TAIL of it, verbatim — the half
+    // this form must relay untouched rather than paraphrase.
+    expect(alert.textContent!.endsWith(READ_ONLY_REFUSAL.pageMetadata)).toBe(true);
+    // The helper is what composes it, so it has to agree with the literal. This
+    // is the tie that lets every other case here call the helper instead of
+    // typing the sentence again.
+    expect(partialSaveMessage(READ_ONLY_REFUSAL.pageMetadata)).toBe(
+      PREFIXED_READ_ONLY,
+    );
+
+    // Nothing else about the refused-save path moved: the whole draft is still
+    // on screen, the form is still open, and nothing navigated away.
+    expect((screen.getByLabelText(/Markdown/) as HTMLTextAreaElement).value).toBe(
+      REWRITTEN,
+    );
+    expect(router.push).not.toHaveBeenCalled();
+    expect(router.refresh).not.toHaveBeenCalled();
+    expect(save().disabled).toBe(false);
+  });
+
+  it("prefixes the status fallback too, when the refusal body will not parse", async () => {
+    // The fallback still proves the metadata was not applied, so the same two
+    // facts hold — and the owner is no less likely to retype over a landed body
+    // because the server's sentence went missing.
+    landThePutRefuseThePatch(500, async () => {
+      throw new SyntaxError("Unexpected token <");
+    });
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(partialSaveMessage("metadata save failed (500)")),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("falls back to the status when the served error is an empty string", async () => {
+    // The refusal body PARSES here, so the `??` that used to pick `served`
+    // accepted `""` and composed a sentence ending in a dangling dash — the
+    // owner learns their body was saved and is then told nothing at all about
+    // why the metadata was not. The status line is what is left to say.
+    landThePutRefuseThePatch(400, async () => ({ error: "" }));
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(partialSaveMessage("metadata save failed (400)")),
+      ).toBeTruthy(),
+    );
+  });
+
+  it("says nothing of the sort when only the metadata leg ran", async () => {
+    // Body clean: there is no landed body to reassure anyone about, and a
+    // prefix here would be a plain lie about text this save never sent.
+    const SERVED = "confidence must be a number";
+    fetchMock.mockImplementation(
+      async () =>
+        ({ ok: false, status: 400, json: async () => ({ error: SERVED }) }) as
+          unknown as Response,
+    );
+
+    mountEditor();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() => expect(screen.getByText(SERVED)).toBeTruthy());
+    expect(screen.queryByText(partialSaveMessage(SERVED))).toBeNull();
+    // One request: the `PATCH`. No `PUT` fired, which is why nothing landed.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe("PATCH");
+  });
+
+  it("says nothing of the sort when the body leg itself was refused", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          ok: false,
+          status: 412,
+          json: async () => ({ error: WRITE_CONFLICT_COPY }),
+        }) as unknown as Response,
+    );
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() => expect(screen.getByText(WRITE_CONFLICT_COPY)).toBeTruthy());
+    expect(screen.queryByText(partialSaveMessage(WRITE_CONFLICT_COPY))).toBeNull();
+    // The `PUT` short-circuits, so the `PATCH` never fired — which is what makes
+    // "the body leg landed" unambiguous at the prefix site.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe("PUT");
+  });
+
+  it("makes no claim about a metadata leg whose fetch never came back", async () => {
+    // A dropped connection leaves the metadata outcome UNKNOWN. "the metadata
+    // change was not" would be a claim nobody is in a position to make, so this
+    // branch keeps the thrown message alone.
+    const DROPPED = "Failed to fetch";
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ slug: "alpha", version: SEEDED_VERSION }),
+        } as unknown as Response;
+      }
+      throw new TypeError(DROPPED);
+    });
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() => expect(screen.getByText(DROPPED)).toBeTruthy());
+    expect(screen.queryByText(partialSaveMessage(DROPPED))).toBeNull();
   });
 });
 
