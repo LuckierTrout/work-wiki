@@ -34,6 +34,7 @@ import {
 } from "../structured-knowledge";
 import { _resetStorage, getStorage } from "../storage";
 import { tenantWikiRelPath } from "../wiki";
+import { SETTINGS_LABEL, settingsCategory, settingsPointer } from "../workbench-settings";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -257,6 +258,105 @@ describe("structured knowledge", () => {
     expect(rerun.relations[0]).toMatchObject({ type: "decision for" });
     const replacedEvidence = await getPageEvidence("alice", "decision-log");
     expect(replacedEvidence?.claims).toHaveLength(2);
+  });
+
+  describe("the refusal when no extraction provider is configured (DW-630)", () => {
+    /**
+     * `detectEnvProvider` auto-selects the primary provider from the FIRST of
+     * these that is set, and an inherited primary is what
+     * `getStructuredKnowledgeModelSettings` falls back to — so any one of them
+     * present in a developer's shell makes the unconfigured state, and this
+     * refusal, unreachable. The file-wide `beforeEach` clears only
+     * `OPENAI_API_KEY`, which is not enough.
+     */
+    const DETECTION_VARS = [
+      "ANTHROPIC_API_KEY",
+      "OPENAI_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "OLLAMA_API_KEY",
+      "OLLAMA_BASE_URL",
+      "OLLAMA_MODEL",
+    ] as const;
+
+    let saved: Record<string, string | undefined>;
+
+    beforeEach(() => {
+      saved = {};
+      for (const name of DETECTION_VARS) {
+        saved[name] = process.env[name];
+        delete process.env[name];
+      }
+      _resetConfigCache();
+    });
+
+    afterEach(() => {
+      for (const name of DETECTION_VARS) {
+        if (saved[name] === undefined) delete process.env[name];
+        else process.env[name] = saved[name];
+      }
+      _resetConfigCache();
+    });
+
+    /** The message `extractStructuredKnowledge` refuses the seeded page with. */
+    async function refusal(slug: string): Promise<string> {
+      try {
+        await extractStructuredKnowledge("alice", slug);
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+      // AFTER the `catch`, never inside the `try`: inline, this throw is caught
+      // by its own handler and the sentinel becomes the "message" asserted on.
+      throw new Error("expected the extraction to be refused");
+    }
+
+    it("sends an owner with no extraction provider to the LLM Models category", async () => {
+      // The sentence used to end "Choose one in Settings;" — a surface with
+      // nine categories and no hint which one holds provider selection, which
+      // is weaker than the sibling refusals in `llm.ts` that all name the
+      // field. Asserted against the DERIVATION, not a hand-composed literal: a
+      // test that spelled the label would still pass if the source stopped
+      // calling `settingsPointer`, and would fail on the very rename the
+      // derivation exists to absorb.
+      const pointer = settingsPointer("llm-models", SETTINGS_LABEL);
+      // No config is saved and the `beforeEach` above clears every variable
+      // `detectEnvProvider` consults, so nothing is selected or inherited and
+      // the refusal is reached directly.
+      await getStorage().writeFile(
+        tenantWikiRelPath("alice", "no-provider.md"),
+        "---\ntitle: No provider\nowner: alice\n---\nNothing can be extracted from here yet.\n",
+      );
+
+      const message = await refusal("no-provider");
+      // The WHOLE sentence, not a substring: `rejects.toThrow` would pass on a
+      // message that merely contained this, including one that had also kept
+      // the old bare "Settings" clause somewhere else in it.
+      expect(message).toBe(
+        `Structured Knowledge needs a configured extraction provider. Choose one in ${pointer}; credentials stay in server secrets.`,
+      );
+      // SHORT surface form, for the same reason `llm.ts` uses it: this is a
+      // runtime error raised from an extraction run, rendered on neither
+      // Settings surface, so the disambiguating "Workbench " would be noise.
+      expect(message).not.toContain("Workbench");
+    });
+
+    it("spells the destination nowhere in structured-knowledge.ts itself", async () => {
+      // The mirror of `llm.test.ts`'s whole-file scan, and the reason the
+      // pointer is hoisted to a module constant rather than composed inline at
+      // the throw: the acceptance criterion names BOTH files, and until now
+      // only `llm.ts` was scanned. Read as bytes, because a second refusal
+      // written beside this one with a hand-typed label is invisible to any
+      // assertion on a single message.
+      const source = await fs.readFile(
+        path.resolve(__dirname, "../structured-knowledge.ts"),
+        "utf8",
+      );
+      const category = settingsCategory("llm-models").label;
+      expect(source).not.toContain(`${SETTINGS_LABEL} → ${category}`);
+      // And the derivation is actually reached — a file that had simply dropped
+      // the destination would pass the check above too.
+      expect(source).toContain('settingsPointer("llm-models", SETTINGS_LABEL)');
+    });
   });
 
   it("surfaces a safe structured-output error and writes nothing on parse failure", async () => {

@@ -333,11 +333,16 @@ function getModel(cfg?: AppConfig) {
   const creds = getResolvedCredentials(cfg);
 
   if (!creds.provider) {
+    // The env var names STAY: this is the one refusal an operator can act on
+    // without a browser, and the list is the whole of that. Only the trailing
+    // destination changed (DW-630) — it used to stop at the bare surface word,
+    // so the most common keyless path was the one path that named no field,
+    // while the eight sibling refusals in this file all named one.
     throw new Error(
       "No LLM API key found. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, " +
         "GOOGLE_GENERATIVE_AI_API_KEY, DEEPSEEK_API_KEY, OLLAMA_API_KEY, or " +
         "OLLAMA_BASE_URL / OLLAMA_MODEL in your environment, or configure a " +
-        "provider in Settings.",
+        `provider in ${LLM_MODELS_POINTER}.`,
     );
   }
 
@@ -410,8 +415,21 @@ function getModel(cfg?: AppConfig) {
     }
     case "ollama-cloud": {
       if (!creds.apiKey) {
+        // In this function's own gap-naming voice, with both halves derived
+        // (DW-631). It used to hand-type the display label `providerLabel`
+        // owns and name an env var instead of a field — an owner who selected
+        // this provider in Settings was sent to a shell they may not have.
+        //
+        // DROPPING `OLLAMA_API_KEY` FROM THE SENTENCE COSTS NOTHING THE OWNER
+        // COULD HAVE ACTED ON, and the no-provider throw above is NOT why: that
+        // one fires only on `!creds.provider`, and reaching here means the
+        // provider IS `ollama-cloud`, so its env-var list never renders for this
+        // state. The reason is that the pre-switch guard in
+        // `getConfiguredModel` already sends a keyless `ollama-cloud` to this
+        // same derived destination (pinned in `llm.test.ts`) — so both ladders
+        // now name one place to go instead of two different ones.
         throw new Error(
-          "Ollama Cloud requires OLLAMA_API_KEY to be configured as a server secret.",
+          `The ${providerLabel(creds.provider)} provider needs an API key. Set it in ${LLM_MODELS_POINTER}.`,
         );
       }
       const ollama = createOllama({
@@ -472,14 +490,20 @@ export async function getConfiguredModel(options?: {
 
   if (provider) {
     const apiKey = apiKeyForProvider(provider, cfg);
-    if (provider !== "ollama" && !apiKey) {
-      // The sixth destination, and until DW-503 the only one of them that named
-      // none: this sentence used to end at "server." and hand back the raw slug
-      // ("openai", "ollama-cloud"), so the owner learned that something was
-      // unconfigured but neither what it is called nor where the field lives.
-      // Both halves are derived — `providerLabel` owns the display name and
-      // {@link LLM_MODELS_POINTER} owns the destination — which is what keeps
-      // this in step with the five sibling refusals rather than beside them.
+    // `custom` is exempt for the same reason `ollama` is, though not the same
+    // cause: its own case below names all three gaps in `getModel`'s order —
+    // base URL, API key, model — and routing it through this generic sentence
+    // reported the missing key BEFORE the missing endpoint, so one state got two
+    // diagnoses depending on the ladder it arrived on (DW-632).
+    if (provider !== "ollama" && provider !== "custom" && !apiKey) {
+      // One of the NINE refusals this file now sends somewhere, and until
+      // DW-503 the only one of them that named nowhere: this sentence used to
+      // end at "server." and hand back the raw slug ("openai", "ollama-cloud"),
+      // so the owner learned that something was unconfigured but neither what
+      // it is called nor where the field lives. Both halves are derived —
+      // `providerLabel` owns the display name and {@link LLM_MODELS_POINTER}
+      // owns the destination — which is what keeps this in step with the eight
+      // sibling refusals rather than beside them.
       throw new Error(
         `The ${providerLabel(provider)} provider is not configured on this server. Set it in ${LLM_MODELS_POINTER}.`,
       );
@@ -511,12 +535,21 @@ export async function getConfiguredModel(options?: {
             `The Custom provider needs a base URL. Set it in ${LLM_MODELS_POINTER}.`,
           );
         }
+        // The gap the pre-switch guard used to swallow (DW-632). It sits
+        // BETWEEN the two checks, not before them, because that is the order
+        // `getModel` names them in — endpoint, then key, then model — and the
+        // two ladders resolving one state have to reach one sentence.
+        if (!apiKey) {
+          throw new Error(
+            `The Custom provider needs an API key. Set it in ${LLM_MODELS_POINTER}.`,
+          );
+        }
         if (!resolvedModel) {
           throw new Error(
             `The Custom provider needs a model name. Set it in ${LLM_MODELS_POINTER}.`,
           );
         }
-        return createOpenAI({ apiKey: apiKey!, baseURL }).chat(resolvedModel);
+        return createOpenAI({ apiKey, baseURL }).chat(resolvedModel);
       }
       case "ollama": {
         // THROUGH THE ACCESSOR (DW-326), which was a raw

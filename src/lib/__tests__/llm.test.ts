@@ -542,9 +542,11 @@ describe("Custom provider refusals point at the LLM Models category", () => {
   });
 
   it("says the same thing on the getConfiguredModel path", async () => {
-    // The OTHER two throw sites. They are a separate resolution ladder, which is
+    // The OTHER throw sites. They are a separate resolution ladder, which is
     // exactly how five copies of one destination came to exist — so both ladders
-    // are asserted against the same derived label.
+    // are asserted against the same derived label. The key is set to reach the
+    // MODEL gap in the second half; since DW-632 it is no longer needed to step
+    // past a guard, because `custom` is exempt from that guard now.
     process.env.LLM_CUSTOM_API_KEY = "sk-custom-test";
     _resetConfigCache();
     await expect(getConfiguredModel({ provider: "custom" })).rejects.toThrow(
@@ -569,39 +571,48 @@ describe("Custom provider refusals point at the LLM Models category", () => {
     const throwSites = source
       .split("\n")
       .filter((line) => line.includes("The Custom provider needs"));
-    expect(throwSites).toHaveLength(5);
+    // SIX since DW-632: `getConfiguredModel`'s `custom` case gained the API-key
+    // refusal the pre-switch guard used to swallow, so both ladders now name the
+    // same three gaps in the same order.
+    expect(throwSites).toHaveLength(6);
     for (const line of throwSites) {
       expect(line).toContain("${LLM_MODELS_POINTER}");
       expect(line).not.toContain(`Settings → ${category}`);
     }
 
-    // WIDENED for DW-503: the keyless guard is a sixth sentence carrying this
-    // destination and it does not say "The Custom provider needs", so the scan
-    // above would have walked straight past a hand-typed label there. Every
-    // line that sends an owner anywhere is checked instead of the five that
+    // WIDENED for DW-503, and it earns its keep again under DW-631: the
+    // pre-switch keyless guard and the `ollama-cloud` guard both carry this
+    // destination and neither says "The Custom provider needs", so the scan
+    // above would have walked straight past a hand-typed label at either. Every
+    // line that sends an owner anywhere is checked instead of the six that
     // happen to share a subject.
     const pointerSites = source
       .split("\n")
       .filter((line) => line.includes("Set it in "));
-    expect(pointerSites.length).toBeGreaterThanOrEqual(6);
+    // EIGHT since DW-631/DW-632: the six above, the DW-503 keyless guard, and
+    // the `ollama-cloud` guard, which used to name an env var and no field.
+    expect(pointerSites.length).toBeGreaterThanOrEqual(8);
     for (const line of pointerSites) {
       expect(line).toContain("${LLM_MODELS_POINTER}");
       expect(line).not.toContain(`${SETTINGS_LABEL} → ${category}`);
     }
 
     // AND THE WHOLE FILE, because both loops above key on English phrasing —
-    // a seventh refusal worded "Find it in Settings → LLM Models." matches
+    // a tenth refusal worded "Find it in Settings → LLM Models." matches
     // neither filter and would slip past both. The destination itself is what
-    // may not be typed here, wherever and however it is worded.
+    // may not be typed here, wherever and however it is worded. (It is also
+    // what catches the no-provider throw, which ends "configure a provider in
+    // …" and so carries the destination without saying "Set it in ".)
     expect(source).not.toContain(`${SETTINGS_LABEL} → ${category}`);
   });
 });
 
 // ---------------------------------------------------------------------------
-// The keyless guard names the provider AND the destination (DW-503)
+// The keyless guard names the provider AND the destination (DW-503) — and does
+// not fire for `custom`, whose own case names the gap better (DW-632)
 // ---------------------------------------------------------------------------
 
-describe("the keyless guard points at the LLM Models category", () => {
+describe("the pre-switch keyless guard: who it catches and who it lets past", () => {
   /**
    * The whole destination, built the one sanctioned way — and the ONLY derived
    * value this describe needs, which is why the category label is not read
@@ -641,6 +652,23 @@ describe("the keyless guard points at the LLM Models category", () => {
     throw new Error("expected the keyless guard to refuse");
   }
 
+  /**
+   * The message the PRIMARY ladder (`callLLM` → `getModel`) refuses with.
+   *
+   * The sentinel throw is AFTER the `catch`, not inside the `try`, which is why
+   * it is a helper rather than an inline block: written inline, its own `catch`
+   * swallows it and the sentinel string becomes the message under assertion —
+   * a test that reports "expected …" as though the code had said it.
+   */
+  async function primaryRefusal(): Promise<string> {
+    try {
+      await callLLM("system", "hello");
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected the primary ladder to refuse");
+  }
+
   beforeEach(() => {
     savedCustomBaseUrl = process.env.LLM_CUSTOM_BASE_URL;
     savedCustomApiKey = process.env.LLM_CUSTOM_API_KEY;
@@ -659,7 +687,7 @@ describe("the keyless guard points at the LLM Models category", () => {
     _resetConfigCache();
   });
 
-  it("ends at the same destination the five sibling refusals do", async () => {
+  it("ends at the same destination the eight sibling refusals do", async () => {
     // The outer `beforeEach` deletes every provider key, so `openai` is asked
     // for and unconfigured — the exact state this guard exists for. Before
     // DW-503 the sentence stopped at "server.", naming no field to go and set.
@@ -676,20 +704,80 @@ describe("the keyless guard points at the LLM Models category", () => {
       `The Ollama Cloud provider is not configured on this server. Set it in ${pointer}.`,
     );
     expect(message).not.toContain("ollama-cloud");
-    // SHORT form, for the same reason the five siblings use it: a runtime error
+    // SHORT form, for the same reason the eight siblings use it: a runtime error
     // raised from the LLM call is rendered on neither Settings surface.
     expect(message).not.toContain("Workbench");
   });
 
-  it("refuses a keyless custom provider here, before the custom case runs", async () => {
-    // DW-503's own headline. `custom` reaches this guard first — its three
-    // named refusals live inside the `switch` below and never run without a
-    // key — so the sentence an owner with an unconfigured custom endpoint
-    // actually sees is this one, and until now it named neither the provider
-    // nor anywhere to go.
-    expect(await refusal({ provider: "custom" })).toBe(
-      `The Custom provider is not configured on this server. Set it in ${pointer}.`,
+  it("sends a keyless custom provider to its own case, not this guard (DW-632)", async () => {
+    // INVERTED from DW-503 on purpose. `custom` used to reach this guard first,
+    // so an owner who had set nothing was told the provider "is not configured
+    // on this server" here while the SAME state resolved through `getModel`
+    // said "needs a base URL" — one state, two diagnoses, decided by which
+    // ladder the call arrived on. `custom` is exempt now, so its own case names
+    // the first real gap and both ladders agree.
+    const message = await refusal({ provider: "custom" });
+    expect(message).toBe(
+      `The Custom provider needs a base URL. Set it in ${pointer}.`,
     );
+    expect(message).not.toContain("is not configured on this server");
+  });
+
+  it("names the API key gap a keyless custom provider used to hide", async () => {
+    // The state the old guard made unreachable: endpoint supplied, key missing.
+    // It short-circuited before the `switch`, so this sentence could not be
+    // produced on this ladder at all — the second half of DW-632.
+    process.env.LLM_CUSTOM_BASE_URL = "https://example.invalid/v1";
+    _resetConfigCache();
+    expect(await refusal({ provider: "custom" })).toBe(
+      `The Custom provider needs an API key. Set it in ${pointer}.`,
+    );
+  });
+
+  it("diagnoses one keyless custom state identically on both ladders", async () => {
+    // The acceptance criterion itself, asserted as an EQUALITY between the two
+    // resolvers rather than as two literals that happen to match — a rewording
+    // of one alone fails here even if both still read plausibly.
+    //
+    // BOTH gap states, not just the first. The API-key sentence is the one this
+    // change DUPLICATED — `getModel`'s custom case and `getConfiguredModel`'s
+    // custom case now each spell it — so it is the pair most able to drift.
+    seedConfig({ provider: "custom" });
+    expect(await primaryRefusal()).toBe(await refusal({ provider: "custom" }));
+    expect(await primaryRefusal()).toBe(
+      `The Custom provider needs a base URL. Set it in ${pointer}.`,
+    );
+
+    process.env.LLM_CUSTOM_BASE_URL = "https://example.invalid/v1";
+    _resetConfigCache();
+    expect(await primaryRefusal()).toBe(await refusal({ provider: "custom" }));
+    expect(await primaryRefusal()).toBe(
+      `The Custom provider needs an API key. Set it in ${pointer}.`,
+    );
+
+    // NO model-state equality on purpose. The two ladders genuinely diverge
+    // once both credentials are present — `getConfiguredModel` resolves the
+    // model from its own arguments and never reads `cfg.model` or `LLM_MODEL`,
+    // which `getModel` does — so asserting parity there would pin a difference
+    // that is real and deferred, not a copy that drifted.
+  });
+
+  it("still BUILDS a fully configured custom provider on this ladder", async () => {
+    // The exemption's other side, and the failure it could hide: `custom` no
+    // longer stops at the pre-switch guard, so if its own case refused a
+    // complete configuration every working custom deployment would break with
+    // this suite green. Asserting the refusals alone cannot tell a guard that
+    // throws correctly from one that always throws.
+    process.env.LLM_CUSTOM_BASE_URL = "https://example.invalid/v1";
+    process.env.LLM_CUSTOM_API_KEY = "sk-custom-test";
+    _resetConfigCache();
+    const model = await getConfiguredModel({
+      // Explicit, because `DEFAULT_MODELS.custom` deliberately does not exist —
+      // there is no name for this ladder to fall back to.
+      provider: "custom",
+      model: "some-served-model",
+    });
+    expect(model.modelId).toBe("some-served-model");
   });
 
   it("says the same thing when the WORKLOAD ladder routes the provider", async () => {
@@ -710,5 +798,122 @@ describe("the keyless guard points at the LLM Models category", () => {
     // "did not throw", including one built from the wrong name.
     const model = await getConfiguredModel({ provider: "ollama" });
     expect(model.modelId).toBe(DEFAULT_MODELS.ollama);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two refusals that named no field at all (DW-630, DW-631)
+// ---------------------------------------------------------------------------
+
+describe("getModel's remaining refusals name their destination", () => {
+  /** Built the one sanctioned way, for the same reason the describes above do. */
+  const pointer = settingsPointer("llm-models", SETTINGS_LABEL);
+
+  let dataDir: string | null = null;
+  let savedDeepseek: string | undefined;
+  let savedCustomBaseUrl: string | undefined;
+  let savedCustomApiKey: string | undefined;
+
+  function seedConfig(config: Record<string, unknown>) {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "llm-refusal-pointer-"));
+    fs.writeFileSync(
+      path.join(dataDir, ".llm-wiki-config.json"),
+      JSON.stringify(config),
+    );
+    process.env.DATA_DIR = dataDir;
+    _resetStorage();
+    _resetConfigCache();
+  }
+
+  /** The message `callLLM` — i.e. the PRIMARY ladder — refuses with. */
+  async function refusal(): Promise<string> {
+    try {
+      await callLLM("system", "hello");
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    throw new Error("expected getModel to refuse");
+  }
+
+  beforeEach(() => {
+    // The outer `beforeEach` clears every key `detectEnvProvider` consults
+    // EXCEPT this one, and a real `DEEPSEEK_API_KEY` in the developer's shell
+    // would auto-select a provider and make "no provider at all" unreachable.
+    savedDeepseek = process.env.DEEPSEEK_API_KEY;
+    savedCustomBaseUrl = process.env.LLM_CUSTOM_BASE_URL;
+    savedCustomApiKey = process.env.LLM_CUSTOM_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
+    delete process.env.LLM_CUSTOM_BASE_URL;
+    delete process.env.LLM_CUSTOM_API_KEY;
+  });
+
+  afterEach(() => {
+    if (savedDeepseek === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = savedDeepseek;
+    if (savedCustomBaseUrl === undefined) delete process.env.LLM_CUSTOM_BASE_URL;
+    else process.env.LLM_CUSTOM_BASE_URL = savedCustomBaseUrl;
+    if (savedCustomApiKey === undefined) delete process.env.LLM_CUSTOM_API_KEY;
+    else process.env.LLM_CUSTOM_API_KEY = savedCustomApiKey;
+    if (dataDir) fs.rmSync(dataDir, { recursive: true, force: true });
+    dataDir = null;
+    _resetStorage();
+    _resetConfigCache();
+  });
+
+  it("ends the no-provider throw at the derived pointer, keeping the env var list", async () => {
+    // The most common keyless state there is, and until DW-630 the one refusal
+    // in this file that stopped at the bare surface word.
+    const message = await refusal();
+    // The WHOLE message, composed from the derived pointer. `toContain` would
+    // pass on a message that had regrown a bare "…, or configure a provider in
+    // Settings." clause somewhere else in the same string — which is exactly
+    // the regression this test exists to catch.
+    expect(message).toBe(
+      "No LLM API key found. Set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, " +
+        "GOOGLE_GENERATIVE_AI_API_KEY, DEEPSEEK_API_KEY, OLLAMA_API_KEY, or " +
+        "OLLAMA_BASE_URL / OLLAMA_MODEL in your environment, or configure a " +
+        `provider in ${pointer}.`,
+    );
+    // Named separately as well as inside the whole-message assertion above: the
+    // env var enumeration is the half an operator with no browser acts on, and
+    // spelling out WHICH names are load-bearing says so to the next reader in a
+    // way one long literal does not.
+    expect(message).toContain("ANTHROPIC_API_KEY");
+    expect(message).toContain("OLLAMA_BASE_URL / OLLAMA_MODEL");
+    // SHORT form, as on every other runtime refusal raised from the LLM call.
+    expect(message).not.toContain("Workbench");
+  });
+
+  it("names the Ollama Cloud gap in getModel's own voice, with a derived label", async () => {
+    // `provider` is stored and `OLLAMA_API_KEY` is unset, so `getModel` reaches
+    // the `ollama-cloud` case with no key. The old sentence hand-typed the
+    // display label and sent the owner to an env var; both halves are derived
+    // now (DW-631), and the gap is named the way the four sibling throws in
+    // this function name theirs.
+    seedConfig({ provider: "ollama-cloud" });
+    const message = await refusal();
+    expect(message).toBe(
+      `The Ollama Cloud provider needs an API key. Set it in ${pointer}.`,
+    );
+    // The slug is an internal id; the picker shows the label.
+    expect(message).not.toContain("ollama-cloud");
+    expect(message).not.toContain("OLLAMA_API_KEY");
+    expect(message).not.toContain("Workbench");
+  });
+
+  it("still builds an ollama-cloud model on the WORKLOAD ladder once the key is present", async () => {
+    // NOT the other side of the guard DW-631 reworded. This calls
+    // `getConfiguredModel`, which never enters `getModel`'s `ollama-cloud`
+    // case at all — that guard's non-throwing leg is covered by
+    // `src/lib/__tests__/llm-ollama-cloud.test.ts` ("uses the cloud API with
+    // bearer authentication"). What this pins is the OTHER ladder reaching a
+    // built model for the same credentials, so the pre-switch guard above is
+    // shown to let a configured `ollama-cloud` past rather than merely to
+    // refuse an unconfigured one.
+    seedConfig({ provider: "ollama-cloud" });
+    process.env.OLLAMA_API_KEY = "ollama-cloud-test-key";
+    _resetConfigCache();
+    const model = await getConfiguredModel({ provider: "ollama-cloud" });
+    expect(model.modelId).toBe(DEFAULT_MODELS["ollama-cloud"]);
   });
 });

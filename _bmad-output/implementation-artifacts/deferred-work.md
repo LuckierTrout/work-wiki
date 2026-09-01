@@ -4899,7 +4899,9 @@ location: src/lib/llm.ts:303, src/lib/structured-knowledge.ts:299
 source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
 severity: low
 reason: `src/lib/llm.ts:303-308` (`getModel`'s no-provider-at-all throw) ends "…or configure a provider in Settings.", and `src/lib/structured-knowledge.ts:299-301` throws "Structured Knowledge needs a configured extraction provider. Choose one in Settings; credentials stay in server secrets." Neither names a category, so neither can drift — but both are now WEAKER than the sentence thrown 130 lines below the first one, which reads "Set it in Settings → LLM Models." The no-provider case is the most common keyless path, so the owner most in need of the pointer is the one who does not get it. Neither line contains "Set it in ", so the widened byte scan added in this bundle walks straight past both.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-llm-refusal-copy-pointers
+resolution-undo: e5f8862d4adc585244981e15513e397db3b6a4e95ea23993dc3dd48c9b0096ae 2026-09-01 7374617475733a206f70656e
 
 ### DW-631: `getModel`'s Ollama Cloud refusal hand-types the display label `providerLabel` owns and names no destination.
 origin: spec-deferred 23ccead14b73
@@ -4907,7 +4909,9 @@ location: src/lib/llm.ts:380
 source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
 severity: low
 reason: `src/lib/llm.ts:378-382` throws "Ollama Cloud requires OLLAMA_API_KEY to be configured as a server secret." It spells "Ollama Cloud", which is `PROVIDER_INFO`'s label for `ollama-cloud` (`src/lib/providers.ts:17`) and is now derived through `providerLabel` at the sibling guard this bundle fixed — so the same rename that moves one leaves the other. It also names an env var and no Settings field, where the five DW-369 refusals and the DW-503 guard all end in the derived pointer. Same `switch` the change touched; outside the intent's named sites.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-llm-refusal-copy-pointers
+resolution-undo: e5f8862d4adc585244981e15513e397db3b6a4e95ea23993dc3dd48c9b0096ae 2026-09-01 7374617475733a206f70656e
 
 ### DW-632: A keyless `custom` provider gets two different diagnoses depending on which resolution ladder it arrives on.
 origin: spec-deferred 1ae87fbfb4c3
@@ -4915,7 +4919,9 @@ location: src/lib/llm.ts:433
 source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
 severity: low
 reason: Both ladders now end at the same derived destination, but they disagree on what is wrong. `getModel` (`src/lib/llm.ts:336-360`) checks the base URL first and then says "The Custom provider needs an API key."; `getConfiguredModel`'s pre-switch guard (`:433`) fires before the `custom` case and says "The Custom provider is not configured on this server." — reporting the missing key before the missing base URL, the reverse of its sibling's order. DW-503 asked only for the destination and the display label, both delivered; the diagnosis half is untouched and pre-existing. `llm.test.ts:544`'s cross-ladder parity test sets `LLM_CUSTOM_API_KEY` specifically to step past this guard, so the one Custom state where the two ladders disagree is the state it does not cover. Not already in the ledger: `deferred-work.md:3748` is DW-503 itself, which names the ordering but does not record the divergence.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-llm-refusal-copy-pointers
+resolution-undo: e5f8862d4adc585244981e15513e397db3b6a4e95ea23993dc3dd48c9b0096ae 2026-09-01 7374617475733a206f70656e
 
 ### DW-633: The `starting` loopback health status renders the pane's "The sidecar is running" sentence, because the health ternary only special-cases port_conflict, unreachable and error.
 origin: spec-deferred ab4203592b4f
@@ -5589,4 +5595,12 @@ location: src/lib/wiki-retrieve.ts:552
 source_spec: `spec-dw-618-619-621-single-snapshot-model-client.md`
 severity: medium
 reason: `chatModelForRetrieve` is synchronous and its only production caller, `src/app/api/v1/projects/[wikiId]/retrieve/route.ts:51`, never awaits `loadConfig()` (grepped: the file contains no `loadConfig` call). On a process nothing else warmed, `loadConfigSync()` answers `{}` and re-stamps it for another 5 s (`src/lib/config.ts:1180-1186`), so `provider`, `model`, `configured` and `baseUrl` all describe an empty store and the public retrieve API tells a caller the wiki has no chat model. This is DW-548's class of defect — the one that forced `hasLLMKey` to become async — at a different surface. PRE-EXISTING: the bare `getChatModelSettings()` had the same cold read before DW-619 threaded a snapshot through it, and DW-619 neither caused nor names it. Not covered by the suite, which module-mocks `loadConfigSync`.
+status: open
+
+### DW-713: `getConfiguredModel` never reads `cfg.model` or `LLM_MODEL`, so a stored primary model refuses a `custom` provider the primary ladder builds fine.
+origin: spec-deferred a5a25d7b2c00
+location: src/lib/llm.ts:519
+source_spec: `spec-dw-630-631-632-llm-refusal-copy-pointers.md`
+severity: low
+reason: DW-632 aligned the two ladders' KEYLESS diagnoses; the MODEL gap still diverges, and this one is not copy. `getResolvedCredentials` (`src/lib/config.ts:2613-2632`) resolves the model from `LLM_MODEL`, then `cfg.model`; `getConfiguredModel`'s explicit-provider branch (`src/lib/llm.ts:519-524`) resolves only `options.model`, the workload settings, `OLLAMA_MODEL` and `DEFAULT_MODELS[provider]` — and `DEFAULT_MODELS.custom` is deliberately absent. Verified with a seeded config `{provider: "custom", model: "my-model", customApiKey, customBaseUrl}`: `getModel` builds the client, while `getConfiguredModel({provider: "custom"})` throws "The Custom provider needs a model name." Reachable in production at `src/lib/agent-runtime.ts:156`, which spreads `provider` with no `model` when an agent carries no model override — so a correctly configured custom endpoint is refused for a model the owner did set. Pre-existing and outside this bundle's named sites; the new cross-ladder equality tests delibera
 status: open

@@ -20,7 +20,29 @@ import {
 } from "./names-terms";
 import { getStorage } from "./storage";
 import { tenantForOwner, tenantWikiRelPath, validateSlug, validateTenant } from "./wiki";
+// Client-safe and Node-free, and it imports nothing from this file — so the
+// destination below can be DERIVED the one sanctioned way rather than typed.
+import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
 import { buildWorkspaceGuidance } from "./workspace-guidance";
+
+/**
+ * Where this file's extraction refusal sends the owner: the Settings surface,
+ * arrow, the `llm-models` category's own nav label (DW-630).
+ *
+ * ONE value, DERIVED, and hoisted for the same reason `LLM_MODELS_POINTER` is
+ * in `src/lib/llm.ts`: the refusal below used to end at a bare "Settings", and
+ * a destination composed inline at a throw site is one a second refusal can be
+ * written beside without reusing it. Naming it here means the next sentence
+ * that needs this destination has something to reach for, and a search for the
+ * literal turns up only the one place that owns it.
+ *
+ * The SHORT surface form (`SETTINGS_LABEL`, not the "Workbench Settings → …"
+ * default) matches `llm.ts` and for the same reason: this is a RUNTIME error
+ * raised from an extraction run, rendered on neither Settings surface, so the
+ * word that disambiguates the two would only be noise. See the doc block on
+ * `settingsPointer` in `./workbench-settings`.
+ */
+const LLM_MODELS_POINTER = settingsPointer("llm-models", SETTINGS_LABEL);
 
 export type KnowledgeKind =
   | "person"
@@ -297,8 +319,13 @@ export async function extractStructuredKnowledge(
   await loadConfig();
   const selection = getStructuredKnowledgeModelSettings();
   if (!selection.provider || !selection.model || !selection.configured) {
+    // "Settings" alone named a surface but no field, which on a Settings page
+    // with nine categories is a destination the owner still has to hunt for
+    // (DW-630). {@link LLM_MODELS_POINTER} derives it through the same helper
+    // the rendered Settings copy uses, so a rename of the `llm-models` category
+    // carries this sentence with it.
     throw new Error(
-      "Structured Knowledge needs a configured extraction provider. Choose one in Settings; credentials stay in server secrets.",
+      `Structured Knowledge needs a configured extraction provider. Choose one in ${LLM_MODELS_POINTER}; credentials stay in server secrets.`,
     );
   }
   const model = await getConfiguredModel({
