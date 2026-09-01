@@ -761,11 +761,12 @@ const PART_BYTES = 7 * 1024 * 1024;
  *
  * Written with NO transfer encoding (DW-449). Base64 was the original choice
  * because it is the encoding that makes the decoded-vs-wire gap reachable, but
- * once `MAX_RAW_EMAIL_BYTES` is clamped to Email Routing's 25 MiB inbound
- * ceiling, ~21 MiB of decoded payload is ~28.7 MiB of base64 and is refused at
- * the door -- which would test the raw gate instead of this bound. An unencoded
- * part costs ~1x, so it is now the only shape that carries an over-budget
- * decoded payload through a gate a real message could clear.
+ * once `MAX_RAW_EMAIL_BYTES` is clamped to the 25 MiB inbound ceiling this repo
+ * records for Email Routing -- a bound adopted, not checked (DW-457) -- ~21 MiB
+ * of decoded payload is ~28.7 MiB of base64 and is refused at the door, which
+ * would test the raw gate instead of this bound. An unencoded part costs ~1x, so
+ * it is now the only shape that carries an over-budget decoded payload through a
+ * gate a real message could clear.
  */
 let overBudgetEmail: string | undefined;
 function overBudgetFixture(): string {
@@ -2755,11 +2756,13 @@ describe("email-ingest misconfigured bindings", () => {
  * And it must not be bigger than the transport (DW-449). The enforced cap is
  * `Math.min(AGGREGATE_DERIVED_RAW_EMAIL_BYTES, EMAIL_ROUTING_MAX_INBOUND_BYTES)`,
  * so the derivation states what the aggregate budget NEEDS while the platform
- * term states what Email Routing will actually deliver. These cases test the
+ * term states what this repo records Email Routing as delivering -- a
+ * conservative bound adopted without verification (DW-457). These cases test the
  * ENFORCED figure, which is the only one a sender meets: what it forwards, what
  * it refuses, and -- the point of the clamp -- that the size the refusal quotes
- * back is never one the platform would have rejected first. The derivation's own
- * reach is pinned in `email-ingest-allowlist-parity.test.ts`.
+ * back is never one the recorded platform ceiling would have rejected first.
+ * The derivation's own reach is pinned in
+ * `email-ingest-allowlist-parity.test.ts`.
  */
 /**
  * The refusal's only job beyond saying no: quote the size the sender can resend
@@ -2768,10 +2771,14 @@ describe("email-ingest misconfigured bindings", () => {
  * The upper bounds are why DW-449 exists. Against `MAX_RAW_EMAIL_BYTES` because
  * a figure above the enforced cap invites a resend this Worker would bounce
  * again; against `EMAIL_ROUTING_MAX_INBOUND_BYTES` because a figure above the
- * PLATFORM ceiling invites a resend that never reaches this Worker to be bounced
- * by -- the sender's own provider returns a delivery failure and work-wiki never
- * explains anything. The second is what fails if the `Math.min` is ever replaced
- * by the derived term alone.
+ * recorded PLATFORM ceiling invites a resend that -- if that ceiling is real --
+ * never reaches this Worker to be bounced by, so the sender's own provider
+ * returns a delivery failure and work-wiki never explains anything. That second
+ * bound is a bound this repo adopted rather than measured (DW-457), which is why
+ * it is stated as a ceiling recorded and not as transport behaviour observed;
+ * the assertion holds either way, since a quoted figure under a conservative
+ * bound is safe whether or not the bound is tight. It is what fails if the
+ * `Math.min` is ever replaced by the derived term alone.
  *
  * The LOWER bound is the same defect inverted, and upper bounds alone cannot see
  * it: a stray `/ 1024`, or an edit that quoted what base64 actually carries,
@@ -2932,14 +2939,15 @@ describe("email-ingest raw message cap", () => {
   it("refuses a worst-case quoted-printable full-size document, quoting a size that can be resent", async () => {
     // The message DW-358 widened the DERIVATION for, at the surface a sender
     // actually feels. It no longer clears the gate: at ~3.12x a full-size
-    // document is 32,715,573 bytes on the wire, above the 25 MiB Email Routing
-    // itself refuses, so this Worker would never have seen it however wide its
-    // own cap was (DW-449). The derivation's admission of it is still pinned --
-    // against `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, in the parity suite.
+    // document is 32,715,573 bytes on the wire, above the 25 MiB this repo records
+    // as Email Routing's own ceiling, so under that bound this Worker would never
+    // have seen it however wide its own cap was (DW-449, DW-457). The
+    // derivation's admission of it is still pinned -- against
+    // `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, in the parity suite.
     //
     // What matters here is what the sender is TOLD. The old refusal quoted
-    // 62.4 MB, inviting a resend at a size the transport had already rejected;
-    // the figure now has to be one a message could actually arrive under.
+    // 62.4 MB, inviting a resend at a size well past the ceiling this repo
+    // records; the figure now has to be one a message could actually arrive under.
     const rawSize = quotedPrintablePartWireSize(MAX_EMAIL_DOCUMENT_BYTES);
     // The premise, computed rather than assumed: this is over the enforced gate
     // and under the derivation, which is the whole gap the clamp closes.
@@ -2959,8 +2967,8 @@ describe("email-ingest raw message cap", () => {
   it("forwards a message the size of a base64-encoded full-size document", async () => {
     // The DW-104 admission, and the one full-size shape that still ARRIVES: at
     // ~1.37x a full-size document is 14,348,938 bytes, well inside the 25 MiB
-    // the transport carries. If the clamp ever bit harder than the platform
-    // figure, this is the case that would fail.
+    // raw gate. If the clamp ever bit harder than the platform figure, this is
+    // the case that would fail.
     const msg = {
       ...message(ATTACHMENT_EMAIL, "Quarterly report"),
       rawSize: base64PartWireSize(MAX_EMAIL_DOCUMENT_BYTES),
@@ -2977,9 +2985,11 @@ describe("email-ingest raw message cap", () => {
   it("refuses the whole aggregate budget on the worst-case wire, quoting a size that can be resent", async () => {
     // DW-362's aggregate at the gate. Measured per part, because ten short final
     // lines cost more than one. On the worst-case wire those ten mid-size files
-    // are 65,119,170 bytes -- what the DERIVATION was sized to admit, and two
-    // and a half times what Email Routing delivers, so the message is refused
-    // upstream and the sender must hear a figure they can act on (DW-449).
+    // are 65,119,170 bytes: what the DERIVATION was sized to admit, and two and a
+    // half times the 25 MiB this repo records for Email Routing. This gate
+    // refuses the message. Under that recorded bound the transport would have
+    // refused it upstream first. Either way the sender must hear a figure they
+    // can act on (DW-449, DW-457).
     //
     // The derivation's reach is not deleted with the admission: the parity suite
     // still measures this same aggregate against

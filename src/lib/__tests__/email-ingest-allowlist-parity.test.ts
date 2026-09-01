@@ -168,16 +168,18 @@ describe("email-ingest allowlist parity", () => {
    * enough for a full-size document however the sender encodes it" -- and it
    * survives DW-449 intact. What DW-449 changed is that the derivation is no
    * longer what a sender meets: `MAX_RAW_EMAIL_BYTES` clamps it to the 25 MiB
-   * Cloudflare Email Routing will deliver, and a maximally-escaped full-size
-   * document is above that, so the transport refuses it before this Worker sees
-   * it. Re-pointed rather than deleted, so the derivation's reach stays observed
-   * and the clamp is measurably a CEILING rather than a re-derivation.
+   * this repo records for Cloudflare Email Routing -- a bound chosen, not
+   * observed (DW-457) -- and a maximally-escaped full-size document is above
+   * that, so this Worker refuses it, and under that bound the transport would
+   * have refused it first. Re-pointed rather than deleted, so the derivation's
+   * reach stays measured here and the clamp is measurably a CEILING rather than
+   * a re-derivation.
    */
   it("derives room for a worst-case-encoded full-size document, which the enforced cap then refuses", () => {
     const wireSize = quotedPrintablePartWireSize(MAX_DOCUMENT_SIZE);
     expect(wireSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
-    // ...and over what the transport carries, which is the fact the enforced cap
-    // reports and the gate case in `email-ingest-worker.test.ts` refuses on.
+    // ...and over the enforced cap, which is the gate the case in
+    // `email-ingest-worker.test.ts` refuses on.
     expect(wireSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
     // Pinned as FIXED, not merely as changed: this is the exact message the
     // previous base64-only derivation bounced. A byte-dense `.csv` or `.txt`
@@ -231,8 +233,9 @@ describe("email-ingest allowlist parity", () => {
    * The constant is `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` since DW-449. This whole
    * case is a statement about the DERIVATION -- that it is sized for the count
    * this Worker advertises -- and the clamp did not touch any term of it. The
-   * enforced cap is lower, so this aggregate does not reach the Worker over
-   * Cloudflare Email Routing at all; the gate case in
+   * enforced cap is lower, so this aggregate is refused at the door -- and under
+   * the 25 MiB this repo records for Cloudflare Email Routing it would not have
+   * reached the Worker at all; the gate case in
    * `email-ingest-worker.test.ts` pins that refusal and the figure it quotes.
    *
    * Since DW-455 it is also a statement about the BODY. The envelope headroom
@@ -464,10 +467,11 @@ describe("email-ingest allowlist parity", () => {
 
   /**
    * The clamp itself (DW-449). The derivation says how wide the aggregate budget
-   * NEEDS the door to be; Cloudflare Email Routing says how wide it can be. A
-   * cap taken from the derivation alone quoted senders 62.4 MB for a message the
-   * transport had already rejected at 25 MiB -- a refusal that invited a resend
-   * under a ceiling that does not exist.
+   * NEEDS the door to be; `EMAIL_ROUTING_MAX_INBOUND_BYTES` says how wide this
+   * repo has CHOSEN to assume Cloudflare Email Routing makes it -- a
+   * conservative bound recorded, not measured (DW-457). A cap taken from the
+   * derivation alone quoted senders 62.4 MB, two and a half times that bound,
+   * inviting a resend at a size nothing here has any reason to think arrives.
    *
    * Written as a `Math.min` rather than as a swap to the smaller term, the same
    * way `WORST_CASE_TRANSFER_ENCODING_FACTOR` is a `Math.max`: both terms stay
@@ -480,12 +484,14 @@ describe("email-ingest allowlist parity", () => {
     );
     // The invariant that outlives today's arithmetic, and the reason the clamp
     // exists at all: whatever either term becomes, the Worker may never enforce
-    // -- or quote -- a size the transport will not deliver.
+    // -- or quote -- a size above the ceiling recorded for the transport.
     expect(MAX_RAW_EMAIL_BYTES).toBeLessThanOrEqual(EMAIL_ROUTING_MAX_INBOUND_BYTES);
-    // The platform figure in the unit its source states it in, which is also the
-    // unit `workers/email-ingest/README.md` records for operators: "Inbound
-    // message size: 25 MiB". A byte count restated here would agree with the
-    // constant however wrong both were; the MiB is the checkable claim.
+    // The platform figure in the unit this repo records it in, which is also the
+    // unit `workers/email-ingest/README.md` gives operators. 25 MiB is an
+    // unverified conservative bound, not a checked one (DW-457), so this pins
+    // what was RECORDED rather than what was confirmed -- still the unit worth
+    // pinning, because a byte count restated here would agree with the constant
+    // however wrong both were.
     expect(EMAIL_ROUTING_MAX_INBOUND_BYTES / 1024 / 1024).toBe(25);
     // Which term binds TODAY, stated rather than left to the reader. Not a
     // requirement -- lowering the aggregate budget far enough would flip it, and

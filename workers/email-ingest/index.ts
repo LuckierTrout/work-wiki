@@ -244,10 +244,13 @@ export const BASE64_EXPANSION_FACTOR = (4 / 3) * (78 / 76);
  * None of those figures is what a sender meets today (DW-449). The ENFORCED gate
  * is `MAX_RAW_EMAIL_BYTES`, clamped to the 26,214,400-byte
  * `EMAIL_ROUTING_MAX_INBOUND_BYTES`, and EVERY quoted-printable figure above is
- * over it — Cloudflare Email Routing rejects those messages before this Worker
- * runs at all. Worst-case quoted-printable therefore carries roughly 8.0 MiB of
- * decoded payload in practice, not a full-size document; base64 still carries
- * one (14,348,938 bytes on the wire) with room to spare.
+ * over it — this Worker refuses those messages at the door, and under the
+ * ceiling `EMAIL_ROUTING_MAX_INBOUND_BYTES` records they would not have reached
+ * it in the first place. That ceiling is a bound this repo adopted, not one it
+ * observed (DW-457), so the upstream half of that sentence is only as good as
+ * the bound. Worst-case quoted-printable therefore carries roughly 8.0 MiB of
+ * decoded payload past the enforced gate, not a full-size document; base64
+ * still carries one (14,348,938 bytes on the wire) with room to spare.
  */
 export const QUOTED_PRINTABLE_EXPANSION_FACTOR = 3 * (78 / 75);
 /**
@@ -401,32 +404,56 @@ export const MIME_ENVELOPE_HEADROOM_BYTES =
  * and `MIME_ENVELOPE_HEADROOM_BYTES` are — today — arithmetic no message is ever
  * measured against. It is kept for two reasons rather than inlined away: it is
  * the record of what the aggregate budget NEEDS the door to be, which is the
- * claim the parity suite still measures; and it is the term that binds again the
- * moment the platform ceiling rises above it, at which point every figure above
- * becomes live without anyone having to re-derive it. Treat the paragraphs above
- * as that record, not as a description of what senders meet.
+ * claim the parity suite still measures; and it is the term that binds again as
+ * soon as `EMAIL_ROUTING_MAX_INBOUND_BYTES` reaches it — at or above 65,496,679
+ * bytes (~62.46 MiB), since the `Math.min` below makes the derivation the
+ * enforced cap on a tie — at which point every figure above becomes live without
+ * anyone having to re-derive it.
+ *
+ * Two different thresholds, and it is worth not confusing them. 25 MiB is a
+ * bound this repo recorded rather than verified (DW-457): if the real published
+ * limit is anything ABOVE 25 MiB, work-wiki is narrowing itself and giving up
+ * reach the transport would have carried. But only a real limit at or above
+ * ~62.46 MiB makes THIS arithmetic live again. In between — a real ceiling of,
+ * say, 30 MiB — the narrowing is self-imposed while the clamp still binds and
+ * this derivation stays dormant. Treat the paragraphs above as that record, not
+ * as a description of what senders meet.
  */
 export const AGGREGATE_DERIVED_RAW_EMAIL_BYTES =
   Math.ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
   MIME_ENVELOPE_HEADROOM_BYTES;
 /**
- * Cloudflare Email Routing's own inbound ceiling — a limit this Worker lives
- * UNDER rather than one it chooses. A message larger than this is rejected by
- * the platform before the `email()` handler is invoked at all, so a refusal
- * quoting any larger figure invites the sender to resend under a size the
- * transport has already refused (DW-449).
+ * Cloudflare Email Routing's inbound ceiling AS THIS REPO RECORDS IT — the
+ * transport limit this Worker means to stay under, not a budget of its own. A
+ * message larger than the real ceiling is rejected by the platform before the
+ * `email()` handler is invoked at all, so a refusal quoting any larger figure
+ * invites the sender to resend under a size the transport has already refused
+ * (DW-449).
  *
- * Verified 2026-08-31 against https://developers.cloudflare.com/email-routing/limits/
- * — "Inbound message size: 25 MiB. Messages larger than this are rejected." —
- * and corroborated by Cloudflare's own Email Workers guide, whose size-check
- * example reads `message.rawSize > 25 * 1024 * 1024`. Written as that same
- * expression rather than as 26,214,400 so the MiB the docs state stays legible
- * at the constant.
+ * 25 MiB is an UNVERIFIED bound, not a checked one (DW-457). It entered this
+ * repository on 2026-08-31 under DW-449, adopted AS IF verified against
+ * Cloudflare's published limits — but DW-449's own record says the figure could
+ * not be verified offline, so that verification cannot have happened. It is
+ * RETAINED now for a different reason than it was adopted: not because anyone
+ * checked it, but because it is conservative. This repository records no fetch
+ * of https://developers.cloudflare.com/email-routing/limits/, then or since.
+ * That URL stays as the place to look, not as a citation of something read.
+ *
+ * What re-verification would settle, and why an unchecked figure is KEPT LOW
+ * rather than dropped altogether. If the published ceiling is HIGHER than
+ * 25 MiB, this constant is a narrowing work-wiki imposes on itself and the
+ * reach described at `MAX_RAW_EMAIL_BYTES` is given up by choice. If it is
+ * LOWER, the bound is not conservative at all: the clamp is insufficient and
+ * the refusal still quotes a size the transport would reject on its own. Only
+ * the first is safe by default, which is the whole argument for keeping it.
+ * Written as `25 * 1024 * 1024` rather than as 26,214,400 so the MiB stays
+ * legible at the constant.
  */
 export const EMAIL_ROUTING_MAX_INBOUND_BYTES = 25 * 1024 * 1024;
 /**
  * The cap this Worker actually enforces: the lower of what the aggregate budget
- * needs and what the transport will carry.
+ * needs and what this repo records the transport as carrying (an unverified
+ * bound — see `EMAIL_ROUTING_MAX_INBOUND_BYTES`).
  *
  * Written as a `Math.min` over the two named terms rather than as a swap to the
  * smaller one — the same both-terms-stay-live idiom
@@ -438,12 +465,22 @@ export const EMAIL_ROUTING_MAX_INBOUND_BYTES = 25 * 1024 * 1024;
  * 65,496,679. What that costs, stated here rather than discovered later — a
  * maximally-escaped quoted-printable full-size document (32,715,573 bytes on the
  * wire) and the whole aggregate budget (65,119,170) no longer reach this Worker.
- * They did not reach it before this clamp either; Email Routing refused them
- * upstream while this Worker's refusal copy promised otherwise. The clamp only
- * stops the promise. The reachable admissions that survive are base64 — a
- * full-size document is 14,348,938 bytes, ~11.3 MiB clear — and roughly 8.0 MiB
- * decoded under worst-case quoted-printable. That is a transport fact this
- * constant reports, not a narrowing it chose.
+ * The reachable admissions that survive are base64 — a full-size document is
+ * 14,348,938 bytes, ~11.3 MiB clear — and roughly 8.0 MiB decoded under
+ * worst-case quoted-printable.
+ *
+ * Those losses are ACCEPTED BY DECISION, not observed (DW-457).
+ * `EMAIL_ROUTING_MAX_INBOUND_BYTES` is an unverified conservative bound, so the
+ * DW-362 aggregate worst case is out of reach because this repo chose a low
+ * ceiling — not because the transport was ever seen refusing it. Three branches,
+ * kept apart because they do not cost the same thing. If the real ceiling is
+ * EXACTLY 25 MiB, the clamp gives up nothing that was ever deliverable and only
+ * stops a promise the refusal copy used to make. If it is BELOW 25 MiB, the
+ * bound is not conservative at all: the clamp is insufficient and the refusal
+ * still quotes a size the transport would reject on its own. If it is ABOVE,
+ * this clamp is itself where those bytes are surrendered.
+ * Re-verifying the platform figure is what would tell you which, and until
+ * someone does, this repo accepts the narrowing as the safe way to be wrong.
  */
 export const MAX_RAW_EMAIL_BYTES = Math.min(
   AGGREGATE_DERIVED_RAW_EMAIL_BYTES,

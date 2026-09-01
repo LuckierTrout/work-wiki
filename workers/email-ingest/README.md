@@ -41,14 +41,26 @@ agent in Settings. Original documents and supported embedded figures are
 preserved in R2 after synthesis.
 
 Those figures bound what the Worker will forward once a message arrives. What
-arrives is bounded first by Cloudflare Email Routing, which **rejects any inbound
-message larger than 25 MiB (26,214,400 bytes) before this Worker runs** —
-"Inbound message size: 25 MiB. Messages larger than this are rejected."
-(<https://developers.cloudflare.com/email-routing/limits/>, verified 2026-08-31).
-That ceiling is a platform limit and is not configurable. The Worker's own
-raw-message cap is clamped to it, so the over-size refusal quotes **25.0 MB** —
-a size a sender can actually resend under, rather than a wider figure the
-transport would refuse again on its own.
+arrives is bounded first by Cloudflare Email Routing, which rejects oversized
+inbound mail before this Worker runs at all. **The size this repository assumes
+that ceiling to be is 25 MiB (26,214,400 bytes)** — an unverified bound, not a
+confirmed figure: recorded on 2026-08-31 as if checked against Cloudflare's
+published limits, when it could not have been, and retained since because it is
+conservative rather than because anyone confirmed it.
+<https://developers.cloudflare.com/email-routing/limits/> is where an operator
+confirms it, and either answer is actionable — a higher published limit means
+work-wiki is narrowing itself and the constant can be raised, a lower one means
+this ceiling is too generous and the refusal still over-promises. Whatever its
+real value, the platform ceiling is not configurable.
+
+Only the upstream half of that is uncertain. **This Worker refuses any message
+over 26,214,400 bytes whatever Email Routing does** — that gate is enforced here
+and is not in doubt; what is unconfirmed is only whether the transport would
+have refused the message first. The Worker's own raw-message cap is clamped to
+the recorded figure, so the over-size refusal quotes **25.0 MB** — a size this
+Worker will certainly accept, and one the transport will too if the recorded
+bound is right, rather than the far wider figure the derivation alone would have
+named.
 
 The consequence for the figures above, stated so the advertised limits are not
 read as delivery promises. `message.rawSize` is counted on the ENCODED message,
@@ -63,11 +75,13 @@ larger than it really is:
 - One full-size (10 MB) document arrives comfortably in base64 — ~13.7 MiB on
   the wire, ~11.3 MiB clear of the ceiling.
 - The 19 MB total attachment budget is **not** reachable in base64: ten
-  ~1.99 MiB parts are ~27.2 MiB encoded and are rejected by Email Routing. It is
-  reachable only from a client that sends its parts unencoded (`7bit`/`8bit`).
+  ~1.99 MiB parts are ~27.2 MiB encoded, past the 25 MiB recorded above, so the
+  Worker refuses them — and if that bound is right Email Routing refused them
+  first. It is reachable only from a client that sends its parts unencoded
+  (`7bit`/`8bit`).
 - Under quoted-printable — what mail clients use for byte-dense `text/*`
   attachments and non-ASCII bodies, at ~3.12x — roughly 8.0 MiB of decoded
-  payload fits at all.
+  payload fits under the recorded ceiling at all.
 
 The inbound Worker sends an immediate accepted/rejected reply. The task-consumer
 Worker sends the final success/failure receipt after conversion settles.
@@ -82,11 +96,14 @@ After deploying:
    task-consumer's `EMAIL` binding can deliver final receipts from
    `ingest@workwiki.app`.
 
-Nothing in steps 1–3 raises the 25 MiB inbound ceiling. Email Routing rejects an
-oversized message at SMTP time, before this Worker runs, so the sender's own mail
-provider returns a delivery-failure notice naming a size or quota — work-wiki
-sends nothing at all, and no Worker log records the attempt. An operator hearing
-"my large attachment bounced and work-wiki never replied" is looking at the
-platform limit, not at `YOPEDIA_CONFIG` or the Worker. The figure lives in code
-as `EMAIL_ROUTING_MAX_INBOUND_BYTES` in `workers/email-ingest/index.ts`, with the
-same source URL; re-verify it there if Cloudflare changes the published limit.
+Nothing in steps 1–3 raises the inbound ceiling — 25 MiB as this repository
+records it. Email Routing rejects an oversized message at SMTP time, before this
+Worker runs, so the sender's own mail provider returns a delivery-failure notice
+naming a size or quota — work-wiki sends nothing at all, and no Worker log
+records the attempt. An operator hearing "my large attachment bounced and
+work-wiki never replied" is looking at the platform limit, not at
+`YOPEDIA_CONFIG` or the Worker. The figure lives in code as
+`EMAIL_ROUTING_MAX_INBOUND_BYTES` in `workers/email-ingest/index.ts`, with the
+same URL and the same caveat: it is an unverified conservative bound, so check
+it against Cloudflare's published limit rather than assuming it was ever
+confirmed.

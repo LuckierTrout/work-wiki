@@ -5504,3 +5504,11 @@ source_spec: `spec-dw-455-email-envelope-body-budget.md`
 severity: low
 reason: MIME_ENVELOPE_HEADROOM_BYTES adds Math.ceil(MAX_EMAIL_CONTENT_CHARS * WORST_CASE_TRANSFER_ENCODING_FACTOR) = 312,000, but MAX_EMAIL_CONTENT_CHARS bounds code units (rawContent.length / rawContent.slice at the Worker's truncation, content.length on the route). 100,000 non-ASCII BMP characters are up to ~300,000 decoded bytes and ~936,000 on the worst-case quoted-printable wire, against 312,000 bought plus 65,509 bytes of structural slack. 312,000 is the figure the recorded DW-455 decision named, so it was documented rather than re-derived. Inert today: since DW-449 the Math.min picks EMAIL_ROUTING_MAX_INBOUND_BYTES, so AGGREGATE_DERIVED_RAW_EMAIL_BYTES gates nothing -- it becomes live only if the platform ceiling rises above the derivation (the open DW-457 question).
 status: open
+
+### DW-706: Nine code and test sites now cite DW-457 for the email inbound-ceiling decision, but the ledger entry under that id is an unrelated, already-closed MCP `missing-concept-page` slug-parity defect.
+origin: spec-deferred 7b2a0e867d77
+location: workers/email-ingest/index.ts (EMAIL_ROUTING_MAX_INBOUND_BYTES, MAX_RAW_EMAIL_BYTES)
+source_spec: `spec-dw-457-email-inbound-ceiling-provenance.md`
+severity: low
+reason: `_bmad-output/implementation-artifacts/deferred-work.md:3386` reads "### DW-457: `missing-concept-page` is effectively unreachable over both MCP transports", status done 2026-08-29, and `src/mcp.ts` already cites DW-457 for that. The email-ceiling decision reached this work only through a `decision:` line misfiled onto that archived entry -- a misfiling `spec-dw-395-455-456-457-mcp-rest-door-parity.md:214` already flagged as "worth correcting in the ledger". A maintainer grepping DW-457 after this change now gets two unrelated defects and no way to tell which citation belongs to which. Fixing it means correcting the ledger, which this run was forbidden to touch.
+status: open
