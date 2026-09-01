@@ -2,12 +2,42 @@
 title: 'DW-571/DW-365: compare every readable Source in coverage lint, and read the archive map through ownLookup'
 type: 'bugfix'
 created: '2026-08-31'
-status: 'in-review'
+status: 'done'
 review_loop_iteration: 1
-followup_review_recommended: false
+followup_review_recommended: true
 context: []
 warnings: ['oversized']
-deferred: []
+deferred:
+  - summary: >-
+      `extractPptx` indexes the unzipped archive map with a relationship-derived
+      path, so a crafted PPTX turns document ingest into an uncaught `TypeError`
+      (HTTP 500) and silently discards the deck's real slides.
+    evidence: |-
+      `src/lib/document-extract.ts:595` filters slides with
+      `Boolean(files[slide.path])` and `:602` reads `const bytes = files[path]`,
+      where `path` comes from `relationshipMap` -> `resolveArchiveTarget` over an
+      uploaded archive's `Target` attribute. A `ppt/_rels/presentation.xml.rels`
+      entry of `Target="../constructor"` resolves to the bare key `constructor`,
+      which the plain index answers with the inherited `Object` constructor
+      function: the `Boolean(...)` filter keeps the bogus slide, `ordered.length`
+      is non-zero so it OVERRIDES the correct `fallbackSlides`, and
+      `new TextDecoder().decode(fn)` throws
+      `TypeError: The "list" argument must be an instance of SharedArrayBuffer,
+      ArrayBuffer or ArrayBufferView`. Three independent reviewers built the
+      fixture and reproduced it. Because it is not a `ClientInputError`,
+      `src/app/api/ingest/document/route.ts` answers 500 rather than the 400 the
+      extractor's contract promises, and the readable `ppt/slides/slide1.xml` in
+      the same archive is never extracted. Reachable without the sidecar: an
+      emailed attachment (`src/app/api/email/ingest/route.ts:547`) or a `.pptx`
+      nested in an uploaded `.zip` (`document-extract.ts:972`). No test in the
+      repo builds a presentation-relationship fixture with such a target.
+      `extractXlsx` is NOT affected: it rejects `..` and force-prefixes `xl/`.
+      Out of scope here -- this bundle's intent names `document-extract.ts:458`
+      only, and that line is inert by contrast (`mediaTypeFor` rejects every
+      extensionless name).
+    location: >-
+      src/lib/document-extract.ts:595
+    severity: medium
 baseline_revision: 'e5dc6724d36cd57af3f28ebc816b065fe980c30c'
 ---
 
@@ -158,3 +188,45 @@ Shape of the assembled message:
 - `pnpm vitest run src/lib/__tests__/lint.test.ts src/lib/__tests__/document-extract.test.ts` -- expected: all rows pass, including the pre-existing `MAX_COVERAGE_CHECKS` cap row.
 - `pnpm lint` -- expected: no new findings in the two changed source files.
 - `npx tsc --noEmit` -- expected: no new type errors (`ownLookup(files, target)` narrows to `Uint8Array | null`).
+
+### 2026-08-31 — Review pass 2
+- intent_gap: 0
+- bad_spec: 0
+- patch: 6: (high 0, medium 0, low 6)
+- defer: 1: (high 0, medium 1, low 0)
+- reject: 12: (high 0, medium 0, low 12)
+- addressed_findings:
+  - `[low]` `[patch]` The `Math.max(1, …)` share floor guaranteed every part one character, so with more parts than the budget has characters the rendered total exceeded `MAX_RAW_CHARS` — the spec's own invariant, broken at the boundary. Floor changed to `Math.max(0, …)`; the invariant now holds for any part count.
+  - `[low]` `[patch]` A flat Source that `listRawSources` reported but `readRawSource` could not open was swallowed while the snapshot failure warned — the same asymmetry the warning was added to remove. Added `flatSlugsOnDisk`, so a listed-but-unreadable flat Source warns and a page with no flat blob stays silent, plus a test row.
+  - `[low]` `[patch]` The no-readable-Source row was named "skips a slug silently" while the code does warn, and installed a `logger.warn` spy it never asserted. Renamed and the warning is now asserted.
+  - `[low]` `[patch]` Every new row mocked `callLLM` to `"[]"`, leaving the gap → `LintIssue` mapping unverified on the multi-part path. The flagship multi-Source row now returns a real gap payload and asserts the emitted issue.
+  - `[low]` `[patch]` The rendering comment claims a stable collection order but no test pinned it. The flat header's position is now asserted ahead of every snapshot header.
+  - `[low]` `[patch]` The prototype-target row covered only `constructor`. The fixture now also carries targets resolving to bare `valueOf` and `__proto__` (an inherited accessor), with the same single-surviving-asset assertions.
+
+## Auto Run Result
+
+Status: done
+Blocking condition: none
+
+**Implemented change.** `checkIncompleteCoverage` now collects EVERY readable Source for a sampled page — the flat `raw/sources/<slug>.md` blob when it opens, plus every hashed `raw/sources/<slug>/<id>.md` snapshot — instead of stopping at the first one that opens, and hands them all to the LLM in the single existing call under per-part `--- Raw Source: <slug> [flat|snapshot <id>] ---` headers. The `MAX_RAW_CHARS` budget is split need-aware (equal share as a floor while budget remains, allocated shortest-first so an unspent share flows to the parts that can use it), so a long Source is not truncated to `8000/n` while short siblings leave the budget unspent. Byte-identical parts are deduped; a listed Source that will not open warns rather than vanishing; a page with nothing readable is still skipped silently. `assetFromArchive` reads the unzipped archive map through `ownLookup(files, target)` instead of a raw index, removing its dependence on `mediaTypeFor` happening to reject extensionless names.
+
+**Files changed.**
+- `src/lib/lint-checks.ts` — multi-Source collection, need-aware budget split, per-part headers, `flatSlugsOnDisk` + two warnings, rewritten `INCOMPLETE_COVERAGE_SYSTEM_PROMPT` and refreshed `checkIncompleteCoverage` JSDoc.
+- `src/lib/document-extract.ts` — `files[target]` → `ownLookup(files, target)` at `assetFromArchive`, with the hazard and its (honest) current inertness documented.
+- `src/lib/__tests__/lint.test.ts` — nine new `checkIncompleteCoverage` rows covering every I/O Matrix scenario plus the two budget behaviours and both warnings.
+- `src/lib/__tests__/document-extract.test.ts` — one new row pinning that DOCX relationship targets resolving to `constructor` / `valueOf` / `__proto__` yield no asset while a real sibling image survives intact.
+
+**Review findings breakdown.** Two passes. Pass 1: 1 bad_spec (medium) + 7 low folded into it — the prescribed even split never redistributed an unspent share, so a long flat Source would have lost bytes that reach the model today; code was reverted, Design Notes replaced with the need-aware split, and the code re-derived. Pass 2: 6 patches applied (all low), 1 deferred (medium), 12 rejected.
+
+**Follow-up review recommendation.** Patched this pass: 0 high, 0 medium, 6 low. Score = 3×0 + 6 = 6, which is ≥ 5, so `followup_review_recommended: true`.
+
+**Verification.**
+- `pnpm vitest run src/lib/__tests__/lint.test.ts src/lib/__tests__/document-extract.test.ts` — 106 passed, including the untouched `MAX_COVERAGE_CHECKS` cap row (still exactly 20 calls).
+- `npx tsc --noEmit` — exit 0.
+- `pnpm lint` — exit 0 (the three `jsx-ast-utils` `TSNonNullExpression` notices are pre-existing repo noise from unrelated `.tsx` files).
+- Mutation checks confirmed the budget rows are load-bearing: removing the shortest-first sort fails the redistribution row, and removing truncation fails all three budget rows.
+
+**Residual risks.**
+- DW-365 is behaviour-neutral today and its test row is a characterization pin, green with and without the change. No input can separate the two versions through the public entry point, because `mediaTypeFor` returns `null` for every extensionless name and no `Object.prototype` member name carries an extension. The row's docstring says so outright.
+- The number of collected Sources per page is deliberately uncapped, because the intent is to compare every readable snapshot. A page with very many Intake arrivals therefore gets a proportionally smaller slice of each, and the per-part headers sit outside the `MAX_RAW_CHARS` content budget exactly as the single header always did. Each sampled page also now issues one read per snapshot rather than one read total.
+- A concurrent `bmad-loop` session committed part of this work into its own sweep commit `8c75f2d5` while the run was in flight; `src/lib/document-extract.ts` and the pass-1 test rows landed there. The remainder is committed by this run. `src/cli.ts` was left modified by that other session and is untouched here.

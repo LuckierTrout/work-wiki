@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import worker, {
+  AGGREGATE_DERIVED_RAW_EMAIL_BYTES,
   AGGREGATE_DOCUMENT_AVERAGE_BYTES,
+  EMAIL_ROUTING_MAX_INBOUND_BYTES,
   MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
@@ -492,6 +494,57 @@ function partBytes(index: number, length = 96): Uint8Array {
   return bytes;
 }
 
+/** Wire line width for an unencoded part body, and for base64. */
+const PART_LINE_CHARS = 76;
+
+/**
+ * The payload of a part written with NO transfer encoding (`7bit`), which is
+ * the only shape that can still carry more decoded bytes than
+ * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` while staying under the raw gate: since
+ * DW-449 that gate is 25 MiB, and base64's ~1.37x puts 20 MiB of decoded
+ * payload at ~28.7 MB on the wire, refused at the door. An unencoded part costs
+ * ~1x, so the DW-360 bound is reachable through it and through nothing else.
+ *
+ * Distinct per part and per offset for the same reason `partBytes` is, but
+ * constrained to what an unencoded body may actually contain:
+ *
+ * - Printable ASCII (0x21-0x7E). The fixture is assembled as a JS string and
+ *   UTF-8 encoded, so a byte above 0x7F would reach the wire as two bytes and
+ *   the part would decode to something the fixture never wrote. `partBytes`
+ *   stays the generator for encoded parts, where the full 0-255 range is what
+ *   proves base64 and quoted-printable really round-trip binary.
+ * - A `\n` every `PART_LINE_CHARS` bytes, and one as the FINAL byte. The
+ *   builder writes those as CRLF, and PostalMime hands an unencoded body back
+ *   with its line endings normalised to LF -- so these bytes are the DECODED
+ *   form, and the trailing one is the CRLF that opens the MIME boundary. Both
+ *   are why a fixture can ask for exactly `n` bytes and get exactly `n` back.
+ */
+function asciiPartBytes(index: number, length = 96): Uint8Array {
+  const bytes = new Uint8Array(length);
+  for (let i = 0; i < length; i += 1) bytes[i] = ((index * 31 + i * 7 + 3) % 94) + 33;
+  for (let i = PART_LINE_CHARS - 1; i < length; i += PART_LINE_CHARS) bytes[i] = 10;
+  bytes[length - 1] = 10;
+  return bytes;
+}
+
+/**
+ * `asciiPartBytes` on the wire: its `\n` markers become CRLF, and the final one
+ * is dropped because the CRLF preceding the boundary delimiter supplies it.
+ * The inverse of what PostalMime returns for an unencoded part, so a part built
+ * from `asciiPartBytes(i, n)` decodes back to exactly those `n` bytes.
+ */
+function literalLines(bytes: Uint8Array): string {
+  const lines: string[] = [];
+  let start = 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    if (bytes[i] !== 10) continue;
+    lines.push(String.fromCharCode(...bytes.subarray(start, i)));
+    start = i + 1;
+  }
+  if (start < bytes.length) lines.push(String.fromCharCode(...bytes.subarray(start)));
+  return lines.join("\r\n");
+}
+
 /** One byte over -- the gate is `>`, so this is the smallest refused document. */
 const OVERSIZED_BYTES = MAX_EMAIL_DOCUMENT_BYTES + 1;
 /** The ceiling as the reply writes it, and as `/api/email/ingest` writes it. */
@@ -524,9 +577,14 @@ function multipartEmail(
     /**
      * Transfer encoding for the part body. Defaults to base64, the encoding
      * every fixture used before DW-358; `quoted-printable` is the worst-case
-     * encoding a sending client may pick instead.
+     * encoding a sending client may pick instead, and `7bit` writes the payload
+     * with no encoding at all -- the CHEAPEST wire cost, and since DW-449 the
+     * only one under which a message can carry the whole decoded aggregate
+     * budget and still clear the 25 MiB raw gate. A `7bit` part's payload comes
+     * from `asciiPartBytes` rather than `partBytes`, because an unencoded body
+     * may only carry what the wire can hold literally.
      */
-    encoding?: "base64" | "quoted-printable";
+    encoding?: "base64" | "quoted-printable" | "7bit";
   })[],
   options: {
     subject: string;
@@ -567,7 +625,10 @@ function multipartEmail(
   }
   parts.forEach((part, index) => {
     const encoding = part.encoding ?? "base64";
-    const payload = partBytes(index, part.bytes ?? 96);
+    const payload =
+      encoding === "7bit"
+        ? asciiPartBytes(index, part.bytes ?? 96)
+        : partBytes(index, part.bytes ?? 96);
     // `filename` is written into the `Content-Disposition` line and NOWHERE
     // else, so omitting that line silently discards it -- a fixture asking for
     // both would test a nameless part while reading as though it named one.
@@ -593,6 +654,12 @@ function multipartEmail(
     lines.push(`Content-Transfer-Encoding: ${encoding}`, "");
     if (encoding === "base64") {
       lines.push(base64Lines(payload), "");
+    } else if (encoding === "7bit") {
+      // No blank line after an unencoded body either, and for the same reason
+      // the quoted-printable branch gives below: the CRLF that opens the
+      // boundary delimiter is the last line's terminator, and an extra one
+      // arrives as a literal line break appended to the payload.
+      lines.push(literalLines(payload));
     } else {
       // No blank line after a quoted-printable body: the CRLF that opens the
       // boundary delimiter is the last line's terminator, and an extra one
@@ -668,15 +735,25 @@ const AGGREGATE_BUDGET_MB = Math.floor(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 1024
  */
 const PART_BYTES = 7 * 1024 * 1024;
 
-/** Built once: ~28 MB of base64 is worth encoding a single time. */
+/**
+ * Built once: ~21 MB of message is worth assembling a single time.
+ *
+ * Written with NO transfer encoding (DW-449). Base64 was the original choice
+ * because it is the encoding that makes the decoded-vs-wire gap reachable, but
+ * once `MAX_RAW_EMAIL_BYTES` is clamped to Email Routing's 25 MiB inbound
+ * ceiling, ~21 MiB of decoded payload is ~28.7 MB of base64 and is refused at
+ * the door -- which would test the raw gate instead of this bound. An unencoded
+ * part costs ~1x, so it is now the only shape that carries an over-budget
+ * decoded payload through a gate a real message could clear.
+ */
 let overBudgetEmail: string | undefined;
 function overBudgetFixture(): string {
   overBudgetEmail ??= multipartEmail(
     [
-      { filename: "big-1.pdf", mime: "application/pdf", bytes: PART_BYTES },
-      { filename: "big-2.pdf", mime: "application/pdf", bytes: PART_BYTES },
-      { filename: "big-3.pdf", mime: "application/pdf", bytes: PART_BYTES },
-      { filename: "tail.pdf", mime: "application/pdf" },
+      { filename: "big-1.pdf", mime: "application/pdf", bytes: PART_BYTES, encoding: "7bit" },
+      { filename: "big-2.pdf", mime: "application/pdf", bytes: PART_BYTES, encoding: "7bit" },
+      { filename: "big-3.pdf", mime: "application/pdf", bytes: PART_BYTES, encoding: "7bit" },
+      { filename: "tail.pdf", mime: "application/pdf", encoding: "7bit" },
     ],
     {
       subject: "Too much at once",
@@ -1288,11 +1365,20 @@ describe("email-ingest oversized attachments", () => {
           filename: null,
           mime: "application/pdf",
           bytes: OVERSIZED_BYTES,
+          // Unencoded: two 10 MiB parts are ~28.7 MB of base64, over the 25 MiB
+          // raw gate since DW-449, and this case is about the oversize loss
+          // rather than about the door.
+          encoding: "7bit",
           disposition: `Content-Disposition: attachment; filename*=utf-8''huge%0D%0A1.pdf`,
         },
         // No filename parameter: `postal-mime` reports `null`, which is what
         // drives the reply's own name fallback.
-        { filename: null, mime: "application/pdf", bytes: OVERSIZED_BYTES },
+        {
+          filename: null,
+          mime: "application/pdf",
+          bytes: OVERSIZED_BYTES,
+          encoding: "7bit",
+        },
         { filename: "program.exe", mime: "application/octet-stream" },
         { filename: "clip.mov", mime: "video/quicktime" },
         // Inline and ineligible -- the signature logo DW-359 is about. It is in
@@ -1704,12 +1790,15 @@ describe("email-ingest inline parts", () => {
     // A real MIME fixture, against the cost convention recorded in
     // `email-ingest-worker-normalization.test.ts` (`describe("email-ingest
     // oversized inline parts")`): a mocked 10 MiB part is one allocation, this
-    // is ~28 MB of base64 on every run. That convention is about parts whose
-    // disposition is incidental to the case. Here the disposition IS the case --
-    // whether a `Content-Disposition: inline` header survives PostalMime as
-    // `disposition === "inline"` is a fact about the parser, and a mock that
-    // sets the field directly would assert the Worker's half of the contract
-    // while assuming the half that fails.
+    // is ~21 MB of message on every run. Written unencoded for the reason the
+    // aggregate-budget suite records: at base64's ~1.37x the same decoded
+    // payload is ~28.7 MB and the 25 MiB raw gate refuses it (DW-449). That
+    // convention is about parts whose disposition is incidental to the case.
+    // Here the disposition IS the case -- whether a `Content-Disposition:
+    // inline` header survives PostalMime as `disposition === "inline"` is a
+    // fact about the parser, and a mock that sets the field directly would
+    // assert the Worker's half of the contract while assuming the half that
+    // fails.
     const INLINE_BYTES = MAX_EMAIL_DOCUMENT_BYTES;
     // The `+ 1` is the smallest per-part bump that puts the trio over the
     // budget: without it the three parts land EXACTLY on it, and the gate is
@@ -1738,10 +1827,11 @@ describe("email-ingest inline parts", () => {
           filename: "preview.pdf",
           mime: "application/pdf",
           bytes: INLINE_BYTES,
+          encoding: "7bit",
           disposition: 'Content-Disposition: inline; filename="preview.pdf"',
         },
-        { filename: "real-1.pdf", mime: "application/pdf", bytes: REAL_BYTES },
-        { filename: "real-2.pdf", mime: "application/pdf", bytes: REAL_BYTES },
+        { filename: "real-1.pdf", mime: "application/pdf", bytes: REAL_BYTES, encoding: "7bit" },
+        { filename: "real-2.pdf", mime: "application/pdf", bytes: REAL_BYTES, encoding: "7bit" },
       ],
       { subject: "Two files", messageId: "message-inline-budget", body: "Two files attached." },
     );
@@ -2146,9 +2236,12 @@ describe("email-ingest Content-ID parts", () => {
  * in memory at once. Widening the door for DW-358/DW-362 without this bound
  * would have made that peak worse, not better.
  *
- * Base64 on purpose: it is the encoding that makes the gap reachable. A
- * quoted-printable message carrying this much decoded payload would be refused
- * at the door instead, and would test the raw gate rather than this bound.
+ * Unencoded (`7bit`) parts on purpose: they are what makes the gap reachable
+ * now. Quoted-printable at ~3.12x was never a candidate, and base64 at ~1.37x
+ * stopped being one when DW-449 clamped the raw gate to Email Routing's 25 MiB
+ * ceiling -- 20 MiB of decoded payload is ~28.7 MB of base64, refused at the
+ * door, which would test the raw gate rather than this bound. At ~1x the door
+ * is clear and the budget is the only thing that can drop a part.
  */
 describe("email-ingest aggregate decoded budget", () => {
   it("stops appending parts once the decoded budget is spent", async () => {
@@ -2180,7 +2273,7 @@ describe("email-ingest aggregate decoded budget", () => {
     ).reduce((total, buffer) => total + buffer.byteLength, 0);
     expect(forwardedBytes).toBeLessThanOrEqual(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
     // The tail really is the fourth part's payload, not the third's shifted up.
-    expect(new Uint8Array(await (parts[2] as File).arrayBuffer())).toEqual(partBytes(3));
+    expect(new Uint8Array(await (parts[2] as File).arrayBuffer())).toEqual(asciiPartBytes(3));
 
     // Named and counted, not dropped in silence. The name list is unaffected --
     // the file was attached, it just was not queued.
@@ -2239,8 +2332,21 @@ describe("email-ingest aggregate decoded budget", () => {
   function onBudgetFixture(): string {
     onBudgetEmail ??= multipartEmail(
       [
-        { filename: "half-1.pdf", mime: "application/pdf", bytes: ON_BUDGET_HALF },
-        { filename: "half-2.pdf", mime: "application/pdf", bytes: ON_BUDGET_HALF },
+        // Unencoded, so the pair reaches the budget without the message
+        // exceeding the raw gate -- see the suite comment above. The stragglers
+        // below stay base64: they are 96 bytes each and cost nothing either way.
+        {
+          filename: "half-1.pdf",
+          mime: "application/pdf",
+          bytes: ON_BUDGET_HALF,
+          encoding: "7bit",
+        },
+        {
+          filename: "half-2.pdf",
+          mime: "application/pdf",
+          bytes: ON_BUDGET_HALF,
+          encoding: "7bit",
+        },
         // ONE byte. The smallest thing the budget can refuse, and the only
         // payload size that tells `>` from `>=` at the boundary.
         { filename: "one-byte.pdf", mime: "application/pdf", bytes: 1 },
@@ -2335,6 +2441,7 @@ describe("email-ingest aggregate decoded budget", () => {
           filename: "enormous.pdf",
           mime: "application/pdf",
           bytes: MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES + 1,
+          encoding: "7bit",
         },
       ],
       { subject: "One enormous file", messageId: "message-over-budget-no-body", body: "" },
@@ -2428,18 +2535,36 @@ describe("email-ingest aggregate decoded budget", () => {
     const OVER_CAP_EXTRAS = 3;
     const raw = multipartEmail(
       [
-        { filename: "lead-1.pdf", mime: "application/pdf", bytes: LEAD_PART_BYTES },
-        { filename: "lead-2.pdf", mime: "application/pdf", bytes: SECOND_LEAD_BYTES },
+        // Unencoded, like every other over-budget fixture in this suite: base64
+        // would put ~21 MiB of decoded payload past the 25 MiB raw gate.
+        {
+          filename: "lead-1.pdf",
+          mime: "application/pdf",
+          bytes: LEAD_PART_BYTES,
+          encoding: "7bit",
+        },
+        {
+          filename: "lead-2.pdf",
+          mime: "application/pdf",
+          bytes: SECOND_LEAD_BYTES,
+          encoding: "7bit",
+        },
         // An RFC 2231 encoded name that really does arrive carrying CR/LF.
         {
           filename: null,
           mime: "application/pdf",
           bytes: OVER_BUDGET_PART_BYTES,
+          encoding: "7bit",
           disposition: `Content-Disposition: attachment; filename*=utf-8''huge%0D%0A1.pdf`,
         },
         // No filename parameter at all: `postal-mime` reports `null`, which is
         // what drives the reply's own name fallback.
-        { filename: null, mime: "application/pdf", bytes: OVER_BUDGET_PART_BYTES },
+        {
+          filename: null,
+          mime: "application/pdf",
+          bytes: OVER_BUDGET_PART_BYTES,
+          encoding: "7bit",
+        },
         // Inline and ineligible -- the signature logo DW-359 is about.
         {
           filename: "logo.png",
@@ -2595,7 +2720,35 @@ describe("email-ingest misconfigured bindings", () => {
  * compared against has to be big enough for an ENCODED full-size document. It
  * was not: 10 MB flat, which put the route's own `MAX_DOCUMENT_SIZE` gate out of
  * reach over email entirely (DW-104).
+ *
+ * And it must not be bigger than the transport (DW-449). The enforced cap is
+ * `Math.min(AGGREGATE_DERIVED_RAW_EMAIL_BYTES, EMAIL_ROUTING_MAX_INBOUND_BYTES)`,
+ * so the derivation states what the aggregate budget NEEDS while the platform
+ * term states what Email Routing will actually deliver. These cases test the
+ * ENFORCED figure, which is the only one a sender meets: what it forwards, what
+ * it refuses, and -- the point of the clamp -- that the size the refusal quotes
+ * back is never one the platform would have rejected first. The derivation's own
+ * reach is pinned in `email-ingest-allowlist-parity.test.ts`.
  */
+/**
+ * The refusal's only job beyond saying no: quote a size the sender can act on.
+ *
+ * Two bounds, not one. Against `MAX_RAW_EMAIL_BYTES` because a figure above the
+ * enforced cap invites a resend this Worker would bounce again; against
+ * `EMAIL_ROUTING_MAX_INBOUND_BYTES` because a figure above the PLATFORM ceiling
+ * invites a resend that never reaches this Worker to be bounced by -- the sender
+ * gets a transport rejection instead, with no explanation from work-wiki at all
+ * (DW-449). The second is the one that fails if the `Math.min` is ever replaced
+ * by the derived term alone.
+ */
+function expectResendableRefusal(text: string): void {
+  expect(text).toContain("larger than");
+  const quoted = Number(/larger than ([\d.]+) MB/.exec(text)?.[1]);
+  expect(Number.isFinite(quoted)).toBe(true);
+  expect(quoted * 1024 * 1024).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
+  expect(quoted * 1024 * 1024).toBeLessThanOrEqual(EMAIL_ROUTING_MAX_INBOUND_BYTES);
+}
+
 describe("email-ingest raw message cap", () => {
   it("predicts a real fixture's encoded part length at every awkward length", () => {
     // Calibration. The parity test measures a full-size document against the cap
@@ -2726,25 +2879,38 @@ describe("email-ingest raw message cap", () => {
     expect(blocks[2]).toMatch(/^=[0-9A-F]{2}=\r\n$/);
   });
 
-  it("forwards a message the size of a worst-case quoted-printable full-size document", async () => {
-    // The cap's reason for existing, at the surface a sender actually feels: the
-    // encoding `MAX_RAW_EMAIL_BYTES` is now derived from (DW-358). The parity
-    // test pins the same document against the constant; this pins it against the
-    // gate, which is where a sender learns whether their `.csv` was refused.
-    const msg = {
-      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
-      rawSize: quotedPrintablePartWireSize(MAX_EMAIL_DOCUMENT_BYTES),
-    };
+  it("refuses a worst-case quoted-printable full-size document, quoting a size that can be resent", async () => {
+    // The message DW-358 widened the DERIVATION for, at the surface a sender
+    // actually feels. It no longer clears the gate: at ~3.12x a full-size
+    // document is 32,715,573 bytes on the wire, above the 25 MiB Email Routing
+    // itself refuses, so this Worker would never have seen it however wide its
+    // own cap was (DW-449). The derivation's admission of it is still pinned --
+    // against `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, in the parity suite.
+    //
+    // What matters here is what the sender is TOLD. The old refusal quoted
+    // 62.4 MB, inviting a resend at a size the transport had already rejected;
+    // the figure now has to be one a message could actually arrive under.
+    const rawSize = quotedPrintablePartWireSize(MAX_EMAIL_DOCUMENT_BYTES);
+    // The premise, computed rather than assumed: this is over the enforced gate
+    // and under the derivation, which is the whole gap the clamp closes.
+    expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+    expect(rawSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+
+    const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
     const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
     await worker.email(
       msg as unknown as Parameters<typeof worker.email>[0],
       bindings as unknown as Parameters<typeof worker.email>[1],
     );
-    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
-    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    expectResendableRefusal(msg.reply.mock.calls[0][0].text);
   });
 
   it("forwards a message the size of a base64-encoded full-size document", async () => {
+    // The DW-104 admission, and the one full-size shape that still ARRIVES: at
+    // ~1.37x a full-size document is 14,348,938 bytes, well inside the 25 MiB
+    // the transport carries. If the clamp ever bit harder than the platform
+    // figure, this is the case that would fail.
     const msg = {
       ...message(ATTACHMENT_EMAIL, "Quarterly report"),
       rawSize: base64PartWireSize(MAX_EMAIL_DOCUMENT_BYTES),
@@ -2758,24 +2924,30 @@ describe("email-ingest raw message cap", () => {
     expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
   });
 
-  it("forwards a message carrying the whole aggregate attachment budget", async () => {
-    // DW-362 at the gate, which is where a sender learns whether their ten
-    // mid-size files were refused. The parity suite pins the same aggregate
-    // against the constant; this pins it against `message.rawSize`, the only
-    // surface the sender sees. Measured per part, because ten short final lines
-    // cost more than one.
-    const msg = {
-      ...message(ATTACHMENT_EMAIL, "Quarterly report"),
-      rawSize:
-        MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES),
-    };
+  it("refuses the whole aggregate budget on the worst-case wire, quoting a size that can be resent", async () => {
+    // DW-362's aggregate at the gate. Measured per part, because ten short final
+    // lines cost more than one. On the worst-case wire those ten mid-size files
+    // are 65,431,170 bytes -- what the DERIVATION was sized to admit, and two
+    // and a half times what Email Routing delivers, so the message is refused
+    // upstream and the sender must hear a figure they can act on (DW-449).
+    //
+    // The derivation's reach is not deleted with the admission: the parity suite
+    // still measures this same aggregate against
+    // `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, and the premise below re-states which
+    // of the two terms each side of the comparison belongs to.
+    const rawSize =
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
+    expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+    expect(rawSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+
+    const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
     const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));
     await worker.email(
       msg as unknown as Parameters<typeof worker.email>[0],
       bindings as unknown as Parameters<typeof worker.email>[1],
     );
-    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
-    expect(msg.reply.mock.calls[0][0].text).not.toContain("larger than");
+    expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
+    expectResendableRefusal(msg.reply.mock.calls[0][0].text);
   });
 
   it("forwards a message sitting exactly on the cap", async () => {
@@ -2807,14 +2979,11 @@ describe("email-ingest raw message cap", () => {
     );
     expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
     const text = msg.reply.mock.calls[0][0].text;
-    expect(text).toContain("larger than");
-    // The stale hardcoded figure, and any figure ABOVE the enforced cap: quoting
-    // a limit larger than the one enforced invites the sender to resend a message
-    // that will bounce again. Rounding must go down, not to nearest.
+    // The stale hardcoded figure: quoting a limit larger than the one enforced
+    // invites the sender to resend a message that will bounce again. Rounding
+    // must go down, not to nearest.
     expect(text).not.toContain("larger than 10 MB");
-    const quoted = Number(/larger than ([\d.]+) MB/.exec(text)?.[1]);
-    expect(Number.isFinite(quoted)).toBe(true);
-    expect(quoted * 1024 * 1024).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
+    expectResendableRefusal(text);
   });
 
   it("bounces a full aggregate of documents carried alongside a maximal body", async () => {
@@ -2855,10 +3024,19 @@ describe("email-ingest raw message cap", () => {
     const aggregateWireSize =
       MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
     const rawSize = aggregateWireSize + MAX_EMAIL_CONTENT_CHARS;
-    expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+    // Measured against the DERIVED cap, because the trade-off is a property of
+    // the derivation: `MIME_ENVELOPE_HEADROOM_BYTES` is a term of it, and the
+    // DW-449 clamp sits above that arithmetic without changing any of it.
+    // Against the ENFORCED cap the comparison would be true by slack -- the
+    // aggregate alone is already over 25 MiB -- and would stop testing the
+    // headroom at all.
+    expect(rawSize).toBeGreaterThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
     // ...while the attachments ALONE are under it, so what this case proves is
     // the body/headroom trade-off and not an oversized aggregate.
-    expect(aggregateWireSize).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+    expect(aggregateWireSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+    // The message is refused either way, but by the clamp rather than by the
+    // headroom, so the assertions above are what carry the claim.
+    expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
 
     const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
     const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));

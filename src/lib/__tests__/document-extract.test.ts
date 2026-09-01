@@ -116,7 +116,9 @@ describe("document extraction", () => {
    * A relationship `Target` is attacker-supplied, and `resolveArchiveTarget`
    * boils `../constructor` down to the bare key `constructor` — which a plain
    * `files[target]` answers with the inherited `Object.prototype` function
-   * rather than entry bytes. `assetFromArchive` now reads that map through
+   * rather than entry bytes. `valueOf` is the same hazard through another
+   * inherited function and `__proto__` through an inherited accessor, so all
+   * three are in the fixture. `assetFromArchive` now reads that map through
    * `ownLookup` (DW-365).
    *
    * Be honest about what this row is: it is green both with and without the
@@ -133,12 +135,17 @@ describe("document extraction", () => {
     const result = office("prototype-target.docx", {
       "word/document.xml": `<w:document><w:body>
         <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Logo" descr="Company logo"/><a:graphic><a:blip r:embed="rId1"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
-        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Chart" descr="Revenue chart"/><a:graphic><a:blip r:embed="rId2"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Value" descr="Value badge"/><a:graphic><a:blip r:embed="rId2"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Proto" descr="Proto banner"/><a:graphic><a:blip r:embed="rId3"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Chart" descr="Revenue chart"/><a:graphic><a:blip r:embed="rId4"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
       </w:body></w:document>`,
       // `../constructor` from `word/document.xml` resolves to the bare string
       // `constructor` — no archive entry of that name exists, so the only way
-      // the lookup answers is through the prototype chain.
-      "word/_rels/document.xml.rels": '<Relationships><Relationship Id="rId1" Target="../constructor"/><Relationship Id="rId2" Target="media/chart.png"/></Relationships>',
+      // the lookup answers is through the prototype chain. `valueOf` is the
+      // same hazard through a different inherited function, and `__proto__`
+      // through an inherited ACCESSOR, which returns the prototype object
+      // itself rather than a function.
+      "word/_rels/document.xml.rels": '<Relationships><Relationship Id="rId1" Target="../constructor"/><Relationship Id="rId2" Target="../valueOf"/><Relationship Id="rId3" Target="../__proto__"/><Relationship Id="rId4" Target="media/chart.png"/></Relationships>',
       "word/media/chart.png": new Uint8Array([137, 80, 78, 71]),
     });
     expect(result.assets).toHaveLength(1);
@@ -146,19 +153,23 @@ describe("document extraction", () => {
       filename: "chart.png",
       mediaType: "image/png",
       alt: "Revenue chart",
-      context: "Paragraph 2",
+      context: "Paragraph 4",
     });
     // Its OWN bytes: an asset carrying `chart.png`'s name over something
     // else's payload would pass every assertion above.
     expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
-    expect(result.assets.map((asset) => asset.filename)).not.toContain("constructor");
+    for (const member of ["constructor", "valueOf", "__proto__"]) {
+      expect(result.assets.map((asset) => asset.filename)).not.toContain(member);
+    }
     // Same strength as the DW-254 row above: a `mediaType` that is the
     // `Object` constructor function fails this, a `typeof` check would not.
     for (const asset of result.assets) {
       expect(asset.mediaType).toMatch(/^image\//);
     }
     expect(result.text).toContain("Embedded image: Revenue chart");
-    expect(result.text).not.toContain("Company logo");
+    for (const alt of ["Company logo", "Value badge", "Proto banner"]) {
+      expect(result.text).not.toContain(alt);
+    }
   });
 
   it("extracts PPTX slides in presentation order with linked speaker notes", () => {

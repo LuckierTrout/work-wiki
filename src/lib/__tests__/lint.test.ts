@@ -1521,9 +1521,13 @@ describe("checkIncompleteCoverage", () => {
       "# Multi Source\n\nSecond snapshot detail: 33% of nodes stalled.",
     );
 
-    mockedCallLLM.mockResolvedValue("[]");
+    // A real gap payload, not `[]`: the multi-part path has to keep producing
+    // issues, not merely a well-shaped prompt.
+    mockedCallLLM.mockResolvedValue(
+      '[{"gap": "Snapshot detail (33% of nodes stalled) missing from the page", "importance": "high"}]',
+    );
 
-    await checkIncompleteCoverage(["multi-source"]);
+    const issues = await checkIncompleteCoverage(["multi-source"]);
 
     // One call for the page — the cap counts calls, not Sources.
     expect(mockedCallLLM).toHaveBeenCalledTimes(1);
@@ -1531,10 +1535,26 @@ describe("checkIncompleteCoverage", () => {
     expect(message).toContain("11% of runs converged");
     expect(message).toContain("22% of shards drifted");
     expect(message).toContain("33% of nodes stalled");
-    expect(message).toContain("--- Raw Source: multi-source [flat] ---");
-    expect(message).toContain("--- Raw Source: multi-source [snapshot aa11] ---");
-    expect(message).toContain("--- Raw Source: multi-source [snapshot bb22] ---");
+    const flatAt = message.indexOf("--- Raw Source: multi-source [flat] ---");
+    const firstSnapshotAt = message.indexOf(
+      "--- Raw Source: multi-source [snapshot aa11] ---",
+    );
+    const secondSnapshotAt = message.indexOf(
+      "--- Raw Source: multi-source [snapshot bb22] ---",
+    );
+    expect(flatAt).toBeGreaterThanOrEqual(0);
+    // Collection order, as the rendering comment claims: the flat blob first,
+    // then the snapshots as listed. Header presence alone would pass whatever
+    // order the budget split happened to produce.
+    expect(flatAt).toBeLessThan(firstSnapshotAt);
+    expect(flatAt).toBeLessThan(secondSnapshotAt);
     expect(message).toContain("--- Wiki Page: multi-source ---");
+    // The gap still becomes an issue on the multi-part path.
+    expect(issues).toHaveLength(1);
+    expect(issues[0].type).toBe("incomplete-coverage");
+    expect(issues[0].slug).toBe("multi-source");
+    expect(issues[0].message).toContain("33% of nodes stalled");
+    expect(issues[0].suggestion).toBeTruthy();
     // A multi-part payload behind a prompt that still promises the model
     // exactly two documents is a contract nobody was told about.
     const systemPrompt = mockedCallLLM.mock.calls[0][0];
@@ -1634,7 +1654,76 @@ describe("checkIncompleteCoverage", () => {
     ).toBe(true);
   });
 
-  it("skips a slug silently when no Source at all can be read", async () => {
+  it("warns when a LISTED flat Source will not open, and carries on", async () => {
+    // `readRawSource` throws two different things: "this page has no flat
+    // blob" — the normal shape for an Intake-only page, and silent by design —
+    // and "the flat blob is listed but will not open", which is a fault. The
+    // flat listing's own slug set separates them, so this failure is reported
+    // in the same shape a listed-but-unreadable snapshot is.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("flat-unreadable", "# Flat Unreadable\n\nA thin overview.");
+    await updateIndex([
+      { slug: "flat-unreadable", title: "Flat Unreadable", summary: "Mixed arrival" },
+    ]);
+    await saveRawSource(
+      "flat-unreadable",
+      "# Flat Unreadable\n\nFlat detail: 12% of writes stalled.",
+    );
+    await saveRawSourceFor(
+      "flat-unreadable",
+      "aa11",
+      "# Flat Unreadable\n\nSnapshot detail: 34% of writes stalled.",
+    );
+
+    // Only the flat blob's own key fails, at either of the two locations
+    // `readRawSource` tries. The listing (`listFiles` + `stat`) still reports
+    // the slug, which is exactly what makes this a fault rather than an
+    // absence.
+    const storage = getStorage();
+    const realReadFile = storage.readFile.bind(storage);
+    const readFile = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (rel: string) =>
+        /^raw\/(sources\/)?flat-unreadable\.md$/.test(rel)
+          ? Promise.reject(new Error("flat read failed"))
+          : realReadFile(rel),
+      );
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    mockedCallLLM.mockResolvedValue(
+      '[{"gap": "Snapshot detail (34% of writes stalled) missing", "importance": "high"}]',
+    );
+
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    let warnings: string[] = [];
+    try {
+      issues = await checkIncompleteCoverage(["flat-unreadable"]);
+    } finally {
+      warnings = warn.mock.calls.map((call) => `${call[0]}: ${call[1]}`);
+      readFile.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.startsWith("lint: ") &&
+          warning.includes("flat raw source flat-unreadable"),
+      ),
+    ).toBe(true);
+    // The readable snapshot still reaches the single comparison...
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("34% of writes stalled");
+    expect(message).not.toContain("12% of writes stalled");
+    // ...and the issue path is untouched by the failed read.
+    expect(issues).toHaveLength(1);
+    expect(issues[0].slug).toBe("flat-unreadable");
+    expect(issues[0].message).toContain("34% of writes stalled");
+  });
+
+  it("makes no LLM call when no Source for the slug can be read", async () => {
     mockedHasLLMKey.mockResolvedValue(true);
 
     await writeWikiPage("all-unreadable", "# All Unreadable\n\nA thin overview.");
@@ -1661,15 +1750,29 @@ describe("checkIncompleteCoverage", () => {
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 
     let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    let warnings: string[] = [];
     try {
       issues = await checkIncompleteCoverage(["all-unreadable"]);
     } finally {
+      warnings = warn.mock.calls.map((call) => `${call[0]}: ${call[1]}`);
       readFile.mockRestore();
       warn.mockRestore();
     }
 
     expect(issues).toHaveLength(0);
     expect(mockedCallLLM).not.toHaveBeenCalled();
+    // Not silent: the slug is dropped, but the snapshot that would not open is
+    // still reported. Only the absent flat blob passes without a word.
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.startsWith("lint: ") &&
+          warning.includes("all-unreadable/aa11"),
+      ),
+    ).toBe(true);
+    expect(
+      warnings.some((warning) => warning.includes("flat raw source")),
+    ).toBe(false);
   });
 
   it("sends byte-identical Sources once so the budget is not spent twice", async () => {

@@ -1240,6 +1240,44 @@ describe("CLI command execution", () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
+  /**
+   * Pins the LITERAL at the call site, independent of the behavioural rows in
+   * `cli-lifecycle.test.ts`. The conflict guard's `null` is what authorizes the
+   * create, so it must neither be served from the ref-counted global
+   * `pageCache` (`fresh`, DW-195) nor be a non-ENOENT storage failure flattened
+   * into "no page here" (`strict`, DW-378).
+   */
+  it("runCreate() reads the conflict guard fresh and strict", async () => {
+    const { readWikiPage, validateSlug } = await import("../wiki");
+    vi.mocked(validateSlug).mockImplementation(() => {});
+    vi.mocked(readWikiPage).mockResolvedValueOnce(null);
+
+    const { serializeFrontmatter } = await import("../frontmatter");
+    vi.mocked(serializeFrontmatter).mockReturnValueOnce("---\ntitle: Fresh Page\n---\nBody");
+
+    const { extractSummary } = await import("../ingest");
+    vi.mocked(extractSummary).mockReturnValueOnce("Body");
+
+    const { writeWikiPageWithSideEffects } = await import("../lifecycle");
+    vi.mocked(writeWikiPageWithSideEffects).mockResolvedValueOnce({
+      slug: "fresh-page",
+      updatedSlugs: [],
+    });
+
+    const originalStdin = process.stdin;
+    const mockStdin = new (await import("stream")).Readable();
+    mockStdin.push("Body");
+    mockStdin.push(null);
+    Object.defineProperty(process, "stdin", { value: mockStdin, writable: true });
+
+    const { runCreate } = await import("../../cli");
+    await runCreate("fresh-page", "Fresh Page");
+
+    Object.defineProperty(process, "stdin", { value: originalStdin, writable: true });
+
+    expect(readWikiPage).toHaveBeenCalledWith("fresh-page", { fresh: true, strict: true });
+  });
+
   it("runCreate() propagates error for invalid slug", async () => {
     const { validateSlug } = await import("../wiki");
     vi.mocked(validateSlug).mockImplementation(() => {
@@ -1499,6 +1537,54 @@ describe("CLI command execution", () => {
       expect.stringContaining('page "nonexistent-slug" not found'),
     );
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  /**
+   * Pins the LITERAL at the call site. These bytes are the merge base — they
+   * become `expectedContent` on the write below — so they must come from
+   * storage rather than a superseded entry a bulk scan is holding open
+   * (`fresh`, DW-195), and a non-ENOENT blip must not read back as a Page that
+   * does not exist (`strict`, DW-378).
+   */
+  it("runUpdate() reads the merge base fresh and strict", async () => {
+    const { readWikiPageWithFrontmatter, validateSlug } = await import("../wiki");
+    vi.mocked(validateSlug).mockImplementation(() => {});
+    vi.mocked(readWikiPageWithFrontmatter).mockResolvedValueOnce({
+      slug: "fresh-base",
+      title: "Fresh Base",
+      content: "---\ntitle: Fresh Base\n---\nOld body",
+      path: "/wiki/fresh-base.md",
+      frontmatter: { title: "Fresh Base" },
+      body: "Old body",
+    });
+
+    const { serializeFrontmatter } = await import("../frontmatter");
+    vi.mocked(serializeFrontmatter).mockReturnValueOnce("---\ntitle: Fresh Base\n---\nNew body");
+
+    const { extractSummary } = await import("../ingest");
+    vi.mocked(extractSummary).mockReturnValueOnce("New body");
+
+    const { writeWikiPageWithSideEffects } = await import("../lifecycle");
+    vi.mocked(writeWikiPageWithSideEffects).mockResolvedValueOnce({
+      slug: "fresh-base",
+      updatedSlugs: [],
+    });
+
+    const originalStdin = process.stdin;
+    const mockStdin = new (await import("stream")).Readable();
+    mockStdin.push("New body");
+    mockStdin.push(null);
+    Object.defineProperty(process, "stdin", { value: mockStdin, writable: true });
+
+    const { runUpdate } = await import("../../cli");
+    await runUpdate("fresh-base");
+
+    Object.defineProperty(process, "stdin", { value: originalStdin, writable: true });
+
+    expect(readWikiPageWithFrontmatter).toHaveBeenCalledWith("fresh-base", {
+      fresh: true,
+      strict: true,
+    });
   });
 
   it("runUpdate() exits with error when stdin is empty", async () => {

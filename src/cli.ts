@@ -362,8 +362,28 @@ export async function runCreate(slug: string, title: string, tags?: string[]): P
   // Validate slug format
   validateSlug(slug);
 
-  // Check for existing page
-  const existing = await readWikiPage(slug);
+  // Check for existing page.
+  //
+  // FRESH (DW-195). This read's answer decides a mutation: `null` here is what
+  // authorizes the create below. `pageCache` is module-global and ref-counted
+  // around bulk scans, so a concurrent scan can hold a stale NEGATIVE entry
+  // open and the guard would rule a stored slug free.
+  //
+  // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+  // `null`, indistinguishable from "no page here", and the guard reads a blip
+  // as proof the slug is free — landing a create over a stored Page. Strict
+  // rethrows; the catch below keeps that out of the `already exists` sentence.
+  let existing: Awaited<ReturnType<typeof readWikiPage>>;
+  try {
+    existing = await readWikiPage(slug, { fresh: true, strict: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Error: could not read page "${slug}": ${message}\nNothing was created.`,
+    );
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
   if (existing) {
     console.error(`Error: page "${slug}" already exists.`);
     process.exit(1);
@@ -427,8 +447,30 @@ export async function runUpdate(slug: string, title?: string, tags?: string[]): 
   // Validate slug format
   validateSlug(slug);
 
-  // Check that the page exists
-  const existing = await readWikiPageWithFrontmatter(slug);
+  // Check that the page exists.
+  //
+  // FRESH (DW-195). This read's answer decides a mutation, and its bytes ARE
+  // the merge base — `existing.content` becomes `expectedContent` below.
+  // `pageCache` is module-global and ref-counted around bulk scans, so a
+  // concurrent scan can hold a superseded entry open and the update would
+  // merge over — and compare against — bytes that are no longer stored.
+  //
+  // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+  // `null`, indistinguishable from "no page here", so a blip is reported as a
+  // page that does not exist and the update refuses a Page that is merely
+  // unreadable. Strict rethrows; the catch below keeps that out of the
+  // `not found` sentence.
+  let existing: Awaited<ReturnType<typeof readWikiPageWithFrontmatter>>;
+  try {
+    existing = await readWikiPageWithFrontmatter(slug, { fresh: true, strict: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      `Error: could not read page "${slug}": ${message}\nNothing was written.`,
+    );
+    process.exit(1);
+    return; // unreachable but satisfies linting
+  }
   if (!existing) {
     console.error(`Error: page "${slug}" not found.\nRun "pnpm cli list" to see available pages.`);
     process.exit(1);

@@ -34,6 +34,29 @@ name. The owner can route accepted mail to an owned vault and/or
 agent in Settings. Original documents and supported embedded figures are
 preserved in R2 after synthesis.
 
+Those figures bound what the Worker will forward once a message arrives. What
+arrives is bounded first by Cloudflare Email Routing, which **rejects any inbound
+message larger than 25 MiB (26,214,400 bytes) before this Worker runs** —
+"Inbound message size: 25 MiB. Messages larger than this are rejected."
+(<https://developers.cloudflare.com/email-routing/limits/>, verified 2026-08-31).
+That ceiling is a platform limit and is not configurable. The Worker's own
+raw-message cap is clamped to it, so the over-size refusal quotes **25.0 MB** —
+a size a sender can actually resend under, rather than a wider figure the
+transport would refuse again on its own.
+
+The consequence for the figures above, stated so the advertised limits are not
+read as delivery promises. `message.rawSize` is counted on the ENCODED message,
+so how much of the decoded budget fits under 25 MiB depends on the transfer
+encoding the sending client picks:
+
+- One 10 MB document arrives comfortably in base64 (~13.7 MB on the wire).
+- The 20 MB total attachment budget is **not** reachable in base64: ten 2 MiB
+  parts are ~28.7 MB encoded and are rejected by Email Routing. It is reachable
+  only from a client that sends its parts unencoded (`7bit`/`8bit`).
+- Under quoted-printable — what mail clients use for byte-dense `text/*`
+  attachments and non-ASCII bodies, at ~3.12x — roughly 8 MB of decoded payload
+  fits at all.
+
 The inbound Worker sends an immediate accepted/rejected reply. The task-consumer
 Worker sends the final success/failure receipt after conversion settles.
 
@@ -46,3 +69,10 @@ After deploying:
 5. Enable `workwiki.app` for Cloudflare Email Service sending so the
    task-consumer's `EMAIL` binding can deliver final receipts from
    `ingest@workwiki.app`.
+
+Nothing in step 1-3 raises the 25 MiB inbound ceiling: Email Routing rejects an
+oversized message upstream, so a sender reporting a silent bounce for a large
+attachment is hitting the platform, not `YOPEDIA_CONFIG` or the Worker. The
+figure lives in code as `EMAIL_ROUTING_MAX_INBOUND_BYTES` in
+`workers/email-ingest/index.ts`, with the same source URL; re-verify it there if
+Cloudflare changes the published limit.

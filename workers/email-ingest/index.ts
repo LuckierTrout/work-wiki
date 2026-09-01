@@ -102,9 +102,11 @@ export const AGGREGATE_DOCUMENT_AVERAGE_BYTES = 2 * 1024 * 1024;
  * This is the cap's derivation AND, since DW-360, the post-decode bound: the
  * forwarding selection below stops appending parts to the outbound `FormData`
  * once their decoded lengths reach this figure. That pairing is the point. The
- * cap is derived from the WORST transfer encoding, so a sender using the CHEAP
- * one (base64, ~1.37x) could otherwise slip ~47 MB of decoded bytes under a
- * 62.4 MB raw gate.
+ * cap is derived from the WORST transfer encoding, so a sender using a CHEAPER
+ * one (base64 at ~1.37x, an unencoded 7bit/8bit part at ~1x) could otherwise
+ * slip far more decoded bytes past the raw gate than the budget names — ~47 MB
+ * under the 62.4 MB `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` this budget yields, and
+ * ~19 MB under the 25 MiB figure the DW-449 clamp actually enforces.
  *
  * WHICH peak this bounds, stated precisely, because the loose reading of it is
  * wrong. It bounds the `FormData` copies of the SELECTED parts — the bytes this
@@ -112,9 +114,9 @@ export const AGGREGATE_DOCUMENT_AVERAGE_BYTES = 2 * 1024 * 1024;
  * buffered payload: `PostalMime.parse(message.raw)` has already decoded the
  * entire MIME tree into `parsed.attachments` before the selection loop runs, and
  * that parse-time peak is still bounded solely by `MAX_RAW_EMAIL_BYTES` — which
- * this same change RAISED. So the budget halves a doubled exposure rather than
- * removing it; bounding the parse itself would mean streaming the MIME tree, a
- * different change entirely.
+ * DW-362 RAISED and the DW-449 clamp has since lowered to 25 MiB. So the budget
+ * halves a doubled exposure rather than removing it; bounding the parse itself
+ * would mean streaming the MIME tree, a different change entirely.
  */
 export const MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES = Math.max(
   MAX_EMAIL_DOCUMENT_BYTES,
@@ -154,21 +156,28 @@ export const BASE64_EXPANSION_FACTOR = (4 / 3) * (78 / 76);
  * The residual, stated rather than left implicit. A maximally-escaped
  * `MAX_EMAIL_DOCUMENT_BYTES` document reaches 32,715,573 bytes at k=25 and
  * 32,768,001 at k=24, both far under the 65,496,679-byte
- * `MAX_RAW_EMAIL_BYTES` the aggregate budget now yields — and so is every
- * narrower wrap, down to k=1 at 62,914,560 bytes. Since `(3k + 3) / k` only
- * rises as `k` falls, ONE full-size document is admissible at every conforming
- * wrap; the k=23 limit this comment used to record was a property of the old
- * single-document derivation and no longer exists (DW-362).
+ * `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` the aggregate budget yields — and so is
+ * every narrower wrap, down to k=1 at 62,914,560 bytes. Since `(3k + 3) / k`
+ * only rises as `k` falls, ONE full-size document is admissible AGAINST THE
+ * DERIVATION at every conforming wrap; the k=23 limit this comment used to
+ * record was a property of the old single-document derivation and no longer
+ * exists (DW-362).
  *
- * The bounded limit MOVED rather than disappeared, and it now lives at the
- * aggregate the cap is sized for: `MAX_EMAIL_ATTACHMENTS` parts of
- * `AGGREGATE_DOCUMENT_AVERAGE_BYTES` reach 65,431,170 bytes at k=25 and fit, but
- * 65,536,020 at k=24 (a 72-column wrap) and do not. So a sender who fills a
- * message to the full aggregate AND wraps narrower than the 76-character maximum
- * is still refused at the door. That is a bounded, known limit, not an oversight
- * — widening for it would cost headroom against a shape no mainstream client
- * emits. Pinned at both widths by
- * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
+ * The bounded limit MOVED rather than disappeared, and against the derivation it
+ * lives at the aggregate that figure is sized for: `MAX_EMAIL_ATTACHMENTS` parts
+ * of `AGGREGATE_DOCUMENT_AVERAGE_BYTES` reach 65,431,170 bytes at k=25 and fit
+ * under `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, but 65,536,020 at k=24 (a 72-column
+ * wrap) and do not. That is a bounded, known limit, not an oversight — widening
+ * for it would cost headroom against a shape no mainstream client emits. Pinned
+ * at both widths by `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
+ *
+ * None of those figures is what a sender meets today (DW-449). The ENFORCED gate
+ * is `MAX_RAW_EMAIL_BYTES`, clamped to the 26,214,400-byte
+ * `EMAIL_ROUTING_MAX_INBOUND_BYTES`, and EVERY quoted-printable figure above is
+ * over it — Cloudflare Email Routing rejects those messages before this Worker
+ * runs at all. Worst-case quoted-printable therefore carries roughly 8.0 MiB of
+ * decoded payload in practice, not a full-size document; base64 still carries
+ * one (14,348,938 bytes on the wire) with room to spare.
  */
 export const QUOTED_PRINTABLE_EXPANSION_FACTOR = 3 * (78 / 75);
 /**
@@ -197,6 +206,10 @@ export const WORST_CASE_TRANSFER_ENCODING_FACTOR = Math.max(
  * `MAX_EMAIL_CONTENT_CHARS` — and is not meant to be: the pair only has to be
  * simultaneously satisfiable for realistic mail, not at both extremes at once.
  * Pinned as a trade-off by `src/lib/__tests__/email-ingest-worker.test.ts`.
+ *
+ * A property of `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, which is what this headroom
+ * is added to. The DW-449 clamp sits ABOVE that arithmetic and does not change
+ * it: it lowers the enforced gate without re-sizing any term of the derivation.
  */
 export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
 /**
@@ -236,8 +249,10 @@ export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
  * not from the exact formula: the exact one lives in the test helper, where it
  * can be calibrated against a real fixture.
  *
- * That lands the cap at 65,496,679 bytes (~62.46 MiB), quoted to senders as
- * 62.4 MB. Far above the "about 13.4 MB" recorded in the 2026-08-19 decision —
+ * That lands the DERIVATION at 65,496,679 bytes (~62.46 MiB). It is no longer
+ * the figure quoted to senders: `MAX_RAW_EMAIL_BYTES` below clamps it to the
+ * platform ceiling, and 25.0 MB is what the refusal names (DW-449). Far above
+ * the "about 13.4 MB" recorded in the 2026-08-19 decision —
  * which was a bare `MAX_DOCUMENT_SIZE * 4 / 3`, the arithmetic of one encoding
  * rather than its intent. Only this cap moves: the per-document ceiling, the
  * attachment count, the body cap and the `message.rawSize` gate itself are
@@ -245,9 +260,49 @@ export const MIME_ENVELOPE_HEADROOM_BYTES = 64 * 1024;
  * which holds the bytes actually copied into the outbound `FormData` to the same
  * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` this cap is sized for.
  */
-export const MAX_RAW_EMAIL_BYTES =
+export const AGGREGATE_DERIVED_RAW_EMAIL_BYTES =
   Math.ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
   MIME_ENVELOPE_HEADROOM_BYTES;
+/**
+ * Cloudflare Email Routing's own inbound ceiling — a limit this Worker lives
+ * UNDER rather than one it chooses. A message larger than this is rejected by
+ * the platform before the `email()` handler is invoked at all, so a refusal
+ * quoting any larger figure invites the sender to resend under a size the
+ * transport has already refused (DW-449).
+ *
+ * Verified 2026-08-31 against https://developers.cloudflare.com/email-routing/limits/
+ * — "Inbound message size: 25 MiB. Messages larger than this are rejected." —
+ * and corroborated by Cloudflare's own Email Workers guide, whose size-check
+ * example reads `message.rawSize > 25 * 1024 * 1024`. Written as that same
+ * expression rather than as 26,214,400 so the MiB the docs state stays legible
+ * at the constant.
+ */
+export const EMAIL_ROUTING_MAX_INBOUND_BYTES = 25 * 1024 * 1024;
+/**
+ * The cap this Worker actually enforces: the lower of what the aggregate budget
+ * needs and what the transport will carry.
+ *
+ * Written as a `Math.min` over the two named terms rather than as a swap to the
+ * smaller one — the same both-terms-stay-live idiom
+ * `WORST_CASE_TRANSFER_ENCODING_FACTOR` and `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`
+ * use. Each term stays exported and separately pinned, and the enforced figure
+ * keeps tracking whichever is lower if either ever moves.
+ *
+ * The PLATFORM term binds today: 26,214,400 against the derivation's
+ * 65,496,679. What that costs, stated here rather than discovered later — a
+ * maximally-escaped quoted-printable full-size document (32,715,573 bytes on the
+ * wire) and the whole aggregate budget (65,431,170) no longer reach this Worker.
+ * They did not reach it before this clamp either; Email Routing refused them
+ * upstream while this Worker's refusal copy promised otherwise. The clamp only
+ * stops the promise. The reachable admissions that survive are base64 — a
+ * full-size document is 14,348,938 bytes, ~11.3 MiB clear — and roughly 8.0 MiB
+ * decoded under worst-case quoted-printable. That is a transport fact this
+ * constant reports, not a narrowing it chose.
+ */
+export const MAX_RAW_EMAIL_BYTES = Math.min(
+  AGGREGATE_DERIVED_RAW_EMAIL_BYTES,
+  EMAIL_ROUTING_MAX_INBOUND_BYTES,
+);
 /**
  * Rounded DOWN to the displayed precision, so the figure quoted back to the
  * sender is never larger than the limit actually enforced.
@@ -805,19 +860,23 @@ export default {
     );
     // The forwarding selection, bounded by BOTH limits the cap is sized for: the
     // attachment COUNT, and — since DW-360 — the aggregate DECODED byte budget
-    // `MAX_RAW_EMAIL_BYTES` is derived from.
+    // `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` is derived from.
     //
     // The byte bound is not redundant with the raw gate. `message.rawSize` is
-    // measured on the wire and the cap is derived from the WORST transfer
-    // encoding, so a sender using the cheap one (base64, ~1.37x rather than
-    // ~3.12x) can put ~47 MB of decoded bytes under a 62.4 MB raw gate. Without
-    // this loop every one of those bytes would be copied AGAIN into `FormData`
-    // and held there for the lifetime of the forward.
+    // measured on the wire, and every encoding a sender may pick is cheaper than
+    // the worst-case ~3.12x the derivation assumes: base64 is ~1.37x and an
+    // unencoded 7bit/8bit part is ~1x. So a message inside the enforced
+    // `MAX_RAW_EMAIL_BYTES` can still carry more decoded bytes than the budget
+    // names — ~47 MB under the 62.4 MB derivation, and, since the DW-449 clamp,
+    // up to the 25 MiB gate itself for an unencoded part. Without this loop
+    // every one of those bytes would be copied AGAIN into `FormData` and held
+    // there for the lifetime of the forward.
     //
     // What it does not bound: `PostalMime.parse` above has already decoded the
     // whole MIME tree, so the parse-time peak is `MAX_RAW_EMAIL_BYTES`' problem
-    // and this change raised that figure. The budget bounds the second copy, not
-    // the first — see `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`.
+    // — a figure DW-362 raised and the DW-449 clamp then lowered to 25 MiB. The
+    // budget bounds the second copy, not the first — see
+    // `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`.
     //
     // Sizes come from `decodedByteLength`, which reads `byteLength` (or scans a
     // string) and allocates nothing: no attachment is decoded any more times

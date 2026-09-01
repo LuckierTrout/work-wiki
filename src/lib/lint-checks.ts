@@ -1007,9 +1007,16 @@ export async function checkIncompleteCoverage(
   // does. Each listing gets its own try/catch so one failing root does not
   // silently blank the whole check.
   const rawSlugsOnDisk = new Set<string>();
+  // The slugs the FLAT listing reported, kept apart from the union above so a
+  // flat read that throws can be told apart from a page that simply has no
+  // flat blob. Without it, "no `raw/sources/<slug>.md` exists" (the normal
+  // shape for an Intake-only page) and "the blob is listed but will not open"
+  // (a real fault) are the same silent `catch`.
+  const flatSlugsOnDisk = new Set<string>();
   try {
     for (const source of await listRawSources()) {
       rawSlugsOnDisk.add(source.slug);
+      flatSlugsOnDisk.add(source.slug);
     }
   } catch (error) {
     // Snapshots below can still drive the check, but say so: a broken Source
@@ -1076,8 +1083,19 @@ export async function checkIncompleteCoverage(
     };
     try {
       collectRawPart("flat", (await readRawSource(slug)).content);
-    } catch {
-      // No flat blob — the normal shape for an Intake-only page, not a fault.
+    } catch (error) {
+      // `readRawSource` throws for both "there is no flat blob" and "the flat
+      // blob will not open". The first is the normal shape for an Intake-only
+      // page and stays silent; the second is a fault, and gets the same
+      // warning a listed-but-unreadable snapshot does — logging one and
+      // swallowing the other is the asymmetry the warning exists to remove.
+      if (flatSlugsOnDisk.has(slug)) {
+        logger.warn(
+          "lint",
+          `flat raw source ${slug} unreadable for coverage`,
+          error,
+        );
+      }
     }
     for (const rawId of snapshotIdsBySlug.get(slug) ?? []) {
       try {
@@ -1099,12 +1117,15 @@ export async function checkIncompleteCoverage(
     }
     if (rawParts.length === 0) continue; // No readable Source, skip
 
-    // Spread MAX_RAW_CHARS across the collected Sources need-aware: the equal
-    // share is the FLOOR, not the cap, so parts shorter than their share
-    // release the remainder to the parts that can still use it. A flat blob
-    // beside three tiny snapshots therefore keeps nearly the whole budget
-    // rather than MAX_RAW_CHARS/4, and four equally oversized Sources still
-    // get a quarter each. Shortest first, so an unspent share flows onward.
+    // Spread MAX_RAW_CHARS across the collected Sources need-aware: while
+    // budget remains, the equal share is the FLOOR rather than the cap, so
+    // parts shorter than their share release the remainder to the parts that
+    // can still use it. A flat blob beside three tiny snapshots therefore
+    // keeps nearly the whole budget rather than MAX_RAW_CHARS/4, and four
+    // equally oversized Sources still get a quarter each. Shortest first, so
+    // an unspent share flows onward. The floor is 0, not 1: a page with more
+    // Sources than the budget has characters must still total at most
+    // MAX_RAW_CHARS, and a guaranteed one character each would breach that.
     // A single `.slice(0, MAX_RAW_CHARS)` over the joined parts is the shape
     // that must not ship: it pushes every snapshot out behind a long flat
     // blob, which is DW-571 in a new form.
@@ -1115,7 +1136,7 @@ export async function checkIncompleteCoverage(
       .map((_, index) => index)
       .sort((a, b) => rawParts[a].content.length - rawParts[b].content.length);
     for (const index of byAscendingLength) {
-      const share = Math.max(1, Math.floor(remaining / left));
+      const share = Math.max(0, Math.floor(remaining / left));
       const take = Math.min(rawParts[index].content.length, share);
       takes[index] = take;
       remaining -= take;

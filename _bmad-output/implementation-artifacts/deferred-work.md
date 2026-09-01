@@ -2663,7 +2663,9 @@ source_spec: `spec-dw-250-251-252-254-email-ingest-test-coverage.md`
 location: src/lib/document-extract.ts:458
 severity: low
 reason: `src/lib/document-extract.ts:458` does `const bytes = files[target]`, where `target` is resolved from a relationship `Target` attribute inside an attacker-supplied archive. `resolveArchiveTarget` can produce a bare `constructor` (e.g. from `../constructor`), which would answer an inherited function. It is unreachable today only because `mediaTypeFor` rejects an extensionless name first and the `!bytes || !mediaType` guard short-circuits -- an accident of ordering, not a guard. Routing it through `ownLookup` would make it match its neighbour.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-snapshot-coverage-and-archive-lookup
+resolution-undo: 07a4b5b8a44b8a65a0b1c538e87fae9d53c4b4f8686762b90f112510c146d6e3 2026-08-31 7374617475733a206f70656e
 
 ### DW-366: The route's `MAX_EMAIL_CONTENT_CHARS` 400 branch is unexercised -- the same defect class as DW-250, two gates above it.
 
@@ -4377,7 +4379,9 @@ location: src/lib/lint-checks.ts:1040
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: medium
 reason: The fallback breaks on the first snapshot that opens, and `readRawSource` is tried first, so a page assembled from several hashed Sources is judged against one of them chosen by directory-listing order. The DW-437 decision is about candidacy and counting; which bytes reach the LLM is a separate question this change did not settle.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-snapshot-coverage-and-archive-lookup
+resolution-undo: 07a4b5b8a44b8a65a0b1c538e87fae9d53c4b4f8686762b90f112510c146d6e3 2026-08-31 7374617475733a206f70656e
 
 ### DW-572: Other content-addressed binary writers still publish through the overwrite door, so FR-2 exclusivity holds only for the `raw.ts` path.
 origin: spec-deferred 47e89b1d5d12
@@ -5403,4 +5407,20 @@ location: src/mcp.ts:1421
 source_spec: `spec-dw-424-426-mcp-and-delete-fresh-merge-bases.md`
 severity: high
 reason: `src/mcp.ts:1421` declares `args: { slug; timestamp; author? }` — no `principal` — and the handler never calls `canWriteFrontmatter`; the lifecycle writer it delegates to adds none. Its REST twin runs `canWriteFrontmatter(existing.frontmatter, principal, "body")` with the 404/403 cloak immediately after the identical fresh+strict read (`src/app/api/wiki/[slug]/revisions/route.ts:138` and just below), and the sibling MCP write doors (`handleUpdatePage`, `handleDeletePage`, `handleUpdateMetadata`) all take a `principal`. `src/lib/mcp-http.ts:763` registers `revert_revision` with `write: true` but passes only `author: p!.handle` (`:777`), so the caller's identity never reaches an authorization check. A caller `handleUpdatePage` would refuse can restore any prior revision of the same Page — including a private one in another owner's realm — which is a write-authorization bypass, not a wording bug. The only `revert_revision` rows in `src/lib/__tests__/mcp-http.test.ts` (`:1491-1552`) assert
+status: open
+
+### DW-695: `extractPptx` indexes the unzipped archive map with a relationship-derived path, so a crafted PPTX turns document ingest into an uncaught `TypeError` (HTTP 500) and silently discards the deck's real s
+origin: spec-deferred d1ac81be373c
+location: src/lib/document-extract.ts:595
+source_spec: `spec-dw-365-571-snapshot-coverage-and-archive-lookup.md`
+severity: medium
+reason: `src/lib/document-extract.ts:595` filters slides with `Boolean(files[slide.path])` and `:602` reads `const bytes = files[path]`, where `path` comes from `relationshipMap` -> `resolveArchiveTarget` over an uploaded archive's `Target` attribute. A `ppt/_rels/presentation.xml.rels` entry of `Target="../constructor"` resolves to the bare key `constructor`, which the plain index answers with the inherited `Object` constructor function: the `Boolean(...)` filter keeps the bogus slide, `ordered.length` is non-zero so it OVERRIDES the correct `fallbackSlides`, and `new TextDecoder().decode(fn)` throws `TypeError: The "list" argument must be an instance of SharedArrayBuffer, ArrayBuffer or ArrayBufferView`. Three independent reviewers built the fixture and reproduced it. Because it is not a `ClientInputError`, `src/app/api/ingest/document/route.ts` answers 500 rather than the 400 the extractor's contract promises, and the readable `ppt/slides/slide1.xml` in the same archive is never extracted.
+status: open
+
+### DW-696: A concurrently in-review spec lists `src/cli.ts:366` — this bundle's create-conflict guard — in its Never clause as a "pure display read", so a later sweep acting on that clause could revert the guard
+origin: spec-deferred 8d301557101f
+location: _bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-strict-reads.md:37
+source_spec: `spec-dw-425-create-conflict-fresh-reads.md`
+severity: low
+reason: `_bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-strict-reads.md` (`status: in-review`, another session's in-flight bundle) groups `src/cli.ts:366` with `src/cli.ts:279` and `:327` under "Do not convert reads that do not authorize a write and do not serve an existence answer -- the pure display reads ... stay exactly as they are." `:366` is neither: it is `runCreate`'s conflict guard, whose `null` is the sole authorization for the create below, and DW-496's own `reason` (`deferred-work.md:3717`) names the create-conflict guards as the mirror case in scope. That same spec also plans to convert `src/cli.ts:431` -- the SAME site this bundle converted -- and prescribes the opposite handling there ("A rethrow reaches `main().catch` ... correct already, no repair needed"), where this bundle's intent explicitly requires a distinct "could not read" exit message. If the stale Never clause is later acted on, the create guard reverts to a cached-negative read and a create can
 status: open
