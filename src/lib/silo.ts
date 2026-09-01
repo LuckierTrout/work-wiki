@@ -29,7 +29,13 @@ import {
   tenantForOwner,
   validateTenant,
 } from "./wiki";
-import { RAW_ASSETS_DIR, rawSourceRelPath, tenantRawSourceRelPath } from "./raw";
+import {
+  RAW_ASSETS_DIR,
+  RAW_STRUCTURAL_DIRS,
+  isRawSnapshotName,
+  rawSourceRelPath,
+  tenantRawSourceRelPath,
+} from "./raw";
 import { logger } from "./logger";
 
 async function copyText(src: string, dst: string): Promise<boolean> {
@@ -84,6 +90,95 @@ async function deleteDirSafe(path: string): Promise<void> {
 }
 
 /**
+ * Mirror the PAGE-OWNED entries of one hashed directory into the silo, and
+ * return how many were copied.
+ *
+ * "Page-owned" is `isRawSnapshotName` — a content-addressed `<hex>.<ext>` —
+ * because `raw/sources/<name>/` is SHARED: `saveRawSourceFor`/
+ * `saveRawSourceBytes` address it by page slug while `saveRawSourceTree`
+ * addresses it by folder-import root, so a page slugged like an import root
+ * would otherwise pull that import's top-level files — possibly another
+ * owner's — into its silo (DW-611). Subdirectories are skipped for the same
+ * reason the assets loop skips them (imports nest), dotfiles because
+ * `.DS_Store` is not a Source and mirroring one would make it Workbench-visible
+ * in Files.
+ *
+ * `copyAsset`, not `copyText`: `saveRawSourceBytes` publishes PDFs/DOCX/JPEGs
+ * into the same namespace as the extracted `.md`, and a UTF-8 round-trip would
+ * mangle them.
+ *
+ * The mirrored-name Set is a COST BOUND, not a concurrency guarantee: it keeps
+ * a re-sync from re-copying keys that never change, the same bound the revision
+ * and asset loops carry for the Workers subrequest budget. It is NOT the
+ * create-only door `mirrorSourceToSilo`/`storeRawSourceBytes` use
+ * (`writeFileIfAbsent`/`writeAssetIfAbsent`) — `copyAsset` ends in an
+ * unconditional `writeAsset`, so the check-then-write window is open here. That
+ * is safe precisely because the names are content-addressed: a racing mirror
+ * writes byte-identical bytes to the key it already occupies.
+ *
+ * The FLAT side is listed FIRST and the silo side is not listed AT ALL when no
+ * page-owned candidate survives, so a slug with no hashed tree under this root
+ * pays one missing-directory listing and stops — the bound that keeps calling
+ * this for two roots from doubling every flat-only page's sync cost.
+ */
+async function mirrorHashedTree(
+  flatPrefix: string,
+  siloPrefix: string,
+): Promise<number> {
+  const candidates = (await listSafe(flatPrefix)).filter(
+    (f) =>
+      !f.isDirectory && !f.name.startsWith(".") && isRawSnapshotName(f.name),
+  );
+  if (candidates.length === 0) return 0;
+  const mirrored = new Set((await listSafe(siloPrefix)).map((f) => f.name));
+  let copied = 0;
+  for (const f of candidates) {
+    if (mirrored.has(f.name)) continue;
+    if (await copyAsset(`${flatPrefix}/${f.name}`, `${siloPrefix}/${f.name}`))
+      copied++;
+  }
+  return copied;
+}
+
+/**
+ * Remove one page's snapshots from a silo hashed directory, and the directory
+ * itself only when nothing foreign was left in it.
+ *
+ * The recursive `deleteDirectory` this replaces was correct only while the
+ * directory belonged to one page. It does not: a page slugged like a
+ * folder-import root shares `raw/sources/<name>/` with that import, so deleting
+ * the page took the whole import tree — another owner's, possibly — with it
+ * (DW-611). Deleting the page-owned FILES individually is the narrowest
+ * cleanup that still leaves no silo ghost behind for the reverse-orphan pass
+ * to trip over.
+ *
+ * A directory holding anything this mirror would never have written — an import
+ * file, a subdirectory, a dotfile — survives with that content intact.
+ */
+async function removeHashedTree(siloPrefix: string): Promise<void> {
+  const entries = await listSafe(siloPrefix);
+  // Nothing there — including the common case of a directory that never
+  // existed. Return before `deleteDirSafe`: `removeSiloForPage` calls this at
+  // BOTH roots, so falling through would issue two recursive deletes against
+  // absent prefixes on every page delete, and on R2 a recursive delete is a
+  // prefix sweep, not a no-op.
+  if (entries.length === 0) return;
+  let foreign = 0;
+  for (const f of entries) {
+    if (
+      !f.isDirectory &&
+      !f.name.startsWith(".") &&
+      isRawSnapshotName(f.name)
+    ) {
+      await deleteSafe(`${siloPrefix}/${f.name}`);
+    } else {
+      foreign++;
+    }
+  }
+  if (foreign === 0) await deleteDirSafe(siloPrefix);
+}
+
+/**
  * Mirror every per-page artifact for one slug into its tenant silo (idempotent
  * — overwrites). Reads from flat (the write primary), so call AFTER the flat
  * write completes. Returns the count of artifacts copied.
@@ -105,12 +200,12 @@ export async function syncSiloForPage(
   // costs one missing-file check rather than a second write.
   //
   // Neither address covers Workbench Intake's per-slug HASHED tree
-  // `raw/sources/<slug>/<rawId>.<ext>`, mirrored below (DW-435). DW-435 scopes
-  // to that tree alone. The legacy hashed root `raw/<slug>/<rawId>.md` is a
-  // REAL source location — `readRawSourceById` falls back to it and
-  // `listRawSourceSnapshots` enumerates it — and is deliberately left
-  // unmirrored here, not assumed absent. Widening the mirror to it is a
-  // separate decision with its own migration cost, not a line in this one.
+  // `raw/sources/<slug>/<rawId>.<ext>`, mirrored below (DW-435) — nor the
+  // legacy hashed root `raw/<slug>/<rawId>.md`, which DW-435 left unmirrored
+  // and DW-610 now covers too. That root is a REAL source location:
+  // `readRawSourceById` falls back to it and `listRawSourceSnapshots`
+  // enumerates it, so a workspace whose arrivals predate the move had them
+  // invisible in Files forever (`raw/` resolves silo-only, DW-40).
   if (
     await copyText(
       rawSourceRelPath(`${slug}.md`),
@@ -121,44 +216,35 @@ export async function syncSiloForPage(
   if (await copyText(rawRelPath(`${slug}.md`), tenantRawRelPath(tenant, `${slug}.md`)))
     n++;
 
-  // Hashed Intake arrivals: raw/sources/<slug>/<rawId>.<ext>.
+  // Hashed arrivals, at BOTH roots, through one helper — see
+  // `mirrorHashedTree` for what counts as page-owned and why the flat side is
+  // listed first.
   //
-  // The mirrored-name Set is a COST BOUND, not a concurrency guarantee: it
-  // keeps a re-sync from re-copying keys that never change, the same bound the
-  // revision and asset loops below carry for the Workers subrequest budget.
-  // It is NOT the create-only door `mirrorSourceToSilo`/`storeRawSourceBytes`
-  // use (`writeFileIfAbsent`/`writeAssetIfAbsent`) — `copyAsset` ends in an
-  // unconditional `writeAsset`, so the check-then-write window is open here.
-  // That is safe precisely because the names are content-addressed: a racing
-  // mirror writes byte-identical bytes to the key it already occupies.
+  // Modern: raw/sources/<slug>/<rawId>.<ext> (DW-435).
+  n += await mirrorHashedTree(
+    rawSourceRelPath(slug),
+    tenantRawSourceRelPath(tenant, slug),
+  );
+  // Legacy: raw/<slug>/<rawId>.<ext> (DW-610), mirrored ADDRESS-PRESERVINGLY
+  // into `tenants/<t>/raw/<slug>/` — the same convention the legacy flat
+  // `raw/<slug>.md` copy above uses. It keeps the silo a faithful picture of
+  // the flat tree for a future flat retirement, and `listWorkbenchFilePaths`
+  // walks the whole silo `raw/` root, so visibility in Files does not depend on
+  // the modern spelling.
   //
-  // `copyAsset`, not `copyText`: `saveRawSourceBytes` publishes PDFs/DOCX/JPEGs
-  // into the same namespace as the extracted `.md`, and a UTF-8 round-trip
-  // would mangle them.
-  //
-  // The FLAT side is listed FIRST so a slug with only the flat layout pays one
-  // missing-directory listing and stops, never a second (silo-side) listing.
-  const hashedEntries = await listSafe(rawSourceRelPath(slug));
-  if (hashedEntries.length > 0) {
-    const mirroredHashed = new Set(
-      (await listSafe(tenantRawSourceRelPath(tenant, slug))).map((f) => f.name),
+  // SKIPPED for a slug naming a structural root under `raw/` — `raw/sources/`,
+  // `raw/assets/`, `raw/parsed/`, `raw/uploads/` hold other pages' and other
+  // owners' content, and the path alone cannot tell a real page slugged
+  // `assets` from the root itself. When it cannot, WITHHOLD: read the name as a
+  // root and mirror nothing, rather than pull a shared tree into one page's
+  // silo. `rawPathSlug` withholds under the same principle and the opposite
+  // direction — see `RAW_STRUCTURAL_DIRS` for why the two are not one rule. The
+  // page's MODERN tree (`raw/sources/assets/…`) is unaffected.
+  if (!RAW_STRUCTURAL_DIRS.has(slug)) {
+    n += await mirrorHashedTree(
+      rawRelPath(slug),
+      tenantRawRelPath(tenant, slug),
     );
-    for (const f of hashedEntries) {
-      // Folder-import trees can nest (`raw/sources/<dir>/<sub>/<file>`); skip
-      // subdirectories at this level exactly as the assets loop does. Dotfiles
-      // are skipped for the reason `listRawSources` and
-      // `listRawSourceSnapshots` skip them: `.DS_Store` and friends are not
-      // Sources, and mirroring one would make it Workbench-visible in Files.
-      if (f.isDirectory || f.name.startsWith(".") || mirroredHashed.has(f.name))
-        continue;
-      if (
-        await copyAsset(
-          rawSourceRelPath(`${slug}/${f.name}`),
-          tenantRawSourceRelPath(tenant, `${slug}/${f.name}`),
-        )
-      )
-        n++;
-    }
   }
 
   // Revision history + assets are IMMUTABLE (append-only, never rewritten), so
@@ -223,10 +309,16 @@ export async function removeSiloForPage(
     deleteSafe(`tenants/${tenant}/discuss/${slug}.json`),
     deleteDirSafe(tenantWikiRelPath(tenant, `.revisions/${slug}`)),
     deleteDirSafe(tenantRawRelPath(tenant, `${RAW_ASSETS_DIR}/${slug}`)),
-    // Hashed Intake arrivals mirrored by syncSiloForPage (DW-435) — without
+    // Hashed arrivals mirrored by syncSiloForPage (DW-435/DW-610) — without
     // this a deleted page leaves Sources in the silo for reverse-orphan
-    // cleanup to trip over.
-    deleteDirSafe(tenantRawSourceRelPath(tenant, slug)),
+    // cleanup to trip over. SELECTIVE, not a recursive directory delete: the
+    // directory may be shared with a folder import (DW-611). Same structural-
+    // root skip as the mirror, so a page slugged `assets` cannot delete out of
+    // `tenants/<t>/raw/assets/`.
+    removeHashedTree(tenantRawSourceRelPath(tenant, slug)),
+    ...(RAW_STRUCTURAL_DIRS.has(slug)
+      ? []
+      : [removeHashedTree(tenantRawRelPath(tenant, slug))]),
   ]);
 }
 
@@ -237,10 +329,18 @@ export async function removeSiloForPage(
 /** Summary returned by {@link reconcileSilos}. */
 export interface ReconcileResult {
   total: number;
-  /** Pages whose silo copy was missing and freshly synced. */
+  /** Pages whose silo wiki md was MISSING when the pass reached them. */
   synced: number;
-  /** Pages whose silo copy existed but had stale content — re-synced. */
+  /** Pages whose silo wiki md existed but had stale content. */
   stale: number;
+  /**
+   * Pages whose silo wiki md already matched flat.
+   *
+   * NOT "nothing was done": every page is synced (DW-608), and this counter
+   * only says which of the three states the md was in. A page counted here can
+   * still have had a Source, a revision, a discussion thread or an asset
+   * repaired by that sync.
+   */
   alreadyCurrent: number;
   /** Silo pages with no corresponding index entry — cleaned up. */
   removed: number;
@@ -251,9 +351,10 @@ export interface ReconcileResult {
 const SKIP = new Set(["index", "log"]);
 
 /**
- * Scan every page in the flat index, verify that its tenant silo copy exists,
- * and repair any that are missing. This closes the gap left by fail-soft silo
- * mirrors — a page whose mirror write failed silently will be re-synced here.
+ * Scan every page in the flat index and re-sync its tenant silo. This closes
+ * the gap left by fail-soft silo mirrors — a page whose mirror write failed
+ * silently is repaired here, for EVERY artifact the silo holds and not just the
+ * wiki md whose state the counters report (DW-608).
  *
  * Designed to run at the END of {@link rebuildDerivedIndexes} (it reads from
  * flat, so all indexes should be fresh first) and is also available for the
@@ -279,21 +380,30 @@ export async function reconcileSilos(): Promise<ReconcileResult> {
     try {
       const flatPath = wikiRelPath(`${page.slug}.md`);
       const siloPath = tenantWikiRelPath(tenant, `${page.slug}.md`);
+      // The md comparison is now purely a CLASSIFIER for the counters below,
+      // not a gate (DW-608). `lifecycle.ts` writes flat and silo from the
+      // identical content, so a live page always compared equal and the sync
+      // never ran — which meant a Source, revision, thread or asset that
+      // arrived AFTER the md was mirrored could never be repaired by a routine
+      // reconcile, the one job this pass exists to do.
       const exists = await storage.fileExists(siloPath);
+      let bucket: "synced" | "stale" | "alreadyCurrent";
       if (!exists) {
-        await syncSiloForPage(page.slug, tenant);
-        result.synced++;
+        bucket = "synced";
       } else {
-        // Silo exists — compare content to detect staleness.
         const flatContent = await storage.readFile(flatPath);
         const siloContent = await storage.readFile(siloPath);
-        if (flatContent !== siloContent) {
-          await syncSiloForPage(page.slug, tenant);
-          result.stale++;
-        } else {
-          result.alreadyCurrent++;
-        }
+        bucket = flatContent !== siloContent ? "stale" : "alreadyCurrent";
       }
+      // Unconditional. The per-page cost is a handful of listings against a
+      // silo that is usually already complete, and it is affordable HERE
+      // specifically: the only production caller is the tail of
+      // `rebuildDerivedIndexes` (admin/rebuild, fail-soft), never a request hot
+      // path. `syncSiloForPage`'s own copy-only-new bound is what keeps that
+      // cost from growing with history — which is why the answer is not an
+      // opt-out parameter on the sync.
+      await syncSiloForPage(page.slug, tenant);
+      result[bucket]++;
     } catch (e) {
       result.errors.push(`${page.slug}: ${String(e)}`);
       logger.warn("silo", `reconcile failed for "${page.slug}":`, e);

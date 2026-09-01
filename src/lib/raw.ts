@@ -68,6 +68,37 @@ export const RAW_PARSED_DIR = "parsed";
  */
 export const RAW_ASSETS_DIR = "assets";
 
+/**
+ * The first segments under `raw/` that are STRUCTURE, not a page slug.
+ *
+ * A page slug occupies the same position as these roots do — `raw/<slug>.md`
+ * and the legacy hashed `raw/<slug>/<rawId>.md` put it right there — so a
+ * caller walking `raw/<name>/` cannot tell a real page slugged `assets` from
+ * the asset root itself by the path alone.
+ *
+ * The principle when the path cannot resolve that ambiguity is to WITHHOLD, and
+ * `rawPathSlug` already applies it under `raw/` — though in the opposite
+ * DIRECTION, which is worth naming so the two are not read as one rule. There,
+ * withholding means reading `parsed` AS a slug, so a hidden page by that name
+ * keeps its subtree out of the Files listing. Here, withholding means reading
+ * the name as a ROOT, so the mirror skips the legacy hashed tree for these
+ * names rather than pulling another owner's content into one page's silo
+ * (DW-611); a page delete likewise leaves them alone. Each direction costs the
+ * real page named `parsed`/`assets` something, and each buys the answer that
+ * cannot leak or destroy somebody else's data.
+ *
+ * `uploads` is `ingest-staging.ts`'s root (`raw/uploads/<jobId>/<file>`) and
+ * the literal lives there; it is restated here because this set is about what
+ * a *slug-shaped* segment may not be, and staging blobs are as foreign to a
+ * page's silo as anything else under `raw/`.
+ */
+export const RAW_STRUCTURAL_DIRS: ReadonlySet<string> = new Set([
+  RAW_SOURCES_DIR,
+  RAW_ASSETS_DIR,
+  RAW_PARSED_DIR,
+  "uploads",
+]);
+
 /** Storage-relative path for something under `raw/sources/`. */
 export function rawSourceRelPath(rest: string): string {
   return rawRelPath(`${RAW_SOURCES_DIR}/${rest}`);
@@ -320,7 +351,7 @@ export async function saveRawSourceBytes(
   if (!RAW_ID_RE.test(rawId)) {
     throw new Error("Invalid raw id: must be a hex hash");
   }
-  if (!/^[a-z0-9]{1,8}$/.test(ext)) {
+  if (!RAW_EXT_RE.test(ext)) {
     throw new Error("Invalid raw source extension");
   }
   const rest = `${slug}/${rawId}.${ext}`;
@@ -379,6 +410,46 @@ export async function saveRawSource(
 
 /** A per-source raw id is a hex hash — path-safe by construction. */
 const RAW_ID_RE = /^[a-f0-9]+$/;
+
+/**
+ * The extension half of a snapshot filename, as {@link saveRawSourceBytes}
+ * writes it. Hoisted out of that writer so the WRITER and
+ * {@link isRawSnapshotName} cannot disagree about what it accepts.
+ */
+const RAW_EXT_RE = /^[a-z0-9]{1,8}$/;
+
+/**
+ * Is `name` a per-page snapshot filename — `<hex>.<ext>` — as opposed to a
+ * folder-import file that happens to share the directory?
+ *
+ * `raw/sources/<name>/` is written by TWO writers: {@link saveRawSourceFor} /
+ * {@link saveRawSourceBytes} address it by page slug, and
+ * {@link saveRawSourceTree} addresses it by folder-import root, so `<name>`
+ * can belong to a page, to an import, or (by collision) to both. The
+ * content-addressed filename is the only thing in the path that tells them
+ * apart.
+ *
+ * This is the silo mirror ADOPTING an identity it does not own, one-way:
+ * {@link listRawSourceSnapshots} still classifies with its own inline
+ * `<hex>.md` test and does NOT call this. Exporting the predicate puts the
+ * mirror's copy of that rule in the same file as the writers and the listing,
+ * where a change to any of them is visible in one diff — but the two are kept
+ * in step BY HAND, and nothing here fails if they drift. They already differ
+ * deliberately in one respect: the listing enumerates `.md` only, while the
+ * mirror must also carry the binary arrivals {@link saveRawSourceBytes}
+ * publishes into the same namespace, so this accepts any extension that writer
+ * accepts.
+ *
+ * By name alone an import file called `beef.md` is a snapshot; accepted, and
+ * bounded — a single colliding FILE, never a directory or a tree.
+ */
+export function isRawSnapshotName(name: string): boolean {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return (
+    RAW_ID_RE.test(name.slice(0, dot)) && RAW_EXT_RE.test(name.slice(dot + 1))
+  );
+}
 
 export interface RawSourceSnapshot {
   slug: string;

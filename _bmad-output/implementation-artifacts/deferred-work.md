@@ -4701,7 +4701,9 @@ location: src/lib/silo.ts:263
 source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
 severity: medium
 reason: src/lib/silo.ts:263-281 calls syncSiloForPage only when the silo `tenants/<t>/wiki/<slug>.md` is missing or its bytes differ from flat; otherwise the page counts as `alreadyCurrent`. lifecycle.ts writes silo and flat from the identical `op.content`, so a live page always lands on `alreadyCurrent`. A Source added after the page md was mirrored is therefore never repaired by reconcile. This predates DW-435 and applies identically to the flat `raw/sources/<slug>.md` mirror; widening the gate means listing raw sources for every page on every reconcile, which is its own subrequest-budget decision.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-silo-sync-gate-coverage
+resolution-undo: ef2ba2220bf852973feea77d5c94951d2c7caf702969056eef229a5d63f9de5a 2026-09-01 7374617475733a206f70656e
 
 ### DW-609: A normal page delete never routes through `removeSiloForPage`, so silo raw artifacts (flat source, hashed tree, discuss, assets) leak on deletion.
 origin: spec-deferred 3f311ceb04e9
@@ -4717,7 +4719,9 @@ location: src/lib/silo.ts:121
 source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
 severity: low
 reason: `readRawSourceById` falls back to `rawRelPath(<slug>/<rawId>.md)` and `listRawSourceSnapshots` enumerates `rawRelPath("")` as a second root, so workspaces written before Sources moved under `raw/sources/` demonstrably hold hashed bytes only there. The flat legacy `raw/<slug>.md` IS mirrored two lines above for exactly that reason. DW-435's intent names only `raw/sources/<slug>/<rawId>.md`, so the widening is out of scope here.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-silo-sync-gate-coverage
+resolution-undo: ef2ba2220bf852973feea77d5c94951d2c7caf702969056eef229a5d63f9de5a 2026-09-01 7374617475733a206f70656e
 
 ### DW-611: `raw/sources/<name>/` is shared by page slugs and folder-import roots; nested import content is never mirrored but IS recursively deleted.
 origin: spec-deferred 44d9476a0211
@@ -4725,7 +4729,9 @@ location: src/lib/silo.ts:223
 source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
 severity: low
 reason: `saveRawSourceTree` (src/lib/raw.ts:459) writes `raw/sources/<dir>/<file>` at any depth with every segment validateSlug'd, so a folder-import root can collide with a page slug. The new sync loop copies top-level files only, while `deleteDirSafe` is recursive on both providers (filesystem.ts fs.rm recursive; r2.ts prefix sweep). A page slugged the same as an import root therefore mirrors that import's top-level files into its silo and deletes the whole import tree with the page. The namespace ambiguity predates DW-435; this change exercises it.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-silo-sync-gate-coverage
+resolution-undo: ef2ba2220bf852973feea77d5c94951d2c7caf702969056eef229a5d63f9de5a 2026-09-01 7374617475733a206f70656e
 
 ### DW-612: A drifted-handle owner now passes the gate but still addresses a handle-keyed silo, so their writes land in a tenant nothing reads.
 origin: spec-deferred c9f4e0a090a3
@@ -5517,4 +5523,12 @@ location: workers/email-ingest/index.ts (EMAIL_ROUTING_MAX_INBOUND_BYTES, MAX_RA
 source_spec: `spec-dw-457-email-inbound-ceiling-provenance.md`
 severity: low
 reason: `_bmad-output/implementation-artifacts/deferred-work.md:3386` reads "### DW-457: `missing-concept-page` is effectively unreachable over both MCP transports", status done 2026-08-29, and `src/mcp.ts` already cites DW-457 for that. The email-ceiling decision reached this work only through a `decision:` line misfiled onto that archived entry -- a misfiling `spec-dw-395-455-456-457-mcp-rest-door-parity.md:214` already flagged as "worth correcting in the ledger". A maintainer grepping DW-457 after this change now gets two unrelated defects and no way to tell which citation belongs to which. Fixing it means correcting the ledger, which this run was forbidden to touch.
+status: open
+
+### DW-707: The Sources-pane rescan lists `raw/sources/**` only, so a legacy-address silo mirror is visible in the Files tab but never in Sources.
+origin: spec-deferred 05bb5603ea70
+location: src/lib/workbench-files.ts:726
+source_spec: `spec-dw-608-610-611-silo-sync-gate-coverage.md`
+severity: low
+reason: `listRawSourceFilePaths` (src/lib/workbench-files.ts:726) walks the silo `raw/` root but descends only toward `raw/sources` (`underSources`/`towardSources`, :770-776), while `listWorkbenchFilePaths` walks the whole root. Both legacy addresses this mirror writes — `tenants/<t>/raw/<slug>.md` (pre-existing) and `tenants/<t>/raw/<slug>/<rawId>.<ext>` (DW-610, added here) — therefore list in Files and never in the Sources pane. DW-610's harm is stated as "invisible in Files" and that surface IS closed; the Sources pane is a second surface the bundle never named. Pre-existing for the flat legacy address, and unchanged by the address-preserving choice recorded in this spec's Design Notes.
 status: open

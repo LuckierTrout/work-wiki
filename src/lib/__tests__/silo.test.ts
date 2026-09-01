@@ -5,6 +5,7 @@ import path from "path";
 import { syncSiloForPage, removeSiloForPage, reconcileSilos } from "../silo";
 import { writeWikiPage, ensureDirectories, updateIndex } from "../wiki";
 import { getStorage, _resetStorage } from "../storage";
+import { listWorkbenchFilePaths } from "../workbench-files";
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -185,10 +186,13 @@ describe("syncSiloForPage", () => {
       expect(await syncSiloForPage("kappa", "alice")).toBe(2); // md + flat source
 
       const prefixes = spy.mock.calls.map((c) => c[0]);
-      // The absent flat hashed prefix is listed exactly once...
+      // Each absent flat hashed prefix is listed exactly once...
       expect(prefixes.filter((p) => p === "raw/sources/kappa")).toHaveLength(1);
-      // ...and the silo side is never listed at all.
+      expect(prefixes.filter((p) => p === "raw/kappa")).toHaveLength(1);
+      // ...and neither silo side is listed at all. Mirroring the legacy root
+      // too (DW-610) must not cost a flat-only page a second pair of listings.
       expect(prefixes).not.toContain("tenants/alice/raw/sources/kappa");
+      expect(prefixes).not.toContain("tenants/alice/raw/kappa");
     } finally {
       spy.mockRestore();
     }
@@ -249,6 +253,212 @@ describe("syncSiloForPage", () => {
     // The FLAT tree is untouched — this is a mirror/cleanup change, not a
     // source deleter (cascade delete owns the flat hashed bytes).
     expect(await getStorage().fileExists(`raw/sources/lambda/${hex}.md`)).toBe(true);
+  });
+
+  // ── DW-610: the LEGACY hashed root `raw/<slug>/<rawId>.<ext>` ──
+  // A workspace ingested before the `raw/sources/` move has arrivals only
+  // there. `readRawSourceById` falls back to it and `listRawSourceSnapshots`
+  // enumerates it, so it is a real source location — but nothing mirrored it,
+  // and `raw/` resolves silo-only (DW-40), so those arrivals were invisible in
+  // Files forever.
+
+  it("mirrors the legacy hashed root, address-preservingly (DW-610)", async () => {
+    const hex = "3".repeat(64);
+    await writeWikiPage("omicron", "# Omicron");
+    await getStorage().writeFile(`raw/omicron/${hex}.md`, "pre-move bytes");
+
+    // Page md + the legacy hashed arrival.
+    expect(await syncSiloForPage("omicron", "alice")).toBe(2);
+    // `tenants/<t>/raw/<slug>/…`, NOT the modern `raw/sources/<slug>/…`
+    // spelling — the same convention the legacy flat `raw/<slug>.md` mirror
+    // follows, so the silo stays a faithful picture of the flat tree.
+    expect(
+      await getStorage().readFile(`tenants/alice/raw/omicron/${hex}.md`),
+    ).toBe("pre-move bytes");
+    expect(
+      await getStorage().fileExists(`tenants/alice/raw/sources/omicron/${hex}.md`),
+    ).toBe(false);
+  });
+
+  it("makes a legacy hashed arrival VISIBLE in the Files tree", async () => {
+    // The harm DW-610 names is not "a storage key is missing" — it is
+    // "invisible in Files". Every other assertion here is at the key layer, so
+    // this one goes through the real reader: `listWorkbenchFilePaths` resolves
+    // `raw/` strictly inside the owner's silo (DW-40) and walks the WHOLE silo
+    // `raw/` root, which is what makes the address-preserving legacy mirror
+    // show up without the modern `sources/` spelling.
+    //
+    // `ownerToTenant("alice") === "alice"`, so the owner the Workbench asks
+    // with is the tenant the mirror wrote to.
+    const hex = "b3".repeat(32);
+    await writeWikiPage("upsilon", "# Upsilon");
+    await getStorage().writeFile(`raw/upsilon/${hex}.md`, "pre-move bytes");
+
+    const before = await listWorkbenchFilePaths("alice", null, {
+      readableSlugs: new Set(["upsilon"]),
+      hiddenSlugs: new Set<string>(),
+    });
+    expect(before.paths).not.toContain(`raw/upsilon/${hex}.md`);
+
+    await syncSiloForPage("upsilon", "alice");
+
+    const after = await listWorkbenchFilePaths("alice", null, {
+      readableSlugs: new Set(["upsilon"]),
+      hiddenSlugs: new Set<string>(),
+    });
+    expect(after.paths).toContain(`raw/upsilon/${hex}.md`);
+  });
+
+  it("mirrors a legacy hashed BINARY arrival byte-for-byte", async () => {
+    const hex = "4".repeat(64);
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0x7f, 0x81]);
+    await writeWikiPage("pi", "# Pi");
+    await getStorage().writeAsset(
+      `raw/pi/${hex}.pdf`,
+      bytes.buffer.slice(0) as ArrayBuffer,
+    );
+
+    expect(await syncSiloForPage("pi", "alice")).toBe(2);
+    const mirrored = new Uint8Array(
+      await getStorage().readAsset(`tenants/alice/raw/pi/${hex}.pdf`),
+    );
+    expect(Array.from(mirrored)).toEqual(Array.from(bytes));
+  });
+
+  it("skips the legacy root for a slug naming a structural root", async () => {
+    // `raw/sources/` is not one page's directory — it holds every page's
+    // Sources. A page really slugged `sources` must not read the root as its
+    // own legacy tree, and the path alone cannot tell the two apart, so the
+    // mirror fails CLOSED exactly as `rawPathSlug` does for `parsed`.
+    const hex = "5".repeat(64);
+    await writeWikiPage("sources", "# Sources");
+    await getStorage().writeFile("raw/sources/otherpage.md", "someone else's");
+    await getStorage().writeFile(`raw/sources/otherpage/${hex}.md`, "theirs");
+    // The page's OWN modern tree is still mirrored.
+    await getStorage().writeFile(`raw/sources/sources/${hex}.md`, "mine");
+
+    const spy = vi.spyOn(getStorage(), "listFiles");
+    let n: number;
+    try {
+      n = await syncSiloForPage("sources", "alice");
+      expect(spy.mock.calls.map((c) => c[0])).not.toContain("raw/sources");
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(n).toBe(2); // md + the page's own modern hashed arrival
+    expect(
+      await getStorage().readFile(`tenants/alice/raw/sources/sources/${hex}.md`),
+    ).toBe("mine");
+    expect(
+      await getStorage().fileExists("tenants/alice/raw/otherpage.md"),
+    ).toBe(false);
+
+    // …and the delete side skips it too: nothing of the shared root is removed.
+    await getStorage().writeFile("tenants/alice/raw/sources/otherpage.md", "x");
+    // The entry that actually OBSERVES the skip. `otherpage.md` and the
+    // `sources/` directory both land in `removeHashedTree`'s foreign branch, so
+    // they survive whether or not the structural-root guard is there. This one
+    // is snapshot-NAMED and sits directly under the shared root — it is the
+    // flat Source mirror of a page whose slug happens to be all hex — so
+    // dropping the guard points `removeHashedTree` at `tenants/alice/raw/
+    // sources` and deletes it along with the page called `sources`.
+    await getStorage().writeFile("tenants/alice/raw/sources/beef.md", "hex-slug page");
+
+    await removeSiloForPage("sources", "alice");
+    expect(
+      await getStorage().fileExists(`tenants/alice/raw/sources/sources/${hex}.md`),
+    ).toBe(false);
+    expect(
+      await getStorage().fileExists("tenants/alice/raw/sources/otherpage.md"),
+    ).toBe(true);
+    expect(await getStorage().readFile("tenants/alice/raw/sources/beef.md")).toBe(
+      "hex-slug page",
+    );
+  });
+
+  it("a page slugged `assets` deletes nothing out of the asset root", async () => {
+    // `assets` is the name the mirror's own comment singles out, because
+    // `raw/assets/<hex>.<ext>` is genuinely ambiguous: it could be the legacy
+    // hashed Source of a page really slugged `assets`, or residue of something
+    // else entirely, and the path cannot say which. Withholding costs that page
+    // its legacy snapshots; deleting would take content the mirror never put
+    // there. The silo mirror never wrote this file, so the silo delete does not
+    // get to remove it.
+    const hex = "a1b2".repeat(16);
+    const storage = getStorage();
+    await storage.writeFile(`tenants/alice/raw/assets/${hex}.md`, "ambiguous");
+    await storage.writeFile(`tenants/alice/raw/sources/assets/${hex}.md`, "page-owned");
+
+    await removeSiloForPage("assets", "alice");
+
+    // The page's own modern tree goes…
+    expect(
+      await storage.fileExists(`tenants/alice/raw/sources/assets/${hex}.md`),
+    ).toBe(false);
+    // …the structural root is not touched.
+    expect(await storage.readFile(`tenants/alice/raw/assets/${hex}.md`)).toBe(
+      "ambiguous",
+    );
+  });
+
+  // ── DW-611: `raw/sources/<name>/` is SHARED with folder imports ──
+  // `saveRawSourceTree` addresses that directory by import root while
+  // `saveRawSourceFor`/`saveRawSourceBytes` address it by page slug, so a page
+  // slugged like an import root shares it. Only the content-addressed
+  // `<hex>.<ext>` names are page-owned.
+
+  it("does not mirror a folder-import file sharing the hashed directory", async () => {
+    const hex = "6".repeat(64);
+    await writeWikiPage("papers", "# Papers");
+    await getStorage().writeFile(`raw/sources/papers/${hex}.md`, "snapshot");
+    await getStorage().writeFile("raw/sources/papers/note.md", "import file");
+
+    expect(await syncSiloForPage("papers", "alice")).toBe(2); // md + snapshot
+    expect(
+      await getStorage().readFile(`tenants/alice/raw/sources/papers/${hex}.md`),
+    ).toBe("snapshot");
+    expect(
+      await getStorage().fileExists("tenants/alice/raw/sources/papers/note.md"),
+    ).toBe(false);
+  });
+
+  it("removeSiloForPage spares foreign entries in a shared directory", async () => {
+    // The recursive directory delete this replaces took the whole import tree
+    // — possibly another owner's — with the colliding page.
+    const hex = "7".repeat(64);
+    const storage = getStorage();
+    await storage.writeFile(`tenants/alice/raw/sources/papers/${hex}.md`, "mine");
+    await storage.writeFile("tenants/alice/raw/sources/papers/note.md", "theirs");
+    await storage.writeFile("tenants/alice/raw/sources/papers/sub/deep.md", "deep");
+
+    await removeSiloForPage("papers", "alice");
+
+    expect(
+      await storage.fileExists(`tenants/alice/raw/sources/papers/${hex}.md`),
+    ).toBe(false);
+    expect(
+      await storage.readFile("tenants/alice/raw/sources/papers/note.md"),
+    ).toBe("theirs");
+    expect(
+      await storage.readFile("tenants/alice/raw/sources/papers/sub/deep.md"),
+    ).toBe("deep");
+  });
+
+  it("removeSiloForPage removes a page-only directory outright, at both roots", async () => {
+    const hex = "8".repeat(64);
+    const storage = getStorage();
+    await storage.writeFile(`tenants/alice/raw/sources/rho/${hex}.md`, "modern");
+    await storage.writeFile(`tenants/alice/raw/rho/${hex}.md`, "legacy");
+
+    await removeSiloForPage("rho", "alice");
+
+    expect(
+      (await storage.listFiles("tenants/alice/raw/sources")).map((f) => f.name),
+    ).not.toContain("rho");
+    expect(
+      (await storage.listFiles("tenants/alice/raw")).map((f) => f.name),
+    ).not.toContain("rho");
   });
 
   it("removeSiloForPage clears the page from its silo", async () => {
@@ -313,6 +523,42 @@ describe("reconcileSilos", () => {
     expect(result.synced).toBe(0);
     expect(result.alreadyCurrent).toBe(1);
     expect(result.errors).toEqual([]);
+  });
+
+  it("repairs a hashed Source under an already-current page (DW-608)", async () => {
+    // The gate this replaces only ran the sync when the silo md was missing or
+    // differed from flat — and `lifecycle.ts` writes both from the identical
+    // content, so a live page always landed on `alreadyCurrent` and NOTHING
+    // was ever repaired for it. A Source that arrives after the md was
+    // mirrored is exactly that case.
+    const hex = "9".repeat(64);
+    const storage = getStorage();
+    await writeWikiPage(
+      "page-d",
+      "---\nowner: alice\n---\n# Page D\n\nContent D.",
+    );
+    await updateIndex([{ slug: "page-d", title: "Page D", summary: "D" }]);
+    await syncSiloForPage("page-d", "alice");
+
+    // Arrives afterwards; the md stays byte-identical to flat.
+    await storage.writeFile(`raw/sources/page-d/${hex}.md`, "late arrival");
+    await storage.writeFile(`raw/page-d/${hex}.md`, "late legacy arrival");
+
+    const result = await reconcileSilos();
+    // Still counted exactly once, and still as already-current: the md really
+    // did match. The counter classifies the md, it does not report idleness.
+    expect(result.total).toBe(1);
+    expect(result.synced).toBe(0);
+    expect(result.stale).toBe(0);
+    expect(result.alreadyCurrent).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    expect(
+      await storage.readFile(`tenants/alice/raw/sources/page-d/${hex}.md`),
+    ).toBe("late arrival");
+    expect(await storage.readFile(`tenants/alice/raw/page-d/${hex}.md`)).toBe(
+      "late legacy arrival",
+    );
   });
 
   it("skips infrastructure slugs (index, log)", async () => {

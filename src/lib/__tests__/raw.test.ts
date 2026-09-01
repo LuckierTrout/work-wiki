@@ -14,6 +14,7 @@ import {
   readRawSourceBytes,
   rawSourceRelPath,
   tenantRawSourceRelPath,
+  isRawSnapshotName,
 } from "../raw";
 import { ensureDirectories, tenantForOwner } from "../wiki";
 import { getDataDir } from "../paths";
@@ -673,5 +674,40 @@ describe("intake writes (owner option)", () => {
     expect(await fs.readFile(siloAbs("papers/energy/note.md"), "utf-8")).toBe(
       "first arrival",
     );
+  });
+});
+
+describe("isRawSnapshotName", () => {
+  // The identity the silo mirror uses to tell a page's own content-addressed
+  // snapshot from a folder-import file sharing `raw/sources/<name>/`. Pinned
+  // directly because getting it wrong in either direction is silent: too loose
+  // carries somebody else's import into a page silo and deletes it with the
+  // page, too tight leaves real arrivals unmirrored and invisible in Files.
+  const hex = "c4".repeat(32);
+
+  it("accepts a hashed snapshot at any extension saveRawSourceBytes writes", () => {
+    // `.md` is what `listRawSourceSnapshots` enumerates; the binary extensions
+    // are the arrivals `saveRawSourceBytes` publishes into the same namespace,
+    // which the mirror must carry byte-exactly.
+    expect(isRawSnapshotName(`${hex}.md`)).toBe(true);
+    expect(isRawSnapshotName(`${hex}.pdf`)).toBe(true);
+  });
+
+  it("rejects names that are not <hex>.<ext>", () => {
+    expect(isRawSnapshotName("note.md")).toBe(false); // a folder-import file
+    expect(isRawSnapshotName("abc")).toBe(false); // no extension at all
+    expect(isRawSnapshotName(".md")).toBe(false); // dotfile, empty id
+    expect(isRawSnapshotName("a.b.md")).toBe(false); // the id half is not hex
+    expect(isRawSnapshotName(`${hex.toUpperCase()}.md`)).toBe(false); // ids are lowercase
+    expect(isRawSnapshotName(`${hex}.abcdefghi`)).toBe(false); // 9-char extension
+  });
+
+  it("accepts a SHORT all-hex name — the collision this deliberately allows", () => {
+    // `beef.md` is indistinguishable by name from a real snapshot, so a folder
+    // import can put one file (never a directory or a tree) into a colliding
+    // page's silo, and lose it when that page is deleted. Recorded as a test so
+    // that tightening the id rule — a length floor, say — is a visible diff
+    // here rather than a silent behavior change in the mirror.
+    expect(isRawSnapshotName("beef.md")).toBe(true);
   });
 });
