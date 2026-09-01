@@ -3228,7 +3228,9 @@ archived: 2026-08-29
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
 location: src/lib/workbench-request.ts:33
 reason: `send` / `sendForm` time out at 15s, and the server URL-intake path it calls is itself budgeted at 15s. A slow but ultimately successful HTML fetch can therefore trip the client deadline and be reported as an unconfirmed write while the route completes and stores the source anyway. Deferred because fixing it means renegotiating the two budgets rather than a local change.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw3-email-worker-reply-path-hardening
+resolution-undo: 16241f8bbbbe6d9e8a8a58c17639242b50895154f05c12d8dc3280fcb3a8727f 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-31 Raise the client deadline above the server's — Raise the client `REQUEST_TIMEOUT_MS` above `FETCH_TIMEOUT_MS` by a margin that covers request and response overhead, so the server's own timeout always fires first and the client reports a real refusal instead of an unconfirmed write. Add a comment at both constants naming the required ordering, and pin the ordering in a test so the two cannot silently converge again.
 
 ### DW-440: When store succeeds but enqueue returns `queued: false`, the batch sentence still claims "Ingest is queued."
@@ -5441,4 +5443,20 @@ location: src/lib/ingest.ts:1952
 source_spec: `spec-dw-427-ingest-fresh-merge-bases.md`
 severity: low
 reason: Traced during the DW-427 review (not executed). `const resolvedExisting = await readWikiPageWithFrontmatter(slug)` at src/lib/ingest.ts:1952 is the only gate that forks to a free slug when the resolved slug landed on another owner's PRIVATE page. Without `strict` a blip answers `null`, the guard is skipped, and the ingest proceeds to the merge base at :2068 — which DOES find the private page, preserves its `owner`/`visibility` (:2140-2146) and writes the actor's body over it. `writeWikiPageWithSideEffects` in lifecycle.ts carries no authorization of its own, so nothing downstream re-decides the fork. The DW-427 bundle named this line only as one of the "roughly eight pure existence probes" to leave alone; it did not name this harm, and the intent's Never clause kept it out of scope for this session.
+status: open
+
+### DW-699: QueryResultPanel's Sources chip and saved-answer "View" link are hrefForSlug call sites that no suite renders, because the only file that mounts the panel always passes sources: [] and no save state.
+origin: spec-deferred 9065fc4dffed
+location: src/components/QueryResultPanel.tsx:201
+source_spec: `spec-owner-scoped-anchor-pins.md`
+severity: medium
+reason: src/components/__tests__/renderer-slug-tenant-adoption.test.tsx:110,122 mount QueryResultPanel with `result={{ answer: ..., sources: [] }}` and assert only the in-content wikilink, so the `result.sources.length > 0` branch at QueryResultPanel.tsx:192 and the `saveState.status === "saved"` branch at :277 never render. Demonstrated during review: both anchors reverted to `/u/yopedia/<slug>` at once and `pnpm vitest run --project dom` stayed green -- 68 files / 1000 tests, not one extra failure. Out of scope here: this story's intent named exactly three consumers (IngestSuccess, useGlobalSearch, LintClient) and this is a fourth. The saved-answer link is the more interesting half: its `saveState.url ?? hrefForSlug(...)` fallback is the branch that matters, and ChatWorkspace's "falls back to the map when the save response carries no url" case is the existing model for it.
+status: open
+
+### DW-700: A fixed client margin cannot bound the server's TOTAL work, so DW-439's unconfirmed-write report is still reachable on two intake paths this story's ordering does not reach.
+origin: spec-deferred b3a0e1fc00d6
+location: src/lib/fetch.ts:175 / src/app/api/workbench/intake/route.ts:640
+source_spec: `spec-dw-439-workbench-request-deadline-ordering.md`
+severity: medium
+reason: The ordering shipped here guarantees only that the server's FETCH deadline fires before the client's. Two paths outlast any fixed margin: 1. `fetchFollowingRedirects` (src/lib/fetch.ts:163-201) arms `AbortSignal.timeout(FETCH_TIMEOUT_MS)` INSIDE the `for (let hop = 0; hop <= MAX_REDIRECTS; hop++)` loop at :175, with `MAX_REDIRECTS = 5` (:169) -- five redirects, so up to six fetches with a full 15 s each, up to 90 s server-side. 2. `src/app/api/workbench/intake/route.ts:640` ends in `enqueueOrInline(jobId, task, () => ingest(title, text, options))`. Where `enqueueTask` returns false (src/lib/ingest-async.ts:52-58, the off-Workers deployment), the FULL `ingest()` -- LLM map/reduce, retries, embeddings, image downloads -- runs inside the request the client deadline wraps, and `storeAndQueue` has already stored the Source before that call. In both, the client aborts first, `unconfirmedCause` (src/lib/workbench-request.ts) classifies the `TimeoutError` as unconfirmed, and the owner is told
 status: open

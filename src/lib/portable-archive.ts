@@ -91,10 +91,33 @@ export async function buildPortableArchive(owner: string): Promise<{
   for (const path of paths.sort()) {
     const sourcePath = `${root}/${path}`;
     const effectivePurpose = purposeOverrides.get(sourcePath);
+    // Ask the size before pulling the bytes (DW-679), in the same two-check
+    // shape `createOwnerBackupUnlocked` carries (DW-542). `stat` is one statx on
+    // disk, one HEAD on R2; `readAsset` is the whole object. Without this, the
+    // file that trips the 500 MB ceiling is materialised in full to copy zero
+    // bytes of it — the worst case is exactly the case that cannot afford it.
+    //
+    // Only the READING path is gated: a purpose override supplies its own bytes
+    // from memory, so there is no read to avoid and `stat` would measure the
+    // wrong thing (the file on disk, not the bytes being archived).
+    //
+    // `stat` GATES; it never ACCOUNTS. `totalBytes`, each manifest entry's
+    // `size` and its `sha256` still come only from the bytes actually read, so
+    // the post-read test below is what keeps the invariant true when `stat`
+    // under-reports. This throws rather than truncating — unchanged from before
+    // and unlike the backup loop — and it throws the same message either way,
+    // so which check fired is invisible to every caller.
+    if (effectivePurpose === undefined) {
+      const { size } = await getStorage().stat(sourcePath);
+      if (totalBytes + size > MAX_BYTES) {
+        throw new Error("Archive exceeds the 500 MB safety limit");
+      }
+    }
     const data = effectivePurpose === undefined
       ? await getStorage().readAsset(sourcePath)
       : new TextEncoder().encode(effectivePurpose).buffer;
     totalBytes += data.byteLength;
+    // The check above is the optimisation; this one owns the invariant.
     if (totalBytes > MAX_BYTES) throw new Error("Archive exceeds the 500 MB safety limit");
     const bytes = new Uint8Array(data);
     archiveFiles[`files/${path}`] = bytes;
@@ -195,7 +218,12 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
     totalBytes += data.byteLength;
     if (totalBytes > MAX_BYTES) throw new Error("Archive expands beyond the 500 MB safety limit");
     try {
-      await getStorage().readAsset(`tenants/${tenant(owner)}/${entry.path}`);
+      // A yes/no question deserves a yes/no call: this probe only asks whether
+      // the tenant path is occupied, and `readAsset` answered it by pulling the
+      // entire existing object into memory and discarding it — once per
+      // manifest entry, for every inspection and every import. `stat` is the
+      // metadata call, and it raises the SAME ENOENT the branching below reads.
+      await getStorage().stat(`tenants/${tenant(owner)}/${entry.path}`);
       collisions.push(entry.path);
     } catch (error) {
       if (isEnoent(error)) newFiles.push(entry.path);
@@ -270,48 +298,64 @@ export async function importPortableArchive(
     }
   let imported = 0;
   let skipped = 0;
-  for (const entry of inspection.manifest.files) {
-    // Version 1 exports historically included these files. Accept those
-    // backups for compatibility, but never restore global/rebuilt
-    // infrastructure from archive bytes.
-    if (ARCHIVE_INFRASTRUCTURE_PATHS.has(entry.path)) {
-      skipped += 1;
-      continue;
-    }
-    if (collision === "skip" && collisionSet.has(entry.path)) {
-      skipped += 1;
-      continue;
-    }
-    const writeEntry = async () => {
-      await getStorage().writeAsset(
-        `tenants/${tenant(owner)}/${entry.path}`,
-        bytesBuffer(files[`files/${entry.path}`]),
-      );
-      // Tenant storage is canonical, but the current transition still rebuilds
-      // global indexes from flat compatibility paths. Restore those copies for
-      // page, raw, and discussion artifacts before invoking the rebuild.
-      const compatibilityPath = entry.path.startsWith("wiki/")
-        ? wikiRelPath(entry.path.slice("wiki/".length))
-        : entry.path.startsWith("raw/")
-          ? rawRelPath(entry.path.slice("raw/".length))
-          : entry.path.startsWith("discuss/")
-            ? entry.path
-            : null;
-      if (compatibilityPath) {
-        await getStorage().writeAsset(
-          compatibilityPath,
+  // Every entry is written through ONE batch: the manifest loop is the path
+  // that paid an fsync per entry (two, with the compatibility copy), and it is
+  // exactly the kind of caller the door is for — if the process dies mid-import
+  // the recovery is to re-run the import from the same archive bytes, which are
+  // still sitting in `files`. Publication is unchanged: each entry is still
+  // tmp+renamed under its own publication lock, so a reader never sees a torn
+  // page and the per-slug `withDurableLock` around a page write still holds.
+  await getStorage().withBatchedWrites(async (batch) => {
+    for (const entry of inspection.manifest.files) {
+      // Version 1 exports historically included these files. Accept those
+      // backups for compatibility, but never restore global/rebuilt
+      // infrastructure from archive bytes.
+      if (ARCHIVE_INFRASTRUCTURE_PATHS.has(entry.path)) {
+        skipped += 1;
+        continue;
+      }
+      if (collision === "skip" && collisionSet.has(entry.path)) {
+        skipped += 1;
+        continue;
+      }
+      const writeEntry = async () => {
+        await batch.writeAsset(
+          `tenants/${tenant(owner)}/${entry.path}`,
           bytesBuffer(files[`files/${entry.path}`]),
         );
+        // Tenant storage is canonical, but the current transition still rebuilds
+        // global indexes from flat compatibility paths. Restore those copies for
+        // page, raw, and discussion artifacts before invoking the rebuild.
+        const compatibilityPath = entry.path.startsWith("wiki/")
+          ? wikiRelPath(entry.path.slice("wiki/".length))
+          : entry.path.startsWith("raw/")
+            ? rawRelPath(entry.path.slice("raw/".length))
+            : entry.path.startsWith("discuss/")
+              ? entry.path
+              : null;
+        if (compatibilityPath) {
+          await batch.writeAsset(
+            compatibilityPath,
+            bytesBuffer(files[`files/${entry.path}`]),
+          );
+        }
+      };
+      const pageMatch = /^wiki\/(.+)\.md$/.exec(entry.path);
+      if (pageMatch && !["index", "log"].includes(pageMatch[1])) {
+        await withDurableLock(`page-lifecycle:${pageMatch[1]}`, writeEntry);
+      } else {
+        await writeEntry();
       }
-    };
-    const pageMatch = /^wiki\/(.+)\.md$/.exec(entry.path);
-    if (pageMatch && !["index", "log"].includes(pageMatch[1])) {
-      await withDurableLock(`page-lifecycle:${pageMatch[1]}`, writeEntry);
-    } else {
-      await writeEntry();
+      imported += 1;
     }
-    imported += 1;
-  }
+  });
+  // The batch is flushed by the line above, BEFORE the reconstruction below —
+  // which reads every page it just wrote back off the provider. Those reads
+  // would succeed either way (a batch member is published, only its durability
+  // is deferred), but the index this reconstruction writes is the pointer that
+  // makes the restored pages discoverable, so it must not be made durable ahead
+  // of the pages it names.
+  //
   // Reconstruct the flat index from every canonical page in this tenant. The
   // current transition still uses wiki/index.md as ordered discovery ground
   // truth, so a restore must seed it before rebuilding the derived indexes.

@@ -7,6 +7,7 @@ import type { EmbeddingModel } from "ai";
 import type { Ai } from "./storage/cloudflare-types";
 import { listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
+import type { EmbeddingEntry } from "./storage";
 import {
   loadConfigSync,
   getEmbeddingModelOverride,
@@ -870,6 +871,18 @@ interface EmbeddingMeta extends Record<string, string> {
   contentHash: string;
 }
 
+/**
+ * How many vectors {@link rebuildVectorStore} accumulates before one store.
+ *
+ * The number trades two bounded risks against each other. Larger batches mean
+ * fewer index rewrites (the whole point) but a bigger blast radius: a rejected
+ * flush costs every page in it, and the pending array holds every vector in it
+ * in memory. 32 keeps a rebuild's rewrites proportional to N/32 while keeping
+ * both of those small enough to shrug at. It is not tuned to any provider's
+ * request limit — nothing here batches over a network — so it is safe to move.
+ */
+const EMBEDDING_FLUSH_BATCH = 32;
+
 /** Drop matches whose stored model differs from the active one (stale vectors). */
 function modelMatches(metadata: Record<string, string>, model: string | null): boolean {
   // Unknown active model or unlabelled legacy vector → don't filter it out.
@@ -1217,6 +1230,40 @@ export async function rebuildVectorStore(
   let embedded = 0;
   let skipped = 0;
 
+  // Vectors accumulated since the last flush. A provider that keeps its
+  // embeddings in one blob rewrote and fsynced that whole blob once per vector,
+  // so a rebuild of N pages cost N full index rewrites; a flush of up to
+  // EMBEDDING_FLUSH_BATCH is one.
+  let pending: EmbeddingEntry[] = [];
+
+  /**
+   * Store what has accumulated, and settle those pages' counters.
+   *
+   * A page counts as `embedded` only once its flush has SUCCEEDED — before that
+   * its vector exists only in this array — and as `skipped` when the flush
+   * rejects, logged exactly as the per-page catch below logs its own failure.
+   * The batch is cleared before the store so a rejected flush cannot be retried
+   * implicitly by the next one: one bad flush costs its own pages and no more,
+   * which is the same fail-soft shape the per-page loop already had.
+   */
+  const flushPending = async (): Promise<void> => {
+    if (pending.length === 0) return;
+    const batch = pending;
+    pending = [];
+    try {
+      await withFileLock("vectors", () => storage.upsertEmbeddings(batch));
+      embedded += batch.length;
+    } catch (err) {
+      logger.warn(
+        "embeddings",
+        `embed flush failed for ${batch.length} page(s) ` +
+          `(${batch.map((item) => item.id).join(", ")}):`,
+        err,
+      );
+      skipped += batch.length;
+    }
+  };
+
   // Upsert every current page. This overwrites in place; embeddings for pages
   // that no longer exist are left untouched (no bulk-clear on a managed index),
   // but they're harmless — every read intersects results with the caller's
@@ -1243,10 +1290,8 @@ export async function rebuildVectorStore(
         model: modelName,
         contentHash: contentHash(page.content),
       };
-      await withFileLock("vectors", () =>
-        storage.upsertEmbedding(entry.slug, embedding, meta),
-      );
-      embedded++;
+      pending.push({ id: entry.slug, vector: embedding, metadata: meta });
+      if (pending.length >= EMBEDDING_FLUSH_BATCH) await flushPending();
     } catch (err) {
       logger.warn("embeddings", `embed page "${entry.slug}" failed:`, err);
       skipped++;
@@ -1254,6 +1299,8 @@ export async function rebuildVectorStore(
 
     onProgress?.(i + 1, total);
   }
+  // The tail — whatever did not fill a whole batch.
+  await flushPending();
 
   return { total, embedded, skipped, model: modelName };
 }

@@ -11,7 +11,10 @@
  *  3. Concurrency  — readFileWithEtag, writeFileIfMatch (optimistic locking),
  *                    writeFileIfAbsent / writeAssetIfAbsent (create-only)
  *  4. Indexes      — getIndex, putIndex, incrementIndex (derived JSON blobs: config, history, counters)
- *  5. Embeddings   — upsertEmbedding, queryEmbeddings (vector search)
+ *  5. Embeddings   — upsertEmbedding, upsertEmbeddings, queryEmbeddings
+ *                    (vector search)
+ *  6. Bulk writes  — withBatchedWrites (an opt-in door that trades per-file
+ *                    durability for one barrier per scope)
  *
  * **Design rationale:**
  *
@@ -50,6 +53,20 @@
  *   one HEAD per file rather than materialising the file that does not fit. A
  *   provider that reported some other number would make that backup stop at a
  *   file that fit, or copy one it should have stopped at.
+ *
+ * - `withBatchedWrites` is the ONE door that trades any of the above away, and
+ *   it trades only durability. Every write made through the batch writer is
+ *   still published the same way an unbatched one is — tmp + rename under the
+ *   same publication lock on the filesystem, a single-object PUT on R2 — so a
+ *   reader still never sees a torn file and a rejected write still leaves the
+ *   destination exactly as it was. What moves is WHEN the bytes are forced to
+ *   stable storage: instead of one fsync per file, the scope issues one
+ *   directory-level barrier per touched directory at exit. A power loss inside
+ *   the scope can therefore leave a batch member present with unwritten bytes,
+ *   which is why only a caller that can RE-DRIVE its whole batch from a source
+ *   that outlives the crash may use it (archive import re-reads the archive,
+ *   backup create re-reads the tenant, backup verification writes into a prefix
+ *   that is deleted either way). Everything else keeps `writeFile`'s own fsync.
  *
  * - `appendFile` exists specifically for `log.md`, which is the only file
  *   appended to rather than overwritten.
@@ -125,6 +142,58 @@ export interface EmbeddingMatch {
   id: string;
   score: number;
   metadata: Record<string, string>;
+}
+
+/**
+ * Merge a set of incoming embeddings into a stored list, id-keyed.
+ *
+ * ONE implementation for the rule every provider's bulk upsert states: within
+ * the incoming set the LAST value for an id wins, entries already stored keep
+ * their stored position (an update rewrites in place), and ids not stored yet
+ * append in the order they first appear in the argument. Two providers spelling
+ * that for themselves is exactly how a filesystem rebuild and a KV rebuild end
+ * up with differently ordered indexes for the same input.
+ *
+ * `stored` is never mutated.
+ */
+export function mergeEmbeddingEntries(
+  stored: readonly EmbeddingEntry[],
+  incoming: readonly EmbeddingEntry[],
+): EmbeddingEntry[] {
+  // Insertion order of a Map is first-appearance order, and `set` overwrites
+  // the value without moving the key — which is precisely "position by first
+  // appearance, value by last write".
+  const latest = new Map<string, EmbeddingEntry>();
+  for (const entry of incoming) latest.set(entry.id, entry);
+  const merged = stored.map((entry) => latest.get(entry.id) ?? entry);
+  const already = new Set(stored.map((entry) => entry.id));
+  for (const [id, entry] of latest) {
+    if (!already.has(id)) merged.push(entry);
+  }
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
+// Batched writes
+// ---------------------------------------------------------------------------
+
+/**
+ * The write door handed to a {@link StorageProvider.withBatchedWrites} body.
+ *
+ * Deliberately only the two REPLACING whole-file writes the bounded loop paths
+ * actually use. It is not a second `StorageProvider`: the create-only doors
+ * (`writeFileIfAbsent` / `writeAssetIfAbsent`) publish by link rather than
+ * rename and stay fully synced, and no lifecycle write belongs in a scope whose
+ * members are only recoverable by re-driving the whole set.
+ *
+ * A write made here is published exactly like its unbatched twin and rejects
+ * exactly like it. Only the durability point moves — see the header docblock.
+ */
+export interface BatchWriter {
+  /** {@link StorageProvider.writeFile}, published now, made durable at scope exit. */
+  writeFile(path: string, content: string): Promise<void>;
+  /** {@link StorageProvider.writeAsset}, published now, made durable at scope exit. */
+  writeAsset(path: string, data: ArrayBuffer): Promise<void>;
 }
 
 /**
@@ -400,6 +469,27 @@ export interface StorageProvider {
   ): Promise<void>;
 
   /**
+   * Insert or update a WHOLE SET of embeddings as one store operation.
+   *
+   * The point of it: a provider that keeps its vectors in one blob (as the
+   * filesystem one does) otherwise reloads, rewrites and fsyncs that entire
+   * blob once per vector, so a rebuild of N pages costs N full index rewrites.
+   * This is one load, one merge and one store for the set.
+   *
+   * Merge rule, identical on every provider (see {@link mergeEmbeddingEntries}):
+   * id-keyed, the LAST value for a repeated id in `entries` wins, entries that
+   * are already stored keep their stored position, and new ids append in the
+   * order they first appear. An EMPTY array writes nothing at all — no store,
+   * no barrier, the stored bytes untouched.
+   *
+   * Atomic on the same terms as {@link upsertEmbedding}: the set lands whole or
+   * not at all, and a failed call must not leave a torn index behind.
+   *
+   * @param entries — the vectors to insert or update
+   */
+  upsertEmbeddings(entries: EmbeddingEntry[]): Promise<void>;
+
+  /**
    * Find the nearest neighbors to a query vector.
    * @param vector — the query embedding
    * @param topK — maximum number of results to return
@@ -427,4 +517,44 @@ export interface StorageProvider {
    * but it must never throw.
    */
   clearEmbeddings(): Promise<void>;
+
+  // -------------------------------------------------------------------------
+  // Batched writes
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run `fn` with a {@link BatchWriter} whose writes share ONE durability
+   * barrier, issued when the scope exits.
+   *
+   * **What is kept.** Every write made through `batch` is published exactly as
+   * its unbatched twin is — tmp + rename under the same publication lock on the
+   * filesystem, a single-object PUT on R2. A reader never observes a torn file,
+   * a rejected write leaves its destination byte-for-byte as it was, and a write
+   * that resolved is immediately READABLE (the name is published; only the
+   * flush to stable storage is deferred).
+   *
+   * **What is traded.** Per-file durability becomes per-batch. A directory
+   * fsync makes the NAMES durable, not the file contents, so a power loss
+   * inside the scope can leave a batch member present with unwritten bytes.
+   * ONLY a caller that can re-drive its ENTIRE batch from a source that
+   * outlives the crash may use this door — "redo the batch" is the only
+   * recovery it offers. That is why it is opt-in and why `writeFile` and every
+   * lifecycle write keep their own fsync.
+   *
+   * **Scope, not ambient state.** Only writes made through the passed `batch`
+   * are affected; a concurrent unrelated `writeFile` in the same process still
+   * fsyncs its own bytes.
+   *
+   * **Exit.** The barrier runs whether the body resolved or threw. If the body
+   * threw, the BODY's error propagates and a barrier failure is logged and
+   * swallowed — the body's error is the one the caller can act on. If the body
+   * resolved, a barrier failure propagates, except for the platform codes that
+   * mean "this filesystem cannot fsync a directory", which are swallowed.
+   *
+   * A provider whose single write is already its own barrier (R2) satisfies
+   * this as a pass-through.
+   *
+   * @param fn — the body; whatever it returns is returned here
+   */
+  withBatchedWrites<T>(fn: (batch: BatchWriter) => Promise<T>): Promise<T>;
 }

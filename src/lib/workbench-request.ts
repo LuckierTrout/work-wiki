@@ -29,8 +29,37 @@
  * the rest of the session and its controls disabled with no error to explain
  * it. `finally` cannot rescue a promise that never resolves, so the deadline is
  * the rescue.
+ *
+ * ORDERING (DW-439): this must stay STRICTLY ABOVE `FETCH_TIMEOUT_MS`
+ * (`src/lib/constants.ts`), which arms the server fetch this deadline wraps:
+ * `submitIntakeUrl` -> `send` -> `POST /api/workbench/intake` ->
+ * `fetchUrlContent`. What the ordering buys is exactly one thing: the server's
+ * FETCH deadline fires first, so a URL that times out comes back as the route's
+ * 400 -- a refusal the owner can act on -- instead of a client abort that
+ * {@link writeFailure} can only report as "the outcome is unknown" while the
+ * route runs on and stores the Source.
+ *
+ * It does NOT bound the route's total work, and two paths outlast any fixed
+ * margin. `fetchFollowingRedirects` (`src/lib/fetch.ts`) arms `FETCH_TIMEOUT_MS`
+ * per hop for five redirects -- up to six fetches, up to 90 s. And where
+ * `enqueueTask` returns false (`src/lib/ingest-async.ts`), the full `ingest()`
+ * runs INLINE inside this request, after the store. Both still abort
+ * client-side and still read as unconfirmed.
+ *
+ * Blast radius: this constant also arms `sendForm` and every other workbench
+ * write -- create/rename/delete/switch, settings save, upload -- so 20 s makes
+ * all of them wait 5 s longer before the rescue fires. That cost was accepted
+ * to get this one door its ordering.
+ *
+ * `SettingsCanvas.tsx` and `PreviewColumn.tsx` still declare their own private
+ * `REQUEST_TIMEOUT_MS = 15_000`. Left at 15 s deliberately: their routes
+ * (`/api/settings`, preview/revert) reach no `fetchUrlContent`, so this rule
+ * does not bind them.
+ *
+ * The ordering and its 5 s margin are executed in
+ * `src/lib/__tests__/workbench-request.test.ts`.
  */
-export const REQUEST_TIMEOUT_MS = 15_000;
+export const REQUEST_TIMEOUT_MS = 20_000;
 
 /**
  * A non-2xx, carrying the STATUS as a fact rather than as a rendering of one.

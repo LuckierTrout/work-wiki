@@ -14,13 +14,18 @@
 
 import type {
   StorageProvider,
+  BatchWriter,
   FileInfo,
   FileWithEtag,
   FileEntry,
   EmbeddingMatch,
   EmbeddingEntry,
 } from "./types";
-import { ATOMIC_COUNTER_INDEX_KEYS, isAtomicCounterIndexKey } from "./types";
+import {
+  ATOMIC_COUNTER_INDEX_KEYS,
+  isAtomicCounterIndexKey,
+  mergeEmbeddingEntries,
+} from "./types";
 import { narrowIndexInteger } from "./index-integer";
 
 import type {
@@ -355,25 +360,50 @@ export class R2StorageProvider implements StorageProvider {
   // Embeddings / vector search
   // -------------------------------------------------------------------------
 
+  /**
+   * One vector, through the bulk door — the same delegation the filesystem
+   * provider makes, for the same reason: one implementation of the merge rule
+   * means a single upsert and a bulk upsert cannot disagree.
+   */
   async upsertEmbedding(
     id: string,
     vector: number[],
     metadata: Record<string, string>,
   ): Promise<void> {
+    await this.upsertEmbeddings([{ id, vector, metadata }]);
+  }
+
+  /**
+   * The whole set in one operation.
+   *
+   * Vectorize's `upsert` already takes an ARRAY, so the bulk door is what that
+   * API wanted all along; the set is de-duplicated first (`mergeEmbeddingEntries`
+   * against an empty base) so a repeated id inside one call resolves to the
+   * last value here rather than however the managed index happens to order
+   * two writes of one id in a single request. The KV fallback collapses to one
+   * load / merge / put, which is where the real saving is: it is the branch
+   * that otherwise rewrote the whole blob per vector.
+   *
+   * An empty set does nothing at all.
+   */
+  async upsertEmbeddings(entries: EmbeddingEntry[]): Promise<void> {
+    if (entries.length === 0) return;
     if (this.vectorize) {
-      await this.vectorize.upsert([{ id, values: vector, metadata }]);
-    } else {
-      // Fallback: store in KV as a JSON blob (same approach as filesystem)
-      const entries = await this.loadEmbeddingsFromKV();
-      const idx = entries.findIndex((e) => e.id === id);
-      const entry = { id, vector, metadata };
-      if (idx >= 0) {
-        entries[idx] = entry;
-      } else {
-        entries.push(entry);
-      }
-      await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify(entries));
+      await this.vectorize.upsert(
+        mergeEmbeddingEntries([], entries).map((entry) => ({
+          id: entry.id,
+          values: entry.vector,
+          metadata: entry.metadata,
+        })),
+      );
+      return;
     }
+    // Fallback: store in KV as a JSON blob (same approach as filesystem)
+    const stored = await this.loadEmbeddingsFromKV();
+    await this.kv.put(
+      EMBEDDINGS_KV_KEY,
+      JSON.stringify(mergeEmbeddingEntries(stored, entries)),
+    );
   }
 
   async queryEmbeddings(
@@ -442,6 +472,33 @@ export class R2StorageProvider implements StorageProvider {
       return;
     }
     await this.kv.put(EMBEDDINGS_KV_KEY, JSON.stringify([]));
+  }
+
+  // -------------------------------------------------------------------------
+  // Batched writes
+  // -------------------------------------------------------------------------
+
+  /**
+   * A pass-through — R2 has nothing to batch.
+   *
+   * The filesystem door exists because a whole-file write there costs a real
+   * fsync, and a loop of them costs one each. An R2 write is a single-object
+   * PUT: it is already its own barrier, it is already atomic, and it is already
+   * acknowledged as durable when it resolves. There is no per-write cost to
+   * defer and therefore nothing a scope could amortise.
+   *
+   * It is implemented anyway because the door is part of the
+   * {@link StorageProvider} contract, and a caller must be able to take it
+   * without asking which provider it is talking to. On this provider the
+   * "trade" the interface describes simply is not made: every batch member is
+   * as durable as if it had been written alone.
+   */
+  async withBatchedWrites<T>(fn: (batch: BatchWriter) => Promise<T>): Promise<T> {
+    const batch: BatchWriter = {
+      writeFile: (path, content) => this.writeFile(path, content),
+      writeAsset: (path, data) => this.writeAsset(path, data),
+    };
+    return fn(batch);
   }
 
   // -------------------------------------------------------------------------

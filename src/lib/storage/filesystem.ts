@@ -14,14 +14,17 @@ import { setTimeout as wait } from "node:timers/promises";
 
 import type {
   StorageProvider,
+  BatchWriter,
   FileInfo,
   FileWithEtag,
   FileEntry,
   EmbeddingEntry,
   EmbeddingMatch,
 } from "./types";
+import { mergeEmbeddingEntries } from "./types";
 import { narrowIndexInteger } from "./index-integer";
 import { withFileLock } from "../lock";
+import { logger } from "../logger";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,6 +46,25 @@ import { withFileLock } from "../lock";
  */
 const TMP_ARTIFACT = /^\.tmp-[0-9a-f-]+\.tmp$/i;
 const LOCK_DIR = ".storage-locks";
+
+/**
+ * Errno values that mean "this platform/filesystem will not fsync a directory",
+ * not "the barrier failed".
+ *
+ * fsync on a directory fd is a POSIX-ism the spec does not require and Windows
+ * has no analogue for: darwin and Linux answer it, but a directory fd opened
+ * elsewhere can refuse with any of these. A refusal is not a durability
+ * failure a caller can do anything about — it is the same "not portable" fact
+ * `atomicWriteUnlocked`'s docblock already names — so the batch swallows these
+ * and propagates everything else (an EIO from a dying disk is real).
+ */
+const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set([
+  "EPERM",
+  "EISDIR",
+  "EINVAL",
+  "EACCES",
+  "ENOTSUP",
+]);
 const LOCK_WAIT_MS = 5;
 const LOCK_TIMEOUT_MS = 15_000;
 const STALE_LOCK_MS = 5 * 60_000;
@@ -78,7 +100,12 @@ async function withFilesystemPublicationLock<T>(
             pid: process.pid,
             createdAt: new Date().toISOString(),
           }));
-          await candidate.sync();
+          // Deliberately NOT fsynced. Nothing ever reads this file's contents:
+          // exclusion comes from the `wx` create above (the name either appears
+          // or it does not), and staleness reclamation below is decided by
+          // `mtimeMs`, never by the pid/createdAt JSON inside. Forcing those
+          // bytes to stable storage bought a second real barrier on every
+          // whole-file write in the provider and bought nothing with it.
           handle = candidate;
         } catch (error) {
           try {
@@ -134,15 +161,25 @@ interface NewFileHandle {
   close(): Promise<unknown>;
 }
 
-/** Write, sync and close while preserving the first publication failure. */
+/**
+ * Write, sync and close while preserving the first publication failure.
+ *
+ * `sync` defaults to `true` and every caller outside a batch leaves it there:
+ * the bytes are on disk before any name points at them. A batch member passes
+ * `false` because the scope issues one directory-level barrier for all of its
+ * members at exit instead — see {@link FilesystemStorageProvider.withBatchedWrites}
+ * for what that trades. The close, and the "first failure wins" rule around it,
+ * are identical either way.
+ */
 export async function writeSyncedNewFile(
   handle: NewFileHandle,
   content: string | Buffer,
+  sync = true,
 ): Promise<void> {
   let failure: { error: unknown } | null = null;
   try {
     await handle.writeFile(content);
-    await handle.sync();
+    if (sync) await handle.sync();
   } catch (error) {
     failure = { error };
   }
@@ -154,14 +191,41 @@ export async function writeSyncedNewFile(
   if (failure) throw failure.error;
 }
 
-/** Sync and close a complete replacement before publishing its name. */
+/**
+ * Sync and close a complete replacement before publishing its name.
+ *
+ * `sync` is forwarded to {@link writeSyncedNewFile} and defaults to `true`.
+ * Publication is the same `rename` either way — a batch member defers the
+ * durability of its bytes, never the atomicity of its name.
+ */
 export async function writeSyncedAndPublish(
   handle: NewFileHandle,
   content: string | Buffer,
   publish: () => Promise<unknown>,
+  sync = true,
 ): Promise<void> {
-  await writeSyncedNewFile(handle, content);
+  await writeSyncedNewFile(handle, content, sync);
   await publish();
+}
+
+/**
+ * Force a directory's entries to stable storage — the barrier a batch issues
+ * once per touched directory instead of one fsync per member file.
+ *
+ * A directory fsync makes the NAMES durable. It says nothing about the file
+ * CONTENTS behind those names, which is the whole of what a batch trades away.
+ */
+async function syncDirectory(dir: string): Promise<void> {
+  const handle = await fs.open(dir, "r");
+  try {
+    await handle.sync();
+  } finally {
+    try {
+      await handle.close();
+    } catch {
+      // Closing the barrier's fd cannot replace the barrier's own result.
+    }
+  }
 }
 
 /** Cosine similarity between two equal-length vectors. */
@@ -246,10 +310,18 @@ export class FilesystemStorageProvider implements StorageProvider {
    *   - The write now needs write permission on the destination's DIRECTORY (to
    *     create and rename the tmp file), not just on the destination, and it
    *     needs transient free space for BOTH copies at once.
+   *
+   * `syncPayload` defaults to `true` and is `false` for exactly one caller:
+   * {@link withBatchedWrites}, which barriers the whole scope's directories
+   * once at exit. Everything above still holds when it is off — the tmp file is
+   * still complete and closed before the rename, and the rename is still
+   * atomic. What is off is only the fsync that would force the tmp file's bytes
+   * to stable storage before the name is published.
    */
   private async atomicWriteUnlocked(
     absPath: string,
     data: string | Buffer,
+    syncPayload = true,
   ): Promise<void> {
     await this.ensureParent(absPath);
     const tmp = path.join(
@@ -276,7 +348,12 @@ export class FilesystemStorageProvider implements StorageProvider {
           throw error;
         }
       }
-      await writeSyncedAndPublish(handle, data, () => fs.rename(tmp, absPath));
+      await writeSyncedAndPublish(
+        handle,
+        data,
+        () => fs.rename(tmp, absPath),
+        syncPayload,
+      );
     } catch (error) {
       // Cleanup must never change what propagates. `force` only suppresses
       // ENOENT, so an EPERM/EACCES/EBUSY unlink would otherwise replace the
@@ -567,20 +644,38 @@ export class FilesystemStorageProvider implements StorageProvider {
       this.atomicWriteUnlocked(abs, JSON.stringify(entries)));
   }
 
+  /**
+   * One vector, through the bulk door.
+   *
+   * Delegating rather than duplicating is the point: the merge rule (position
+   * by first appearance, value by last write) has exactly ONE implementation,
+   * so a single upsert and a bulk upsert can never disagree about where an id
+   * lands or which value survives.
+   */
   async upsertEmbedding(
     id: string,
     vector: number[],
     metadata: Record<string, string>,
   ): Promise<void> {
-    const entries = await this.loadEmbeddings();
-    const idx = entries.findIndex((e) => e.id === id);
-    const entry: EmbeddingEntry = { id, vector, metadata };
-    if (idx >= 0) {
-      entries[idx] = entry;
-    } else {
-      entries.push(entry);
-    }
-    await this.saveEmbeddings(entries);
+    await this.upsertEmbeddings([{ id, vector, metadata }]);
+  }
+
+  /**
+   * One load, one merge, one store for the whole set.
+   *
+   * This file's embeddings live in a single `.indexes/embeddings.json` blob, so
+   * the per-vector door reloads, rewrites and fsyncs that entire blob once per
+   * vector — `rebuildVectorStore` over N pages paid N full index rewrites. The
+   * set collapses to one.
+   *
+   * An empty set writes NOTHING: no store, no barrier, the stored bytes and
+   * their mtime untouched. That matters because a rebuild that embedded nothing
+   * must not be able to rewrite the index it never contributed to.
+   */
+  async upsertEmbeddings(entries: EmbeddingEntry[]): Promise<void> {
+    if (entries.length === 0) return;
+    const stored = await this.loadEmbeddings();
+    await this.saveEmbeddings(mergeEmbeddingEntries(stored, entries));
   }
 
   async queryEmbeddings(
@@ -610,5 +705,89 @@ export class FilesystemStorageProvider implements StorageProvider {
 
   async clearEmbeddings(): Promise<void> {
     await this.saveEmbeddings([]);
+  }
+
+  // -------------------------------------------------------------------------
+  // Batched writes
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run `fn` with a writer whose members share one barrier per touched
+   * directory, issued here at scope exit.
+   *
+   * Each member still goes through {@link withFilesystemPublicationLock} and
+   * {@link atomicWriteUnlocked} — the same tmp file in the destination's own
+   * directory, the same `rename`, the same cleanup that must not change which
+   * error propagates. The single difference is `syncPayload: false`: the tmp
+   * file's bytes are not forced to disk before the name is published. So
+   * publication is unchanged (no torn reads, a rejected write leaves the
+   * destination exactly as it was, a resolved write is immediately readable)
+   * and only the durability point moves — see the interface docblock for who
+   * may take that trade.
+   *
+   * A directory is recorded BEFORE its write is attempted, so a member that
+   * throws still gets its directory barriered: a failed rename may still have
+   * left the destination's parent dirty from the tmp file's create and unlink.
+   *
+   * EXIT ORDER. The barrier runs whether the body resolved or threw, because a
+   * body that threw may have landed writes before it did. If the body threw,
+   * the body's error is what the caller can act on, so any barrier failure is
+   * logged and swallowed; if it resolved, a barrier failure propagates unless
+   * its code says this filesystem simply does not fsync directories.
+   */
+  async withBatchedWrites<T>(fn: (batch: BatchWriter) => Promise<T>): Promise<T> {
+    const directories = new Set<string>();
+    const batchWrite = async (
+      filePath: string,
+      data: string | Buffer,
+    ): Promise<void> => {
+      const abs = this.resolve(filePath);
+      directories.add(path.dirname(abs));
+      await withFilesystemPublicationLock(this.basePath, abs, () =>
+        this.atomicWriteUnlocked(abs, data, false));
+    };
+    const batch: BatchWriter = {
+      writeFile: (filePath, content) => batchWrite(filePath, content),
+      writeAsset: (filePath, data) => batchWrite(filePath, Buffer.from(data)),
+    };
+
+    // Definite-assignment: `result` is read only on the path where the body
+    // resolved, which is the path that assigned it.
+    let result!: T;
+    let bodyFailure: { error: unknown } | null = null;
+    try {
+      result = await fn(batch);
+    } catch (error) {
+      bodyFailure = { error };
+    }
+
+    let barrierFailure: unknown = null;
+    for (const dir of directories) {
+      try {
+        await syncDirectory(dir);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        if (code !== undefined && UNSUPPORTED_DIRECTORY_FSYNC_CODES.has(code)) {
+          continue;
+        }
+        // Keep going: every OTHER directory in the scope still deserves its
+        // barrier, and only the first real failure is reported.
+        barrierFailure ??= error;
+      }
+    }
+
+    if (bodyFailure) {
+      if (barrierFailure !== null) {
+        logger.warn(
+          "storage",
+          "withBatchedWrites: directory barrier failed while the batch body was already failing; " +
+            "reporting the body's error:",
+          barrierFailure,
+        );
+      }
+      throw bodyFailure.error;
+    }
+    if (barrierFailure !== null) throw barrierFailure;
+    return result;
   }
 }

@@ -15,6 +15,8 @@
  * So the helper is EXERCISED here against a stubbed `fetch`: what reaches the
  * network is read off the call, not matched against the file's text.
  */
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   REQUEST_TIMEOUT_MS,
@@ -27,7 +29,10 @@ import {
   unconfirmedWriteMessage,
   writeFailure,
 } from "../workbench-request";
+import { FETCH_TIMEOUT_MS } from "../constants";
 import { CONFIG_UNREADABLE_COPY } from "../config";
+
+const SRC = path.resolve(__dirname, "../..");
 
 /** The subset of `Response` `send` reads — `status` included. */
 function answer(body: unknown, { ok = true, status = 200 } = {}) {
@@ -193,6 +198,33 @@ describe("send", () => {
     // Named rather than asserted exactly: what matters is that it exists and is
     // measured in seconds, not that it is any particular number.
     expect(REQUEST_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it("outlives the server's own fetch deadline by a usable margin", () => {
+    // DW-439. The reasoning lives on the constant in `workbench-request.ts`;
+    // the invariant is that this deadline stays above the server fetch it
+    // wraps, so a slow URL returns the route's 400 instead of a client abort
+    // reported as unconfirmed. Both values are read, so either one moving into
+    // violation fails here.
+    expect(REQUEST_TIMEOUT_MS).toBeGreaterThan(FETCH_TIMEOUT_MS);
+    // Strictly-greater alone passes at 15_001, which buys nothing: the gap has
+    // to leave the route's 400 room to travel back. 5 s is that floor.
+    expect(REQUEST_TIMEOUT_MS - FETCH_TIMEOUT_MS).toBeGreaterThanOrEqual(5_000);
+  });
+
+  it("wraps a fetch that is actually armed with FETCH_TIMEOUT_MS", async () => {
+    // The margin above is meaningless if the server fetch stops honouring the
+    // constant it is compared against: raise the literal at the `fetch` call
+    // and DW-439 reopens with every other assertion still green. Nothing else
+    // in the suite observes that link, so it is scanned here.
+    const fetcher = await readFile(path.join(SRC, "lib/fetch.ts"), "utf8");
+    // Scoped to the ONE fetch this deadline wraps. `fetch.ts` arms the constant
+    // in three places, so a file-wide search still passes with THIS call site
+    // changed to a literal -- which is the whole failure being guarded.
+    const start = fetcher.indexOf("async function fetchFollowingRedirects(");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = fetcher.slice(start, fetcher.indexOf("\n}\n", start));
+    expect(body).toContain("AbortSignal.timeout(FETCH_TIMEOUT_MS)");
   });
 });
 

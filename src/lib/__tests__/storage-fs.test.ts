@@ -643,4 +643,253 @@ describe("FilesystemStorageProvider", () => {
       expect(await provider.listIndexKeys("")).toEqual(["cfg"]);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Batched writes
+  // -------------------------------------------------------------------------
+
+  describe("withBatchedWrites", () => {
+    /** Scratch files a batched write leaves behind if it does not clean up. */
+    async function tmpArtifactsIn(rel: string): Promise<string[]> {
+      const entries = await fs.readdir(path.join(tmpDir, rel));
+      return entries.filter((name) => /^\.tmp-.*\.tmp$/.test(name));
+    }
+
+    async function inodeOf(rel: string): Promise<bigint> {
+      const st = await fs.stat(path.join(tmpDir, rel), { bigint: true });
+      return st.ino;
+    }
+
+    it("returns the body's value and leaves every member readable and whole", async () => {
+      const answer = await provider.withBatchedWrites(async (batch) => {
+        await batch.writeFile("batch/a.md", "alpha");
+        await batch.writeAsset("batch/b.bin", new Uint8Array([1, 2, 3]).buffer);
+        return "returned";
+      });
+
+      expect(answer).toBe("returned");
+      expect(await provider.readFile("batch/a.md")).toBe("alpha");
+      expect([...new Uint8Array(await provider.readAsset("batch/b.bin"))])
+        .toEqual([1, 2, 3]);
+      expect(await tmpArtifactsIn("batch")).toEqual([]);
+    });
+
+    it("still publishes by rename inside a batch, never by truncating in place", async () => {
+      // The guarantee the batch KEEPS. Only durability moves; a member is still
+      // a new inode renamed over the destination, so a reader holding the old
+      // file still sees the old whole bytes rather than a torn new one.
+      await provider.writeFile("batch/a.md", "old");
+      const before = await inodeOf("batch/a.md");
+      const reader = await fs.open(path.join(tmpDir, "batch", "a.md"), "r");
+      try {
+        await provider.withBatchedWrites(async (batch) => {
+          await batch.writeFile("batch/a.md", "brand new and longer");
+        });
+        expect((await reader.readFile("utf-8"))).toBe("old");
+      } finally {
+        await reader.close();
+      }
+
+      expect(await provider.readFile("batch/a.md")).toBe("brand new and longer");
+      expect(await inodeOf("batch/a.md")).not.toBe(before);
+      expect(await tmpArtifactsIn("batch")).toEqual([]);
+    });
+
+    it("makes a member readable immediately, before the scope exits", async () => {
+      // Deferring the fsync does NOT defer the publication: callers like the
+      // backup verifier write and then read the same path back inside the body.
+      await provider.withBatchedWrites(async (batch) => {
+        await batch.writeAsset("batch/round.bin", new Uint8Array([9]).buffer);
+        expect([...new Uint8Array(await provider.readAsset("batch/round.bin"))])
+          .toEqual([9]);
+      });
+    });
+
+    it("propagates the body's own error, keeps the writes that landed, and leaves no tmp artifact", async () => {
+      const boom = new Error("body gave up");
+      await expect(provider.withBatchedWrites(async (batch) => {
+        await batch.writeFile("batch/one.md", "1");
+        await batch.writeFile("batch/two.md", "2");
+        throw boom;
+      })).rejects.toBe(boom);
+
+      expect(await provider.readFile("batch/one.md")).toBe("1");
+      expect(await provider.readFile("batch/two.md")).toBe("2");
+      expect(await tmpArtifactsIn("batch")).toEqual([]);
+    });
+
+    /**
+     * Count fsyncs by kind while `fn` runs.
+     *
+     * `FileHandle` is not exported and `node:fs/promises` is an ESM namespace
+     * that cannot be spied on, so the seam is the PROTOTYPE every handle shares:
+     * open one file, take its prototype, wrap `sync`. The wrapper asks the
+     * handle whether it is a directory, which is what separates a batch's
+     * directory barrier from a per-file payload fsync.
+     */
+    async function countSyncs<T>(fn: () => Promise<T>): Promise<{
+      result: T;
+      files: number;
+      directories: number;
+    }> {
+      const probePath = path.join(tmpDir, ".sync-probe");
+      const probe = await fs.open(probePath, "w");
+      const proto = Object.getPrototypeOf(probe) as { sync: () => Promise<void> };
+      await probe.close();
+      await fs.rm(probePath, { force: true });
+      const original = proto.sync;
+      let files = 0;
+      let directories = 0;
+      proto.sync = async function patched(this: fs.FileHandle) {
+        if ((await this.stat()).isDirectory()) directories += 1;
+        else files += 1;
+        return original.call(this);
+      };
+      try {
+        const result = await fn();
+        return { result, files, directories };
+      } finally {
+        proto.sync = original;
+      }
+    }
+
+    it("issues one directory barrier per distinct directory and no per-file fsync", async () => {
+      const counted = await countSyncs(() =>
+        provider.withBatchedWrites(async (batch) => {
+          await batch.writeFile("d1/a.md", "a");
+          await batch.writeFile("d1/b.md", "b");
+          await batch.writeFile("d2/c.md", "c");
+          await batch.writeAsset("d3/d.bin", new Uint8Array([4]).buffer);
+        }),
+      );
+
+      // Three distinct directories, four members: three barriers, zero payload
+      // fsyncs. Unbatched, the same four writes cost four payload fsyncs.
+      expect(counted.directories).toBe(3);
+      expect(counted.files).toBe(0);
+      expect(await provider.readFile("d1/b.md")).toBe("b");
+      expect(await provider.readFile("d2/c.md")).toBe("c");
+    });
+
+    it("barriers the whole scope once, however many members share a directory", async () => {
+      const counted = await countSyncs(() =>
+        provider.withBatchedWrites(async (batch) => {
+          for (let i = 0; i < 12; i++) await batch.writeFile(`one/f${i}.md`, `${i}`);
+        }),
+      );
+
+      expect(counted.directories).toBe(1);
+      expect(counted.files).toBe(0);
+      for (let i = 0; i < 12; i++) {
+        expect(await provider.readFile(`one/f${i}.md`)).toBe(`${i}`);
+      }
+    });
+
+    it("runs the barrier even when the body throws", async () => {
+      const counted = await countSyncs(async () => {
+        await expect(provider.withBatchedWrites(async (batch) => {
+          await batch.writeFile("d4/a.md", "a");
+          throw new Error("half way");
+        })).rejects.toThrow("half way");
+      });
+
+      expect(counted.directories).toBe(1);
+      expect(await provider.readFile("d4/a.md")).toBe("a");
+      expect(await tmpArtifactsIn("d4")).toEqual([]);
+    });
+
+    it("does not defer an UNBATCHED write's own fsync", async () => {
+      // The default is untouched: a single write outside a batch still forces
+      // its own bytes before publishing its name.
+      const counted = await countSyncs(() => provider.writeFile("solo.md", "solo"));
+
+      expect(counted.files).toBe(1);
+      expect(counted.directories).toBe(0);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Bulk embedding upsert
+  // -------------------------------------------------------------------------
+
+  describe("upsertEmbeddings", () => {
+    async function storedIds(): Promise<string[]> {
+      const raw = await fs.readFile(
+        path.join(tmpDir, ".indexes", "embeddings.json"),
+        "utf-8",
+      );
+      return (JSON.parse(raw) as Array<{ id: string }>).map((entry) => entry.id);
+    }
+
+    it("stores the whole set with ONE index rewrite", async () => {
+      await provider.upsertEmbedding("seed", [1, 0], { v: "seed" });
+      const before = await fs.stat(
+        path.join(tmpDir, ".indexes", "embeddings.json"),
+        { bigint: true },
+      );
+
+      await provider.upsertEmbeddings([
+        { id: "a", vector: [1, 0], metadata: { v: "a" } },
+        { id: "b", vector: [0, 1], metadata: { v: "b" } },
+        { id: "c", vector: [1, 1], metadata: { v: "c" } },
+      ]);
+
+      const after = await fs.stat(
+        path.join(tmpDir, ".indexes", "embeddings.json"),
+        { bigint: true },
+      );
+      // One rewrite = one new inode, not three.
+      expect(after.ino).not.toBe(before.ino);
+      expect(await storedIds()).toEqual(["seed", "a", "b", "c"]);
+    });
+
+    it("keeps stored order, lets the last write for a repeated id win, and appends new ids in argument order", async () => {
+      await provider.upsertEmbeddings([
+        { id: "first", vector: [1, 0], metadata: { v: "1" } },
+        { id: "second", vector: [0, 1], metadata: { v: "2" } },
+      ]);
+
+      await provider.upsertEmbeddings([
+        { id: "new", vector: [1, 1], metadata: { v: "new-a" } },
+        { id: "new", vector: [2, 2], metadata: { v: "new-b" } },
+        { id: "first", vector: [9, 9], metadata: { v: "updated" } },
+        { id: "later", vector: [3, 3], metadata: { v: "later" } },
+      ]);
+
+      // `first` stayed where it was stored; the two new ids appended in the
+      // order they first appeared.
+      expect(await storedIds()).toEqual(["first", "second", "new", "later"]);
+      expect((await provider.getEmbeddingById("first"))!.metadata.v).toBe("updated");
+      // Last write for the repeated id wins.
+      expect((await provider.getEmbeddingById("new"))!.metadata.v).toBe("new-b");
+      expect((await provider.getEmbeddingById("new"))!.vector).toEqual([2, 2]);
+    });
+
+    it("writes nothing at all for an empty set", async () => {
+      await provider.upsertEmbedding("only", [1, 0], { v: "1" });
+      const indexPath = path.join(tmpDir, ".indexes", "embeddings.json");
+      const before = await fs.stat(indexPath, { bigint: true });
+      const bytesBefore = await fs.readFile(indexPath, "utf-8");
+
+      await provider.upsertEmbeddings([]);
+
+      const after = await fs.stat(indexPath, { bigint: true });
+      // Same inode AND same mtime: no rewrite happened, so no barrier could have.
+      expect(after.ino).toBe(before.ino);
+      expect(after.mtimeNs).toBe(before.mtimeNs);
+      expect(await fs.readFile(indexPath, "utf-8")).toBe(bytesBefore);
+    });
+
+    it("leaves single upsertEmbedding on exactly the same merge rule", async () => {
+      await provider.upsertEmbeddings([
+        { id: "a", vector: [1, 0], metadata: { v: "a" } },
+        { id: "b", vector: [0, 1], metadata: { v: "b" } },
+      ]);
+      await provider.upsertEmbedding("a", [5, 5], { v: "a2" });
+      await provider.upsertEmbedding("c", [7, 7], { v: "c" });
+
+      expect(await storedIds()).toEqual(["a", "b", "c"]);
+      expect((await provider.getEmbeddingById("a"))!.vector).toEqual([5, 5]);
+    });
+  });
 });

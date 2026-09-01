@@ -250,65 +250,75 @@ async function createOwnerBackupUnlocked(
     : null;
 
   try {
-    for (const sourcePath of walked.files) {
-      // Ask the size before pulling the bytes (DW-542). `stat` is one HEAD on R2,
-      // one statx on disk; `readAsset` is the whole object. The trade is one
-      // extra stat on every file against at most one avoided read — worth taking
-      // only because the read it avoids is, by definition, of a file big enough
-      // to break the ceiling.
-      //
-      // Two things this gate is NOT. It is not symmetric: an UNDER-reporting stat
-      // is caught below, but an OVER-reporting one records a tenant that would
-      // have fit as `truncated` — wrong in the conservative, visible direction.
-      // And it is not the only not-found detector: a file can still vanish in the
-      // window this opens between the stat and the read.
-      const effectivePurpose = purposeOverrides.get(sourcePath);
-      const { size } = await getStorage().stat(sourcePath);
-      // The per-file bound, BEFORE the total ceiling (DW-677). One object too big
-      // to hold in an isolate is skipped and the walk carries on, because the
-      // files behind it are lower priority, not less recoverable — letting it
-      // break the loop instead would hand a single fat asset the power the
-      // priority walk was built to take away from it. It is also why the
-      // remaining budget is not consulted here: a file that is never read spends
-      // nothing, so it must not be able to decide `total-bytes`.
-      //
-      // Only the reading path is gated. A purpose override supplies its own bytes
-      // and never calls `readAsset`, so there is no read to avoid, and `size`
-      // there measures the file on disk rather than the bytes being copied.
-      if (effectivePurpose === undefined && size > maxFileBytes) {
-        // Weakest reason: it never displaces one that actually stopped the copy.
-        if (truncationReason === null) truncationReason = "file-size";
-        continue;
+    // The copy loop is ONE batch (DW-293). It was paying a real fsync per asset;
+    // this pays one directory barrier per touched directory when the scope
+    // exits. That trade is available here because the whole set is re-drivable:
+    // the source is the owner's tenant, which outlives any crash, so the
+    // recovery for a half-durable backup prefix is to take the backup again.
+    // The manifest write below stays OUTSIDE the batch on purpose — it is the
+    // pointer that makes this prefix reachable at all, and a pointer must not
+    // be durable before the bytes it names.
+    await getStorage().withBatchedWrites(async (batch) => {
+      for (const sourcePath of walked.files) {
+        // Ask the size before pulling the bytes (DW-542). `stat` is one HEAD on R2,
+        // one statx on disk; `readAsset` is the whole object. The trade is one
+        // extra stat on every file against at most one avoided read — worth taking
+        // only because the read it avoids is, by definition, of a file big enough
+        // to break the ceiling.
+        //
+        // Two things this gate is NOT. It is not symmetric: an UNDER-reporting stat
+        // is caught below, but an OVER-reporting one records a tenant that would
+        // have fit as `truncated` — wrong in the conservative, visible direction.
+        // And it is not the only not-found detector: a file can still vanish in the
+        // window this opens between the stat and the read.
+        const effectivePurpose = purposeOverrides.get(sourcePath);
+        const { size } = await getStorage().stat(sourcePath);
+        // The per-file bound, BEFORE the total ceiling (DW-677). One object too big
+        // to hold in an isolate is skipped and the walk carries on, because the
+        // files behind it are lower priority, not less recoverable — letting it
+        // break the loop instead would hand a single fat asset the power the
+        // priority walk was built to take away from it. It is also why the
+        // remaining budget is not consulted here: a file that is never read spends
+        // nothing, so it must not be able to decide `total-bytes`.
+        //
+        // Only the reading path is gated. A purpose override supplies its own bytes
+        // and never calls `readAsset`, so there is no read to avoid, and `size`
+        // there measures the file on disk rather than the bytes being copied.
+        if (effectivePurpose === undefined && size > maxFileBytes) {
+          // Weakest reason: it never displaces one that actually stopped the copy.
+          if (truncationReason === null) truncationReason = "file-size";
+          continue;
+        }
+        if (totalBytes + size > limits.maxBytes) {
+          // The byte ceiling stops the copy EARLIER in the same list than the file
+          // ceiling did, so it is the truer answer to "what stopped this backup".
+          truncationReason = "total-bytes";
+          break;
+        }
+        const data = effectivePurpose === undefined
+          ? await getStorage().readAsset(sourcePath)
+          : new TextEncoder().encode(effectivePurpose).buffer;
+        // The check above is the optimisation; this one owns the invariant. `stat`
+        // gates and never accounts — `totalBytes`, the entry's `size` and its
+        // `sha256` all come from these bytes — so re-testing the ceiling here is
+        // what keeps `totalBytes <= maxBytes` true when stat under-reports. When
+        // the two agree, which is always on a healthy provider, this never fires.
+        if (totalBytes + data.byteLength > limits.maxBytes) {
+          truncationReason = "total-bytes";
+          break;
+        }
+        totalBytes += data.byteLength;
+        const relative = sourcePath.slice(sourceRoot.length + 1);
+        const destination = `${root}/files/${relative}`;
+        await batch.writeAsset(destination, data);
+        entries.push({
+          path: sourcePath,
+          backupPath: destination,
+          size: data.byteLength,
+          sha256: await sha256(data),
+        });
       }
-      if (totalBytes + size > limits.maxBytes) {
-        // The byte ceiling stops the copy EARLIER in the same list than the file
-        // ceiling did, so it is the truer answer to "what stopped this backup".
-        truncationReason = "total-bytes";
-        break;
-      }
-      const data = effectivePurpose === undefined
-        ? await getStorage().readAsset(sourcePath)
-        : new TextEncoder().encode(effectivePurpose).buffer;
-      // The check above is the optimisation; this one owns the invariant. `stat`
-      // gates and never accounts — `totalBytes`, the entry's `size` and its
-      // `sha256` all come from these bytes — so re-testing the ceiling here is
-      // what keeps `totalBytes <= maxBytes` true when stat under-reports. When
-      // the two agree, which is always on a healthy provider, this never fires.
-      if (totalBytes + data.byteLength > limits.maxBytes) {
-        truncationReason = "total-bytes";
-        break;
-      }
-      totalBytes += data.byteLength;
-      const relative = sourcePath.slice(sourceRoot.length + 1);
-      const destination = `${root}/files/${relative}`;
-      await getStorage().writeAsset(destination, data);
-      entries.push({
-        path: sourcePath,
-        backupPath: destination,
-        size: data.byteLength,
-        sha256: await sha256(data),
-      });
-    }
+    });
 
     const manifest: BackupManifest = {
       version: 1,
@@ -412,19 +422,32 @@ export async function verifyOwnerBackup(
   if (!manifest) throw new Error("Backup not found");
   const verificationRoot = `restore-verification/${ownerTenant(owner)}/${id}`;
   try {
-    for (const file of manifest.files) {
-      const data = await getStorage().readAsset(file.backupPath);
-      if (data.byteLength !== file.size || await sha256(data) !== file.sha256) {
-        throw new Error(`Checksum mismatch for ${file.path}`);
+    // ONE batch for the whole restore-verify loop (DW-293). This is the easiest
+    // of the batched callers to justify: every byte it writes goes under
+    // `verificationRoot`, which the `finally` below deletes whether the
+    // verification passed, failed or threw. Nothing here is ever meant to
+    // survive a crash, so there is nothing for a per-file fsync to protect.
+    //
+    // The read-back two lines down still works inside the batch: a batched
+    // write is PUBLISHED when it resolves (tmp + rename, same as always) and
+    // only its flush to stable storage is deferred, so the file is there to be
+    // read. And a `throw` from either check propagates out of the batch body
+    // unchanged into the catch below — the batch never rewrites the body's error.
+    await getStorage().withBatchedWrites(async (batch) => {
+      for (const file of manifest.files) {
+        const data = await getStorage().readAsset(file.backupPath);
+        if (data.byteLength !== file.size || await sha256(data) !== file.sha256) {
+          throw new Error(`Checksum mismatch for ${file.path}`);
+        }
+        const relative = file.path.slice(`tenants/${manifest.tenant}/`.length);
+        const restoredPath = `${verificationRoot}/${relative}`;
+        await batch.writeAsset(restoredPath, data);
+        const restored = await getStorage().readAsset(restoredPath);
+        if (await sha256(restored) !== file.sha256) {
+          throw new Error(`Restore verification failed for ${file.path}`);
+        }
       }
-      const relative = file.path.slice(`tenants/${manifest.tenant}/`.length);
-      const restoredPath = `${verificationRoot}/${relative}`;
-      await getStorage().writeAsset(restoredPath, data);
-      const restored = await getStorage().readAsset(restoredPath);
-      if (await sha256(restored) !== file.sha256) {
-        throw new Error(`Restore verification failed for ${file.path}`);
-      }
-    }
+    });
     manifest.verifiedAt = now.toISOString();
     manifest.verificationStatus = "passed";
     delete manifest.verificationError;

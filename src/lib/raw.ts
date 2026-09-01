@@ -114,6 +114,14 @@ export interface SaveRawSourceOptions {
  * before `etagDoesNotMatch: "*"` rejects it, so a re-drop of the same large PDF
  * now pays a full write where the old `fileExists` short-circuited. Accepted:
  * the race it closes mutates bytes the product promises never change.
+ *
+ * NOT A BATCH MEMBER, on purpose (DW-293). `StorageProvider.withBatchedWrites`
+ * amortises one directory barrier over many writes, but an ingest arrival makes
+ * exactly two — this flat key, then {@link mirrorSourceToSilo}'s copy — and
+ * they live in two DIFFERENT directories, so a per-directory barrier is two
+ * barriers for two writes. Nothing saved, in exchange for widening a create-only
+ * door (which publishes by `fs.link`, not `rename`, and stays fully synced) into
+ * a scope whose members are only recoverable by re-driving the whole set.
  */
 async function publishSourceFirstWrite(
   rel: string,

@@ -234,15 +234,20 @@ describe("portable owner archive", () => {
       "# Atlas\n\nNewly committed bytes.",
     );
     const storage = getStorage();
-    const originalReadAsset = storage.readAsset.bind(storage);
+    // The seam is the COLLISION PROBE, whichever call makes it. It used to be a
+    // `readAsset`; DW-679 made it the `stat` it always should have been (the
+    // probe asks "is this path occupied", not "what is in it"). Nothing about
+    // what this test pins moved — the fence still has to be held from the
+    // moment the snapshot is taken until the import is done with it.
+    const originalStat = storage.stat.bind(storage);
     let observedMissingSnapshot!: () => void;
     let resumeSnapshot!: () => void;
     const snapshotObserved = new Promise<void>((resolve) => { observedMissingSnapshot = resolve; });
     const resume = new Promise<void>((resolve) => { resumeSnapshot = resolve; });
     let pauseOnce = true;
-    vi.spyOn(storage, "readAsset").mockImplementation(async (target) => {
+    vi.spyOn(storage, "stat").mockImplementation(async (target) => {
       try {
-        return await originalReadAsset(target);
+        return await originalStat(target);
       } catch (error) {
         if (
           pauseOnce
@@ -280,6 +285,97 @@ describe("portable owner archive", () => {
     expect(result.imported).toBeGreaterThanOrEqual(1);
     expect(await getStorage().readFile("tenants/alice/wiki/atlas.md")).toBe(newer);
   }, 15_000);
+
+  // ---------------------------------------------------------------------------
+  // DW-679 — bound before read
+  // ---------------------------------------------------------------------------
+
+  it("rejects past the 500 MB ceiling WITHOUT reading the file that trips it", async () => {
+    const page = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nSmall on disk.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
+    const storage = getStorage();
+    const originalStat = storage.stat.bind(storage);
+    vi.spyOn(storage, "stat").mockImplementation(async (target) => (
+      target === "tenants/alice/wiki/atlas.md"
+        ? { size: 600 * 1024 * 1024, lastModified: new Date() }
+        : originalStat(target)
+    ));
+    // The proof: the read that used to materialise this object now never
+    // happens, so making it throw cannot change the answer.
+    const readAsset = vi.spyOn(storage, "readAsset").mockImplementation(async (target) => {
+      throw new Error(`readAsset must not be called for ${target}`);
+    });
+
+    await expect(buildPortableArchive("alice"))
+      .rejects.toThrow(/500 MB safety limit/);
+    // The ceiling error, not the read's.
+    expect(readAsset).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it("still rejects past the ceiling when stat UNDER-reports", async () => {
+    const page = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nSmall on disk.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
+    const storage = getStorage();
+    const originalStat = storage.stat.bind(storage);
+    // stat says zero; the bytes say 600 MB. The post-read check owns the
+    // invariant, so the gate being wrong cannot let an oversized archive
+    // through — `stat` gates, it never accounts.
+    vi.spyOn(storage, "stat").mockImplementation(async (target) => (
+      target === "tenants/alice/wiki/atlas.md"
+        ? { size: 0, lastModified: new Date() }
+        : originalStat(target)
+    ));
+    vi.spyOn(storage, "readAsset").mockImplementation(async (target) => (
+      target === "tenants/alice/wiki/atlas.md"
+        // Only `byteLength` is read before the ceiling test fires.
+        ? ({ byteLength: 600 * 1024 * 1024 } as ArrayBuffer)
+        : new ArrayBuffer(0)
+    ));
+
+    await expect(buildPortableArchive("alice"))
+      .rejects.toThrow(/500 MB safety limit/);
+    vi.restoreAllMocks();
+  });
+
+  it("probes for collisions with stat, never by reading the existing file", async () => {
+    const page = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nPrivate knowledge.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
+    await getStorage().writeAsset("tenants/alice/raw/atlas/source.bin", new Uint8Array([1, 2, 3]).buffer);
+    const archive = await buildPortableArchive("alice");
+
+    const storage = getStorage();
+    const probed: string[] = [];
+    const originalStat = storage.stat.bind(storage);
+    vi.spyOn(storage, "stat").mockImplementation(async (target) => {
+      probed.push(target);
+      return originalStat(target);
+    });
+    const readAsset = vi.spyOn(storage, "readAsset");
+
+    const inspection = await inspectPortableArchive("alice", buffer(archive.bytes));
+
+    // Both tenant files are occupied, so both are collisions…
+    expect(inspection.collisions).toContain("wiki/atlas.md");
+    expect(inspection.collisions).toContain("raw/atlas/source.bin");
+    // …and the `.obsidian/` stubs are not.
+    expect(inspection.newFiles).toContain(".obsidian/app.json");
+    // Every manifest entry was probed by `stat`…
+    expect(probed).toContain("tenants/alice/wiki/atlas.md");
+    expect(probed).toContain("tenants/alice/.obsidian/app.json");
+    // …and nothing in the inspection pulled an existing object's bytes.
+    expect(readAsset).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
 
   it("rejects an oversized manifest before allocating its expanded payload", async () => {
     const oversized = zipSync({

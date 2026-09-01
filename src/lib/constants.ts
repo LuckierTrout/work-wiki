@@ -24,7 +24,23 @@ export const MAX_DOCUMENT_SIZE = 10 * 1024 * 1024;
 /** Maximum extracted text content length passed downstream (100 K chars). */
 export const MAX_CONTENT_LENGTH = 100_000;
 
-/** URL fetch timeout in milliseconds (15 seconds). */
+/**
+ * URL fetch timeout in milliseconds (15 seconds).
+ *
+ * ORDERING (DW-439): `REQUEST_TIMEOUT_MS` in `src/lib/workbench-request.ts`
+ * must stay STRICTLY ABOVE this value, with at least a 5 s margin. That client
+ * deadline wraps a server fetch armed with this one
+ * (`POST /api/workbench/intake` -> `fetchUrlContent`), and the ordering buys
+ * exactly one thing: this fetch's deadline fires first, so a slow URL comes
+ * back as the route's own 400 rather than as a client abort reported to the
+ * owner as "the outcome is unknown" while the route completes and stores the
+ * Source. It does NOT bound the route's total work -- `fetchFollowingRedirects`
+ * in `src/lib/fetch.ts` arms this timeout per hop for five redirects, so up to
+ * six fetches and up to 90 s, past any fixed client margin.
+ *
+ * Raising this value without raising that one re-opens DW-439. The pin that
+ * catches it lives in `src/lib/__tests__/workbench-request.test.ts`.
+ */
 export const FETCH_TIMEOUT_MS = 15_000;
 
 /**
