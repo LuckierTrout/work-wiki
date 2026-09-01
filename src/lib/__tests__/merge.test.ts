@@ -1280,6 +1280,51 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
     expect(prompt).toContain(ALICE_ALIAS);
   });
 
+  it("reads the HUMAN's standards when the survivor is owned by an agent handle", async () => {
+    // DW-543. Guidance is addressed by human owner: `alice--yoyo` keys its own
+    // (empty) tenant, so resolving guidance from the raw handle would fold the
+    // agent's page with no Purpose and no dictionary — even though the
+    // same-owner guard already treats `alice--yoyo` and `alice` as one owner.
+    const AGENT_OWNER = `${SURVIVOR_OWNER}--yoyo`;
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedMergePair(AGENT_OWNER, AGENT_OWNER);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: AGENT_OWNER,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain("WORKSPACE PURPOSE");
+    expect(prompt).toContain(ALICE_PURPOSE);
+    expect(prompt).toContain("WORKSPACE NAMES & TERMS");
+    expect(prompt).toContain(ALICE_TERM);
+    expect(prompt).toContain(ALICE_ALIAS);
+    // Addressing is untouched: the survivor still carries the RAW agent handle.
+    const survivor = await readWikiPageWithFrontmatter(SURVIVOR_SLUG, {
+      fresh: true,
+    });
+    expect(survivor?.frontmatter.owner).toBe(AGENT_OWNER);
+  });
+
+  it("reduces the ACTOR to its human too when the survivor names no owner", async () => {
+    // The fallback principal goes through the same reduction as the survivor's.
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await seedMergePair(undefined, SURVIVOR_OWNER);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: `${SURVIVOR_OWNER}--yoyo`,
+      bypassOwnerCheck: true,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    expect(prompt).toContain(ALICE_PURPOSE);
+    expect(prompt).toContain(ALICE_TERM);
+  });
+
   it("uses the SURVIVOR's owner, never the actor, on a cross-owner merge", async () => {
     // The recorded decision: the merged prose is written to `into` and lives on
     // in `into`'s owner's wiki, so alice's standards govern even though bob

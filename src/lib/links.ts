@@ -126,6 +126,15 @@ export const DEFAULT_TENANT = "yopedia";
  * than a broken URL or a silo write that throws. Unicode (e.g. CJK handles) is
  * preserved — only the unsafe set is touched. Normal handles (Clerk usernames,
  * `alice--yoyo`) pass through unchanged apart from lowercasing.
+ *
+ * STORAGE addressing only — it answers "which SILO is this?". It deliberately
+ * does NOT strip the `--<agent>` suffix: `alice--yoyo` is its own tenant, so an
+ * agent's pages, dedup guards and attribution stay exactly where they are
+ * written. The different question "which HUMAN is this?" — the one workspace
+ * GUIDANCE asks, since a Workspace Purpose and a Names & Terms dictionary
+ * belong to a person rather than to each of their agents — is answered by
+ * `humanOwnerOf` (`agent-handle.ts`), which reduces the handle BEFORE it
+ * reaches this function.
  */
 export function ownerToTenant(owner?: string | null): string {
   if (typeof owner !== "string") return DEFAULT_TENANT;

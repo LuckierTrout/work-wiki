@@ -14,7 +14,10 @@
  *    supplies the standard: ingest passes the ACTING principal
  *    (`options?.owner?.trim() || actor`, `ingest.ts`), while this door passes
  *    the SURVIVOR's owner, because the merged prose lives on in the survivor's
- *    workspace and not in the actor's.
+ *    workspace and not in the actor's. Since DW-543 BOTH doors then reduce
+ *    whichever principal they picked to the HUMAN behind it (`humanOwnerOf`),
+ *    so an agent handle reads its human's standards instead of its own empty
+ *    tenant — a guidance-only reduction that leaves storage addressing alone.
  *  - sources / contributors / authors / aliases are UNIONed; `from`'s title AND
  *    slug are recorded as aliases of `into` so a later ingest under either name
  *    converges on the survivor. NOTE: the alias URL redirect that used to
@@ -48,6 +51,7 @@ import {
   type PageLifecycleLockHeld,
 } from "./lifecycle";
 import { escapeRegex } from "./links";
+import { humanOwnerOf } from "./agent-handle";
 import { createGuidanceCache } from "./guidance-cache";
 import { buildNamesTermsGuidance } from "./names-terms";
 import { getStorage } from "./storage";
@@ -463,7 +467,20 @@ async function mergePagesWhileSourceLocked({
         // handing the default silo's Purpose and dictionary to a fold that
         // named no principal at all. Both absent ⇒ `undefined` ⇒ today's
         // unguided prompt.
-        let guidanceOwner = asString(into.frontmatter.owner) ?? asString(actor);
+        //
+        // Whichever side wins is then reduced to the HUMAN behind it (DW-543).
+        // A Workspace Purpose and a Names & Terms dictionary belong to a
+        // PERSON, not to each of that person's agents: a survivor owned by
+        // `alice--yoyo` must read alice's standards, exactly as the same-owner
+        // guard above already treats the two handles as one owner. The
+        // reduction is guidance-only — nothing about where the survivor is
+        // stored, who it is attributed to, or which silo it lives in changes,
+        // because `ownerToTenant` deliberately keeps the `--<agent>` suffix.
+        const guidancePrincipal =
+          asString(into.frontmatter.owner) ?? asString(actor);
+        let guidanceOwner = guidancePrincipal
+          ? humanOwnerOf(guidancePrincipal)
+          : undefined;
         // One handle for THIS merge only — never hoisted, never shared across
         // merges — so a Purpose or dictionary edit saved between two merges is
         // still picked up by the next one.

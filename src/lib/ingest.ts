@@ -30,6 +30,7 @@ import {
 } from "./names-terms";
 import { buildWorkspaceGuidance } from "./workspace-guidance";
 import { createGuidanceCache, type GuidanceCache } from "./guidance-cache";
+import { humanOwnerOf } from "./agent-handle";
 
 /**
  * Merge a provenance entry into a sources list. A real source URL supersedes a
@@ -1219,15 +1220,17 @@ export function parseDisputedMarker(raw: string): {
 export async function reconcilePage(
   existingBody: string,
   newBody: string,
-  owner?: string,
+  /** The HUMAN principal whose workspace standards guide the fold — see
+   * {@link humanOwnerOf}. Callers reduce the raw handle BEFORE calling. */
+  guidanceOwner?: string,
   cache?: GuidanceCache,
   options?: { emptyFallback?: "new" | "throw" },
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
-  const [workspaceGuidance, dictionaryGuidance] = owner
+  const [workspaceGuidance, dictionaryGuidance] = guidanceOwner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner, cache?.workspace),
-        buildNamesTermsGuidance(owner, cache?.namesTerms),
+        buildWorkspaceGuidance(guidanceOwner, cache?.workspace),
+        buildNamesTermsGuidance(guidanceOwner, cache?.namesTerms),
       ])
     : ["", ""];
   const systemPrompt = RECONCILE_SYSTEM_PROMPT +
@@ -1290,15 +1293,17 @@ export async function collectTagVocabulary(
 }
 
 export async function buildIngestSystemPrompt(
-  owner?: string,
+  /** The HUMAN principal whose workspace standards guide the prompt — see
+   * {@link humanOwnerOf}. NOT a storage key. */
+  guidanceOwner?: string,
   cache?: GuidanceCache,
 ): Promise<string> {
   // DW-19 — deliberately NO argument: the conventions are deployment-global.
   // They come from the SITE OWNER's active Wiki (`NEXT_PUBLIC_OWNER_HANDLE`,
-  // resolved inside `readActiveWikiSchema`), NOT from the `owner` parameter
-  // used for guidance below. `owner` is a PRINCIPAL, not a tenant — it can be
-  // `"system"`, an agent handle, or a monitor's owner, none of which may become
-  // a Schema storage key. Correct while work-wiki is single-owner; a second
+  // resolved inside `readActiveWikiSchema`), NOT from the `guidanceOwner`
+  // parameter used for guidance below. `guidanceOwner` is a PRINCIPAL, not a
+  // tenant — it can be `"system"` or a monitor's owner, neither of which may
+  // become a Schema storage key. Correct while work-wiki is single-owner; a second
   // tenant means threading a tenant argument through `loadPageConventions()`
   // and passing it here — the caller's TENANT, which is not necessarily
   // `owner`. See the invariant on `readActiveWikiSchema` in `wikis.ts`.
@@ -1321,10 +1326,10 @@ Follow these conventions when generating the page.`;
 Tags already used across this wiki (PREFER reusing an existing tag when it fits; only coin a new one when none apply):
 ${vocab.join(", ")}`;
   }
-  if (owner) {
+  if (guidanceOwner) {
     const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-      buildWorkspaceGuidance(owner, cache?.workspace),
-      buildNamesTermsGuidance(owner, cache?.namesTerms),
+      buildWorkspaceGuidance(guidanceOwner, cache?.workspace),
+      buildNamesTermsGuidance(guidanceOwner, cache?.namesTerms),
     ]);
     if (workspaceGuidance) prompt += `\n\n${workspaceGuidance}`;
     if (dictionaryGuidance) prompt += `\n\n${dictionaryGuidance}`;
@@ -1440,25 +1445,51 @@ async function assertNotCancelled(jobId?: string): Promise<void> {
  * (stale index) so the caller can fall through to a normal ingest.
  */
 /**
- * Reduce a handle to its human identity: an agent id `<user>--<name>` collapses
- * to `<user>` (slugified), a plain handle slugifies as-is. Mirrors the
- * owner-equivalence `canReadPage`/`canWritePage` use, at the handle level.
- */
-function humanOf(handle: string): string {
-  const i = handle.indexOf("--");
-  return slugify(i >= 0 ? handle.slice(0, i) : handle);
-}
-
-/**
  * True iff ingest actor `actorOwner` belongs to the same human-owner class as a
  * page owned by `pageOwner` — i.e. the actor (or their agent) owns it. Used to
  * decide whether an ingest may converge onto a PRIVATE page: private content is
  * owner-only, so a non-owner must never dedup/merge into it.
+ *
+ * The reduction is {@link humanOwnerOf}; the `slugify` stays HERE, at the
+ * comparison site, because a comparison key is what this guard wants and the
+ * shared reduction must stay unslugified for its other caller (guidance
+ * addressing, which feeds the raw segment to `ownerToTenant`).
  */
 export function sameHumanOwner(actorOwner: string | undefined, pageOwner: unknown): boolean {
   if (typeof pageOwner !== "string" || pageOwner.trim() === "") return false;
   if (!actorOwner || actorOwner.trim() === "") return false;
-  return humanOf(actorOwner) === humanOf(pageOwner);
+  return ownerClassKey(actorOwner) === ownerClassKey(pageOwner);
+}
+
+/**
+ * The owner-equivalence key {@link sameHumanOwner} compares — the slugified
+ * human behind a handle, with ONE deliberate divergence from `humanOwnerOf`.
+ *
+ * The two callers of the reduction want OPPOSITE things about the class of
+ * handles carrying no usable human prefix (`--yoyo`, `" --yoyo"`, `--`):
+ *
+ *  - GUIDANCE addressing must never hand `ownerToTenant` an empty principal —
+ *    it would collapse onto the DEFAULT tenant and guide the fold with the
+ *    default silo's Purpose and dictionary. So `humanOwnerOf` returns the
+ *    WHOLE handle there, keeping it on its own tenant.
+ *  - THIS guard wants the opposite: a handle naming no human is its own
+ *    equivalence class, so it matches only other handles naming no human and
+ *    never a real person. Letting `--yoyo` reduce to the whole handle would
+ *    slugify to `"yoyo"` and make `sameHumanOwner("yoyo", "--yoyo")` true —
+ *    widening an authorization-adjacent guard that gates private-page dedup.
+ *
+ * So the class is folded back to the empty key here. That reproduces the old
+ * private `humanOf` (`slugify(i >= 0 ? handle.slice(0, i) : handle)`) exactly
+ * for every input, which is the point: DW-543 promoted the reduction without
+ * moving a single handle between classes.
+ */
+function ownerClassKey(handle: string): string {
+  const human = humanOwnerOf(handle);
+  // `humanOwnerOf` returns its argument UNCHANGED exactly when there was no
+  // usable human prefix. With a `--` present that means the degenerate class
+  // above; without one it is an ordinary prefix-less handle, which the old
+  // `humanOf` slugified whole.
+  return human === handle && handle.includes("--") ? "" : slugify(human);
 }
 
 /** Find a slug not taken by any existing page (`base`, `base-2`, `base-3`, …). */
@@ -1650,7 +1681,18 @@ async function analyzeSource(
 async function runTwoStepSynthesis(input: {
   title: string;
   content: string;
+  /**
+   * The RAW acting owner handle — an agent keeps its `--<name>` suffix. Used
+   * only for the durable lock key below, which must stay keyed exactly as it is
+   * written today (DW-543).
+   */
   owner: string;
+  /**
+   * The HUMAN behind {@link owner} ({@link humanOwnerOf}) — the principal whose
+   * Workspace Purpose and Names & Terms dictionary govern the prompts. Separate
+   * from `owner` precisely so reducing guidance never repoints the lock.
+   */
+  guidanceOwner: string;
   cache?: GuidanceCache;
   jobId?: string;
   reuseAnalysis?: boolean;
@@ -1660,7 +1702,12 @@ async function runTwoStepSynthesis(input: {
     // Classic ingest (no tracked job) stays one Generation call. The two-step
     // Analysis → Generation contract is the Workbench compile path.
     if (!input.jobId) {
-      return synthesizeBody(input.title, input.content, input.owner, input.cache);
+      return synthesizeBody(
+        input.title,
+        input.content,
+        input.guidanceOwner,
+        input.cache,
+      );
     }
     let analysis: IngestAnalysis | null = await loadIngestAnalysis(input.jobId);
     if (!analysis) {
@@ -1673,7 +1720,7 @@ async function runTwoStepSynthesis(input: {
     return synthesizeBody(
       input.title,
       input.content,
-      input.owner,
+      input.guidanceOwner,
       input.cache,
       analysis,
     );
@@ -1690,7 +1737,9 @@ async function runTwoStepSynthesis(input: {
 async function synthesizeBody(
   title: string,
   content: string,
-  owner?: string,
+  /** The HUMAN principal whose workspace standards guide the prompts — see
+   * {@link humanOwnerOf}. NOT a storage key and not the lock key. */
+  guidanceOwner?: string,
   cache?: GuidanceCache,
   analysis?: IngestAnalysis,
 ): Promise<string> {
@@ -1698,7 +1747,7 @@ async function synthesizeBody(
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
-  let systemPrompt = await buildIngestSystemPrompt(owner, cache);
+  let systemPrompt = await buildIngestSystemPrompt(guidanceOwner, cache);
   systemPrompt += `\n\nWrite the wiki page in English only.`;
   if (analysis) {
     systemPrompt += `\n\nConsume this Analysis JSON when writing the page. Do not ignore it:\n${JSON.stringify(analysis)}`;
@@ -1752,10 +1801,10 @@ async function synthesizeBody(
     // reducing nothing into a hallucinated page.
     throw new Error("synthesis produced no content from the source");
   }
-  const [workspaceGuidance, dictionaryGuidance] = owner
+  const [workspaceGuidance, dictionaryGuidance] = guidanceOwner
     ? await Promise.all([
-        buildWorkspaceGuidance(owner, cache?.workspace),
-        buildNamesTermsGuidance(owner, cache?.namesTerms),
+        buildWorkspaceGuidance(guidanceOwner, cache?.workspace),
+        buildNamesTermsGuidance(guidanceOwner, cache?.namesTerms),
       ])
     : ["", ""];
   return callLLM(
@@ -1817,6 +1866,17 @@ export async function ingest(
   // can scope a semantic merge to the same owner's silo.
   const actor = options?.author?.trim() || "system";
   const owner = options?.owner?.trim() || actor;
+  // Guidance is addressed BY HUMAN, storage by handle (DW-543). `owner` stays
+  // the RAW handle everywhere it addresses or attributes: the frontmatter
+  // `owner`, the silo it writes into, the dedup/private-page guards, the
+  // concept resolver's same-silo scoping, the bookkeeping and the
+  // `ingest-llm:` lock key. But a Workspace Purpose and a Names & Terms
+  // dictionary belong to a PERSON, not to each of that person's agents — an
+  // agent handle like `alice--yoyo` keys its own empty tenant, so guidance
+  // resolved from it would come back blank while the same-owner guard above
+  // already collapses it onto `alice`. Reduce it once, here, and hand the
+  // reduced principal to every guidance consumer below.
+  const guidanceOwner = humanOwnerOf(owner);
   // ONE guidance resolution for this document (DW-141, DW-322). Synthesis, the
   // map/reduce REDUCE step, reconcile-on-merge and the concept canonicalization
   // below all ask for the same active Wiki's Workspace Purpose and the same
@@ -1903,6 +1963,7 @@ export async function ingest(
       title: effectiveTitle,
       content: cleanContent,
       owner,
+      guidanceOwner,
       cache: guidanceCache,
       jobId: options?.jobId,
       reuseAnalysis: options?.reuseAnalysis,
@@ -1920,7 +1981,10 @@ export async function ingest(
     tags: conceptTags,
     body: conceptStrippedBody,
   } = parseConceptMarker(wikiContent);
-  const dictionary = await listNamesTerms(owner, guidanceCache.namesTerms);
+  // The SAME principal the prompts carried, so the concept is canonicalized
+  // against the very dictionary the model was shown — and the shared,
+  // tenant-keyed handle stays one read.
+  const dictionary = await listNamesTerms(guidanceOwner, guidanceCache.namesTerms);
   const concept = extractedConcept
     ? canonicalizeNamesTerm(dictionary, extractedConcept)
     : extractedConcept;
@@ -2238,7 +2302,7 @@ export async function ingest(
       const reconciled = await reconcilePage(
         existing.body,
         wikiContent,
-        owner,
+        guidanceOwner,
         guidanceCache,
       );
       wikiContent = reconciled.body;

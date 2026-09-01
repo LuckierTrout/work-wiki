@@ -19,6 +19,7 @@ import {
   stripImageMarkdown,
   mergeSourceEntry,
   recordSourceResee,
+  sameHumanOwner,
 } from "../ingest";
 import { slugify } from "../slugify";
 import { loadPageConventions } from "../schema";
@@ -4413,6 +4414,69 @@ describe("mergeSourceEntry URL normalization", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Owner equivalence (`sameHumanOwner`) — the guard DW-543's promotion moved
+// ---------------------------------------------------------------------------
+
+describe("sameHumanOwner", () => {
+  it("treats an agent and its human owner as the same owner", () => {
+    expect(sameHumanOwner("alice", "alice--yoyo")).toBe(true);
+    expect(sameHumanOwner("alice--yoyo", "alice")).toBe(true);
+    expect(sameHumanOwner("alice--yoyo", "alice--scout")).toBe(true);
+    expect(sameHumanOwner("alice", "alice")).toBe(true);
+  });
+
+  it("keeps two different humans apart", () => {
+    expect(sameHumanOwner("alice", "bob")).toBe(false);
+    expect(sameHumanOwner("alice--yoyo", "bob--yoyo")).toBe(false);
+    expect(sameHumanOwner("alice", "bob--yoyo")).toBe(false);
+  });
+
+  it("compares case-insensitively (the key is slugified)", () => {
+    expect(sameHumanOwner("Alice", "alice--yoyo")).toBe(true);
+    expect(sameHumanOwner("ALICE--yoyo", "alice")).toBe(true);
+  });
+
+  it("refuses a missing, blank or non-string side", () => {
+    expect(sameHumanOwner(undefined, "alice")).toBe(false);
+    expect(sameHumanOwner("", "alice")).toBe(false);
+    expect(sameHumanOwner("   ", "alice")).toBe(false);
+    expect(sameHumanOwner("alice", undefined)).toBe(false);
+    expect(sameHumanOwner("alice", "")).toBe(false);
+    expect(sameHumanOwner("alice", "   ")).toBe(false);
+    expect(sameHumanOwner("alice", 42)).toBe(false);
+    expect(sameHumanOwner("alice", null)).toBe(false);
+  });
+
+  /**
+   * CHARACTERIZATION — the pre-existing behavior of the degenerate class, NOT
+   * a property DW-543 introduced or endorses. A handle whose text before the
+   * first `--` is empty or blank names no human, so it keys its OWN class:
+   * it never matches a real person, and it matches every other such handle.
+   *
+   * This is authorization-adjacent (the guard gates private-page dedup, the
+   * workbench intake door and the merge same-owner check), and the class is
+   * reachable in production: `agentIdFor` is `slugify(owner)--slugify(name)`
+   * and a non-CJK unicode handle slugifies to `""`. DW-543 moved the reduction
+   * into `agent-handle.ts`, where the no-prefix class must return the WHOLE
+   * handle so guidance never addresses the default silo — the opposite of what
+   * this guard wants. `ownerClassKey` folds it back. These rows pin that
+   * round-trip, so any future change to the class is visible in a diff rather
+   * than silently widening the guard.
+   */
+  it("keeps a human-less handle in its own equivalence class (characterization)", () => {
+    // `"yoyo"` is a REAL actor — `normalizeActor` folds system/lint-fix/yopedia
+    // into it and the task runner ingests as it — so this must stay false.
+    expect(sameHumanOwner("yoyo", "--yoyo")).toBe(false);
+    expect(sameHumanOwner("alice", "--alice")).toBe(false);
+    // ...and every human-less handle collapses together, as it always has.
+    expect(sameHumanOwner("--alice", "--bob")).toBe(true);
+    // Blank-prefixed handles land in that same class (`ownerToTenant` trims).
+    expect(sameHumanOwner(" --alice", "--bob")).toBe(true);
+    expect(sameHumanOwner("yoyo", " --yoyo")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Workspace guidance is resolved ONCE per ingest (DW-141)
 // ---------------------------------------------------------------------------
 
@@ -4552,6 +4616,101 @@ describe("ingest resolves workspace guidance once per document", () => {
       .toBe(true);
     expect(prompts.some((prompt) => prompt.includes("aliases: Lighthouse")))
       .toBe(true);
+  });
+
+  it("guides an AGENT-owned ingest with its human's standards, storing it unchanged", async () => {
+    // DW-543. `ownerToTenant("alice--yoyo")` is its own (empty) tenant, so
+    // resolving guidance from the raw handle would synthesize with no Purpose
+    // and no dictionary. Guidance reduces to the human; addressing does not.
+    const AGENT_OWNER = `${OWNER}--yoyo`;
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+    // Emit the ALIAS as the concept, so canonicalization is a real decision
+    // rather than an identity. This is the DATA-visible half of the change:
+    // the concept drives the page title and the convergence slug, so if the
+    // agent's ingest failed to consult ALICE's dictionary the written page
+    // would be titled/slugged "Lighthouse" instead.
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Lighthouse\n\n# Lighthouse\n\n## Summary\n\nMocked synthesis.",
+    );
+
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: AGENT_OWNER,
+      owner: AGENT_OWNER,
+    });
+
+    // More than one LLM call ⇒ the map/reduce branch really ran.
+    expect(mockedCallLLM.mock.calls.length).toBeGreaterThan(1);
+    const prompts = systemPrompts();
+    expect(prompts.some((prompt) => prompt.includes(PURPOSE))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("aliases: Lighthouse")))
+      .toBe(true);
+    // One guidance owner per document ⇒ the shared handle stays ONE read each,
+    // and never a read against the agent's own empty tenant.
+    expect(reads(DICTIONARY_PATH)).toBe(1);
+    expect(reads(`tenants/${tenantForOwner(AGENT_OWNER)}/names-terms.json`)).toBe(0);
+    expect(reads(wikiArtifactPath(OWNER, wikiId, "purpose.md"))).toBe(1);
+
+    const pages = await listWikiPages();
+    expect(pages).toHaveLength(1);
+    // The concept was canonicalized against alice's dictionary — WRITTEN data,
+    // not just prompt text.
+    expect(pages[0].slug).toBe("project-lighthouse");
+    expect(pages[0].title).toBe("Project Lighthouse");
+    // Addressing is untouched: the page is still written as the AGENT's.
+    const written = await readWikiPageWithFrontmatter(pages[0].slug, {
+      fresh: true,
+    });
+    expect(written?.frontmatter.owner).toBe(AGENT_OWNER);
+  });
+
+  it("guides the reconcile-on-merge fold of an AGENT-owned ingest with its human's standards", async () => {
+    // DW-543's third re-pointed consumer. The `reconcilePage` call only runs
+    // when an ingest converges onto an EXISTING page, so it needs a SECOND
+    // ingest — a single ingest into an empty fixture never reaches that branch
+    // and leaves the argument untested.
+    const AGENT_OWNER = `${OWNER}--yoyo`;
+    await createNamesTerm(OWNER, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+
+    await ingest("Lighthouse Long", LONG_CONTENT, {
+      author: AGENT_OWNER,
+      owner: AGENT_OWNER,
+    });
+    const pages = await listWikiPages();
+    // Assert before indexing: a first ingest that wrote nothing would otherwise
+    // surface as a TypeError here and hide the real failure.
+    expect(pages).toHaveLength(1);
+    const slug = pages[0].slug;
+
+    mockedCallLLM.mockClear();
+    const reads = countReads();
+
+    await ingest("Lighthouse Long", `${LONG_CONTENT} A second pass.`, {
+      author: AGENT_OWNER,
+      owner: AGENT_OWNER,
+      pinSlug: slug,
+    });
+
+    // Identify the reconcile call by RECONCILE_SYSTEM_PROMPT's own marker.
+    const reconcilePrompts = systemPrompts().filter((prompt) =>
+      prompt.includes("You are a wiki editor maintaining a single canonical page"),
+    );
+    expect(reconcilePrompts).toHaveLength(1);
+    expect(reconcilePrompts[0]).toContain(PURPOSE);
+    expect(reconcilePrompts[0]).toContain("WORKSPACE NAMES & TERMS");
+    expect(reconcilePrompts[0]).toContain("aliases: Lighthouse");
+    // The fold never addressed the agent's own empty tenant.
+    expect(reads(`tenants/${tenantForOwner(AGENT_OWNER)}/names-terms.json`)).toBe(0);
+    expect(reads(DICTIONARY_PATH)).toBe(1);
   });
 
   it("shares a CALLER-SUPPLIED handle across two whole documents", async () => {

@@ -2982,9 +2982,11 @@ export async function canonicalizeWikiPurpose(
  * tenant argument, threaded through `loadPageConventions()` in `schema.ts` and
  * supplied at every one of its no-argument call sites. Those sites are not equally ready for it:
  *   - `query.ts` (`buildQuerySystemPrompt`) and `ingest.ts`
- *     (`buildIngestSystemPrompt`) already have a per-caller `owner` in scope —
- *     but note it is a PRINCIPAL, not necessarily a tenant (it can be
- *     `"system"` or an agent handle), so it cannot simply be forwarded.
+ *     (`buildIngestSystemPrompt`, whose parameter is the `guidanceOwner`)
+ *     already have a per-caller principal in scope — but note it is a
+ *     PRINCIPAL, not necessarily a tenant (it can be `"system"`, and it is
+ *     the HUMAN behind an agent handle rather than the agent's own silo), so
+ *     it cannot simply be forwarded.
  *   - `checkContradictions()` and `checkMissingConceptPages()` in
  *     `lint-checks.ts` have NO owner at all. Threading a tenant there means
  *     carrying it down through `lint()` in `lint.ts` from both of its entry

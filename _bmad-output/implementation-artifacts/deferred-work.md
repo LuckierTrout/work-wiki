@@ -4129,7 +4129,9 @@ location: src/lib/merge.ts (guidanceOwner resolution) and src/lib/ingest.ts:1760
 source_spec: `spec-dw-323-merge-door-workspace-guidance.md`
 severity: medium
 reason: `ownerToTenant` (src/lib/links.ts) lowercases and path-sanitizes but does not strip the `--` agent suffix, so `alice--yoyo` keys its own tenant. The same-owner guard 40 lines above the fold deliberately collapses that pair via `sameHumanOwner`/`humanOf` (src/lib/ingest.ts), so the two treat the same handle differently. The ingest door passes the raw handle too, so this is a codebase-wide convention question, not a merge-door bug: deciding it means deciding whether guidance is addressed by silo or by human, for every prompt site at once. Out of scope for DW-323, whose intent is the door asymmetry.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-merge-guidance-human-owner
+resolution-undo: 17abc39e4af7cb778dfe6734aba416a4571451cee580e490b7918905d761e612 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-29 Guidance is addressed by human owner — Resolve guidance through `humanOf` everywhere it is looked up — the merge door's guidanceOwner resolution and the ingest door at src/lib/ingest.ts:1760 — so an agent handle reads its human's Workspace Purpose and dictionary. Leave `ownerToTenant` alone as the storage-addressing function it is, and name the distinction in both modules. Pin an agent-owned survivor folding with the human's guidance.
 decision: 2026-08-29 Guidance is addressed by human owner — Resolve guidance through `humanOf` everywhere it is looked up — the merge door's guidanceOwner resolution and the ingest door at src/lib/ingest.ts:1760 — so an agent handle reads its human's Workspace Purpose and dictionary. Leave `ownerToTenant` alone as the storage-addressing function it is, and name the distinction in both modules. Pin an agent-owned survivor folding with the human's guidance.
 
@@ -5543,4 +5545,12 @@ location: src/app/api/wikis/route.ts (POST); src/lib/wikis.ts createWiki failure
 source_spec: `spec-dw-674-675-wikis-sweep-compensation-guards.md`
 severity: low
 reason: DW-675's fix makes `createWiki` keep the new wiki's directory when the read-back positively finds the record, and bump `dataVersion` — but the original storage error is still re-thrown unwrapped, so the route answers 500. The owner is told the create failed while the switcher, the workbench heading and every artifact read now resolve against the new wiki, and a retry mints a second one against `MAX_WIKIS`. This is the create-route sibling of the shape DW-676 already records for `POST /api/wikis/[id]/template` after DW-484; neither the bundle intent nor either ledger entry names the route surface, both stop at the bytes.
+status: open
+
+### DW-709: Workspace guidance is still resolved from the raw handle at every prompt site outside the merge and ingest doors, so an agent-owned page's action and structured-knowledge extraction still reads the ag
+origin: spec-deferred 7ba7fdd655e1
+location: src/lib/action-extractor.ts:44 and src/lib/structured-knowledge.ts:310
+source_spec: `spec-dw-543-guidance-by-human-owner.md`
+severity: low
+reason: DW-543 scoped the fix to the two doors its `location:` field names, but the decision's `reason:` frames the convention as settling guidance addressing "for every prompt site at once". A concrete agent-reachable path remains: `src/app/api/agents/[id]/ingest/route.ts` sets `owner = asOwner ? agentRecord.owner : id` (the agent id) and records it as the job/task owner; `src/app/api/tasks/run/route.ts` then derives `actionOwner = task.triggeredBy || task.owner || task.author` and hands that agent id to `extractActionsFromPage` (`src/lib/action-extractor.ts:44`) and `extractStructuredKnowledge` (`src/lib/structured-knowledge.ts:310`), each of which calls `buildWorkspaceGuidance(owner)` / `listNamesTerms(owner)` unreduced. So the same agent-owned page whose ingest prompt now carries alice's standards has its follow-on extraction run unguided. Same shape at `src/lib/source-monitors.ts:387-388` (`monitor.owner`), `src/lib/monitor-digests.ts:437` and `src/lib/action-items.ts:102,180`. Not agent-
 status: open
