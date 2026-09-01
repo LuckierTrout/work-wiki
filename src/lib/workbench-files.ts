@@ -654,8 +654,11 @@ export async function listWorkbenchFilePaths(
     siloRaw = tenantRawRelPath(tenant, "");
     siloWiki = tenantWikiRelPath(tenant, "");
   } catch (error) {
-    // A tenant that will not validate leaves only the flat roots. Still a real
-    // tree, still gated by `readableSlugs`.
+    // A tenant that will not validate leaves `wiki/` on the flat root — still
+    // a real tree, still gated by `readableSlugs`. It leaves `raw/` with
+    // NOTHING: the raw arm answers a null silo with the unresolved sentinel
+    // rather than the shared flat tree (DW-40), so an owner whose handle will
+    // not resolve gets an empty `raw/`, never someone else's sources.
     logger.error("workbench-files", "could not resolve the owner's silo", error);
   }
 
