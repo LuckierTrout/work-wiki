@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   FilesystemStorageProvider,
+  STRANDED_SCRATCH_CANDIDATE_CAP,
+  STRANDED_SCRATCH_GRACE_MS,
   withFilesystemPublicationLockForTest,
   writeSyncedAndPublish,
   writeSyncedNewFile,
@@ -1084,6 +1086,171 @@ describe("FilesystemStorageProvider", () => {
 
       expect(await storedIds()).toEqual(["a", "b", "c"]);
       expect((await provider.getEmbeddingById("a"))!.vector).toEqual([5, 5]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Scratch reclamation
+  // -------------------------------------------------------------------------
+
+  /**
+   * The reaper's WALK, pinned at the provider against a real filesystem
+   * (DW-292).
+   *
+   * `maintenance.test.ts` covers the wrapper, but every row there mocks or
+   * drives the whole method, so none of them can see inside the pass: whether
+   * one bad entry aborts it, whether an unreadable subdirectory is the same
+   * thing as an unreadable base path, whether the cap is enforced at all. Those
+   * three are the reaper's self-healing guarantees and each is a silent,
+   * green-shipping failure if it regresses — an unremovable file that zeroed
+   * every subsequent pass would look exactly like "nothing to reclaim".
+   */
+  describe("reapStrandedScratchFiles", () => {
+    /** A name matching the provider's `.tmp-<uuid>.tmp` convention. */
+    function scratchName(n: number): string {
+      return `.tmp-00000000-0000-4000-8000-${String(n).padStart(12, "0")}.tmp`;
+    }
+
+    /** A scratch file dated `ageMs` into the past, at `rel` under the base. */
+    async function plantScratch(rel: string, ageMs: number): Promise<string> {
+      const full = path.join(tmpDir, rel);
+      await fs.mkdir(path.dirname(full), { recursive: true });
+      await fs.writeFile(full, "half a payload");
+      const when = new Date(Date.now() - ageMs);
+      await fs.utimes(full, when, when);
+      return full;
+    }
+
+    async function exists(target: string): Promise<boolean> {
+      try {
+        await fs.lstat(target);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    const AGED = STRANDED_SCRATCH_GRACE_MS * 2;
+
+    it("reclaims aged scratch at any depth and leaves fresh scratch, content and lockfiles alone", async () => {
+      const agedRoot = await plantScratch(scratchName(1), AGED);
+      const agedNested = await plantScratch(
+        path.join("wiki", "deep", scratchName(2)),
+        AGED,
+      );
+      const fresh = await plantScratch(scratchName(3), 1_000);
+      const content = path.join(tmpDir, "page.md");
+      await fs.writeFile(content, "# real bytes");
+      // A NAMING-DRIFT BACKSTOP, not a live hazard: `publicationLockPath`
+      // names lockfiles `<sha256-hex>.lock`, which can never match
+      // `TMP_ARTIFACT`, so no lockfile the provider writes today is a
+      // candidate. The skip is there so that stays true by construction —
+      // `.storage-locks/` belongs to the lock mechanism, which has its own
+      // staleness rule in `withFilesystemPublicationLock`, and the reaper stays
+      // out of it rather than resting on two naming conventions never
+      // overlapping. Planting a scratch-NAMED file in there is the only way to
+      // observe the directory skip at all.
+      const lock = await plantScratch(
+        path.join(".storage-locks", scratchName(4)),
+        AGED,
+      );
+
+      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(2);
+
+      expect(await exists(agedRoot)).toBe(false);
+      expect(await exists(agedNested)).toBe(false);
+      expect(await exists(fresh)).toBe(true);
+      expect(await exists(content)).toBe(true);
+      expect(await exists(lock)).toBe(true);
+    });
+
+    it("skips a candidate whose stat fails and still reaps and counts the rest", async () => {
+      // A dangling symlink wearing a scratch name: `readdir` offers it as a
+      // file, `stat` follows it and answers ENOENT. Fail-soft per entry means
+      // the pass steps over it rather than reporting 0 for the whole tick.
+      const broken = path.join(tmpDir, scratchName(1));
+      await fs.symlink(path.join(tmpDir, "nothing-here"), broken);
+      const aged = await plantScratch(scratchName(2), AGED);
+
+      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(1);
+
+      expect(await exists(aged)).toBe(false);
+      expect(await exists(broken)).toBe(true);
+    });
+
+    it.skipIf(process.getuid?.() === 0)(
+      "skips a candidate whose rm fails and still reaps and counts the rest",
+      async () => {
+        // The failure mode this guards: ONE file that cannot be unlinked —
+        // a sealed directory, an immutable flag — must not zero out every
+        // reclamation the same pass would otherwise have made, forever.
+        const sealedDir = path.join(tmpDir, "sealed");
+        const sealed = await plantScratch(path.join("sealed", scratchName(1)), AGED);
+        const aged = await plantScratch(scratchName(2), AGED);
+        await fs.chmod(sealedDir, 0o555);
+        try {
+          await expect(provider.reapStrandedScratchFiles()).resolves.toBe(1);
+          expect(await exists(aged)).toBe(false);
+          expect(await exists(sealed)).toBe(true);
+        } finally {
+          await fs.chmod(sealedDir, 0o755);
+        }
+      },
+    );
+
+    it.skipIf(process.getuid?.() === 0)(
+      "skips an unreadable SUBDIRECTORY and still reaps and counts the rest",
+      async () => {
+        const closedDir = path.join(tmpDir, "closed");
+        await plantScratch(path.join("closed", scratchName(1)), AGED);
+        const aged = await plantScratch(scratchName(2), AGED);
+        await fs.chmod(closedDir, 0o000);
+        try {
+          await expect(provider.reapStrandedScratchFiles()).resolves.toBe(1);
+          expect(await exists(aged)).toBe(false);
+        } finally {
+          await fs.chmod(closedDir, 0o755);
+        }
+      },
+    );
+
+    it("REJECTS when the base path itself cannot be read", async () => {
+      // The asymmetry that makes the per-entry skips safe. One bad entry is a
+      // skip; a walk that could not start is not "nothing to reclaim", and
+      // answering 0 for it would hide the fault behind a healthy-looking count
+      // on every tick from here on. `maintenance.ts` catches and logs it.
+      const missing = new FilesystemStorageProvider(
+        path.join(tmpDir, "no-such-data-dir"),
+      );
+
+      await expect(missing.reapStrandedScratchFiles()).rejects.toThrow();
+    });
+
+    it("stops at STRANDED_SCRATCH_CANDIDATE_CAP and reclaims the remainder next pass", async () => {
+      // The cap imported, never retyped: a row asserting a hardcoded 500 goes
+      // on passing against a guard keyed on something else entirely.
+      const overflow = 3;
+      for (let i = 0; i < STRANDED_SCRATCH_CANDIDATE_CAP + overflow; i++) {
+        await plantScratch(scratchName(i), AGED);
+      }
+
+      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(
+        STRANDED_SCRATCH_CANDIDATE_CAP,
+      );
+      // Removal IS the progress — no cursor is persisted, so the next pass
+      // simply starts on what is left.
+      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(overflow);
+      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(0);
+    });
+
+    it("honours an explicit window, so the grace period is a parameter and not a hardcode", async () => {
+      const older = await plantScratch(scratchName(1), 10_000);
+      const newer = await plantScratch(scratchName(2), 1_000);
+
+      await expect(provider.reapStrandedScratchFiles(5_000)).resolves.toBe(1);
+
+      expect(await exists(older)).toBe(false);
+      expect(await exists(newer)).toBe(true);
     });
   });
 });

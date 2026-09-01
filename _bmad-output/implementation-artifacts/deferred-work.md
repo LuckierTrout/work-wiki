@@ -2118,7 +2118,9 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/lib/storage/filesystem.ts
 severity: low
 reason: `atomicWrite`'s cleanup only covers a REJECTED write inside a live process. A SIGKILL between `fs.open(tmp)` and `fs.rename` leaves a `.tmp-<uuid>.tmp` on disk, and the new `listFiles` filter now hides it from all ~20 listing call sites, from `sweepOrphans` (which only considers directories matching `WIKI_ID_RE`) and from backups. Nothing sweeps them, so they accumulate silently. Closing it means a reaper — its own story, the way DW-162 was for the orphan-directory sweep.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-filesystem-publication-mechanics
+resolution-undo: 3a20726c29e49a4647a7fdb4db75d437b0ae720271919e0b709895b24a73ac04 2026-09-01 7374617475733a206f70656e
 
 ### DW-293: Every whole-file write now costs a real fsync, and nothing bounds that on the production paths that write in a loop.
 origin: spec-deferred 76acb44f9ed6
@@ -4405,7 +4407,9 @@ location: src/lib/storage/filesystem.ts:397
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: low
 reason: `createOnlyWrite` publishes by hard-linking a complete tmp inode and treats only `EEXIST` as "occupied"; on exFAT or a FUSE/network mount without hard links the call would fail with `EPERM`/`ENOSYS` and every Source arrival would throw where the old rename-based `writeAsset` succeeded. Pre-existing for `writeFileIfAbsent`, which has shipped on this mechanism since DW-272.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-filesystem-publication-mechanics
+resolution-undo: 3a20726c29e49a4647a7fdb4db75d437b0ae720271919e0b709895b24a73ac04 2026-09-01 7374617475733a206f70656e
 
 ### DW-574: The create-only door has no fault-identity coverage on either provider.
 origin: spec-deferred 1ef653883586
@@ -4413,7 +4417,9 @@ location: src/lib/__tests__/storage-fs-fault-identity.test.ts
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: low
 reason: `storage-fs-fault-identity.test.ts` pins that a failed publication leaves no scratch file and propagates the original error for `atomicWrite`; nothing does the same for `createOnlyWrite` (a non-`EEXIST` `fs.link` failure, tmp cleanup on a throwing publish) or for a rejecting R2 `put`.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-filesystem-publication-mechanics
+resolution-undo: 3a20726c29e49a4647a7fdb4db75d437b0ae720271919e0b709895b24a73ac04 2026-09-01 7374617475733a206f70656e
 
 ### DW-575: `parseRegistry`'s bare `JSON.parse` still lets a raw `SyntaxError` escape, unlike the `parseSlots` it mirrors.
 

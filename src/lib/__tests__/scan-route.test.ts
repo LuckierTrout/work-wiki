@@ -7,6 +7,7 @@ vi.mock("@/lib/maintenance", () => ({
   purgeStaleJobs: vi.fn(),
   sweepOrphanWikiDirs: vi.fn(),
   backfillWorkspaceProfiles: vi.fn(),
+  reapStrandedScratchFiles: vi.fn(),
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
 vi.mock("@/lib/tasks", () => ({ enqueueTask: vi.fn() }));
@@ -25,6 +26,7 @@ import {
   purgeStaleJobs,
   sweepOrphanWikiDirs,
   backfillWorkspaceProfiles,
+  reapStrandedScratchFiles,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
 import { isOwnerBackupDue } from "@/lib/backups";
@@ -42,6 +44,7 @@ const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
 const mockedSweepOrphanWikiDirs = vi.mocked(sweepOrphanWikiDirs);
 const mockedBackfillProfiles = vi.mocked(backfillWorkspaceProfiles);
+const mockedReapScratch = vi.mocked(reapStrandedScratchFiles);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedBackupDue = vi.mocked(isOwnerBackupDue);
 const mockedCreateDigest = vi.mocked(createMonitorDigest);
@@ -81,6 +84,7 @@ beforeEach(() => {
   mockedPurge.mockResolvedValue(0);
   mockedSweepOrphanWikiDirs.mockResolvedValue(0);
   mockedBackfillProfiles.mockResolvedValue(0);
+  mockedReapScratch.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
   mockedBackupDue.mockResolvedValue(false);
   mockedDueDigestOwners.mockResolvedValue([]);
@@ -315,6 +319,44 @@ describe("POST /api/tasks/scan", () => {
     expect(body.workspaceProfilesBackfilled).toBe(0);
   });
 
+  it("reaps stranded scratch files with AUTONOMOUS_MAINTENANCE off and reports the count", async () => {
+    // The reaper's ONLY trigger of any kind (DW-292). It removes bytes nothing
+    // can reach — stranded `.tmp-<uuid>.tmp` files are hidden from `listFiles`
+    // — rather than editing pages, so like the orphan sweep it runs with
+    // `AUTONOMOUS_MAINTENANCE` at its default. A deployment that left that flag
+    // alone would otherwise never reclaim a single one.
+    mockedReapScratch.mockResolvedValue(4);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedReapScratch).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: false, dry: true, scratchFilesReaped: 4 });
+  });
+
+  it("reaps stranded scratch files in the enabled production configuration", async () => {
+    // The row the cron actually runs: AUTONOMOUS_MAINTENANCE=on, no ?dry.
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedReapScratch.mockResolvedValue(5);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedReapScratch).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: true, dry: false, scratchFilesReaped: 5 });
+  });
+
+  it("?dry=1 suppresses the scratch-file reap", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedReapScratch.mockResolvedValue(4);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedReapScratch).not.toHaveBeenCalled();
+    expect(body.scratchFilesReaped).toBe(0);
+  });
+
   it("honors a ?cap override", async () => {
     await scan("?cap=3");
     expect(mockedScan).toHaveBeenCalledWith(3);
@@ -392,7 +434,7 @@ describe("POST /api/tasks/scan on a read-only deployment", () => {
     process.env.YOPEDIA_READONLY = "1";
   });
 
-  it("403s without scanning, sweeping, backfilling or enqueuing", async () => {
+  it("403s without scanning, sweeping, reaping, backfilling or enqueuing", async () => {
     const res = await scan();
 
     expect(res.status).toBe(403);
@@ -401,6 +443,7 @@ describe("POST /api/tasks/scan on a read-only deployment", () => {
     expect(mockedRebuild).not.toHaveBeenCalled();
     expect(mockedPurge).not.toHaveBeenCalled();
     expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
+    expect(mockedReapScratch).not.toHaveBeenCalled();
     expect(mockedBackfillProfiles).not.toHaveBeenCalled();
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });

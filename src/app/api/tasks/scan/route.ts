@@ -8,6 +8,7 @@ import {
   purgeStaleJobs,
   sweepOrphanWikiDirs,
   backfillWorkspaceProfiles,
+  reapStrandedScratchFiles,
   DEFAULT_MAINTENANCE_CAP,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
@@ -36,10 +37,10 @@ import { getOwnerHandle } from "@/lib/owner";
  * runs and logs/returns what it WOULD enqueue, but enqueues nothing — and that
  * is all `dry: true` in the response means. It does NOT mean the request
  * changed nothing: the index rebuild, the ingest-job GC, the orphan
- * wiki-directory sweep and the Workspace Purpose backfill are self-healing
- * upkeep and one-time migration rather than unattended content edits, so they
- * run regardless, as do the scheduled-agent, source-monitor, digest, outbox and
- * backup blocks.
+ * wiki-directory sweep, the stranded-scratch reap and the Workspace Purpose
+ * backfill are self-healing upkeep and one-time migration rather than
+ * unattended content edits, so they run regardless, as do the scheduled-agent,
+ * source-monitor, digest, outbox and backup blocks.
  *
  * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH: it suppresses every one of those
  * side-effecting blocks as well as the enqueue, which is what makes it safe to
@@ -49,7 +50,10 @@ import { getOwnerHandle } from "@/lib/owner";
  * Response fields worth naming: `jobsPurged` (terminal ingest-job status files
  * deleted), `orphanWikiDirsRemoved` (`tenants/<t>/wikis/<uuid>/` directories
  * no registry entry named, reclaimed for good — this route is that sweep's only
- * scheduled trigger) and `workspaceProfilesBackfilled` (Wikis handed a copy of
+ * scheduled trigger), `scratchFilesReaped` (`.tmp-<uuid>.tmp` files a dead
+ * process stranded in the data directory, invisible to every listing and
+ * reclaimed by nothing else — DW-292, and this route is that reaper's only
+ * trigger) and `workspaceProfilesBackfilled` (Wikis handed a copy of
  * the retired tenant-global Workspace Purpose before it is deleted, DW-137 —
  * this route is that migration's only trigger of any kind, and the count is 0
  * on every scan of a tenant that has nothing left to relocate).
@@ -203,6 +207,17 @@ export async function POST(req: Request) {
       orphanWikiDirsRemoved = await sweepOrphanWikiDirs();
     }
 
+    // Reclaim `.tmp-<uuid>.tmp` scratch files a dead process left behind
+    // (DW-292). Gated exactly like the sweep above and for the same reasons: it
+    // removes bytes, so `?dry=1` suppresses it, while `AUTONOMOUS_MAINTENANCE`
+    // — which gates unattended EDITS of page content — does not. This is the
+    // reaper's only trigger of any kind: the stranded files are hidden from
+    // `listFiles`, so nothing else in the app will ever see them again.
+    let scratchFilesReaped = 0;
+    if (!forceDry) {
+      scratchFilesReaped = await reapStrandedScratchFiles();
+    }
+
     // Relocate the retired tenant-global Workspace Purpose onto the Wikis that
     // have none of their own, then delete it (DW-137). Gated exactly like the
     // sweep above and for the same reasons: it writes bytes, so `?dry=1`
@@ -216,7 +231,7 @@ export async function POST(req: Request) {
 
     logger.info(
       "maintenance",
-      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} workspaceProfilesBackfilled=${workspaceProfilesBackfilled}`,
+      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} scratchFilesReaped=${scratchFilesReaped} workspaceProfilesBackfilled=${workspaceProfilesBackfilled}`,
     );
 
     return NextResponse.json({
@@ -240,6 +255,7 @@ export async function POST(req: Request) {
       backupDue,
       backupEnqueued,
       orphanWikiDirsRemoved,
+      scratchFilesReaped,
       workspaceProfilesBackfilled,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>

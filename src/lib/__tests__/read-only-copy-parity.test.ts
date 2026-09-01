@@ -18,7 +18,7 @@
  * component modules for their exported copy needs no DOM.
  */
 import { describe, expect, it } from "vitest";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { READ_ONLY_REFUSAL } from "../read-only";
 import {
@@ -74,6 +74,23 @@ async function routeSource(route: string): Promise<string> {
  */
 async function libSource(file: string): Promise<string> {
   return readFile(path.resolve(__dirname, "..", file), "utf8");
+}
+
+/**
+ * Every `.ts` module under `src/lib/storage/`, as paths {@link libSource} takes.
+ *
+ * Enumerated from disk rather than listed, so a provider added tomorrow is
+ * covered by the import-cycle tripwire without anyone remembering to add it.
+ */
+async function storageModuleFiles(prefix = "storage"): Promise<string[]> {
+  const dir = path.resolve(__dirname, "..", prefix);
+  const out: string[] = [];
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const rel = `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...(await storageModuleFiles(rel)));
+    else if (entry.name.endsWith(".ts")) out.push(rel);
+  }
+  return out;
 }
 
 /**
@@ -319,6 +336,38 @@ describe("client refusal copy mirrors the server's", () => {
       READ_ONLY_REFUSAL.wikiDelete,
     );
     expect(READ_ONLY_REFUSAL.wikiDirectorySweep).toContain("wiki directories");
+  });
+
+  it("the scratch reaper's sentence mirrors no route either, and its gate stays out of the storage layer", async () => {
+    // DW-292's key is the SECOND with nothing to mirror, for the same reason as
+    // the sweep's: `reapStrandedScratchFiles` in `maintenance.ts` is reached
+    // only from `POST /api/tasks/scan`, which has already answered its OWN
+    // refusal before the reaper is called. It exists for the direct library
+    // caller — a CLI command, an ops script — that arrives with no route in
+    // front of it.
+    const scan = await routeSource("tasks/scan/route.ts");
+    expect(scan).toContain("error: READ_ONLY_REFUSAL.maintenanceScan");
+    expect(scan).not.toContain("READ_ONLY_REFUSAL.scratchFileReap");
+    expect(scan).not.toContain(servedAs(READ_ONLY_REFUSAL.scratchFileReap));
+    // And it is about SCRATCH files, not about wiki directories — the two GC
+    // passes run beside each other in the same block, so one sentence borrowed
+    // for both is exactly how a re-point would go unnoticed.
+    expect(READ_ONLY_REFUSAL.scratchFileReap).not.toBe(
+      READ_ONLY_REFUSAL.wikiDirectorySweep,
+    );
+    expect(READ_ONLY_REFUSAL.scratchFileReap).toContain("scratch files");
+
+    // WHY THE GATE LIVES IN `maintenance.ts` AND NOT BESIDE THE WALK: this
+    // module imports `./config`, which imports `./storage`, which imports the
+    // provider — so an `assertWritable` inside `src/lib/storage/` would close
+    // an import cycle. Asserted over the WHOLE directory and every spelling
+    // that would close it, because a tripwire that watched one file for one
+    // spelling would not be watching the invariant it claims.
+    const READ_ONLY_SPECIFIER = /["'](?:\.{1,2}\/|@\/lib\/)[^"']*read-only["']/;
+    for (const file of await storageModuleFiles()) {
+      const source = await libSource(file);
+      expect(source, file).not.toMatch(READ_ONLY_SPECIFIER);
+    }
   });
 
   it("the newly gated doors serve their own constant, not a literal", async () => {

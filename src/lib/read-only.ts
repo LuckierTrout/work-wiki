@@ -99,6 +99,15 @@
  * about it — the scan answers its own {@link READ_ONLY_REFUSAL.maintenanceScan}
  * before the sweep is ever called.
  *
+ * {@link READ_ONLY_REFUSAL.scratchFileReap} (DW-292) is the second such key,
+ * and it is one for the same reason: `reapStrandedScratchFiles` in
+ * `maintenance.ts` is reached only from that same scan, which has already
+ * answered `maintenanceScan` before the reaper is called, so no route serves
+ * this sentence and none should. It exists for the DIRECT library caller — a
+ * CLI command, a future MCP tool, an ops script — that reaches the reaper with
+ * no route in front of it, exactly as the sweep's does. The parity suite pins
+ * both as mirroring nothing.
+ *
  * "THE FOUR KERNEL WRITERS" IS DW-188'S STARTING SET, NOT THE WHOLE LIST. The
  * wiki-lifecycle writers above joined them, and DW-385 added three more stores
  * that had carried HTTP gates only — {@link import("./research-projects").createResearchProject}
@@ -386,6 +395,19 @@ export const READ_ONLY_REFUSAL = {
    */
   embeddingRebuild:
     "Embeddings cannot be rebuilt while this deployment is read-only.",
+  /**
+   * `reapStrandedScratchFiles` in `maintenance.ts` — the scheduled reclamation
+   * of `.tmp-<uuid>.tmp` files a dead process left behind (DW-292).
+   *
+   * Deletes bytes on a timer, like {@link wikiDirectorySweep}, and like it has
+   * no route literal to mirror: `POST /api/tasks/scan` answers
+   * {@link maintenanceScan} before the reaper is reached. Its own sentence
+   * rather than the sweep's, because an owner reading "Orphaned wiki
+   * directories cannot be reclaimed…" for a scratch-file pass would go looking
+   * for a Wiki that was never involved.
+   */
+  scratchFileReap:
+    "Stranded scratch files cannot be reclaimed while this deployment is read-only.",
 } as const;
 
 /**

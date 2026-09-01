@@ -110,7 +110,8 @@ export interface SaveRawSourceOptions {
  *
  * THE COST THIS ACCEPTS: a create-only door ships the whole body before the
  * precondition can reject it. The filesystem provider writes and fsyncs a
- * complete tmp file before `fs.link` answers EEXIST, and R2 PUTs the object
+ * complete tmp file before `fs.link` (or, on a link-less mount, the fallback
+ * probe) answers "the name is taken", and R2 PUTs the object
  * before `etagDoesNotMatch: "*"` rejects it, so a re-drop of the same large PDF
  * now pays a full write where the old `fileExists` short-circuited. Accepted:
  * the race it closes mutates bytes the product promises never change.
@@ -120,8 +121,10 @@ export interface SaveRawSourceOptions {
  * exactly two — this flat key, then {@link mirrorSourceToSilo}'s copy — and
  * they live in two DIFFERENT directories, so a per-directory barrier is two
  * barriers for two writes. Nothing saved, in exchange for widening a create-only
- * door (which publishes by `fs.link`, not `rename`, and stays fully synced) into
- * a scope whose members are only recoverable by re-driving the whole set.
+ * door (which publishes by `fs.link`, falling back to a probe-then-`rename`
+ * under the publication lock where the mount has no hard links, and stays fully
+ * synced) into a scope whose members are only recoverable by re-driving the
+ * whole set.
  */
 async function publishSourceFirstWrite(
   rel: string,

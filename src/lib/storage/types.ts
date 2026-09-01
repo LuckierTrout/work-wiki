@@ -36,11 +36,15 @@
  * - The two CREATE-ONLY writes, `writeFileIfAbsent` and `writeAssetIfAbsent`,
  *   carry the same never-partial guarantee through a different publication:
  *   they must never replace an existing object, so the filesystem provider
- *   fsyncs a complete tmp file and publishes it with `fs.link` (EEXIST answers
- *   `false` instead of overwriting) rather than `rename`, and R2 uses a
- *   conditional PUT (`etagDoesNotMatch: "*"`). Their own suites in
+ *   fsyncs a complete tmp file and publishes it by `fs.link` (EEXIST answers
+ *   `false` instead of overwriting), falling back to a probe-then-`rename`
+ *   under the publication lock where the mount has no hard links (DW-573); R2
+ *   uses a conditional PUT (`etagDoesNotMatch: "*"`). Their own suites in
  *   `storage-fs.test.ts` / `storage-r2.test.ts` pin the part that matters most:
- *   of two concurrent creators exactly one wins, whole.
+ *   of two concurrent creators exactly one wins, whole —
+ *   `storage-fs-fault-identity.test.ts` pins that same property on the
+ *   link-less fallback, which no real filesystem reachable from a test host
+ *   can stage.
  *
  * - `listFiles` returns **file names only** (not full paths), filtered by a
  *   prefix directory. This matches the `readdir()` usage across the codebase.
@@ -190,9 +194,11 @@ export function mergeEmbeddingEntries(
  *
  * Deliberately only the two REPLACING whole-file writes the bounded loop paths
  * actually use. It is not a second `StorageProvider`: the create-only doors
- * (`writeFileIfAbsent` / `writeAssetIfAbsent`) publish by link rather than
- * rename and stay fully synced, and no lifecycle write belongs in a scope whose
- * members are only recoverable by re-driving the whole set.
+ * (`writeFileIfAbsent` / `writeAssetIfAbsent`) publish by link — or, on a mount
+ * with no hard links, by a probe-then-`rename` held exclusive by the
+ * publication lock — rather than by the plain replacing rename, and stay fully
+ * synced; and no lifecycle write belongs in a scope whose members are only
+ * recoverable by re-driving the whole set.
  *
  * A write made here is published exactly like its unbatched twin and rejects
  * exactly like it. Only the durability point moves — see the header docblock.

@@ -15,11 +15,15 @@ import {
   rebuildDerivedIndexes,
   sweepOrphanWikiDirs,
   backfillWorkspaceProfiles,
+  reapStrandedScratchFiles,
 } from "../maintenance";
 import { listCommonsPages } from "../commons";
 import { _resetStorage, getStorage } from "../storage";
 import { wikisRootPath } from "../wiki-paths";
 import { ORPHAN_SWEEP_GRACE_MS } from "../wikis";
+import { STRANDED_SCRATCH_GRACE_MS } from "../storage/filesystem";
+import { READ_ONLY_REFUSAL } from "../read-only";
+import { logger } from "../logger";
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -600,5 +604,132 @@ describe("backfillWorkspaceProfiles — the scheduled Workspace Purpose migratio
     });
 
     await expect(backfillWorkspaceProfiles()).resolves.toBe(0);
+  });
+});
+
+
+describe("reapStrandedScratchFiles — the scheduled scratch GC (DW-292)", () => {
+  /**
+   * The env flag is saved HERE rather than in the file-level hooks because it
+   * is this suite's only user: a value exported in a developer's shell would
+   * otherwise turn the reaping rows below into refusals.
+   */
+  let savedReadOnly: string | undefined;
+  let savedProvider: string | undefined;
+
+  beforeEach(() => {
+    savedReadOnly = process.env.YOPEDIA_READONLY;
+    savedProvider = process.env.STORAGE_PROVIDER;
+    delete process.env.YOPEDIA_READONLY;
+    delete process.env.STORAGE_PROVIDER;
+  });
+
+  afterEach(() => {
+    if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = savedReadOnly;
+    if (savedProvider === undefined) delete process.env.STORAGE_PROVIDER;
+    else process.env.STORAGE_PROVIDER = savedProvider;
+  });
+
+  /** A `.tmp-<uuid>.tmp` under DATA_DIR, dated `ageMs` into the past. */
+  async function plantScratch(name: string, ageMs: number): Promise<string> {
+    const full = path.join(tmpDir, name);
+    await fs.writeFile(full, "half a payload");
+    const when = new Date(Date.now() - ageMs);
+    await fs.utimes(full, when, when);
+    return full;
+  }
+
+  async function exists(target: string): Promise<boolean> {
+    try {
+      await fs.stat(target);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  it("reclaims a stranded scratch file and reports the count", async () => {
+    const stranded = await plantScratch(
+      ".tmp-11111111-2222-4333-8444-555555555555.tmp",
+      STRANDED_SCRATCH_GRACE_MS * 2,
+    );
+
+    expect(await reapStrandedScratchFiles()).toBe(1);
+    expect(await exists(stranded)).toBe(false);
+  });
+
+  it("leaves a scratch file a live write could still be holding", async () => {
+    // The grace window is the ONLY thing separating a crash leftover from an
+    // in-flight write's tmp file — both are `.tmp-<uuid>.tmp` in the
+    // destination's own directory — so a pass that took a seconds-old one
+    // would truncate a write that was about to publish.
+    const inFlight = await plantScratch(
+      ".tmp-66666666-7777-4888-8999-aaaaaaaaaaaa.tmp",
+      1_000,
+    );
+
+    expect(await reapStrandedScratchFiles()).toBe(0);
+    expect(await exists(inFlight)).toBe(true);
+  });
+
+  it("refuses on a read-only deployment instead of quietly reclaiming nothing", async () => {
+    // The gate sits BEFORE the try, so the fail-soft catch below cannot swallow
+    // it: a direct library caller — a CLI command, an ops script — meets the
+    // refusal rather than reading `0` as "nothing to reclaim". The scan route
+    // has already answered `maintenanceScan` long before this is reached.
+    process.env.YOPEDIA_READONLY = "1";
+    const stranded = await plantScratch(
+      ".tmp-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff.tmp",
+      STRANDED_SCRATCH_GRACE_MS * 2,
+    );
+
+    await expect(reapStrandedScratchFiles()).rejects.toThrow(
+      READ_ONLY_REFUSAL.scratchFileReap,
+    );
+    expect(await exists(stranded)).toBe(true);
+  });
+
+  it("returns 0 without touching storage on a deployment that is not on disk", async () => {
+    // The ONE branch only this suite can reach: the provider-level rows in
+    // `storage-fs.test.ts` are a filesystem provider by construction, and R2
+    // has no such method to call. Scratch files are an artifact of publishing
+    // through a filesystem — R2's create-only put is native — so there is
+    // nothing to reclaim and the wrapper must answer 0 rather than narrowing
+    // against a class the deployment never instantiated.
+    const stranded = await plantScratch(
+      ".tmp-99999999-8888-4777-8666-555555555555.tmp",
+      STRANDED_SCRATCH_GRACE_MS * 2,
+    );
+    _resetStorage();
+    process.env.STORAGE_PROVIDER = "cloudflare-r2";
+    // The 0 alone proves nothing — the fail-soft catch below also answers 0,
+    // and on an R2 deployment `getStorage()` throws for want of an initialised
+    // binding. A CLEAN short-circuit is a 0 with nothing logged; falling
+    // through to the catch is a 0 with a scan-level error on every tick.
+    const errored = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+    expect(await reapStrandedScratchFiles()).toBe(0);
+
+    expect(errored).not.toHaveBeenCalled();
+    // …and it short-circuited BEFORE resolving a provider: the file a
+    // filesystem pass would have taken is still there.
+    expect(await exists(stranded)).toBe(true);
+  });
+
+  it("returns 0 instead of throwing when the walk fails", async () => {
+    // Fail-soft like `sweepOrphanWikiDirs`: this runs inside the maintenance
+    // scan, and a storage hiccup here must not 500 a scan that did everything
+    // else. The walk's OWN fault behaviour — per-entry skips, and the base-path
+    // rejection this converts — is pinned at the provider in `storage-fs.test.ts`,
+    // which is the only place a row can see inside a single pass.
+    const provider = getStorage() as unknown as {
+      reapStrandedScratchFiles: () => Promise<number>;
+    };
+    vi.spyOn(provider, "reapStrandedScratchFiles").mockRejectedValue(
+      new Error("walking the data directory failed"),
+    );
+
+    await expect(reapStrandedScratchFiles()).resolves.toBe(0);
   });
 });

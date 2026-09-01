@@ -573,6 +573,91 @@ describe("R2StorageProvider", () => {
     });
   });
 
+  /**
+   * The create-only doors under a bucket that FAILS, rather than one that
+   * merely refuses the conditional put (DW-574).
+   *
+   * The distinction is the whole point and it has exactly one shape: `false`
+   * means "the name is taken", a rejection means "the write did not happen and
+   * nobody knows what is there". `raw.ts`'s Source arrivals branch on it — a
+   * `false` is a benign re-drop of bytes that already exist, a throw is an
+   * arrival that must be retried and logged — so a provider that collapsed a
+   * fault into `false` would report an immutable Source as safely stored when
+   * nothing was written at all.
+   *
+   * Every assertion here is `.rejects.toBe(fault)`, never `toBeInstanceOf`:
+   * object identity IS the contract this suite exists for, and a re-wrapped
+   * error would sail past a shape check while destroying the diagnosis the
+   * caller re-throws.
+   */
+  describe("create-only fault identity", () => {
+    /** A provider whose bucket rejects every `put` with `fault`. */
+    function providerWithFailingPut(fault: Error): R2StorageProvider {
+      const failing = createMockEnv();
+      failing.YOPEDIA_BUCKET = {
+        ...failing.YOPEDIA_BUCKET,
+        put: async () => {
+          throw fault;
+        },
+      } as R2Bucket;
+      return new R2StorageProvider(failing);
+    }
+
+    it("rejects writeFileIfAbsent with the bucket's own error object", async () => {
+      const fault = new Error("R2 put failed: internal error");
+
+      await expect(
+        providerWithFailingPut(fault).writeFileIfAbsent("create.md", "bytes"),
+      ).rejects.toBe(fault);
+    });
+
+    it("rejects writeAssetIfAbsent with the bucket's own error object", async () => {
+      // The binary door gets its own row rather than trusting it shares a body
+      // with the string one.
+      const fault = new Error("R2 put failed: internal error");
+
+      await expect(
+        providerWithFailingPut(fault).writeAssetIfAbsent(
+          "create.bin",
+          new Uint8Array([1, 2, 3]).buffer as ArrayBuffer,
+        ),
+      ).rejects.toBe(fault);
+    });
+
+    it("keeps a fault distinguishable from an already-exists on BOTH doors", async () => {
+      // The contrast, pinned on the same pair of calls: an occupied key answers
+      // `false` and a broken bucket throws. One provider that answered `false`
+      // for both would be indistinguishable from a healthy one to every caller.
+      await provider.writeFile("taken.md", "already here");
+      await provider.writeAsset(
+        "taken.bin",
+        new Uint8Array([7]).buffer as ArrayBuffer,
+      );
+
+      await expect(
+        provider.writeFileIfAbsent("taken.md", "replacement"),
+      ).resolves.toBe(false);
+      await expect(
+        provider.writeAssetIfAbsent(
+          "taken.bin",
+          new Uint8Array([0]).buffer as ArrayBuffer,
+        ),
+      ).resolves.toBe(false);
+
+      const fault = new Error("R2 put failed: internal error");
+      const broken = providerWithFailingPut(fault);
+      await expect(
+        broken.writeFileIfAbsent("fresh.md", "bytes"),
+      ).rejects.toBe(fault);
+      await expect(
+        broken.writeAssetIfAbsent(
+          "fresh.bin",
+          new Uint8Array([1]).buffer as ArrayBuffer,
+        ),
+      ).rejects.toBe(fault);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // Derived indexes (KV)
   // -------------------------------------------------------------------------

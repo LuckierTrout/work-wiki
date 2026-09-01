@@ -8,6 +8,7 @@
  */
 
 import * as fs from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
@@ -48,6 +49,58 @@ const TMP_ARTIFACT = /^\.tmp-[0-9a-f-]+\.tmp$/i;
 const LOCK_DIR = ".storage-locks";
 
 /**
+ * How long a `.tmp-<uuid>.tmp` must have sat untouched before
+ * {@link FilesystemStorageProvider.reapStrandedScratchFiles} will remove it.
+ * One hour.
+ *
+ * WHY A WINDOW AT ALL: the scratch name of an IN-FLIGHT write is
+ * indistinguishable, by name, from one a dead process left behind — both are
+ * `.tmp-<uuid>.tmp` in the destination's own directory, and the writer holds no
+ * marker the reaper could read. Removing the wrong one truncates a write that
+ * was about to publish. The window is the only thing standing between those two
+ * cases, so it is a safety margin rather than a tuning knob.
+ *
+ * WHY MTIME AND NOT BIRTHTIME: `mtime` is the time of the LAST byte written, so
+ * an in-flight write's scratch file is always seconds old no matter how long
+ * the write has been running — a slow multi-megabyte payload keeps refreshing
+ * it. Birthtime would age out a long write that is still making progress, and
+ * is not portable besides.
+ *
+ * WHY WIDER THAN {@link import("../wikis").ORPHAN_SWEEP_GRACE_MS} (15 min): that
+ * window covers the gap between seeding a Wiki directory and writing the
+ * registry entry — a bounded stretch of app code. This one covers an arbitrary
+ * payload being written and fsynced through a possibly slow or suspended
+ * isolate, and the cost of erring wide is only that dead bytes sit for another
+ * hour, while the cost of erring narrow is a truncated Source arrival.
+ */
+export const STRANDED_SCRATCH_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * How many scratch candidates one
+ * {@link FilesystemStorageProvider.reapStrandedScratchFiles} pass will consider.
+ *
+ * A COST AND BLAST-RADIUS BOUND, NOT A CORRECTNESS GUARD, in the same spirit as
+ * {@link import("../wikis").ORPHAN_SWEEP_CANDIDATE_CAP} (25) and every other
+ * block in `POST /api/tasks/scan`, each of which bounds its own work. The walk
+ * stats and unlinks each candidate, so without a cap a data directory that
+ * somehow accumulated tens of thousands of stranded files would turn one cron
+ * tick into an unbounded pass. 500 is far wider than its wiki-directory sibling
+ * because the population it bounds is different in kind: stranded scratch is
+ * one file per crashed write rather than one directory per Wiki, so a real
+ * backlog is plausibly in the hundreds where an orphan-directory backlog is
+ * bounded by `MAX_WIKIS`.
+ *
+ * WHY NO CURSOR, and why the cap counts CANDIDATES rather than removals:
+ * removal IS the progress — a reclaimed file is gone from the next pass's
+ * `readdir`, so the next scheduled tick starts on the remainder with no resume
+ * state to persist, corrupt or reconcile. Counting candidates rather than
+ * removals is what keeps that true in the presence of skips: a file that is too
+ * young, or whose `stat`/`rm` failed, consumes a slot exactly once per pass
+ * instead of letting an unremovable file spin the walk forever.
+ */
+export const STRANDED_SCRATCH_CANDIDATE_CAP = 500;
+
+/**
  * Errno values that mean "this platform/filesystem will not fsync a directory",
  * not "the barrier failed".
  *
@@ -82,6 +135,33 @@ const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set([
  * left to make durable, and "the name is gone" is not a durability failure.
  */
 const VANISHED_DIRECTORY_CODES = new Set(["ENOENT", "ENOTDIR"]);
+
+/**
+ * Errno values that mean "this filesystem has no hard links", not "the
+ * publication failed".
+ *
+ * `link(2)` is not universally available: exFAT and FAT32 have no concept of a
+ * second name for one inode at all, and a FUSE or network mount can refuse it
+ * with any of these — Linux answers `EPERM` on a filesystem that does not
+ * support links, `ENOSYS`/`EOPNOTSUPP`/`ENOTSUP` come back from mounts that
+ * never implemented the call, and `EXDEV` appears where a mount presents the
+ * scratch file and its destination as different devices even though they sit in
+ * one directory. Before the fallback below, every one of those turned every
+ * `writeFileIfAbsent`/`writeAssetIfAbsent` — i.e. every Source arrival — into a
+ * hard failure on a mount where the older rename-based write had worked.
+ *
+ * `EEXIST` is deliberately NOT here: that is the create-only contract answering
+ * "the name is taken", which is a result, not a portability problem. Every code
+ * outside this set still rethrows verbatim — an `EIO` from a dying disk must
+ * not be retried as if the mount merely lacked a feature.
+ */
+const LINKLESS_CODES: ReadonlySet<string> = new Set([
+  "EPERM",
+  "ENOSYS",
+  "EXDEV",
+  "EOPNOTSUPP",
+  "ENOTSUP",
+]);
 const LOCK_WAIT_MS = 5;
 const LOCK_TIMEOUT_MS = 15_000;
 const STALE_LOCK_MS = 5 * 60_000;
@@ -458,6 +538,95 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   // -------------------------------------------------------------------------
+  // Scratch reclamation
+  // -------------------------------------------------------------------------
+
+  /**
+   * Remove `.tmp-<uuid>.tmp` scratch files that no write is still using, and
+   * return how many were reclaimed (DW-292).
+   *
+   * THE LEAK THIS CLOSES: every scratch file this provider creates is removed
+   * by its writer — in {@link atomicWriteUnlocked}'s catch, in
+   * {@link createOnlyWrite}'s `finally`, or by the rename that consumes it. A
+   * process that DIES mid-write runs none of those, and the leftover is then
+   * hidden from {@link listFiles} by the very filter that keeps in-flight
+   * scratch invisible to callers. Nothing else on any path ever looks at it
+   * again, so the bytes are unreachable and permanent. This walk is the only
+   * thing that reclaims them.
+   *
+   * NOT ON THE {@link StorageProvider} INTERFACE, deliberately: scratch files
+   * are an artifact of publishing through the filesystem. R2's create-only put
+   * is native and its replacing put is a single object write, so there is no
+   * second name to strand and nothing for a sibling implementation to do.
+   * `maintenance.ts` narrows to this class rather than widening the contract.
+   *
+   * WHAT IT WILL AND WILL NOT TOUCH:
+   *   - only names matching the `.tmp-<uuid>.tmp` convention — never content,
+   *     never a `.discarded` marker, never anything the app addresses by name;
+   *   - only files whose `mtime` is older than `olderThanMs` (default
+   *     {@link STRANDED_SCRATCH_GRACE_MS}), which is what separates a stranded
+   *     file from one a live write is still appending to;
+   *   - never inside {@link LOCK_DIR}, whose lockfiles have their own staleness
+   *     rule in {@link withFilesystemPublicationLock} and are not scratch.
+   *
+   * FAIL-SOFT PER ENTRY, AND THAT ASYMMETRY IS THE DESIGN. A candidate whose
+   * `stat` or `rm` fails is skipped and the pass continues: one unremovable
+   * file must not zero out a reclamation that would otherwise have worked, and
+   * a file left one more hour is exactly where it already was. An unreadable
+   * SUBDIRECTORY is skipped for the same reason. An unreadable BASE PATH is
+   * not: that is not one bad entry, it is the walk being unable to start, and
+   * reporting `0` for it would read as "nothing to reclaim" forever. It rejects
+   * and `maintenance.ts` logs it.
+   *
+   * Bounded by {@link STRANDED_SCRATCH_CANDIDATE_CAP} candidates per pass; the
+   * remainder is reclaimed by the next one, since removal is the only progress
+   * state this needs.
+   */
+  async reapStrandedScratchFiles(
+    olderThanMs: number = STRANDED_SCRATCH_GRACE_MS,
+  ): Promise<number> {
+    const cutoff = Date.now() - olderThanMs;
+    let considered = 0;
+    let reaped = 0;
+
+    const walk = async (dir: string, isBase: boolean): Promise<void> => {
+      let entries: Dirent[];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch (error) {
+        // See FAIL-SOFT above: one unreadable subdirectory is a skip, an
+        // unreadable base path is the walk failing to start.
+        if (isBase) throw error;
+        return;
+      }
+      for (const entry of entries) {
+        if (considered >= STRANDED_SCRATCH_CANDIDATE_CAP) return;
+        if (entry.isDirectory()) {
+          if (entry.name === LOCK_DIR) continue;
+          await walk(path.join(dir, entry.name), false);
+          continue;
+        }
+        if (!TMP_ARTIFACT.test(entry.name)) continue;
+        considered += 1;
+        const full = path.join(dir, entry.name);
+        try {
+          const st = await fs.stat(full);
+          // `>=` rather than `>`: a file dated exactly at the cutoff is inside
+          // the window, which is the side that never truncates a live write.
+          if (st.mtimeMs >= cutoff) continue;
+          await fs.rm(full);
+          reaped += 1;
+        } catch {
+          // Deliberately swallowed — see FAIL-SOFT PER ENTRY above.
+        }
+      }
+    };
+
+    await walk(this.basePath, true);
+    return reaped;
+  }
+
+  // -------------------------------------------------------------------------
   // Assets (binary data)
   // -------------------------------------------------------------------------
 
@@ -500,6 +669,11 @@ export class FilesystemStorageProvider implements StorageProvider {
    * Hard-linking a complete, fsynced tmp inode is what makes the create
    * exclusive without a second read: the name either appears whole or the link
    * fails, so two concurrent creators cannot both win.
+   *
+   * ON A MOUNT WITH NO HARD LINKS the link is tried anyway and its refusal
+   * selects a probe-then-`rename` fallback instead (DW-573) — see
+   * {@link LINKLESS_CODES} and the comment at the fallback itself for why that
+   * is still exclusive and what error a failing fallback reports.
    */
   private async createOnlyWrite(
     filePath: string,
@@ -518,10 +692,58 @@ export class FilesystemStorageProvider implements StorageProvider {
           await fs.link(tmp, abs);
           return true;
         } catch (error) {
-          if (error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "EEXIST") {
-            return false;
-          }
-          throw error;
+          const code =
+            error instanceof Error && "code" in error
+              ? (error as NodeJS.ErrnoException).code
+              : undefined;
+          if (code === "EEXIST") return false;
+          if (!LINKLESS_CODES.has(code ?? "")) throw error;
+          // No hard links on this mount (DW-573). `link` is still tried FIRST
+          // on every call, so this costs nothing where links work; only a
+          // {@link LINKLESS_CODES} refusal reaches here.
+          //
+          // WHERE THE EXCLUSIVITY COMES FROM once the link primitive is gone:
+          // the publication lock, not the rename. We are inside
+          // `withFilesystemPublicationLock`, which is a real lockfile
+          // (`fs.open(…, "wx")`) keyed on this absolute path — the same
+          // cross-process exclusion `writeFileIfMatch` already rests its
+          // read-compare-write on — so a concurrent creator cannot be between
+          // the probe and the rename below. The probe answers "is the name
+          // taken", the rename publishes atomically, and the create-only
+          // contract survives intact; what is lost is only `link`'s
+          // lock-INDEPENDENT exclusivity, never the whole-or-nothing guarantee.
+          //
+          // `lstat`, NOT `stat`, because the question is about the NAME and not
+          // about whatever it points at. `link(2)` never follows its newpath —
+          // a dangling symlink at the destination makes it answer EEXIST — so a
+          // probe that followed links would read that same destination as
+          // "absent" and rename straight over the symlink, returning `true`
+          // where the primary path returns `false`. Same call, two answers,
+          // depending only on which mount the deployment happens to sit on.
+          //
+          // ONLY `ENOENT` MEANS ABSENT. Any other error rethrows: a probe that
+          // answered "absent" for a destination it merely could not read
+          // (EACCES, EIO, ELOOP) would send the `fs.rename` below straight
+          // through published bytes and report `true` — silently replacing the
+          // one thing this door exists to preserve.
+          const occupied = await fs.lstat(abs).then(
+            () => true,
+            (probeError: unknown) => {
+              if (
+                !(probeError instanceof Error && "code" in probeError) ||
+                (probeError as NodeJS.ErrnoException).code !== "ENOENT"
+              ) {
+                throw probeError;
+              }
+              return false;
+            },
+          );
+          if (occupied) return false;
+          // A failing rename is the reason publication failed, so ITS error is
+          // what propagates — never the link refusal that only told us which
+          // path to take.
+          await fs.rename(tmp, abs);
+          return true;
         }
       } finally {
         try {
@@ -548,8 +770,10 @@ export class FilesystemStorageProvider implements StorageProvider {
    *
    * The payload is the ONLY difference, which is why both delegate to
    * {@link createOnlyWrite}: the exclusivity comes from `fs.link` publishing a
-   * complete inode under a name that cannot be taken twice, which is what
-   * removes the check-then-write window a separate `fileExists` left.
+   * complete inode under a name that cannot be taken twice — or, where the
+   * mount has no hard links, from the publication lock around that body's
+   * probe-then-`rename` fallback — which is what removes the check-then-write
+   * window a separate `fileExists` left.
    */
   async writeAssetIfAbsent(filePath: string, data: ArrayBuffer): Promise<boolean> {
     return this.createOnlyWrite(filePath, Buffer.from(data));

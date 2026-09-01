@@ -30,6 +30,8 @@ import { getOnDiskSlugs, checkMissingCrossRefs, LOW_CONFIDENCE_THRESHOLD } from 
 import { extractWikiLinks } from "./links";
 import { purgeStaleIngestJobs } from "./ingest-jobs";
 import { getOwnerHandle } from "./owner";
+import { getStorage, isFilesystemStorage } from "./storage";
+import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
 import type { Task } from "./tasks";
 import { logger } from "./logger";
 
@@ -408,6 +410,62 @@ export async function backfillWorkspaceProfiles(): Promise<number> {
     return relocated + canonicalized;
   } catch (err) {
     logger.error("maintenance", "workspace-profile backfill failed:", err);
+    return 0;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Stranded scratch reclamation — the leak `listFiles` hides
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around the filesystem provider's scratch reaper (DW-292).
+ * Returns how many `.tmp-<uuid>.tmp` files a dead process left behind were
+ * reclaimed — 0 on error, and 0 on a deployment that is not storing on disk.
+ *
+ * WHAT IT RECLAIMS AND WHY NOTHING ELSE DOES: every scratch file the filesystem
+ * provider writes is removed by its own writer, so the only ones that survive
+ * are the ones whose process died mid-write — and those are then hidden from
+ * `listFiles` by the same filter that keeps in-flight scratch invisible. No
+ * other path in the app ever looks at them again. See
+ * {@link import("./storage/filesystem").FilesystemStorageProvider.reapStrandedScratchFiles}
+ * for the grace window that separates a stranded file from a live write's.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * {@link sweepOrphanWikiDirs}: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this DELETES files. It
+ * sits beside the other byte-touching steps as its own export the route calls.
+ *
+ * THE READ-ONLY GATE IS HERE RATHER THAN IN THE STORAGE LAYER, and that is not
+ * a preference. `read-only.ts` imports `./config`, which imports
+ * `./storage/index.ts`, which imports the provider — so a gate inside
+ * `src/lib/storage/` would close an import cycle. This module is the first
+ * layer above the provider that can hold it, and holding it BEFORE the try is
+ * what makes it real: inside, the catch below would swallow the
+ * `ReadOnlyError` and report a reclamation that never ran, and a DIRECT
+ * library caller — a CLI command, an ops script — would read `0` as "nothing to
+ * reclaim". `POST /api/tasks/scan` already refuses whole before reaching here,
+ * so this is that caller's gate, exactly as the sweep's is.
+ *
+ * `await import(...)` mirrors {@link sweepOrphanWikiDirs}' shape and avoids a
+ * named-export dependency on a class this module only narrows against. It does
+ * NOT keep the module graph loose — the static `./storage` import above already
+ * pulls `./storage/filesystem` in eagerly — and claiming otherwise would be the
+ * kind of comment that survives the fact it described.
+ */
+export async function reapStrandedScratchFiles(): Promise<number> {
+  assertWritable(READ_ONLY_REFUSAL.scratchFileReap);
+  try {
+    // R2 has no scratch files: its create-only put is native and its replacing
+    // put is a single object write, so there is no second name to strand.
+    if (!isFilesystemStorage()) return 0;
+    const { FilesystemStorageProvider } = await import("./storage/filesystem");
+    const provider = getStorage();
+    if (!(provider instanceof FilesystemStorageProvider)) return 0;
+    return await provider.reapStrandedScratchFiles();
+  } catch (err) {
+    logger.error("maintenance", "stranded scratch-file reap failed:", err);
     return 0;
   }
 }
