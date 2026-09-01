@@ -26,6 +26,7 @@ import {
   getVectorSearchSettings,
   loadConfigSync,
 } from "./config";
+import type { AppConfig } from "./config";
 import { extractBestSnippet } from "./query-search";
 import { searchByVector } from "./embeddings";
 import { parseFrontmatter } from "./frontmatter";
@@ -540,13 +541,23 @@ function numberBodies(hits: readonly RetrieveHit[]): {
   return { numberedBodies: parts.join("\n\n"), citations };
 }
 
-function chatModelForRetrieve(): AssembledContext["chatModel"] {
-  const chatModel = getChatModelSettings();
+/**
+ * The chat model this context REPORTS. `cfg` is a DEFAULT PARAMETER, the
+ * convention `getChatModelSettings` itself uses, because every leg below reads
+ * the store unconditionally: provider, model, `configured` and `baseUrl` are
+ * four parts of ONE answer, and resolving them from separate entries into the
+ * 5 s-TTL cache let a payload pair one generation's provider with another's
+ * endpoint — or with the cold-cache `{}` (DW-619).
+ */
+function chatModelForRetrieve(
+  cfg: AppConfig = loadConfigSync(),
+): AssembledContext["chatModel"] {
+  const chatModel = getChatModelSettings(cfg);
   let baseUrl: string | null = null;
   if (chatModel.provider === "custom") {
-    baseUrl = getCustomBaseUrl();
+    baseUrl = getCustomBaseUrl(cfg);
   } else if (chatModel.provider === "ollama" || chatModel.provider === "ollama-cloud") {
-    baseUrl = getOllamaBaseUrl() ?? null;
+    baseUrl = getOllamaBaseUrl(cfg) ?? null;
   }
   return {
     provider: chatModel.provider,

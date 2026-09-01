@@ -109,7 +109,7 @@ import {
   getConfiguredModel,
   hasLLMKey,
 } from "../llm";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import {
   SETTINGS_VECTOR_BINDING_ENV_NOTE,
   draftVectorInputs,
@@ -401,6 +401,214 @@ describe("the custom provider reaches the runtime", () => {
     createOpenAIMock.mockClear();
     await getConfiguredModel({ workload: "ingest" });
     expect(createOpenAIMock).toHaveBeenLastCalledWith({ apiKey: "sk-openai" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// One config generation per model client (DW-618)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `fn` with a clock that advances 10 minutes per read AFTER the first: the
+ * first read answers the real `t0`, and every read after it is another 10
+ * minutes on. That is enough — the entry `loadConfig()` stamps is written from
+ * one read and can only be checked by a LATER one, so it is always past the 5 s
+ * TTL by the time anything could answer from it.
+ *
+ * The DW-334 idiom in `config.test.ts` counts `loadConfigSync` entries with a
+ * frozen clock; that cannot be used here, because the code under test awaits
+ * `loadConfig()` itself and would freeze its own priming write into the count.
+ * An always-advancing clock asks the question the other way round: code that
+ * threads its snapshot never re-enters the cache and is unaffected, while code
+ * that re-enters gets the cold-cache `{}` and refuses. The straddle is
+ * otherwise invisible — it needs the cache to expire between two resolvers,
+ * which no real-time test can arrange.
+ *
+ * Safe because `loadConfig()`'s read path makes exactly one clock call
+ * (`config.ts`'s cache write); the only other `Date.now()` reachable from here
+ * is in the filesystem provider's WRITE lock loop, which no case below enters.
+ */
+async function underAnExpiringCache<T>(fn: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  let n = 0;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => t0 + n++ * 600_000);
+  try {
+    return await fn();
+  } finally {
+    clock.mockRestore();
+  }
+}
+
+describe("one model client is built out of one config generation", () => {
+  it("builds a workload-routed custom client from the snapshot the door already holds", async () => {
+    // The workload branch reads FOUR resolvers — the workload settings, the
+    // key, the base URL and (on the primary fallthrough) the credentials — and
+    // used to enter the cache once per resolver. On a straddle the later legs
+    // answered from `{}`, so a correctly configured endpoint refused with
+    // "needs a base URL" halfway through building one client.
+    process.env.OPENAI_API_KEY = "sk-openai";
+    await store({
+      provider: "openai",
+      model: "gpt-4o",
+      chatProvider: "custom",
+      chatModel: "chat-model",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://api.example/v1",
+    });
+
+    await underAnExpiringCache(() => getConfiguredModel({ workload: "chat" }));
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "chat-model",
+    );
+  });
+
+  it("builds an ingest-routed client from that generation too", async () => {
+    // The chat case alone leaves `getIngestModelSettings(cfg)` unpinned: the
+    // one existing ingest case runs on a warm cache, so reverting that
+    // argument would stay green.
+    process.env.ANTHROPIC_API_KEY = "sk-anthropic";
+    await store({
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      ingestProvider: "custom",
+      ingestModel: "ingest-model",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://api.example/v1",
+    });
+
+    await underAnExpiringCache(() => getConfiguredModel({ workload: "ingest" }));
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "ingest-model",
+    );
+  });
+
+  it("carries a workload-routed Ollama endpoint across the same expiry", async () => {
+    // `getOllamaBaseUrl` is the other store-backed leg of that branch: a
+    // re-entry here dropped the owner's endpoint and pointed chat at localhost.
+    await store({
+      provider: "anthropic",
+      chatProvider: "ollama",
+      chatModel: "llama3",
+      ollamaBaseUrl: "http://ollama.internal:11434",
+    });
+
+    await underAnExpiringCache(() => getConfiguredModel({ workload: "chat" }));
+
+    expect(createOllamaMock).toHaveBeenLastCalledWith({
+      baseURL: "http://ollama.internal:11434",
+    });
+  });
+
+  it("builds the primary custom client from that one generation too", async () => {
+    await store(CUSTOM);
+
+    await underAnExpiringCache(() => getConfiguredModel());
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "my-model",
+    );
+  });
+
+  it("does the same for callLLM, which discarded the identical snapshot", async () => {
+    await store(CUSTOM);
+
+    await underAnExpiringCache(() => callLLM("system", "message"));
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+  });
+
+  it("does the same for callLLMStream", async () => {
+    await store(CUSTOM);
+
+    await underAnExpiringCache(async () => {
+      await callLLMStream("system", "message");
+    });
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+  });
+
+  it("does the same for callVisionLLM", async () => {
+    await store(CUSTOM);
+
+    await underAnExpiringCache(() =>
+      callVisionLLM("describe", new Uint8Array([1, 2, 3])),
+    );
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+  });
+
+  it("builds an EXPLICIT provider/model client from that generation", async () => {
+    // The production-reachable shape: nothing in `src/` passes `workload`, but
+    // `agent-runtime.ts` and `structured-knowledge.ts` both call this with an
+    // explicit `{provider, model}` — so this is the branch a real deployment
+    // straddles, and it reads the key and the base URL as two resolvers.
+    await store(CUSTOM);
+
+    await underAnExpiringCache(() =>
+      getConfiguredModel({ provider: "custom", model: "explicit-model" }),
+    );
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "explicit-model",
+    );
+  });
+
+  it("does not turn an UNREADABLE store into a refusal while the cache is warm", async () => {
+    // `loadConfig()` answers `{}` for an unreadable store as well as for an
+    // absent one, and on that branch it does NOT prime the cache — the previous
+    // generation is still warm. Threading that `{}` would refuse a working
+    // store-only deployment for the whole 5 s window at the doors that are not
+    // behind `hasLLMKey()` (`/api/settings/test`, `agent-runtime`,
+    // `structured-knowledge`, `source-monitors`), which is a behaviour change,
+    // not the threading this bundle authorises. `configSnapshot()` is what
+    // keeps an empty answer unthreaded.
+    await store(CUSTOM);
+    const read = vi
+      .spyOn(getStorage(), "readFileWithEtag")
+      .mockRejectedValue(Object.assign(new Error("EIO"), { code: "EIO" }));
+    try {
+      await callLLM("system", "message");
+      expect(createOpenAIMock).toHaveBeenLastCalledWith({
+        apiKey: "sk-custom",
+        baseURL: "https://api.example/v1",
+      });
+
+      createOpenAIMock.mockClear();
+      await getConfiguredModel();
+      expect(createOpenAIMock).toHaveBeenLastCalledWith({
+        apiKey: "sk-custom",
+        baseURL: "https://api.example/v1",
+      });
+    } finally {
+      read.mockRestore();
+    }
   });
 });
 

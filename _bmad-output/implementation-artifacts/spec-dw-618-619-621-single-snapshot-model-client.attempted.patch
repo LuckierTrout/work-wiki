@@ -1,0 +1,534 @@
+diff --git a/src/lib/__tests__/settings-runtime-wiring.test.ts b/src/lib/__tests__/settings-runtime-wiring.test.ts
+index 35b42ed4..8f6a0de3 100644
+--- a/src/lib/__tests__/settings-runtime-wiring.test.ts
++++ b/src/lib/__tests__/settings-runtime-wiring.test.ts
+@@ -404,6 +404,165 @@ describe("the custom provider reaches the runtime", () => {
+   });
+ });
+ 
++// ---------------------------------------------------------------------------
++// One config generation per model client (DW-618) and the workload-aware
++// gate (DW-621)
++// ---------------------------------------------------------------------------
++
++/**
++ * Run `body` under a clock whose every read lands ten minutes after the one
++ * before it, so the config cache is stale by the time ANY `loadConfigSync()`
++ * would read it.
++ *
++ * This is the DW-334 `withClockSpy` idiom from `config.test.ts` pushed one
++ * layer out: that helper COUNTS `loadConfigSync` entries and cannot span an
++ * `async` function that awaits `loadConfig()` itself. An always-advancing clock
++ * needs no counting — under it a second entry into the 5 s-TTL cache can only
++ * answer the cold-cache `{}`, so the assertion is simply that the constructed
++ * client still carries the STORED key, endpoint and model. Threaded code never
++ * re-enters the cache at all and passes; the pre-fix code fell to `{}` and
++ * either refused the provider or built a client out of two generations.
++ *
++ * Safe because `loadConfigSync`'s TTL check is the only clock read on any path
++ * reached here — the other `Date.now()` in range is `storage/filesystem.ts`'s
++ * WRITE lock loop, and every `store()` below happens before the spy goes in.
++ */
++async function underStaleCache<T>(body: () => Promise<T>): Promise<T> {
++  const t0 = Date.now();
++  let read = 0;
++  const clock = vi.spyOn(Date, "now").mockImplementation(() => t0 + read++ * 600_000);
++  try {
++    return await body();
++  } finally {
++    clock.mockRestore();
++  }
++}
++
++describe("one model client comes from one config generation (DW-618)", () => {
++  const WORKLOAD_CUSTOM: AppConfig = {
++    chatProvider: "custom",
++    chatModel: "chat-model",
++    customApiKey: "sk-custom",
++    customBaseUrl: "https://api.example/v1",
++  };
++
++  it("builds a WORKLOAD client from the snapshot its own loadConfig() returned", async () => {
++    // `getConfiguredModel` awaited `loadConfig()` and then DISCARDED it, so the
++    // workload settings, the key and the base URL were three separate entries
++    // into a 5 s-TTL cache. A cache that expires between them hands the later
++    // legs the cold `{}` — and a correctly configured Custom deployment is
++    // refused, or worse, half-built.
++    await store(WORKLOAD_CUSTOM);
++    createOpenAIMock.mockClear();
++
++    await underStaleCache(() => getConfiguredModel({ workload: "chat" }));
++
++    expect(createOpenAIMock).toHaveBeenLastCalledWith({
++      apiKey: "sk-custom",
++      baseURL: "https://api.example/v1",
++    });
++    expect(createOpenAIMock.mock.results[0].value.chat).toHaveBeenCalledWith(
++      "chat-model",
++    );
++  });
++
++  it("builds the PRIMARY client from that same one snapshot", async () => {
++    await store(CUSTOM);
++    createOpenAIMock.mockClear();
++
++    await underStaleCache(() => getConfiguredModel());
++
++    expect(createOpenAIMock).toHaveBeenLastCalledWith({
++      apiKey: "sk-custom",
++      baseURL: "https://api.example/v1",
++    });
++    expect(createOpenAIMock.mock.results[0].value.chat).toHaveBeenCalledWith("my-model");
++  });
++
++  it("does the same for callLLM, which straddled the identical snapshot", async () => {
++    // `callLLM`, `callLLMStream` and `callVisionLLM` are the same
++    // `await loadConfig(); getModel();` pair as the primary route above — one
++    // argument each, and fixing only `getConfiguredModel` would leave the bug
++    // live on the three busiest doors in the file.
++    await store(CUSTOM);
++    createOpenAIMock.mockClear();
++
++    await underStaleCache(() => callLLM("system", "user"));
++
++    expect(createOpenAIMock).toHaveBeenLastCalledWith({
++      apiKey: "sk-custom",
++      baseURL: "https://api.example/v1",
++    });
++    expect(lastGenerateArgs().model).toEqual({ id: "my-model", api: "chat" });
++  });
++
++  it("does the same for callLLMStream and callVisionLLM", async () => {
++    await store(CUSTOM);
++
++    createOpenAIMock.mockClear();
++    await underStaleCache(async () => callLLMStream("system", "user"));
++    expect(createOpenAIMock).toHaveBeenLastCalledWith({
++      apiKey: "sk-custom",
++      baseURL: "https://api.example/v1",
++    });
++
++    createOpenAIMock.mockClear();
++    await underStaleCache(() => callVisionLLM("describe", new Uint8Array([1, 2, 3])));
++    expect(createOpenAIMock).toHaveBeenLastCalledWith({
++      apiKey: "sk-custom",
++      baseURL: "https://api.example/v1",
++    });
++  });
++});
++
++describe("the LLM gate sees the workload selections too (DW-621)", () => {
++  it("passes for a store that selects Ollama through chatProvider alone", async () => {
++    // `chatProvider` is an independent route the workload resolvers honour, so
++    // this deployment IS configured. Asking only `cfg.provider` told it
++    // otherwise, and every LLM feature in the repo gates on this function — so
++    // Chat, ingest, lint, vision, search and the query route all silently
++    // skipped their LLM steps.
++    await store({ chatProvider: "ollama" });
++    expect(await hasLLMKey()).toBe(true);
++  });
++
++  it("passes for a configured Custom selected through ingestProvider alone", async () => {
++    await store({
++      ingestProvider: "custom",
++      customApiKey: "sk-custom",
++      customBaseUrl: "https://api.example/v1",
++    });
++    expect(await hasLLMKey()).toBe(true);
++  });
++
++  it("holds Custom's both-halves rule for a workload field too", async () => {
++    // The RULES are unchanged and asked of each selection in turn — only the
++    // set of fields they are asked about widened. A half-configured workload
++    // Custom is no more constructible than a half-configured primary one.
++    await store({ chatProvider: "custom", customApiKey: "sk-custom" });
++    expect(await hasLLMKey()).toBe(false);
++
++    await store({ chatProvider: "custom", customBaseUrl: "https://api.example/v1" });
++    expect(await hasLLMKey()).toBe(false);
++  });
++
++  it("still refuses a workload provider whose key is an env secret", async () => {
++    // The widening is about STORE-only providers. `openai` needs a server
++    // secret that is not there, so the gate stays closed and the resolver keeps
++    // refusing with the sentence DW-503 owns.
++    await store({ chatProvider: "openai", chatModel: "gpt-4o" });
++    expect(await hasLLMKey()).toBe(false);
++    await expect(getConfiguredModel({ workload: "chat" })).rejects.toThrow(
++      /is not configured on this server/,
++    );
++  });
++
++  it("still answers false for a store with no provider selection at all", async () => {
++    await store({ customApiKey: "sk-custom", customBaseUrl: "https://api.example/v1" });
++    expect(await hasLLMKey()).toBe(false);
++  });
++});
++
+ // ---------------------------------------------------------------------------
+ // The Ollama endpoint — one ladder, checked before it reaches the SDK (DW-326)
+ // ---------------------------------------------------------------------------
+diff --git a/src/lib/__tests__/wiki-retrieve.test.ts b/src/lib/__tests__/wiki-retrieve.test.ts
+index 027d2b51..b0a137c4 100644
+--- a/src/lib/__tests__/wiki-retrieve.test.ts
++++ b/src/lib/__tests__/wiki-retrieve.test.ts
+@@ -26,11 +26,23 @@ vi.mock("../config", async (importOriginal) => {
+       usesPrimary: true,
+     })),
+     loadConfigSync: vi.fn(() => ({ vectorSearchEnabled: false })),
++    // WRAPPERS OVER THE REAL IMPLEMENTATIONS (DW-619), not stubs: what the
++    // endpoint case below asserts is which SNAPSHOT these two are asked, so
++    // their answers must still be the real ladder's. Nothing else in this file
++    // reaches either of them.
++    getCustomBaseUrl: vi.fn(actual.getCustomBaseUrl),
++    getOllamaBaseUrl: vi.fn(actual.getOllamaBaseUrl),
+   };
+ });
+ 
+ import { searchByVector } from "../embeddings";
+-import { getVectorSearchSettings, loadConfigSync } from "../config";
++import {
++  getChatModelSettings,
++  getCustomBaseUrl,
++  getOllamaBaseUrl,
++  getVectorSearchSettings,
++  loadConfigSync,
++} from "../config";
+ import { _resetStorage } from "../storage";
+ import { serializeFrontmatter } from "../frontmatter";
+ import { buildSourceEntry, serializeSources } from "../sources";
+@@ -50,6 +62,9 @@ import { INTERNAL_LINK_FIXTURE, INTERNAL_LINK_TARGETS } from "./internal-link-fi
+ const mockedVector = vi.mocked(searchByVector);
+ const mockedVectorSettings = vi.mocked(getVectorSearchSettings);
+ const mockedLoadConfig = vi.mocked(loadConfigSync);
++const mockedChatModelSettings = vi.mocked(getChatModelSettings);
++const mockedCustomBaseUrl = vi.mocked(getCustomBaseUrl);
++const mockedOllamaBaseUrl = vi.mocked(getOllamaBaseUrl);
+ 
+ let tmpDir: string;
+ let originalWikiDir: string | undefined;
+@@ -75,6 +90,22 @@ beforeEach(async () => {
+     hasKey: false,
+   });
+   mockedLoadConfig.mockReturnValue({ vectorSearchEnabled: false } as never);
++  // `mockClear`, NOT `mockReset`: these two are wrappers over the real
++  // resolvers and a reset would drop the implementation.
++  mockedCustomBaseUrl.mockClear();
++  mockedOllamaBaseUrl.mockClear();
++  // Re-primed per case AND cleared, so the DW-619 case below can re-point it
++  // without leaking that provider into every case after it, and so call-index
++  // assertions mean "this case's first call".
++  mockedChatModelSettings.mockClear();
++  mockedChatModelSettings.mockReturnValue({
++    provider: "anthropic",
++    providerSource: "default",
++    model: "claude-sonnet-4-5",
++    modelSource: "default",
++    configured: true,
++    usesPrimary: true,
++  });
+   await ensureDirectories();
+ });
+ 
+@@ -345,6 +376,50 @@ describe("assemble and search", () => {
+     expect(assembled.chatModel).not.toHaveProperty("apiKey");
+   });
+ 
++  it("resolves the whole chatModel payload from ONE config snapshot (DW-619)", async () => {
++    // The payload used to be built from two or three separate entries into the
++    // 5 s-TTL config cache: `getChatModelSettings()`, then `getCustomBaseUrl()`
++    // or `getOllamaBaseUrl()`, each taking the cache itself. A cache that
++    // expired between them answered the endpoint leg with the cold `{}`, so a
++    // `custom` chat provider was reported to the client WITHOUT the base URL it
++    // is only usable with.
++    //
++    // `loadConfigSync` hands back a FRESH object per call here, so object
++    // identity is what distinguishes one snapshot from two.
++    const snapshot = () => ({
++      vectorSearchEnabled: false,
++      chatProvider: "custom",
++      chatModel: "owner-model",
++      customApiKey: "sk-custom",
++      customBaseUrl: "https://api.example/v1",
++    });
++    mockedLoadConfig.mockImplementation(() => snapshot() as never);
++    mockedChatModelSettings.mockReturnValue({
++      provider: "custom",
++      providerSource: "config",
++      model: "owner-model",
++      modelSource: "config",
++      configured: true,
++      usesPrimary: false,
++    });
++
++    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
++    const assembled = await assembleWikiContext("alpha", { principal: null });
++
++    expect(assembled.chatModel).toEqual({
++      provider: "custom",
++      model: "owner-model",
++      configured: true,
++      baseUrl: "https://api.example/v1",
++    });
++    // THE SAME OBJECT, not merely an equal one: that is the whole claim.
++    expect(mockedCustomBaseUrl).toHaveBeenCalledTimes(1);
++    expect(mockedCustomBaseUrl.mock.calls[0][0]).toBe(
++      mockedChatModelSettings.mock.calls[0][0],
++    );
++    expect(mockedChatModelSettings.mock.calls[0][0]).toBeDefined();
++  });
++
+   it("Sources-only returns source paths", async () => {
+     await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha concept page" }]);
+     await saveRawSource("alpha-src", "alpha original transcript");
+diff --git a/src/lib/config.ts b/src/lib/config.ts
+index 5a5c9e55..0f991ca3 100644
+--- a/src/lib/config.ts
++++ b/src/lib/config.ts
+@@ -2571,9 +2571,17 @@ export interface ResolvedCredentials {
+  * Return the fully-resolved credentials for constructing an LLM model.
+  * The saved provider selection chooses which environment credential to use;
+  * env auto-detection remains the fallback when no preference has been saved.
++ *
++ * `cfg` is a DEFAULT PARAMETER, the convention {@link getOllamaBaseUrl} and
++ * {@link getEffectiveProvider} already use, because this function reads the
++ * store unconditionally — there is no lazy leg to protect. A caller that
++ * already holds a snapshot (`llm.ts`'s `getModel`, and through it `callLLM`,
++ * `callLLMStream`, `callVisionLLM` and `getConfiguredModel`'s primary route)
++ * passes it so the whole answer describes one config generation (DW-334).
+  */
+-export function getResolvedCredentials(): ResolvedCredentials {
+-  const cfg = loadConfigSync();
++export function getResolvedCredentials(
++  cfg: AppConfig = loadConfigSync(),
++): ResolvedCredentials {
+   const env = detectEnvProvider();
+ 
+   const provider = cfg.provider ?? env.provider ?? null;
+@@ -2588,14 +2596,17 @@ export function getResolvedCredentials(): ResolvedCredentials {
+   }
+ 
+   // API keys remain server-side environment secrets. Resolved from the `cfg`
+-  // read at the top rather than from a fresh entry into the 5 s-TTL cache
+-  // (DW-334), so the key, the model and the endpoint below describe one config
+-  // generation — `getModel()` builds a single client out of all three.
++  // this function was given (or read once, above) rather than from a fresh
++  // entry into the 5 s-TTL cache (DW-334), so the key, the model and the
++  // endpoint below describe one config generation — `getModel()` builds a
++  // single client out of all three.
+   //
+-  // `getModel()`, NOT every route into `llm.ts`: `getConfiguredModel`'s
+-  // explicit-provider / workload branch bypasses this function and still
+-  // resolves the workload settings, the key and the base URL as separate cache
+-  // entries. Closing that is a follow-up, not a claim this comment gets to make.
++  // EVERY route into `llm.ts` now, not just `getModel()` (DW-618).
++  // `getConfiguredModel`'s explicit-provider / workload branch used to bypass
++  // this function and resolve the workload settings, the key and the base URL
++  // as separate cache entries; it now threads the one snapshot its own
++  // `loadConfig()` returned through each of them, and hands that same object
++  // here when it falls through to the primary route.
+   const apiKey = apiKeyForProvider(provider, cfg);
+ 
+   // Model
+diff --git a/src/lib/llm.ts b/src/lib/llm.ts
+index 1357ffee..877a2e5b 100644
+--- a/src/lib/llm.ts
++++ b/src/lib/llm.ts
+@@ -18,7 +18,7 @@ import {
+   providerLabel,
+   DEFAULT_MODELS,
+ } from "./config";
+-import type { ProviderValue } from "./config";
++import type { AppConfig, ProviderValue } from "./config";
+ import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
+ import { getErrorMessage } from "./errors";
+ import { logger } from "./logger";
+@@ -254,8 +254,25 @@ export async function hasLLMKey(): Promise<boolean> {
+   // cold cache (DW-548) — so this awaits the real read.
+   const cfg = await loadConfig();
+ 
++  // THE STORE'S THREE PROVIDER SELECTIONS, not the primary field alone
++  // (DW-621). `chatProvider` and `ingestProvider` are independent workload
++  // routes the resolvers already honour, so a deployment that selects a
++  // store-only provider through one of them alone IS configured — and asking
++  // only `cfg.provider` told it nothing was, which sent Chat, ingest, lint,
++  // vision, search and the query route all silently past their LLM steps.
++  //
++  // The RULES below are unchanged and are asked of each selection in turn, so
++  // `custom`'s both-halves requirement and `ollama`'s keyless exemption cannot
++  // drift between the primary field and the workload ones.
++  //
++  // `structuredKnowledgeProvider` is deliberately NOT here: nothing gates
++  // structured-knowledge extraction on this function (`structured-knowledge.ts`
++  // calls `getConfiguredModel` directly), so including it would be a new rule
++  // with no behaviour behind it.
++  const selections = [cfg.provider, cfg.chatProvider, cfg.ingestProvider];
++
+   // Ollama is keyless — only config-file provider path that works without env vars
+-  if (cfg.provider === "ollama") return true;
++  if (selections.includes("ollama")) return true;
+ 
+   // Story 1.9's `custom` provider is the other config-file path that works
+   // without env vars: both its endpoint and its key may live in the store. Every
+@@ -267,7 +284,7 @@ export async function hasLLMKey(): Promise<boolean> {
+   //
+   // `cfg` is FORWARDED (DW-334): letting it re-enter `loadConfigSync()` would
+   // answer the two halves of one question from two reads of a 5 s-TTL cache.
+-  return cfg.provider === "custom" && providerIsConfigured("custom", cfg);
++  return selections.includes("custom") && providerIsConfigured("custom", cfg);
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -295,9 +312,15 @@ export function getProviderInfo(): ProviderInfo {
+  *
+  * The model name can be overridden with the `LLM_MODEL` env var, or via
+  * the config file's `model` field.
++ *
++ * `cfg` is OPTIONAL and forwarded as-is (DW-618): every caller below already
++ * awaits `loadConfig()` immediately before calling this, and used to discard
++ * that snapshot — so the key, the model and the endpoint one `createOpenAI`
++ * was built from could straddle two generations of a 5 s-TTL cache. Passing
++ * nothing keeps `getResolvedCredentials`' own default read.
+  */
+-function getModel() {
+-  const creds = getResolvedCredentials();
++function getModel(cfg?: AppConfig) {
++  const creds = getResolvedCredentials(cfg);
+ 
+   if (!creds.provider) {
+     throw new Error(
+@@ -412,13 +435,20 @@ export async function getConfiguredModel(options?: {
+   model?: string;
+   workload?: LlmWorkload;
+ }) {
+-  await loadConfig();
++  // ONE SNAPSHOT, THREADED (DW-618). This result used to be discarded, and
++  // every resolver below re-entered the 5 s-TTL cache on its own: the workload
++  // settings, the key, and the base URL could each answer from a different
++  // generation, and on a straddle the later legs fell to the cold-cache `{}`
++  // and refused a correctly configured provider.
++  const cfg = await loadConfig();
+ 
+   let provider = options?.provider;
+   let model = options?.model;
+   if (!provider && options?.workload) {
+     const settings =
+-      options.workload === "chat" ? getChatModelSettings() : getIngestModelSettings();
++      options.workload === "chat"
++        ? getChatModelSettings(cfg)
++        : getIngestModelSettings(cfg);
+     // An UNSET workload inherits: falling through to `getModel()` IS the primary
+     // route, and re-deriving it here would be a second ladder free to drift from
+     // `getResolvedCredentials`'.
+@@ -429,7 +459,7 @@ export async function getConfiguredModel(options?: {
+   }
+ 
+   if (provider) {
+-    const apiKey = apiKeyForProvider(provider);
++    const apiKey = apiKeyForProvider(provider, cfg);
+     if (provider !== "ollama" && !apiKey) {
+       // The sixth destination, and until DW-503 the only one of them that named
+       // none: this sentence used to end at "server." and hand back the raw slug
+@@ -463,7 +493,7 @@ export async function getConfiguredModel(options?: {
+         // No `DEFAULT_MODELS.custom` exists on purpose, so an unnamed model here
+         // would reach the SDK as `undefined` and fail at the wire with a message
+         // about nothing. Both halves are named instead.
+-        const baseURL = getCustomBaseUrl();
++        const baseURL = getCustomBaseUrl(cfg);
+         if (!baseURL) {
+           throw new Error(
+             `The Custom provider needs a base URL. Set it in ${LLM_MODELS_POINTER}.`,
+@@ -484,7 +514,7 @@ export async function getConfiguredModel(options?: {
+         // `ollama` call, matching what the primary path has always done: this
+         // leg used to ignore `cfg.ollamaBaseUrl` entirely, so an owner who set
+         // the endpoint in Settings had chat and ingest talk to localhost.
+-        const baseURL = getOllamaBaseUrl();
++        const baseURL = getOllamaBaseUrl(cfg);
+         return createOllama(baseURL ? { baseURL } : {})(resolvedModel);
+       }
+       case "ollama-cloud":
+@@ -495,7 +525,7 @@ export async function getConfiguredModel(options?: {
+         })(resolvedModel);
+     }
+   }
+-  return getModel();
++  return getModel(cfg);
+ }
+ 
+ /**
+@@ -515,8 +545,8 @@ export async function callLLM(
+   userMessage: string,
+   options?: { maxOutputTokens?: number },
+ ): Promise<string> {
+-  await loadConfig();
+-  const model = getModel();
++  const cfg = await loadConfig();
++  const model = getModel(cfg);
+ 
+   const { text } = await retryWithBackoff(() =>
+     generateText({
+@@ -549,8 +579,8 @@ export async function callVisionLLM(
+   image: ArrayBuffer | Uint8Array,
+   options?: { maxOutputTokens?: number; mediaType?: string },
+ ): Promise<string> {
+-  await loadConfig();
+-  const model = getModel();
++  const cfg = await loadConfig();
++  const model = getModel(cfg);
+   const bytes = image instanceof Uint8Array ? image : new Uint8Array(image);
+ 
+   const { text } = await retryWithBackoff(() =>
+@@ -624,8 +654,8 @@ export async function callLLMStream(
+   userMessage: string,
+   options?: { maxOutputTokens?: number },
+ ) {
+-  await loadConfig();
+-  const model = getModel();
++  const cfg = await loadConfig();
++  const model = getModel(cfg);
+ 
+   return streamText({
+     model,
+diff --git a/src/lib/wiki-retrieve.ts b/src/lib/wiki-retrieve.ts
+index 243fca93..cde08e30 100644
+--- a/src/lib/wiki-retrieve.ts
++++ b/src/lib/wiki-retrieve.ts
+@@ -26,6 +26,7 @@ import {
+   getVectorSearchSettings,
+   loadConfigSync,
+ } from "./config";
++import type { AppConfig } from "./config";
+ import { extractBestSnippet } from "./query-search";
+ import { searchByVector } from "./embeddings";
+ import { parseFrontmatter } from "./frontmatter";
+@@ -540,13 +541,26 @@ function numberBodies(hits: readonly RetrieveHit[]): {
+   return { numberedBodies: parts.join("\n\n"), citations };
+ }
+ 
+-function chatModelForRetrieve(): AssembledContext["chatModel"] {
+-  const chatModel = getChatModelSettings();
++/**
++ * ONE SNAPSHOT FOR THE WHOLE PAYLOAD (DW-619). The provider, the model, the
++ * `configured` flag and the base URL are one answer about one config
++ * generation; resolving them through two or three separate entries into the
++ * 5 s-TTL cache could report a `custom` chat provider whose endpoint came back
++ * `null` because the second read fell to the cold-cache `{}`.
++ *
++ * `cfg` is a DEFAULT PARAMETER, the convention `config.ts` uses for readers
++ * that touch the store unconditionally — this one always resolves the chat
++ * model settings, so there is no lazy leg to protect.
++ */
++function chatModelForRetrieve(
++  cfg: AppConfig = loadConfigSync(),
++): AssembledContext["chatModel"] {
++  const chatModel = getChatModelSettings(cfg);
+   let baseUrl: string | null = null;
+   if (chatModel.provider === "custom") {
+-    baseUrl = getCustomBaseUrl();
++    baseUrl = getCustomBaseUrl(cfg);
+   } else if (chatModel.provider === "ollama" || chatModel.provider === "ollama-cloud") {
+-    baseUrl = getOllamaBaseUrl() ?? null;
++    baseUrl = getOllamaBaseUrl(cfg) ?? null;
+   }
+   return {
+     provider: chatModel.provider,

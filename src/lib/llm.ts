@@ -18,7 +18,7 @@ import {
   providerLabel,
   DEFAULT_MODELS,
 } from "./config";
-import type { ProviderValue } from "./config";
+import type { AppConfig, ProviderValue } from "./config";
 import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
 import { getErrorMessage } from "./errors";
 import { logger } from "./logger";
@@ -289,6 +289,34 @@ export function getProviderInfo(): ProviderInfo {
 // ---------------------------------------------------------------------------
 
 /**
+ * Warm the config cache and hand back the snapshot — but ONLY when it holds
+ * something.
+ *
+ * `loadConfig()` answers `{}` for two different situations: there is no config
+ * file (ENOENT, a normal empty install) and THE STORE COULD NOT BE READ (a
+ * non-ENOENT error, malformed JSON, or JSON that is not an object — see
+ * `readStoredConfig`). On that second branch it does not prime the cache
+ * either, so the PREVIOUS generation is still warm behind `loadConfigSync()`.
+ *
+ * Threading `{}` from that branch would be a behaviour change rather than a
+ * threading-only one: a transient read failure would turn a working store-only
+ * `ollama` / `custom` deployment into `No LLM API key found…` at the ungated
+ * doors (`/api/settings/test`, `agent-runtime`, `structured-knowledge`,
+ * `source-monitors`, and the `callLLM` sites in `query`, `search` and
+ * `research-runtime`) for the whole 5 s window, where today the resolvers read
+ * through the warm cache and absorb it. So an EMPTY answer is not a snapshot
+ * worth threading: `undefined` means "read it yourself", which is exactly what
+ * every one of these resolvers did before (DW-618).
+ *
+ * A genuinely empty SAVED config is unaffected — `loadConfigSync()` answers
+ * `{}` for it too.
+ */
+async function configSnapshot(): Promise<AppConfig | undefined> {
+  const cfg = await loadConfig();
+  return Object.keys(cfg).length > 0 ? cfg : undefined;
+}
+
+/**
  * Build the appropriate Vercel AI SDK model instance based on resolved
  * credentials.  Resolution merges env vars and the config file, with env
  * vars taking priority.
@@ -296,8 +324,13 @@ export function getProviderInfo(): ProviderInfo {
  * The model name can be overridden with the `LLM_MODEL` env var, or via
  * the config file's `model` field.
  */
-function getModel() {
-  const creds = getResolvedCredentials();
+function getModel(cfg?: AppConfig) {
+  // `cfg` is OPTIONAL and forwarded as-is: every public door into this file
+  // takes a `configSnapshot()` first, and passing that snapshot on is what
+  // keeps the key, the model and the base URL below one config generation
+  // rather than three entries into a 5 s-TTL cache (DW-618). Omitted, the
+  // resolver reads the store itself exactly as it always has.
+  const creds = getResolvedCredentials(cfg);
 
   if (!creds.provider) {
     throw new Error(
@@ -412,13 +445,22 @@ export async function getConfiguredModel(options?: {
   model?: string;
   workload?: LlmWorkload;
 }) {
-  await loadConfig();
+  // KEPT, not discarded (DW-618). Every resolver below takes a snapshot, and
+  // this one read is the only generation any of them should answer from: the
+  // 5 s TTL can expire between two of them, and a re-entry after that falls to
+  // the cold-cache `{}` — which refuses a correctly configured provider
+  // halfway through building one client. `configSnapshot` rather than
+  // `loadConfig` because an EMPTY answer must stay unthreaded — see its
+  // docblock.
+  const cfg = await configSnapshot();
 
   let provider = options?.provider;
   let model = options?.model;
   if (!provider && options?.workload) {
     const settings =
-      options.workload === "chat" ? getChatModelSettings() : getIngestModelSettings();
+      options.workload === "chat"
+        ? getChatModelSettings(cfg)
+        : getIngestModelSettings(cfg);
     // An UNSET workload inherits: falling through to `getModel()` IS the primary
     // route, and re-deriving it here would be a second ladder free to drift from
     // `getResolvedCredentials`'.
@@ -429,7 +471,7 @@ export async function getConfiguredModel(options?: {
   }
 
   if (provider) {
-    const apiKey = apiKeyForProvider(provider);
+    const apiKey = apiKeyForProvider(provider, cfg);
     if (provider !== "ollama" && !apiKey) {
       // The sixth destination, and until DW-503 the only one of them that named
       // none: this sentence used to end at "server." and hand back the raw slug
@@ -463,7 +505,7 @@ export async function getConfiguredModel(options?: {
         // No `DEFAULT_MODELS.custom` exists on purpose, so an unnamed model here
         // would reach the SDK as `undefined` and fail at the wire with a message
         // about nothing. Both halves are named instead.
-        const baseURL = getCustomBaseUrl();
+        const baseURL = getCustomBaseUrl(cfg);
         if (!baseURL) {
           throw new Error(
             `The Custom provider needs a base URL. Set it in ${LLM_MODELS_POINTER}.`,
@@ -484,7 +526,7 @@ export async function getConfiguredModel(options?: {
         // `ollama` call, matching what the primary path has always done: this
         // leg used to ignore `cfg.ollamaBaseUrl` entirely, so an owner who set
         // the endpoint in Settings had chat and ingest talk to localhost.
-        const baseURL = getOllamaBaseUrl();
+        const baseURL = getOllamaBaseUrl(cfg);
         return createOllama(baseURL ? { baseURL } : {})(resolvedModel);
       }
       case "ollama-cloud":
@@ -495,7 +537,7 @@ export async function getConfiguredModel(options?: {
         })(resolvedModel);
     }
   }
-  return getModel();
+  return getModel(cfg);
 }
 
 /**
@@ -515,8 +557,11 @@ export async function callLLM(
   userMessage: string,
   options?: { maxOutputTokens?: number },
 ): Promise<string> {
-  await loadConfig();
-  const model = getModel();
+  // The snapshot is FORWARDED rather than discarded (DW-618): `getModel()`
+  // would otherwise re-enter the 5 s-TTL cache and could build one client out
+  // of two config generations. Empty stays unthreaded — see `configSnapshot`.
+  const cfg = await configSnapshot();
+  const model = getModel(cfg);
 
   const { text } = await retryWithBackoff(() =>
     generateText({
@@ -549,8 +594,9 @@ export async function callVisionLLM(
   image: ArrayBuffer | Uint8Array,
   options?: { maxOutputTokens?: number; mediaType?: string },
 ): Promise<string> {
-  await loadConfig();
-  const model = getModel();
+  // Forwarded, not discarded — see `callLLM` (DW-618).
+  const cfg = await configSnapshot();
+  const model = getModel(cfg);
   const bytes = image instanceof Uint8Array ? image : new Uint8Array(image);
 
   const { text } = await retryWithBackoff(() =>
@@ -624,8 +670,9 @@ export async function callLLMStream(
   userMessage: string,
   options?: { maxOutputTokens?: number },
 ) {
-  await loadConfig();
-  const model = getModel();
+  // Forwarded, not discarded — see `callLLM` (DW-618).
+  const cfg = await configSnapshot();
+  const model = getModel(cfg);
 
   return streamText({
     model,

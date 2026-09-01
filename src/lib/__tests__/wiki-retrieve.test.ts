@@ -26,11 +26,23 @@ vi.mock("../config", async (importOriginal) => {
       usesPrimary: true,
     })),
     loadConfigSync: vi.fn(() => ({ vectorSearchEnabled: false })),
+    // Wrappers over the REAL resolvers, not replacements: the DW-619 case below
+    // asserts which snapshot object they were handed, which only means anything
+    // if the resolution itself is the production one. Nothing else in this file
+    // touches either.
+    getCustomBaseUrl: vi.fn(actual.getCustomBaseUrl),
+    getOllamaBaseUrl: vi.fn(actual.getOllamaBaseUrl),
   };
 });
 
 import { searchByVector } from "../embeddings";
-import { getVectorSearchSettings, loadConfigSync } from "../config";
+import {
+  getChatModelSettings,
+  getCustomBaseUrl,
+  getOllamaBaseUrl,
+  getVectorSearchSettings,
+  loadConfigSync,
+} from "../config";
 import { _resetStorage } from "../storage";
 import { serializeFrontmatter } from "../frontmatter";
 import { buildSourceEntry, serializeSources } from "../sources";
@@ -50,11 +62,23 @@ import { INTERNAL_LINK_FIXTURE, INTERNAL_LINK_TARGETS } from "./internal-link-fi
 const mockedVector = vi.mocked(searchByVector);
 const mockedVectorSettings = vi.mocked(getVectorSearchSettings);
 const mockedLoadConfig = vi.mocked(loadConfigSync);
+const mockedChatModelSettings = vi.mocked(getChatModelSettings);
+const mockedCustomBaseUrl = vi.mocked(getCustomBaseUrl);
+const mockedOllamaBaseUrl = vi.mocked(getOllamaBaseUrl);
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
 let originalRawDir: string | undefined;
 let originalDataDir: string | undefined;
+/**
+ * The two env vars the REAL `getCustomBaseUrl` / `getOllamaBaseUrl` read BEFORE
+ * the store. The DW-619 cases below wrap the real resolvers, so a value
+ * exported in a developer's shell would decide the endpoint they assert —
+ * scrubbed per case for the same reason the other suites scrub their provider
+ * keys.
+ */
+const LLM_ENV_KEYS = ["LLM_CUSTOM_BASE_URL", "OLLAMA_BASE_URL"] as const;
+let savedLlmEnv: Record<string, string | undefined>;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wiki-retrieve-"));
@@ -64,6 +88,11 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
+  savedLlmEnv = {};
+  for (const key of LLM_ENV_KEYS) {
+    savedLlmEnv[key] = process.env[key];
+    delete process.env[key];
+  }
   _resetStorage();
   mockedVector.mockReset();
   mockedVector.mockResolvedValue([]);
@@ -85,6 +114,11 @@ afterEach(async () => {
   else process.env.RAW_DIR = originalRawDir;
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
+  for (const key of LLM_ENV_KEYS) {
+    const value = savedLlmEnv[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   _resetStorage();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
@@ -343,6 +377,87 @@ describe("assemble and search", () => {
       }),
     );
     expect(assembled.chatModel).not.toHaveProperty("apiKey");
+  });
+
+  it("resolves the whole chatModel payload from ONE config snapshot", async () => {
+    // DW-619: provider, model, `configured` and `baseUrl` are four parts of one
+    // answer, and they used to come from separate entries into a 5 s-TTL cache —
+    // so a payload could pair one generation's provider with another's endpoint,
+    // or with the cold-cache `{}`. Nothing else in this file pins that the two
+    // resolvers share a snapshot, and the mismatch is invisible to a value
+    // assertion whenever the two reads happen to agree.
+    mockedChatModelSettings.mockClear();
+    mockedCustomBaseUrl.mockClear();
+    mockedOllamaBaseUrl.mockClear();
+    mockedLoadConfig.mockReturnValue({
+      vectorSearchEnabled: false,
+      customBaseUrl: "https://api.example/v1",
+    } as never);
+    mockedChatModelSettings.mockReturnValueOnce({
+      provider: "custom",
+      providerSource: "config",
+      model: "my-model",
+      modelSource: "config",
+      configured: true,
+      usesPrimary: false,
+    } as never);
+
+    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
+    const assembled = await assembleWikiContext("alpha", { principal: null });
+
+    expect(assembled.chatModel).toEqual({
+      provider: "custom",
+      model: "my-model",
+      configured: true,
+      baseUrl: "https://api.example/v1",
+    });
+    // What this pins: the resolver is HANDED the snapshot the function holds,
+    // rather than being called with no argument and left to read the store
+    // itself. It does not — and under a module-mocked `loadConfigSync` that
+    // returns one object it cannot — prove the two reads landed in the same
+    // generation; the production straddle is what the `llm.ts` expiring-cache
+    // suite covers. Reverting `getCustomBaseUrl(cfg)` to `getCustomBaseUrl()`
+    // fails here, which is the regression this case exists for.
+    expect(mockedChatModelSettings).toHaveBeenCalled();
+    expect(mockedCustomBaseUrl).toHaveBeenCalled();
+    const settingsCfg = mockedChatModelSettings.mock.calls[0][0];
+    expect(settingsCfg).toBeDefined();
+    expect(mockedCustomBaseUrl.mock.calls[0][0]).toBe(settingsCfg);
+  });
+
+  it("resolves an OLLAMA chatModel payload from that same snapshot", async () => {
+    // The other store-backed leg of `chatModelForRetrieve`. Without this,
+    // reverting `getOllamaBaseUrl(cfg)` to `getOllamaBaseUrl()` goes unnoticed.
+    mockedChatModelSettings.mockClear();
+    mockedCustomBaseUrl.mockClear();
+    mockedOllamaBaseUrl.mockClear();
+    mockedLoadConfig.mockReturnValue({
+      vectorSearchEnabled: false,
+      ollamaBaseUrl: "http://ollama.internal:11434",
+    } as never);
+    mockedChatModelSettings.mockReturnValueOnce({
+      provider: "ollama",
+      providerSource: "config",
+      model: "llama3",
+      modelSource: "config",
+      configured: true,
+      usesPrimary: false,
+    } as never);
+
+    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
+    const assembled = await assembleWikiContext("alpha", { principal: null });
+
+    expect(assembled.chatModel).toEqual({
+      provider: "ollama",
+      model: "llama3",
+      configured: true,
+      baseUrl: "http://ollama.internal:11434",
+    });
+    expect(mockedChatModelSettings).toHaveBeenCalled();
+    expect(mockedOllamaBaseUrl).toHaveBeenCalled();
+    const settingsCfg = mockedChatModelSettings.mock.calls[0][0];
+    expect(settingsCfg).toBeDefined();
+    expect(mockedOllamaBaseUrl.mock.calls[0][0]).toBe(settingsCfg);
   });
 
   it("Sources-only returns source paths", async () => {

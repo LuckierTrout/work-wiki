@@ -142,6 +142,30 @@ describe("hasLLMKey() sees a store nothing warmed (DW-548)", () => {
     expect(await hasLLMKey()).toBe(false);
   });
 
+  it("still refuses a WORKLOAD-only selection — the gate speaks for the primary route", async () => {
+    // DW-621 asked for the gate to be widened to `chatProvider` /
+    // `ingestProvider`, and this case pins the decision NOT to. The gate answers
+    // "can the primary route make a call", and every one of its ~25 consumers
+    // takes that route (`callLLM` / `callLLMStream` / `callVisionLLM` / bare
+    // `getConfiguredModel()`) immediately after. `getResolvedCredentials` still
+    // resolves this store to `provider: null`, so a `true` here would trade a
+    // graceful skip for a thrown `No LLM API key found…` at every one of them.
+    // Nothing in production passes `workload`, so the `false` is honest.
+    //
+    // THE WHOLE ARGUMENT, though: this `false` is not costless either. For a
+    // `chatProvider`-only store `chat.ts:865` throws "No LLM provider is
+    // configured." after `ChatCanvas` has already reported the chat model
+    // configured from the retrieve payload — a real user-visible disagreement.
+    // It is filed as DW-711 and fixed at the call sites (wiring the workload
+    // route) rather than by widening this predicate, which would only move the
+    // throw to `getModel()` and take ~20 graceful skips down with it.
+    await storeConfig({ chatProvider: "ollama", chatModel: "llama3" });
+    expect(await hasLLMKey()).toBe(false);
+
+    await storeConfig({ ingestProvider: "ollama", ingestModel: "llama3" });
+    expect(await hasLLMKey()).toBe(false);
+  });
+
   it("answers from the environment WITHOUT reading the store", async () => {
     // THE COST CONTROL. ~20 call sites ask this gate, several of them inside
     // loops, so an env-configured deployment must not start paying a storage

@@ -4799,7 +4799,9 @@ location: src/lib/llm.ts:231-242, src/lib/llm.ts:392-451
 source_spec: `spec-dw-334-550-config-single-read-resolution.md`
 severity: medium
 reason: `hasLLMKey` (src/lib/llm.ts:231-242) reads `const cfg = loadConfigSync()` and then asks `providerIsConfigured("custom")` without passing it, and `getConfiguredModel`'s explicit-provider / workload path (src/lib/llm.ts:392-451) calls `getChatModelSettings()` / `getIngestModelSettings()`, `apiKeyForProvider(provider)` and `getCustomBaseUrl()` / `getOllamaBaseUrl()` as separate reads before handing all of them to one `createOpenAI({apiKey, baseURL}).chat(model)`. That path bypasses `getResolvedCredentials`, which this story did close. The optional `cfg` parameters added here make each of these a one-argument fix.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-single-snapshot-config-resolution
+resolution-undo: 06861f86ef74e7b9ec7887b6e852e833442ae0c6312c9e5790cd67090c7ed933 2026-09-01 7374617475733a206f70656e
 
 ### DW-619: `chatModelForRetrieve` builds one `chatModel` answer from two or three config-cache entries.
 origin: spec-deferred 6c595b6cbe1a
@@ -4807,7 +4809,9 @@ location: src/lib/wiki-retrieve.ts:543-549
 source_spec: `spec-dw-334-550-config-single-read-resolution.md`
 severity: low
 reason: `src/lib/wiki-retrieve.ts:543-549` calls `getChatModelSettings()` and then `getCustomBaseUrl()` (or `getOllamaBaseUrl()`) with no shared snapshot, and puts `provider` / `model` / `configured` on `AssembledContext`. Same shape as the legs closed here; both resolvers now take a `cfg`.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-single-snapshot-config-resolution
+resolution-undo: 06861f86ef74e7b9ec7887b6e852e833442ae0c6312c9e5790cd67090c7ed933 2026-09-01 7374617475733a206f70656e
 
 ### DW-620: The settings payload straddles an `await`, and three of its resolvers still take no `cfg`.
 origin: spec-deferred 4ad30020b011
@@ -5569,4 +5573,20 @@ location: src/lib/ingest.ts:1048
 source_spec: `spec-dw-68-70-embedding-config-plumbing.md`
 severity: low
 reason: `getVectorSearchSettings()` always passes `hasWorkersAiBinding: null` (config.ts:1653, DW-225), and `vectorSearchMissingLegs` applies the binding leg only on an explicit `false` (workbench-settings.ts:1588). So a store holding `embeddingProvider: "workers-ai"`, a supported `@cf/` model and `vectorSearchEnabled: true`, running OFF Workers, reports `enabled: true` while `resolveEmbeddingProvider` returns `null`. `searchByVector` then returns `[]` (embeddings.ts:1106) and `findMergeCandidates` returns that empty list without reaching `buildCorpusStats`/`bm25Score`. Before DW-68 the gate was `hasEmbeddingSupport()`, which is `false` there, so the BM25 branch ran and merge de-duplication worked. Consequence on such a deployment: every ingest forks a new page instead of merging, silently. Root cause is the pre-existing `hasWorkersAiBinding: null` hole rather than this change, and the three candidate fixes (fall through on empty results, conjoin `hasEmbeddingSupport()`, or close the binding h
+status: open
+
+### DW-711: The Chat send path gates on two different answers — `ChatCanvas` on the WORKLOAD model's `configured`, `chat.ts` on `hasLLMKey()`'s PRIMARY answer — so a `chatProvider`-only store passes the first and throws at the second.
+origin: escalation resolution of spec-dw-618-619-621-single-snapshot-model-client.md via /bmad-loop-resolve, 2026-09-01
+location: src/components/workbench/ChatCanvas.tsx:472 and src/lib/chat.ts:865
+source_spec: `spec-dw-618-619-621-single-snapshot-model-client.md`
+severity: low
+reason: `ChatCanvas.tsx:472` refuses on `!assembled.chatModel.configured`, which comes from `chatModelForRetrieve` → `getChatModelSettings` (`wiki-retrieve.ts:544`) — the WORKLOAD resolver, which honours `cfg.chatProvider`. `chat.ts:865` then refuses on `!(await hasLLMKey())`, which reads `cfg.provider` only. For a store holding `chatProvider: "ollama"` and no `provider` the two disagree: the UI gate passes (workload resolves ollama, keyless, `configured: true`), the send proceeds, and the runtime gate throws `No LLM provider is configured.` — so the owner is told Chat is ready and then told nothing is configured, on the same click. Underneath sits the real gap DW-621 misdiagnosed as a `hasLLMKey` widening: NO production call site passes `workload` to `getConfiguredModel` (only tests do), and Epics 2 and 3, which `llm.ts:400-406` and `config.ts:1578-1591` name as owning those call sites, are `done` in `sprint-status.yaml` without having wired it — so `chatProvider`/`ingestProvider` change what the UI reports but never which model a call actually uses. Fixing this means either routing chat/ingest by workload at the call sites or making both gates ask one question; picking between those is a story, not a predicate change. See that spec's Design Notes ("The DW-621 finding") for the measurement that ruled out widening the gate on its own.
+status: open
+
+### DW-712: `assembleWikiContext` resolves its `chatModel` payload from a config cache nothing on that route ever warms, so a cold process reports a correctly configured provider as `configured: false`.
+origin: spec-deferred 0810f95490ab
+location: src/lib/wiki-retrieve.ts:552
+source_spec: `spec-dw-618-619-621-single-snapshot-model-client.md`
+severity: medium
+reason: `chatModelForRetrieve` is synchronous and its only production caller, `src/app/api/v1/projects/[wikiId]/retrieve/route.ts:51`, never awaits `loadConfig()` (grepped: the file contains no `loadConfig` call). On a process nothing else warmed, `loadConfigSync()` answers `{}` and re-stamps it for another 5 s (`src/lib/config.ts:1180-1186`), so `provider`, `model`, `configured` and `baseUrl` all describe an empty store and the public retrieve API tells a caller the wiki has no chat model. This is DW-548's class of defect — the one that forced `hasLLMKey` to become async — at a different surface. PRE-EXISTING: the bare `getChatModelSettings()` had the same cold read before DW-619 threaded a snapshot through it, and DW-619 neither caused nor names it. Not covered by the suite, which module-mocks `loadConfigSync`.
 status: open

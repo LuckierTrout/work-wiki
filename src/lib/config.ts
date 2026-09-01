@@ -2571,9 +2571,18 @@ export interface ResolvedCredentials {
  * Return the fully-resolved credentials for constructing an LLM model.
  * The saved provider selection chooses which environment credential to use;
  * env auto-detection remains the fallback when no preference has been saved.
+ *
+ * `cfg` is a DEFAULT PARAMETER, the convention {@link getOllamaBaseUrl} and
+ * {@link getEffectiveProvider} already use, because this function reads the
+ * store unconditionally — there is no lazy leg to protect. A caller that
+ * already holds a snapshot (`llm.ts`'s `getModel`, reached from `callLLM`,
+ * `callLLMStream`, `callVisionLLM` and `getConfiguredModel`, each of which
+ * awaits `loadConfig()` first) passes it so the client is built out of one
+ * config generation (DW-334, DW-618).
  */
-export function getResolvedCredentials(): ResolvedCredentials {
-  const cfg = loadConfigSync();
+export function getResolvedCredentials(
+  cfg: AppConfig = loadConfigSync(),
+): ResolvedCredentials {
   const env = detectEnvProvider();
 
   const provider = cfg.provider ?? env.provider ?? null;
@@ -2587,15 +2596,18 @@ export function getResolvedCredentials(): ResolvedCredentials {
     };
   }
 
-  // API keys remain server-side environment secrets. Resolved from the `cfg`
-  // read at the top rather than from a fresh entry into the 5 s-TTL cache
-  // (DW-334), so the key, the model and the endpoint below describe one config
-  // generation — `getModel()` builds a single client out of all three.
+  // API keys remain server-side environment secrets. Resolved from the one
+  // `cfg` this function was handed (or read once above) rather than from a
+  // fresh entry into the 5 s-TTL cache (DW-334), so the key, the model and the
+  // endpoint below describe one config generation — `getModel()` builds a
+  // single client out of all three.
   //
-  // `getModel()`, NOT every route into `llm.ts`: `getConfiguredModel`'s
-  // explicit-provider / workload branch bypasses this function and still
-  // resolves the workload settings, the key and the base URL as separate cache
-  // entries. Closing that is a follow-up, not a claim this comment gets to make.
+  // `getConfiguredModel`'s explicit-provider / workload branch bypasses this
+  // function, and it used to resolve the workload settings, the key and the
+  // base URL as separate cache entries of its own. It no longer does: it
+  // threads its `await loadConfig()` snapshot through those resolvers and into
+  // `getModel()` here (DW-618), so BOTH routes into `llm.ts` build one client
+  // from one generation.
   const apiKey = apiKeyForProvider(provider, cfg);
 
   // Model
