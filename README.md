@@ -165,7 +165,7 @@ for the selected provider.
 | Google | `GOOGLE_GENERATIVE_AI_API_KEY=...` | `gemini-2.0-flash` | `@ai-sdk/google` (Gemini) |
 | DeepSeek | `DEEPSEEK_API_KEY=...` | `deepseek-v4-flash` | OpenAI-compatible generation API; embeddings use a separate provider |
 | Ollama Cloud | `OLLAMA_API_KEY=...` | `gpt-oss:120b` | Hosted API at `https://ollama.com/api`; store the key as a server secret |
-| Ollama | `OLLAMA_BASE_URL=http://localhost:11434/api` and/or `OLLAMA_MODEL=llama3.2` | `llama3.2` | `ollama-ai-provider-v2`; runs against a local Ollama server, no API key needed |
+| Ollama | `OLLAMA_BASE_URL=http://localhost:11434/api` and/or `OLLAMA_MODEL=llama3.2` | `llama3.2` | `ollama-ai-provider-v2`; runs against a local Ollama server, no API key needed. `OLLAMA_BASE_URL` is the **chat/generation** endpoint — Ollama *embeddings* read the Embedding endpoint saved in Settings |
 
 Cloudflare deployments use the `AI` binding with `@cf/baai/bge-m3` for
 embeddings. BGE-M3 produces 1,024-dimensional vectors, so its Vectorize index

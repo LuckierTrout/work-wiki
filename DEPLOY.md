@@ -200,6 +200,38 @@ so a stored `deepseek` uncovered by removing an env `deepseek` is a *new* fact
 and is said once on its own terms, rather than being silenced as a repeat of the
 sentence you already fixed.
 
+**The Ollama chat endpoint and the Ollama embedding endpoint are two different
+settings.** `OLLAMA_BASE_URL` (and the Ollama endpoint saved in Settings) is the
+**chat / generation** endpoint: it is what text generation dials. Embeddings dial
+the **Embedding endpoint** in Settings → Embeddings — the same one field `openai`
+and `google` have always read. Ollama used to be the exception, reaching its
+server through the chat endpoint while the Embedding endpoint box accepted a
+value nothing read; the two no longer overlap.
+
+`OLLAMA_BASE_URL` still *detects* Ollama as a provider — setting it can still be
+what causes `ollama` to be selected for embeddings — it just no longer decides
+where that embedding request is sent.
+
+> **Migration.** If you embed with Ollama and have only ever set
+> `OLLAMA_BASE_URL` (or only the Ollama endpoint in Settings), **save an
+> Embedding endpoint** — usually the same URL. Until you do, embeddings go to the
+> Ollama SDK's own default, `http://127.0.0.1:11434/api`, which is correct for a
+> local install on the same host and wrong for everyone else. The app says so
+> once, on the `embeddings` tag:
+>
+> ```
+> [embeddings] Ollama is the selected embedding provider, but no embedding
+> endpoint is saved (Settings → Embeddings → "Embedding endpoint" is empty), so
+> embeddings are going to the SDK's own default, http://127.0.0.1:11434/api.
+> OLLAMA_BASE_URL is the chat endpoint and is not read here — save an Embedding
+> endpoint if that default is not where Ollama is listening.
+> ```
+>
+> The endpoint stays **optional**: turning vector search on does not demand one
+> from Ollama, because the SDK default is a working configuration for a local
+> install. There is no `EMBEDDING_BASE_URL` environment variable — the Embedding
+> endpoint is stored through Settings only.
+
 **`EMBEDDING_MODEL` must name a model the selected provider can actually serve.**
 Under `workers-ai` it must be one of the supported Cloudflare embedding ids:
 
@@ -591,6 +623,11 @@ If you run [Ollama](https://ollama.com) on your host machine, the container need
 # .env
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
+
+That variable is the **chat / generation** endpoint. If you also embed with
+Ollama, save the same URL as the **Embedding endpoint** under Settings →
+Embeddings — see [Additional Settings](#additional-settings) for why the two are
+separate and what happens if you leave it blank.
 
 On Linux, you may need to add `--add-host=host.docker.internal:host-gateway` or use the host network:
 

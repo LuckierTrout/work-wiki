@@ -37,6 +37,11 @@ export type { ProviderValue } from "./providers";
 export interface AppConfig {
   provider?: ProviderValue;
   model?: string;
+  /**
+   * Ollama's CHAT / GENERATION endpoint — see {@link getOllamaBaseUrl}, which
+   * layers `OLLAMA_BASE_URL` over it. Embeddings do NOT read this field: they
+   * read {@link AppConfig.embeddingBaseUrl} (DW-70).
+   */
   ollamaBaseUrl?: string;
   /** Optional workload-specific generation route for Knowledge Atlas
    * extraction. Credentials remain server-side environment secrets. */
@@ -80,7 +85,12 @@ export interface AppConfig {
    * rather than of a component that happens to render unchecked.
    */
   vectorSearchEnabled?: boolean;
-  /** Optional endpoint override for the embedding provider. */
+  /**
+   * Optional endpoint override for the embedding provider — the one field every
+   * non-binding embedding provider reads, `ollama` included since DW-70. It is
+   * store-only (no env feeder) and unvalidated; `workers-ai` ignores it, having
+   * the Cloudflare `AI` binding for transport.
+   */
   embeddingBaseUrl?: string;
   /** Embedding credential, when it is not supplied as an env secret. */
   embeddingApiKey?: string;
@@ -461,8 +471,9 @@ export function getEmbeddingModelOverride(): string | undefined {
  * an import: `embeddings.ts` imports this module, so importing it back would
  * close a cycle. An unusable Ollama endpoint is standing state, not an event:
  * it holds until someone edits the store or the environment, and
- * `getOllamaBaseUrl()` is read on every embed and every generation, so logging
- * per read would emit the same sentence thousands of times for one typo.
+ * `getOllamaBaseUrl()` is read on every generation (and, through
+ * `resolveEmbeddingProvider`'s detection rung, on every embed), so logging per
+ * read would emit the same sentence thousands of times for one typo.
  *
  * The KEY is the source AND the value, because the sentence names where the
  * value came from: the same bad string in the environment and in the store are
@@ -601,8 +612,22 @@ export function envOllamaBaseUrl(): string | undefined {
 }
 
 /**
- * Returns the effective Ollama base URL.
+ * Returns the effective Ollama base URL FOR CHAT / GENERATION.
  * Priority: `OLLAMA_BASE_URL` env var → config file `ollamaBaseUrl` → `undefined`.
+ *
+ * NOT THE EMBEDDING ENDPOINT (DW-70). Embeddings read the stored
+ * `embeddingBaseUrl` — Settings → Embeddings → "Embedding endpoint" — through
+ * `embeddings.ts`'s `embeddingBaseUrlOf`, on the same terms as `openai` and
+ * `google`. This ladder used to serve both legs, which made one field describe
+ * two endpoints and made the Embedding endpoint field inert under `ollama`. The
+ * consumers left are `getResolvedCredentials` and `getConfiguredModel`, i.e.
+ * everything that generates text.
+ *
+ * `OLLAMA_BASE_URL` is still a provider-DETECTION signal on top of that (see
+ * {@link envOllamaBaseUrl}, `detectEnvProvider` and `resolveEmbeddingProvider`'s
+ * auto-detect rung, DW-370): it can still cause `ollama` to be SELECTED as the
+ * embedding provider. What it no longer does is decide where that embedding call
+ * is sent.
  *
  * THE ONE PLACE THAT LADDER IS SPELLED (DW-326). `getResolvedCredentials` and
  * `getConfiguredModel` used to re-derive it, which is how a stored endpoint

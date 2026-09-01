@@ -483,7 +483,9 @@ location: src/lib/embeddings.ts:139 (embeddingApiKeyFor), src/lib/ingest.ts:989
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: medium
 reason: `embeddingApiKeyFor` now falls back to `loadConfigSync().embeddingApiKey` (which the spec's Execution list requires, or the three stored vector values would have no reader at all). `hasEmbeddingSupport()` → `getEmbeddingModelName()` → `resolveEmbeddingProvider()` → `embeddingApiKeyFor()`, so an owner who pastes a key into Settings → Embeddings and leaves the switch off — the story's headline default — turns `ingest.ts:989` from off to on. Nothing fails: `embeddings.test.ts` drives that path from env vars, which are unchanged. The epic assigns "embed after ingest only when vector is on" to Story 2.9 and the spec's Never list forbids gating the callers here, so closing it is that story's work.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-embedding-config-plumbing
+resolution-undo: 8a0382f4070a51c2a5a7aaf7da5b7aa65dd5bd80790f4a492e096d44cb987daf 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-29 Gate the ingest caller, leave the predicate alone — Gate src/lib/ingest.ts:1011 on `getVectorSearchSettings().enabled` rather than on `hasEmbeddingSupport()`, keeping `hasEmbeddingSupport`'s contract and `embeddings.test.ts` untouched. Fall through to the existing corpus-stats path when the switch is off, which is the same branch an unconfigured deployment already takes. Pin that a stored embedding key with the switch off takes the non-vector branch.
 decision: 2026-08-29 Gate the ingest caller, leave the predicate alone — Gate src/lib/ingest.ts:1011 on `getVectorSearchSettings().enabled` rather than on `hasEmbeddingSupport()`, keeping `hasEmbeddingSupport`'s contract and `embeddings.test.ts` untouched. Fall through to the existing corpus-stats path when the switch is off, which is the same branch an unconfigured deployment already takes. Pin that a stored embedding key with the switch off takes the non-vector branch.
 
@@ -500,7 +502,9 @@ location: src/lib/embeddings.ts:228-247, src/components/workbench/SettingsCanvas
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `_createEmbeddingModel` applies `config.embeddingBaseUrl` for `openai` and `google` only; `ollama` reaches its server through `getOllamaBaseUrl()` and `workers-ai` through the Cloudflare binding. The vector gate agrees (both are in `SELF_TRANSPORTING_EMBEDDING_PROVIDERS` and are not asked for an endpoint), so nothing is broken — but the field still accepts a value that goes nowhere. Hiding it per provider, or routing `ollama`'s embedding endpoint through it, both change what `ollamaBaseUrl` means and want one decision rather than a fix inside this surface.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-embedding-config-plumbing
+resolution-undo: 8a0382f4070a51c2a5a7aaf7da5b7aa65dd5bd80790f4a492e096d44cb987daf 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-28 Route ollama through it — Make _createEmbeddingModel read embeddingBaseUrl for ollama, redefining ollamaBaseUrl as the chat endpoint only, and document and pin the split so the two settings stop overlapping.
 
 ### DW-71: `LLM_CUSTOM_BASE_URL` wins at runtime but is invisible on the surface, so the Custom endpoint box can be typed into and saved with no effect.
@@ -5557,4 +5561,12 @@ location: src/lib/action-extractor.ts:44 and src/lib/structured-knowledge.ts:310
 source_spec: `spec-dw-543-guidance-by-human-owner.md`
 severity: low
 reason: DW-543 scoped the fix to the two doors its `location:` field names, but the decision's `reason:` frames the convention as settling guidance addressing "for every prompt site at once". A concrete agent-reachable path remains: `src/app/api/agents/[id]/ingest/route.ts` sets `owner = asOwner ? agentRecord.owner : id` (the agent id) and records it as the job/task owner; `src/app/api/tasks/run/route.ts` then derives `actionOwner = task.triggeredBy || task.owner || task.author` and hands that agent id to `extractActionsFromPage` (`src/lib/action-extractor.ts:44`) and `extractStructuredKnowledge` (`src/lib/structured-knowledge.ts:310`), each of which calls `buildWorkspaceGuidance(owner)` / `listNamesTerms(owner)` unreduced. So the same agent-owned page whose ingest prompt now carries alice's standards has its follow-on extraction run unguided. Same shape at `src/lib/source-monitors.ts:387-388` (`monitor.owner`), `src/lib/monitor-digests.ts:437` and `src/lib/action-items.ts:102,180`. Not agent-
+status: open
+
+### DW-710: With vector search switched ON but no embedding provider actually resolvable, `findMergeCandidates` now takes the vector branch, gets an empty result, and returns early instead of falling through to t
+origin: spec-deferred eacd5deb7dad
+location: src/lib/ingest.ts:1048
+source_spec: `spec-dw-68-70-embedding-config-plumbing.md`
+severity: low
+reason: `getVectorSearchSettings()` always passes `hasWorkersAiBinding: null` (config.ts:1653, DW-225), and `vectorSearchMissingLegs` applies the binding leg only on an explicit `false` (workbench-settings.ts:1588). So a store holding `embeddingProvider: "workers-ai"`, a supported `@cf/` model and `vectorSearchEnabled: true`, running OFF Workers, reports `enabled: true` while `resolveEmbeddingProvider` returns `null`. `searchByVector` then returns `[]` (embeddings.ts:1106) and `findMergeCandidates` returns that empty list without reaching `buildCorpusStats`/`bm25Score`. Before DW-68 the gate was `hasEmbeddingSupport()`, which is `false` there, so the BM25 branch ran and merge de-duplication worked. Consequence on such a deployment: every ingest forks a new page instead of merging, silently. Root cause is the pre-existing `hasWorkersAiBinding: null` hole rather than this change, and the three candidate fixes (fall through on empty results, conjoin `hasEmbeddingSupport()`, or close the binding h
 status: open

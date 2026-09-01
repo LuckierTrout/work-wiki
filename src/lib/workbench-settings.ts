@@ -1447,10 +1447,22 @@ export interface VectorSearchInputs {
  * Embedding providers that carry their own transport and need no credential.
  *
  * `embeddings.ts` documents both as keyless (`embeddingApiKeyFor` returns `null`
- * for them by design): `ollama` reaches its server through `getOllamaBaseUrl()`
- * and `workers-ai` through the Cloudflare `AI` binding. Demanding an endpoint
- * and a key from either would make vector search UNREACHABLE for half the
- * supported providers, and would store an endpoint no code path reads.
+ * for them by design): `ollama` talks HTTP to a server that needs no credential,
+ * and `workers-ai` reaches Cloudflare through the `AI` binding. Demanding a key
+ * from either would make vector search UNREACHABLE for half the supported
+ * providers.
+ *
+ * THE ENDPOINT LEG IS EXEMPT FOR A DIFFERENT REASON SINCE DW-70, and the old
+ * one is no longer true: `ollama` now reads the stored `embeddingBaseUrl` in
+ * `_createEmbeddingModel` exactly like every other non-binding provider, so the
+ * "Embedding endpoint" field is NOT a value no code path reads. It stays exempt
+ * because that endpoint is OPTIONAL — with nothing saved, `createOllama()` is
+ * called with no argument and the SDK uses its own default, which is a working
+ * configuration for the common local install. `workers-ai` is exempt because its
+ * transport is the binding and no URL applies at all.
+ *
+ * The SET and the predicate are unchanged by that correction — turning vector
+ * search on demands no endpoint from either provider, exactly as before.
  */
 const SELF_TRANSPORTING_EMBEDDING_PROVIDERS: ReadonlySet<string> = new Set([
   "ollama",

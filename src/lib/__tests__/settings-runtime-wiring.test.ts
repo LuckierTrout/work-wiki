@@ -508,13 +508,19 @@ describe("the Ollama endpoint reaches every SDK construction through one ladder"
     }
   });
 
-  it("keeps the embedding leg's REFUSAL a refusal, not a substitution", async () => {
-    // The other half: a stored endpoint the ladder threw away must not be
-    // replaced by the SDK default as a VALUE. The provider still resolves and
-    // the warning still speaks; the construction is still argument-free.
+  it("does NOT hand the embedding leg the CHAT endpoint (DW-70)", async () => {
+    // The split, pinned where the argument is observable. `ollamaBaseUrl` is a
+    // perfectly USABLE URL here — before DW-70 this leg dialled it, which is
+    // what made the "Embedding endpoint" field inert under ollama and made one
+    // variable mean two things. The embedding call now reads `embeddingBaseUrl`
+    // and nothing else, so with none saved the construction is argument-free
+    // and the DW-401 sentence speaks.
     const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
     try {
-      await store({ embeddingProvider: "ollama", ollamaBaseUrl: "localhost:11434" });
+      await store({
+        embeddingProvider: "ollama",
+        ollamaBaseUrl: "http://ollama.internal:11434",
+      });
 
       expect(getEmbeddingModel()).not.toBeNull();
       expect(lastOllamaArgs()?.baseURL).toBeUndefined();
@@ -523,16 +529,37 @@ describe("the Ollama endpoint reaches every SDK construction through one ladder"
     }
   });
 
-  it("hands the embedding leg a USABLE stored endpoint, unchanged", async () => {
+  it("hands the embedding leg a USABLE stored EMBEDDING endpoint, unchanged", async () => {
     // …and the positive control, so the two assertions above cannot both pass
     // on a leg that never reaches `createOllama` at all.
     await store({
       embeddingProvider: "ollama",
-      ollamaBaseUrl: "http://ollama.internal:11434",
+      embeddingBaseUrl: "http://embed.internal:11434",
     });
 
     expect(getEmbeddingModel()).not.toBeNull();
-    expect(lastOllamaArgs()?.baseURL).toBe("http://ollama.internal:11434");
+    expect(lastOllamaArgs()?.baseURL).toBe("http://embed.internal:11434");
+  });
+
+  it("sends chat and embeddings to DIFFERENT endpoints when both are stored", async () => {
+    // The whole point of the split, in one case: two settings, two endpoints,
+    // neither borrowing the other's. A regression that re-merged them would
+    // still pass both cases above if it picked the wrong single winner
+    // consistently — this one cannot be satisfied by any single value.
+    await store({
+      provider: "ollama",
+      model: "llama3",
+      ollamaBaseUrl: "http://chat.internal:11434",
+      embeddingProvider: "ollama",
+      embeddingBaseUrl: "http://embed.internal:11434",
+    });
+
+    await callLLM("system", "message");
+    expect(lastOllamaArgs()?.baseURL).toBe("http://chat.internal:11434");
+
+    createOllamaMock.mockClear();
+    expect(getEmbeddingModel()).not.toBeNull();
+    expect(lastOllamaArgs()?.baseURL).toBe("http://embed.internal:11434");
   });
 });
 

@@ -45,11 +45,25 @@ import {
 } from "../wiki";
 import { resetSourceIndex } from "../source-index";
 import { resetAliasIndex } from "../alias-index";
-import { hasEmbeddingSupport, searchByVector, contentHash } from "../embeddings";
+// `hasEmbeddingSupport` is imported but NOT mocked (DW-68): the pin below needs
+// the REAL predicate to answer true while the switch is off.
+import { searchByVector, contentHash, hasEmbeddingSupport } from "../embeddings";
+import { getVectorSearchSettings } from "../config";
 import type { IndexEntry, SourceEntry } from "../types";
 
-const mockedHasEmbeddingSupport = vi.mocked(hasEmbeddingSupport);
+const mockedGetVectorSearchSettings = vi.mocked(getVectorSearchSettings);
 const mockedSearchByVector = vi.mocked(searchByVector);
+
+/** The switch, as `findMergeCandidates` reads it. */
+function vectorSearch(enabled: boolean) {
+  mockedGetVectorSearchSettings.mockReturnValue({
+    enabled,
+    provider: enabled ? "openai" : null,
+    baseUrl: null,
+    model: enabled ? "text-embedding-3-small" : null,
+    hasKey: enabled,
+  });
+}
 
 // Mock the LLM module so ingest never calls the real API
 vi.mock("../llm", () => ({
@@ -57,17 +71,57 @@ vi.mock("../llm", () => ({
   callLLM: vi.fn(),
 }));
 
-// Partial-mock embeddings: keep every real export (contentHash, the no-op
-// embed/upsert behaviour, etc.) but make `hasEmbeddingSupport` and
+// Partial-mock embeddings: keep every real export (contentHash, etc.) but make
 // `searchByVector` overridable so the concept resolver's SEMANTIC step (layer 3)
-// can be exercised. Defaults delegate to the real impls, so non-embedding tests
-// behave exactly as before (no provider → support false → semantic step skipped).
+// can be exercised. The default delegates to the real impl, so non-embedding
+// tests behave exactly as before.
+//
+// `upsertEmbedding` IS STUBBED, and it has to be now that the switch below is a
+// mock. `ingest()` reaches `lifecycle.ts`'s embed-on-write step, which is gated
+// on the very `getVectorSearchSettings().enabled` this file now controls — so
+// every `vectorSearch(true)` case runs a step the REAL gate used to hold shut
+// (measured: with this stub in place it is entered once per such ingest).
+// Nothing else here would hold it: the partial mock keeps the real
+// implementation, `loadConfigSync` is real, and the `ai` module is NOT mocked in
+// this file, so provider resolution answers to the AMBIENT environment —
+// `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `OLLAMA_*` — rather than to
+// anything the suite controls.
+//
+// Scope of the claim, since it was checked rather than assumed: with the real
+// implementation and `OPENAI_API_KEY` exported, this suite still made no
+// outbound connection (a `net.Socket.prototype.connect` + `fetch` recorder
+// loaded into all 20 processes saw none), so the stub is not fixing an observed
+// live-call bug. It is defence in depth: it keeps a suite about MERGE RETRIEVAL
+// off the embed path entirely, so no future change to provider resolution or to
+// the storage layer can turn a developer's exported key into a billed call
+// nothing here asked for. No assertion in this file reads it, so a no-op is the
+// whole requirement.
 vi.mock("../embeddings", async (orig) => {
   const actual = await orig<typeof import("../embeddings")>();
   return {
     ...actual,
-    hasEmbeddingSupport: vi.fn(actual.hasEmbeddingSupport),
     searchByVector: vi.fn(actual.searchByVector),
+    upsertEmbedding: vi.fn(async () => {}),
+  };
+});
+
+// Partial-mock config the same way, for the ONE fact `findMergeCandidates`
+// gates on since DW-68: the vector-search SWITCH, not `hasEmbeddingSupport()`.
+// A stored embedding key is not consent to do vector work, so a suite that
+// drove the branch through the predicate was driving the wrong lever.
+vi.mock("../config", async (orig) => {
+  const actual = await orig<typeof import("../config")>();
+  return {
+    ...actual,
+    getVectorSearchSettings: vi.fn(() => ({
+      // The shipped default, so every test that never mentions vector search
+      // takes the BM25 branch exactly as it did before.
+      enabled: false,
+      provider: null,
+      baseUrl: null,
+      model: null,
+      hasKey: false,
+    })),
   };
 });
 
@@ -2392,12 +2446,12 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   afterEach(() => {
     mockedHasLLMKey.mockResolvedValue(false);
     mockedCallLLM.mockReset();
-    mockedHasEmbeddingSupport.mockReturnValue(false);
+    vectorSearch(false);
     mockedSearchByVector.mockResolvedValue([]);
   });
 
   it("merges a differently-worded source into the candidate the adjudicator confirms", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     // The retrieval surfaces "alpha-thing" as a near candidate; the adjudicator
     // (mock) confirms it's the same concept.
     mockedSearchByVector.mockResolvedValue([
@@ -2427,7 +2481,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("forks when no candidate clears the retrieval floor (no adjudication call)", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     // Nearest page exists but is below CONCEPT_ADJUDICATE_FLOOR (0.6) → it isn't
     // even offered to the adjudicator → fork.
     mockedSearchByVector.mockResolvedValue([
@@ -2446,7 +2500,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("never folds into an artifact / agent-scoped candidate even at the same scope", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
 
     // Both pages are agent-knowledge + same owner, so the scope-EQUALITY check
@@ -2470,7 +2524,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("forks when the adjudicator judges the candidate a DIFFERENT concept", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
     // Override: adjudicator always says "none".
     mockedCallLLM.mockImplementation(async (system: string, user: string) =>
@@ -2492,7 +2546,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("forks when the adjudicator returns a slug that wasn't offered (hallucination guard)", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
     mockedCallLLM.mockImplementation(async (system: string, user: string) =>
       system.includes("decide whether")
@@ -2508,10 +2562,10 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
     expect(result.primarySlug).toBe("beta-thing");
   });
 
-  it("merges via the BM25 fallback when embeddings are unavailable (the pre-backfill prod path)", async () => {
+  it("merges via the BM25 fallback when vector search is off (the pre-backfill prod path)", async () => {
     // Vectorize not backfilled → searchByVector unused; candidates come from a
     // title+summary BM25 pass. The two sources share tokens ("widget protocol").
-    mockedHasEmbeddingSupport.mockReturnValue(false);
+    vectorSearch(false);
     mockedCallLLM.mockImplementation(async (system: string, user: string) => {
       if (system.includes("decide whether")) {
         return user.includes("widget-protocol") ? "widget-protocol" : "none";
@@ -2530,8 +2584,47 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
     expect(await listWikiPages()).toHaveLength(1);
   });
 
+  it("does NOT retrieve by vector on a STORED KEY with the switch off (DW-68)", async () => {
+    // The headline case. `hasEmbeddingSupport()` is genuinely TRUE here — a real
+    // provider key is present, so the real predicate (not mocked in this file)
+    // answers yes — and the vector switch is off, which is the shipped default.
+    // Gating on the predicate meant pasting a key into Settings → Embeddings
+    // silently moved merge retrieval onto `searchByVector`, against a vector
+    // store nothing had necessarily backfilled. The switch is the consent.
+    process.env.OPENAI_API_KEY = "sk-test-dw68";
+    try {
+      expect(hasEmbeddingSupport()).toBe(true);
+      vectorSearch(false);
+      // Armed with a hit that WOULD merge, so the assertion cannot pass merely
+      // because retrieval returned nothing.
+      mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.99 }]);
+      // Call history only — the resolved value above survives (nothing in this
+      // file clears mocks between tests, so the count has to be zeroed here).
+      mockedSearchByVector.mockClear();
+      mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+        if (system.includes("decide whether")) {
+          return user.includes("widget-protocol") ? "widget-protocol" : "none";
+        }
+        return user.toLowerCase().includes("specification")
+          ? "CONCEPT: Widget Protocol\nALIASES: none\n\n# Widget Protocol\n\n## Summary\n\nThe widget protocol specification."
+          : "CONCEPT: Widget Spec\nALIASES: none\n\n# Widget Spec\n\n## Summary\n\nThe widget protocol, explained.";
+      });
+
+      await ingest("First", "First note on the widget protocol specification details.");
+      const result = await ingest("Second", "Second note, widget protocol explained anew.");
+
+      // Never asked.
+      expect(mockedSearchByVector).not.toHaveBeenCalled();
+      // …and the merge still happened, through the BM25 corpus-stats branch.
+      expect(result.primarySlug).toBe("widget-protocol");
+      expect(await listWikiPages()).toHaveLength(1);
+    } finally {
+      delete process.env.OPENAI_API_KEY;
+    }
+  });
+
   it("does NOT semantic-merge an agent-knowledge ingest into a public page (scope guard)", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([
       { slug: "alpha-thing", score: 0.95 },
     ]);
@@ -2552,7 +2645,7 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
   });
 
   it("does NOT merge across owners even on a high-confidence hit", async () => {
-    mockedHasEmbeddingSupport.mockReturnValue(true);
+    vectorSearch(true);
     mockedSearchByVector.mockResolvedValue([
       { slug: "alpha-thing", score: 0.95 },
     ]);

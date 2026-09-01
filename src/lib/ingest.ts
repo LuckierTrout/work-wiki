@@ -144,7 +144,8 @@ import {
   resolveContentSha256,
   updateSourceIndexForPage,
 } from "./source-index";
-import { contentHash, searchByVector, hasEmbeddingSupport } from "./embeddings";
+import { contentHash, searchByVector } from "./embeddings";
+import { getVectorSearchSettings } from "./config";
 import { getStorage } from "./storage";
 import { logger } from "./logger";
 import { preserveDocumentSources } from "./document-sources";
@@ -1017,18 +1018,34 @@ Reply with ONLY the slug of the matching existing page, copied exactly from the 
 
 /**
  * Find existing pages that might be the SAME concept as a freshly-synthesized
- * one, for {@link adjudicateMerge}. Uses embedding similarity when available (a
- * wide recall net at {@link CONCEPT_ADJUDICATE_FLOOR}); otherwise a title+summary
- * BM25 pass over the index (`fullBody:false` → no disk reads, no LLM) so merge
- * still works before the vector store is backfilled. Returns candidate slugs,
- * best-first.
+ * one, for {@link adjudicateMerge}. Uses embedding similarity when VECTOR SEARCH
+ * IS SWITCHED ON (a wide recall net at {@link CONCEPT_ADJUDICATE_FLOOR});
+ * otherwise a title+summary BM25 pass over the index (`fullBody:false` → no disk
+ * reads, no LLM) so merge still works with the switch off, and before the vector
+ * store is backfilled. Returns candidate slugs, best-first.
  */
 async function findMergeCandidates(
   concept: string,
   embedBody: string,
 ): Promise<string[]> {
   const query = `${concept}\n\n${embedBody}`;
-  if (hasEmbeddingSupport()) {
+  // THE SWITCH, NOT THE PREDICATE (DW-68). `hasEmbeddingSupport()` answers
+  // "could this deployment embed?" — a question a stored key alone makes true.
+  // A key pasted into Settings → Embeddings is not consent to do vector work;
+  // the vector-search switch is, and it ships OFF. Gating retrieval on the
+  // predicate meant saving a key silently flipped ingest's merge step onto
+  // `searchByVector` against a store nothing had necessarily backfilled.
+  // `getVectorSearchSettings().enabled` is the gate `lifecycle.ts`'s embed step
+  // and the `tasks/run` backfill already read, so ingest's WRITE side and its
+  // merge-retrieval side now answer "do we do vector work?" the same way.
+  //
+  // Not yet every reader: `search.ts`'s `findRelatedPages`, `browse.ts`'s
+  // `hybridRank` and `query-search.ts`'s `searchIndex` still call
+  // `searchByVector` with no switch check, and `searchByVector` does not gate
+  // itself. Those are out of DW-68's scope — this entry is about ingest's merge
+  // step — but the claim here is deliberately narrow so nobody reads it as
+  // "the switch is honoured everywhere".
+  if (getVectorSearchSettings().enabled) {
     const hits = await searchByVector(query, MAX_MERGE_CANDIDATES + 3);
     return hits
       .filter((h) => h.score >= CONCEPT_ADJUDICATE_FLOOR)

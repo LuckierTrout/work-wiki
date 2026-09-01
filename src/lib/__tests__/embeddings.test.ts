@@ -2677,11 +2677,12 @@ describe("misconfiguration warnings are said once", () => {
     // openai" is a different fact from "@cf/baai/bge-m3 under ollama".
     process.env.OPENAI_API_KEY = "sk-openai";
     process.env.EMBEDDING_MODEL = "@cf/baai/bge-m3";
-    // A USABLE endpoint, so the `ollama` leg below does not also emit DW-401's
-    // "no endpoint resolved" line. This count is about MODEL/PROVIDER keying;
-    // an unrelated second identity standing at the same time would make it pass
-    // or fail for the wrong reason.
-    process.env.OLLAMA_BASE_URL = "http://ollama.test:11434/api";
+    // A SAVED EMBEDDING ENDPOINT, so the `ollama` leg below does not also emit
+    // DW-401's "no embedding endpoint" line. Since DW-70 that line reads
+    // `embeddingBaseUrl`, not `OLLAMA_BASE_URL`. This count is about
+    // MODEL/PROVIDER keying; an unrelated second identity standing at the same
+    // time would make it pass or fail for the wrong reason.
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "http://ollama.test:11434/api" });
 
     const { warnings } = await withWarnSpy(() => {
       process.env.EMBEDDING_PROVIDER = "openai";
@@ -3022,7 +3023,7 @@ describe("embedding provider override reads blanks as unset (DW-333)", () => {
   });
 });
 
-describe("an ollama selection with no endpoint is AUDIBLE (DW-401)", () => {
+describe("an ollama selection with no embedding endpoint is AUDIBLE (DW-401/DW-70)", () => {
   const SDK_DEFAULT = "http://127.0.0.1:11434/api";
 
   it("still resolves ollama, and names the endpoint actually in effect", async () => {
@@ -3038,12 +3039,18 @@ describe("an ollama selection with no endpoint is AUDIBLE (DW-401)", () => {
     expect(result).toBe("nomic-embed-text");
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(SDK_DEFAULT);
-    expect(warnings[0]).toContain("OLLAMA_BASE_URL");
+    // The FIELD it now reads (DW-70), and the fact that the chat variable is
+    // not it. A sentence naming only `OLLAMA_BASE_URL` would send the owner to
+    // fill in a value this leg no longer looks at.
+    expect(warnings[0]).toContain("Embedding endpoint");
+    expect(warnings[0]).toContain("OLLAMA_BASE_URL is the chat endpoint");
   });
 
-  it("stays SILENT when the endpoint resolves", async () => {
+  it("stays SILENT when the EMBEDDING endpoint is saved", async () => {
+    // The stored `embeddingBaseUrl` is what `_createEmbeddingModel` hands
+    // `createOllama` since DW-70, so it is what silences the sentence.
     process.env.EMBEDDING_PROVIDER = "ollama";
-    process.env.OLLAMA_BASE_URL = "http://host.test:11434/api";
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "http://embed.test:11434" });
 
     const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
 
@@ -3102,16 +3109,16 @@ describe("an ollama selection with no endpoint is AUDIBLE (DW-401)", () => {
   });
 
   it("goes quiet on a save that fixes the endpoint, and speaks again if it breaks", async () => {
-    // The store leg of the ladder is fixable IN-process, which is why this key
-    // re-arms where the env/binding identities do not (DW-332's reasoning, with
-    // the evidence read from the ladder itself).
+    // `embeddingBaseUrl` is STORE-ONLY (no env feeder), so it is fixable
+    // IN-process by definition — which is why this key re-arms where the
+    // env/binding identities do not (DW-332's reasoning).
     process.env.EMBEDDING_PROVIDER = "ollama";
 
     const broken = await withWarnSpy(() => getEmbeddingModelName());
     expect(broken.warnings).toHaveLength(1);
 
-    // A save lands a usable endpoint: silent, and the key is re-armed.
-    mockLoadConfigSync.mockReturnValue({ ollamaBaseUrl: "http://saved.test:11434" });
+    // A save lands an embedding endpoint: silent, and the key is re-armed.
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "http://saved.test:11434" });
     const fixed = await withWarnSpy(() => [
       getEmbeddingModelName(),
       getEmbeddingModelName(),
@@ -3132,8 +3139,9 @@ describe("an ollama selection with no endpoint is AUDIBLE (DW-401)", () => {
     // `createOllama` was called with — `ollama-ai-provider-v2` is real here.
     // The argument itself is pinned in `settings-runtime-wiring.test.ts`, which
     // mocks the SDK: see "gives the EMBEDDING leg no endpoint either when none
-    // resolves (DW-401)" and the refusal case beside it for the claim that the
-    // sentence's endpoint never becomes the value passed.
+    // resolves (DW-401)" and "does NOT hand the embedding leg the CHAT endpoint
+    // (DW-70)" beside it for the claim that the sentence's endpoint never
+    // becomes the value passed.
     process.env.EMBEDDING_PROVIDER = "ollama";
 
     const { result } = await withWarnSpy(() => getEmbeddingModel());
@@ -3141,23 +3149,54 @@ describe("an ollama selection with no endpoint is AUDIBLE (DW-401)", () => {
     expect(result).not.toBeNull();
   });
 
-  it("still names the SDK default when the endpoint was REFUSED, not merely absent", async () => {
-    // The "or were refused" half of the sentence. `localhost:11434` has no
-    // scheme, so the ladder throws it away (DW-370/DW-402) and the call falls to
-    // the SDK default just as it does with nothing set at all — which is exactly
-    // the case an owner is most likely to misread, having typed an endpoint and
-    // seen no complaint from the embedding side.
+  it("still speaks when a USABLE OLLAMA_BASE_URL is set but no Embedding endpoint is (DW-70)", async () => {
+    // THE SPLIT'S HAZARD, and the case this describe exists for after DW-70.
+    // The chat endpoint is set and perfectly usable — the old condition read it
+    // and would have gone quiet here — but the embedding leg no longer dials it,
+    // so this deployment IS embedding against the SDK default and the owner has
+    // every reason to think otherwise. This is also the migration path: an
+    // `OLLAMA_BASE_URL`-only deployment that embedded yesterday is told, once,
+    // which field to fill in.
     process.env.EMBEDDING_PROVIDER = "ollama";
-    process.env.OLLAMA_BASE_URL = "localhost:11434";
+    process.env.OLLAMA_BASE_URL = "http://host.test:11434/api";
 
     const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
 
     expect(result).toBe("nomic-embed-text");
-    // Asserted by PRESENCE, not by a total: `config.ts` warns about the refused
-    // value under its own registry and its own `logger` tag, and a bare count
-    // here would be a claim about how those two are filtered rather than about
-    // this sentence.
-    expect(warnings.filter((w) => w.includes(SDK_DEFAULT))).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+    expect(warnings[0]).toContain("Embedding endpoint");
+  });
+
+  it("treats a WHITESPACE-ONLY embedding endpoint as absent", async () => {
+    // `embeddingBaseUrlOf` trims, and blank is UNSET — the same rule
+    // `getEmbeddingModelOverride` applies to `EMBEDDING_MODEL` (DW-227). That
+    // rule is newly load-bearing under ollama (DW-70): it decides BOTH whether
+    // this sentence speaks and whether `createOllama` is handed an argument, so
+    // a `"   "` treated as present would silence the warning AND send the SDK a
+    // baseURL of three spaces.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    mockLoadConfigSync.mockReturnValue({ embeddingBaseUrl: "   " });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
+    expect(warnings[0]).toContain("Embedding endpoint");
+  });
+
+  it("is not silenced by a stored CHAT endpoint either", async () => {
+    // The store half of the same split: `ollamaBaseUrl` is the chat/generation
+    // field, and `getOllamaBaseUrl`'s ladder is no longer this leg's ladder.
+    process.env.EMBEDDING_PROVIDER = "ollama";
+    mockLoadConfigSync.mockReturnValue({ ollamaBaseUrl: "http://chat.test:11434" });
+
+    const { result, warnings } = await withWarnSpy(() => getEmbeddingModelName());
+
+    expect(result).toBe("nomic-embed-text");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(SDK_DEFAULT);
   });
 });
 

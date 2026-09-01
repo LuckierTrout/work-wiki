@@ -11,7 +11,6 @@ import type { EmbeddingEntry } from "./storage";
 import {
   loadConfigSync,
   getEmbeddingModelOverride,
-  getOllamaBaseUrl,
   envOllamaBaseUrl,
   getVectorSearchSettings,
 } from "./config";
@@ -155,14 +154,14 @@ import { logger } from "./logger";
  *     hold; and the warn's `kept.length === 0` then implies an empty `others`,
  *     which its own second conjunct rejects. `drift:null` is structurally
  *     unspeakable — do not add a branch to say so.
- *   - `ollama-endpoint:sdk-default` (DW-401). The endpoint ladder's STORE leg
- *     (`cfg.ollamaBaseUrl`) is moved by a save, so an owner who reads the line
- *     and fixes the endpoint changes the answer without restarting anything —
- *     and the evidence is read from the ladder itself, in {@link selectOllama}:
- *     `getOllamaBaseUrl(cfg)` answering a URL IS the fix having landed. Without
- *     the re-arm, an endpoint that is fixed and then broken again — the
- *     variable unset, the stored value replaced with a refused one — would fall
- *     back to the SDK default in silence for the rest of the process.
+ *   - `ollama-endpoint:sdk-default` (DW-401, repointed by DW-70). The embedding
+ *     endpoint (`cfg.embeddingBaseUrl`) is STORE-ONLY and moved by a save, so an
+ *     owner who reads the line and fills the field in changes the answer without
+ *     restarting anything — and the evidence is read from the same helper the
+ *     call is built from, in {@link selectOllama}: {@link embeddingBaseUrlOf}
+ *     answering a URL IS the fix having landed. Without the re-arm, an endpoint
+ *     that is saved and then cleared again would fall back to the SDK default in
+ *     silence for the rest of the process.
  *
  * The key is deliberately FIXED rather than carrying the endpoint that would
  * have been used: there is no such value. The misconfiguration's identity is
@@ -369,15 +368,55 @@ function resolveEmbeddingProvider(
 }
 
 /**
+ * THE EMBEDDING ENDPOINT — the one rule, read by everything that has an opinion
+ * about it (DW-70).
+ *
+ * The stored `embeddingBaseUrl` (Settings → Embeddings → "Embedding endpoint"),
+ * trimmed, or `undefined` when it is absent, blank or whitespace-only. That is
+ * the same treatment `openai` and `google` have always given the field, and now
+ * `ollama` gives it too.
+ *
+ * THE SPLIT THIS MAKES: `ollamaBaseUrl` / `OLLAMA_BASE_URL` — the ladder in
+ * `getOllamaBaseUrl` in `config.ts` — is the CHAT/GENERATION endpoint and is not read
+ * here. Before this, the "Embedding endpoint" field accepted a value that no
+ * code path read under `ollama` while the chat endpoint quietly served the
+ * embedding call, so two settings overlapped and one of them went nowhere.
+ * `OLLAMA_BASE_URL` remains a provider-DETECTION signal (see
+ * {@link envOllamaBaseUrl} and `detectEnvProvider`) — this split is about which
+ * endpoint the embedding CALL uses, not about which provider is selected.
+ *
+ * The consequence, accepted deliberately: an `OLLAMA_BASE_URL`-only deployment
+ * that embeds today stops reaching that endpoint and falls to the SDK default.
+ * `embeddingBaseUrl` is store-only (no env feeder), so {@link selectOllama}'s
+ * warning is the migration path — it names the field to fill in.
+ *
+ * ONE READER, so {@link selectOllama}'s warn condition and the `baseURL`
+ * {@link _createEmbeddingModel} hands `createOllama` cannot disagree: a warning
+ * that describes a different endpoint than the call is worse than no warning.
+ *
+ * NO URL VALIDATION, on purpose: this is one flat unvalidated field and
+ * `openai`/`google` already pass it through raw. One field, one treatment.
+ */
+function embeddingBaseUrlOf(cfg: ReturnType<typeof loadConfigSync>): string | undefined {
+  const stored = cfg.embeddingBaseUrl;
+  return typeof stored === "string" && stored.trim().length > 0 ? stored.trim() : undefined;
+}
+
+/**
  * The endpoint `createOllama()` uses when it is handed no `baseURL` at all.
  *
  * Copied from the SDK rather than imported because it is not exported
  * (`ollama-ai-provider-v2`, `createOllama`'s `baseURL` default). It is named
  * here for ONE purpose — saying out loud, in {@link selectOllama}, where the
  * embeddings actually went — and nothing resolves against it: the fall-through
- * in {@link _createEmbeddingModel} is still `createOllama()` with no argument,
- * so a future change to the SDK's default changes the behaviour and this
- * constant only mis-names it in a log line.
+ * in {@link _createEmbeddingModel} is still `createOllama()` with no argument
+ * whenever {@link embeddingBaseUrlOf} is `undefined`, so a future change to the
+ * SDK's default changes the behaviour and this constant only mis-names it in a
+ * log line.
+ *
+ * SINCE DW-70 the fact it describes is the EMBEDDING endpoint's absence, not the
+ * chat ladder's: a deployment with `OLLAMA_BASE_URL` set and nothing in the
+ * Embedding endpoint field lands here, and the warning is what tells it so.
  */
 const OLLAMA_SDK_DEFAULT_BASE_URL = "http://127.0.0.1:11434/api";
 
@@ -388,10 +427,16 @@ const OLLAMA_SDK_DEFAULT_BASE_URL = "http://127.0.0.1:11434/api";
  * select `ollama` — but that only covers the rung that reads the variable to
  * decide. An EXPLICIT selection (`EMBEDDING_PROVIDER=ollama`, or the stored
  * `embeddingProvider`, or a stored generation provider of `ollama`) does not
- * consult the endpoint at all, so a deployment with no `OLLAMA_BASE_URL` and no
- * saved endpoint resolved `ollama`, reached `createOllama()` with no `baseURL`,
- * and embedded its whole corpus against the SDK's own localhost default —
- * silently, and successfully, if something happened to be listening there.
+ * consult the endpoint at all, so a deployment with no saved endpoint resolved
+ * `ollama`, reached `createOllama()` with no `baseURL`, and embedded its whole
+ * corpus against the SDK's own localhost default — silently, and successfully,
+ * if something happened to be listening there.
+ *
+ * IT ASKS {@link embeddingBaseUrlOf}, THE SAME HELPER `_createEmbeddingModel`
+ * BUILDS THE CALL FROM (DW-70). It used to ask `getOllamaBaseUrl` — which is now
+ * the chat/generation ladder and not what the embedding call reads — so leaving
+ * it there would have produced the one thing worse than silence: a sentence
+ * describing an endpoint other than the one being dialled.
  *
  * LOG-ONLY, deliberately: the return value is `"ollama"` on every path, exactly
  * as each rung returned before. The endpoint ladder's fall-through is a real
@@ -408,14 +453,15 @@ const OLLAMA_SDK_DEFAULT_BASE_URL = "http://127.0.0.1:11434/api";
  */
 function selectOllama(cfg: ReturnType<typeof loadConfigSync>): "ollama" {
   const key = "ollama-endpoint:sdk-default";
-  if (getOllamaBaseUrl(cfg) === undefined) {
+  if (embeddingBaseUrlOf(cfg) === undefined) {
     warnOnceAbout(
       key,
-      "Ollama is the selected embedding provider, but no endpoint resolved " +
-        "(OLLAMA_BASE_URL and the saved Ollama endpoint are both unset or were " +
-        `refused), so embeddings are going to the SDK's own default, ` +
-        `${OLLAMA_SDK_DEFAULT_BASE_URL}. Set OLLAMA_BASE_URL, or save an ` +
-        "endpoint in Settings, if that is not where Ollama is listening.",
+      "Ollama is the selected embedding provider, but no embedding endpoint is " +
+        "saved (Settings → Embeddings → \"Embedding endpoint\" is empty), so " +
+        `embeddings are going to the SDK's own default, ` +
+        `${OLLAMA_SDK_DEFAULT_BASE_URL}. OLLAMA_BASE_URL is the chat endpoint ` +
+        "and is not read here — save an Embedding endpoint if that default is " +
+        "not where Ollama is listening.",
     );
   } else {
     // The endpoint resolves again — a save can do that mid-process — so the
@@ -610,11 +656,22 @@ export function getEmbeddingModel(
 /**
  * Internal helper to construct an AI SDK embedding model instance.
  *
- * Ollama base URL is resolved via `getOllamaBaseUrl(cfg)` from the config layer.
- * OpenAI and Google honour a stored `embeddingBaseUrl` (Story 1.9's "endpoint"
- * half of the vector gate) — additive, so with nothing stored the option is
- * omitted entirely and both providers resolve to their own defaults exactly as
- * before.
+ * EVERY non-binding provider honours the stored `embeddingBaseUrl` (Story 1.9's
+ * "endpoint" half of the vector gate) through {@link embeddingBaseUrlOf} —
+ * additive, so with nothing stored the option is omitted entirely and each
+ * provider resolves to its own default exactly as before.
+ *
+ * `ollama` JOINED THEM IN DW-70. It used to read `getOllamaBaseUrl(cfg)` — the
+ * chat/generation ladder — which made the "Embedding endpoint" field a value no
+ * `ollama` code path read, and made `OLLAMA_BASE_URL` do double duty. The two
+ * settings no longer overlap: chat/generation reads `ollamaBaseUrl` /
+ * `OLLAMA_BASE_URL`, embeddings read `embeddingBaseUrl`. The known migration
+ * cost is that an `OLLAMA_BASE_URL`-ONLY DEPLOYMENT NOW NEEDS AN EMBEDDING
+ * ENDPOINT SAVED; until it is, the call is argument-free and {@link selectOllama}
+ * says so once, naming the field to fill in.
+ *
+ * `workers-ai` is untouched by that and stays untouched: its transport is the
+ * Cloudflare `AI` binding, not a URL, and it is not constructed here at all.
  *
  * `cfg` is REQUIRED and comes from the caller for the same reason
  * {@link embeddingApiKeyFor}'s does (DW-313): the endpoint has to be read out of
@@ -651,11 +708,8 @@ function _createEmbeddingModel(
   // A config written before this change, or hand-edited, can also already hold
   // a mismatched pair — nothing migrates it. Both are recorded as deferred
   // follow-up rather than fixed here.
-  const stored = cfg.embeddingBaseUrl;
-  const baseUrlOption =
-    typeof stored === "string" && stored.trim().length > 0
-      ? { baseURL: stored.trim() }
-      : {};
+  const embeddingBaseUrl = embeddingBaseUrlOf(cfg);
+  const baseUrlOption = embeddingBaseUrl ? { baseURL: embeddingBaseUrl } : {};
   switch (provider) {
     case "openai": {
       const openai = createOpenAI({ apiKey: apiKey!, ...baseUrlOption });
@@ -666,19 +720,22 @@ function _createEmbeddingModel(
       return google.embedding(modelName);
     }
     case "ollama": {
-      // Resolve Ollama base URL via centralized config layer, against the SAME
-      // `cfg` snapshot `embeddingBaseUrl` above is resolved from (DW-313). With
-      // no argument this half answered from the 5 s cache while the other half
-      // answered from the object passed in, so one function could resolve two
-      // different configs — which is exactly what the accessor's parameter
-      // exists to rule out.
-      // The fall-through to the SDK's own default is deliberate and unchanged
-      // (DW-401): a value the ladder REFUSED must not be handed to
-      // `createOllama` just because something was typed. What changed is that
-      // `selectOllama` has already said out loud, once, that this is where the
-      // call is about to go.
-      const baseURL = getOllamaBaseUrl(cfg);
-      const ollama = baseURL ? createOllama({ baseURL }) : createOllama();
+      // THE SAME ENDPOINT `openai` and `google` read, off the same `cfg`
+      // snapshot (DW-70/DW-313) — `embeddingBaseUrl`, not the chat ladder.
+      //
+      // The argument-free fall-through is preserved VERBATIM (DW-401): with no
+      // Embedding endpoint saved, `createOllama()` is called with nothing and
+      // the SDK uses its own default. `OLLAMA_SDK_DEFAULT_BASE_URL` stays
+      // log-only — it is never substituted here — so what an owner reads in the
+      // warning and what the call does remain one fact.
+      //
+      // Spelled as its own branch rather than `createOllama({...baseUrlOption})`
+      // because `createOllama({})` and `createOllama()` are not identical to
+      // read, and "no argument at all" is the behaviour pinned by
+      // `settings-runtime-wiring.test.ts`.
+      const ollama = embeddingBaseUrl
+        ? createOllama({ baseURL: embeddingBaseUrl })
+        : createOllama();
       return ollama.embedding(modelName);
     }
     default:
