@@ -73,6 +73,7 @@ import {
   fixBrokenLink,
   fixSupersededDangling,
   fixLintIssue,
+  autoFixRefusal,
   FixValidationError,
   FixNotFoundError,
 } from "../lint-fix";
@@ -81,6 +82,9 @@ import {
   AUTO_FIXABLE_CHECK_TYPES,
   disputedClearGuidance,
 } from "../lint-types";
+import { MAINTAIN_FIX_TYPES } from "../tasks";
+import { readFile } from "fs/promises";
+import path from "path";
 
 const mockedReadWikiPage = vi.mocked(readWikiPage);
 const mockedReadWikiPageWithFrontmatter = vi.mocked(readWikiPageWithFrontmatter);
@@ -1350,4 +1354,95 @@ describe("check types with no auto-fix", () => {
       );
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// The maintenance vocabulary — every `MAINTAIN_FIX_TYPES` member is dispatchable,
+// and the compile-time pin that guarantees it is still in the source.
+// ---------------------------------------------------------------------------
+
+/**
+ * `src/lib/tasks.ts` pins this at compile time: `_MaintainFixTypesAreAutoFixable`,
+ * an `Exclude<MaintainFixType, AutoFixableCheckType>` that must be `never`.
+ *
+ * WHAT THIS DESCRIBE IS ACTUALLY FOR — read it before adding to it, because two
+ * of the three tests below are worth less than they look:
+ *
+ *   - `autoFixRefusal` and `fixLintIssue` resolve through the SAME table,
+ *     `FIX_HANDLERS` (`../lint-fix`, declared `Record<AutoFixableCheckType,
+ *     FixHandler>` at src/lib/lint-fix.ts:791). So while `tsc` is green the
+ *     per-type `toBeNull()` assertions below CANNOT fail: the table is exhaustive
+ *     over `AutoFixableCheckType` by construction, and the type pin already says
+ *     every `MAINTAIN_FIX_TYPES` member is one. They document the runtime
+ *     proposition — a `maintain:fix` task `parseTask` admits cannot die on
+ *     arrival with `FixValidationError` at `src/app/api/tasks/run/route.ts:255` —
+ *     they do not independently discover it.
+ *   - The independent value is in the other two: the source read-back, which
+ *     fails if the type alias is deleted (it is referenced by no runtime code, so
+ *     deleting it leaves `tsc` perfectly green — the gap it closed would come back
+ *     silently), and the complement pin, which fails if a member is dropped from
+ *     `MAINTAIN_FIX_TYPES` or an LLM-backed type is added to it.
+ *
+ * `autoFixRefusal` is the gate the DOORS share — `POST /api/lint/fix` and
+ * `src/lib/mcp-http.ts` call it before dispatching; `fixLintIssue` reaches it
+ * only on its throw path (src/lib/lint-fix.ts:946). `null` means dispatchable.
+ *
+ * Types are iterated from `MAINTAIN_FIX_TYPES` itself — a literal restated here
+ * would be a second copy of the very list under test.
+ */
+describe("maintenance fix vocabulary", () => {
+  const repoFile = (relative: string) =>
+    path.resolve(__dirname, "../../..", relative);
+
+  /**
+   * The fixable types the unattended scan deliberately does NOT take. Both call
+   * the LLM (`fixContradiction`, `fixMissingConceptPage` reach `hasLLMKey` /
+   * `callLLM`), which is the whole reason `MaintainFixType` is a strict subset
+   * rather than an alias: the maintenance scan runs with no human and no prompt
+   * budget. All three type pins in `tasks.ts` would happily accept
+   * `"contradiction"` added to both the union and the tuple — this is the
+   * assertion that would not.
+   */
+  const LLM_BACKED_FIXABLE_TYPES = AUTO_FIXABLE_CHECK_TYPES.filter(
+    (type) => !(MAINTAIN_FIX_TYPES as readonly string[]).includes(type),
+  );
+
+  it("omits exactly the fixable types that call the LLM", () => {
+    expect(LLM_BACKED_FIXABLE_TYPES).toEqual([
+      "contradiction",
+      "missing-concept-page",
+    ]);
+    // Mirrors the arity check in "check types with no auto-fix" above: the
+    // lengths reconcile only while every maintain type is also a fixable one and
+    // neither list repeats itself — so `it.each` below cannot pass vacuously.
+    expect(MAINTAIN_FIX_TYPES.length).toBe(
+      AUTO_FIXABLE_CHECK_TYPES.length - LLM_BACKED_FIXABLE_TYPES.length,
+    );
+  });
+
+  it("still declares the compile-time subset pin in src/lib/tasks.ts", async () => {
+    // The one assertion here that a green `tsc` does not already imply. Read back
+    // from disk, in the manner of `prose-inventory-parity.test.ts`, because the
+    // subject is the SOURCE TEXT: nothing imports the alias, so its deletion is
+    // invisible to every other check in the repository.
+    const source = await readFile(repoFile("src/lib/tasks.ts"), "utf8");
+
+    // Matched against the extracted declaration rather than the whole file, so a
+    // failure reads as the one line that is wrong (or the absence sentence)
+    // instead of a thousand-line source dump.
+    const declaration =
+      /type _MaintainFixTypesAreAutoFixable\s*=[^;]*;/.exec(source)?.[0] ??
+      "no `_MaintainFixTypesAreAutoFixable` declaration in src/lib/tasks.ts";
+
+    expect(declaration).toMatch(
+      /=\s*AssertNever<\s*Exclude<\s*MaintainFixType\s*,\s*AutoFixableCheckType\s*>\s*>\s*;/,
+    );
+  });
+
+  it.each(MAINTAIN_FIX_TYPES)(
+    "is dispatchable at the doors' gate: %s",
+    (type) => {
+      expect(autoFixRefusal(type, "some-page")).toBeNull();
+    },
+  );
 });

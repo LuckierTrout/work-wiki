@@ -2194,6 +2194,95 @@ describe("rebuildVectorStore", () => {
     expect(result.embedded).toBe(1);
     expect(result.skipped).toBe(1);
   });
+
+  // -------------------------------------------------------------------------
+  // Flush accounting (DW-293)
+  // -------------------------------------------------------------------------
+  //
+  // A rebuild no longer stores one vector at a time — it accumulates up to
+  // EMBEDDING_FLUSH_BATCH and stores the set. That moves WHEN a page's counter
+  // settles: not when it embeds, but when its flush lands. These pin that a
+  // rejected flush is fail-soft and costs exactly its own pages.
+
+  it("counts a page SKIPPED, not embedded, when its flush rejects — and still resolves", async () => {
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+      { title: "B", slug: "b", summary: "B" },
+    ]);
+    mockReadWikiPage.mockImplementation(async (slug: string) => ({
+      slug,
+      title: slug,
+      content: `Content for ${slug}`,
+      path: `/fake/${slug}.md`,
+    }));
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+    vi.spyOn(getStorage(), "upsertEmbeddings")
+      .mockRejectedValue(new Error("index write failed"));
+
+    // Resolves rather than throwing: one bad flush must not kill the run.
+    const result = await rebuildVectorStore();
+
+    expect(result.total).toBe(2);
+    expect(result.embedded).toBe(0);
+    // BOTH pages, not one — the whole batch is what failed.
+    expect(result.skipped).toBe(2);
+  });
+
+  it("charges a rejected flush its own pages and no more", async () => {
+    // 40 pages = one full batch of 32 plus a tail of 8. Only the SECOND flush
+    // rejects, so the first batch's pages must still count as embedded.
+    const slugs = Array.from({ length: 40 }, (_, i) => `p${i}`);
+    mockListWikiPages.mockResolvedValue(
+      slugs.map((slug) => ({ title: slug, slug, summary: slug })),
+    );
+    mockReadWikiPage.mockImplementation(async (slug: string) => ({
+      slug,
+      title: slug,
+      content: `Content for ${slug}`,
+      path: `/fake/${slug}.md`,
+    }));
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    const storage = getStorage();
+    const original = storage.upsertEmbeddings.bind(storage);
+    let flushes = 0;
+    vi.spyOn(storage, "upsertEmbeddings").mockImplementation(async (entries) => {
+      flushes++;
+      if (flushes === 2) throw new Error("index write failed");
+      return original(entries);
+    });
+
+    const result = await rebuildVectorStore();
+
+    expect(flushes).toBe(2);
+    expect(result.total).toBe(40);
+    // The 32 that flushed cleanly, and only the 8 in the failed tail lost.
+    expect(result.embedded).toBe(32);
+    expect(result.skipped).toBe(8);
+    expect(await storage.getEmbeddingById("p0")).not.toBeNull();
+    expect(await storage.getEmbeddingById("p39")).toBeNull();
+  });
+
+  it("flushes what it already embedded when the page loop throws outside the per-page catch", async () => {
+    // `readWikiPage` and `onProgress` sit outside the per-page try. A throw
+    // there escapes the loop, and without the tail flush in a `finally` every
+    // vector accumulated since the last flush would be silently discarded —
+    // vectors the per-vector code this replaced had already stored.
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+      { title: "B", slug: "b", summary: "B" },
+    ]);
+    mockReadWikiPage.mockImplementation(async (slug: string) => {
+      if (slug === "b") throw new Error("page read exploded");
+      return { slug, title: slug, content: `Content for ${slug}`, path: `/fake/${slug}.md` };
+    });
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    await expect(rebuildVectorStore()).rejects.toThrow("page read exploded");
+
+    // "a" was embedded before the throw, so it must be stored.
+    expect(await getStorage().getEmbeddingById("a")).not.toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

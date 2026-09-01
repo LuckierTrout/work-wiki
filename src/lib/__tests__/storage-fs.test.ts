@@ -8,6 +8,79 @@ import {
   writeSyncedAndPublish,
   writeSyncedNewFile,
 } from "../storage/filesystem";
+import { mergeEmbeddingEntries } from "../storage/types";
+import type { EmbeddingEntry } from "../storage/types";
+
+/**
+ * The merge rule, tested where it lives rather than only through a provider.
+ *
+ * `mergeEmbeddingEntries` is the SINGLE source of cross-provider agreement about
+ * embedding order: the filesystem blob and the R2 KV fallback both run it, and
+ * `upsertEmbedding` delegates to `upsertEmbeddings` so a single write and a bulk
+ * write cannot disagree either. Tested only through a provider, a change to the
+ * rule reads as a change to that provider's storage format.
+ */
+describe("mergeEmbeddingEntries", () => {
+  const entry = (id: string, tag: string): EmbeddingEntry =>
+    ({ id, vector: [1, 0], metadata: { tag } });
+  const shape = (entries: EmbeddingEntry[]) =>
+    entries.map((e) => `${e.id}:${e.metadata.tag}`);
+
+  it("keeps stored entries in their stored positions when they are updated", () => {
+    const merged = mergeEmbeddingEntries(
+      [entry("a", "old-a"), entry("b", "old-b"), entry("c", "old-c")],
+      [entry("c", "new-c"), entry("a", "new-a")],
+    );
+
+    // Updated in place — an update must never reorder the index.
+    expect(shape(merged)).toEqual(["a:new-a", "b:old-b", "c:new-c"]);
+  });
+
+  it("lets the LAST value for a repeated incoming id win, at its FIRST position", () => {
+    const merged = mergeEmbeddingEntries(
+      [],
+      [entry("x", "1"), entry("y", "y"), entry("x", "2"), entry("x", "3")],
+    );
+
+    expect(shape(merged)).toEqual(["x:3", "y:y"]);
+  });
+
+  it("appends ids that are not stored yet in argument order", () => {
+    const merged = mergeEmbeddingEntries(
+      [entry("a", "a")],
+      [entry("z", "z"), entry("m", "m"), entry("a", "a2")],
+    );
+
+    expect(shape(merged)).toEqual(["a:a2", "z:z", "m:m"]);
+  });
+
+  it("collapses a stored blob that already holds one id twice", () => {
+    // The store is supposed to be id-unique and nothing enforces it. Mapping
+    // each slot independently would alias ONE incoming object into BOTH, leaving
+    // the duplicate in place and sharing a single object between two positions.
+    const merged = mergeEmbeddingEntries(
+      [entry("dup", "first"), entry("keep", "keep"), entry("dup", "second")],
+      [entry("dup", "incoming")],
+    );
+
+    expect(shape(merged)).toEqual(["dup:incoming", "keep:keep"]);
+  });
+
+  it("never mutates the stored array", () => {
+    const stored = [entry("a", "old")];
+    const snapshot = shape(stored);
+
+    mergeEmbeddingEntries(stored, [entry("a", "new"), entry("b", "b")]);
+
+    expect(shape(stored)).toEqual(snapshot);
+  });
+
+  it("returns the stored list unchanged for an empty incoming set", () => {
+    const merged = mergeEmbeddingEntries([entry("a", "a"), entry("b", "b")], []);
+
+    expect(shape(merged)).toEqual(["a:a", "b:b"]);
+  });
+});
 
 describe("FilesystemStorageProvider", () => {
   let tmpDir: string;
@@ -805,6 +878,127 @@ describe("FilesystemStorageProvider", () => {
 
       expect(counted.files).toBe(1);
       expect(counted.directories).toBe(0);
+    });
+
+    it("refuses a write issued after the scope has exited", async () => {
+      // A leaked writer's write would get neither its own payload fsync nor any
+      // barrier — strictly worse than either mode — so the door closes behind
+      // the body and says so.
+      let leaked!: Parameters<Parameters<typeof provider.withBatchedWrites>[0]>[0];
+      await provider.withBatchedWrites(async (batch) => {
+        leaked = batch;
+        await batch.writeFile("leak/inside.md", "inside");
+      });
+
+      await expect(leaked.writeFile("leak/after.md", "after"))
+        .rejects.toThrow(/used after its scope exited/);
+      await expect(leaked.writeAsset("leak/after.bin", new Uint8Array([1]).buffer))
+        .rejects.toThrow(/used after its scope exited/);
+      // Nothing landed, and the write that WAS inside the scope is intact.
+      expect(await provider.fileExists("leak/after.md")).toBe(false);
+      expect(await provider.readFile("leak/inside.md")).toBe("inside");
+    });
+
+    /**
+     * Make every DIRECTORY fsync reject with `code`, leaving file fsyncs alone.
+     *
+     * The barrier ladder — which codes are swallowed, which propagate, whether
+     * the body's error still wins, whether the remaining directories are still
+     * barriered — is the most intricate logic in the batch door and none of it
+     * is reachable without a failing fsync, which a healthy disk will not give.
+     */
+    async function withFailingDirectorySync<T>(
+      code: string,
+      fn: () => Promise<T>,
+    ): Promise<{ result: T; attempted: number }> {
+      const probePath = path.join(tmpDir, ".fail-probe");
+      const probe = await fs.open(probePath, "w");
+      const proto = Object.getPrototypeOf(probe) as { sync: () => Promise<void> };
+      await probe.close();
+      await fs.rm(probePath, { force: true });
+      const original = proto.sync;
+      let attempted = 0;
+      proto.sync = async function patched(this: fs.FileHandle) {
+        if (!(await this.stat()).isDirectory()) return original.call(this);
+        attempted += 1;
+        const error: NodeJS.ErrnoException = new Error(`barrier refused: ${code}`);
+        error.code = code;
+        throw error;
+      };
+      try {
+        return { result: await fn(), attempted };
+      } finally {
+        proto.sync = original;
+      }
+    }
+
+    it("propagates a barrier failure whose code is outside the swallow set", async () => {
+      // EIO is a dying disk, not a filesystem declining to fsync a directory.
+      // The body resolved, so this error is the only thing the caller can learn.
+      const failure = withFailingDirectorySync("EIO", async () => {
+        await provider.withBatchedWrites(async (batch) => {
+          await batch.writeFile("eio/a.md", "a");
+        });
+      });
+
+      await expect(failure).rejects.toThrow(/barrier refused: EIO/);
+    });
+
+    it.each(["EPERM", "EISDIR", "EINVAL", "EACCES", "ENOTSUP", "ENOSYS", "EOPNOTSUPP"])(
+      "swallows a barrier refusal of %s — the mount will not fsync a directory",
+      async (code) => {
+        const { attempted } = await withFailingDirectorySync(code, async () => {
+          await provider.withBatchedWrites(async (batch) => {
+            await batch.writeFile(`${code}/a.md`, "a");
+          });
+        });
+
+        // It TRIED — the refusal is swallowed, not skipped.
+        expect(attempted).toBe(1);
+        expect(await provider.readFile(`${code}/a.md`)).toBe("a");
+      },
+    );
+
+    it.each(["ENOENT", "ENOTDIR"])(
+      "treats %s as nothing left to barrier rather than a failure",
+      async (code) => {
+        // The barrier opens the directory at scope EXIT, so a body that removed
+        // a directory it wrote into must not turn a successful batch into a throw.
+        const { attempted } = await withFailingDirectorySync(code, async () => {
+          await provider.withBatchedWrites(async (batch) => {
+            await batch.writeFile(`${code}/a.md`, "a");
+          });
+        });
+
+        expect(attempted).toBe(1);
+      },
+    );
+
+    it("lets the body's own error win when the barrier fails too", async () => {
+      const boom = new Error("body gave up");
+      const failure = withFailingDirectorySync("EIO", async () => {
+        await provider.withBatchedWrites(async (batch) => {
+          await batch.writeFile("both/a.md", "a");
+          throw boom;
+        });
+      });
+
+      // Not the EIO: the body's error is the one the caller can act on.
+      await expect(failure).rejects.toBe(boom);
+    });
+
+    it("still barriers the remaining directories after one of them fails", async () => {
+      const { attempted } = await withFailingDirectorySync("EIO", async () => {
+        await expect(provider.withBatchedWrites(async (batch) => {
+          await batch.writeFile("many1/a.md", "a");
+          await batch.writeFile("many2/b.md", "b");
+          await batch.writeFile("many3/c.md", "c");
+        })).rejects.toThrow(/barrier refused: EIO/);
+      });
+
+      // All three were attempted — the loop does not abandon the rest on the
+      // first failure, and only the first failure is reported.
+      expect(attempted).toBe(3);
     });
   });
 

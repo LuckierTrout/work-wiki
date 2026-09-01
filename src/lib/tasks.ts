@@ -17,6 +17,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { Queue } from "@cloudflare/workers-types";
 import { logger } from "./logger";
 import type { EmailIngestMetadata } from "./email-ingest";
+import type { AutoFixableCheckType } from "./lint-types";
 import { workbenchSourcePath } from "./source-delete";
 
 /**
@@ -281,7 +282,15 @@ export type TaskKind = (typeof TASK_KINDS)[number];
 type AssertNever<T extends never> = T;
 type _NoTaskKindMissingFromList = AssertNever<Exclude<Task["kind"], TaskKind>>;
 
-/** Deterministic, no-LLM lint fixes the maintenance scan may auto-apply. */
+/**
+ * Deterministic, no-LLM lint fixes the maintenance scan may auto-apply.
+ *
+ * This is not an independent list: it is the maintenance-eligible SUBSET of
+ * {@link AutoFixableCheckType} (`./lint-types`), the check types `fixLintIssue`
+ * dispatches — narrower because the two it omits, `contradiction` and
+ * `missing-concept-page`, call the LLM. `_MaintainFixTypesAreAutoFixable` below
+ * holds the subset relation at compile time and explains why.
+ */
 export type MaintainFixType =
   | "unmigrated-page"
   | "stale-index"
@@ -298,13 +307,19 @@ export type MaintainFixType =
  * are read back against (`prose-inventory-parity.test.ts`), and the source of
  * the membership set `parseTask` uses below.
  *
- * The two assertions here pin this list to the union in both directions and are
- * enforced by CI's `pnpm exec tsc --noEmit` — exactly as {@link TASK_KINDS} is:
+ * Three constraints hold this pair, all enforced by CI's `pnpm exec tsc
+ * --noEmit`. The two assertions here pin this list to the union in both
+ * directions — exactly as {@link TASK_KINDS} is:
  *   - `satisfies readonly MaintainFixType[]` rejects a fix type the union does
  *     not have (no extras);
  *   - `_NoMaintainFixTypeMissingFromList` resolves to `never` only while every
  *     union arm appears here, and a non-`never` residue fails `AssertNever`
  *     (no omissions).
+ *
+ * The third is `_MaintainFixTypesAreAutoFixable` below, which neither of those
+ * can supply: they only hold the union and this list to EACH OTHER, so both
+ * could agree on a type `lint-fix.ts` no longer dispatches. It pins the pair to
+ * `AUTO_FIXABLE_CHECK_TYPES` as well (DW-459).
  *
  * The omission half is the one that used to be missing (DW-343). This was a
  * `new Set<MaintainFixType>([…])`, which rejects an extra member but is silent
@@ -325,6 +340,31 @@ export const MAINTAIN_FIX_TYPES = [
 
 type _NoMaintainFixTypeMissingFromList = AssertNever<
   Exclude<MaintainFixType, (typeof MAINTAIN_FIX_TYPES)[number]>
+>;
+
+/**
+ * The third constraint, and the one that reaches OUTSIDE this file: every
+ * `MaintainFixType` arm must also be an {@link AutoFixableCheckType}, the list
+ * `fixLintIssue` (`./lint-fix`) actually dispatches.
+ *
+ * The two pins above only hold the union and the tuple to each other, so both
+ * could agree on a type `lint-fix.ts` no longer handles. The harm is a poison
+ * task that passes every gate on the way in: `parseTask` below sees the type in
+ * `MAINTAIN_FIX_TYPE_SET` and admits the `maintain:fix` task, the consumer
+ * drains it, and `fixLintIssue(task.lintType, …)` at
+ * `src/app/api/tasks/run/route.ts:255` throws `FixValidationError` on work that
+ * is already off the queue. This turns that into a build failure at the moment
+ * a member leaves `AUTO_FIXABLE_CHECK_TYPES`.
+ *
+ * Deliberately a pin and not a definition: writing `MaintainFixType` as
+ * `Extract<AutoFixableCheckType, …>` would make the union silently NARROW when
+ * a member disappears from the fixable list — the drift would compile here and
+ * surface, if at all, at the tuple's `satisfies` with the wrong message. The
+ * import is `import type` so this producer module gains no runtime dependency;
+ * `./lint-types` exists precisely so the list has one home both sides can name.
+ */
+type _MaintainFixTypesAreAutoFixable = AssertNever<
+  Exclude<MaintainFixType, AutoFixableCheckType>
 >;
 
 /**

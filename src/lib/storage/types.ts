@@ -154,6 +154,12 @@ export interface EmbeddingMatch {
  * that for themselves is exactly how a filesystem rebuild and a KV rebuild end
  * up with differently ordered indexes for the same input.
  *
+ * A stored blob that already holds an id TWICE collapses to one entry at the
+ * first of the two positions. That is a repair, not a rule the callers rely on:
+ * the store is supposed to be id-unique, but nothing enforces it, and mapping
+ * each slot independently would alias one incoming object into both — leaving
+ * the duplicate in place and, worse, sharing a single object between two slots.
+ *
  * `stored` is never mutated.
  */
 export function mergeEmbeddingEntries(
@@ -162,15 +168,17 @@ export function mergeEmbeddingEntries(
 ): EmbeddingEntry[] {
   // Insertion order of a Map is first-appearance order, and `set` overwrites
   // the value without moving the key — which is precisely "position by first
-  // appearance, value by last write".
-  const latest = new Map<string, EmbeddingEntry>();
-  for (const entry of incoming) latest.set(entry.id, entry);
-  const merged = stored.map((entry) => latest.get(entry.id) ?? entry);
-  const already = new Set(stored.map((entry) => entry.id));
-  for (const [id, entry] of latest) {
-    if (!already.has(id)) merged.push(entry);
+  // appearance, value by last write". One Map does both halves of the job:
+  // seeded from `stored` it fixes each id's position, then `incoming` overwrites
+  // values in place and appends whatever is new.
+  const merged = new Map<string, EmbeddingEntry>();
+  for (const entry of stored) {
+    // First stored occurrence wins the slot; a duplicate id is dropped rather
+    // than given a second one.
+    if (!merged.has(entry.id)) merged.set(entry.id, entry);
   }
-  return merged;
+  for (const entry of incoming) merged.set(entry.id, entry);
+  return [...merged.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -188,11 +196,18 @@ export function mergeEmbeddingEntries(
  *
  * A write made here is published exactly like its unbatched twin and rejects
  * exactly like it. Only the durability point moves — see the header docblock.
+ *
+ * EVERY MEMBER CALL MUST BE AWAITED BEFORE THE BODY RESOLVES. The scope has no
+ * way to know about a promise the body did not await, so an un-awaited write can
+ * have its rename land AFTER the barrier that was supposed to cover it — a name
+ * with no barrier behind it, which is worse than either mode. The writer is
+ * CLOSED when the scope exits and a member call after that throws, so the
+ * mistake fails loudly rather than silently producing a non-durable write.
  */
 export interface BatchWriter {
-  /** {@link StorageProvider.writeFile}, published now, made durable at scope exit. */
+  /** {@link StorageProvider.writeFile}, durable no later than scope exit. */
   writeFile(path: string, content: string): Promise<void>;
-  /** {@link StorageProvider.writeAsset}, published now, made durable at scope exit. */
+  /** {@link StorageProvider.writeAsset}, durable no later than scope exit. */
   writeAsset(path: string, data: ArrayBuffer): Promise<void>;
 }
 
@@ -533,13 +548,32 @@ export interface StorageProvider {
    * that resolved is immediately READABLE (the name is published; only the
    * flush to stable storage is deferred).
    *
-   * **What is traded.** Per-file durability becomes per-batch. A directory
-   * fsync makes the NAMES durable, not the file contents, so a power loss
-   * inside the scope can leave a batch member present with unwritten bytes.
-   * ONLY a caller that can re-drive its ENTIRE batch from a source that
-   * outlives the crash may use this door — "redo the batch" is the only
-   * recovery it offers. That is why it is opt-in and why `writeFile` and every
-   * lifecycle write keep their own fsync.
+   * **What is traded.** Per-file durability becomes durability NO LATER THAN
+   * scope exit. That is the portable claim: on R2 each member is already durable
+   * when its PUT resolves and the scope changes nothing, while the filesystem
+   * provider defers to one directory fsync per touched directory at exit. So a
+   * power loss inside a filesystem scope can leave a batch member present with
+   * unwritten bytes. ONLY a caller that can re-drive its ENTIRE batch from a
+   * source that outlives the crash may use this door — "redo the batch" is the
+   * only recovery it offers. That is why it is opt-in and why `writeFile` and
+   * every lifecycle write keep their own fsync.
+   *
+   * **Await every member.** A write the body does not await before resolving
+   * can land after the barrier meant to cover it. The writer is closed at scope
+   * exit and a later member call throws, on every provider.
+   *
+   * **Only the destination's own directory is barriered.** Writing into a fresh
+   * nested tree creates ancestor directories (`mkdir -p`) that are NOT
+   * barriered, so a crash can lose an ancestor's entry and with it the leaf's
+   * name even though the leaf's own directory was synced. This is inside the
+   * "re-drive the whole batch" contract — the recovery is the same — but it is
+   * narrower than "one barrier per touched directory" sounds.
+   *
+   * **Nesting and locks.** A nested scope barriers only ITS OWN directories;
+   * the outer scope's members are untouched by the inner scope's exit. And a
+   * lock released inside a batch no longer implies the write it guarded is
+   * durable — `importPortableArchive` takes a per-slug durable lock INSIDE the
+   * scope, so that lock now protects publication ordering only, not durability.
    *
    * **Scope, not ambient state.** Only writes made through the passed `batch`
    * are affected; a concurrent unrelated `writeFile` in the same process still

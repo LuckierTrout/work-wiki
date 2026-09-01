@@ -20,6 +20,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Restored HERE, not at the end of a test body: a spy installed on the
+  // `getStorage()` singleton and restored only on the success path stays
+  // installed for every later case in this file the moment one assertion fails.
+  vi.restoreAllMocks();
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
   _resetStorage();
@@ -313,7 +317,6 @@ describe("portable owner archive", () => {
       .rejects.toThrow(/500 MB safety limit/);
     // The ceiling error, not the read's.
     expect(readAsset).not.toHaveBeenCalled();
-    vi.restoreAllMocks();
   });
 
   it("still rejects past the ceiling when stat UNDER-reports", async () => {
@@ -341,7 +344,6 @@ describe("portable owner archive", () => {
 
     await expect(buildPortableArchive("alice"))
       .rejects.toThrow(/500 MB safety limit/);
-    vi.restoreAllMocks();
   });
 
   it("probes for collisions with stat, never by reading the existing file", async () => {
@@ -374,7 +376,6 @@ describe("portable owner archive", () => {
     expect(probed).toContain("tenants/alice/.obsidian/app.json");
     // …and nothing in the inspection pulled an existing object's bytes.
     expect(readAsset).not.toHaveBeenCalled();
-    vi.restoreAllMocks();
   });
 
   it("rejects an oversized manifest before allocating its expanded payload", async () => {

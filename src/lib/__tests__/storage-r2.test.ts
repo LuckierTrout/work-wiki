@@ -7,7 +7,7 @@
  * Cloudflare Workers environment.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { R2StorageProvider, R2NotFoundError } from "../storage/r2";
 import type { CloudflareEnv } from "../storage/cloudflare-types";
 import type {
@@ -766,6 +766,136 @@ describe("R2StorageProvider", () => {
       // remains and is filtered at query time by the caller.
       await expect(vecProvider.clearEmbeddings()).resolves.toBeUndefined();
       expect(await vecProvider.getEmbeddingById("page1")).not.toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Batched writes + bulk embedding upsert (DW-293)
+  // -------------------------------------------------------------------------
+
+  describe("withBatchedWrites", () => {
+    it("puts every member into the bucket and returns the body's value", async () => {
+      const answer = await provider.withBatchedWrites(async (batch) => {
+        await batch.writeFile("batch/a.md", "alpha");
+        await batch.writeAsset("batch/b.bin", new Uint8Array([1, 2, 3]).buffer);
+        return "returned";
+      });
+
+      expect(answer).toBe("returned");
+      expect(await provider.readFile("batch/a.md")).toBe("alpha");
+      expect([...new Uint8Array(await provider.readAsset("batch/b.bin"))])
+        .toEqual([1, 2, 3]);
+    });
+
+    it("propagates the body's own error", async () => {
+      const boom = new Error("body gave up");
+      await expect(provider.withBatchedWrites(async (batch) => {
+        await batch.writeFile("batch/one.md", "1");
+        throw boom;
+      })).rejects.toBe(boom);
+
+      // The write that landed before the throw is still there — a batch never
+      // rolls its members back on either provider.
+      expect(await provider.readFile("batch/one.md")).toBe("1");
+    });
+
+    it("refuses a write issued after the scope has exited", async () => {
+      // R2 defers nothing, so this guard buys no durability here. It exists so
+      // the CONTRACT is identical on both providers: a body that leaks the
+      // writer must fail the same way in dev as it does on Workers.
+      let leaked!: Parameters<Parameters<typeof provider.withBatchedWrites>[0]>[0];
+      await provider.withBatchedWrites(async (batch) => {
+        leaked = batch;
+      });
+
+      await expect(leaked.writeFile("batch/after.md", "after"))
+        .rejects.toThrow(/used after its scope exited/);
+      expect(await provider.fileExists("batch/after.md")).toBe(false);
+    });
+  });
+
+  describe("upsertEmbeddings", () => {
+    /** The provider's internal KV key for the Vectorize-less fallback blob. */
+    const EMBEDDINGS_KV_KEY = "_idx:embeddings";
+
+    it("issues ONE Vectorize upsert for the whole set, repeated ids collapsed", async () => {
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const upsert = vi.spyOn(vecEnv.YOPEDIA_VECTORIZE!, "upsert");
+      const vecProvider = new R2StorageProvider(vecEnv);
+
+      await vecProvider.upsertEmbeddings([
+        { id: "a", vector: [1, 0, 0], metadata: { tag: "a" } },
+        { id: "b", vector: [0, 1, 0], metadata: { tag: "b" } },
+        { id: "a", vector: [0, 0, 1], metadata: { tag: "a-again" } },
+      ]);
+
+      // One request, not one per vector — the whole point of the bulk door.
+      expect(upsert).toHaveBeenCalledTimes(1);
+      const sent = upsert.mock.calls[0][0];
+      // Two vectors, not three: the repeated id resolves HERE rather than
+      // leaving the managed index to order two writes of one id in one request.
+      expect(sent.map((v) => v.id)).toEqual(["a", "b"]);
+      expect(await vecProvider.getEmbeddingById("a")).toEqual({
+        id: "a",
+        vector: [0, 0, 1],
+        metadata: { tag: "a-again" },
+      });
+    });
+
+    it("issues ONE KV put whose merged order follows the merge rule", async () => {
+      await provider.upsertEmbeddings([
+        { id: "first", vector: [1, 0], metadata: { tag: "1" } },
+        { id: "second", vector: [0, 1], metadata: { tag: "2" } },
+      ]);
+
+      const put = vi.spyOn(env.YOPEDIA_CONFIG, "put");
+      await provider.upsertEmbeddings([
+        { id: "new", vector: [1, 1], metadata: { tag: "new-a" } },
+        { id: "new", vector: [2, 2], metadata: { tag: "new-b" } },
+        { id: "first", vector: [9, 9], metadata: { tag: "updated" } },
+        { id: "later", vector: [3, 3], metadata: { tag: "later" } },
+      ]);
+
+      // One load / merge / put for the set, where the per-vector door rewrote
+      // the whole blob once each.
+      expect(put).toHaveBeenCalledTimes(1);
+      const stored = await env.YOPEDIA_CONFIG.get(EMBEDDINGS_KV_KEY, "json") as
+        Array<{ id: string; metadata: Record<string, string> }>;
+      // Stored entries keep their positions; new ids append in the order they
+      // FIRST appeared; the last write for a repeated id wins.
+      expect(stored.map((e) => e.id)).toEqual(["first", "second", "new", "later"]);
+      expect(stored.find((e) => e.id === "first")!.metadata.tag).toBe("updated");
+      expect(stored.find((e) => e.id === "new")!.metadata.tag).toBe("new-b");
+    });
+
+    it("writes nothing at all for an empty set", async () => {
+      const put = vi.spyOn(env.YOPEDIA_CONFIG, "put");
+      await provider.upsertEmbeddings([]);
+      expect(put).not.toHaveBeenCalled();
+
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const upsert = vi.spyOn(vecEnv.YOPEDIA_VECTORIZE!, "upsert");
+      await new R2StorageProvider(vecEnv).upsertEmbeddings([]);
+      expect(upsert).not.toHaveBeenCalled();
+    });
+
+    it("chunks a set larger than one Vectorize request rather than rejecting it", async () => {
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const upsert = vi.spyOn(vecEnv.YOPEDIA_VECTORIZE!, "upsert");
+      const vecProvider = new R2StorageProvider(vecEnv);
+
+      const entries = Array.from({ length: 2_500 }, (_, i) => ({
+        id: `v${i}`,
+        vector: [i, 0],
+        metadata: { tag: `${i}` },
+      }));
+      await vecProvider.upsertEmbeddings(entries);
+
+      // 2500 over a 1000-vector chunk: three requests, every vector sent once.
+      expect(upsert).toHaveBeenCalledTimes(3);
+      const sentIds = upsert.mock.calls.flatMap((call) => call[0].map((v) => v.id));
+      expect(sentIds).toHaveLength(2_500);
+      expect(new Set(sentIds).size).toBe(2_500);
     });
   });
 

@@ -258,6 +258,15 @@ async function createOwnerBackupUnlocked(
     // The manifest write below stays OUTSIDE the batch on purpose — it is the
     // pointer that makes this prefix reachable at all, and a pointer must not
     // be durable before the bytes it names.
+    //
+    // THE WINDOW THIS STILL LEAVES. `writeManifest` and the `succeeded` ledger
+    // line are ordinary fsynced writes; the copied files under this prefix were
+    // made durable only by the batch's directory barriers. A crash in between
+    // can leave a manifest and a ledger line naming files whose bytes were lost.
+    // That state is DETECTED, not silent: `verifyOwnerBackup` walks
+    // `manifest.files` and compares each one's sha256, so a lost or truncated
+    // member fails verification and the manifest records `verificationStatus:
+    // "failed"` rather than quietly reading as a good backup.
     await getStorage().withBatchedWrites(async (batch) => {
       for (const sourcePath of walked.files) {
         // Ask the size before pulling the bytes (DW-542). `stat` is one HEAD on R2,

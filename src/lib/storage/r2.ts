@@ -63,6 +63,19 @@ function atomicIndexR2Key(key: string): string {
 /** KV key for fallback embedding store when Vectorize is unavailable. */
 const EMBEDDINGS_KV_KEY = "_idx:embeddings";
 
+/**
+ * Vectors per `vectorize.upsert` call.
+ *
+ * `upsertEmbeddings` takes a set of ANY size — the interface puts no cap on it,
+ * and a caller is entitled to hand over a whole rebuild — while Vectorize caps
+ * one request. Chunking here rather than asking callers to is the difference
+ * between a large flush costing more requests and a large flush REJECTING, which
+ * on the rebuild path would cost every page in it. 1000 is comfortably under
+ * the documented per-request ceiling and is not load-bearing: any value that
+ * fits works, and the merge that precedes it already fixed the ordering.
+ */
+const VECTORIZE_UPSERT_CHUNK = 1000;
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
@@ -389,13 +402,17 @@ export class R2StorageProvider implements StorageProvider {
   async upsertEmbeddings(entries: EmbeddingEntry[]): Promise<void> {
     if (entries.length === 0) return;
     if (this.vectorize) {
-      await this.vectorize.upsert(
-        mergeEmbeddingEntries([], entries).map((entry) => ({
-          id: entry.id,
-          values: entry.vector,
-          metadata: entry.metadata,
-        })),
-      );
+      const vectors = mergeEmbeddingEntries([], entries).map((entry) => ({
+        id: entry.id,
+        values: entry.vector,
+        metadata: entry.metadata,
+      }));
+      // Chunked, so a set larger than the per-request ceiling costs more
+      // requests rather than rejecting the whole flush. De-duplication happened
+      // above, so no id can straddle two chunks and land twice.
+      for (let i = 0; i < vectors.length; i += VECTORIZE_UPSERT_CHUNK) {
+        await this.vectorize.upsert(vectors.slice(i, i + VECTORIZE_UPSERT_CHUNK));
+      }
       return;
     }
     // Fallback: store in KV as a JSON blob (same approach as filesystem)
@@ -494,11 +511,32 @@ export class R2StorageProvider implements StorageProvider {
    * as durable as if it had been written alone.
    */
   async withBatchedWrites<T>(fn: (batch: BatchWriter) => Promise<T>): Promise<T> {
-    const batch: BatchWriter = {
-      writeFile: (path, content) => this.writeFile(path, content),
-      writeAsset: (path, data) => this.writeAsset(path, data),
+    // Closed at scope exit even though nothing here is deferred, because the
+    // CONTRACT must not differ per provider: a body that leaks the writer has
+    // to fail the same way on both, or the bug is found only in production.
+    let closed = false;
+    const guard = (filePath: string): void => {
+      if (!closed) return;
+      throw new Error(
+        `withBatchedWrites: the batch writer was used after its scope exited (${filePath}). ` +
+          "Every write must be awaited inside the body.",
+      );
     };
-    return fn(batch);
+    const batch: BatchWriter = {
+      writeFile: async (filePath, content) => {
+        guard(filePath);
+        await this.writeFile(filePath, content);
+      },
+      writeAsset: async (filePath, data) => {
+        guard(filePath);
+        await this.writeAsset(filePath, data);
+      },
+    };
+    try {
+      return await fn(batch);
+    } finally {
+      closed = true;
+    }
   }
 
   // -------------------------------------------------------------------------

@@ -15,12 +15,22 @@
  * barrier per write", and a COUNT of fsync calls is deterministic across
  * machines, cores and disks.
  *
- * WHY MARGINAL, NOT TOTAL, FOR THE LOOP PATHS. An import or a backup also does
- * fixed work — a manifest, an index reconstruction, a derived-index rebuild —
- * and that fixed cost is large enough to hide a per-item regression inside a
- * single total. So each loop path is measured at N and again at 3N items and the
- * assertion is on the MARGINAL cost: (barriers at 3N − barriers at N) / 2N. Fixed
- * writes cancel; only what scales with the input survives.
+ * WHY BOTH N AND 3N FOR THE LOOP PATHS. An import or a backup also does fixed
+ * work — a manifest, an index reconstruction, a derived-index rebuild — and that
+ * fixed cost is large enough to hide a per-item regression inside a single
+ * total. So each loop path is measured at N and again at 3N items: the MARGINAL
+ * cost, (barriers at 3N − barriers at N) / 2N, cancels the fixed writes and
+ * leaves only what scales. Both totals are asserted EXACTLY as well, because a
+ * marginal bound alone cannot see a fixed-cost blow-up.
+ *
+ * WHAT THE BOUNDS CLAIM — and what they do not. The door spends ONE BARRIER PER
+ * DIRECTORY. On a flat fixture the directory count is constant in N, so the
+ * marginal cost is 0 BY CONSTRUCTION and a suite that measured only that would
+ * be measuring its own fixture. Every loop path is therefore measured twice,
+ * flat and nested, and the nested shape — one directory per item, which is what
+ * `raw/sources/<slug>/<id>.<ext>` gives a real tenant — is where the marginal
+ * cost comes back to 1–2 per item. That is the true claim: per directory, not
+ * per file.
  *
  * HOW THE COUNT IS TAKEN. `FileHandle` is not exported and `node:fs/promises` is
  * an ESM namespace vitest cannot spy on, so the seam is the prototype every
@@ -71,9 +81,8 @@ import { embed } from "ai";
 // pulled into the graph THROUGH a module under test rather than by this file
 // directly — import it after something that loads `config.ts` unmocked and
 // `rebuildVectorStore` reads the real, disabled vector switch and refuses to run.
-import { rebuildVectorStore } from "../embeddings";
+import { EMBEDDING_FLUSH_BATCH, rebuildVectorStore } from "../embeddings";
 import { createOwnerBackup } from "../backups";
-import { serializeFrontmatter } from "../frontmatter";
 import { buildPortableArchive, importPortableArchive } from "../portable-archive";
 import { _resetStorage, getStorage } from "../storage";
 import { updateIndex, writeWikiPage } from "../wiki";
@@ -115,34 +124,70 @@ const BATCH_ONE_DIRECTORY_BARRIERS = 1;
 const BATCH_THREE_DIRECTORIES_BARRIERS = 3;
 
 /**
- * Extra barriers `importPortableArchive` may spend per additional manifest
- * entry.
+ * WHAT THE DOOR ACTUALLY BUYS, and the honest claim these four constants pin.
  *
- * MEASURED: 0. Four entries cost 12 barriers; twelve entries cost 12 — every
- * one of those 12 is fixed work (the manifest read-back's index reconstruction
- * and the derived-index rebuild), and the entries themselves now cost nothing
- * because they all land in the same two directories inside one batch.
+ * A batch spends ONE barrier PER DIRECTORY, not one per batch and not one per
+ * file. So the saving a real caller sees is decided entirely by the SHAPE of
+ * what it writes, and a benchmark that only ever writes flat fixtures measures
+ * its own fixture rather than the door:
  *
- * With the batch's payload fsync switched back on, the same measurement reads
- * 23 → 39, i.e. 2 per entry: the tenant write and its compatibility copy.
+ *   - FLAT — every member lands in the same directory (`wiki/page-N.md`,
+ *     `raw/asset-N.bin`). The directory count is constant in N, so the marginal
+ *     cost per item really is 0. This is the best case, and it is NOT what a
+ *     real tenant looks like.
+ *   - NESTED — one directory per item, which is the production shape:
+ *     `raw/sources/<slug>/<id>.<ext>` gives a Source its own directory, and the
+ *     archive import writes each one TWICE (tenant path + flat compatibility
+ *     path), in two different directories. Here a per-directory barrier trends
+ *     back toward one per file, and the batch saves the payload fsyncs but not
+ *     the directory barriers.
+ *
+ * Both shapes are measured below, and both bounds are EXACT totals rather than
+ * ceilings: with a ceiling of 0, a run that spends FEWER barriers passes just as
+ * happily, so a fixed-cost blow-up elsewhere on the path stays invisible.
  */
-const IMPORT_MARGINAL_BARRIERS_PER_ENTRY = 0;
+
+/** `importPortableArchive`, all entries in one directory. MEASURED: 12 at N=4 AND at N=12 (marginal 0). */
+const IMPORT_FLAT_BARRIERS = { small: 12, large: 12 } as const;
+
+/** `createOwnerBackup`, all files in one directory. MEASURED: 3 at N=4 AND at N=12 (marginal 0). */
+const BACKUP_FLAT_BARRIERS = { small: 3, large: 3 } as const;
 
 /**
- * Extra barriers `createOwnerBackup` may spend per additional copied file.
+ * `importPortableArchive`, one directory per entry — the production shape.
  *
- * MEASURED: 0. Four files cost 3 barriers; twelve files cost 3 — the 3 are the
- * batch's directory barrier, the manifest write and the ledger line.
+ * MEASURED: 18 at N=4, 34 at N=12 → marginal 2 per entry, which is exactly the
+ * two directories each entry creates (its tenant path and its flat compatibility
+ * path). NOT 0, and it is not supposed to be: the door charges per directory.
  *
- * With the batch's payload fsync switched back on: 7 → 15, i.e. 1 per file.
+ * What the batch still buys here is the payload fsyncs. With it switched off the
+ * same measurement reads 29 → 61, i.e. 4 per entry — so the batch removes half
+ * the marginal cost on this shape and all of it on the flat one.
  */
-const BACKUP_MARGINAL_BARRIERS_PER_FILE = 0;
+const IMPORT_NESTED_BARRIERS = { small: 18, large: 34 } as const;
+
+/**
+ * `createOwnerBackup`, one directory per file — the production shape.
+ *
+ * MEASURED: 6 at N=4, 14 at N=12 → marginal 1 per file: each source file gets
+ * its own destination directory under the backup prefix.
+ *
+ * With the payload fsync switched back on: 10 → 26, i.e. 2 per file.
+ */
+const BACKUP_NESTED_BARRIERS = { small: 6, large: 14 } as const;
+
+/** Items in the small and large runs of every marginal measurement. */
+const SMALL_N = 4;
+const LARGE_N = 12;
 
 /** Pages seeded for the rebuild bound — deliberately not a multiple of 32. */
 const REBUILD_PAGES = 40;
 
-/** Mirrors `EMBEDDING_FLUSH_BATCH` in `embeddings.ts`. */
-const REBUILD_FLUSH_BATCH = 32;
+/**
+ * The real constant, imported rather than copied — a hand-written 32 here would
+ * let `embeddings.ts` change while the bound meant to express it silently did not.
+ */
+const REBUILD_FLUSH_BATCH = EMBEDDING_FLUSH_BATCH;
 
 /**
  * How many times a rebuild may store the whole embeddings index.
@@ -284,19 +329,33 @@ describe("write barrier bounds — the batch door", () => {
 // The loop paths, measured marginally
 // ---------------------------------------------------------------------------
 
-/** Seed `count` owner pages, build an archive, wipe, then import it. */
-async function measureImport(count: number): Promise<{
+/**
+ * How a fixture lays its files out.
+ *
+ * `flat` puts everything in one directory; `nested` gives each item its own,
+ * which is what `raw/sources/<slug>/<id>.<ext>` does in production. The door
+ * charges per DIRECTORY, so this choice — not the item count — is what decides
+ * what a batch saves.
+ */
+type Shape = "flat" | "nested";
+
+/** The tenant-relative path of item `i` under `shape`. */
+function itemPath(shape: Shape, i: number): string {
+  return shape === "flat"
+    ? `raw/asset-${i}.bin`
+    : `raw/sources/slug-${i}/doc-${i}.bin`;
+}
+
+/** Seed `count` owner files, build an archive, wipe, then import it. */
+async function measureImport(count: number, shape: Shape): Promise<{
   barriers: number;
   imported: number;
 }> {
   await freshDataDir();
   for (let i = 0; i < count; i++) {
-    await getStorage().writeFile(
-      `tenants/alice/wiki/page-${i}.md`,
-      serializeFrontmatter(
-        { owner: "alice", visibility: "private", authors: ["alice"] },
-        `# Page ${i}\n\nBody ${i}.`,
-      ),
+    await getStorage().writeAsset(
+      `tenants/alice/${itemPath(shape, i)}`,
+      new Uint8Array([i % 256, 1, 2, 3]).buffer,
     );
   }
   const archive = await buildPortableArchive("alice");
@@ -312,18 +371,18 @@ async function measureImport(count: number): Promise<{
 
   for (let i = 0; i < count; i++) {
     expect(
-      await getStorage().readFile(`tenants/alice/wiki/page-${i}.md`),
-    ).toContain(`Body ${i}.`);
+      (await getStorage().readAsset(`tenants/alice/${itemPath(shape, i)}`)).byteLength,
+    ).toBe(4);
   }
   return { barriers: used, imported: result.imported };
 }
 
 /** Seed `count` tenant assets, then take a backup of them. */
-async function measureBackup(count: number): Promise<number> {
+async function measureBackup(count: number, shape: Shape): Promise<number> {
   await freshDataDir();
   for (let i = 0; i < count; i++) {
     await getStorage().writeAsset(
-      `tenants/alice/raw/asset-${i}.bin`,
+      `tenants/alice/${itemPath(shape, i)}`,
       new Uint8Array([i % 256, 1, 2, 3]).buffer,
     );
   }
@@ -339,21 +398,49 @@ async function measureBackup(count: number): Promise<number> {
 }
 
 describe("write barrier bounds — the loop paths", () => {
-  it("adds no more than the recorded marginal cost per imported archive entry", async () => {
-    const small = await measureImport(4);
-    const large = await measureImport(12);
+  it("spends a FLAT archive import exactly its recorded totals — nothing per entry", async () => {
+    const small = await measureImport(SMALL_N, "flat");
+    const large = await measureImport(LARGE_N, "flat");
 
-    const marginal = (large.barriers - small.barriers) / (12 - 4);
-    expect(marginal).toBeLessThanOrEqual(IMPORT_MARGINAL_BARRIERS_PER_ENTRY);
-    expect(large.imported).toBeGreaterThanOrEqual(12);
+    // Exact, not a ceiling: a bound of "no more than 0 per entry" is also met
+    // by a run whose FIXED cost tripled.
+    expect(small.barriers).toBe(IMPORT_FLAT_BARRIERS.small);
+    expect(large.barriers).toBe(IMPORT_FLAT_BARRIERS.large);
+    expect((large.barriers - small.barriers) / (LARGE_N - SMALL_N)).toBe(0);
+    expect(large.imported).toBeGreaterThanOrEqual(LARGE_N);
   }, 60_000);
 
-  it("adds no more than the recorded marginal cost per backed-up file", async () => {
-    const small = await measureBackup(4);
-    const large = await measureBackup(12);
+  it("spends a NESTED archive import exactly its recorded totals — per DIRECTORY, not per file", async () => {
+    // The production shape: each Source gets its own directory, and the import
+    // writes it twice (tenant path + flat compatibility path). The batch still
+    // removes every payload fsync; what it cannot remove is a barrier for a
+    // directory that exists only because of this one entry.
+    const small = await measureImport(SMALL_N, "nested");
+    const large = await measureImport(LARGE_N, "nested");
 
-    const marginal = (large - small) / (12 - 4);
-    expect(marginal).toBeLessThanOrEqual(BACKUP_MARGINAL_BARRIERS_PER_FILE);
+    expect(small.barriers).toBe(IMPORT_NESTED_BARRIERS.small);
+    expect(large.barriers).toBe(IMPORT_NESTED_BARRIERS.large);
+    // The honest claim: 2 per entry, one for each directory the entry creates.
+    expect((large.barriers - small.barriers) / (LARGE_N - SMALL_N)).toBe(2);
+  }, 60_000);
+
+  it("spends a FLAT backup exactly its recorded totals — nothing per file", async () => {
+    const small = await measureBackup(SMALL_N, "flat");
+    const large = await measureBackup(LARGE_N, "flat");
+
+    expect(small).toBe(BACKUP_FLAT_BARRIERS.small);
+    expect(large).toBe(BACKUP_FLAT_BARRIERS.large);
+    expect((large - small) / (LARGE_N - SMALL_N)).toBe(0);
+  }, 60_000);
+
+  it("spends a NESTED backup exactly its recorded totals — per DIRECTORY, not per file", async () => {
+    const small = await measureBackup(SMALL_N, "nested");
+    const large = await measureBackup(LARGE_N, "nested");
+
+    expect(small).toBe(BACKUP_NESTED_BARRIERS.small);
+    expect(large).toBe(BACKUP_NESTED_BARRIERS.large);
+    // One per file, because each file lands in a directory of its own.
+    expect((large - small) / (LARGE_N - SMALL_N)).toBe(1);
   }, 60_000);
 
   it("stores the embeddings index a bounded number of times per rebuild", async () => {
@@ -377,7 +464,11 @@ describe("write barrier bounds — the loop paths", () => {
 
     expect(result.embedded).toBe(REBUILD_PAGES);
     // The ONLY writes a rebuild makes are the index stores, so the barrier
-    // count IS the number of times the whole index was rewritten.
+    // count IS the number of times the whole index was rewritten. Asserted
+    // exactly at the DERIVED flush count — one full batch plus the tail — and
+    // then against the recorded ceiling, so neither a regression nor an
+    // unexplained improvement passes silently.
+    expect(used).toBe(Math.ceil(REBUILD_PAGES / REBUILD_FLUSH_BATCH));
     expect(used).toBeLessThanOrEqual(REBUILD_INDEX_STORES);
     for (let i = 0; i < REBUILD_PAGES; i++) {
       expect(await getStorage().getEmbeddingById(`vec-${i}`)).not.toBeNull();

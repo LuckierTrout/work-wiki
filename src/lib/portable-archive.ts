@@ -97,6 +97,18 @@ export async function buildPortableArchive(owner: string): Promise<{
     // file that trips the 500 MB ceiling is materialised in full to copy zero
     // bytes of it — the worst case is exactly the case that cannot afford it.
     //
+    // THE COST, stated plainly: one extra `stat` on EVERY file — one extra HEAD
+    // per object on R2 — bought against AT MOST ONE avoided read. It is worth
+    // taking only because the read it avoids is, by definition, of a file big
+    // enough to break a 500 MB ceiling inside one isolate.
+    //
+    // AND IT IS NOT SYMMETRIC. An UNDER-reporting stat is caught by the retained
+    // post-read check below. An OVER-reporting one rejects an archive that would
+    // actually have fit — and unlike the backup loop, which truncates and says
+    // so in its manifest, this path THROWS, so there is no partial archive and
+    // no record of why: the owner just cannot export. Wrong in the conservative
+    // and visible direction, but louder here than there.
+    //
     // Only the READING path is gated: a purpose override supplies its own bytes
     // from memory, so there is no read to avoid and `stat` would measure the
     // wrong thing (the file on disk, not the bytes being archived).
@@ -104,9 +116,8 @@ export async function buildPortableArchive(owner: string): Promise<{
     // `stat` GATES; it never ACCOUNTS. `totalBytes`, each manifest entry's
     // `size` and its `sha256` still come only from the bytes actually read, so
     // the post-read test below is what keeps the invariant true when `stat`
-    // under-reports. This throws rather than truncating — unchanged from before
-    // and unlike the backup loop — and it throws the same message either way,
-    // so which check fired is invisible to every caller.
+    // under-reports. The message is identical either way, so which check fired
+    // is invisible to every caller.
     if (effectivePurpose === undefined) {
       const { size } = await getStorage().stat(sourcePath);
       if (totalBytes + size > MAX_BYTES) {
@@ -223,6 +234,13 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
       // entire existing object into memory and discarding it — once per
       // manifest entry, for every inspection and every import. `stat` is the
       // metadata call, and it raises the SAME ENOENT the branching below reads.
+      //
+      // ONE BEHAVIOUR CHANGE, deliberate: `stat` SUCCEEDS on a directory where
+      // `readAsset` raised EISDIR and fell through to the rethrow. So a tenant
+      // path occupied by a DIRECTORY is now a plain collision — skipped under
+      // `collision: "skip"`, and under `"overwrite"` the write fails on its own
+      // terms — rather than failing the whole inspection loudly. Quieter, and
+      // consistent with what the probe is actually asking.
       await getStorage().stat(`tenants/${tenant(owner)}/${entry.path}`);
       collisions.push(entry.path);
     } catch (error) {
@@ -355,6 +373,14 @@ export async function importPortableArchive(
   // is deferred), but the index this reconstruction writes is the pointer that
   // makes the restored pages discoverable, so it must not be made durable ahead
   // of the pages it names.
+  //
+  // THE WINDOW THIS STILL LEAVES. `updateIndexUnsafe` below is a NORMAL fsynced
+  // write, and so are the derived-index rebuilds after it, while the pages they
+  // name were made durable only by their batch's directory barriers. A crash in
+  // between can therefore leave a rebuilt index naming pages whose bytes were
+  // lost. Nothing here detects that; the recovery is the same as for any other
+  // half-finished import — RE-RUN THE IMPORT from the same archive, which
+  // rewrites every entry and rebuilds the index over them.
   //
   // Reconstruct the flat index from every canonical page in this tenant. The
   // current transition still uses wiki/index.md as ordered discovery ground

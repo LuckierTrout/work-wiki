@@ -64,7 +64,24 @@ const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set([
   "EINVAL",
   "EACCES",
   "ENOTSUP",
+  // The plausible refusals on FUSE and network mounts, where the fsync simply
+  // is not implemented for a directory fd. Without them every batched path in
+  // the app throws on such a mount — for a barrier the mount was never going to
+  // give, which is the definition of a refusal rather than a failure.
+  "ENOSYS",
+  "EOPNOTSUPP",
 ]);
+
+/**
+ * Errno values that mean the directory is no longer there to barrier.
+ *
+ * The barrier opens the directory at SCOPE EXIT, not at write time, so a batch
+ * whose body deliberately removed a directory it wrote into — a temporary
+ * prefix, a tree the body itself cleaned up — would otherwise turn a fully
+ * successful body into a thrown ENOENT from the barrier loop. There is nothing
+ * left to make durable, and "the name is gone" is not a durability failure.
+ */
+const VANISHED_DIRECTORY_CODES = new Set(["ENOENT", "ENOTDIR"]);
 const LOCK_WAIT_MS = 5;
 const LOCK_TIMEOUT_MS = 15_000;
 const STALE_LOCK_MS = 5 * 60_000;
@@ -733,14 +750,27 @@ export class FilesystemStorageProvider implements StorageProvider {
    * body that threw may have landed writes before it did. If the body threw,
    * the body's error is what the caller can act on, so any barrier failure is
    * logged and swallowed; if it resolved, a barrier failure propagates unless
-   * its code says this filesystem simply does not fsync directories.
+   * its code says this filesystem simply does not fsync directories, or says
+   * the directory is no longer there to barrier at all.
+   *
+   * THE WRITER IS CLOSED AT EXIT. A body that leaks `batch` — stores it, or
+   * returns a promise it never awaited — would otherwise get a write that is
+   * neither individually synced NOR covered by any barrier, which is strictly
+   * worse than either mode. A member call after the scope has exited throws.
    */
   async withBatchedWrites<T>(fn: (batch: BatchWriter) => Promise<T>): Promise<T> {
     const directories = new Set<string>();
+    let closed = false;
     const batchWrite = async (
       filePath: string,
       data: string | Buffer,
     ): Promise<void> => {
+      if (closed) {
+        throw new Error(
+          `withBatchedWrites: the batch writer was used after its scope exited (${filePath}). ` +
+            "Every write must be awaited inside the body; the barrier has already run.",
+        );
+      }
       const abs = this.resolve(filePath);
       directories.add(path.dirname(abs));
       await withFilesystemPublicationLock(this.basePath, abs, () =>
@@ -759,6 +789,10 @@ export class FilesystemStorageProvider implements StorageProvider {
       result = await fn(batch);
     } catch (error) {
       bodyFailure = { error };
+    } finally {
+      // Before the barrier loop, so nothing can slip a write in between the
+      // last barrier and the return.
+      closed = true;
     }
 
     let barrierFailure: unknown = null;
@@ -767,7 +801,10 @@ export class FilesystemStorageProvider implements StorageProvider {
         await syncDirectory(dir);
       } catch (error) {
         const code = (error as NodeJS.ErrnoException | null)?.code;
-        if (code !== undefined && UNSUPPORTED_DIRECTORY_FSYNC_CODES.has(code)) {
+        if (code !== undefined && (
+          UNSUPPORTED_DIRECTORY_FSYNC_CODES.has(code)
+          || VANISHED_DIRECTORY_CODES.has(code)
+        )) {
           continue;
         }
         // Keep going: every OTHER directory in the scope still deserves its

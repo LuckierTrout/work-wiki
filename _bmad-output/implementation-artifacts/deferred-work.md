@@ -3404,7 +3404,9 @@ source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.m
 location: src/lib/tasks.ts:285
 severity: low
 reason: This change pins `MAINTAIN_FIX_TYPES` to `MaintainFixType` in both directions, but the union itself (`src/lib/tasks.ts:285-292`) is a bare literal union with no reference to `AutoFixableCheckType`. A member dropped from `AUTO_FIXABLE_CHECK_TYPES` would still compile here and surface only as a runtime `FixValidationError` on the maintenance path (`src/app/api/tasks/run/route.ts:255`). The bundle intent named the restatements of the fixable list, not the subset relation between the two lists.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw3-email-worker-decoded-byte-budget
+resolution-undo: 87e62427843d8e17e02e56e9c5a773a3944f09414b9994ebdacf950be5f20cf4 2026-09-01 7374617475733a206f70656e
 
 ### DW-460: The graph-page source scan parses the `<canvas>` opening tag with `<canvas\b[^>]*>`, which any `>` inside a prop breaks.
 

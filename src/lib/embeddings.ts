@@ -879,9 +879,14 @@ interface EmbeddingMeta extends Record<string, string> {
  * flush costs every page in it, and the pending array holds every vector in it
  * in memory. 32 keeps a rebuild's rewrites proportional to N/32 while keeping
  * both of those small enough to shrug at. It is not tuned to any provider's
- * request limit — nothing here batches over a network — so it is safe to move.
+ * request limit — the R2 provider chunks its own Vectorize requests — so it is
+ * safe to move.
+ *
+ * EXPORTED for `write-batching-bounds.test.ts`, which derives the recorded
+ * rewrite bound from it. A hand-copied 32 in the test would let this constant
+ * change while the bound it is supposed to express silently did not.
  */
-const EMBEDDING_FLUSH_BATCH = 32;
+export const EMBEDDING_FLUSH_BATCH = 32;
 
 /** Drop matches whose stored model differs from the active one (stale vectors). */
 function modelMatches(metadata: Record<string, string>, model: string | null): boolean {
@@ -1268,39 +1273,51 @@ export async function rebuildVectorStore(
   // that no longer exist are left untouched (no bulk-clear on a managed index),
   // but they're harmless — every read intersects results with the caller's
   // readable/scoped slug set, so an orphan vector can never surface.
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    const page = await readWikiPage(entry.slug);
+  //
+  // The `finally` is what makes accumulating safe. `readWikiPage` and
+  // `onProgress` sit OUTSIDE the per-page catch — deliberately, since a caller's
+  // progress callback throwing is the caller's bug — so a throw there escapes
+  // the loop entirely. Without the tail flush running on that path, up to
+  // EMBEDDING_FLUSH_BATCH − 1 vectors that were already embedded would be
+  // discarded, where the per-vector code this replaced had already stored them.
+  try {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const page = await readWikiPage(entry.slug);
 
-    if (!page || !page.content || page.content.trim().length === 0) {
-      skipped++;
-      onProgress?.(i + 1, total);
-      continue;
-    }
-
-    try {
-      const embedding = await embedText(page.content);
-      if (!embedding) {
+      if (!page || !page.content || page.content.trim().length === 0) {
         skipped++;
         onProgress?.(i + 1, total);
         continue;
       }
 
-      const meta: EmbeddingMeta = {
-        model: modelName,
-        contentHash: contentHash(page.content),
-      };
-      pending.push({ id: entry.slug, vector: embedding, metadata: meta });
-      if (pending.length >= EMBEDDING_FLUSH_BATCH) await flushPending();
-    } catch (err) {
-      logger.warn("embeddings", `embed page "${entry.slug}" failed:`, err);
-      skipped++;
-    }
+      try {
+        const embedding = await embedText(page.content);
+        if (!embedding) {
+          skipped++;
+          onProgress?.(i + 1, total);
+          continue;
+        }
 
-    onProgress?.(i + 1, total);
+        const meta: EmbeddingMeta = {
+          model: modelName,
+          contentHash: contentHash(page.content),
+        };
+        pending.push({ id: entry.slug, vector: embedding, metadata: meta });
+        if (pending.length >= EMBEDDING_FLUSH_BATCH) await flushPending();
+      } catch (err) {
+        logger.warn("embeddings", `embed page "${entry.slug}" failed:`, err);
+        skipped++;
+      }
+
+      onProgress?.(i + 1, total);
+    }
+  } finally {
+    // The tail — whatever did not fill a whole batch, on every exit path.
+    // `flushPending` swallows its own failure, so this cannot replace an error
+    // already on its way out.
+    await flushPending();
   }
-  // The tail — whatever did not fill a whole batch.
-  await flushPending();
 
   return { total, embedded, skipped, model: modelName };
 }
