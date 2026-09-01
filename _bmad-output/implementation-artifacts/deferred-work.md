@@ -5462,3 +5462,11 @@ source_spec: `spec-dw-439-workbench-request-deadline-ordering.md`
 severity: medium
 reason: The ordering shipped here guarantees only that the server's FETCH deadline fires before the client's. Two paths outlast any fixed margin: 1. `fetchFollowingRedirects` (src/lib/fetch.ts:163-201) arms `AbortSignal.timeout(FETCH_TIMEOUT_MS)` INSIDE the `for (let hop = 0; hop <= MAX_REDIRECTS; hop++)` loop at :175, with `MAX_REDIRECTS = 5` (:169) -- five redirects, so up to six fetches with a full 15 s each, up to 90 s server-side. 2. `src/app/api/workbench/intake/route.ts:640` ends in `enqueueOrInline(jobId, task, () => ingest(title, text, options))`. Where `enqueueTask` returns false (src/lib/ingest-async.ts:52-58, the off-Workers deployment), the FULL `ingest()` -- LLM map/reduce, retries, embeddings, image downloads -- runs inside the request the client deadline wraps, and `storeAndQueue` has already stored the Source before that call. In both, the client aborts first, `unconfirmedCause` (src/lib/workbench-request.ts) classifies the `TimeoutError` as unconfirmed, and the owner is told
 status: open
+
+### DW-701: A tenant path occupied by a DIRECTORY is now recorded as an ordinary archive collision instead of failing loudly.
+origin: spec-deferred 725e18a278b9
+location: src/lib/portable-archive.ts:225
+source_spec: `spec-dw-293-679-bulk-read-and-write-cost.md`
+severity: low
+reason: `parseArchive`'s collision probe changed from `readAsset` to `stat` (DW-679's read-avoidance). `fs.readFile` on a directory raised `EISDIR`, which the `else` branch rethrew; `fs.stat` succeeds, so the entry lands in `collisions` and, under `collision: "skip"`, is silently skipped rather than rejecting the import. Closing it needs a way to ask the provider whether a path is a directory — `FileInfo` carries only `size` and `lastModified`, and widening `StorageProvider` is outside this bundle's intent. Reachable only when a tenant holds files under `tenants/<t>/<archive entry path>/...`, which `walk()` would have archived as children rather than as that path.
+status: open
