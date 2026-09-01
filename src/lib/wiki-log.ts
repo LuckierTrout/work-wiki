@@ -48,6 +48,59 @@ function logBlock(operation: LogOperation, title: string, details?: string, mark
   return block;
 }
 
+/** Longest handle the trigger suffix will carry; see {@link withTriggeredBy}. */
+const TRIGGER_HANDLE_MAX = 64;
+
+/**
+ * Stamp WHO ASKED for an automated operation onto its log detail line.
+ *
+ * ONE OWNER FOR THE SUFFIX FORMAT (DW-447). An automated edit is authored by
+ * the automation — `"lint-fix"` for every lint auto-fix, an `AUTOMATION_ACTORS`
+ * member `normalizeActor` folds into the agent — so the human who pressed the
+ * button never becomes the revision `author`, a page `contributor` or a
+ * trust-score input. The log detail line is where their handle lands instead:
+ * `logBlock` emits it as free prose under the entry heading, and NO PART OF THE
+ * CONTRIBUTOR CONTRACT reads it — `contributors.ts`, `normalizeActor` and
+ * `pushRecentEvent` all work from the revision sidecar and page frontmatter,
+ * never from `log.md`.
+ *
+ * NOT the same field as `SourceEntry.triggered_by`. That one is structured
+ * ingest provenance stored in a page's `sources[]`, and `src/lib/trail.ts`
+ * DOES feed it through `normalizeActor` (`normalizeActor(s.triggered_by ||
+ * "system")`). This is prose in a log line and reaches no such reader. Do not
+ * wire one to the other.
+ *
+ * Callers on both sides of the lint-fix split use this (`./lifecycle`'s
+ * page-less fixes and `./lint-fix`'s ten `logDetails` closures), so the
+ * parenthetical cannot drift into two spellings.
+ *
+ * SANITIZED HERE, because the single owner of the format has to be the single
+ * owner of the escaping too. The handle is interpolated raw into markdown that
+ * `wiki/log.md` stores and `src/app/wiki/log/page.tsx` renders publicly, and
+ * `logBlock` only trims the OUTER ends of `details`. A handle carrying a
+ * newline could therefore split one entry into two lines — forging a `## [`
+ * heading, or slipping content past that page's LINE-BASED private-page
+ * redaction, which drops whole lines that name a hidden slug or title. The
+ * handle is not always a Clerk username: `YOPEDIA_SERVICE_PRINCIPAL` and
+ * registered agent handles reach here too. So control characters collapse to a
+ * single space and the result is capped.
+ *
+ * An absent, blank, or sanitizes-to-blank handle returns `details` UNCHANGED —
+ * the stdio MCP transport resolves no principal, and its log lines must stay
+ * byte-identical to what they were before a trigger could be recorded at all.
+ */
+export function withTriggeredBy(details: string, triggeredBy?: string): string {
+  // Collapse every control character (newlines, tabs, NUL, the C1 range) to a
+  // single space BEFORE trimming, so a handle that is nothing but control
+  // characters ends up blank and takes the unchanged-`details` path.
+  const handle = (triggeredBy ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ")
+    .trim()
+    .slice(0, TRIGGER_HANDLE_MAX)
+    .trim();
+  return handle ? `${details} (triggered by ${handle})` : details;
+}
+
 /**
  * Append a structured entry to `wiki/log.md`, following the founding-spec format:
  *

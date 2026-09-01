@@ -1070,8 +1070,12 @@ describe("the bump lives at the exact write-owner tails", () => {
     expect(pipeline).toMatch(
       /await appendToLog\(logOp, op\.title, details\);[\s\S]{0,1200}try \{\s*\n\s*await bumpDataVersion\(\);\s*\n\s*\} catch \(err\) \{[\s\S]{0,160}logger\.warn\("data-version"/,
     );
+    // `\s*` between the arguments, not a literal `", "`: DW-447 wrapped this
+    // call across lines to fit the `withTriggeredBy` wrapper, and the claim
+    // being pinned is the ORDER — log, then the fail-soft bump — not the
+    // formatting of the argument list.
     expect(stalePrune).toMatch(
-      /await appendToLog\("edit", slug,[\s\S]{0,240}try \{\s*await bumpDataVersion\(\);\s*\} catch \(err\) \{[\s\S]{0,180}logger\.warn\("data-version"/,
+      /await appendToLog\(\s*"edit",\s*slug,[\s\S]{0,240}try \{\s*await bumpDataVersion\(\);\s*\} catch \(err\) \{[\s\S]{0,180}logger\.warn\("data-version"/,
     );
     expect(pipeline.indexOf("await bumpDataVersion();")).toBeLessThan(
       pipeline.indexOf("return { slug, crossRefedSlugs, strippedBacklinksFrom, removedFromIndex };")

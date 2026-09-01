@@ -1128,8 +1128,39 @@ describe("dispatchMcp — fix_lint_issue", () => {
         "absent-page",
         undefined,
         undefined,
+        undefined,
         ALICE.handle,
       );
+    });
+
+    /**
+     * The principal is the TRIGGER, never the AUTHOR (DW-447).
+     *
+     * This door used to pass `author: p!.handle` into `handleFixLintIssue`, so
+     * an owner who asked for a lint fix was written into the page's revision
+     * sidecar, its `contributors` and their trust score as the author of a
+     * machine-generated edit — the exact thing `AUTOMATION_ACTORS` exists to
+     * prevent, and the honest `"lint-fix"` the stdio transport kept all along.
+     * Position matters as much as presence here: fifth is `author`, sixth is
+     * `triggeredBy`, and the defect was the handle sitting in the wrong one.
+     */
+    it("forwards the principal as the trigger and leaves the author alone", async () => {
+      // BOB, not the suite's ALICE, so neither assertion can pass on a
+      // coincidence with a handle some other row already put in the spy.
+      await dispatchMcp(
+        {
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "fix_lint_issue",
+            arguments: { type: "orphan-page", slug: "absent-page" },
+          },
+        },
+        BOB,
+      );
+
+      expect(spiedFixLintIssue.mock.lastCall?.[4]).toBeUndefined();
+      expect(spiedFixLintIssue.mock.lastCall?.[5]).toBe(BOB.handle);
     });
 
     it("advertises the same set it enforces", async () => {
@@ -1220,6 +1251,7 @@ describe("dispatchMcp — fix_lint_issue", () => {
         "absent-page",
         undefined,
         undefined,
+        undefined,
         ALICE.handle,
       );
     });
@@ -1269,6 +1301,7 @@ describe("dispatchMcp — fix_lint_issue", () => {
         "",
         undefined,
         "no concept sentence here",
+        undefined,
         ALICE.handle,
       );
     });
@@ -1284,6 +1317,7 @@ describe("dispatchMcp — fix_lint_issue", () => {
       expect(spiedFixLintIssue).toHaveBeenCalledWith(
         "orphan-page",
         "",
+        undefined,
         undefined,
         undefined,
         ALICE.handle,

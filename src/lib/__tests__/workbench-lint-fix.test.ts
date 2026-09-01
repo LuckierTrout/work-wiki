@@ -30,11 +30,12 @@ vi.mock("../alias-index", () => ({
 import { resolveAlias } from "../alias-index";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { FixValidationError } from "../lint-fix";
-import { readWikiPage } from "../wiki";
+import { listWikiPages, readWikiPage } from "../wiki";
 import { WORKBENCH_MECHANICAL_FIX } from "../workbench-lint-types";
 import { fixWorkbenchLintIssue } from "../workbench-lint-fix";
 
 const mockedRead = vi.mocked(readWikiPage);
+const mockedList = vi.mocked(listWikiPages);
 const mockedWrite = vi.mocked(writeWikiPageWithSideEffects);
 const mockedResolve = vi.mocked(resolveAlias);
 
@@ -172,6 +173,125 @@ describe("Workbench mechanical auto-fix", () => {
     );
     expect(mockedWrite).not.toHaveBeenCalled();
   });
+
+  /**
+   * The trigger is recorded, the author is not touched — ON ALL THREE BRANCHES
+   * (DW-447).
+   *
+   * `POST /api/lint/workbench-fix` resolves an owner and used to hand that
+   * handle down as `author`, which is how a human ends up credited with a
+   * machine-generated edit in the revision sidecar, the page's `contributors`
+   * and their trust score.
+   *
+   * ONE ROW PER BRANCH, because this wrapper forks three ways and the argument
+   * lists differ: `fixRenamedSlug` and `fixDanglingWikilink` take
+   * `(slug, target, author, triggeredBy)`, while the fall-through calls
+   * `fixLintIssue(type, slug, target, message, author, triggeredBy)` — a
+   * six-argument call where dropping the `undefined` message puts the handle
+   * back in the AUTHOR slot, type-checks cleanly, and reinstates the exact
+   * defect this change removed. A single `broken-link` row left that mutation
+   * green across the whole suite.
+   *
+   * Each row asserts BOTH halves, since the defect is a swap: `"lint-fix"` in
+   * the author slot AND the handle on the log line.
+   */
+  const seeGone = () =>
+    mockedRead.mockImplementation(async (slug) =>
+      slug === "gone"
+        ? null
+        : {
+            slug: "src",
+            title: "Src",
+            content: "# Src\n\nSee [[Gone]].",
+            path: "/wiki/src.md",
+          },
+    );
+
+  const seeRenamed = () => {
+    mockedResolve.mockResolvedValue("current-name");
+    mockedRead.mockImplementation(async (slug) =>
+      slug === "current-name"
+        ? {
+            slug,
+            title: "Current Name",
+            content: "# Current Name",
+            path: "/wiki/current-name.md",
+          }
+        : {
+            slug: "linker",
+            title: "Linker",
+            content: "# Linker\n\nSee [[old-name]].",
+            path: "/wiki/linker.md",
+          },
+    );
+  };
+
+  /** `orphan-page`: on disk, absent from the index — the fall-through branch. */
+  const seeOrphan = () => {
+    mockedRead.mockResolvedValue({
+      slug: "orphan",
+      title: "Orphan Page",
+      content: "# Orphan Page\n\nSome content about orphans.",
+      path: "/wiki/orphan.md",
+    });
+    mockedList.mockResolvedValue([]);
+  };
+
+  const writtenDetail = () =>
+    mockedWrite.mock.calls[0][0].logDetails?.({ updatedSlugs: [] });
+
+  it("records the trigger on the fixDanglingWikilink branch", async () => {
+    seeGone();
+
+    await fixWorkbenchLintIssue("broken-link", "src", "gone", undefined, "bob");
+
+    expect(mockedWrite.mock.calls[0][0].author).toBe("lint-fix");
+    expect(writtenDetail()).toBe(
+      'auto-fix: removed dangling wikilink(s) to "gone" (triggered by bob)',
+    );
+  });
+
+  it("records the trigger on the fixRenamedSlug branch", async () => {
+    seeRenamed();
+
+    await fixWorkbenchLintIssue("renamed-slug", "linker", "old-name", undefined, "bob");
+
+    expect(mockedWrite.mock.calls[0][0].author).toBe("lint-fix");
+    expect(writtenDetail()).toBe(
+      'auto-fix: rewrote renamed slug "old-name" → "current-name" (triggered by bob)',
+    );
+  });
+
+  it("records the trigger on the fixLintIssue fall-through", async () => {
+    // `orphan-page` takes the dispatcher path, where the trigger has to survive
+    // an extra hop through `FIX_HANDLERS` as well as this wrapper's own call.
+    seeOrphan();
+
+    await fixWorkbenchLintIssue("orphan-page", "orphan", undefined, undefined, "bob");
+
+    expect(mockedWrite.mock.calls[0][0].author).toBe("lint-fix");
+    expect(writtenDetail()).toBe("auto-fix: added orphan page to index (triggered by bob)");
+  });
+
+  it.each([
+    ["the fixDanglingWikilink branch", seeGone, ["broken-link", "src", "gone"] as const,
+      'auto-fix: removed dangling wikilink(s) to "gone"'],
+    ["the fixRenamedSlug branch", seeRenamed, ["renamed-slug", "linker", "old-name"] as const,
+      'auto-fix: rewrote renamed slug "old-name" → "current-name"'],
+    ["the fixLintIssue fall-through", seeOrphan, ["orphan-page", "orphan", undefined] as const,
+      "auto-fix: added orphan page to index"],
+  ])(
+    "leaves the log line untouched on %s when no principal was resolved",
+    async (_label, seed, [type, slug, target], expected) => {
+      // The in-process shape (no door, no owner): byte-identical to the line
+      // each fix wrote before a trigger could be recorded at all.
+      seed();
+
+      await fixWorkbenchLintIssue(type, slug, target);
+
+      expect(writtenDetail()).toBe(expected);
+    },
+  );
 
   it("allows the two index.md-drift classes and no others", async () => {
     expect(WORKBENCH_MECHANICAL_FIX.has("orphan-page")).toBe(true);

@@ -1281,15 +1281,28 @@ export async function handleLintWiki(args: {
  * DOES need a slug still answers "Missing required field: slug" for the empty
  * string, which names both the field and the fact that this type needs it —
  * strictly better than a schema's "expected string, received undefined".
+ *
+ * `triggeredBy`, not `author` (DW-447): a lint fix is authored by `"lint-fix"`
+ * at every door, and the resolved principal is recorded as the TRIGGER on the
+ * wiki-log detail line instead — same field name `handleReingest` below uses.
+ * `author` is left to `fixLintIssue`'s own default, so nothing this handler
+ * forwards can reach `normalizeActor`, the contributor list or a trust score.
  */
 export async function handleFixLintIssue(args: {
   type: string;
   slug?: string | undefined;
   target?: string | undefined;
   message?: string | undefined;
-  author?: string | undefined;
+  triggeredBy?: string | undefined;
 }): Promise<FixResult> {
-  return fixLintIssue(args.type, args.slug ?? "", args.target, args.message, args.author);
+  return fixLintIssue(
+    args.type,
+    args.slug ?? "",
+    args.target,
+    args.message,
+    undefined,
+    args.triggeredBy,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2615,16 +2628,32 @@ export function createMcpServer(): McpServer {
     },
   }, async (args) => {
     try {
-      // No `author`: the stdio transport is unauthenticated and deployment-
-      // trusted — every handler here runs with a `null` principal (see
-      // `handleSearchWiki`) — so there is no resolved actor to attribute the
-      // fix to, and `fixLintIssue`'s `"lint-fix"` default is the HONEST answer
-      // here — not the omission it would be at the two doors that DO resolve a
-      // principal (`mcp-http.ts` and `POST /api/lint/fix`, DW-456).
-      // `"lint-fix"` is an `AUTOMATION_ACTORS` member (`agent-handle.ts`), so
-      // `normalizeActor` folds it into the agent rather than scattering a
-      // one-off system handle through the contributor list.
-      const result = await handleFixLintIssue(args);
+      // `args` carries no `triggeredBy`, and no door here can supply one: the
+      // stdio transport is unauthenticated and deployment-trusted — every
+      // handler runs with a `null` principal (see `handleSearchWiki`) — so
+      // there is no resolved actor who could be named as having ASKED for the
+      // fix. The log detail line stays exactly what it was.
+      //
+      // The AUTHOR is `"lint-fix"` here and at every other door (DW-447), not
+      // just this one: an auto-fix is a machine edit, and `"lint-fix"` is an
+      // `AUTOMATION_ACTORS` member (`agent-handle.ts`) that `normalizeActor`
+      // folds into the agent. The doors that DO resolve a principal
+      // (`mcp-http.ts`, `POST /api/lint/fix`, `POST /api/lint/workbench-fix`)
+      // pass it as `triggeredBy` — a log-line-only record — precisely so a
+      // human is never credited in revision history, the contributor list or a
+      // trust score for an edit they did not write.
+      // EXPLICIT FIELDS, not `handleFixLintIssue(args)`. `triggeredBy` is
+      // server-derived by contract — no door lets a caller name who triggered a
+      // fix — and forwarding the parsed argument object wholesale made that
+      // contract depend on the SDK stripping unknown keys during `parse`, which
+      // is a property of its zod call rather than of this one. The same
+      // discipline `mcp-http.ts` argues for at its own `fix_lint_issue`.
+      const result = await handleFixLintIssue({
+        type: args.type,
+        slug: args.slug,
+        target: args.target,
+        message: args.message,
+      });
       return {
         content: [
           {

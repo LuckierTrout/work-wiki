@@ -24,14 +24,29 @@ vi.mock("../lifecycle", () => ({
     removedFromIndex: true,
     strippedBacklinksFrom: [],
   })),
-  pruneStaleIndexEntry: vi.fn(async (slug: string) => {
+  // Mirrors the real `pruneStaleIndexEntry` closely enough for the log line to
+  // be observable: it writes the SAME detail string through the SAME
+  // `withTriggeredBy` formatter, so the DW-447 rows below are reading the
+  // production suffix rather than one this stub invented.
+  //
+  // NOT end-to-end coverage, though — this stub REBUILDS the wrapped string, so
+  // it would keep answering correctly if the real `pruneStaleIndexEntry` lost
+  // its `withTriggeredBy` call. What these rows pin is that `fixStaleIndex`
+  // FORWARDS the trigger. The load-bearing guard for the line the real function
+  // writes lives in `stale-index-lifecycle.test.ts`, against real storage.
+  pruneStaleIndexEntry: vi.fn(async (slug: string, triggeredBy?: string) => {
     const { listWikiPages, updateIndex, appendToLog } = await import("../wiki");
+    const { withTriggeredBy } = await import("../wiki-log");
     const index = await listWikiPages();
     if (!index.some((entry) => entry.slug === slug)) {
       return { removed: false };
     }
     await updateIndex(index.filter((entry) => entry.slug !== slug));
-    await appendToLog("edit", slug, `auto-fix: removed stale index entry for ${slug}`);
+    await appendToLog(
+      "edit",
+      slug,
+      withTriggeredBy(`auto-fix: removed stale index entry for ${slug}`, triggeredBy),
+    );
     return { removed: true };
   }),
 }));
@@ -81,6 +96,7 @@ import {
   ALL_CHECK_TYPES,
   AUTO_FIXABLE_CHECK_TYPES,
   disputedClearGuidance,
+  type AutoFixableCheckType,
 } from "../lint-types";
 import { MAINTAIN_FIX_TYPES } from "../tasks";
 import { readFile } from "fs/promises";
@@ -242,7 +258,323 @@ describe("fixEmptyPage", () => {
     });
 
     expect(mockedDeleteWikiPage).toHaveBeenCalledOnce();
-    expect(mockedDeleteWikiPage).toHaveBeenCalledWith("empty", "lint-fix");
+    // Four arguments since DW-447: `expectedContent` is still unused (this fix
+    // never reads the page first), and the trailing trigger is absent because
+    // no door resolved a principal for this call.
+    expect(mockedDeleteWikiPage).toHaveBeenCalledWith(
+      "empty",
+      "lint-fix",
+      undefined,
+      undefined,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// triggeredBy — WHO ASKED, recorded apart from WHO AUTHORED (DW-447)
+// ---------------------------------------------------------------------------
+
+/**
+ * The trigger lands on the log detail line and NOWHERE else.
+ *
+ * A lint auto-fix is a machine edit: its `author` is `"lint-fix"`, an
+ * `AUTOMATION_ACTORS` member `normalizeActor` folds into the agent, so no human
+ * is credited in the revision sidecar, a page's `contributors` or a trust score
+ * for text they did not write. Three doors nonetheless know WHO pressed the
+ * button, and that fact is worth keeping — as free prose under the log entry's
+ * heading, which `contributors.ts`, `normalizeActor` and `pushRecentEvent` all
+ * ignore.
+ *
+ * Rows below cover the three shapes the matrix names — a handle, no handle, a
+ * BLANK handle — across the two recording points: a page-writing fix (whose
+ * `logDetails` closure the lifecycle pipeline calls) and the two fixes that
+ * write no page at all, `stale-index` and `empty-page`. They are driven through
+ * `fixLintIssue` rather than the leaf functions so the dispatch table's
+ * threading is under test too: a `FIX_HANDLERS` entry that forgot to forward
+ * `triggeredBy` would drop it silently.
+ */
+describe("triggeredBy", () => {
+  /** The detail line the lifecycle pipeline would have written. */
+  const writtenDetail = () =>
+    mockedWriteWikiPageWithSideEffects.mock.calls[0][0].logDetails?.({ updatedSlugs: [] });
+
+  beforeEach(() => {
+    mockedReadWikiPage.mockResolvedValue({
+      slug: "orphan",
+      title: "Orphan Page",
+      content: "# Orphan Page\n\nSome content about orphans.",
+      path: "/wiki/orphan.md",
+    });
+  });
+
+  describe("on a page-writing fix", () => {
+    it("suffixes the log detail line with the trigger", async () => {
+      await fixLintIssue("orphan-page", "orphan", undefined, undefined, undefined, "alice");
+
+      expect(writtenDetail()).toBe("auto-fix: added orphan page to index (triggered by alice)");
+    });
+
+    it("still writes `lint-fix` as the author — the trigger is not an author", async () => {
+      // The whole point of the split. If this ever reads "alice", the fix is
+      // back in the contributor contract and `contributors.test.ts` is next.
+      await fixLintIssue("orphan-page", "orphan", undefined, undefined, undefined, "alice");
+
+      expect(mockedWriteWikiPageWithSideEffects.mock.calls[0][0].author).toBe("lint-fix");
+    });
+
+    it("leaves the line untouched when no door resolved a principal", async () => {
+      // The stdio-MCP / CLI / task-runner shape: byte-identical to what this
+      // fix logged before a trigger could be recorded at all.
+      await fixLintIssue("orphan-page", "orphan");
+
+      expect(writtenDetail()).toBe("auto-fix: added orphan page to index");
+    });
+
+    it("treats a blank handle as absent — no empty parenthetical", async () => {
+      // Whitespace is not an actor. Without the trim this would append
+      // "(triggered by    )" and make every such line differ from its peers.
+      await fixLintIssue("orphan-page", "orphan", undefined, undefined, undefined, "   ");
+
+      expect(writtenDetail()).toBe("auto-fix: added orphan page to index");
+    });
+  });
+
+  /**
+   * EVERY fixable type, not a representative one.
+   *
+   * The handlers do not share a call shape — `(slug, author, triggeredBy)`,
+   * `(slug, target, author, triggeredBy)`, `(message, author, triggeredBy)` —
+   * so `FIX_HANDLERS` forwards the two trailing arguments ten separate times,
+   * and each is its own chance to swap them. A mutation that rewrote the
+   * `unmigrated-page` entry as `fixUnmigratedPage(slug, triggeredBy)` — the
+   * owner's handle back in the AUTHOR slot, the exact DW-447 defect — was
+   * type-clean and left every other test in this file green.
+   *
+   * Both halves per row, because the defect is a swap and each half alone is
+   * satisfiable: the trigger on the log line AND `"lint-fix"` still in the
+   * author slot. The `AUTO_FIXABLE_CHECK_TYPES` assertion underneath is what
+   * keeps the table from silently falling behind a newly fixable type.
+   */
+  describe("every fixable type, one row each", () => {
+    /** Seeds the mocks each type's handler needs to reach its write. */
+    const SEEDS: Record<AutoFixableCheckType, () => void> = {
+      "orphan-page": () => {
+        mockedReadWikiPage.mockResolvedValue({
+          slug: "orphan",
+          title: "Orphan",
+          content: "# Orphan\n\nContent.",
+          path: "/wiki/orphan.md",
+        });
+      },
+      "stale-index": () => {
+        mockedReadWikiPage.mockResolvedValue(null);
+        mockedListWikiPages.mockResolvedValue([
+          { slug: "stale", title: "Stale", summary: "..." },
+        ]);
+      },
+      "empty-page": () => {},
+      "missing-crossref": () => {
+        mockedReadWikiPage.mockImplementation(async (slug: string) => ({
+          slug,
+          title: slug,
+          content: `# ${slug}\n\nContent.`,
+          path: `/wiki/${slug}.md`,
+        }));
+      },
+      "contradiction": () => {
+        mockedHasLLMKey.mockResolvedValue(true);
+        mockedCallLLM.mockResolvedValue("# Alpha\n\nResolved claim.");
+        mockedReadWikiPage.mockImplementation(async (slug: string) => ({
+          slug,
+          title: slug,
+          content: `# ${slug}\n\nClaim.`,
+          path: `/wiki/${slug}.md`,
+        }));
+      },
+      "missing-concept-page": () => {
+        mockedReadWikiPage.mockResolvedValue(null);
+        mockedHasLLMKey.mockResolvedValue(false);
+      },
+      "broken-link": () => {
+        mockedReadWikiPage.mockResolvedValue({
+          slug: "src",
+          title: "Src",
+          content: "# Src\n\nSee [the target](gone.md).",
+          path: "/wiki/src.md",
+        });
+      },
+      "stale-page": () => {
+        mockedReadWikiPageWithFrontmatter.mockResolvedValue({
+          slug: "stale",
+          title: "Stale",
+          content: "---\nexpiry: 2020-01-01\n---\n\n# Stale\n\nBody.",
+          path: "/wiki/stale.md",
+          frontmatter: { expiry: "2020-01-01" },
+          body: "# Stale\n\nBody.",
+        });
+      },
+      "unmigrated-page": () => {
+        mockedReadWikiPageWithFrontmatter.mockResolvedValue({
+          slug: "bare",
+          title: "Bare",
+          content: "---\ncreated: 2025-01-01\n---\n\n# Bare\n\nBody.",
+          path: "/wiki/bare.md",
+          frontmatter: { created: "2025-01-01" },
+          body: "# Bare\n\nBody.",
+        });
+      },
+      "supersedes-dangling": () => {
+        mockedReadWikiPageWithFrontmatter.mockImplementation(async (slug: string) =>
+          slug === "some-slug"
+            ? ({
+                title: "Some",
+                body: "# Some\n\nBody.",
+                frontmatter: { supersedes: "ghost" },
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              } as any)
+            : null,
+        );
+      },
+    };
+
+    /** `[slug, targetSlug, message]` for each type's dispatcher call. */
+    const ARGS: Record<AutoFixableCheckType, [string, string | undefined, string | undefined]> = {
+      "orphan-page": ["orphan", undefined, undefined],
+      "stale-index": ["stale", undefined, undefined],
+      "empty-page": ["empty", undefined, undefined],
+      "missing-crossref": ["src", "tgt", undefined],
+      "contradiction": ["alpha", "beta", "conflicting claims"],
+      "missing-concept-page": [
+        "",
+        undefined,
+        'Concept "Widgets" is mentioned in a, b but has no dedicated page.',
+      ],
+      "broken-link": ["src", "gone", undefined],
+      "stale-page": ["stale", undefined, undefined],
+      "unmigrated-page": ["bare", undefined, undefined],
+      "supersedes-dangling": ["some-slug", undefined, undefined],
+    };
+
+    /** The two types that write no page record their trigger elsewhere. */
+    const PAGELESS = new Set<AutoFixableCheckType>(["stale-index", "empty-page"]);
+
+    it("covers every member of AUTO_FIXABLE_CHECK_TYPES", () => {
+      // Both maps are `Record<AutoFixableCheckType, …>`, so `tsc` already
+      // refuses a missing key. This is the runtime half: it fails loudly if the
+      // const grows and someone widens the type instead of adding a row.
+      expect(Object.keys(SEEDS).sort()).toEqual([...AUTO_FIXABLE_CHECK_TYPES].sort());
+      expect(Object.keys(ARGS).sort()).toEqual([...AUTO_FIXABLE_CHECK_TYPES].sort());
+    });
+
+    it.each([...AUTO_FIXABLE_CHECK_TYPES])(
+      "%s records the trigger and keeps `lint-fix` as the author",
+      async (type) => {
+        SEEDS[type]();
+        const [slug, targetSlug, message] = ARGS[type];
+
+        await fixLintIssue(type, slug, targetSlug, message, undefined, "alice");
+
+        if (type === "stale-index") {
+          // No page, no revision: the trigger lands on this op's own log line.
+          expect(mockedAppendToLog.mock.lastCall?.[2]).toMatch(/ \(triggered by alice\)$/);
+          return;
+        }
+        if (type === "empty-page") {
+          // Its log line is built inside the lifecycle pipeline, so what this
+          // suite can see is the forwarded argument — `author` second, trigger
+          // fourth. `stale-index-lifecycle.test.ts` owns the line itself.
+          expect(mockedDeleteWikiPage).toHaveBeenCalledWith(
+            "empty",
+            "lint-fix",
+            undefined,
+            "alice",
+          );
+          return;
+        }
+
+        expect(PAGELESS.has(type)).toBe(false);
+        expect(mockedWriteWikiPageWithSideEffects).toHaveBeenCalledOnce();
+        const written = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
+        expect(written.author).toBe("lint-fix");
+        expect(written.logDetails?.({ updatedSlugs: [] })).toMatch(
+          / \(triggered by alice\)$/,
+        );
+      },
+    );
+
+    it.each([...AUTO_FIXABLE_CHECK_TYPES])(
+      "%s leaves its line untouched with no trigger",
+      async (type) => {
+        // The principal-less half of every row above: no parenthetical anywhere.
+        SEEDS[type]();
+        const [slug, targetSlug, message] = ARGS[type];
+
+        await fixLintIssue(type, slug, targetSlug, message);
+
+        if (type === "stale-index") {
+          expect(mockedAppendToLog.mock.lastCall?.[2]).not.toContain("(triggered by");
+          return;
+        }
+        if (type === "empty-page") {
+          expect(mockedDeleteWikiPage).toHaveBeenCalledWith(
+            "empty",
+            "lint-fix",
+            undefined,
+            undefined,
+          );
+          return;
+        }
+
+        const written = mockedWriteWikiPageWithSideEffects.mock.calls[0][0];
+        expect(written.author).toBe("lint-fix");
+        expect(written.logDetails?.({ updatedSlugs: [] })).not.toContain("(triggered by");
+      },
+    );
+  });
+
+  describe("on `stale-index`, which writes no page", () => {
+    beforeEach(() => {
+      mockedReadWikiPage.mockResolvedValue(null); // page file genuinely missing
+      mockedListWikiPages.mockResolvedValue([
+        { slug: "ghost", title: "Ghost", summary: "remove" },
+      ]);
+    });
+
+    it("suffixes its own appendToLog detail with the trigger", async () => {
+      await fixLintIssue("stale-index", "ghost", undefined, undefined, undefined, "alice");
+
+      expect(mockedAppendToLog).toHaveBeenCalledWith(
+        "edit",
+        "ghost",
+        "auto-fix: removed stale index entry for ghost (triggered by alice)",
+      );
+    });
+
+    it("leaves the line untouched for a blank or absent handle", async () => {
+      await fixLintIssue("stale-index", "ghost", undefined, undefined, undefined, "   ");
+
+      expect(mockedAppendToLog).toHaveBeenCalledWith(
+        "edit",
+        "ghost",
+        "auto-fix: removed stale index entry for ghost",
+      );
+    });
+  });
+
+  describe("on `empty-page`, which deletes", () => {
+    it("hands the trigger to deleteWikiPage without disturbing the author", async () => {
+      // `deleteWikiPage` builds its own log-details closure inside the
+      // lifecycle pipeline, so the forwarded argument is what this suite can
+      // observe; `lifecycle.test.ts` owns the line itself.
+      await fixLintIssue("empty-page", "empty", undefined, undefined, undefined, "alice");
+
+      expect(mockedDeleteWikiPage).toHaveBeenCalledWith(
+        "empty",
+        "lint-fix",
+        undefined,
+        "alice",
+      );
+    });
   });
 });
 

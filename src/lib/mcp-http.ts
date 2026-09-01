@@ -694,12 +694,21 @@ export const MCP_TOOLS: ToolDef[] = [
       // `tool.run(...)` bypasses the door and every check it performs. The
       // `autoFixRefusal` line below holds either way; the three string casts
       // hold only on the gated path.
+      //
+      // `triggeredBy`, never `author` (DW-447). This door used to stamp the
+      // resolved principal as the AUTHOR of the fix, which credited a human
+      // with a machine-generated edit everywhere `normalizeActor` looks — the
+      // revision sidecar, the page's contributor list, their trust score. The
+      // author stays `fixLintIssue`'s `"lint-fix"` default; the principal is
+      // recorded as the TRIGGER on the wiki-log detail line, which nothing in
+      // the contributor contract reads. `attributed()` above already mints both
+      // fields for the tools that take them; this one takes only the trigger.
       return handleFixLintIssue({
         type: a.type as string,
         slug,
         target,
         message,
-        author: p!.handle,
+        triggeredBy: p!.handle,
       });
     },
   },

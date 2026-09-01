@@ -281,6 +281,9 @@ describe("Epic 5 owner APIs require a signed-in owner", () => {
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "Issue is no longer live." });
-    expect(mockedFix).toHaveBeenCalledWith("broken-link", "src", "gone", "alice");
+    // DW-447: the owner is the TRIGGER (fifth), and the `undefined` fourth is
+    // what leaves `fixWorkbenchLintIssue`'s `"lint-fix"` author default alone.
+    // Before the swap this door passed "alice" as the AUTHOR of a machine edit.
+    expect(mockedFix).toHaveBeenCalledWith("broken-link", "src", "gone", undefined, "alice");
   });
 });

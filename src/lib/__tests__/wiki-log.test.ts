@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { appendToLog, appendToLogOnce, readLog } from "../wiki-log";
+import { appendToLog, appendToLogOnce, readLog, withTriggeredBy } from "../wiki-log";
 import type { LogOperation } from "../wiki-log";
 import { ensureDirectories, getWikiDir } from "../wiki";
 import { _resetLocks, _setDurableLocksForTests } from "../lock";
@@ -327,5 +327,81 @@ describe("readLog", () => {
     const firstIdx = content!.indexOf("First");
     const secondIdx = content!.indexOf("Second");
     expect(firstIdx).toBeLessThan(secondIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withTriggeredBy — the single owner of the trigger suffix (DW-447)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every lint-fix door and both page-less lifecycle ops format their trigger
+ * through this one function, so its contract is worth pinning directly rather
+ * than only through the callers that happen to exercise it.
+ *
+ * Two halves. The FORMAT half: a real handle gets one parenthetical, and
+ * anything that is not a handle leaves `details` byte-identical — the stdio MCP
+ * transport resolves no principal, and its log lines must not shift. The SAFETY
+ * half: the handle is interpolated raw into markdown that `wiki/log.md` stores
+ * and `/wiki/log` renders publicly with LINE-BASED private-page redaction, and
+ * a handle is not always a Clerk username (`YOPEDIA_SERVICE_PRINCIPAL` and
+ * registered agent handles reach here too). A newline in one would split the
+ * entry, which is both a forged-heading vector and a way past that redaction.
+ */
+describe("withTriggeredBy", () => {
+  const DETAILS = "auto-fix: added orphan page to index";
+
+  it("appends one parenthetical for a real handle", () => {
+    expect(withTriggeredBy(DETAILS, "alice")).toBe(`${DETAILS} (triggered by alice)`);
+  });
+
+  it.each([
+    ["an absent handle", undefined],
+    ["an empty string", ""],
+    ["whitespace only", "   "],
+    ["a tab and newline only", "\t\n"],
+    // Sanitization must not be able to MANUFACTURE a handle out of nothing: a
+    // string that reduces to blank takes the same path as an absent one.
+    ["a NUL byte only", "\u0000"],
+  ])("leaves the line byte-identical for %s", (_label, handle) => {
+    expect(withTriggeredBy(DETAILS, handle)).toBe(DETAILS);
+  });
+
+  it("collapses control characters so a handle cannot split the log entry", () => {
+    // The attack shape: `logBlock` trims only the OUTER ends of `details`, so an
+    // embedded newline would end this entry and start a line the log page's
+    // per-line redaction filter evaluates on its own — here a forged heading.
+    const forged = withTriggeredBy(DETAILS, "alice\n\n## [2026-01-01] ingest | Forged");
+
+    expect(forged).not.toContain("\n");
+    expect(forged.split("\n")).toHaveLength(1);
+    expect(forged).toBe(`${DETAILS} (triggered by alice ## [2026-01-01] ingest | Forged)`);
+  });
+
+  it.each([
+    ["a carriage return", "alice\rbob"],
+    ["a tab", "alice\tbob"],
+    ["a NUL byte", "alice\u0000bob"],
+    // U+0085 NEXT LINE is a C1 control that several renderers treat as a break.
+    ["a C1 control", "alice\u0085bob"],
+  ])("neutralizes %s", (_label, handle) => {
+    const line = withTriggeredBy(DETAILS, handle);
+
+    expect(line).toBe(`${DETAILS} (triggered by alice bob)`);
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+  });
+
+  it("caps an overlong handle so one actor cannot flood the line", () => {
+    const line = withTriggeredBy(DETAILS, "z".repeat(500));
+
+    expect(line).toBe(`${DETAILS} (triggered by ${"z".repeat(64)})`);
+  });
+
+  it("does not leave a dangling space when the cap lands mid-gap", () => {
+    // Slicing can end on whitespace; the trailing trim is what keeps the
+    // parenthetical from reading "(triggered by alice )".
+    const line = withTriggeredBy(DETAILS, `${"z".repeat(63)}   tail`);
+
+    expect(line).toBe(`${DETAILS} (triggered by ${"z".repeat(63)})`);
   });
 });

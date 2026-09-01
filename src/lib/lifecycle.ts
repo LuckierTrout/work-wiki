@@ -47,7 +47,7 @@ import { normalizeActor } from "./agent-handle";
 import { parseFrontmatter } from "./frontmatter";
 import { parseSources, newestSourceType } from "./sources";
 import type { LogOperation } from "./wiki";
-import { appendToLogOnce } from "./wiki-log";
+import { appendToLogOnce, withTriggeredBy } from "./wiki-log";
 import { logger } from "./logger";
 
 // ---------------------------------------------------------------------------
@@ -1114,10 +1114,21 @@ async function runPageLifecycleOp(
 /**
  * Drop a stale `index.md` membership under the index lock, with log + data-version
  * history. Used when the referenced Page no longer exists.
+ *
+ * `triggeredBy` is the handle of whoever ASKED for the fix, when a door resolved
+ * one (DW-447). This op writes no page and so mints no revision — its log detail
+ * line is the only durable record it leaves, and therefore the only place a
+ * trigger can land.
+ *
+ * It is NOT an author, and there is deliberately no author parameter beside it:
+ * this op has ONE production caller (`fixStaleIndex`), and the `_author` that
+ * used to sit in this slot was ignored on every path. Leaving an ignored
+ * optional string ahead of a live one is how `pruneStaleIndexEntry(slug, handle)`
+ * — written by someone meaning the trigger — silently drops it.
  */
 export async function pruneStaleIndexEntry(
   slug: string,
-  _author?: string,
+  triggeredBy?: string,
 ): Promise<{ removed: boolean }> {
   assertWritable(READ_ONLY_REFUSAL.pageWrite);
   validateSlug(slug);
@@ -1139,7 +1150,11 @@ export async function pruneStaleIndexEntry(
   } catch (err) {
     logger.warn("page-index", `cleanup skipped for stale index "${slug}":`, err);
   }
-  await appendToLog("edit", slug, `auto-fix: removed stale index entry for ${slug}`);
+  await appendToLog(
+    "edit",
+    slug,
+    withTriggeredBy(`auto-fix: removed stale index entry for ${slug}`, triggeredBy),
+  );
   try {
     await bumpDataVersion();
   } catch (err) {
@@ -1159,11 +1174,18 @@ export async function pruneStaleIndexEntry(
  * Hard delete only — no trash, no undo. Raw source files in `raw/` are
  * intentionally NOT touched (the raw layer is immutable per the founding
  * vision).
+ *
+ * `triggeredBy` is the handle of whoever ASKED for an automated delete, when a
+ * door resolved one (DW-447) — today only the `empty-page` lint auto-fix passes
+ * it. It joins the log detail line and nothing else: `author` stays whatever the
+ * caller declared (`"lint-fix"` for a lint fix), so `normalizeActor` and the
+ * contributor list never see the human's handle. See `withTriggeredBy`.
  */
 export async function deleteWikiPage(
   slug: string,
   author?: string,
   expectedContent?: string,
+  triggeredBy?: string,
 ): Promise<DeletePageResult> {
   // Deployment read-only (DW-188), answered BEFORE `validateSlug` and before
   // the read below. This is the ENFORCEMENT POINT, not a convenience: REST,
@@ -1187,7 +1209,10 @@ export async function deleteWikiPage(
     { kind: "delete", title, author, expectedContent },
     "delete",
     ({ strippedBacklinksFrom }) =>
-      `deleted · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
+      withTriggeredBy(
+        `deleted · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,
+        triggeredBy,
+      ),
     undefined,
     false,
     false,

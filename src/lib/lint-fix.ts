@@ -9,7 +9,26 @@ import {
 } from "./markdown-link-rewrite";
 import { serializeFrontmatter } from "./frontmatter";
 import { disputedClearGuidance, type AutoFixableCheckType } from "./lint-types";
+import { withTriggeredBy } from "./wiki-log";
 import type { LintIssue } from "./types";
+
+/**
+ * WHO IS THE AUTHOR OF A LINT FIX, AND WHO IS THE TRIGGER (DW-447).
+ *
+ * `author` is the machine: `"lint-fix"`, an `AUTOMATION_ACTORS` member
+ * (`./agent-handle`) that `normalizeActor` folds into the agent, on EVERY door
+ * — REST, HTTP MCP, stdio MCP, Workbench. A door that stamped its resolved
+ * principal as `author` credited a human with a machine-generated edit in the
+ * revision history, the page's contributor list and their trust score, which is
+ * the exact thing `AUTOMATION_ACTORS` exists to prevent.
+ *
+ * `triggeredBy` is the human (or agent) who ASKED. It is optional, server-
+ * derived from the resolved principal — never caller-supplied — and lands ONLY
+ * on the wiki-log detail line, via `withTriggeredBy`. Nothing that feeds
+ * attribution reads that line. Absent or blank leaves the line byte-identical,
+ * which is what the principal-less callers (stdio MCP, `cli.ts --fix`,
+ * `POST /api/tasks/run`'s `maintain:fix`) get.
+ */
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,7 +71,11 @@ export class FixNotFoundError extends Error {
  * Reads the page, extracts a summary, and writes it through the lifecycle
  * pipeline so that the index entry is created.
  */
-export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<FixResult> {
+export async function fixOrphanPage(
+  slug: string,
+  author = "lint-fix",
+  triggeredBy?: string,
+): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
@@ -72,7 +95,7 @@ export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<
     content: page.content,
     summary,
     logOp: "edit",
-    logDetails: () => "auto-fix: added orphan page to index",
+    logDetails: () => withTriggeredBy("auto-fix: added orphan page to index", triggeredBy),
     crossRefSource: null,
     author,
     expectedContent: page.content,
@@ -90,7 +113,17 @@ export async function fixOrphanPage(slug: string, author = "lint-fix"): Promise<
  *
  * If the slug is not found in the index, returns a no-op success result.
  */
-export async function fixStaleIndex(slug: string, author = "lint-fix"): Promise<FixResult> {
+export async function fixStaleIndex(
+  slug: string,
+  // INERT, and kept anyway. `pruneStaleIndexEntry` mints no revision, so there
+  // is no author to record — but every one of this function's nine siblings
+  // takes `(…, author, triggeredBy)` and `FIX_HANDLERS` forwards that pair
+  // positionally to all ten. Dropping the slot here would make this the one
+  // entry with a different tail, which is a worse trap than an unused
+  // parameter: the next hand-written call would put the trigger in it.
+  _author = "lint-fix",
+  triggeredBy?: string,
+): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
@@ -106,7 +139,9 @@ export async function fixStaleIndex(slug: string, author = "lint-fix"): Promise<
     };
   }
 
-  const result = await pruneStaleIndexEntry(slug, author);
+  // `author` is deliberately NOT forwarded: `pruneStaleIndexEntry` mints no
+  // revision and never had a use for one. The trigger is its only extra input.
+  const result = await pruneStaleIndexEntry(slug, triggeredBy);
   if (!result.removed) {
     return {
       success: true,
@@ -125,12 +160,18 @@ export async function fixStaleIndex(slug: string, author = "lint-fix"): Promise<
 /**
  * Fix an empty-page lint issue by deleting the page entirely.
  */
-export async function fixEmptyPage(slug: string, author = "lint-fix"): Promise<FixResult> {
+export async function fixEmptyPage(
+  slug: string,
+  author = "lint-fix",
+  triggeredBy?: string,
+): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
 
-  await deleteWikiPage(slug, author);
+  // `expectedContent` stays `undefined` — this fix has never read the page
+  // first — so the trigger has to be named positionally as the fourth argument.
+  await deleteWikiPage(slug, author, undefined, triggeredBy);
 
   return {
     success: true,
@@ -150,6 +191,7 @@ export async function fixMissingCrossRef(
   slug: string,
   targetSlug: string,
   author = "lint-fix",
+  triggeredBy?: string,
 ): Promise<FixResult> {
   if (!slug || !targetSlug) {
     throw new FixValidationError(
@@ -236,7 +278,8 @@ export async function fixMissingCrossRef(
     content: updatedContent,
     summary,
     logOp: "edit",
-    logDetails: () => `auto-fix: added cross-reference to ${targetSlug}.md`,
+    logDetails: () =>
+      withTriggeredBy(`auto-fix: added cross-reference to ${targetSlug}.md`, triggeredBy),
     crossRefSource: null, // skip cross-ref discovery — we're adding a specific link
     author,
     expectedContent: sourcePage.content,
@@ -262,6 +305,7 @@ export async function fixContradiction(
   targetSlug: string,
   message: string,
   author = "lint-fix",
+  triggeredBy?: string,
 ): Promise<FixResult> {
   if (!slug || !targetSlug) {
     throw new FixValidationError(
@@ -302,7 +346,7 @@ export async function fixContradiction(
     summary,
     logOp: "edit",
     logDetails: () =>
-      `auto-fix: resolved contradiction with ${targetSlug}.md`,
+      withTriggeredBy(`auto-fix: resolved contradiction with ${targetSlug}.md`, triggeredBy),
     crossRefSource: null,
     author,
     expectedContent: sourcePage.content,
@@ -328,6 +372,7 @@ export async function fixContradiction(
 export async function fixMissingConceptPage(
   message: string,
   author = "lint-fix",
+  triggeredBy?: string,
 ): Promise<FixResult> {
   // Extract concept name from the lint message format:
   //   Concept "X" is mentioned in slug-a, slug-b but has no dedicated page. <reason>
@@ -385,7 +430,10 @@ export async function fixMissingConceptPage(
     summary,
     logOp: "ingest",
     logDetails: () =>
-      `auto-fix: created stub page for missing concept "${concept}"`,
+      withTriggeredBy(
+        `auto-fix: created stub page for missing concept "${concept}"`,
+        triggeredBy,
+      ),
     crossRefSource: content,
     author,
     createOnly: true,
@@ -407,6 +455,7 @@ export async function fixBrokenLink(
   slug: string,
   targetSlug: string,
   author = "lint-fix",
+  triggeredBy?: string,
 ): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
@@ -450,7 +499,7 @@ export async function fixBrokenLink(
     summary,
     logOp: "edit",
     logDetails: () =>
-      `auto-fix: removed broken link(s) to "${targetSlug}.md"`,
+      withTriggeredBy(`auto-fix: removed broken link(s) to "${targetSlug}.md"`, triggeredBy),
     crossRefSource: null,
     author,
     expectedContent: page.content,
@@ -471,6 +520,7 @@ export async function fixDanglingWikilink(
   slug: string,
   targetSlug: string,
   author = "lint-fix",
+  triggeredBy?: string,
 ): Promise<FixResult> {
   if (!slug) throw new FixValidationError("Missing required field: slug");
   if (!targetSlug) throw new FixValidationError("Missing required field: targetSlug");
@@ -498,7 +548,8 @@ export async function fixDanglingWikilink(
     content: updatedContent,
     summary,
     logOp: "edit",
-    logDetails: () => `auto-fix: removed dangling wikilink(s) to "${targetSlug}"`,
+    logDetails: () =>
+      withTriggeredBy(`auto-fix: removed dangling wikilink(s) to "${targetSlug}"`, triggeredBy),
     crossRefSource: null,
     author,
     expectedContent: page.content,
@@ -517,6 +568,7 @@ export async function fixRenamedSlug(
   slug: string,
   targetSlug: string,
   author = "lint-fix",
+  triggeredBy?: string,
 ): Promise<FixResult> {
   if (!slug) throw new FixValidationError("Missing required field: slug");
   if (!targetSlug) throw new FixValidationError("Missing required field: targetSlug");
@@ -554,7 +606,11 @@ export async function fixRenamedSlug(
     content: updatedContent,
     summary,
     logOp: "edit",
-    logDetails: () => `auto-fix: rewrote renamed slug "${targetSlug}" → "${canonical}"`,
+    logDetails: () =>
+      withTriggeredBy(
+        `auto-fix: rewrote renamed slug "${targetSlug}" → "${canonical}"`,
+        triggeredBy,
+      ),
     crossRefSource: null,
     author,
     expectedContent: page.content,
@@ -573,7 +629,11 @@ export async function fixRenamedSlug(
  * Reads the page, updates the `expiry` and `valid_from` frontmatter fields,
  * and writes back.
  */
-export async function fixStalePage(slug: string, author = "lint-fix"): Promise<FixResult> {
+export async function fixStalePage(
+  slug: string,
+  author = "lint-fix",
+  triggeredBy?: string,
+): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
@@ -602,7 +662,10 @@ export async function fixStalePage(slug: string, author = "lint-fix"): Promise<F
     summary,
     logOp: "edit",
     logDetails: () =>
-      `auto-fix: extended expiry to ${expiryStr}, verified as of ${validFromStr}`,
+      withTriggeredBy(
+        `auto-fix: extended expiry to ${expiryStr}, verified as of ${validFromStr}`,
+        triggeredBy,
+      ),
     crossRefSource: null,
     author,
     expectedContent: page.content,
@@ -632,7 +695,11 @@ export async function fixStalePage(slug: string, author = "lint-fix"): Promise<F
  * Does NOT add `supersedes` or `aliases` — those are page-specific with no
  * sensible default.
  */
-export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Promise<FixResult> {
+export async function fixUnmigratedPage(
+  slug: string,
+  author = "lint-fix",
+  triggeredBy?: string,
+): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
@@ -696,9 +763,12 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
     })(),
     logOp: "edit",
     logDetails: () =>
-      added.length > 0
-        ? `auto-fix: added work-wiki defaults: ${added.join(", ")}`
-        : `auto-fix: unmigrated page already has all work-wiki fields`,
+      withTriggeredBy(
+        added.length > 0
+          ? `auto-fix: added work-wiki defaults: ${added.join(", ")}`
+          : `auto-fix: unmigrated page already has all work-wiki fields`,
+        triggeredBy,
+      ),
     crossRefSource: null,
     author,
     expectedContent: page.content,
@@ -719,7 +789,11 @@ export async function fixUnmigratedPage(slug: string, author = "lint-fix"): Prom
  * Re-verifies the target is still missing before clearing (idempotent / safe
  * under queue retry), so a now-valid reference is never dropped.
  */
-export async function fixSupersededDangling(slug: string, author = "lint-fix"): Promise<FixResult> {
+export async function fixSupersededDangling(
+  slug: string,
+  author = "lint-fix",
+  triggeredBy?: string,
+): Promise<FixResult> {
   if (!slug) {
     throw new FixValidationError("Missing required field: slug");
   }
@@ -752,7 +826,8 @@ export async function fixSupersededDangling(slug: string, author = "lint-fix"): 
       return m ? m[1].slice(0, 120) : slug;
     })(),
     logOp: "edit",
-    logDetails: () => `auto-fix: cleared dangling supersedes "${supersedes}"`,
+    logDetails: () =>
+      withTriggeredBy(`auto-fix: cleared dangling supersedes "${supersedes}"`, triggeredBy),
     crossRefSource: null,
     author,
     expectedContent: page.content,
@@ -775,6 +850,8 @@ interface FixRequest {
   targetSlug?: string;
   message?: string;
   author: string;
+  /** Handle of whoever asked; log-line only. See the DW-447 note at the top. */
+  triggeredBy?: string;
 }
 
 type FixHandler = (request: FixRequest) => Promise<FixResult>;
@@ -789,21 +866,23 @@ type FixHandler = (request: FixRequest) => Promise<FixResult>;
  * drifting behind this table again (DW-229).
  */
 const FIX_HANDLERS: Record<AutoFixableCheckType, FixHandler> = {
-  "orphan-page": ({ slug, author }) => fixOrphanPage(slug, author),
-  "stale-index": ({ slug, author }) => fixStaleIndex(slug, author),
-  "empty-page": ({ slug, author }) => fixEmptyPage(slug, author),
-  "missing-crossref": ({ slug, targetSlug, author }) =>
-    fixMissingCrossRef(slug, targetSlug ?? "", author),
-  "contradiction": ({ slug, targetSlug, message, author }) =>
-    fixContradiction(slug, targetSlug ?? "", message ?? "", author),
-  "missing-concept-page": ({ message, author }) =>
-    fixMissingConceptPage(message ?? "", author),
-  "broken-link": ({ slug, targetSlug, author }) =>
-    fixBrokenLink(slug, targetSlug ?? "", author),
-  "stale-page": ({ slug, author }) => fixStalePage(slug, author),
-  "unmigrated-page": ({ slug, author }) => fixUnmigratedPage(slug, author),
+  "orphan-page": ({ slug, author, triggeredBy }) => fixOrphanPage(slug, author, triggeredBy),
+  "stale-index": ({ slug, author, triggeredBy }) => fixStaleIndex(slug, author, triggeredBy),
+  "empty-page": ({ slug, author, triggeredBy }) => fixEmptyPage(slug, author, triggeredBy),
+  "missing-crossref": ({ slug, targetSlug, author, triggeredBy }) =>
+    fixMissingCrossRef(slug, targetSlug ?? "", author, triggeredBy),
+  "contradiction": ({ slug, targetSlug, message, author, triggeredBy }) =>
+    fixContradiction(slug, targetSlug ?? "", message ?? "", author, triggeredBy),
+  "missing-concept-page": ({ message, author, triggeredBy }) =>
+    fixMissingConceptPage(message ?? "", author, triggeredBy),
+  "broken-link": ({ slug, targetSlug, author, triggeredBy }) =>
+    fixBrokenLink(slug, targetSlug ?? "", author, triggeredBy),
+  "stale-page": ({ slug, author, triggeredBy }) => fixStalePage(slug, author, triggeredBy),
+  "unmigrated-page": ({ slug, author, triggeredBy }) =>
+    fixUnmigratedPage(slug, author, triggeredBy),
   // Auto-fixable: clear the dead reference (re-verified missing first).
-  "supersedes-dangling": ({ slug, author }) => fixSupersededDangling(slug, author),
+  "supersedes-dangling": ({ slug, author, triggeredBy }) =>
+    fixSupersededDangling(slug, author, triggeredBy),
 };
 
 /**
@@ -926,6 +1005,10 @@ export function autoFixRefusal(type: unknown, slug: string): string | null {
  * Keeps `type: string` — the gate belongs at the doors, and this stays the
  * defense that runs whichever door (or in-process caller) got here.
  *
+ * `author` keeps its `"lint-fix"` default and every door leaves it there;
+ * `triggeredBy` is the trailing, optional handle of whoever asked. See the
+ * DW-447 note at the top of this file for why they are two parameters.
+ *
  * @throws {FixValidationError} for missing fields or unsupported types
  * @throws {FixNotFoundError} when a required page doesn't exist
  */
@@ -935,10 +1018,11 @@ export async function fixLintIssue(
   targetSlug?: string,
   message?: string,
   author = "lint-fix",
+  triggeredBy?: string,
 ): Promise<FixResult> {
   const handler = ownEntry<FixHandler>(FIX_HANDLERS, type);
   if (handler) {
-    return handler({ slug, targetSlug, message, author });
+    return handler({ slug, targetSlug, message, author, triggeredBy });
   }
 
   // `autoFixRefusal` answers `null` only when a handler exists, which the branch

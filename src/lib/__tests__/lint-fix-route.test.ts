@@ -216,6 +216,7 @@ describe("POST /api/lint/fix — body validation", () => {
       "",
       undefined,
       "no concept sentence here",
+      undefined,
       "LuckierTrout",
     );
     expect(res.status).toBe(400);
@@ -237,6 +238,7 @@ describe("POST /api/lint/fix — body validation", () => {
       "",
       undefined,
       undefined,
+      undefined,
       "LuckierTrout",
     );
     expect(res.status).toBe(400);
@@ -256,18 +258,19 @@ describe("POST /api/lint/fix — body validation", () => {
       "some-page",
       undefined,
       undefined,
+      undefined,
       "LuckierTrout",
     );
     expect(res.status).toBe(404);
   });
 
-  it("attributes the fix to the resolved principal, not the `lint-fix` default", async () => {
-    // DW-456. `fixLintIssue`'s fifth parameter defaults to `"lint-fix"`, and
-    // this door used to pass four arguments — so every fix an owner made
-    // through the REST surface landed in the page's revision history and the
-    // activity trail under a robot name, losing the only actor the request
-    // actually identified. The owner gate three statements above resolved them;
-    // the author reaching the dispatcher must be that handle.
+  it("records the resolved principal as the TRIGGER, never as the author", async () => {
+    // DW-447, reversing DW-456. This door used to pass the owner's handle as
+    // `fixLintIssue`'s FIFTH argument — the `author` — so a fix an owner asked
+    // for was written into the page's revision sidecar, its contributor list
+    // and that owner's trust score as if they had typed the edit. `"lint-fix"`
+    // is an `AUTOMATION_ACTORS` member precisely so machine edits stay out of
+    // all three; the owner belongs on the log detail line instead.
     //
     // A DIFFERENT handle from the suite default, so the assertion cannot pass
     // on a coincidence with some hard-coded string.
@@ -280,11 +283,14 @@ describe("POST /api/lint/fix — body validation", () => {
       "some-page",
       undefined,
       undefined,
+      undefined,
       "SomeOtherOwner",
     );
-    // Named explicitly, because the whole defect was that this argument was
-    // absent and the parameter's own default filled it in.
-    expect(spiedFixLintIssue.mock.lastCall?.[4]).not.toBe("lint-fix");
+    // Both halves named explicitly, because the defect is a swap: the handle
+    // must be in the trigger slot AND absent from the author slot. `undefined`
+    // is what leaves `fixLintIssue`'s `"lint-fix"` default standing.
+    expect(spiedFixLintIssue.mock.lastCall?.[4]).toBeUndefined();
+    expect(spiedFixLintIssue.mock.lastCall?.[5]).toBe("SomeOtherOwner");
   });
 });
 

@@ -30,7 +30,17 @@ export async function POST(request: Request) {
         : typeof body.target === "string"
           ? body.target
           : undefined;
-    const result = await fixWorkbenchLintIssue(body.type, body.slug, target, principal.handle);
+    // The owner is the TRIGGER, not the author (DW-447): `author` stays
+    // `"lint-fix"` (hence the `undefined`), and the resolved principal is
+    // recorded on the fix's wiki-log detail line only — never in the revision
+    // sidecar, the page's contributors or a trust score.
+    const result = await fixWorkbenchLintIssue(
+      body.type,
+      body.slug,
+      target,
+      undefined,
+      principal.handle,
+    );
     return NextResponse.json(result);
   } catch (error) {
     if (isReadOnlyError(error)) {

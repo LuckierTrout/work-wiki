@@ -6,7 +6,7 @@ import { readDataVersion } from "../data-version";
 import { pruneStaleIndexEntry, writeWikiPageWithSideEffects } from "../lifecycle";
 import { _resetLocks } from "../lock";
 import { logger } from "../logger";
-import { fixBrokenLink } from "../lint-fix";
+import { fixBrokenLink, fixEmptyPage, fixLintIssue } from "../lint-fix";
 import { getPageIndex } from "../page-index";
 import { _resetStorage, getStorage } from "../storage";
 import {
@@ -14,6 +14,7 @@ import {
   ensureDirectories,
   listWikiPages,
   readWikiPage,
+  readWikiPageWithFrontmatter,
   tenantForOwner,
   tenantWikiRelPath,
   updateIndex,
@@ -269,5 +270,153 @@ describe("pruneStaleIndexEntry", () => {
     await expect(fixBrokenLink("linker", "gone")).rejects.toThrow(/changed; run Lint again/);
     expect(await storage.readFile(tenantPath)).toBe(newer);
     expect(await storage.readFile(wikiRelPath("linker.md"))).toBe(original);
+  });
+});
+
+/**
+ * The two lint fixes that write NO page (DW-447).
+ *
+ * `stale-index` and `empty-page` mint no revision, so their wiki-log detail
+ * line is the only durable record they leave — and therefore the only place the
+ * handle of whoever ASKED for the fix can land. Real storage here, not a spy on
+ * `appendToLog`: the claim is about the bytes that reach `wiki/log.md`, and
+ * `contributors.ts` / `normalizeActor` never reading them is precisely why this
+ * is a safe home for a human's handle.
+ */
+describe("the trigger on the page-less lint fixes", () => {
+  const readLogFile = () => getStorage().readFile(wikiRelPath("log.md"));
+
+  it("stamps `stale-index` with the trigger and leaves it off when there is none", async () => {
+    await seedGhost();
+    await expect(pruneStaleIndexEntry("ghost", "alice")).resolves.toEqual({
+      removed: true,
+    });
+
+    expect(await readLogFile()).toContain(
+      "auto-fix: removed stale index entry for ghost (triggered by alice)",
+    );
+
+    // Same op, no principal — the stdio-MCP / CLI shape. Byte-identical to what
+    // this fix logged before a trigger could be recorded at all.
+    await seedGhost();
+    await expect(pruneStaleIndexEntry("ghost")).resolves.toEqual({ removed: true });
+
+    const log = await readLogFile();
+    expect(log).toContain("auto-fix: removed stale index entry for ghost\n");
+    expect(log.match(/\(triggered by/g) ?? []).toHaveLength(1);
+  });
+
+  it("stamps an `empty-page` delete with the trigger, without touching its author", async () => {
+    await getStorage().writeFile(wikiRelPath("hollow.md"), "# Hollow\n");
+    await updateIndex([{ slug: "hollow", title: "Hollow", summary: "empty" }]);
+
+    await expect(fixEmptyPage("hollow", undefined, "alice")).resolves.toMatchObject({
+      success: true,
+      slug: "hollow",
+    });
+
+    // The delete's own detail line, suffixed by the SAME formatter the
+    // page-writing fixes use — one owner, so the two cannot drift apart.
+    expect(await readLogFile()).toMatch(
+      /deleted · stripped backlinks from \d+ page\(s\) \(triggered by alice\)/,
+    );
+  });
+
+  it("leaves an `empty-page` delete line untouched when no principal was resolved", async () => {
+    await getStorage().writeFile(wikiRelPath("hollow.md"), "# Hollow\n");
+    await updateIndex([{ slug: "hollow", title: "Hollow", summary: "empty" }]);
+
+    await expect(fixEmptyPage("hollow")).resolves.toMatchObject({ success: true });
+
+    expect(await readLogFile()).not.toContain("(triggered by");
+  });
+});
+
+/**
+ * THE INVARIANT THE WHOLE CHANGE EXISTS FOR, end to end (DW-447).
+ *
+ * Every other row in this bundle observes one hop — a forwarded argument, a
+ * `logDetails` closure invoked against a mocked write. None of them can say
+ * whether the human's handle stays OUT of the places attribution actually reads.
+ * This one drives a triggered fix through real storage and then sweeps the
+ * whole wiki tree: `alice` must appear in `log.md` and nowhere else.
+ *
+ * A tree-wide sweep rather than a list of named fields, because the failure
+ * mode is a handle reaching somewhere nobody thought to assert about — the
+ * revision `.meta.json` sidecar and the page's `contributors` are the two
+ * `contributors.ts` reads today, but the frontmatter, the index and the
+ * derived indices are all written on this same path.
+ */
+describe("a triggered fix keeps the human out of attribution", () => {
+  /** Every file under the wiki tree, relative to it, with its bytes. */
+  async function readWikiTree(): Promise<Map<string, string>> {
+    const root = process.env.WIKI_DIR!;
+    const out = new Map<string, string>();
+    async function walk(dir: string, prefix: string): Promise<void> {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) await walk(full, rel);
+        else out.set(rel, await fs.readFile(full, "utf8"));
+      }
+    }
+    await walk(root, "");
+    return out;
+  }
+
+  it("logs the trigger, and leaks it into no other file in the wiki", async () => {
+    // An orphan: on disk, absent from `index.md`. `fixOrphanPage` reads it,
+    // writes it back through the lifecycle pipeline (minting a revision of the
+    // previous bytes) and adds the index entry.
+    const body = "---\ncontributors: []\n---\n\n# Orphan E2E\n\nBody text.\n";
+    await getStorage().writeFile(wikiRelPath("orphan-e2e.md"), body);
+    await updateIndex([{ slug: "other", title: "Other", summary: "unrelated" }]);
+
+    await expect(
+      fixLintIssue("orphan-page", "orphan-e2e", undefined, undefined, undefined, "alice"),
+    ).resolves.toMatchObject({ success: true, slug: "orphan-e2e" });
+
+    const tree = await readWikiTree();
+
+    // (a) The trigger really is on the log line — read from the file, not from
+    // a closure this test invoked itself.
+    expect(tree.get("log.md")).toContain(
+      "auto-fix: added orphan page to index (triggered by alice)",
+    );
+
+    // (b) The revision sidecar names the MACHINE. `contributors.ts` reads this
+    // field; a handle here is a trust-score entry for an edit alice never wrote.
+    const sidecars = [...tree].filter(([name]) => name.endsWith(".meta.json"));
+    expect(sidecars.length).toBeGreaterThan(0);
+    for (const [, raw] of sidecars) {
+      expect(JSON.parse(raw)).toMatchObject({ author: "lint-fix" });
+    }
+
+    // (c) And nowhere else at all. `log.md` is the ONE file allowed to name her.
+    const leaked = [...tree]
+      .filter(([name, content]) => name !== "log.md" && content.includes("alice"))
+      .map(([name]) => name);
+    expect(leaked).toEqual([]);
+
+    // The control for (c): the sweep is looking at real files with real
+    // content, so an empty `leaked` means something.
+    expect(tree.size).toBeGreaterThan(1);
+    expect(await readWikiPageWithFrontmatter("orphan-e2e")).toMatchObject({
+      frontmatter: { contributors: [] },
+    });
+  });
+
+  it("writes no trigger anywhere when no principal was resolved — the control", async () => {
+    const body = "---\ncontributors: []\n---\n\n# Orphan E2E\n\nBody text.\n";
+    await getStorage().writeFile(wikiRelPath("orphan-e2e.md"), body);
+    await updateIndex([{ slug: "other", title: "Other", summary: "unrelated" }]);
+
+    await expect(fixLintIssue("orphan-page", "orphan-e2e")).resolves.toMatchObject({
+      success: true,
+    });
+
+    const tree = await readWikiTree();
+    expect(tree.get("log.md")).toContain("auto-fix: added orphan page to index");
+    expect(tree.get("log.md")).not.toContain("(triggered by");
   });
 });

@@ -49,7 +49,7 @@ import {
 } from "../../mcp";
 import { isServicePrincipalId } from "../principal-id";
 import { vaultIdFor, listVaults, getVault, createVault } from "../vault";
-import { readWikiPageWithFrontmatter } from "../wiki";
+import { readWikiPageWithFrontmatter, wikiRelPath } from "../wiki";
 import { _resetStorage, getStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
@@ -3110,6 +3110,31 @@ describe("fix_lint_issue", () => {
     await expect(handleFixLintIssue({ type: "orphan-page" })).rejects.toThrow(
       "Missing required field: slug",
     );
+  });
+
+  /**
+   * The stdio door records NO trigger, because it resolves no principal (DW-447).
+   *
+   * `author` is `"lint-fix"` at every door now, and the other three pass the
+   * handle they resolved as `triggeredBy` instead. This transport is
+   * unauthenticated and deployment-trusted — every handler here runs with a
+   * `null` principal — so there is no handle to pass, and the log line it writes
+   * must stay byte-identical to the one this fix wrote before `triggeredBy`
+   * existed. Asserted on the bytes in `wiki/log.md` rather than on the arguments
+   * `handleFixLintIssue` forwards, because "unchanged output" is the claim.
+   */
+  it("writes a log line with no trigger parenthetical — stdio resolves no principal", async () => {
+    await writeTestPage(
+      "orphan-untriggered",
+      "---\ntags: [test]\n---\n# Orphan Untriggered\n\nNo principal asked for this.",
+    );
+    await writeIndex([]);
+
+    await handleFixLintIssue({ type: "orphan-page", slug: "orphan-untriggered" });
+
+    const log = await getStorage().readFile(wikiRelPath("log.md"));
+    expect(log).toContain("auto-fix: added orphan page to index\n");
+    expect(log).not.toContain("(triggered by");
   });
 });
 

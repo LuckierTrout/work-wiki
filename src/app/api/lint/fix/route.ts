@@ -149,15 +149,21 @@ export async function POST(req: NextRequest) {
     }
 
     const { type, slug, targetSlug, message } = parsed.data;
-    // The resolved owner is the author (DW-456). Without it every fix made
-    // through this door was attributed to `fixLintIssue`'s `"lint-fix"`
-    // default, which loses the real actor in the page's revision history and
-    // the activity trail — the owner gate above already knows who this is.
+    // The resolved owner is the TRIGGER, not the author (DW-447). This door
+    // used to pass the owner's handle as `fixLintIssue`'s fifth argument, the
+    // `author` — which credited a human with a machine-generated edit in the
+    // page's revision history, its contributor list and their trust score, the
+    // exact thing `AUTOMATION_ACTORS` exists to prevent. The author stays
+    // `"lint-fix"` (the parameter's own default, so `undefined` below is what
+    // says "leave it alone"), and the owner the gate above resolved is recorded
+    // as the trigger on the fix's wiki-log detail line — free prose no part of
+    // the contributor contract reads.
     const result = await fixLintIssue(
       type,
       slug ?? "",
       targetSlug,
       message,
+      undefined,
       // Non-null: `isOwnerPrincipal` is false for a null/undefined principal,
       // so the 403 above has already returned for every principal-less request.
       principal!.handle,
