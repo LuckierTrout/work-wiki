@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { ProviderForm, type ProviderFormProps } from "@/components/ProviderForm";
+import { DEFAULT_MODELS } from "@/lib/providers";
 import {
   SETTINGS_FLAT_CUSTOM_ENDPOINT_COPY,
   ollamaBaseUrlRefusedCopy,
@@ -159,11 +160,15 @@ describe("ProviderForm says why the Ollama endpoint box is empty", () => {
     // owner set is not the one being used. Without it the page looks simply
     // correct.
     //
-    // NOT the `env` source: that spelling of the control — the read-only div —
-    // can never carry a reason at all. `ollamaBaseUrlSource === "env"` means
-    // the env leg RETURNED a URL, and `resolveOllamaBaseUrl` hands that answer
-    // back outright with `issue: null`, so the pairing is a payload the server
-    // cannot emit and a test asserting it would pin fiction.
+    // NOT the `env` source: that spelling of the control — the locked
+    // `<output>` (DW-617) — can never carry a reason the SERVER produced.
+    // `ollamaBaseUrlSource === "env"` means the env leg RETURNED a URL, and
+    // `resolveOllamaBaseUrl` hands that answer back outright with `issue: null`,
+    // so the pairing is a payload the route cannot emit, and a case asserting it
+    // as a SERVED state would pin fiction. The DW-617 describe at the foot of
+    // this file mounts that pairing anyway and says which it is: a CONSTRUCTED
+    // payload, earning its place only as the one mount where an
+    // `aria-describedby` wrongly composed onto the locked box is visible.
     render(
       <ProviderForm
         {...props({
@@ -572,9 +577,16 @@ describe("ProviderForm tells the truth about a BLANK selection (DW-505)", () => 
     expect(credentialLine()!.textContent).toBe(BLANK_COPY);
   });
 
-  it("reads the three existing branches off the picker once a provider IS selected", () => {
+  it("reads the three existing branches off the picker once a provider IS selected, placeholder with them", () => {
     // The other half of the boundary: a real selection must announce exactly
     // what it announced before this change.
+    //
+    // AND THE PLACEHOLDER WITH IT (DW-561). The line and the model box are two
+    // statements about one selection, so the agreement is pinned in every pick
+    // state rather than only the blank one: each of these three mounts asserts
+    // both nodes, and the two blank-pick cases below assert both as well. The
+    // three branches here differ only in what is STORED, which the placeholder
+    // must be indifferent to — it reads the picker.
     render(
       <ProviderForm
         {...props({
@@ -584,6 +596,7 @@ describe("ProviderForm tells the truth about a BLANK selection (DW-505)", () => 
       />,
     );
     expect(credentialLine()!.textContent).toBe("✓ API key configured on server");
+    expect(modelBox().placeholder).toBe(DEFAULT_MODELS.openai);
     cleanup();
 
     render(
@@ -597,6 +610,7 @@ describe("ProviderForm tells the truth about a BLANK selection (DW-505)", () => 
     expect(credentialLine()!.textContent).toBe(
       "⚠ No API key — set via server environment variables",
     );
+    expect(modelBox().placeholder).toBe(DEFAULT_MODELS.openai);
     cleanup();
 
     render(
@@ -610,6 +624,96 @@ describe("ProviderForm tells the truth about a BLANK selection (DW-505)", () => 
     expect(credentialLine()!.textContent).toBe(
       "Save this selection to check its server credential",
     );
+    // THE PICKED-≠-STORED state, the one the placeholder had no case at all
+    // for: the box offers the PICKED provider's default, and never the stored
+    // provider's — the same inversion the line beside it makes.
+    expect(modelBox().placeholder).toBe(DEFAULT_MODELS.openai);
+    expect(document.body.innerHTML).not.toContain(DEFAULT_MODELS.anthropic);
+  });
+
+  /**
+   * The MODEL PLACEHOLDER is the credential line's second reader (DW-561).
+   *
+   * Both nodes are statements about the SELECTION, and off `effectiveProvider`
+   * they disagreed: a blank pick over a stored `openai` offered THAT provider's
+   * default model one line under "Select a provider to check its server
+   * credential". The placeholder is an ATTRIBUTE, so nothing a `textContent`
+   * scan does can see it — these cases read `placeholder` off the node and the
+   * absence off `innerHTML`.
+   *
+   * The model name is read from `DEFAULT_MODELS`, never spelled here — the same
+   * rule `ENV_REFUSAL` states for copy at the top of this file. A literal
+   * `"gpt-4o"` would make the negative assertion below go VACUOUSLY green the
+   * day that table entry changes, with the defect fully restored: the box would
+   * offer the stored provider's new default and the test would find the old
+   * string absent and pass.
+   */
+  function modelBox(): HTMLInputElement {
+    return screen.getByLabelText(/^Model/) as HTMLInputElement;
+  }
+
+  it("offers no stored provider's default model behind a blank pick", () => {
+    // THE DW-561 defect. `DEFAULT_MODELS.openai` reached the box through the
+    // stored-provider fallback while the picker showed nothing — the same
+    // claim-about-an-unshown-provider DW-505 removed from the line above it.
+    render(
+      <ProviderForm
+        {...props({
+          provider: "",
+          settings: settings({ provider: "openai", hasApiKey: true }),
+        })}
+      />,
+    );
+
+    expect(modelBox().placeholder).toBe("Select a provider first");
+    // `textContent` would pass whatever the attribute says: the placeholder is
+    // never text in the document, so the absence is asserted over the markup.
+    expect(document.body.innerHTML).not.toContain(DEFAULT_MODELS.openai);
+    expect(credentialLine()!.textContent).toBe(BLANK_COPY);
+  });
+
+  it("asks for a provider first when NOTHING is stored either", () => {
+    // No fallback to fall back TO, so this case was already right — it is here
+    // because the branch that serves it is the one the fix routes the first
+    // case through, and a mutation that dropped the blank arm entirely would
+    // otherwise only be visible on one mount.
+    render(
+      <ProviderForm
+        {...props({ provider: "", settings: settings({ provider: null }) })}
+      />,
+    );
+
+    expect(modelBox().placeholder).toBe("Select a provider first");
+    // The two nodes AGREE here too: this is the second of the five pick states
+    // the joint claim covers.
+    expect(credentialLine()!.textContent).toBe(BLANK_COPY);
+  });
+
+  it("leaves a PICKED provider's default exactly where it was", () => {
+    // The other half of the boundary: with a selection,
+    // `selectedProvider === provider === effectiveProvider`, so the rendered
+    // placeholder must be byte-identical to what it was before DW-561.
+    render(
+      <ProviderForm
+        {...props({ provider: "openai", settings: settings({ provider: "openai" }) })}
+      />,
+    );
+
+    expect(modelBox().placeholder).toBe(DEFAULT_MODELS.openai);
+  });
+
+  it("still asks for a name when the picked provider has no default entry", () => {
+    // `custom` is deliberately absent from `DEFAULT_MODELS` — an
+    // owner-supplied endpoint serves whatever its operator chose — so the `??`
+    // arm answers, and it must keep answering for a PICKED provider rather
+    // than collapsing into the blank copy.
+    render(
+      <ProviderForm
+        {...props({ provider: "custom", settings: settings({ provider: "custom" }) })}
+      />,
+    );
+
+    expect(modelBox().placeholder).toBe("Enter model name");
   });
 });
 
@@ -826,5 +930,152 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
       }
       cleanup();
     }
+  });
+});
+
+describe("ProviderForm NAMES the env-locked Ollama endpoint box (DW-617)", () => {
+  /**
+   * The DW-562 case, one control over.
+   *
+   * The `<label htmlFor="ollamaBaseUrl">` above this block is UNCONDITIONAL,
+   * but the `env` branch rendered a bare `<div>` — so on an
+   * `OLLAMA_BASE_URL`-pinned deployment the label named an id no element in the
+   * document carried and the locked endpoint was announced with no accessible
+   * name at all. No suite mounted this branch before these cases: `env` was a
+   * source only `src/lib/__tests__/config.test.ts` ever produced, and that one
+   * renders nothing.
+   *
+   * `ollamaBlock()` above cannot serve here. It resolves the container through
+   * `getByText("Ollama Base URL")`, which matches only while the badge renders
+   * nothing; on an `env` source the label's own text is
+   * "Ollama Base URLfrom environment", so these cases reach it by `for`.
+   */
+  const PINNED = "http://pinned:11434/api";
+
+  function endpointLabel(): HTMLElement {
+    return document.querySelector("label[for='ollamaBaseUrl']")!;
+  }
+
+  it("names the locked box from its own label, and still describes nothing", () => {
+    // MOUNTED READ-ONLY on purpose. `describedBy` is the id a read-only
+    // deployment hands every control on this form, so `ollamaDescribedBy` is a
+    // non-empty string here — without it the abstention below would be
+    // unobservable, the attribute absent whether or not the locked box asked
+    // for it.
+    render(
+      <ProviderForm
+        {...props({
+          ollamaBaseUrl: "",
+          readOnly: true,
+          describedBy: "readOnlyNote",
+          settings: settings({
+            ollamaBaseUrlSource: "env",
+            ollamaBaseUrl: PINNED,
+          }),
+        })}
+      />,
+    );
+
+    const box = document.getElementById("ollamaBaseUrl");
+    expect(box).not.toBeNull();
+    // The VALUE box, not a surviving input — this branch renders no editable
+    // control at all, so the id can only be the locked one's.
+    expect(box!.tagName).toBe("OUTPUT");
+    expect(document.querySelector("input#ollamaBaseUrl")).toBeNull();
+    expect(box!.textContent).toBe(PINNED);
+
+    // The NAME, pinned against the label's OWN text rather than a pattern a
+    // partial name would also satisfy: `SourceBadge` renders "from environment"
+    // inside the label with no separating space, and a name missing it is a
+    // different name. `getByRole(…, { name })` is what goes through the
+    // accessible-name computation, and `status` is `<output>`'s implicit role.
+    const name = endpointLabel().textContent!;
+    expect(name).toBe("Ollama Base URLfrom environment");
+    expect(screen.getByRole("status", { name })).toBe(box);
+    expect(screen.getByLabelText(name)).toBe(box);
+
+    // NOT bought with focusability: `/settings`' keyboard order is what it was.
+    expect(box!.hasAttribute("tabindex")).toBe(false);
+    expect((box as HTMLElement).tabIndex).toBe(-1);
+    // No EXPLICIT role — the implicit `status` the query above resolves through
+    // is exactly what should be here, and a widget role on an unfocusable
+    // element would be a control assistive tech offers and cannot operate.
+    expect(box!.hasAttribute("role")).toBe(false);
+    // The live region that implicit role brings is SILENCED. Without this the
+    // box re-announces itself every time `/api/settings` answers, and deleting
+    // `aria-live="off"` leaves the rest of this suite green.
+    expect(box!.getAttribute("aria-live")).toBe("off");
+    // And still no DESCRIPTION: DW-617 is about the missing NAME, and what a
+    // locked box announces as a description is a separate question nothing has
+    // asked. The editable branch takes `readOnlyNote` on this very mount's
+    // props (the case below shows it), so this is an ABSTENTION and not an
+    // attribute that had nothing to hold.
+    expect(box!.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("leaves the EDITABLE branch's box untouched by the locked one's shape", () => {
+    // The other half: nothing the locked branch gained may leak onto the branch
+    // that renders a real control. The `<input>` keeps its id, its label
+    // association and its DW-402 composition, and gains no `aria-live`.
+    for (const source of ["config", "default", "none"] as const) {
+      cleanup();
+      render(
+        <ProviderForm
+          {...props({
+            readOnly: true,
+            describedBy: "readOnlyNote",
+            settings: settings({
+              ollamaBaseUrlSource: source,
+              ollamaBaseUrl: PINNED,
+              ollamaBaseUrlIssue: STORE_REFUSAL,
+            }),
+          })}
+        />,
+      );
+
+      const box = document.getElementById("ollamaBaseUrl");
+      expect(box!.tagName, source).toBe("INPUT");
+      expect((box as HTMLInputElement).placeholder, source).toBe(
+        "http://localhost:11434/api",
+      );
+      expect((box as HTMLInputElement).readOnly, source).toBe(true);
+      expect(box!.hasAttribute("aria-live"), source).toBe(false);
+      expect(box!.getAttribute("aria-describedby"), source).toBe(
+        "readOnlyNote ollamaBaseUrlIssue",
+      );
+      expect(screen.getByLabelText(endpointLabel().textContent!)).toBe(box);
+    }
+  });
+
+  it("keeps the refusal sentence in the block without pointing the locked box at it", () => {
+    // A CONSTRUCTED payload, and said so: `resolveOllamaBaseUrl` returns the env
+    // answer outright when it carries a URL, and `envOllamaBaseUrlAnswer` pairs
+    // a URL with `issue: null`, so an `env` source and a reason cannot arrive
+    // together from the server (the DW-402 case above says the same).
+    //
+    // It earns its place anyway, as the ONE mount where a wrongly-composed
+    // `aria-describedby` on the `<output>` would be visible: with no reason
+    // rendered, `ollamaDescribedBy` is `undefined` and the attribute would be
+    // absent whether or not the locked box asked for it. It also pins that the
+    // `<p>` sits OUTSIDE the ternary, so the id exists on both spellings.
+    render(
+      <ProviderForm
+        {...props({
+          settings: settings({
+            ollamaBaseUrlSource: "env",
+            ollamaBaseUrl: PINNED,
+            ollamaBaseUrlIssue: ENV_REFUSAL,
+          }),
+        })}
+      />,
+    );
+
+    const box = document.getElementById("ollamaBaseUrl")!;
+    expect(box.tagName).toBe("OUTPUT");
+    expect(box.getAttribute("aria-describedby")).toBeNull();
+    // The sentence still renders, inside the endpoint block and nowhere else.
+    const issue = document.getElementById("ollamaBaseUrlIssue");
+    expect(issue!.textContent).toBe(ENV_REFUSAL);
+    expect(endpointLabel().closest("div")!.textContent).toContain(ENV_REFUSAL);
   });
 });

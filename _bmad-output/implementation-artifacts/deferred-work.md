@@ -4301,7 +4301,9 @@ location: src/components/ProviderForm.tsx:355
 source_spec: `spec-dw-505-506-provider-blank-state-and-model-hint.md`
 severity: medium
 reason: `ProviderForm.tsx:355-359` keeps `DEFAULT_MODELS[effectiveProvider]`, so a blank picker over a stored `openai` shows placeholder `gpt-4o` one line below "Select a provider to check its server credential". Two statements about the same control now disagree, which is the DW-505 harm shape applied to a different node. Out of scope on the intent's own authority — it says to keep the stored-provider fallback for everything but the credential line — so the disagreement is a consequence this bundle was told to accept, not a deviation from it.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-provider-form-pick-and-env-label
+resolution-undo: 634001e4acbf6f0e4e4a1898a00439359c4b7ab473f5b67ee08a08d8692debe8 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-29 Blank the placeholder on a blank pick — Extend the blank-pick rule from the credential line to the model placeholder, so a blank provider selection shows no model default rather than the stored provider's. Keep the stored-provider fallback everywhere the pick is not blank. Pin that the credential line and the model placeholder make the same statement for every pick state.
 decision: 2026-08-29 Blank the placeholder on a blank pick — Extend the blank-pick rule from the credential line to the model placeholder, so a blank provider selection shows no model default rather than the stored provider's. Keep the stored-provider fallback everywhere the pick is not blank. Pin that the credential line and the model placeholder make the same statement for every pick state.
 
@@ -4791,7 +4793,9 @@ location: src/components/ProviderForm.tsx — the `Ollama Base URL` env branch
 source_spec: `spec-dw-560-562-env-locked-model-box-a11y.md`
 severity: medium
 reason: `ProviderForm.tsx` renders `<label htmlFor="ollamaBaseUrl">` unconditionally, while the `settings?.ollamaBaseUrlSource === "env"` branch renders a bare `<div>` with no id — so on an `OLLAMA_BASE_URL`-pinned deployment the label names an id nothing carries and the value is announced with no accessible name, exactly the state removed from `#model` and `#embeddingModel`. Excluded by this bundle's intent, which names only the model boxes. Nothing would catch it drifting further: a repo-wide search for `ollamaBaseUrlSource: "env"` matches only `src/lib/__tests__/config.test.ts` (a server-side resolver test that renders nothing), and every mounted suite uses `config` sources for that field. The fix is the same one-line element swap plus a twin of the accessible-name case.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-provider-form-pick-and-env-label
+resolution-undo: 634001e4acbf6f0e4e4a1898a00439359c4b7ab473f5b67ee08a08d8692debe8 2026-09-01 7374617475733a206f70656e
 
 ### DW-618: `src/lib/llm.ts` resolves one model client out of several independent entries into the 5 s config cache — the same straddle DW-334 closed inside `config.ts`.
 origin: spec-deferred b016a504ab40
@@ -5603,4 +5607,12 @@ location: src/lib/llm.ts:519
 source_spec: `spec-dw-630-631-632-llm-refusal-copy-pointers.md`
 severity: low
 reason: DW-632 aligned the two ladders' KEYLESS diagnoses; the MODEL gap still diverges, and this one is not copy. `getResolvedCredentials` (`src/lib/config.ts:2613-2632`) resolves the model from `LLM_MODEL`, then `cfg.model`; `getConfiguredModel`'s explicit-provider branch (`src/lib/llm.ts:519-524`) resolves only `options.model`, the workload settings, `OLLAMA_MODEL` and `DEFAULT_MODELS[provider]` — and `DEFAULT_MODELS.custom` is deliberately absent. Verified with a seeded config `{provider: "custom", model: "my-model", customApiKey, customBaseUrl}`: `getModel` builds the client, while `getConfiguredModel({provider: "custom"})` throws "The Custom provider needs a model name." Reachable in production at `src/lib/agent-runtime.ts:156`, which spreads `provider` with no `model` when an agent carries no model override — so a correctly configured custom endpoint is refused for a model the owner did set. Pre-existing and outside this bundle's named sites; the new cross-ladder equality tests delibera
+status: open
+
+### DW-714: Every `SourceBadge`-bearing label on /settings computes an accessible name with no separating space, so a screen reader announces "Modelfrom environment" and "Ollama Base URLfrom environment".
+origin: spec-deferred 8a0b73bf34b1
+location: src/components/SourceBadge.tsx and the SourceBadge-bearing labels in src/components/ProviderForm.tsx
+source_spec: `spec-dw-561-617-provider-form-pick-and-env-label.md`
+severity: low
+reason: `SourceBadge.tsx` relies on the badge span's `ml-2` class for visual spacing only, and the labels in `ProviderForm.tsx` render `{settings && <SourceBadge …/>}` directly after the label text with no whitespace node between them. The accessible name is therefore the two strings run together, which both `provider-form.test.tsx` cases now pin verbatim ("Modelfrom environment", "Ollama Base URLfrom environment") as the name a browser computes. `EmbeddingSettings.tsx` already writes `Embedding Model{" "}` before its span, so the repo carries both spellings and the fix pattern is settled. Pre-existing and repo-wide across Provider, Model and Ollama Base URL; surfaced here because DW-617 pinned a second instance of it.
 status: open

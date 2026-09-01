@@ -386,9 +386,9 @@ export function ProviderForm({
           // `block w-full` restores what the `<div>` had for free — `<output>`
           // is inline by default — so the box looks identical.
           //
-          // The `Ollama Base URL` block below still renders a bare `<div>` on
-          // its own env branch: the same defect on a different control, outside
-          // DW-562, and not a rule this page follows everywhere yet.
+          // The `Ollama Base URL` block below now spells its own env branch the
+          // same way (DW-617): it carried the identical defect on a different
+          // control, and the two locked boxes on this form are one rule.
           <output
             id="model"
             aria-live="off"
@@ -406,9 +406,18 @@ export function ProviderForm({
             // copyable and in the tab order, which is the whole point.
             readOnly={readOnly}
             aria-describedby={modelDescribedBy}
+            // The PICKER's own value, like the credential line (DW-561). Both
+            // nodes are statements ABOUT THE SELECTION, so they read the same
+            // const: off `effectiveProvider` a blank pick over a stored
+            // `openai` offered `gpt-4o` one line under "Select a provider to
+            // check its server credential" — two sentences about one selection
+            // disagreeing, and the placeholder naming a provider the control
+            // was not showing. The Custom/Ollama notes keep the stored-provider
+            // fallback (`:110-113`): they point at configuration that exists
+            // whether or not the select has been touched.
             placeholder={
-              effectiveProvider
-                ? DEFAULT_MODELS[effectiveProvider] ?? "Enter model name"
+              selectedProvider
+                ? DEFAULT_MODELS[selectedProvider] ?? "Enter model name"
                 : "Select a provider first"
             }
             className="mt-1.5 block w-full rounded-md border border-foreground/20 bg-background px-3 py-2 text-sm text-foreground shadow-sm focus:border-foreground/40 focus:outline-none focus:ring-1 focus:ring-foreground/20 font-mono"
@@ -458,9 +467,24 @@ export function ProviderForm({
             )}
           </label>
           {settings?.ollamaBaseUrlSource === "env" ? (
-            <div className="mt-1.5 rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono">
+            // AN `<output>`, not a `<div>` (DW-617) — the model box's argument
+            // above, verbatim, one control over. The `<label
+            // htmlFor="ollamaBaseUrl">` is unconditional, so on an
+            // `OLLAMA_BASE_URL`-pinned deployment it named an id nothing in the
+            // document carried and the locked endpoint was announced with no
+            // accessible name at all. `<output>` is labelable, `aria-live="off"`
+            // silences the live region its implicit `status` role brings, and
+            // `block w-full` restores what the `<div>` had for free; the reasons
+            // for each — and for the `role`/`tabIndex`/`aria-describedby` this
+            // deliberately does NOT carry — are argued in full on `#model` and
+            // are not restated here.
+            <output
+              id="ollamaBaseUrl"
+              aria-live="off"
+              className="mt-1.5 block w-full rounded-md border border-foreground/10 bg-foreground/5 px-3 py-2 text-sm text-foreground/60 font-mono"
+            >
               {settings.ollamaBaseUrl}
-            </div>
+            </output>
           ) : (
             <input
               id="ollamaBaseUrl"
