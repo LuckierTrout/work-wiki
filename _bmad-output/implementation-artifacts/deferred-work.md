@@ -5470,3 +5470,11 @@ source_spec: `spec-dw-293-679-bulk-read-and-write-cost.md`
 severity: low
 reason: `parseArchive`'s collision probe changed from `readAsset` to `stat` (DW-679's read-avoidance). `fs.readFile` on a directory raised `EISDIR`, which the `else` branch rethrew; `fs.stat` succeeds, so the entry lands in `collisions` and, under `collision: "skip"`, is silently skipped rather than rejecting the import. Closing it needs a way to ask the provider whether a path is a directory — `FileInfo` carries only `size` and `lastModified`, and widening `StorageProvider` is outside this bundle's intent. Reachable only when a tenant holds files under `tenants/<t>/<archive entry path>/...`, which `walk()` would have archived as children rather than as that path.
 status: open
+
+### DW-702: A merge fold that returns non-empty text carrying no prose still overwrites the survivor's body and then hard-deletes the absorbed page.
+origin: spec-deferred 8401ccfd4da9
+location: src/lib/merge.ts:530
+source_spec: `spec-c3-merge-empty-reconcile-guard.md`
+severity: medium
+reason: The new `emptyFallback: "throw"` guard only fires when the parsed body trims to empty. Two shapes slip past it and produce the same destruction this bundle set out to stop: `parseDisputedMarker` only matches `(yes|true)`, so a response of exactly "DISPUTED: no\n" is returned verbatim as the merged body (verified against the regex at src/lib/ingest.ts:1183); and a heading-only fold such as "# Agent Harness\n" is likewise non-empty. Either becomes `mergedBody`, is written over the survivor, lands in `MergeOperationReceipt.mergedContent` (replayed verbatim by Retry), and the absorbed page is hard-deleted with its revisions. Pre-existing — not introduced by this change, and outside this bundle's intent, which names only the empty-response fallback.
+status: open

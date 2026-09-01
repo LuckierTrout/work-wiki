@@ -514,11 +514,22 @@ async function mergePagesWhileSourceLocked({
             guidanceOwner = undefined;
           }
         }
+        // `emptyFallback: "throw"`. At THIS door `from.body` is the ABSORBED
+        // page's body, and `mergedBody` is written over the SURVIVOR at the end
+        // of this function before `from` is hard-deleted. The ingest-door
+        // default (`"new"`) would hand back `from.body` on an empty fold,
+        // silently replacing the survivor's prose with the absorbed page's —
+        // and because `mergedBody` goes into the receipt, that substitution is
+        // the merge's linearization point, replayed verbatim by any Retry and
+        // undoable only by hand. Throwing drops into the `catch` below, which
+        // keeps the appended-bodies default — the same degrade a reconcile API
+        // error already gets, and lossless.
         const reconciled = await reconcilePage(
           into.body,
           from.body,
           guidanceOwner,
           guidance,
+          { emptyFallback: "throw" },
         );
         mergedBody = reconciled.body;
         if (reconciled.disputed) disputed = true;

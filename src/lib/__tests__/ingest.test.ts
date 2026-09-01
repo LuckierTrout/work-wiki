@@ -11,6 +11,7 @@ import {
   chunkText,
   parseConceptMarker,
   parseDisputedMarker,
+  reconcilePage,
   normalizeTags,
   deriveTitleFromContent,
   collectTagVocabulary,
@@ -2648,6 +2649,60 @@ describe("ingest — reconcile on merge", () => {
     const page = await readWikiPageWithFrontmatter("topic");
     expect(page!.content).not.toContain("Merged body that must never appear");
     expect(page!.frontmatter.disputed).toBe(false);
+  });
+
+  it("keeps the freshly synthesized body when reconcile answers empty", async () => {
+    // The ingest door keeps the "fall back to the new body" rule: here `newBody`
+    // IS the fresh synthesis, so an empty fold degrades to the pre-reconcile
+    // overwrite rather than blanking the page. (The merge door opts out via
+    // `emptyFallback: "throw"` because there `newBody` is the absorbed page's
+    // body.)
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("canonical page about one concept")
+        ? "   \n  "
+        : "CONCEPT: Topic\nALIASES: none\n\n# Topic\n\n## Summary\n\nFresh synthesis body.",
+    );
+
+    await ingest("Topic A", "First source. Details one.");
+    const result = await ingest("Topic B", "Second source. Details two.");
+
+    expect(result.primarySlug).toBe("topic");
+    const page = await readWikiPageWithFrontmatter("topic");
+    expect(page!.content).toContain("Fresh synthesis body.");
+    expect(page!.body.trim()).not.toBe("");
+    expect(page!.frontmatter.disputed).toBe(false);
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
+  // The two end-to-end cases above cannot tell the `emptyFallback` default
+  // apart: at the ingest door `newBody` IS the fresh synthesis, so the `"new"`
+  // fallback and the door's own catch produce byte-identical pages. These call
+  // `reconcilePage` directly to pin the option itself.
+  it("defaults to the new body on an empty fold, and throws only when asked to", async () => {
+    mockedCallLLM.mockResolvedValue("   \n  ");
+
+    // No options argument at all — the default must stay `"new"`.
+    await expect(reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.")).resolves.toEqual(
+      { body: "# New\n\nNew prose.", disputed: false },
+    );
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "new",
+      }),
+    ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).rejects.toThrow(/empty body/);
+
+    // A marker-only response strips down to the same empty body.
+    mockedCallLLM.mockResolvedValue("DISPUTED: yes\n");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).rejects.toThrow(/empty body/);
   });
 
   it("degrades to the new body (ingest still succeeds) when reconcile throws", async () => {

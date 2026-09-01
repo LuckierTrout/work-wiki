@@ -944,6 +944,46 @@ describe("mergePages", () => {
     expect(mockedCallLLM).not.toHaveBeenCalled();
   });
 
+  // At the merge door `newBody` is the ABSORBED page's body, so the ingest-door
+  // "fall back to the new body" rule would overwrite the survivor with the
+  // absorbed page's prose and then hard-delete the absorbed page. A fold that
+  // yields no body must degrade to the lossless append instead. Both shapes are
+  // covered: an empty response, and a response that is nothing but a marker the
+  // parsers strip (which reduces to the same empty body).
+  for (const [label, foldResponse] of [
+    ["comes back empty", "   \n  "],
+    ["is nothing but a DISPUTED marker", "DISPUTED: yes\n"],
+  ] as const) {
+    it(`keeps the survivor's prose (appends both bodies) when the fold ${label}`, async () => {
+      await seedPage("agent-harness", {
+        title: "Agent Harness",
+        body: "# Agent Harness\n\nThe harness loop.",
+      });
+      await seedPage("harness-ai-agents", {
+        title: "Harness (AI agents)",
+        body: "# Harness (AI agents)\n\nContext window management.",
+      });
+      mockedCallLLM.mockResolvedValue(foldResponse);
+
+      await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+      // The fold was actually attempted — this is NOT the no-LLM-key path,
+      // whose outcome is byte-identical.
+      expect(mockedCallLLM).toHaveBeenCalled();
+      const into = await readWikiPageWithFrontmatter("agent-harness");
+      // Exactly the `into.body + "\n\n" + from.body` append, survivor first —
+      // not merely "both phrases appear somewhere".
+      expect(into!.body).toBe(
+        "# Agent Harness\n\nThe harness loop.\n\n# Harness (AI agents)\n\nContext window management.",
+      );
+      // A fold that produced nothing produces no verdict either: `disputed`
+      // stays whatever the two pages' frontmatter said (neither was disputed).
+      expect(into!.frontmatter.disputed).toBe(false);
+      // The absorbed page is still deleted — the merge itself succeeded.
+      expect(await readWikiPage("harness-ai-agents")).toBeNull();
+    });
+  }
+
   it("rejects merging a page into itself and a missing page", async () => {
     await seedPage("agent-harness", { title: "Agent Harness" });
     await expect(mergePages({ from: "agent-harness", into: "agent-harness" })).rejects.toThrow(

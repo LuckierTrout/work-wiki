@@ -1192,14 +1192,36 @@ export function parseDisputedMarker(raw: string): {
  * (→ `disputed`).
  *
  * Defensive about the model's output: strips a `DISPUTED:` marker, then any
- * echoed `CONCEPT:`/`ALIASES:` synthesis headers. Falls back to the new body on
- * an empty/failed response so a reconcile hiccup never blanks the page.
+ * echoed `CONCEPT:`/`ALIASES:` synthesis headers.
+ *
+ * `emptyFallback` picks what an EMPTY fold means, because the two doors that
+ * call this disagree about it and the wrong answer destroys prose:
+ *
+ *  - `"new"` (default, the ingest door): `newBody` is the freshly synthesized
+ *    article, so falling back to it degrades to the pre-reconcile overwrite —
+ *    the page keeps a real body rather than the fold's nothing. (This covers
+ *    the empty/whitespace response only. A response that survives that check
+ *    but strips down to nothing still returns an empty body at this door; see
+ *    the note at the second check below.)
+ *  - `"throw"` (the merge door): there `newBody` is the ABSORBED page's body,
+ *    and the caller writes the result over the SURVIVOR and then hard-deletes
+ *    the absorbed Page and its revisions. Returning `newBody` would silently
+ *    replace the survivor's prose with the absorbed page's — recoverable only
+ *    by hand, from the survivor's revision history and the merge receipt, and
+ *    replayed verbatim by any Retry. Throwing hands the caller its own
+ *    reconcile-failed path (append both bodies) instead, which loses nothing.
+ *
+ * Under `"throw"` an empty fold is a response whose body is empty or
+ * whitespace-only, before or after the markers above are stripped. A fold that
+ * returns non-empty text carrying no actual prose (a bare heading, an
+ * unrecognised `DISPUTED: no` line) is NOT caught here.
  */
 export async function reconcilePage(
   existingBody: string,
   newBody: string,
   owner?: string,
   cache?: GuidanceCache,
+  options?: { emptyFallback?: "new" | "throw" },
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
   const [workspaceGuidance, dictionaryGuidance] = owner
@@ -1214,12 +1236,23 @@ export async function reconcilePage(
   const out = await callLLM(systemPrompt, user, {
     maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS,
   });
+  const emptyFallback = options?.emptyFallback ?? "new";
   if (!out || out.trim() === "") {
+    if (emptyFallback === "throw") {
+      throw new Error("reconcile returned an empty body");
+    }
     return { body: newBody, disputed: false };
   }
   const { disputed, body: afterDisputed } = parseDisputedMarker(out);
   // Guard against the model echoing the synthesis headers into the merged body.
   const { body } = parseConceptMarker(afterDisputed);
+  // A marker-only response reduces to the same empty fold as an empty response.
+  // Only `"throw"` re-checks. `"new"` deliberately keeps today's exact
+  // behaviour — it returns the (empty) parsed body rather than falling back —
+  // because changing the ingest door is out of this change's scope.
+  if (emptyFallback === "throw" && body.trim() === "") {
+    throw new Error("reconcile returned an empty body");
+  }
   return { body, disputed };
 }
 
