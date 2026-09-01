@@ -2985,7 +2985,9 @@ source_spec: `spec-dw-332-embedding-drift-warning-rearm.md`
 location: src/lib/embeddings.ts (relatedByVector)
 severity: low
 reason: src/lib/embeddings.ts relatedByVector applies `modelMatches` and silently returns [] on a drifted corpus. That muteness predates this change (DW-310 scoped the breadcrumb to searchByVector), but with drift now modelled as CLEARABLE state the asymmetry is newly consequential: a rebuild proven out only through relatedByVector never re-arms the key. Worth either one sentence of recorded rationale or a decision to widen the door.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-related-by-vector-drift-voice
+resolution-undo: 41c6f505ef7bd8c3b921e54d2f717048d006ed58790d2ce489533009da760ef5 2026-09-01 7374617475733a206f70656e
 
 ### DW-407: WikiWorkbench's CreateWikiDialog confirm stays live on its own unconfirmed path, so a second press seeds a duplicate wiki.
 
@@ -4637,7 +4639,9 @@ location: _bmad-output/implementation-artifacts/spec-dw-404-405-406-embedding-dr
 source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: medium
 reason: That spec reconciles DW-404 and DW-405 into `matches.every((m) => m.metadata.model === model)` and also rewrites `relatedByVector` (DW-406). HEAD before this run still had `kept.length > 0`, so none of it ever landed. A later run routing on its `in-review` status would re-derive the strict-label gate and silently close DW-405, which the human decision deliberately left open, and would pull DW-406 in with it. It needs to be withdrawn or re-scoped by whoever owns the ledger.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-related-by-vector-drift-voice
+resolution-undo: 41c6f505ef7bd8c3b921e54d2f717048d006ed58790d2ce489533009da760ef5 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-29 Withdraw the spec — Move the spec's status from `in-review` to `withdrawn` with a note recording that DW-404 and DW-405 were settled by the 2026-08-22 decision and closed by later sweeps, and that its prescribed predicate contradicts that decision. Name the commits that closed them so a reader can find the shipped behaviour. Leave DW-406 to be re-filed on its own terms if it is still wanted.
 decision: 2026-08-29 Withdraw the spec — Move the spec's status from `in-review` to `withdrawn` with a note recording that DW-404 and DW-405 were settled by the 2026-08-22 decision and closed by later sweeps, and that its prescribed predicate contradicts that decision. Name the commits that closed them so a reader can find the shipped behaviour. Leave DW-406 to be re-filed on its own terms if it is still wanted.
 

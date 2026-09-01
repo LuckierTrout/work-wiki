@@ -3,13 +3,91 @@ title: 'Settle the embedding-drift re-arm on one gate, and apply it at both vect
 type: 'bugfix'
 created: '2026-08-27'
 baseline_revision: '40f313b75191792f0ae8e5960232f0eaa5d4d80b'
-status: 'in-review'
+status: 'withdrawn'
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
 warnings: ['oversized']
 deferred: []
 ---
+
+## Withdrawal Note
+
+**WITHDRAWN 2026-09-01 under the 2026-08-29 `DW-600` decision ("Withdraw the
+spec"). Do not implement this spec, and do not re-derive its re-arm predicate
+from the contract below.** Everything from `<intent-contract>` onward is
+preserved byte-for-byte as the historical proposal it was; it is a record of
+reasoning, not a live instruction.
+
+Why: every entry this spec bundled was already settled and shipped — by a gate
+that differs from the one prescribed here. Every statement about shipped code
+below is as of `9ef733cd986a7570a7f87fe0ecc276392028265a`.
+
+- **DW-404** (re-arm only on a whole window) and **DW-405** (re-arm only on
+  labelled proof) were settled by two recorded 2026-08-22 human decisions —
+  "Require a whole-window match" (DW-404) and "Require a positive labelled
+  match" (DW-405). Both are preserved in
+  `_bmad-output/implementation-artifacts/deferred-work-archive.md`, at lines 3458
+  and 3471; neither is in `.bmad-loop/decisions.json`, which holds only the later
+  DW-600 decision. They were built from
+  `spec-dw-404-drift-rearm-whole-window.md` and
+  `spec-dw-405-drift-rearm-labelled-proof.md` (both `status: 'done'`), and closed
+  in `945de9bfb9b40aa863b9a9a4a93a60223648b1db` (DW-404) and
+  `0349df96eea85b82adc933ac2c0845bb92d9c4ad` (DW-405). The shipped behaviour is
+  the re-arm gate in `searchByVector` in `src/lib/embeddings.ts`.
+- **DW-406** (`relatedByVector` drift parity) closed in
+  `aa427ff33b4b4cc36ee73602fa94334a017808bd`, which landed the code, the tests
+  and `spec-dw-406-related-by-vector-drift-parity.md` (+108/−0) together in one
+  sweep commit, under another bundle's commit message. The later docs follow-up
+  `a858dcb506bc9939984fac709f470338462e77e7` amended that same spec file
+  (+50/−1) to record its review order and status, and is where the reason for the
+  split is written. A reader chasing the artifact's origin wants `aa427ff3`;
+  `a858dcb5` is the amendment that explains it. The spec is `status: 'done'` and
+  `<frozen-after-approval>`. `relatedByVector` now carries the whole door: a
+  `warnOnceAbout` before the stale-anchor early return, a `rearmWarningAbout` on
+  a window that proves a rebuild, and a `warnOnceAbout` when the model filter
+  drops every other match — all three on the single shared key
+  `drift:<active model>` that `searchByVector` uses, so the two doors spend and
+  re-arm one throttle between them.
+
+**The predicate prescribed below contradicts the gate that shipped, and must not
+be re-derived from this document.** This spec argues for one predicate at both
+doors: `matches.length > 0 && matches.every((m) => m.metadata.model === model)`.
+What is in the tree is a conjunction of whole-window presence with `some`, never
+`every`, and the two doors read that window over different sets:
+
+- `searchByVector` (`src/lib/embeddings.ts:1073`) —
+  `kept.length === matches.length && kept.some((m) => m.metadata.model === currentModel)`
+- `relatedByVector` (`src/lib/embeddings.ts:1172`) —
+  `kept.length === others.length && kept.some((m) => m.metadata.model === currentModel)`,
+  where `others = matches.filter((m) => m.id !== slug)` (line 1170) excludes the
+  anchor deliberately, so a page cannot vouch for a corpus it is the only current
+  member of.
+
+The `some` is the deliberate part: under the shipped gate an unlabelled legacy
+vector sitting alongside at least one positively labelled current vector still
+counts as proof of a landed rebuild, whereas this spec's `every` would refuse to
+re-arm and wedge the drift warning permanently shut on any corpus retaining
+legacy vectors. The discriminating pin is
+`it("DOES re-arm on a window holding an ACTIVE-model vector beside an unlabelled one")`
+at `src/lib/__tests__/embeddings.test.ts:1338`, whose own comment names
+`matches.every(...)` as the alternative the 2026-08-22 decision rejected. So the
+DW-405 pin this spec's Verification section would have written — its mutation
+check that "relaxing `every` to `some` must fail the DW-405 pin" — is the exact
+inverse of the DW-405 pin that actually shipped.
+
+The predicates quoted above are accurate as of the commit named at the top of
+this note and may yet be superseded: DW-598, DW-599 and DW-602 are all still
+`open` in the deferred-work ledger against this same re-arm gate. Re-read
+`src/lib/embeddings.ts` before relying on them.
+
+`withdrawn` is used rather than `done` or `blocked` deliberately: `done` would
+claim this proposal shipped as written, which is the exact misreading to prevent,
+and `blocked` invites a retry. `withdrawn` is the status the 2026-08-29 decision
+names, and it sits deliberately outside the
+`draft | ready-for-dev | in-progress | in-review | done | blocked` set that
+build-auto's spec-file route resumes from, so that route does not pick this spec
+up.
 
 <intent-contract>
 
