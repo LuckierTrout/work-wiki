@@ -11,7 +11,7 @@ import type { WriteKind } from "@/lib/authz";
 /**
  * The write-denial resolver (DW-122/DW-123).
  *
- * One commons-realm deny reaches nine server surfaces. Before this module each
+ * One commons-realm deny reaches ten server surfaces. Before this module each
  * of them answered its own generic sentence while the edit page explained the
  * realm, so the same refusal read differently depending on which door the
  * caller knocked on. The resolver is what makes them one sentence — and, more

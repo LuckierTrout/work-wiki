@@ -784,6 +784,7 @@ export const MCP_TOOLS: ToolDef[] = [
       handleRevertRevision({
         ...(a as { slug: string; timestamp: number }),
         author: p!.handle,
+        principal: p,
       }),
   },
   // -- Vault tools ----------------------------------------------------------
