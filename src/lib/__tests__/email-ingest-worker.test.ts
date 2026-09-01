@@ -9,6 +9,8 @@ import worker, {
   MAX_EMAIL_CONTENT_CHARS,
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_RAW_EMAIL_BYTES,
+  MIME_STRUCTURAL_HEADROOM_BYTES,
+  WORST_CASE_TRANSFER_ENCODING_FACTOR,
 } from "../../../workers/email-ingest/index";
 import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-wire";
 
@@ -508,9 +510,10 @@ const ASCII_PART_LINE_STRIDE = 76;
  * The payload of a part written with NO transfer encoding (`7bit`), which is
  * the only shape that can still carry more decoded bytes than
  * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` while staying under the raw gate: since
- * DW-449 that gate is 25 MiB, and base64's ~1.37x puts 20 MiB of decoded
- * payload at ~27.4 MiB on the wire, refused at the door. An unencoded part costs
- * ~1x, so the DW-360 bound is reachable through it and through nothing else.
+ * DW-449 that gate is 25 MiB, and base64's ~1.37x puts the budget's ~19.9 MiB
+ * of decoded payload at ~27.2 MiB on the wire, refused at the door. An unencoded
+ * part costs ~1x, so the DW-360 bound is reachable through it and through
+ * nothing else.
  *
  * Distinct per part and per offset for the same reason `partBytes` is, but
  * constrained to what an unencoded body may actually contain:
@@ -731,10 +734,12 @@ async function forwardedForm(raw: string, subject: string, slug: string) {
 // copy of the shape would mean encoding ~28 MB of base64 twice for no gain.
 /**
  * The budget as the acknowledgement quotes it, derived with the SAME floor
- * arithmetic production uses. A plain `/ 1024 / 1024` agrees with it only
- * because 20 MiB happens to be MiB-aligned today; the "rounded DOWN, so the
- * figure quoted is never larger than the one enforced" invariant is pinned for
- * `MAX_RAW_EMAIL_MB` and would otherwise be unpinned here.
+ * arithmetic production uses. Since DW-455 the budget is 20,871,520 bytes --
+ * ~19.90 MiB, not MiB-aligned at all -- so the floor is doing real work and a
+ * plain `/ 1024 / 1024` would quote 19.9 where the acknowledgement says 19. The
+ * "rounded DOWN, so the figure quoted is never larger than the one enforced"
+ * invariant is pinned for `MAX_RAW_EMAIL_MB` and would otherwise be unpinned
+ * here.
  */
 const AGGREGATE_BUDGET_MB = Math.floor(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024);
 
@@ -1366,7 +1371,7 @@ describe("email-ingest oversized attachments", () => {
    *
    * The aggregate budget (DW-360) is deliberately NOT in play: the oversized
    * pair never reaches the selection loop, and eleven 96-byte parts cannot spend
-   * a 20 MiB budget. Its own three-way case lives next door.
+   * a ~19.9 MiB budget. Its own three-way case lives next door.
    */
   it("reports oversized, over-cap and unsupported losses in one scrubbed acknowledgement", async () => {
     const raw = multipartEmail(
@@ -2255,7 +2260,7 @@ describe("email-ingest Content-ID parts", () => {
  * Unencoded (`7bit`) parts on purpose: they are what makes the gap reachable
  * now. Quoted-printable at ~3.12x was never a candidate, and base64 at ~1.37x
  * stopped being one when DW-449 clamped the raw gate to Email Routing's 25 MiB
- * ceiling -- 20 MiB of decoded payload is ~27.4 MiB of base64, refused at the
+ * ceiling -- ~19.9 MiB of decoded payload is ~27.2 MiB of base64, refused at the
  * door, which would test the raw gate rather than this bound. At ~1x the door
  * is clear and the budget is the only thing that can drop a part.
  *
@@ -2972,7 +2977,7 @@ describe("email-ingest raw message cap", () => {
   it("refuses the whole aggregate budget on the worst-case wire, quoting a size that can be resent", async () => {
     // DW-362's aggregate at the gate. Measured per part, because ten short final
     // lines cost more than one. On the worst-case wire those ten mid-size files
-    // are 65,431,170 bytes -- what the DERIVATION was sized to admit, and two
+    // are 65,119,170 bytes -- what the DERIVATION was sized to admit, and two
     // and a half times what Email Routing delivers, so the message is refused
     // upstream and the sender must hear a figure they can act on (DW-449).
     //
@@ -3057,57 +3062,53 @@ describe("email-ingest raw message cap", () => {
     expectResendableRefusal(text);
   });
 
-  it("bounces a full aggregate of documents carried alongside a maximal body", async () => {
-    // The trade-off `MIME_ENVELOPE_HEADROOM_BYTES` records in its comment,
-    // enforced instead of merely stated: the headroom covers part headers,
-    // boundaries and an ORDINARY body, not a body at `MAX_EMAIL_CONTENT_CHARS`.
-    // Both extremes at once do not fit, by design.
+  it("admits a full aggregate of documents carried alongside a maximal body against the derivation, and refuses it only at the DW-449 clamp", async () => {
+    // The INVERSE of the trade-off `MIME_ENVELOPE_HEADROOM_BYTES` used to
+    // record. Until DW-455 the headroom covered part headers, boundaries and an
+    // ORDINARY body, and this case pinned that both extremes at once did not
+    // fit. That was the defect: the Worker itself truncates a body to
+    // `MAX_EMAIL_CONTENT_CHARS`, so the envelope was dishonest about a shape the
+    // module produces on purpose. The headroom now buys the maximal body out of
+    // the aggregate average, and the pair fits.
     //
     // Derived from the exported terms, never hand-typed, so it tracks the
     // constants rather than a snapshot of them.
     //
-    // The sum is a conservative LOWER bound on the real wire size, not an
-    // estimate of it: it adds a decoded character count to an encoded byte
-    // count and charges nothing for the MIME envelope. A body of
-    // `MAX_EMAIL_CONTENT_CHARS` characters occupies at least that many bytes on
-    // the wire and usually more (UTF-8 multi-byte runes, quoted-printable
-    // escapes), and headers and boundaries are pure addition on top. So the
-    // real message is always at least this large -- the assertion cannot become
-    // falsely true by the bound being loose.
+    // Measured on the quoted-printable wire size for BOTH terms, because that is
+    // what `MAX_RAW_EMAIL_BYTES` is derived from (DW-358) and what the envelope
+    // charges the body at. The old shape added a decoded CHARACTER count to an
+    // encoded byte count -- a conservative lower bound, which was the right
+    // direction while the assertion was "this does not fit". It is the wrong
+    // direction now: an under-estimate would make "this fits" true by slack. So
+    // the body is put through the same helper the attachments are, which is the
+    // ~3.12x the derivation actually pays for.
     //
-    // Measured on the quoted-printable wire size, because that is what
-    // `MAX_RAW_EMAIL_BYTES` is derived from (DW-358): against a cap widened for
-    // worst-case expansion, a base64 payload plus a maximal body fits
-    // comfortably, so the base64 measurement would no longer be testing the
-    // trade-off at all -- it would just be asserting a true-by-slack inequality.
+    // Measured PER PART rather than by scaling one part, for the same reason the
+    // parity suite measures it that way: ten short final lines cost more than
+    // one.
     //
-    // Re-derived at the AGGREGATE ceiling the cap now binds at (DW-362). The
-    // trade-off is unchanged in kind, only in where it binds: one full-size
-    // document plus a maximal body now fits with room to spare, so measuring
-    // there would test nothing. Measured PER PART rather than by scaling one
-    // part, for the same reason the parity suite measures it that way: ten short
-    // final lines cost more than one.
-    //
-    // This still guards the trade-off AS RECORDED TODAY; it is not a veto on
-    // widening the cap again. Re-derive the expectation from the constants if
-    // the budget moves; do not read a failure here as a reason to leave the cap
-    // alone.
+    // This pins the admission AS DERIVED TODAY; it is not a veto on re-sizing
+    // the cap. Re-derive the expectation from the constants if the budget moves.
     const aggregateWireSize =
       MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
-    const rawSize = aggregateWireSize + MAX_EMAIL_CONTENT_CHARS;
-    // Measured against the DERIVED cap, because the trade-off is a property of
+    const rawSize = aggregateWireSize + quotedPrintablePartWireSize(MAX_EMAIL_CONTENT_CHARS);
+    // Measured against the DERIVED cap, because the admission is a property of
     // the derivation: `MIME_ENVELOPE_HEADROOM_BYTES` is a term of it, and the
     // DW-449 clamp sits above that arithmetic without changing any of it.
-    // Against the ENFORCED cap the comparison would be true by slack -- the
-    // aggregate alone is already over 25 MiB -- and would stop testing the
-    // headroom at all.
-    expect(rawSize).toBeGreaterThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
-    // ...while the attachments ALONE are under it, so what this case proves is
-    // the body/headroom trade-off and not an oversized aggregate.
-    expect(aggregateWireSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
-    // The message is refused either way, but by the clamp rather than by the
-    // headroom, so the assertions above are what carry the claim.
+    expect(rawSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+    // ...and it is the DW-455 envelope that admits it, not slack the derivation
+    // always had. Against an envelope that still held only the structural term,
+    // this same message is over -- so the case above cannot pass on a cap that
+    // merely happens to be loose.
+    expect(rawSize).toBeGreaterThan(
+      Math.ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
+        MIME_STRUCTURAL_HEADROOM_BYTES,
+    );
+    // What still refuses it, stated so the acknowledgement below is not read as
+    // a failure of the envelope: the enforced gate is the platform clamp, and
+    // the aggregate alone is already over 25 MiB.
     expect(rawSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+    expect(aggregateWireSize).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
 
     const msg = { ...message(ATTACHMENT_EMAIL, "Quarterly report"), rawSize };
     const bindings = env(Response.json({ ok: true, slug: "quarterly-report" }));

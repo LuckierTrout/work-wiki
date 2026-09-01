@@ -5496,3 +5496,11 @@ source_spec: `spec-dw-432-ingest-history-orphan-listing.md`
 severity: medium
 reason: GET now admits an index-missing slug whose page the caller can read (src/app/api/ingest/history/route.ts, the orphan probe in the ledger walk). DELETE was deliberately left alone: its `ingestIds` preflight and its DW-270 read gate both test the index-backed `readable` set built from `listReadableWikiPages`, so the same row answers `SELECTION_NOT_FOUND` and lands in `failed[]`. The owner therefore gets a visible, selectable row whose delete always fails with a sentence that says it was "not found", which is a wrong answer about a row the same route just listed. The gap is the second half of this bundle's own decision ("orphan rows list AND become deletable"); it was not shipped because that decision also says "on this listing path only", and `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md` shipped the opposing constraint for the delete path ("Do not add a disk fallback for orphan slugs -- the ledger/index contract stays as-is"). Closing it means overturning a shipped human decisio
 status: open
+
+### DW-705: The envelope's new body term charges MAX_EMAIL_CONTENT_CHARS as if each UTF-16 code unit were one byte, so it buys a maximal ASCII body only; a non-ASCII body of the same length is up to ~3x larger on
+origin: spec-deferred ab4ee59f10f8
+location: workers/email-ingest/index.ts (MIME_ENVELOPE_HEADROOM_BYTES)
+source_spec: `spec-dw-455-email-envelope-body-budget.md`
+severity: low
+reason: MIME_ENVELOPE_HEADROOM_BYTES adds Math.ceil(MAX_EMAIL_CONTENT_CHARS * WORST_CASE_TRANSFER_ENCODING_FACTOR) = 312,000, but MAX_EMAIL_CONTENT_CHARS bounds code units (rawContent.length / rawContent.slice at the Worker's truncation, content.length on the route). 100,000 non-ASCII BMP characters are up to ~300,000 decoded bytes and ~936,000 on the worst-case quoted-printable wire, against 312,000 bought plus 65,509 bytes of structural slack. 312,000 is the figure the recorded DW-455 decision named, so it was documented rather than re-derived. Inert today: since DW-449 the Math.min picks EMAIL_ROUTING_MAX_INBOUND_BYTES, so AGGREGATE_DERIVED_RAW_EMAIL_BYTES gates nothing -- it becomes live only if the platform ceiling rises above the derivation (the open DW-457 question).
+status: open

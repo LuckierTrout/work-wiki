@@ -14,6 +14,7 @@ import {
 import {
   AGGREGATE_DERIVED_RAW_EMAIL_BYTES,
   AGGREGATE_DOCUMENT_AVERAGE_BYTES,
+  AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES,
   BASE64_EXPANSION_FACTOR,
   EMAIL_ROUTING_MAX_INBOUND_BYTES,
   MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
@@ -23,6 +24,7 @@ import {
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_RAW_EMAIL_BYTES,
   MIME_ENVELOPE_HEADROOM_BYTES,
+  MIME_STRUCTURAL_HEADROOM_BYTES,
   QUOTED_PRINTABLE_EXPANSION_FACTOR,
   SUPPORTED_EXTENSIONS,
   SUPPORTED_MIME_TYPES,
@@ -232,20 +234,39 @@ describe("email-ingest allowlist parity", () => {
    * enforced cap is lower, so this aggregate does not reach the Worker over
    * Cloudflare Email Routing at all; the gate case in
    * `email-ingest-worker.test.ts` pins that refusal and the figure it quotes.
+   *
+   * Since DW-455 it is also a statement about the BODY. The envelope headroom
+   * used to claim it covered "an ordinary text body" while the Worker truncates
+   * to `MAX_EMAIL_CONTENT_CHARS`, a body 4.8x the whole headroom on the
+   * worst-case wire. The aggregate and a MAXIMAL body are measured together
+   * here, because covering both at once is what the derivation now asserts.
    */
-  it("derives room for MAX_EMAIL_ATTACHMENTS mid-size documents, which the enforced cap then refuses", () => {
-    // Measured PER PART, never by scaling one measurement. Ten separate 2 MiB
-    // parts cost slightly more than one 20 MiB part -- each pays its own short
-    // final line, a soft break and a CRLF -- and it is the ten-part figure the
-    // envelope headroom has to absorb.
+  it("derives room for MAX_EMAIL_ATTACHMENTS mid-size documents beside a maximal body, which the enforced cap then refuses", () => {
+    // Measured PER PART, never by scaling one measurement. Ten separate mid-size
+    // parts cost slightly more than one part of the whole budget -- each pays its
+    // own short final line, a soft break and a CRLF -- and it is the ten-part
+    // figure the envelope headroom has to absorb.
     const aggregateWireSize =
       MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES);
     expect(aggregateWireSize).toBeGreaterThan(
       quotedPrintablePartWireSize(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES),
     );
     expect(aggregateWireSize).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+    // The DW-455 claim, observed rather than asserted in a comment: the envelope
+    // covers a body at the full `MAX_EMAIL_CONTENT_CHARS` on the SAME worst-case
+    // wire the attachments are charged at, on top of the whole aggregate. Before
+    // DW-455 this sum was over the derivation and the headroom comment said so.
+    //
+    // The body is measured with the shared quoted-printable helper rather than
+    // counted as raw characters, because that is the encoding the derivation is
+    // built from -- a character count would understate it by ~3.12x and the
+    // assertion would pass on slack rather than on the headroom.
+    const maximalBodyWireSize = quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_CHARS);
+    expect(aggregateWireSize + maximalBodyWireSize).toBeLessThan(
+      AGGREGATE_DERIVED_RAW_EMAIL_BYTES,
+    );
     // And the envelope headroom is still positive afterwards by the amount
-    // `MIME_ENVELOPE_HEADROOM_BYTES` claims to cover -- headers and a boundary
+    // `MIME_STRUCTURAL_HEADROOM_BYTES` claims to cover -- headers and a boundary
     // marker for EVERY part, not a flat slack figure that ten parts could
     // exhaust while the assertion stayed green.
     //
@@ -256,17 +277,88 @@ describe("email-ingest allowlist parity", () => {
     // and 512 leaves room for a long or RFC 2231-encoded one. Generous on
     // purpose: the point is that the margin scales with the part count, so an
     // over-estimate makes the assertion harder to pass, not easier.
+    //
+    // Charged against the aggregate-PLUS-BODY figure, which is the tight one now:
+    // measuring the bare aggregate would leave the body's 312,000 bytes sitting
+    // in the margin and the assertion would no longer be about structure.
+    //
+    // `MAX_EMAIL_ATTACHMENTS + 1` parts, not `MAX_EMAIL_ATTACHMENTS`: the shape
+    // being measured is a multipart message of ten attachment parts AND a body
+    // part, and the body part pays for its own boundary marker and headers
+    // exactly as the attachments do. Charging only ten would let the eleventh
+    // part's preamble come out of slack the assertion never accounted for.
     const PART_HEADER_AND_BOUNDARY_BUDGET_BYTES = 512;
-    expect(AGGREGATE_DERIVED_RAW_EMAIL_BYTES - aggregateWireSize).toBeGreaterThanOrEqual(
-      MAX_EMAIL_ATTACHMENTS * PART_HEADER_AND_BOUNDARY_BUDGET_BYTES,
-    );
+    expect(
+      AGGREGATE_DERIVED_RAW_EMAIL_BYTES - aggregateWireSize - maximalBodyWireSize,
+    ).toBeGreaterThanOrEqual((MAX_EMAIL_ATTACHMENTS + 1) * PART_HEADER_AND_BOUNDARY_BUDGET_BYTES);
     // The bounded limit the `QUOTED_PRINTABLE_EXPANSION_FACTOR` comment now
-    // names, pinned rather than left as prose: a sender filling the whole
-    // aggregate AND wrapping at 72 columns is over the cap. Recorded so a future
-    // widening that admits it is prompted to update that comment.
+    // names, pinned rather than left as prose. It MOVED with DW-455 rather than
+    // disappearing: the bare aggregate at a 72-column wrap now fits, and what is
+    // over the derivation is the aggregate AND a maximal body at that wrap.
+    // Recorded so a future widening that admits it is prompted to update that
+    // comment.
     expect(
       MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 24),
+    ).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+    expect(
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 24) +
+        quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_CHARS, 24),
     ).toBeGreaterThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+    // How far down the bare aggregate now reaches, pinned at its own edge rather
+    // than left as the `QUOTED_PRINTABLE_EXPANSION_FACTOR` comment's prose: a
+    // 66-column wrap still fits, a 63-column one does not. Both sides are
+    // asserted, so a change that moved the edge in EITHER direction is caught --
+    // a one-sided pin would stay green if the aggregate quietly stopped fitting
+    // at wraps it is documented to survive.
+    expect(
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 22),
+    ).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+    expect(
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 21),
+    ).toBeGreaterThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
+  });
+
+  /**
+   * DW-455 paid for the maximal body out of the aggregate average rather than by
+   * widening the door. This is the pin on the "rather than": the honest envelope
+   * has to cost the raw cap NOTHING.
+   *
+   * Compared against the PRE-DW-455 derivation recomputed from the constants that
+   * survive -- `AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES` with the structural
+   * headroom alone -- and never against a hand-typed 65,496,679. A snapshot would
+   * agree with itself if `MAX_EMAIL_ATTACHMENTS` or either expansion factor ever
+   * moved; this recomputation tracks them.
+   */
+  it("pays for the maximal body without widening the derived raw cap", () => {
+    const nominalDerivation =
+      Math.ceil(
+        MAX_EMAIL_ATTACHMENTS *
+          AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES *
+          WORST_CASE_TRANSFER_ENCODING_FACTOR,
+      ) + MIME_STRUCTURAL_HEADROOM_BYTES;
+    expect(AGGREGATE_DERIVED_RAW_EMAIL_BYTES).toBeLessThanOrEqual(nominalDerivation);
+    // The two halves of the trade, each named, so a future edit that keeps the
+    // total while breaking the reason is still caught. The average gives up each
+    // attachment's share of the body...
+    expect(AGGREGATE_DOCUMENT_AVERAGE_BYTES).toBe(
+      AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES -
+        Math.ceil(WORKER_MAX_EMAIL_CONTENT_CHARS / MAX_EMAIL_ATTACHMENTS),
+    );
+    // ...and the envelope gains exactly the wire bytes that body costs.
+    expect(MIME_ENVELOPE_HEADROOM_BYTES - MIME_STRUCTURAL_HEADROOM_BYTES).toBe(
+      Math.ceil(WORKER_MAX_EMAIL_CONTENT_CHARS * WORST_CASE_TRANSFER_ENCODING_FACTOR),
+    );
+    // The share is rounded UP, against the budget, so the budget can never round
+    // in its own favour: ten shares cover the whole body rather than falling
+    // short of it by the remainder.
+    expect(
+      MAX_EMAIL_ATTACHMENTS *
+        (AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES - AGGREGATE_DOCUMENT_AVERAGE_BYTES),
+    ).toBeGreaterThanOrEqual(WORKER_MAX_EMAIL_CONTENT_CHARS);
+    // And the budget stays an integer -- `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`
+    // feeds a `Math.floor(... / 1024 / 1024)` the acknowledgement quotes, and a
+    // fractional byte count there is a figure no sender could act on.
+    expect(Number.isInteger(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES)).toBe(true);
   });
 
   /**
@@ -294,6 +386,46 @@ describe("email-ingest allowlist parity", () => {
     // documents, ~312 MB on the worst-case wire, which is the shape DW-362
     // deliberately did not buy.
     expect(AGGREGATE_DOCUMENT_AVERAGE_BYTES).toBeLessThan(MAX_EMAIL_DOCUMENT_BYTES);
+  });
+
+  /**
+   * What DW-455 COST, observed rather than only narrated in the constant's
+   * comment. The pre-DW-455 budget was exactly `2 * MAX_EMAIL_DOCUMENT_BYTES`, so
+   * two attachments at the advertised per-document ceiling fitted precisely --
+   * the selection gate is a `>`, and their sum landed on the budget rather than
+   * over it. Paying for the maximal body out of the average took that away: the
+   * second is now an over-budget loss.
+   *
+   * Reachable, not theoretical. Two unencoded `7bit`/`8bit` parts are ~1x on the
+   * wire, so the pair is ~20.0 MiB and clears the 25 MiB raw gate -- the same
+   * encoding `email-ingest-worker.test.ts` uses to reach the DW-360 budget at
+   * all.
+   *
+   * Written as a derived comparison rather than as a hand-typed 20,971,520, so it
+   * follows `MAX_EMAIL_DOCUMENT_BYTES` if that ever moves. This is a RECORD of an
+   * accepted cost, not a veto: if a later change restores the room, re-aim this
+   * case at what then holds instead of reading its failure as a regression.
+   */
+  it("no longer fits two full-size documents, which is what paying for the body cost", () => {
+    expect(2 * MAX_EMAIL_DOCUMENT_BYTES).toBeGreaterThan(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    // The premise that makes the loss land exactly at the SECOND document: the
+    // pre-DW-455 budget was two full-size documents to the byte, so the pair sat
+    // on the gate rather than under it and any subtraction at all drops one.
+    expect(MAX_EMAIL_ATTACHMENTS * AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES).toBe(
+      2 * MAX_EMAIL_DOCUMENT_BYTES,
+    );
+    // And the subtraction is the body's share and nothing more -- the whole
+    // shortfall is what the average gave up, not an unrelated narrowing.
+    expect(
+      MAX_EMAIL_ATTACHMENTS * AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES -
+        MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
+    ).toBe(
+      MAX_EMAIL_ATTACHMENTS * Math.ceil(WORKER_MAX_EMAIL_CONTENT_CHARS / MAX_EMAIL_ATTACHMENTS),
+    );
+    // ...and ONE full-size document still fits, which is the DW-104/DW-358
+    // admission the floor above exists to protect. The cost stopped at the
+    // second document.
+    expect(MAX_EMAIL_DOCUMENT_BYTES).toBeLessThanOrEqual(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
   });
 
   /**
