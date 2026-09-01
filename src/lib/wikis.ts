@@ -815,11 +815,13 @@ function normalizeArtifactEditReason(
  * Move `dataVersion` after a write an already-open Preview cannot otherwise
  * learn about. NEVER THROWS.
  *
- * THE ONE COPY OF A TAIL THIS MODULE CARRIES SIX TIMES. `writeWikiArtifact`,
- * {@link createWiki}, {@link applyScenarioTemplate}, {@link renameWiki} and
- * {@link deleteWiki} each spelled — or, for the last two, would each have
- * spelled — the same four lines with one word changed. Six copies of a
- * fail-soft `try/catch` is six places for the next one to forget the `catch`,
+ * THE ONE COPY OF A TAIL THIS MODULE CARRIES EIGHT TIMES, ACROSS SEVEN
+ * WRITERS. `writeWikiArtifact`, {@link createWiki},
+ * {@link applyScenarioTemplate} (twice — its failed-rollback path bumps as
+ * well), {@link renameWiki}, {@link deleteWiki},
+ * {@link canonicalizeWikiPurpose} and {@link setCurrentWiki} would each
+ * otherwise spell the same four lines with one word changed. Eight copies of a
+ * fail-soft `try/catch` is eight places for the next one to forget the `catch`,
  * so the shape lives here and the callers supply only the phrase that names
  * what just landed.
  *
@@ -1508,10 +1510,38 @@ export async function applyScenarioTemplate(
 /**
  * Point `current` at an existing Wiki. Returns null when the id is unknown.
  *
- * NON-DESTRUCTIVE, and that is the whole point: `wikis.json` is the ONLY file
- * this writes. A switch used to re-seed a tenant-global profile from the newly
- * active Wiki's template, which silently discarded whatever the owner had
- * authored in Settings; there is nothing left here to discard.
+ * NON-DESTRUCTIVE, and that is the whole point: `wikis.json` is the ONLY
+ * tenant file this writes. A switch used to re-seed a tenant-global profile
+ * from the newly active Wiki's template, which silently discarded whatever the
+ * owner had authored in Settings; there is nothing left here to discard.
+ *
+ * IT DOES BUMP `dataVersion` (DW-518, implementing DW-429's recorded
+ * decision), the same fail-soft tail {@link renameWiki} and
+ * {@link deleteWiki} carry. Writing one tenant file is not the same as writing
+ * nothing a Preview renders: the Workbench resolves every artifact THROUGH the
+ * `current` pointer, so moving it changes what each `purpose.md`/`schema.md`
+ * read ANSWERS without changing an artifact byte. The switcher's own
+ * `router.refresh()` reaches only the tab that drove the switch, which leaves
+ * the counter as the ONLY thing that can tell ANOTHER open tab — or any
+ * surface not keyed on that refresh — that its reads now resolve against a
+ * different Wiki.
+ *
+ * The tail is OUTSIDE the lock (`bumpDataVersion` takes `DATA_VERSION_LOCK` and
+ * `withFileLock` is not reentrant, so a bump inside the locked body would nest
+ * two lock keys), fail-soft (`wikis.json` is already written by the time it
+ * runs, so a counter that did not move must never turn a landed switch into a
+ * rejected one), and fires only when the locked body returned a record — an
+ * unknown id writes nothing, and a read-only refusal throws before the lock.
+ *
+ * A SWITCH TO THE WIKI THAT IS ALREADY CURRENT still writes `wikis.json` and
+ * still bumps — the same shape {@link renameWiki} has, which bumps a rename to
+ * the name the Wiki already had. The switching tab therefore takes one
+ * `DataVersionWatcher` refresh on top of `WikiSwitcher`'s own
+ * `router.refresh()`. That is ACCEPTED, not short-circuited: the counter is
+ * monotonic and every consumer is forward-only, so a redundant forward move
+ * costs one render and can never produce a wrong answer, while a short-circuit
+ * would add a second registry-state branch to a path whose whole value is
+ * being trivial.
  *
  * WHAT THIS FIXES, EXACTLY. The profile is per-Wiki and lives beside that
  * Wiki's `schema.md`, so the profile `buildWorkspaceGuidance(owner)` renders
@@ -1526,13 +1556,13 @@ export async function setCurrentWiki(
   wikiId: string,
 ): Promise<WikiRecord | null> {
   // Deployment read-only (DW-314), BEFORE the lock and before the registry is
-  // read. `wikis.json` is the only file a switch writes, and that is exactly
-  // why it is gated: which Wiki is current decides which `schema.md` executes
-  // in every ingest, chat and lint prompt, so a switch is a change to what the
-  // whole workspace runs on. `PUT /api/wikis/current` already refuses first, so
-  // this is the backstop for a direct library caller.
+  // read. `wikis.json` is the only tenant file a switch writes, and that is
+  // exactly why it is gated: which Wiki is current decides which `schema.md`
+  // executes in every ingest, chat and lint prompt, so a switch is a change to
+  // what the whole workspace runs on. `PUT /api/wikis/current` already refuses
+  // first, so this is the backstop for a direct library caller.
   assertWritable(READ_ONLY_REFUSAL.wikiSwitch);
-  return withWikiLock(owner, async () => {
+  const switched = await withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
     const wiki = registry.wikis.find((item) => item.id === wikiId);
     if (!wiki) return null;
@@ -1540,6 +1570,11 @@ export async function setCurrentWiki(
     await writeRegistry(owner, registry);
     return wiki;
   });
+
+  // Unknown id: nothing was written, so there is nothing to refresh to.
+  if (!switched) return null;
+  await bumpRefreshSignal(`switching to wiki "${switched.id}"`);
+  return switched;
 }
 
 /**

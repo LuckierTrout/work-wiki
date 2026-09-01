@@ -1143,13 +1143,13 @@ describe("the bump lives at the exact write-owner tails", () => {
     ]);
   });
 
-  it("has one bump helper inside wikis.ts, called from six writers outside the tenant lock", async () => {
+  it("has one bump helper inside wikis.ts, called from seven writers outside the tenant lock", async () => {
     // The list above is FILE-granular, so allowlisting `lib/wikis.ts` would
-    // otherwise buy a blanket exemption for a module with seven exported
-    // writers in it. This pins WHICH of them bump, the way the `lifecycle.ts`
-    // test above pins its own count.
+    // otherwise buy a blanket exemption for a module with eight exported
+    // writers in it, seven of which bump. This pins WHICH of them do, the way
+    // the `lifecycle.ts` test above pins its own count.
     //
-    // FIVE writers, through ONE private helper. `writeWikiArtifact` (a Schema
+    // SEVEN writers, through ONE private helper. `writeWikiArtifact` (a Schema
     // edit) plus `createWiki` and `applyScenarioTemplate` (DW-49), because
     // seeding writes `purpose.md` and `schema.md` through the tail-less
     // `putWikiArtifact` and a re-template moves nothing else a Preview is keyed
@@ -1159,27 +1159,38 @@ describe("the bump lives at the exact write-owner tails", () => {
     // `currentWikiId`; and `deleteWiki` (DW-382), which removes a Wiki and its
     // artifacts while changing no `currentWikiId` either — the current Wiki is
     // undeletable — so another client's open tab goes on listing bytes that are
-    // gone until the counter moves.
+    // gone until the counter moves; `canonicalizeWikiPurpose`, which rewrites
+    // `purpose.md` in place; and `setCurrentWiki` (DW-518), whose case is the
+    // odd one out and is spelled out below.
     //
-    // WHY A HELPER RATHER THAN FIVE COPIES. The tail is four lines of fail-soft
-    // `try`/`catch` with one word changed, and DW-382 and DW-210 would have made
-    // it six copies. One copy is one place for the `catch` to be right.
+    // WHY A HELPER RATHER THAN EIGHT COPIES. The tail is four lines of
+    // fail-soft `try`/`catch` with one word changed, and the module has grown
+    // to EIGHT call sites across those seven writers. One copy is one place for
+    // the `catch` to be right.
     //
-    // The rest are deliberately absent for three DIFFERENT reasons, and lumping
+    // The rest are deliberately absent for two DIFFERENT reasons, and lumping
     // them together would hide the one that matters. `putWikiArtifact`,
     // `seedWikiArtifacts` and `retitlePurpose` write exactly the bytes a Preview
     // renders — they are absent because they run INSIDE `wikis:<tenant>`, where
     // taking `DATA_VERSION_LOCK` would nest two keys, so their CALLERS carry the
-    // tail instead; that is the whole reason the five above are callers.
+    // tail instead; that is the whole reason the seven above are callers.
     // `sweepOrphanWikiDirectories` does remove bytes, and since DW-291 it
     // removes them from directories the registry DOES name — but the only file
     // it takes from one of those is a `.discarded` marker, which nothing
     // renders, is hidden from the Files tab by the dotfile filter, and no
     // Preview can be open on; everything else it removes belongs to a directory
-    // no registry entry references. `setCurrentWiki` is the only one that
-    // genuinely writes nothing a Preview renders: it moves `currentId` in
-    // `wikis.json` and nothing else, and the selection change is its own
-    // refresh trigger.
+    // no registry entry references.
+    //
+    // `setCurrentWiki` USED TO BE A THIRD REASON, and it was wrong (DW-518). It
+    // was exempted for writing "nothing a Preview renders" — it moves
+    // `currentId` in `wikis.json` and not one artifact byte — with the
+    // selection change treated as its own refresh trigger. But that reasons
+    // from BYTES, and the Workbench resolves artifacts THROUGH the `current`
+    // pointer: moving it changes what every `purpose.md`/`schema.md` read
+    // ANSWERS. And "its own refresh trigger" is the switcher's client-side
+    // `router.refresh()`, which reaches only the tab that drove the switch —
+    // ANOTHER open tab kept rendering the previous Wiki's artifacts until its
+    // owner reloaded. So it is in the table below now.
 
     // `stripComments` and `topLevelFunctionBody` are the file's own helpers, the
     // ones the `lifecycle.ts` and kernel-store cases above already navigate
@@ -1195,7 +1206,7 @@ describe("the bump lives at the exact write-owner tails", () => {
     // match at all and which would leave the count looking untouched.
     //
     // ONE site now: the counter is touched in exactly one place in this module,
-    // and that place is the private helper below. A sixth writer that reached
+    // and that place is the private helper below. An eighth writer that reached
     // for `bumpDataVersion` directly — and so re-typed the fail-soft `catch`, or
     // forgot it — fails here.
     expect(source.match(/bumpDataVersion\s*\(/g) ?? []).toHaveLength(1);
@@ -1210,11 +1221,11 @@ describe("the bump lives at the exact write-owner tails", () => {
       /try \{\s*await bumpDataVersion\(\);\s*\} catch \(error\) \{[\s\S]{0,160}logger\.warn\(\s*"wikis"/,
     );
 
-    // SEVEN calls: one apiece for five writers, two for `applyScenarioTemplate`,
+    // EIGHT calls: one apiece for six writers, two for `applyScenarioTemplate`,
     // whose failure path bumps as well when the rollback could not put every
     // file back (DW-210). Counted over the whole module first, so a call from a
     // body this loop does not name cannot hide inside the per-body totals.
-    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(7);
+    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(8);
 
     let counted = 0;
     for (const [name, calls] of [
@@ -1224,6 +1235,7 @@ describe("the bump lives at the exact write-owner tails", () => {
       ["renameWiki", 1],
       ["deleteWiki", 1],
       ["canonicalizeWikiPurpose", 1],
+      ["setCurrentWiki", 1],
     ] as const) {
       const body = topLevelFunctionBody(raw, `export async function ${name}(`);
       const sites = body.match(/await bumpRefreshSignal\(/g) ?? [];
@@ -1267,13 +1279,13 @@ describe("the bump lives at the exact write-owner tails", () => {
         from = bump + 1;
       }
     }
-    // The seven counted over the module are accounted for by six
+    // The eight counted over the module are accounted for by seven
     // DISJOINT bodies, so no other function in the module has one — including
     // `seedWikiArtifacts`, which is the whole reason the tails live at the
     // callers: it always runs while `wikis:<tenant>` is held. Asserted directly
     // as well, because that is the refactor this guard exists to catch and a
     // count mismatch names no function.
-    expect(counted).toBe(7);
+    expect(counted).toBe(8);
     const seeder = topLevelFunctionBody(raw, "async function seedWikiArtifacts(");
     expect(seeder).not.toContain("bumpDataVersion");
     expect(seeder).not.toContain("bumpRefreshSignal");

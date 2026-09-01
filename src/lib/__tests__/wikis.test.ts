@@ -349,7 +349,7 @@ describe("input validation", () => {
  * would let "bumps once" pass against an implementation that just STORES `1`,
  * and let the "does not bump" rows pass against a counter that is failing open.
  */
-describe("create, re-template and rename move the refresh signal (DW-49, DW-57, DW-209)", () => {
+describe("create, re-template, rename and switch move the refresh signal (DW-49, DW-57, DW-209, DW-518)", () => {
   it("bumps exactly once per create, not once per seeded file", async () => {
     // The FIRST create is what lifts the counter off zero, so the second one's
     // `before + 1` is arithmetic on the stored value rather than a literal an
@@ -507,6 +507,43 @@ describe("create, re-template and rename move the refresh signal (DW-49, DW-57, 
     expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain("# Ops");
   });
 
+  it("bumps exactly once per switch, which is the only signal another tab gets", async () => {
+    const first = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const second = await createWiki(OWNER, { name: "Reading", scenario: "reading" });
+    // A create makes its own Wiki current, so `first` is NOT current here.
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(second.id);
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // the creates' own bumps
+
+    expect((await setCurrentWiki(OWNER, first.id))?.id).toBe(first.id);
+
+    // The pointer really moved — so the bump below is not being earned by a
+    // no-op switch back to the Wiki that was already current.
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(first.id);
+    // Once, and this counter is the ONLY thing a SECOND open tab can see: the
+    // switcher's `router.refresh()` reaches only the tab that drove the switch,
+    // while every `purpose.md`/`schema.md` read now resolves against a
+    // different Wiki (DW-518).
+    expect(await readDataVersion()).toBe(before + 1);
+  });
+
+  it("does not bump for a switch to an unknown wiki id", async () => {
+    const ops = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0); // so "unchanged" is not "still zero"
+
+    expect(
+      await setCurrentWiki(OWNER, "00000000-0000-4000-8000-000000000000"),
+    ).toBeNull();
+
+    // The locked body returns before its write, so `current` never moved and
+    // there is nothing new for any tab to resolve against — both halves
+    // asserted, because "did not bump" is only meaningful if the pointer really
+    // did stay put.
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(ops.id);
+    expect(await readDataVersion()).toBe(before);
+  });
+
   // -------------------------------------------------------------------------
   // The counter store is down
   // -------------------------------------------------------------------------
@@ -515,12 +552,13 @@ describe("create, re-template and rename move the refresh signal (DW-49, DW-57, 
    * WHOSE warning to assert on, and why it is not the callers'.
    *
    * `bumpDataVersion` wraps its ENTIRE body, so a rejecting `putIndex` makes it
-   * answer `0` rather than throw — which means the `try/catch` in `createWiki`
-   * and `applyScenarioTemplate` never runs and their "the refresh signal did
-   * not move after …" wording never reaches the log. Those wrappers are
-   * redundant defence, kept deliberately so the tail reads identically at all
-   * three call sites (`writeWikiArtifact` included) and stays correct if
-   * `bumpDataVersion` ever stops swallowing; they are unreachable today.
+   * answer `0` rather than throw — which means the `try/catch` inside
+   * `bumpRefreshSignal` never runs and its "the refresh signal did not move
+   * after …" wording never reaches the log. Every writer in `wikis.ts` reaches
+   * the counter through that one helper — eight call sites across seven
+   * writers today — so there is a single `catch`, kept deliberately as
+   * redundant defence in case `bumpDataVersion` ever stops swallowing; it is
+   * unreachable today.
    *
    * So these rows assert on `data-version`'s own warn. Asserting on the
    * callers' sentence instead would be a test that passes with their `catch`
@@ -637,6 +675,40 @@ describe("create, re-template and rename move the refresh signal (DW-49, DW-57, 
       ),
     ).toBe(true);
   });
+
+  it("still resolves a switch when the counter store rejects putIndex", async () => {
+    const first = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await createWiki(OWNER, { name: "Reading", scenario: "reading" });
+    const before = await readDataVersion();
+    expect(before).toBeGreaterThan(0);
+
+    const putIndex = vi
+      .spyOn(getStorage(), "putIndex")
+      .mockRejectedValue(new Error("kv is gone"));
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let switched: WikiRecord | null;
+    let warned: unknown[][] = [];
+    try {
+      switched = await setCurrentWiki(OWNER, first.id);
+      warned = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+      putIndex.mockRestore();
+    }
+
+    // `wikis.json` was written before the tail ran, so the switch landed…
+    expect(switched?.id).toBe(first.id);
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(first.id);
+    // …while the signal genuinely did NOT move.
+    expect(await readDataVersion()).toBe(before);
+    expect(
+      warned.some(
+        ([scope, message]) =>
+          scope === "data-version" && String(message).includes(BUMP_FAILED_WARN),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("applying a different scenario template", () => {
@@ -701,7 +773,7 @@ describe("the active wiki pointer", () => {
     expect((await getCurrentWiki(OWNER))?.id).toBe(first.id);
   });
 
-  it("writes only wikis.json — a switch overwrites no Purpose or profile (DW-21)", async () => {
+  it("writes only wikis.json among tenant files — a switch overwrites no Purpose or profile (DW-21)", async () => {
     const business = await createWiki(OWNER, { name: "Ops", scenario: "business" });
     const reading = await createWiki(OWNER, { name: "Shelf", scenario: "reading" });
 

@@ -16,19 +16,25 @@ import { useWorkbenchData } from "./WorkbenchData";
  * The Workbench's refresh mechanism for KERNEL PAGE WRITES. Renders nothing.
  *
  * It is not the only `router.refresh()` in this directory, and deliberately so:
- * `WikiSwitcher.tsx` keeps its own, because some of the registry changes it
- * drives — switching the current Wiki, deleting one — are not kernel page
- * writes and move no `dataVersion` at all.
+ * `WikiSwitcher.tsx` keeps its own because that one is IMMEDIATE, and this one
+ * cannot be. A registry change reaches this watcher no sooner than its next
+ * poll — up to `DATA_VERSION_POLL_MS` later — which is far too long to leave
+ * the tab whose owner just clicked looking at the state before the click.
  *
- * CREATE, RE-TEMPLATE AND RENAME ARE THE EXCEPTION (DW-49, DW-209). All three
- * write bytes a Preview renders as well as touching the registry — create and
- * re-template seed `purpose.md` and `schema.md`, rename retitles `purpose.md`'s
- * heading and moves the name the Workbench heading shows — so all three bump the
- * counter and reach this watcher too, which is what un-stales a Preview left
- * open on an artifact across a re-apply or a rename. The switcher's own refresh
- * stays because switch and delete still move nothing; the two paths overlapping
- * on create and rename costs one redundant refresh, which is cheaper than the
- * switcher guessing which of its four operations bumped.
+ * EVERY REGISTRY OPERATION MOVES THE COUNTER NOW, so the switcher's refresh is
+ * the only thing the two mechanisms do not share. Create and re-template
+ * (DW-49) seed `purpose.md` and `schema.md`; rename (DW-209) retitles
+ * `purpose.md`'s heading and moves the name the Workbench heading shows; delete
+ * (DW-382) removes a Wiki and its artifacts; and a switch (DW-518) moves the
+ * `current` pointer every artifact read resolves through, changing what those
+ * reads ANSWER without changing an artifact byte. All of them therefore reach
+ * this watcher as well, which is what un-stales a Preview left open in ANOTHER
+ * tab — the one the switcher's own refresh cannot reach at all.
+ *
+ * The two paths overlapping on every operation costs the ACTING tab one
+ * redundant refresh, which is cheaper than either side guessing. `dataVersion`
+ * is monotonic and every consumer is forward-only, so a duplicate forward move
+ * costs one render and can never produce a wrong answer.
  *
  * Every write that goes through `runPageLifecycleOp` — the Preview editor's
  * save included — arrives here as well.

@@ -407,6 +407,7 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
     const first = await createWiki(OWNER, { name: "Field notes", scenario: "research" });
     const second = await createWiki(OWNER, { name: "Second", scenario: "business" });
     const before = await snapshot();
+    const beforeVersion = await readDataVersion();
     process.env.YOPEDIA_READONLY = "1";
 
     // Switch AWAY from the one `createWiki` left current, so a gate that
@@ -416,11 +417,15 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
       READ_ONLY_REFUSAL.wikiSwitch,
     );
 
-    // `wikis.json` is the ONLY file a switch writes, so the whole-tree snapshot
-    // is exactly the right assertion — and `currentId` is named separately
-    // because it is the field that decides which `schema.md` every prompt in
-    // the app runs on.
+    // `wikis.json` is the only TENANT file a switch writes, so the whole-tree
+    // snapshot is exactly the right assertion — and `currentId` is named
+    // separately because it is the field that decides which `schema.md` every
+    // prompt in the app runs on.
     expect(await snapshot()).toEqual(before);
+    // The switch also carries a `dataVersion` tail (DW-518), so "nothing moved"
+    // is claimed here rather than left implied: `assertWritable` throws ahead of
+    // the lock, which puts that tail out of reach on a refusal.
+    expect(await readDataVersion()).toBe(beforeVersion);
     delete process.env.YOPEDIA_READONLY;
     expect((await getWikiRegistry(OWNER)).currentId).toBe(second.id);
   });

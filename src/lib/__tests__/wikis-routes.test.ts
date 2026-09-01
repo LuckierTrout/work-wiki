@@ -479,9 +479,10 @@ describe("a flag that flips mid-request on the wiki-lifecycle writes", () => {
   });
 
   it("403s PUT /api/wikis/current with the kernel's switch sentence", async () => {
-    // `setCurrentWiki` writes ONE file and nothing else, which is exactly why it
-    // needs the same answer: which Wiki is current decides which `schema.md`
-    // every prompt runs on.
+    // `setCurrentWiki` writes ONE registry file — plus the `dataVersion`
+    // counter it bumps at its tail (DW-518) — which is exactly why it needs the
+    // same answer: which Wiki is current decides which `schema.md` every prompt
+    // runs on.
     mockedSetCurrent.mockRejectedValueOnce(
       new ReadOnlyError(READ_ONLY_REFUSAL.wikiSwitch),
     );

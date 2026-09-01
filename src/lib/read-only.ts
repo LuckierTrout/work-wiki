@@ -251,10 +251,11 @@ export const READ_ONLY_REFUSAL = {
    * `setCurrentWiki` and `PUT /api/wikis/current`. Character-identical to the
    * route's inline literal, for the same reason as {@link wikiDelete}.
    *
-   * A switch writes ONE file — `wikis.json` — and nothing else, which is
-   * exactly why it needs saying: "nothing was deleted" is not "nothing was
-   * written", and which Wiki is current decides which `schema.md` every ingest,
-   * chat and lint prompt runs on.
+   * A switch writes ONE tenant file — `wikis.json`, not one artifact byte —
+   * plus the `dataVersion` refresh counter (DW-518), which is exactly why it
+   * needs saying: "nothing was deleted" is not "nothing was written", and which
+   * Wiki is current decides which `schema.md` every ingest, chat and lint
+   * prompt runs on.
    */
   wikiSwitch:
     "The active wiki cannot be changed while this deployment is read-only.",
