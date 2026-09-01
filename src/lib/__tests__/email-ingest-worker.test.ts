@@ -32,8 +32,11 @@ import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-
  * 3. The forwarded transport — the method, target URL and `Authorization`
  *    header of the `Request` handed to the `YOPEDIA` binding. Both worker
  *    suites read only `formData()` off that `Request`, so the envelope around
- *    the body was entirely unobserved (DW-252) — and the SECOND site-URL trim,
- *    the one that builds the acknowledgement's links, with it (DW-363).
+ *    the body was entirely unobserved (DW-252) — and the acknowledgement's
+ *    LINKS with it, which are built from the same trimmed site URL (DW-363).
+ *    There is one trim now rather than two (DW-451), so those cases pin the
+ *    single definition at BOTH its consumers: deleting it has to fail at the
+ *    reply link as well as at the transport target.
  *
  * 4. The multi-attachment forwarding loop — the per-email cap, the
  *    `attachment-<n>` filename fallback, the `attachmentName` fields and the
@@ -66,6 +69,16 @@ import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-
  * 10. The two misconfiguration early returns — missing service token and
  *     missing site URL — whose sender-visible replies no fixture could reach
  *     while `env()` supplied both bindings (DW-364).
+ *
+ * 11. The body-truncation boundary — that an over-long body is cut to EXACTLY
+ *     `MAX_EMAIL_CONTENT_CHARS`, marker included, and that a body sitting on
+ *     the cap passes through verbatim. Nothing observed this, so an off-by-one
+ *     in `MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length` would ship green
+ *     while `/api/email/ingest`'s `> MAX_EMAIL_CONTENT_CHARS` gate 400s every
+ *     long email, costing the sender their body and every attachment on it
+ *     (DW-453). Read at the `form.append` call, not off the wire — the
+ *     serializer rewrites lone LFs into CRLFs, so the wire length of a
+ *     truncated body is the transport's number rather than the worker's.
  *
  * The `Blob` *type* the worker builds is pinned next door in
  * `email-ingest-worker-normalization.test.ts`, which mocks `postal-mime`: it is
@@ -302,12 +315,17 @@ describe("email-ingest forwarded transport", () => {
   const TRANSPORT_SLUG = "quarterly-report";
 
   /**
-   * Returns the forwarded `Request` AND the acknowledgement, because the site
-   * URL is trimmed TWICE -- once to build the forward target, and again further
-   * down to build the reply's links -- and the two trims are independent
-   * expressions. Discarding `msg.reply` here left the second one unobserved:
-   * deleting it kept every assertion below green while every sender got a page
-   * link with a quadrupled slash in it (DW-363).
+   * Returns the forwarded `Request` AND the acknowledgement, because the
+   * trimmed site URL has TWO consumers -- the forward target, and the reply's
+   * links further down -- and reading only the first leaves half of it
+   * unobserved. It was two independent expressions when this helper was
+   * written, and deleting the second kept every assertion below green while
+   * every sender got a page link with a quadrupled slash in it (DW-363).
+   *
+   * DW-451 collapsed them into one `const site`, which is why both surfaces are
+   * still read here rather than one: with a single definition the failure mode
+   * is no longer drift between two copies but a bad trim reaching BOTH
+   * consumers at once, and only a helper that returns both can say so.
    */
   async function forwardedRequest(
     siteUrl: string,
@@ -463,6 +481,11 @@ function partBytes(index: number, length = 96): Uint8Array {
   return bytes;
 }
 
+/** One byte over -- the gate is `>`, so this is the smallest refused document. */
+const OVERSIZED_BYTES = MAX_EMAIL_DOCUMENT_BYTES + 1;
+/** The ceiling as the reply writes it, and as `/api/email/ingest` writes it. */
+const CEILING_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
+
 function multipartEmail(
   parts: readonly (Pick<MixedPart, "filename" | "mime"> & {
     /** Decoded payload length. Defaults to `partBytes`'s own 96. */
@@ -608,6 +631,51 @@ async function forwardedForm(raw: string, subject: string, slug: string) {
   };
 }
 
+// Module scope rather than inside `describe("email-ingest aggregate decoded
+// budget")`, which is where these were written and where their primary case
+// still lives: the refusal suite needs an over-budget message too, and a second
+// copy of the shape would mean encoding ~28 MB of base64 twice for no gain.
+/**
+ * The budget as the acknowledgement quotes it, derived with the SAME floor
+ * arithmetic production uses. A plain `/ 1024 / 1024` agrees with it only
+ * because 20 MiB happens to be MiB-aligned today; the "rounded DOWN, so the
+ * figure quoted is never larger than the one enforced" invariant is pinned for
+ * `MAX_RAW_EMAIL_MB` and would otherwise be unpinned here.
+ */
+const AGGREGATE_BUDGET_MB = Math.floor(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024);
+
+/**
+ * Three parts that together exceed the budget, and a fourth that still fits
+ * behind the one that does not.
+ *
+ * Each is under `MAX_EMAIL_DOCUMENT_BYTES`, so nothing here is refused for
+ * being an oversized document -- the only thing under test is the aggregate.
+ * The small tail part is what tells a `continue` from a `break`: a bound that
+ * stopped at the first over-budget part would silently drop it too, and
+ * whether a file survives would depend on what sat ahead of it rather than on
+ * the budget.
+ */
+const PART_BYTES = 7 * 1024 * 1024;
+
+/** Built once: ~28 MB of base64 is worth encoding a single time. */
+let overBudgetEmail: string | undefined;
+function overBudgetFixture(): string {
+  overBudgetEmail ??= multipartEmail(
+    [
+      { filename: "big-1.pdf", mime: "application/pdf", bytes: PART_BYTES },
+      { filename: "big-2.pdf", mime: "application/pdf", bytes: PART_BYTES },
+      { filename: "big-3.pdf", mime: "application/pdf", bytes: PART_BYTES },
+      { filename: "tail.pdf", mime: "application/pdf" },
+    ],
+    {
+      subject: "Too much at once",
+      messageId: "message-over-budget",
+      body: "Four files attached.",
+    },
+  );
+  return overBudgetEmail;
+}
+
 describe("email-ingest multi-attachment forwarding", () => {
   it("forwards ten supported attachments in source order with their own bytes", async () => {
     const { form } = await forwardedForm(MIXED_EMAIL, "Mixed batch", "mixed-batch");
@@ -651,6 +719,273 @@ describe("email-ingest multi-attachment forwarding", () => {
       "a12.xlsx",
       "a13.ods",
     ]);
+  });
+});
+
+/**
+ * The refusal exit, which had no coverage at all: every other fixture in this
+ * file answers the forward with an `{ ok: true }` response, so the
+ * `!response.ok` branch was never entered.
+ *
+ * What it discarded (DW-452): the five loss sentences the handler has already
+ * built by the time the forward returns. A route that refuses for a reason of
+ * its own -- a read-only wiki, an unavailable queue -- is refusing a message
+ * whose attachments were dropped BEFORE the forward, and replying with the
+ * route's sentence alone told the sender none of it. Worse, it told them
+ * nothing was wrong beyond a transient failure, so re-sending the same message
+ * once the route recovered dropped the same files again in silence.
+ *
+ * FIVE cases, one per sentence the refusal reply now carries, because each loss
+ * term is a separate entry in that array and a fixture driving one drives none
+ * of the others: deleting any single entry has to fail exactly one case here.
+ * The oversized and unsupported terms share a fixture (they are the two a
+ * refusal most plausibly coincides with); over-cap, over-budget and
+ * inline-dropped each need their own shape, reused from the suites that pin
+ * them on the acknowledgement path.
+ *
+ * The sentences are the acknowledgement's own consts, so a test that only
+ * checked "the reply mentions the loss" would pass against a second copy of the
+ * prose; these assert the exact strings the acknowledgement path produces, and
+ * bound the PARAGRAPH COUNT so an acknowledgement line cannot leak in unseen.
+ */
+describe("email-ingest route refusal", () => {
+  /**
+   * Like `forwardedForm`, but the forward is answered with a REFUSAL and the
+   * reply is the surface under test. The forward is still asserted to have
+   * happened: a reply that names the losses is only interesting if the handler
+   * really reached the route and was turned away, rather than bailing earlier
+   * for some unrelated reason.
+   */
+  async function refusedReply(raw: string, subject: string, response: Response) {
+    const msg = message(raw, subject);
+    const bindings = env(response);
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+    // Exactly once: the losses are carried by the refusal reply itself, not by
+    // a second message sent after it.
+    expect(msg.reply).toHaveBeenCalledOnce();
+    return (msg.reply.mock.calls[0][0] as { text: string }).text;
+  }
+
+  it("carries the loss sentences into the reply when the route refuses", async () => {
+    const raw = multipartEmail(
+      [
+        { filename: "huge.pdf", mime: "application/pdf", bytes: OVERSIZED_BYTES },
+        { filename: "program.exe", mime: "application/octet-stream" },
+      ],
+      {
+        subject: "Refused with losses",
+        messageId: "message-refused-losses",
+        body: "The notes are in this email body.",
+      },
+    );
+    const text = await refusedReply(
+      raw,
+      "Refused with losses",
+      Response.json({ error: "wiki is read-only" }, { status: 400 }),
+    );
+
+    // The route's own sentence opens the reply -- it is the reason the message
+    // was refused, and the losses are context beneath it, not a replacement.
+    // Compared as a whole paragraph rather than with `startsWith`, so a
+    // regression reports the sentence actually leading the reply.
+    expect(text.split("\n\n")[0]).toBe("wiki is read-only");
+    // Byte-identical to what the acknowledgement path would have said about the
+    // same message: one const, two exits.
+    expect(text).toContain(
+      `1 attachment was not queued because it is larger than ${CEILING_MB} MB: huge.pdf.`,
+    );
+    expect(text).toContain("1 unsupported attachment was recorded but skipped.");
+    // Blank-line joined, like every other multi-sentence reply this worker
+    // sends -- not run together into one paragraph.
+    expect(text.split("\n\n")).toHaveLength(3);
+  });
+
+  it("replies with the bare fallback sentence when the route refuses with no usable body", async () => {
+    // Two things at once, and both are the point: `safeError(null)` supplies
+    // the sentence when `response.json()` cannot parse the body, and
+    // `.filter(Boolean)` keeps a loss-free refusal a single line. Joining the
+    // empty sentences unfiltered would append four blank lines no sender should
+    // ever see.
+    const text = await refusedReply(
+      RAW_EMAIL,
+      "Quarterly notes",
+      new Response("<html>502 Bad Gateway</html>", { status: 500 }),
+    );
+    expect(text).toBe("work-wiki could not accept this email.");
+  });
+
+  it("carries the over-cap sentence into the reply when the route refuses", async () => {
+    // The over-cap sentence is one of the two DW-452 hoisted out of the
+    // acknowledgement's `lines` array; asserting it separately is what says the
+    // hoist reached the refusal exit rather than only tidying the array.
+    const raw = multipartEmail(
+      Array.from({ length: MAX_EMAIL_ATTACHMENTS + 1 }, (_unused, index) => ({
+        filename: `small-${index + 1}.pdf`,
+        mime: "application/pdf",
+      })),
+      {
+        subject: "Refused while over cap",
+        messageId: "message-refused-over-cap",
+        body: "Eleven files attached.",
+      },
+    );
+    const text = await refusedReply(
+      raw,
+      "Refused while over cap",
+      Response.json({ error: "queue unavailable" }, { status: 503 }),
+    );
+
+    expect(text.split("\n\n")[0]).toBe("queue unavailable");
+    expect(text).toContain(
+      `1 supported attachment was not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`,
+    );
+    // The acknowledgement's own opening sentence is NOT in a refusal reply:
+    // nothing was queued, so saying so would be a lie.
+    expect(text).not.toContain("queued for ingestion");
+    // Two paragraphs and no more: the error and the one loss this message
+    // really had. A bound, not a spot check -- `not.toContain` can only rule
+    // out the sentences it happens to name, and an acknowledgement line leaking
+    // into this path would otherwise ride along unnoticed.
+    expect(text.split("\n\n")).toHaveLength(2);
+  });
+
+  it("carries the over-budget sentence into the reply when the route refuses", async () => {
+    // The aggregate-budget loss, which the three cases above cannot reach: they
+    // all leave `overBudgetCount` at zero, so deleting `overBudgetLine` from the
+    // refusal array kept every one of them green.
+    //
+    // The same cached fixture the aggregate suite's own case uses -- three
+    // 7 MB parts that together exceed the budget, plus a small tail that still
+    // fits behind the one that does not -- answered with a refusal instead of
+    // an `{ ok: true }` response.
+    const text = await refusedReply(
+      overBudgetFixture(),
+      "Too much at once",
+      Response.json({ error: "wiki is read-only" }, { status: 400 }),
+    );
+
+    expect(text.split("\n\n")[0]).toBe("wiki is read-only");
+    // Byte-identical to the sentence the acknowledgement path produces for this
+    // same fixture, names and all: one const, two exits.
+    expect(text).toContain(
+      `1 supported attachment was not queued because this email exceeds the ${AGGREGATE_BUDGET_MB} MB total attachment budget: big-3.pdf.`,
+    );
+    expect(text.split("\n\n")).toHaveLength(2);
+  });
+
+  it("carries the inline-dropped sentence into the reply when the route refuses", async () => {
+    // The fifth loss term (DW-565), likewise unreachable from the cases above.
+    // A supported document the sending client labelled inline is dropped at
+    // ELIGIBILITY, long before the forward -- so a route refusal is exactly the
+    // moment the sender most needs to hear that it never travelled, and re-sending
+    // the message unchanged once the route recovers would drop it again.
+    //
+    // The inline `.md` shape `describe("email-ingest inline parts")` uses, beside
+    // a real PDF so there is something to forward and be refused.
+    const raw = multipartEmail(
+      [
+        {
+          filename: "notes.md",
+          mime: "text/markdown",
+          disposition: 'Content-Disposition: inline; filename="notes.md"',
+        },
+        { filename: "report.pdf", mime: "application/pdf" },
+      ],
+      {
+        subject: "Refused with a preview",
+        messageId: "message-refused-inline",
+        body: "The report is attached.",
+      },
+    );
+    const text = await refusedReply(
+      raw,
+      "Refused with a preview",
+      Response.json({ error: "queue unavailable" }, { status: 503 }),
+    );
+
+    expect(text.split("\n\n")[0]).toBe("queue unavailable");
+    expect(text).toContain(
+      "1 supported attachment was not queued because it was marked inline by the sending client: notes.md.",
+    );
+    expect(text.split("\n\n")).toHaveLength(2);
+  });
+});
+
+/**
+ * The RECORDED name list -- the `attachmentName` fields the worker forwards, out
+ * of which the route builds the activity history -- against filenames that are
+ * non-null but scrub down to something else (DW-454).
+ *
+ * Its own suite because nothing here refuses anything: these cases answer the
+ * forward with the ordinary `{ ok: true }` response `forwardedForm` supplies,
+ * and the surface under test is the form field rather than the reply.
+ *
+ * The recorded-name assertion in `describe("email-ingest multi-attachment
+ * forwarding")` reaches only a `null` filename, where the old
+ * `filename || "unnamed attachment"` truthiness check and the
+ * `replyAttachmentName` helper agree. These two are the inputs where they did
+ * not.
+ */
+describe("email-ingest recorded attachment names", () => {
+  it("records a whitespace-only filename the way the reply names it", async () => {
+    // RFC 2231 rather than `filename="   "`: the quoted-string form invites the
+    // parser to fold the parameter's own surrounding whitespace, and this case
+    // needs the spaces to be the VALUE, unambiguously.
+    //
+    // The part is supported on its content type alone, so it is countable,
+    // forwarded, and named -- the recorded name is the only thing in question.
+    const raw = multipartEmail(
+      [
+        {
+          filename: null,
+          mime: "application/pdf",
+          disposition: `Content-Disposition: attachment; filename*=utf-8''%20%20%20`,
+        },
+      ],
+      {
+        subject: "Blank name",
+        messageId: "message-blank-name",
+        body: "One oddly-named file attached.",
+      },
+    );
+    const { form } = await forwardedForm(raw, "Blank name", "blank-name");
+
+    // Not `"   "`. `sanitizeAttachmentNames` on the route side trims and
+    // `.filter(Boolean)`s, so the raw form was dropped there -- the sender was
+    // told about a file the activity history then had no name for.
+    expect(form.getAll("attachmentName")).toEqual(["unnamed attachment"]);
+    // And the list LENGTH is untouched by the helper, which the route's
+    // `localSkipped` floor (`attachmentNames.length - attachments.length`)
+    // depends on: one countable part, one recorded name, one forwarded file.
+    expect(form.getAll("attachments")).toHaveLength(1);
+  });
+
+  it("scrubs CR/LF out of a recorded filename", async () => {
+    // The same RFC 2231 smuggling the acknowledgement's scrubbing is pinned
+    // against, observed at the RECORDED-name surface instead: the name reaches
+    // the route, which writes it into activity history, and an unscrubbed CR/LF
+    // is a forged line break wherever that history is rendered.
+    const raw = multipartEmail(
+      [
+        {
+          filename: null,
+          mime: "application/pdf",
+          disposition: `Content-Disposition: attachment; filename*=utf-8''a%0D%0Ab.pdf`,
+        },
+      ],
+      {
+        subject: "Folded name",
+        messageId: "message-folded-name",
+        body: "One oddly-named file attached.",
+      },
+    );
+    const { form } = await forwardedForm(raw, "Folded name", "folded-name");
+
+    expect(form.getAll("attachmentName")).toEqual(["a b.pdf"]);
   });
 });
 
@@ -792,11 +1127,6 @@ describe("email-ingest forwarded skipped count", () => {
  * rather than being held for the file's lifetime.
  */
 describe("email-ingest oversized attachments", () => {
-  /** One byte over -- the gate is `>`, so this is the smallest refused document. */
-  const OVERSIZED_BYTES = MAX_EMAIL_DOCUMENT_BYTES + 1;
-  /** The ceiling as the reply writes it, and as `/api/email/ingest` writes it. */
-  const CEILING_MB = MAX_EMAIL_DOCUMENT_BYTES / 1024 / 1024;
-
   it("never forwards an oversized part, and names it in the acknowledgement", async () => {
     /** One oversized supported part, one small supported part, and a body. */
     const raw = multipartEmail(
@@ -1810,47 +2140,6 @@ describe("email-ingest Content-ID parts", () => {
  * at the door instead, and would test the raw gate rather than this bound.
  */
 describe("email-ingest aggregate decoded budget", () => {
-  /**
-   * The budget as the acknowledgement quotes it, derived with the SAME floor
-   * arithmetic production uses. A plain `/ 1024 / 1024` agrees with it only
-   * because 20 MiB happens to be MiB-aligned today; the "rounded DOWN, so the
-   * figure quoted is never larger than the one enforced" invariant is pinned for
-   * `MAX_RAW_EMAIL_MB` and would otherwise be unpinned here.
-   */
-  const AGGREGATE_BUDGET_MB = Math.floor(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024);
-
-  /**
-   * Three parts that together exceed the budget, and a fourth that still fits
-   * behind the one that does not.
-   *
-   * Each is under `MAX_EMAIL_DOCUMENT_BYTES`, so nothing here is refused for
-   * being an oversized document -- the only thing under test is the aggregate.
-   * The small tail part is what tells a `continue` from a `break`: a bound that
-   * stopped at the first over-budget part would silently drop it too, and
-   * whether a file survives would depend on what sat ahead of it rather than on
-   * the budget.
-   */
-  const PART_BYTES = 7 * 1024 * 1024;
-
-  /** Built once: ~28 MB of base64 is worth encoding a single time. */
-  let overBudgetEmail: string | undefined;
-  function overBudgetFixture(): string {
-    overBudgetEmail ??= multipartEmail(
-      [
-        { filename: "big-1.pdf", mime: "application/pdf", bytes: PART_BYTES },
-        { filename: "big-2.pdf", mime: "application/pdf", bytes: PART_BYTES },
-        { filename: "big-3.pdf", mime: "application/pdf", bytes: PART_BYTES },
-        { filename: "tail.pdf", mime: "application/pdf" },
-      ],
-      {
-        subject: "Too much at once",
-        messageId: "message-over-budget",
-        body: "Four files attached.",
-      },
-    );
-    return overBudgetEmail;
-  }
-
   it("stops appending parts once the decoded budget is spent", async () => {
     // The premise, computed rather than assumed: two parts fit and three do not.
     // Stated here so a change to the budget or the part size fails loudly rather
@@ -2568,5 +2857,168 @@ describe("email-ingest raw message cap", () => {
     );
     expect(bindings.YOPEDIA.fetch).not.toHaveBeenCalled();
     expect(msg.reply.mock.calls[0][0].text).toContain("larger than");
+  });
+});
+
+/**
+ * `TRUNCATION_MARKER` as `workers/email-ingest/index.ts` spells it. Not
+ * exported by the worker -- unlike `MAX_EMAIL_CONTENT_CHARS`, which is -- so the
+ * literal is duplicated here deliberately: this suite's whole job is to pin the
+ * arithmetic that combines the two, and deriving the marker from the module
+ * under test would let a reworded marker slide through silently.
+ */
+const TRUNCATION_MARKER = "\n\n[Email body truncated]";
+
+/**
+ * The `content` string the worker hands to `form.append("content", ...)`, read
+ * at the append call itself rather than off the wire.
+ *
+ * The append call is the OUTERMOST surface at which the worker's own number is
+ * still visible. The multipart/form-data encoding algorithm normalizes every
+ * lone LF and CR in an entry value to CRLF, so `form.get("content")` on a
+ * truncated body returns `MAX_EMAIL_CONTENT_CHARS + 2` -- the marker's `"\n\n"`
+ * arriving as `"\r\n\r\n"` -- plus one more character for every newline in the
+ * sender's own text. That divergence is a property of the serializer, not of
+ * the worker, so a wire-read assertion would pin the transport instead of the
+ * truncation. Same reasoning and same spy shape as `appendedAttachmentBlobs` in
+ * `email-ingest-worker-normalization.test.ts` (which reaches for it because the
+ * wire erases an empty `Blob` type the same way).
+ */
+async function appendedContent(raw: string, subject: string, slug: string): Promise<string> {
+  const msg = message(raw, subject);
+  const bindings = env(Response.json({ ok: true, slug }));
+  const spy = vi.spyOn(FormData.prototype, "append");
+  let recorded: unknown[][] = [];
+  let contexts: unknown[] = [];
+  try {
+    await worker.email(
+      msg as unknown as Parameters<typeof worker.email>[0],
+      bindings as unknown as Parameters<typeof worker.email>[1],
+    );
+    // Snapshot BEFORE `mockRestore()`: vitest's `mockRestore` resets the
+    // recorded calls along with the implementation, so reading `spy.mock.calls`
+    // afterwards yields `[]` and every assertion below passes vacuously. The
+    // same applies to `mock.contexts`, so both are captured together.
+    recorded = spy.mock.calls.map((call) => [...call]);
+    contexts = [...spy.mock.contexts];
+  } finally {
+    spy.mockRestore();
+  }
+  expect(bindings.YOPEDIA.fetch).toHaveBeenCalledOnce();
+  // The spy is installed on the PROTOTYPE, so it records every `FormData` built
+  // anywhere during the run. Scope the calls to the single form the worker
+  // built, identified by its `messageId` append -- performed exactly once on
+  // that form -- rather than trusting the key alone.
+  expect(contexts).toHaveLength(recorded.length);
+  const workerFormIndex = recorded.findIndex((call) => call[0] === "messageId");
+  expect(workerFormIndex).toBeGreaterThanOrEqual(0);
+  const workerForm = contexts[workerFormIndex];
+  expect(workerForm).toBeInstanceOf(FormData);
+  expect(recorded.filter((call) => call[0] === "messageId")).toHaveLength(1);
+  const appended = recorded
+    .filter((call, index) => call[0] === "content" && contexts[index] === workerForm)
+    .map((call) => call[1] as string);
+  // Guards the spy itself: `form.append("content", ...)` is behind
+  // `if (content)`, so an empty body would leave this empty and make every
+  // length assertion below unfalsifiable.
+  expect(appended).toHaveLength(1);
+  return appended[0];
+}
+
+/**
+ * The body-truncation boundary (DW-453). The worker cuts an over-long body to
+ * `MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length` and appends the marker,
+ * landing on exactly `MAX_EMAIL_CONTENT_CHARS`; `/api/email/ingest` then 400s
+ * anything `> MAX_EMAIL_CONTENT_CHARS`. Nothing observed the worker half, so an
+ * off-by-one in that subtraction -- or dropping it -- would ship green here and
+ * 400 every long email in production, costing the sender their body AND every
+ * attachment on the message. The route half of the same boundary is pinned in
+ * `email-ingest-route.test.ts` ("body length ceiling", DW-366); this is the
+ * other half of that pair.
+ */
+describe("email-ingest body truncation", () => {
+  /**
+   * A distinctive opening followed by filler `x`s to an exact total. The
+   * prefix is what makes "what survived the cut" assertable: an all-`x` body of
+   * the right length would satisfy a prefix check no matter which characters
+   * the slice actually kept.
+   */
+  const BODY_PREFIX = "Quarterly figures follow: ";
+  const body = (length: number) => BODY_PREFIX + "x".repeat(length - BODY_PREFIX.length);
+
+  /** What `slice(0, MAX - marker)` must leave of `body(...)`, spelled independently. */
+  const survives = BODY_PREFIX + "x".repeat(
+    MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length - BODY_PREFIX.length,
+  );
+
+  it("truncates a body one character over the cap to exactly the cap", async () => {
+    const content = await appendedContent(
+      multipartEmail([], {
+        subject: "Long body",
+        messageId: "message-body-over-cap",
+        body: body(MAX_EMAIL_CONTENT_CHARS + 1),
+      }),
+      "Long body",
+      "long-body",
+    );
+    // The load-bearing number: the route's gate is `> MAX_EMAIL_CONTENT_CHARS`,
+    // so the worker's own output must land AT the cap and never one past it.
+    expect(content).toHaveLength(MAX_EMAIL_CONTENT_CHARS);
+    expect(content.endsWith(TRUNCATION_MARKER)).toBe(true);
+    // What survived, not merely how much: the marker is appended to the FRONT
+    // of the body, so a slice taken from the wrong end would still be the right
+    // length and still carry the marker.
+    expect(content).toBe(`${survives}${TRUNCATION_MARKER}`);
+    expect(content.startsWith(BODY_PREFIX)).toBe(true);
+  });
+
+  it("leaves a body sitting exactly on the cap verbatim", async () => {
+    const atCap = body(MAX_EMAIL_CONTENT_CHARS);
+    const content = await appendedContent(
+      multipartEmail([], {
+        subject: "Exactly full",
+        messageId: "message-body-at-cap",
+        body: atCap,
+      }),
+      "Exactly full",
+      "exactly-full",
+    );
+    // The ternary is `>`, not `>=`: a body of exactly the advertised length is
+    // the longest legal one and must pass through untouched -- a `>=` would
+    // truncate it, invisibly to a clearly-under / clearly-over pair.
+    expect(content).toBe(atCap);
+    expect(content).toHaveLength(MAX_EMAIL_CONTENT_CHARS);
+    expect(content).not.toContain(TRUNCATION_MARKER);
+  });
+
+  it("truncates a multi-line body to the same cap, cutting mid-line", async () => {
+    // Short LF-terminated lines, so the cut lands inside a line rather than on
+    // a boundary -- the shape a real long email has, and the one where an
+    // off-by-one is easiest to mistake for a stray newline.
+    const line = (index: number) => `line ${String(index).padStart(6, "0")} of the body text`;
+    const lines = Array.from(
+      { length: Math.ceil((MAX_EMAIL_CONTENT_CHARS + 500) / (line(0).length + 1)) },
+      (_, index) => line(index),
+    );
+    const multiLine = lines.join("\n");
+    expect(multiLine.length).toBeGreaterThan(MAX_EMAIL_CONTENT_CHARS);
+
+    const content = await appendedContent(
+      multipartEmail([], {
+        subject: "Long multi-line body",
+        messageId: "message-body-multi-line",
+        body: multiLine,
+      }),
+      "Long multi-line body",
+      "long-multi-line-body",
+    );
+    expect(content).toHaveLength(MAX_EMAIL_CONTENT_CHARS);
+    expect(content.endsWith(TRUNCATION_MARKER)).toBe(true);
+    expect(content).toBe(
+      `${multiLine.slice(0, MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`,
+    );
+    // The cut really did land mid-line: the character immediately before the
+    // marker is body text, not a line break the truncation happened to fall on.
+    expect(content.slice(-TRUNCATION_MARKER.length - 1, -TRUNCATION_MARKER.length)).not.toBe("\n");
   });
 });

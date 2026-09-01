@@ -2093,3 +2093,332 @@ describe("PUT /api/wiki/[slug] — the write precondition", () => {
     expect(doc).toContain("412");
   });
 });
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE page is not an ABSENT one — the delete ACL and the two
+// create-conflict guards (DW-496)
+// ---------------------------------------------------------------------------
+
+/**
+ * Three write-authorizing reads still called `readWikiPage`/
+ * `readWikiPageWithFrontmatter` with no options, so a non-ENOENT storage
+ * failure came back as `null` and each caller read that `null` as proof the
+ * Page does not exist:
+ *
+ *   - `DELETE /api/wiki/[slug]`'s realm-aware ACL read answered
+ *     `page not found: <slug>` for a page that is stored but momentarily
+ *     unreadable — the one answer that makes a human stop retrying and start
+ *     recovering.
+ *   - the create-conflict guards in `POST /api/wiki` and `handleCreatePage`
+ *     (pinned in `mcp.test.ts`) read the same blip as "the slug is free" and
+ *     let a create land over a stored Page.
+ *
+ * `{ fresh: true, strict: true }` at all three, plus DELETE's unclassified
+ * catch default moving 400 → 500 so the rethrow lands as the fault it is
+ * rather than as the caller's malformed request.
+ *
+ * What is pinned here is the CLASSIFICATION, not the wording: a store fault is
+ * ≥ 500 and never `page not found` / `page already exists`, and it writes
+ * nothing.
+ */
+describe("unreadable ≠ absent — DELETE ACL and the create guard (DW-496)", () => {
+  /** A private page the mocked principal ("test-user") owns and may delete. */
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const frontmatter: Frontmatter = {
+      created: today,
+      confidence: 0.5,
+      authors: ["test-user"],
+      owner: "test-user",
+      visibility: "private",
+      contributors: [],
+      expiry: "2099-01-01",
+      sources: [],
+    };
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(frontmatter, `# ${slug}\n\nStored bytes.`),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function del(slug: string) {
+    const { DELETE } = await import("@/app/api/wiki/[slug]/route");
+    return DELETE(
+      new Request(`http://localhost/api/wiki/${slug}`, { method: "DELETE" }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  async function create(slug: string) {
+    const { POST } = await import("@/app/api/wiki/route");
+    return POST(
+      new Request("http://localhost/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, content: `# ${slug}\n\nBrand new.` }),
+      }),
+    );
+  }
+
+  /**
+   * A non-ENOENT failure on `<slug>.md`: the file is there, the provider is
+   * not. Every other path (the page index included) is served for real, so the
+   * only thing under test is what the Page read does with the blip.
+   */
+  function blipOn(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    return vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith(`${slug}.md`)) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+  }
+
+  // -- DELETE ---------------------------------------------------------------
+
+  it("DELETE answers 5xx — NOT `page not found` — when the ACL read blips", async () => {
+    await seed("del-blip");
+
+    const readSpy = blipOn("del-blip");
+    try {
+      const response = await del("del-blip");
+      // Was a 400 before DW-496: the rethrow fell through the catch's
+      // unclassified default, so a broken store was reported as the caller's
+      // malformed request.
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // And the page is still there — the blip authorized nothing.
+    expect(await readWikiPage("del-blip")).not.toBeNull();
+  });
+
+  it("DELETE still answers 404 for a slug that genuinely has no stored file", async () => {
+    // The companion row. `strict` must not turn a real absence into a 500 —
+    // ENOENT stays `null`, so the 404 means only what it claims.
+    const response = await del("del-never-existed");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: del-never-existed",
+    });
+  });
+
+  it("DELETE still deletes a stored page it is allowed to delete", async () => {
+    await seed("del-ok");
+    const response = await del("del-ok");
+    expect(response.status).toBe(200);
+    expect(await readWikiPage("del-ok")).toBeNull();
+  });
+
+  it("DELETE still answers 403 when the read-only flag flips mid-request", async () => {
+    // The `isReadOnlyError` branch sits ABOVE the fallback the 400 → 500 change
+    // touched, and it has to keep winning: the flag flips after DELETE's own
+    // gate has passed, so `deleteWikiPage`'s `assertWritable` refusal is what
+    // reaches the catch. Flipping it from inside the ACL read is the real
+    // ordering — gate, read, refusal.
+    await seed("del-flip");
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        const content = await originalRead(filePath);
+        if (filePath.endsWith("del-flip.md")) {
+          process.env.YOPEDIA_READONLY = "1";
+        }
+        return content;
+      });
+
+    try {
+      const response = await del("del-flip");
+      expect(response.status).toBe(403);
+    } finally {
+      readSpy.mockRestore();
+      delete process.env.YOPEDIA_READONLY;
+    }
+
+    expect(await readWikiPage("del-flip")).not.toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // The ACL is decided from the STORED file, not a cached one (DW-195)
+  // -------------------------------------------------------------------------
+
+  it("DELETE checks the ACL against storage while a stale page cache is open", async () => {
+    // FRESH is the half `strict` cannot pin, and it needs its own row: remove
+    // `fresh: true` from the source read and every `strict` row above still
+    // passes. `pageCache` is module-global and ref-counted around bulk scans,
+    // so one can be holding a superseded entry open when this request arrives —
+    // and the delete ACL is decided from the frontmatter this read returns, so
+    // a cached entry lets the route authorize a delete off an OWNER that is no
+    // longer stored.
+    await seed("del-cached");
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage("del-cached"))!;
+      expect(cached.content).toContain("owner: test-user");
+
+      // The page changes hands underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about. (In production the same state arises from a
+      // scan that re-read the entry after an invalidation.)
+      const stored = cached.content.replace("owner: test-user", "owner: someone-else");
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old owner.
+      expect((await readWikiPage("del-cached"))!.content).toBe(cached.content);
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. The ACL sees the
+      // STORED frontmatter — a private page owned by someone else — and cloaks
+      // it as a 404. Off the cached entry it reads `owner: test-user`,
+      // authorizes, and deletes a page that now belongs to another principal.
+      const response = await del("del-cached");
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({
+        error: "page not found: del-cached",
+      });
+      // Nothing was deleted: the later bytes are intact, byte for byte.
+      expect(await fs.readFile(cached.path, "utf-8")).toBe(stored);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // -- POST /api/wiki -------------------------------------------------------
+
+  /**
+   * WHAT THE HARM ACTUALLY IS. The blip did not by itself overwrite the stored
+   * Page: the `createOnly` branch of the lifecycle pipeline
+   * (`src/lib/lifecycle.ts:487-497`) re-checks `storageFileExists(flatPath)`
+   * and throws `LifecyclePageConflictError`, so a Page that has a flat
+   * compatibility copy was still refused — but under an error naming a CONFLICT
+   * rather than the storage fault that actually happened, which sends the
+   * caller to fix a slug collision that does not exist. The sharper residual
+   * case is a Page stored only in another tenant's silo, where that flat check
+   * passes and the create does land. Either way the guard was ruling on a
+   * `null` it had no right to read as an absence.
+   */
+  it("POST /api/wiki 500s a blipped conflict read over a STORED page, and writes nothing", async () => {
+    // The Page the guard protects has to actually BE stored, or the row asserts
+    // nothing about the harm above and the closing `toBeNull()` is satisfied by
+    // a slug that never existed.
+    await seed("create-blip");
+    const before = (await readWikiPageWithFrontmatter("create-blip"))!.content;
+
+    // The blip is ONE-SHOT, and deliberately so: a spy that failed EVERY read
+    // of `create-blip.md` would also break the `createOnly` re-check inside the
+    // write below, and the route would answer 500 whether or not the guard
+    // rethrows — a green row that pins nothing. Failing only the guard read
+    // leaves the old behaviour answering the conflict error.
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let blipped = false;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!blipped && filePath.endsWith("create-blip.md")) {
+          blipped = true;
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+    try {
+      const response = await create("create-blip");
+      expect(response.status).toBe(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).toContain("storage unavailable");
+      // The caller must not be told this is a slug conflict.
+      expect(body.error).not.toContain("already exists");
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(blipped).toBe(true);
+    // And the stored Page is untouched, byte for byte.
+    expect((await readWikiPageWithFrontmatter("create-blip"))!.content).toBe(before);
+  });
+
+  it("POST /api/wiki still 409s a slug that is genuinely stored", async () => {
+    await seed("create-taken");
+    const before = (await readWikiPageWithFrontmatter("create-taken"))!.content;
+
+    const response = await create("create-taken");
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: "page already exists: create-taken",
+    });
+    // The conflict refused the write rather than merely reporting it.
+    expect((await readWikiPageWithFrontmatter("create-taken"))!.content).toBe(before);
+  });
+
+  it("POST /api/wiki still 201s a slug with no stored file", async () => {
+    // ENOENT stays `null` under strict, so the free-slug path is untouched.
+    const response = await create("create-free");
+    expect(response.status).toBe(201);
+    expect(await readWikiPage("create-free")).not.toBeNull();
+  });
+
+  it("POST /api/wiki checks the conflict guard against storage, not a stale cache", async () => {
+    // The FRESH half at the create guard, in the direction that matters: a
+    // cached NEGATIVE entry — the guard's `null` — for a slug that IS stored.
+    // Without `fresh` the guard rules the slug free and hands the request to
+    // the write; the `createOnly` re-check in the lifecycle pipeline is the
+    // only thing left standing between that and an overwrite, and it answers a
+    // conflict error rather than this route's 409. (For a Page stored only in
+    // another tenant's silo that flat re-check passes and the create lands.)
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan looks the slug up before it exists and caches the
+      // miss — `readWikiPage` seeds a negative entry on a true global miss.
+      expect(await readWikiPage("post-cached")).toBeNull();
+
+      // The page appears underneath it. Written DIRECTLY to the flat path,
+      // bypassing `writeWikiPage` — which invalidates — because a stale entry
+      // is exactly what this row is about.
+      const today = new Date().toISOString().slice(0, 10);
+      const storedBytes = serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["someone-else"],
+          owner: "someone-else",
+          visibility: "public",
+          contributors: [],
+          expiry: "2099-01-01",
+          sources: [],
+        } as Frontmatter,
+        "# post-cached\n\nAlready stored by someone else.",
+      );
+      const flatPath = path.join(process.env.WIKI_DIR!, "post-cached.md");
+      await fs.writeFile(flatPath, storedBytes, "utf-8");
+      // The cache is genuinely stale: a cached read still answers "no page".
+      expect(await readWikiPage("post-cached")).toBeNull();
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ: the guard sees the
+      // stored Page and answers its own 409.
+      const response = await create("post-cached");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "page already exists: post-cached",
+      });
+      // And the other principal's bytes are intact, byte for byte.
+      expect(await fs.readFile(flatPath, "utf-8")).toBe(storedBytes);
+    } finally {
+      cleanup();
+    }
+  });
+});

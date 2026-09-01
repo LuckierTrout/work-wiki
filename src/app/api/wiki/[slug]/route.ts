@@ -47,7 +47,23 @@ export async function DELETE(
     // for agents. (The middleware already blocks unauthenticated mutations;
     // this is the per-page check on top.)
     const principal = (await getPrincipal()) ?? getServicePrincipal(req);
-    const existing = await readWikiPageWithFrontmatter(slug);
+
+    // FRESH (DW-195). This read's frontmatter decides a mutation — the ACL
+    // below authorizes a delete from it. `pageCache` is module-global and
+    // ref-counted around bulk scans, so a concurrent scan can hold a superseded
+    // entry open; authorizing a delete off those bytes would check the realm of
+    // a page that is no longer stored. A fresh read neither consults nor
+    // mutates the cache.
+    //
+    // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+    // `null`, indistinguishable from an absent page, and the 404 below tells
+    // the caller their page is gone when it is only unreadable. Strict rethrows
+    // that failure to the catch at the bottom, which answers 500, so the 404
+    // below now means only what it always claimed: nothing is stored here.
+    const existing = await readWikiPageWithFrontmatter(slug, {
+      fresh: true,
+      strict: true,
+    });
     if (!existing) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },
@@ -86,7 +102,15 @@ export async function DELETE(
       return NextResponse.json({ error: getErrorMessage(err) }, { status: 403 });
     }
     const message = getErrorMessage(err);
-    const status = message.startsWith("page not found") ? 404 : 400;
+    // Unclassified failures are FAULTS, not malformed requests (DW-496 flipped
+    // this default from 400). The strict read above (DW-378) rethrows a storage
+    // blip here, and a 400 would report a broken store as the caller's bad
+    // input — a client that retries a 400 forever never reaches a 5xx anyone
+    // alerts on. `PUT` (:360) and `PATCH` (:441) already default 500;
+    // this matches them. An invalid slug needs no 400 branch here: the read
+    // answers `null` for it, strict or not, so it is already the 404 above and
+    // never reaches this catch.
+    const status = message.startsWith("page not found") ? 404 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

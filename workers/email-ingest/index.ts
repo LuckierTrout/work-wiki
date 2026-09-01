@@ -939,6 +939,39 @@ export default {
           inlineDroppedAttachments,
         )}.`
       : "";
+    // The last two loss sentences, hoisted for the same reason as the three
+    // above them — they now have a SECOND consumer (DW-452). Written inline in
+    // the acknowledgement's `lines` array, they were reachable from exactly one
+    // exit; the refusal exit below carries all five, and no sentence in this
+    // module is authored twice.
+    //
+    // These two are COUNTS with no names, unlike the three above: an over-cap
+    // casualty and an unsupported part are both identified well enough by their
+    // reason, and `attachmentNames` already carries the unsupported names to
+    // the route for the activity history.
+    //
+    // Hoisting them is deliberately NOT the same as adding them to the
+    // no-content exit, which keeps its exact four-sentence set. An over-cap
+    // count is zero by construction there — that exit is reached only when
+    // `supportedAttachments` is empty, and `overCapCount` counts eligible parts
+    // the selection loop had no room for. The unsupported sentence is a
+    // deliberate omission rather than a vacuous one: that exit's first sentence
+    // already carries the format list on the `unsupportedCount &&
+    // !inlineDroppedCount` branch, and where that branch is suppressed it is
+    // suppressed ON PURPOSE (DW-565) — a message carrying an unsupported file
+    // beside an inline-labelled supported one must not be told to fix a format
+    // problem two lines above a sentence naming a Markdown file that arrived.
+    // Adding this sentence there would reintroduce exactly that contradiction.
+    const overCapLine = overCapCount
+      ? `${overCapCount} supported attachment${
+          overCapCount === 1 ? " was" : "s were"
+        } not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`
+      : "";
+    const unsupportedLine = unsupportedCount
+      ? `${unsupportedCount} unsupported attachment${
+          unsupportedCount === 1 ? " was" : "s were"
+        } recorded but skipped.`
+      : "";
     if (!rawContent && supportedAttachments.length === 0) {
       await reply(
         message,
@@ -1008,13 +1041,54 @@ export default {
     // add a phantom skip on top of the real one it already contributes. The two
     // surfaces answer different questions — this one records what travelled,
     // the reply explains what did not.
+    //
+    // Named through `replyAttachmentName`, the same helper the reply's loss
+    // sentences use, so the RECORDED name and the sentence the sender reads
+    // agree about what one part is called (DW-454). `filename ||
+    // "unnamed attachment"` was a truthiness check: a part named `"   "` was
+    // "unnamed attachment" in the sentence and a bare run of spaces in the
+    // field recorded beside it — and `sanitizeAttachmentNames` in
+    // `src/lib/email-ingest.ts` trims and `.filter(Boolean)`s the recorded
+    // names, so that one dropped route-side and the activity history lost a
+    // file the sender had just been told about. A CR/LF name diverged the same
+    // way, and was recorded with the line breaks still in it.
+    //
+    // The forwarded `Blob` filename in the loop below is deliberately NOT
+    // routed through the helper and stays raw. It is not a display name: its
+    // `attachment-${index + 1}` fallback is positional, and the route derives
+    // `intakeSourceSlug(file.name)` from it — collapsing several unnamed parts
+    // onto one shared "unnamed attachment" would collide those slugs where the
+    // positional fallback keeps them distinct. Three surfaces, and only the two
+    // that are prose about a file have to agree.
+    //
+    // Routing through the helper cannot change the LIST'S LENGTH, which is
+    // load-bearing: it falls back to `"unnamed attachment"` and so always
+    // returns a non-empty string, one name per countable part exactly as the
+    // bare `||` did. The route floors its skip count at
+    // `Math.max(0, attachmentNames.length - attachments.length,
+    // payload.attachments.length - attachments.length)` — two floors, of which
+    // this length feeds the first — so a shorter list here would lower that
+    // floor and under-report the loss.
     const attachmentNames = countableAttachments
-      .map((attachment) => attachment.filename || "unnamed attachment")
+      .map((attachment) => replyAttachmentName(attachment.filename))
       .slice(0, MAX_EMAIL_ATTACHMENT_NAMES_RECORDED);
 
+    // ONE definition, read by both consumers: the forward target below and the
+    // acknowledgement's page/ingest links further down. The same expression was
+    // written out twice, which is two things to keep in step for no gain — and
+    // the second copy was invisible to the suite until DW-363 went looking for
+    // it, because every transport assertion read only the first: deleting the
+    // acknowledgement's trim shipped green while every sender got a page link
+    // with a quadrupled slash in it. DW-451 leaves one definition, so there is
+    // nothing left for the two consumers to disagree about.
+    const site = (env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "");
     let response: Response;
     try {
-      const site = (env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "");
+      // The guard stays INSIDE the `try`, even though the value no longer is:
+      // this `throw` has no bespoke reply of its own — it is caught below,
+      // logged as "service binding request failed" and answered with the
+      // generic retry sentence. Hoisting it out would change the sender-visible
+      // behaviour of a misconfigured worker.
       if (!site) throw new Error("YOPEDIA_SITE_URL is missing");
       const form = new FormData();
       form.append("from", from);
@@ -1071,11 +1145,35 @@ export default {
       unknown
     > | null;
     if (!response.ok) {
-      await reply(message, subject, safeError(result));
+      // The route's own refusal, and then everything this message lost on the
+      // way to it (DW-452). Replying with `safeError(result)` alone discarded
+      // five sentences the handler had already built: a sender whose message
+      // was refused for a reason of the route's own — a read-only wiki, an
+      // unavailable queue — heard nothing about the attachments dropped before
+      // the forward was even attempted, and re-sending the same message once
+      // the route recovered would drop them again in the same silence.
+      //
+      // The same consts the acknowledgement reads, in the same order, so the
+      // two exits cannot describe one message differently. `.filter(Boolean)`
+      // is what keeps a no-loss refusal a single bare sentence with no trailing
+      // blank lines.
+      await reply(
+        message,
+        subject,
+        [
+          safeError(result),
+          oversizedLine,
+          overBudgetLine,
+          inlineDroppedLine,
+          overCapLine,
+          unsupportedLine,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      );
       return;
     }
 
-    const site = (env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "");
     const jobId = typeof result?.jobId === "string" ? result.jobId : "";
     const slug = typeof result?.slug === "string" ? result.slug : "";
     const lines = [
@@ -1093,12 +1191,8 @@ export default {
       oversizedLine,
       overBudgetLine,
       inlineDroppedLine,
-      overCapCount
-        ? `${overCapCount} supported attachment${overCapCount === 1 ? " was" : "s were"} not queued because this email exceeds the ${MAX_EMAIL_ATTACHMENTS}-attachment limit.`
-        : "",
-      unsupportedCount
-        ? `${unsupportedCount} unsupported attachment${unsupportedCount === 1 ? " was" : "s were"} recorded but skipped.`
-        : "",
+      overCapLine,
+      unsupportedLine,
     ].filter(Boolean);
     await reply(message, subject, lines.join("\n\n"));
   },

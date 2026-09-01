@@ -3324,7 +3324,9 @@ source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-test
 location: workers/email-ingest/index.ts:752
 severity: low
 reason: `(env.YOPEDIA_SITE_URL || "").replace(/\/+$/, "")` appears at workers/email-ingest/index.ts:752 (forwarded request) and again at :813 (acknowledgement links). DW-363 exists only because the second copy was unpinned. Both are now pinned, but a single `const site` hoisted above the `try` -- keeping `if (!site) throw` inside it -- would make drift structurally impossible. Pre-existing duplication; this change pinned it rather than removing it.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-worker-forward-reply-tail
+resolution-undo: 0cb9a33bc525713fffef0734acfa7653afe9bcd687b5c890c878fb529e1fd75b 2026-08-31 7374617475733a206f70656e
 
 ### DW-452: The Worker's `!response.ok` exit replies with the route's error alone, discarding every loss sentence, so a route refusal hides which attachments were dropped.
 origin: spec-deferred 29a0cc7bff66
@@ -3332,7 +3334,9 @@ source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-test
 location: workers/email-ingest/index.ts:808
 severity: low
 reason: `if (!response.ok) { await reply(message, subject, safeError(result)); return; }` at workers/email-ingest/index.ts:808 drops `oversizedLine`, `overBudgetLine` and the over-cap and unsupported sentences. Pre-existing shape -- this change adds a fourth sentence to the set that exit already discarded.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-worker-forward-reply-tail
+resolution-undo: 0cb9a33bc525713fffef0734acfa7653afe9bcd687b5c890c878fb529e1fd75b 2026-08-31 7374617475733a206f70656e
 
 ### DW-453: Nothing asserts that the Worker's body truncation lands exactly on MAX_EMAIL_CONTENT_CHARS, so an off-by-one there would 400 every long email with the route's new gate test green.
 origin: spec-deferred 1973ea48dc02
@@ -3348,7 +3352,9 @@ source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-test
 location: workers/email-ingest/index.ts:747
 severity: low
 reason: workers/email-ingest/index.ts:747 builds the recorded names with `attachment.filename || "unnamed attachment"`, while `replyAttachmentName` (:429) scrubs and trims before falling back. `sanitizeAttachmentNames` in src/lib/email-ingest.ts then drops the whitespace name, so the recorded list and the sender's reply disagree about the same part. Pre-existing; routing that build through `replyAttachmentName` would settle it.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-worker-forward-reply-tail
+resolution-undo: 0cb9a33bc525713fffef0734acfa7653afe9bcd687b5c890c878fb529e1fd75b 2026-08-31 7374617475733a206f70656e
 
 ### DW-455: `fix_lint_issue` on the HTTP MCP transport gates `type` but still forwards `slug`, `target` and `message` to the handler with no check, so the two lint-fix doors now enforce different contracts for th
 
@@ -5347,4 +5353,27 @@ location: src/components/KnowledgeStudio.tsx (research error banner), src/lib/re
 source_spec: `spec-dw-477-655-research-registry-repair-and-urls.md`
 severity: medium
 reason: `REPAIR_HINT` now ends every `parseRegistry` refusal, and the Studio's research fetch surfaces the server's `error` sentence verbatim in its banner (`KnowledgeStudio.tsx`), so a non-technical owner meets "Research projects file is unreadable. Repair it with POST /api/research/repair, then retry." with nothing to press. Grepping `src` for `research/repair` finds only the route file and its test — no client fetch, no button, and the Workbench's `ResearchCanvas` shows the same sentence with the same absence. The recorded DW-477 decision names a route and a 500 body that names it, and both shipped; the ledger entry's own title says "no IN-PRODUCT repair path", and that half is still open. A Repair control on the research desk's error banner would close it.
+status: open
+
+### DW-689: `PUT /api/workbench/artifact` relays a raw storage errno — message and filesystem path — into the owner's save banner as a 500 body.
+origin: resolve-deferred dw3-wiki-door-unreadable-contract
+location: src/lib/wikis.ts:982, src/app/api/workbench/artifact/route.ts:86-90
+severity: low
+reason: `writeWikiArtifact`'s pre-overwrite read is fail-soft except for a precondition-bearing caller, where `if (expectedVersion !== undefined) throw error` (src/lib/wikis.ts:982) rethrows the storage error UNWRAPPED — deliberately, so a blip is never reported as somebody else's save. The route catch then classifies only `isReadOnlyError`, `isWriteConflictError` and `ClientInputError`, so it falls through to `json({ error: getErrorMessage(error) }, 500)` at :86-90 and `savePreviewBody` renders that string verbatim. The owner meets an errno sentence naming a server path (`EACCES: permission denied, open '/…'`) where every neighbouring door gives them a sentence. 500 is the right STATUS for a storage fault; the message is the defect. The fix wants a typed unreadable error at the `wikis.ts` boundary plus a classifying branch and an owner-worded constant in the route — a different mechanism from the `strict:` read option that closed the DW-378 family, which is why it was cut from the `wiki-door-unreadable-contract` bundle rather than folded into it. Noted in that bundle's Intent since 2026-08-22 but backed by no entry until now.
+status: open
+
+### DW-690: The email-ingest route dedups recorded attachment names BEFORE sanitizing them, so any part whose recorded name and forwarded file name differ only after scrubbing inflates `attachmentNames` and repor
+origin: spec-deferred d9ac1e51bdec
+location: src/app/api/email/ingest/route.ts:236
+source_spec: `spec-dw-451-452-454-email-worker-forward-reply-tail.md`
+severity: low
+reason: `src/app/api/email/ingest/route.ts:236` builds `sanitizeAttachmentNames(Array.from(new Set([...payload.attachmentNames, ...payload.attachments.map((file) => file.name)])))` -- the `Set` collapses RAW strings, and `sanitizeAttachmentNames` scrubs afterwards, so two raw names that scrub to the same string survive as duplicates. `localSkipped` (route.ts:372-376) then takes `attachmentNames.length - attachments.length` as a floor and reports a skip that did not happen. Reachable at HEAD, before and independently of this change, by the most ordinary case: a supported part with no filename at all. The Worker records it as `unnamed attachment` and forwards the Blob as `attachment-1`, so the `Set` holds two entries for one file and the floor is 1 -- a message whose single unnamed attachment ingested cleanly is reported as having skipped one. Verified by evaluating the route's own expression against those two inputs. This change shifts WHICH malformed name trips it rather than creating the clas
+status: open
+
+### DW-691: The DELETE door DW-496 just hardened can still report a stored page as absent: `deleteWikiPage`'s own read, and the MCP delete mirror, are both still unqualified.
+origin: spec-deferred 866174ab7f8d
+location: src/lib/lifecycle.ts:1179 and src/mcp.ts:434
+source_spec: `spec-dw-496-wiki-door-unreadable-contract.md`
+severity: low
+reason: `src/lib/lifecycle.ts:1179` runs `const page = await readWikiPage(slug)` with no options and throws `page not found: ${slug}` on the resulting `null`. That call happens AFTER the route's now-strict ACL read, and the route's catch keeps `page not found` -> 404, so a non-ENOENT blip landing on this second read still answers the caller "your page is gone" through the very door this bundle fixed. `src/mcp.ts:434` is the same shape on the agent-facing surface -- `readWikiPageWithFrontmatter(args.slug)` with no options, throwing `page not found: ${args.slug}` at :435-437 -- under a comment at :427 that claims it "mirrors the REST surface at DELETE /api/wiki/[slug]", a parity claim this change makes false. Neither site is named by DW-495 (merge-base reads), DW-496 (the three sites this bundle converted) or DW-497 (the revisions GET), so neither is covered by an open entry. Both are pre-existing and outside this bundle's enumerated scope; raised by three independent review layers.
 status: open

@@ -244,8 +244,18 @@ export async function handleCreatePage(args: {
 }): Promise<{ slug: string; title: string; created: true }> {
   validateSlug(args.slug);
 
-  // Check for conflicts
-  const existing = await readWikiPage(args.slug);
+  // Check for conflicts.
+  //
+  // FRESH (DW-195). This read's answer decides a mutation: `null` here is what
+  // lets the create below proceed. `pageCache` is module-global and ref-counted
+  // around bulk scans, so a concurrent scan can hold a superseded entry open
+  // and the guard would rule on bytes that are no longer stored.
+  //
+  // STRICT (DW-378). Without it a non-ENOENT storage failure reads back as
+  // `null`, indistinguishable from "no page here", and the guard reads a blip
+  // as proof the slug is free — landing a create over a stored Page. Strict
+  // rethrows the storage error to the MCP caller instead.
+  const existing = await readWikiPage(args.slug, { fresh: true, strict: true });
   if (existing) {
     throw new Error(`Page already exists: ${args.slug}`);
   }

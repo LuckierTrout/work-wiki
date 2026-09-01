@@ -50,7 +50,7 @@ import {
 import { isServicePrincipalId } from "../principal-id";
 import { vaultIdFor, listVaults, getVault, createVault } from "../vault";
 import { readWikiPageWithFrontmatter } from "../wiki";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
 import { registerAgent } from "../agents";
@@ -539,6 +539,134 @@ describe("MCP write tools", () => {
           content: "# Duplicate\n\nSecond version.",
         }),
       ).rejects.toThrow("Page already exists: dup-page");
+    });
+
+    /**
+     * DW-496. The conflict guard above read `null` for a non-ENOENT storage
+     * failure as well as for a free slug, so a provider blip made the guard
+     * answer "this slug is free" for a Page that is stored.
+     *
+     * WHAT THE HARM ACTUALLY IS. The blip did not by itself overwrite the
+     * stored Page: the `createOnly` branch of the lifecycle pipeline
+     * (`src/lib/lifecycle.ts:487-497`) re-checks `storageFileExists(flatPath)`
+     * and throws `LifecyclePageConflictError`, so a Page that has a flat
+     * compatibility copy was still refused — but under an error naming a
+     * CONFLICT rather than the storage fault that actually happened, which
+     * sends the caller to fix a slug collision that does not exist. The sharper
+     * residual case is a Page stored only in another tenant's silo, where that
+     * flat check passes and the create does land. Either way the guard was
+     * ruling on a `null` it had no right to read as an absence.
+     *
+     * Under `{ fresh: true, strict: true }` the read rethrows instead, and the
+     * MCP caller is told the store failed. Classification, not wording, is what
+     * is pinned.
+     */
+    it("rejects with the STORAGE error — not `Page already exists` — when the conflict read blips", async () => {
+      // The Page the guard protects has to actually BE stored, or the row
+      // asserts nothing about the harm its comment names.
+      await handleCreatePage({
+        slug: "blip-page",
+        content: "# Blip\n\nThe stored bytes.",
+      });
+      const before = (await readWikiPageWithFrontmatter("blip-page"))!.content;
+
+      const storage = getStorage();
+      const originalRead = storage.readFile.bind(storage);
+      // ONE-SHOT, and deliberately so: a spy that failed EVERY read of
+      // `blip-page.md` would also break the `createOnly` re-check inside the
+      // write below, so the call would reject whether or not the guard
+      // rethrows — a green row that pins nothing. Failing only the guard read
+      // leaves the old behaviour rejecting with `Page already exists`.
+      let blipped = false;
+      const readSpy = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (filePath: string) => {
+          // A non-ENOENT failure: the file is there, the provider is not.
+          if (!blipped && filePath.endsWith("blip-page.md")) {
+            blipped = true;
+            throw new Error("storage unavailable");
+          }
+          return originalRead(filePath);
+        });
+
+      let caught: unknown;
+      try {
+        await handleCreatePage({
+          slug: "blip-page",
+          content: "# Blip\n\nShould never land.",
+        });
+      } catch (err) {
+        caught = err;
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      expect(blipped).toBe(true);
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toContain("storage unavailable");
+      // The half this row's title promises, and the half that was decorative
+      // before: the caller must not be told this is a slug conflict.
+      expect(message).not.toContain("already exists");
+
+      // And the stored Page is untouched, byte for byte.
+      expect((await readWikiPageWithFrontmatter("blip-page"))!.content).toBe(before);
+    });
+
+    /**
+     * The FRESH half (DW-195), which `strict` cannot pin: remove `fresh: true`
+     * from the guard read and every strict row above still passes. `pageCache`
+     * is module-global and ref-counted around bulk scans, so one can be holding
+     * a stale NEGATIVE entry — the guard's `null` — for a slug that IS stored.
+     * The guard then rules the slug free and hands the request to the write,
+     * where the `createOnly` re-check is the only thing left standing; it
+     * answers its own conflict sentence rather than this handler's.
+     */
+    it("checks the conflict guard against storage while a stale page cache is open", async () => {
+      const { beginPageCache, readWikiPage, serializeFrontmatter } = await import("../wiki");
+      const cleanup = beginPageCache();
+      try {
+        // A concurrent scan looks the slug up before it exists and caches the
+        // miss — `readWikiPage` seeds a negative entry on a true global miss.
+        expect(await readWikiPage("mcp-cached")).toBeNull();
+
+        // The page appears underneath it. Written DIRECTLY to the flat path,
+        // bypassing `writeWikiPage` — which invalidates — because a stale entry
+        // is exactly what this row is about.
+        const today = new Date().toISOString().slice(0, 10);
+        const storedBytes = serializeFrontmatter(
+          {
+            created: today,
+            confidence: 0.5,
+            authors: ["someone-else"],
+            owner: "someone-else",
+            visibility: "public",
+            contributors: [],
+            expiry: "2099-01-01",
+            sources: [],
+          },
+          "# mcp-cached\n\nAlready stored by someone else.",
+        );
+        const flatPath = path.join(process.env.WIKI_DIR!, "mcp-cached.md");
+        await fs.writeFile(flatPath, storedBytes, "utf-8");
+        // The cache is genuinely stale: a cached read still answers "no page".
+        expect(await readWikiPage("mcp-cached")).toBeNull();
+
+        // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. This exact sentence
+        // is the GUARD's. Off the cached entry the guard passes and the write's
+        // own re-check rejects instead, with `Page "mcp-cached" already exists`.
+        await expect(
+          handleCreatePage({
+            slug: "mcp-cached",
+            content: "# Mine\n\nShould never land.",
+          }),
+        ).rejects.toThrow("Page already exists: mcp-cached");
+
+        // And the other principal's bytes are intact, byte for byte.
+        expect(await fs.readFile(flatPath, "utf-8")).toBe(storedBytes);
+      } finally {
+        cleanup();
+      }
     });
 
     it("rejects invalid slug", async () => {
