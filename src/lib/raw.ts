@@ -10,6 +10,7 @@ import { getStorage } from "./storage";
 import { bumpDataVersion } from "./data-version";
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
+import { intakeContentType } from "./workbench-intake";
 
 // ---------------------------------------------------------------------------
 // Raw source storage
@@ -67,6 +68,21 @@ export const RAW_PARSED_DIR = "parsed";
  * onto this root, and that must not start moving whenever this one does.
  */
 export const RAW_ASSETS_DIR = "assets";
+
+/** Queue-staging root under `raw/`; never a page slug. */
+export const RAW_UPLOADS_DIR = "uploads";
+
+/** Owner-scoped preserved-document root under `raw/`; never a page slug. */
+export const RAW_ORIGINALS_DIR = "originals";
+
+/** Structural roots the legacy `raw/` snapshot walk must not treat as slugs. */
+const RAW_NON_SLUG_DIRS = new Set([
+  RAW_SOURCES_DIR,
+  RAW_PARSED_DIR,
+  RAW_ASSETS_DIR,
+  RAW_UPLOADS_DIR,
+  RAW_ORIGINALS_DIR,
+]);
 
 /** Storage-relative path for something under `raw/sources/`. */
 export function rawSourceRelPath(rest: string): string {
@@ -320,7 +336,7 @@ export async function saveRawSourceBytes(
   if (!RAW_ID_RE.test(rawId)) {
     throw new Error("Invalid raw id: must be a hex hash");
   }
-  if (!/^[a-z0-9]{1,8}$/.test(ext)) {
+  if (!RAW_SOURCE_EXT_RE.test(ext)) {
     throw new Error("Invalid raw source extension");
   }
   const rest = `${slug}/${rawId}.${ext}`;
@@ -380,15 +396,22 @@ export async function saveRawSource(
 /** A per-source raw id is a hex hash — path-safe by construction. */
 const RAW_ID_RE = /^[a-f0-9]+$/;
 
+/** The canonical stored-extension rule shared with {@link saveRawSourceBytes}. */
+const RAW_SOURCE_EXT_RE = /^[a-z0-9]{1,8}$/;
+
 export interface RawSourceSnapshot {
   slug: string;
   rawId: string;
-  /** Workbench path, e.g. `raw/sources/<slug>/<rawId>.md`. */
+  /** Lowercase, no dot: `md` for prose, `pdf`/`png`/… for stored bytes. */
+  ext: string;
+  /** The repo's content type for the stored extension. */
+  mediaType: string;
+  /** Workbench path of the exact stored artefact. */
   path: string;
 }
 
 /**
- * Recursive walk of hashed `raw/sources/<slug>/<hex>.md` snapshots.
+ * Depth-one walk of hashed `raw/sources/<slug>/<hex>.<ext>` artefacts.
  *
  * {@link listRawSources} stays non-recursive — that is the browse contract,
  * and the Workbench Sources surface built on it is unchanged: snapshots never
@@ -399,9 +422,17 @@ export interface RawSourceSnapshot {
  * `ingest()` writes BOTH ways — see `listRawSourceRows` in `src/cli.ts`.
  */
 export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
-  const roots: Array<{ prefix: string; pathPrefix: string }> = [
-    { prefix: rawSourceRelPath(""), pathPrefix: `raw/${RAW_SOURCES_DIR}` },
-    { prefix: rawRelPath(""), pathPrefix: "raw" },
+  const roots: Array<{
+    prefix: string;
+    pathPrefix: string;
+    legacy: boolean;
+  }> = [
+    {
+      prefix: rawSourceRelPath(""),
+      pathPrefix: `raw/${RAW_SOURCES_DIR}`,
+      legacy: false,
+    },
+    { prefix: rawRelPath(""), pathPrefix: "raw", legacy: true },
   ];
   const snapshots: RawSourceSnapshot[] = [];
   const seen = new Set<string>();
@@ -409,6 +440,7 @@ export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
     const entries = await listPrefix(root.prefix);
     for (const entry of entries) {
       if (!entry.isDirectory || entry.name.startsWith(".")) continue;
+      if (root.legacy && RAW_NON_SLUG_DIRS.has(entry.name)) continue;
       try {
         validateSlug(entry.name);
       } catch {
@@ -416,15 +448,20 @@ export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
       }
       const children = await listPrefix(`${root.prefix}/${entry.name}`);
       for (const child of children) {
-        if (child.isDirectory || !child.name.endsWith(".md")) continue;
-        const rawId = child.name.slice(0, -3);
-        if (!RAW_ID_RE.test(rawId)) continue;
-        const key = `${entry.name}/${rawId}`;
+        if (child.isDirectory) continue;
+        const dot = child.name.lastIndexOf(".");
+        if (dot <= 0) continue;
+        const rawId = child.name.slice(0, dot);
+        const ext = child.name.slice(dot + 1);
+        if (!RAW_ID_RE.test(rawId) || !RAW_SOURCE_EXT_RE.test(ext)) continue;
+        const key = `${entry.name}/${child.name}`;
         if (seen.has(key)) continue;
         seen.add(key);
         snapshots.push({
           slug: entry.name,
           rawId,
+          ext,
+          mediaType: intakeContentType(ext),
           path: `${root.pathPrefix}/${entry.name}/${child.name}`,
         });
       }

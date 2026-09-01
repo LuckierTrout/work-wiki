@@ -11,6 +11,7 @@
 import { getStorage } from "./storage";
 import { rawRelPath } from "./wiki";
 import { logger } from "./logger";
+import { RAW_UPLOADS_DIR } from "./raw";
 
 /** jobIds are UUIDs; reject anything else so a crafted id can't escape the prefix. */
 function assertSafeJobId(jobId: string): void {
@@ -29,10 +30,12 @@ function safeFilename(filename: string | undefined, fallback: string): string {
 /** Storage-relative key for a staged blob. */
 function stagedKey(jobId: string, name: string): string {
   assertSafeJobId(jobId);
-  return rawRelPath(`uploads/${jobId}/${name}`);
+  return rawRelPath(`${RAW_UPLOADS_DIR}/${jobId}/${name}`);
 }
 
 /** A well-formed staged key ends in `uploads/<jobId>/<file>`. */
+// Keep the security boundary literal aligned with RAW_UPLOADS_DIR so the exact
+// accepted wire shape stays obvious during review.
 const STAGED_KEY_RE = /(^|\/)uploads\/[a-zA-Z0-9-]{1,64}\/[a-zA-Z0-9._-]+$/;
 
 /**

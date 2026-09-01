@@ -498,7 +498,13 @@ describe("CLI command execution", () => {
     const { listRawSources, listRawSourceSnapshots } = await import("../raw");
     vi.mocked(listRawSources).mockResolvedValueOnce([]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/abc123.md",
+      },
     ]);
 
     const { runList } = await import("../../cli");
@@ -513,7 +519,13 @@ describe("CLI command execution", () => {
       { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/abc123.md",
+      },
     ]);
 
     const { runList } = await import("../../cli");
@@ -535,13 +547,51 @@ describe("CLI command execution", () => {
       { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/abc123.md",
+      },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
     expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["alpha\tabc123.md"]);
+  });
+
+  it("runList(true) keeps a flat Source when its only same-slug snapshot is binary", async () => {
+    // Only an extracted Markdown snapshot replaces the flat blob written by
+    // ingest. Binary bytes with the same page slug are an independent readable
+    // Source row and must not hide that flat prose Source.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      {
+        slug: "alpha",
+        filename: "alpha.md",
+        size: 10,
+        modified: "2025-01-01T00:00:00Z",
+      },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/alpha/abc123.pdf",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((call) => call[0])).toEqual([
+      "alpha\talpha.md",
+      "alpha\tabc123.pdf",
+    ]);
   });
 
   it("runList(true) prints one row per snapshot for a multi-source page", async () => {
@@ -553,9 +603,27 @@ describe("CLI command execution", () => {
       { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "aaa111", path: "raw/sources/alpha/aaa111.md" },
-      { slug: "alpha", rawId: "bbb222", path: "raw/sources/alpha/bbb222.md" },
-      { slug: "alpha", rawId: "ccc333", path: "raw/sources/alpha/ccc333.md" },
+      {
+        slug: "alpha",
+        rawId: "aaa111",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/aaa111.md",
+      },
+      {
+        slug: "alpha",
+        rawId: "bbb222",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/bbb222.md",
+      },
+      {
+        slug: "alpha",
+        rawId: "ccc333",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/ccc333.md",
+      },
     ]);
 
     const { runList } = await import("../../cli");
@@ -568,6 +636,75 @@ describe("CLI command execution", () => {
     ]);
   });
 
+  it("runList(true) prefers original bytes over extracted Markdown in either order", async () => {
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const pdf = {
+      slug: "paper",
+      rawId: "cafe01",
+      ext: "pdf",
+      mediaType: "application/pdf",
+      path: "raw/sources/paper/cafe01.pdf",
+    };
+    const markdown = {
+      slug: "paper",
+      rawId: "cafe01",
+      ext: "md",
+      mediaType: "text/markdown",
+      path: "raw/sources/paper/cafe01.md",
+    };
+    const { runList } = await import("../../cli");
+
+    for (const snapshots of [
+      [pdf, markdown],
+      [markdown, pdf],
+    ]) {
+      logSpy.mockClear();
+      vi.mocked(listRawSources).mockResolvedValueOnce([]);
+      vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce(snapshots);
+
+      await runList(true);
+
+      expect(logSpy.mock.calls.map((call) => call[0])).toEqual([
+        "paper\tcafe01.pdf",
+      ]);
+    }
+  });
+
+  it("runList(true) deterministically picks one of multiple non-Markdown aliases", async () => {
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const pdf = {
+      slug: "paper",
+      rawId: "cafe01",
+      ext: "pdf",
+      mediaType: "application/pdf",
+      path: "raw/sources/paper/cafe01.pdf",
+    };
+    const docx = {
+      slug: "paper",
+      rawId: "cafe01",
+      ext: "docx",
+      mediaType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      path: "raw/sources/paper/cafe01.docx",
+    };
+    const { runList } = await import("../../cli");
+
+    for (const snapshots of [
+      [pdf, docx],
+      [docx, pdf],
+    ]) {
+      logSpy.mockClear();
+      vi.mocked(listRawSources).mockResolvedValueOnce([]);
+      vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce(snapshots);
+
+      await runList(true);
+
+      expect(logSpy.mock.calls.map((call) => call[0])).toEqual([
+        "paper\tcafe01.docx",
+      ]);
+    }
+  });
+
   it("runList(true) still prints snapshots when the flat listing throws", async () => {
     // Each listing gets its own try/catch, as `wiki-retrieve.ts` does: one
     // failing root must not blank the other — and the operator is TOLD, because
@@ -575,7 +712,13 @@ describe("CLI command execution", () => {
     const { listRawSources, listRawSourceSnapshots } = await import("../raw");
     vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/abc123.md",
+      },
     ]);
 
     const { runList } = await import("../../cli");
@@ -664,8 +807,20 @@ describe("CLI command execution", () => {
       { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
-      { slug: "beta", rawId: "def456", path: "raw/sources/beta/def456.md" },
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/abc123.md",
+      },
+      {
+        slug: "beta",
+        rawId: "def456",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/beta/def456.md",
+      },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
 
@@ -674,6 +829,32 @@ describe("CLI command execution", () => {
 
     const output = logSpy.mock.calls.map((c) => c[0]).join("\n");
     expect(output).toContain("Raw sources:\t3");
+  });
+
+  it("runStatus() counts a PDF-only workspace as one raw Source", async () => {
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "cafe01",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/cafe01.pdf",
+      },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(logSpy.mock.calls.map((call) => call[0]).join("\n")).toContain(
+      "Raw sources:\t1",
+    );
   });
 
   it("runStatus() still prints a count when a raw listing throws", async () => {
@@ -687,7 +868,13 @@ describe("CLI command execution", () => {
     vi.mocked(listWikiPages).mockResolvedValueOnce([]);
     vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/alpha/abc123.md",
+      },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
 

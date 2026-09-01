@@ -1029,6 +1029,9 @@ export async function checkIncompleteCoverage(
   const snapshotIdsBySlug = new Map<string, string[]>();
   try {
     for (const snapshot of await listRawSourceSnapshots()) {
+      // This caller filters: readRawSourceById opens only Markdown, and binary
+      // bytes contain no prose for incomplete-coverage to compare.
+      if (snapshot.ext !== "md") continue;
       rawSlugsOnDisk.add(snapshot.slug);
       const ids = snapshotIdsBySlug.get(snapshot.slug);
       if (ids) ids.push(snapshot.rawId);

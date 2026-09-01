@@ -35,7 +35,7 @@ import { _resetStorage } from "../storage";
 import { serializeFrontmatter } from "../frontmatter";
 import { buildSourceEntry, serializeSources } from "../sources";
 import { ensureDirectories, updateIndex, writeWikiPage } from "../wiki";
-import { saveRawSource, saveRawSourceFor } from "../raw";
+import { saveRawSource, saveRawSourceBytes, saveRawSourceFor } from "../raw";
 import {
   TITLE_MATCH_BONUS,
   assembleWikiContext,
@@ -46,6 +46,7 @@ import {
 import { CHAT_COVERAGE_MISSING_COPY } from "../workbench-modes";
 import { tokenize } from "../bm25";
 import { INTERNAL_LINK_FIXTURE, INTERNAL_LINK_TARGETS } from "./internal-link-fixture";
+import { logger } from "../logger";
 
 const mockedVector = vi.mocked(searchByVector);
 const mockedVectorSettings = vi.mocked(getVectorSearchSettings);
@@ -330,6 +331,30 @@ describe("assemble and search", () => {
     await saveRawSourceFor("plaud-meet", "cafe01", "hashed snapshot about backpropagation");
     const { hits } = await retrieveHits("backpropagation", { principal: null });
     expect(hits.some((hit) => hit.path === "raw/sources/plaud-meet/cafe01.md")).toBe(true);
+  });
+
+  it("skips binary snapshot rows without logging a read failure", async () => {
+    await saveRawSourceBytes(
+      "binary-only",
+      "beef01",
+      "pdf",
+      new TextEncoder().encode("backpropagation in binary bytes").buffer,
+    );
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    try {
+      const { hits } = await retrieveHits("backpropagation", {
+        principal: null,
+      });
+      expect(hits).toEqual([]);
+      expect(
+        warn.mock.calls.some((call) =>
+          String(call[1]).includes("raw snapshot read failed"),
+        ),
+      ).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("does not leak an apiKey on the retrieve chatModel payload", async () => {

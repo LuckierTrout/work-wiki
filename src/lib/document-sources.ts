@@ -1,7 +1,7 @@
 import type { ExtractedDocument } from "./document-extract";
 import { serializeFrontmatter } from "./frontmatter";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
-import { RAW_ASSETS_DIR } from "./raw";
+import { RAW_ASSETS_DIR, RAW_ORIGINALS_DIR } from "./raw";
 import { getStorage } from "./storage";
 import {
   rawRelPath,
@@ -151,7 +151,7 @@ export async function preserveDocumentSources(
     const shortDigest = digest.slice(0, 16);
     const filename = safeFilename(source.filename, `document-${sourceIndex + 1}.${source.extracted.format}`);
     const originalKey = rawRelPath(
-      `originals/${tenant}/${slug}/${shortDigest}-${filename}`,
+      `${RAW_ORIGINALS_DIR}/${tenant}/${slug}/${shortDigest}-${filename}`,
     );
     await storage.writeAsset(originalKey, source.bytes);
 

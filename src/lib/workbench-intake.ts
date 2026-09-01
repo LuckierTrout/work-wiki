@@ -230,6 +230,41 @@ const MEDIA_CONTENT_TYPES: Record<string, string> = {
   flac: "audio/flac",
 };
 
+/**
+ * What `Content-Type` a text or extract Source is stored and served as.
+ *
+ * This is the non-media half of the same extension inventory above. It stays
+ * separate from {@link INTAKE_MIME_TYPES}: that table classifies an incoming
+ * content type, while this one answers the inverse question for one exact
+ * stored extension (including aliases such as `markdown` and `htm`).
+ */
+const SOURCE_CONTENT_TYPES: Record<string, string> = {
+  md: "text/markdown",
+  markdown: "text/markdown",
+  mdown: "text/markdown",
+  txt: "text/plain",
+  text: "text/plain",
+  html: "text/html",
+  htm: "text/html",
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xls: "application/vnd.ms-excel",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  epub: "application/epub+zip",
+  mobi: "application/x-mobipocket-ebook",
+};
+
+/** Resolve one lowercase stored extension to the type the repo serves. */
+export function intakeContentType(ext: string): string {
+  return (
+    ownLookup(MEDIA_CONTENT_TYPES, ext) ??
+    ownLookup(SOURCE_CONTENT_TYPES, ext) ??
+    "application/octet-stream"
+  );
+}
+
 export function intakeMediaContentType(name: string): string {
   const dot = name.lastIndexOf(".");
   const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";

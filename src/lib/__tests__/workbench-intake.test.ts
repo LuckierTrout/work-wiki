@@ -49,6 +49,7 @@ import {
   INTAKE_URL_REQUIRED_COPY,
   classifyIntakeFile,
   intakeDragHasFiles,
+  intakeContentType,
   intakeFileTitle,
   intakeSourceSlug,
   intakeStoredCopy,
@@ -179,6 +180,21 @@ describe("the intake allowlist", () => {
     // by the operating system's dialog with no sentence anywhere saying why.
     for (const offered of [".pdf", ".docx", ".png", ".mp4", "application/pdf"]) {
       expect(INTAKE_ACCEPT_ATTR).toContain(offered);
+    }
+  });
+
+  it("resolves stored Source extensions to concrete content types", () => {
+    expect(intakeContentType("md")).toBe("text/markdown");
+    expect(intakeContentType("pdf")).toBe("application/pdf");
+    expect(intakeContentType("png")).toBe("image/png");
+    expect(intakeContentType("bin")).toBe("application/octet-stream");
+  });
+
+  it("has a concrete content type for every accepted extension", () => {
+    for (const ext of Object.keys(INTAKE_EXTENSIONS)) {
+      expect(intakeContentType(ext), ext).not.toBe(
+        "application/octet-stream",
+      );
     }
   });
 

@@ -272,6 +272,9 @@ export async function loadRetrieveDocuments(
   try {
     const snapshots = await listRawSourceSnapshots();
     for (const snapshot of snapshots) {
+      // This caller filters: readRawSourceById opens only Markdown snapshots,
+      // so trying a stored binary would emit one false read-failure warning.
+      if (snapshot.ext !== "md") continue;
       try {
         const loaded = await readRawSourceById(snapshot.slug, snapshot.rawId);
         sources.push({

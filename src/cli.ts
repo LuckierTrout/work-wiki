@@ -590,15 +590,16 @@ export async function runLint(fix: boolean): Promise<void> {
  * does; without it a workspace whose Sources all arrived through hashed Intake
  * reports an empty `list --raw` and a `Raw sources:\t0` status (DW-437).
  *
- * WHY THE FLAT ROW IS DROPPED when snapshots exist: a plain concatenation
- * double-counts every normally-ingested page. `ingest()` writes BOTH keys for
- * the same slug — the flat blob at `src/lib/ingest.ts:1953`
+ * WHY THE FLAT ROW IS DROPPED when a readable Markdown snapshot exists: a
+ * plain concatenation double-counts every normally-ingested page. `ingest()`
+ * writes BOTH keys for the same slug — the flat blob at `src/lib/ingest.ts:1953`
  * (`saveRawSource(slug, content)`) and the per-source snapshot at
  * `src/lib/ingest.ts:2012` (`saveRawSourceFor(slug, rawId, content)`) — so the
- * two listings describe one page twice. The snapshots are the per-source view
- * of that page and the flat blob is the legacy single-blob view of the same
- * bytes, so the snapshots win: a page with three distinct sources still counts
- * three, and a slug with no snapshot at all keeps its flat row.
+ * two listings describe one page twice. Markdown snapshots are the per-source
+ * view of that page, so they replace the legacy single-blob row: a page with
+ * three distinct Markdown sources still counts three. Binary-only artefacts do
+ * not establish that replacement relationship and remain visible beside an
+ * independently readable same-slug flat Source.
  *
  * Each listing gets its OWN try/catch: one root failing must not blank the
  * other, which is the whole reason the union is worth more than either half.
@@ -608,7 +609,10 @@ async function listRawSourceRows(): Promise<
 > {
   const { listRawSources, listRawSourceSnapshots } = await import("./lib/raw");
   const flat: Array<{ slug: string; filename: string }> = [];
-  const hashed: Array<{ slug: string; filename: string }> = [];
+  const hashed = new Map<
+    string,
+    { slug: string; filename: string; isMarkdown: boolean }
+  >();
   const slugsWithSnapshots = new Set<string>();
   try {
     for (const source of await listRawSources()) {
@@ -619,15 +623,35 @@ async function listRawSourceRows(): Promise<
   }
   try {
     for (const snapshot of await listRawSourceSnapshots()) {
-      slugsWithSnapshots.add(snapshot.slug);
-      hashed.push({ slug: snapshot.slug, filename: `${snapshot.rawId}.md` });
+      // This caller deliberately does NOT filter. An original binary and its
+      // extracted Markdown are one Source arrival, represented by the original
+      // artefact; unlike retrieval and lint, the CLI never reads the bytes.
+      if (snapshot.ext === "md") {
+        slugsWithSnapshots.add(snapshot.slug);
+      }
+      const key = `${snapshot.slug}/${snapshot.rawId}`;
+      const filename = snapshot.path.slice(snapshot.path.lastIndexOf("/") + 1);
+      const candidate = {
+        slug: snapshot.slug,
+        filename,
+        isMarkdown: snapshot.ext === "md",
+      };
+      const current = hashed.get(key);
+      if (
+        !current ||
+        (current.isMarkdown && !candidate.isMarkdown) ||
+        (current.isMarkdown === candidate.isMarkdown &&
+          candidate.filename < current.filename)
+      ) {
+        hashed.set(key, candidate);
+      }
     }
   } catch (error) {
     console.error(`Warning: could not list raw snapshots: ${String(error)}`);
   }
   return [
     ...flat.filter((row) => !slugsWithSnapshots.has(row.slug)),
-    ...hashed,
+    ...hashed.values(),
   ];
 }
 

@@ -41,6 +41,7 @@ import {
 } from "../lint";
 import {
   saveRawSource,
+  saveRawSourceBytes,
   saveRawSourceFor,
   listRawSourceSnapshots,
 } from "../raw";
@@ -1892,20 +1893,30 @@ describe("checkIncompleteCoverage", () => {
     expect(total).toBeLessThanOrEqual(COVERAGE_MAX_RAW_CHARS);
   });
 
-  // 30 pages, each costing a page write plus a raw-source write, plus the index
-  // write — every one of them a whole-file write that since DW-161 fsyncs a tmp
-  // file before renaming it into place. Measured here: ~35ms before the change,
-  // ~0.5s after it solo, and ~4.9s under the full parallel suite, i.e. sitting
-  // right on the default 5s budget. Same situation as the query-history cap row
-  // and the contributors trust-score row: the durability cost is intended, but
-  // it leaves no headroom, so the row goes flaky on a loaded or slower machine
-  // without an explicit budget. Only the budget moves; the cap assertion below
-  // is untouched.
+  // MAX_COVERAGE_CHECKS + 1 eligible pages, each costing a page write plus a
+  // raw-source write, plus the binary decoy and index write — every one is a
+  // whole-file write that since DW-161 fsyncs a tmp file before renaming it
+  // into place. The durability cost is intended, but needs an explicit budget
+  // on a loaded machine. Only the test budget moves; the cap stays executable.
   it("processes at most MAX_COVERAGE_CHECKS pages per run", async () => {
     mockedHasLLMKey.mockResolvedValue(true);
 
-    // Create more pages with raw sources than the cap
-    const count = MAX_COVERAGE_CHECKS + 10;
+    // Put one binary-only page before MAX_COVERAGE_CHECKS + 1 eligible
+    // Markdown pages, then make Fisher-Yates preserve that order. The extra
+    // Markdown page proves the slice is active: deleting it produces one call
+    // over the cap. If binary snapshots regress into candidacy, the decoy
+    // instead occupies one capped slot but cannot be read by readRawSourceById,
+    // reducing the call count to MAX_COVERAGE_CHECKS - 1.
+    const binarySlug = "capped-binary-only";
+    await writeWikiPage(binarySlug, "# Binary Only\n\nNo extracted prose.");
+    await saveRawSourceBytes(
+      binarySlug,
+      "beef01",
+      "pdf",
+      new Uint8Array([1, 2, 3]).buffer as ArrayBuffer,
+    );
+
+    const count = MAX_COVERAGE_CHECKS + 1;
     const slugs: string[] = [];
     for (let i = 0; i < count; i++) {
       const slug = `capped-page-${i}`;
@@ -1914,16 +1925,34 @@ describe("checkIncompleteCoverage", () => {
       await saveRawSource(slug, `# Page ${i}\n\nRaw content for page ${i}.`);
     }
     await updateIndex(
-      slugs.map((s, i) => ({ slug: s, title: `Page ${i}`, summary: `Page ${i}` })),
+      [
+        { slug: binarySlug, title: "Binary Only", summary: "No prose" },
+        ...slugs.map((s, i) => ({
+          slug: s,
+          title: `Page ${i}`,
+          summary: `Page ${i}`,
+        })),
+      ],
     );
 
     // Each LLM call returns no gaps
     mockedCallLLM.mockResolvedValue("[]");
 
-    await checkIncompleteCoverage(slugs);
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.999999);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let warnings: string[] = [];
+    try {
+      await checkIncompleteCoverage([binarySlug, ...slugs]);
+      warnings = warn.mock.calls.map((call) => String(call[1]));
+    } finally {
+      random.mockRestore();
+      warn.mockRestore();
+    }
 
-    // The LLM should have been called at most MAX_COVERAGE_CHECKS times
+    // Every capped slot belongs to a readable Markdown Source. The binary row
+    // is filtered before candidacy, so it also produces no false read warning.
     expect(mockedCallLLM).toHaveBeenCalledTimes(MAX_COVERAGE_CHECKS);
+    expect(warnings.some((message) => message.includes(binarySlug))).toBe(false);
   }, 30_000);
 });
 

@@ -312,7 +312,159 @@ describe("per-source raw snapshots", () => {
       {
         slug: "flat-one",
         rawId: "cafe01",
+        ext: "md",
+        mediaType: "text/markdown",
         path: "raw/sources/flat-one/cafe01.md",
+      },
+    ]);
+  });
+
+  it("returns an empty snapshot list when both raw roots are missing", async () => {
+    await expect(listRawSourceSnapshots()).resolves.toEqual([]);
+  });
+
+  it("does not mistake a flat hex-stem Source for a page called sources", async () => {
+    await saveRawSource("cafe", "flat Source");
+
+    expect(await listRawSourceSnapshots()).toEqual([]);
+    expect((await listRawSources()).map((source) => source.slug)).toContain(
+      "cafe",
+    );
+  });
+
+  it("lists a PDF-only Source with its stored extension and media type", async () => {
+    await saveRawSourceBytes(
+      "paper",
+      "cafe01",
+      "pdf",
+      new Uint8Array([1, 2, 3]).buffer as ArrayBuffer,
+    );
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "paper",
+        rawId: "cafe01",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/cafe01.pdf",
+      },
+    ]);
+  });
+
+  it("lists original bytes and extracted Markdown as distinct artefacts", async () => {
+    await saveRawSourceBytes(
+      "paper",
+      "beef01",
+      "pdf",
+      new Uint8Array([1, 2, 3]).buffer as ArrayBuffer,
+    );
+    await saveRawSourceFor("paper", "beef01", "extracted prose");
+
+    const snapshots = await listRawSourceSnapshots();
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots).toEqual(
+      expect.arrayContaining([
+        {
+          slug: "paper",
+          rawId: "beef01",
+          ext: "pdf",
+          mediaType: "application/pdf",
+          path: "raw/sources/paper/beef01.pdf",
+        },
+        {
+          slug: "paper",
+          rawId: "beef01",
+          ext: "md",
+          mediaType: "text/markdown",
+          path: "raw/sources/paper/beef01.md",
+        },
+      ]),
+    );
+  });
+
+  it("still lists a hashed snapshot from the legacy raw root", async () => {
+    const legacyDir = path.join(tmpDir, "raw", "legacy-page");
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(path.join(legacyDir, "cafe01.md"), "legacy prose");
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "legacy-page",
+        rawId: "cafe01",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/legacy-page/cafe01.md",
+      },
+    ]);
+  });
+
+  it("never emits artefacts from structural roots or nested folder imports", async () => {
+    for (const [relative, content] of [
+      ["assets/page/x.png", "asset"],
+      ["parsed/page/cafe01.md", "parsed"],
+      ["uploads/job/file", "staged"],
+      ["originals/tenant/page/file", "original"],
+      ["sources/papers/energy/cafe01.md", "folder import"],
+    ] as const) {
+      const target = path.join(tmpDir, "raw", relative);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, content);
+    }
+
+    expect(await listRawSourceSnapshots()).toEqual([]);
+  });
+
+  it("uses octet-stream for an otherwise canonical unknown extension", async () => {
+    await saveRawSourceBytes(
+      "unknown",
+      "f00d01",
+      "bin",
+      new Uint8Array([0xff]).buffer as ArrayBuffer,
+    );
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "unknown",
+        rawId: "f00d01",
+        ext: "bin",
+        mediaType: "application/octet-stream",
+        path: "raw/sources/unknown/f00d01.bin",
+      },
+    ]);
+  });
+
+  it("does not make noncanonical stored extensions look readable", async () => {
+    const sourceDir = path.join(tmpDir, "raw", "sources", "odd");
+    await fs.mkdir(sourceDir, { recursive: true });
+    for (const filename of ["aa11.MD", "bb22.markdownx", "cc33.m\nd"]) {
+      await fs.writeFile(path.join(sourceDir, filename), filename);
+    }
+    await fs.writeFile(path.join(sourceDir, "dd44.md"), "canonical");
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "odd",
+        rawId: "dd44",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/odd/dd44.md",
+      },
+    ]);
+  });
+
+  it("deduplicates an identical canonical filename in favor of the current root", async () => {
+    await saveRawSourceFor("same", "cafe01", "current prose");
+    const legacyDir = path.join(tmpDir, "raw", "same");
+    await fs.mkdir(legacyDir, { recursive: true });
+    await fs.writeFile(path.join(legacyDir, "cafe01.md"), "legacy prose");
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "same",
+        rawId: "cafe01",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/same/cafe01.md",
       },
     ]);
   });

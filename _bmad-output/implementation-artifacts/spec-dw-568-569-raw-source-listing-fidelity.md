@@ -2,13 +2,14 @@
 title: 'DW-568/DW-569: make listRawSourceSnapshots describe what is actually stored'
 type: 'bugfix'
 created: '2026-08-31'
-status: 'in-review'
-review_loop_iteration: 0
+status: 'done'
+review_loop_iteration: 1
 followup_review_recommended: false
 context: []
 warnings: ['oversized']
 deferred: []
 baseline_revision: 'e5dc6724d36cd57af3f28ebc816b065fe980c30c'
+baseline_commit: '7412875c8d0ba574cfd2610715656c1bf8d17dc8'
 ---
 
 <intent-contract>
@@ -74,17 +75,17 @@ baseline_revision: 'e5dc6724d36cd57af3f28ebc816b065fe980c30c'
 ## Tasks & Acceptance
 
 **Execution:**
-- `src/lib/workbench-intake.ts` -- add a `SOURCE_CONTENT_TYPES` table for the text and extract extensions and an exported `intakeContentType(ext)` that answers the media table first, then it, then `application/octet-stream` -- gives `raw.ts` a real media type without minting a third MIME inventory or changing `intakeMediaContentType`.
-- `src/lib/raw.ts` -- add `RAW_UPLOADS_DIR` and `RAW_ORIGINALS_DIR` beside the existing `RAW_*_DIR` constants and a `RAW_NON_SLUG_DIRS` set built from all five -- the legacy `raw/` walk needs one named list of "this is a root, not a slug".
-- `src/lib/document-sources.ts` -- use `RAW_ORIGINALS_DIR` at the `originals/…` key -- one spelling for the directory the walk now excludes.
-- `src/lib/raw.ts` -- extend `RawSourceSnapshot` with `ext` and `mediaType`; rewrite `listRawSourceSnapshots` to skip `RAW_NON_SLUG_DIRS` children under the legacy root, accept any extension whose stem matches `RAW_ID_RE`, key `seen` on `<slug>/<rawId>.<ext>`, and fill the new fields -- closes DW-568 and DW-569 in one walk.
-- `src/lib/wiki-retrieve.ts` -- skip rows whose `ext` is not `md`, with a comment saying `readRawSourceById` opens only Markdown -- a binary row would log a read failure per retrieval.
-- `src/lib/lint-checks.ts` -- same filter in `checkIncompleteCoverage`, for both `rawSlugsOnDisk` and `snapshotIdsBySlug`, with a comment -- a PDF-only page has no prose to compare and would be a candidate that is silently skipped.
-- `src/cli.ts` -- build `filename` from `ext`, and dedupe by `<slug>/<rawId>` preferring the non-Markdown artefact, with a comment saying the CLI is the caller that does NOT filter -- an extracted PDF is one Source, not two rows.
-- `src/lib/__tests__/raw.test.ts` -- update the equality pin and add cases for the matrix rows: flat hex-stem Source, PDF-only, PDF+extracted Markdown, legacy hashed root, structural roots, unknown extension.
-- `src/lib/__tests__/workbench-intake.test.ts` -- pin `intakeContentType` and add a parity test that every `INTAKE_EXTENSIONS` key resolves to something other than `application/octet-stream`.
-- `src/lib/__tests__/cli.test.ts` -- add the new fields to every mocked snapshot literal; add a case pinning a PDF-only workspace's non-zero row and a case pinning the PDF+Markdown dedupe.
-- `src/lib/__tests__/wiki-retrieve.test.ts`, `src/lib/__tests__/lint.test.ts` -- pin that a binary row produces no retrieval document and no coverage candidate.
+- [x] `src/lib/workbench-intake.ts` -- add a `SOURCE_CONTENT_TYPES` table for the text and extract extensions and an exported `intakeContentType(ext)` that answers the media table first, then it, then `application/octet-stream` -- gives `raw.ts` a real media type without minting a third MIME inventory or changing `intakeMediaContentType`.
+- [x] `src/lib/raw.ts` -- add `RAW_UPLOADS_DIR` and `RAW_ORIGINALS_DIR` beside the existing `RAW_*_DIR` constants and a `RAW_NON_SLUG_DIRS` set built from all five -- the legacy `raw/` walk needs one named list of "this is a root, not a slug".
+- [x] `src/lib/document-sources.ts` -- use `RAW_ORIGINALS_DIR` at the `originals/…` key -- one spelling for the directory the walk now excludes.
+- [x] `src/lib/raw.ts` -- extend `RawSourceSnapshot` with `ext` and `mediaType`; rewrite `listRawSourceSnapshots` to skip structural-root children under the legacy root, accept only `<rawId>.<ext>` names admitted by the same lowercase `[a-z0-9]{1,8}` extension rule as `saveRawSourceBytes` (reuse the shared predicate if the current tree already has one), key `seen` on the exact `<slug>/<rawId>.<ext>` filename, and fill the new fields without lowercasing a noncanonical stored name into a readable-looking row -- closes DW-568 and DW-569 without emitting rows the Markdown consumers cannot address.
+- [x] `src/lib/wiki-retrieve.ts` -- skip rows whose `ext` is not `md`, with a comment saying `readRawSourceById` opens only Markdown -- a binary row would log a read failure per retrieval.
+- [x] `src/lib/lint-checks.ts` -- same filter in `checkIncompleteCoverage`, for both `rawSlugsOnDisk` and `snapshotIdsBySlug`, with a comment -- a PDF-only page has no prose to compare and would be a candidate that is silently skipped.
+- [x] `src/cli.ts` -- build `filename` from the stored path, and dedupe by `<slug>/<rawId>` preferring the non-Markdown artefact independently of provider order; if more than one non-Markdown filename shares the content id, use a deterministic filename tie-breaker. Comment that the CLI is the caller that does NOT filter -- an extracted PDF is one Source, not two rows.
+- [x] `src/lib/__tests__/raw.test.ts` -- update the equality pin and add cases for the matrix rows: flat hex-stem Source, PDF-only, PDF+extracted Markdown, legacy hashed root, structural roots, unknown extension; also pin that noncanonical uppercase/control/overlong extensions are not emitted and that an identical canonical filename present in current and legacy roots yields one current-root row.
+- [x] `src/lib/__tests__/workbench-intake.test.ts` -- pin `intakeContentType` and add a parity test that every `INTAKE_EXTENSIONS` key resolves to something other than `application/octet-stream`.
+- [x] `src/lib/__tests__/cli.test.ts` -- add the new fields to every mocked snapshot literal; add a case pinning a PDF-only workspace's non-zero row; exercise the PDF+Markdown dedupe in both provider orders; and pin the deterministic tie-break for multiple non-Markdown aliases.
+- [x] `src/lib/__tests__/wiki-retrieve.test.ts`, `src/lib/__tests__/lint.test.ts` -- pin that a binary row produces no retrieval document/read-failure warning and no coverage candidate; make the capped lint-sampling proof deterministic by controlling the shuffle so a regressed binary candidate would displace a Markdown-backed page.
 
 **Acceptance Criteria:**
 - Given a workspace whose only Source is `raw/sources/paper/<hex>.pdf`, when `runStatus()` runs, then `Raw sources:` reports 1 rather than 0.
@@ -94,6 +95,8 @@ baseline_revision: 'e5dc6724d36cd57af3f28ebc816b065fe980c30c'
 - Given a slug with both `<hex>.pdf` and `<hex>.md`, when `runList(true)` runs, then exactly one row is printed for that arrival and its filename is `<hex>.pdf`.
 
 ## Spec Change Log
+
+- Review loop 1 (2026-09-01): Review found that the prior task widened the walk to arbitrary stored extensions and lowercased them, so an uppercase-only `<hex>.MD` row looked readable while `readRawSourceById` still opened lowercase `.md`; with both spellings present it duplicated the lowercase body under two paths. Tightened the non-frozen raw-listing task to reuse the writer's canonical extension rule and added explicit noncanonical-name, cross-root dedup, provider-order, deterministic tie-break, warning-free retrieval, and deterministic capped-lint proofs. Avoid the known-bad state where a listing row cannot be addressed by its declared consumer. KEEP: depth-one traversal, legacy-root support, structural-root exclusions, per-artefact `ext`/`mediaType`, exact-path reporting, explicit Markdown filters, and PDF-over-derived-Markdown CLI behavior.
 
 ## Review Triage Log
 
@@ -120,6 +123,48 @@ export interface RawSourceSnapshot {
 ## Verification
 
 **Commands:**
-- `pnpm exec vitest run --project node src/lib/__tests__/raw.test.ts src/lib/__tests__/cli.test.ts src/lib/__tests__/lint.test.ts src/lib/__tests__/wiki-retrieve.test.ts src/lib/__tests__/workbench-intake.test.ts` -- expected: all pass, including the new matrix cases.
-- `pnpm exec tsc --noEmit` -- expected: no errors (every mocked `RawSourceSnapshot` literal carries the new fields).
-- `pnpm test` -- expected: the full suite passes, no regression in the brand, prose-inventory, or source-scan parity suites.
+- `pnpm exec vitest run --project node src/lib/__tests__/cli.test.ts src/lib/__tests__/lint.test.ts src/lib/__tests__/raw.test.ts src/lib/__tests__/wiki-retrieve.test.ts src/lib/__tests__/workbench-intake.test.ts` -- PASS: 5 files, 356 tests passed, including every matrix row, provider-order tie-break, unreadable-binary filtering, and the executable coverage cap.
+- `pnpm exec tsc --noEmit` -- PASS: no TypeScript errors.
+- `pnpm test` -- PASS on the terminal rerun: 359 files passed; 8,785 tests passed and 1 pre-existing test skipped. The first full run reached 8,784 passes before `storage-fs.test.ts` timed out at its 5-second budget; that entire file then passed 95/95 in 0.94 seconds in isolation, and the unchanged full-suite rerun passed cleanly in 96.85 seconds.
+- `git diff --check` -- PASS against baseline commit `7412875c8d0ba574cfd2610715656c1bf8d17dc8`.
+
+## Suggested Review Order
+
+**Snapshot discovery contract**
+
+- Widen the canonical depth-one walker while excluding structural roots and invalid extensions.
+  [`raw.ts:424`](../../src/lib/raw.ts#L424)
+
+- Resolve each emitted extension through the repository's existing content-type inventories.
+  [`workbench-intake.ts:260`](../../src/lib/workbench-intake.ts#L260)
+
+- Share the originals directory spelling with its production writer.
+  [`document-sources.ts:154`](../../src/lib/document-sources.ts#L154)
+
+- Keep staged uploads aligned with the shared upload-root contract.
+  [`ingest-staging.ts:33`](../../src/lib/ingest-staging.ts#L33)
+
+**Consumer fidelity**
+
+- Preserve original binary identity while deterministically collapsing derived Markdown and aliases.
+  [`cli.ts:607`](../../src/cli.ts#L607)
+
+- Feed retrieval only Markdown snapshots its reader can address.
+  [`wiki-retrieve.ts:273`](../../src/lib/wiki-retrieve.ts#L273)
+
+- Exclude binary artefacts before coverage candidacy and sampling.
+  [`lint-checks.ts:1031`](../../src/lib/lint-checks.ts#L1031)
+
+**Executable boundaries**
+
+- Pin structural exclusions, canonical extensions, legacy deduplication, and unknown media.
+  [`raw.test.ts:401`](../../src/lib/__tests__/raw.test.ts#L401)
+
+- Prove flat-plus-binary coexistence and order-independent alias selection.
+  [`cli.test.ts:565`](../../src/lib/__tests__/cli.test.ts#L565)
+
+- Make the coverage cap fail if filtering or slicing regresses.
+  [`lint.test.ts:1901`](../../src/lib/__tests__/lint.test.ts#L1901)
+
+- Ensure every accepted intake extension resolves to an explicit content type.
+  [`workbench-intake.test.ts:187`](../../src/lib/__tests__/workbench-intake.test.ts#L187)
