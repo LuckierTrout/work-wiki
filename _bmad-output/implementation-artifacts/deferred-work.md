@@ -3344,7 +3344,8 @@ source_spec: `spec-dw-253-357-363-364-366-367-email-ingest-route-and-worker-test
 location: workers/email-ingest/index.ts:739
 severity: low
 reason: `rawContent.slice(0, MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length) + TRUNCATION_MARKER` at workers/email-ingest/index.ts:739 is untouched by this change and unobserved. DW-366 now pins the route's `content.length > MAX_EMAIL_CONTENT_CHARS` 400, which makes the pairing load-bearing: the Worker must truncate to a length the route accepts.
-status: open
+status: done 2026-08-31
+resolution: already resolved: workers/email-ingest/index.ts:228-230 — MAX_RAW_EMAIL_BYTES is now ceil(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES x WORST_CASE_TRANSFER_ENCODING_FACTOR) + MIME_ENVELOPE_HEADROOM_BYTES = 65,496,679, not the 14,414,471 this entry describes. Against the 10 MiB per-document ceiling (index.ts:46) an attachment now survives the raw gate up to ~47.8 MB decoded under base64 and ~20.97 MB under quoted-printable, so the per-file oversize skip at index.ts:508-513 has a 10 MiB-to-~21 MB band, not the ~50 KB band the entry names. DW-358 and DW-362 widened the cap 4.5x after this entry was filed.
 
 ### DW-454: The Worker's forwarded `attachmentNames` uses a bare `|| "unnamed attachment"` with no trim, so a whitespace-named part is called "unnamed attachment" in the reply but forwarded as whitespace, which t
 origin: spec-deferred fae8dd937071
