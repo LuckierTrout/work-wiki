@@ -44,6 +44,7 @@ import {
   saveRawSourceFor,
   listRawSourceSnapshots,
 } from "../raw";
+import { logger } from "../logger";
 import { serializeFrontmatter } from "../frontmatter";
 
 let tmpDir: string;
@@ -1460,6 +1461,332 @@ describe("checkIncompleteCoverage", () => {
     expect(issues).toHaveLength(1);
     expect(issues[0].slug).toBe("flat-only");
     expect(mockedCallLLM.mock.calls[0][1]).toContain("77% of runs converged");
+  });
+
+  // The coverage budget, mirrored from `checkIncompleteCoverage`'s local
+  // `MAX_RAW_CHARS`. It is not exported, and the spec forbids raising it, so
+  // the rows below pin the number the check actually uses.
+  const COVERAGE_MAX_RAW_CHARS = 8000;
+
+  /**
+   * Split a coverage user message back into its raw parts. Everything before
+   * the `--- Wiki Page:` section is the raw side; each part is one
+   * `--- Raw Source: <slug> [<label>] ---` header line followed by the
+   * allocated content. Headers sit OUTSIDE the budget, so the assertions below
+   * count only the content.
+   */
+  function coverageRawParts(
+    message: string,
+  ): { label: string; content: string }[] {
+    const wikiAt = message.indexOf("\n\n--- Wiki Page: ");
+    const rawSection = message.slice(
+      0,
+      wikiAt === -1 ? message.length : wikiAt,
+    );
+    return rawSection.split("\n\n--- Raw Source: ").map((chunk, index) => {
+      const body = index === 0 ? chunk.replace(/^--- Raw Source: /, "") : chunk;
+      const newline = body.indexOf("\n");
+      const header = newline === -1 ? body : body.slice(0, newline);
+      return {
+        label: header.match(/\[(.+)\] ---$/)?.[1] ?? "",
+        content: newline === -1 ? "" : body.slice(newline + 1),
+      };
+    });
+  }
+
+  it("compares EVERY stored Source for a page in one call (DW-571)", async () => {
+    // The defect: the hashed snapshots were reached only inside the `catch` of
+    // `readRawSource`, and the loop `break`s on the first that opens. A page
+    // with a flat blob never had its snapshots compared at all, and a page
+    // with several snapshots was judged against one of them, picked by
+    // directory-listing order.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("multi-source", "# Multi Source\n\nA thin overview.");
+    await updateIndex([
+      { slug: "multi-source", title: "Multi Source", summary: "Several arrivals" },
+    ]);
+    await saveRawSource(
+      "multi-source",
+      "# Multi Source\n\nFlat detail: 11% of runs converged.",
+    );
+    await saveRawSourceFor(
+      "multi-source",
+      "aa11",
+      "# Multi Source\n\nFirst snapshot detail: 22% of shards drifted.",
+    );
+    await saveRawSourceFor(
+      "multi-source",
+      "bb22",
+      "# Multi Source\n\nSecond snapshot detail: 33% of nodes stalled.",
+    );
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["multi-source"]);
+
+    // One call for the page — the cap counts calls, not Sources.
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("11% of runs converged");
+    expect(message).toContain("22% of shards drifted");
+    expect(message).toContain("33% of nodes stalled");
+    expect(message).toContain("--- Raw Source: multi-source [flat] ---");
+    expect(message).toContain("--- Raw Source: multi-source [snapshot aa11] ---");
+    expect(message).toContain("--- Raw Source: multi-source [snapshot bb22] ---");
+    expect(message).toContain("--- Wiki Page: multi-source ---");
+    // A multi-part payload behind a prompt that still promises the model
+    // exactly two documents is a contract nobody was told about.
+    const systemPrompt = mockedCallLLM.mock.calls[0][0];
+    expect(systemPrompt).toContain("One or more");
+    expect(systemPrompt).toContain("raw sources");
+    expect(systemPrompt).not.toContain("You will be given two documents");
+  });
+
+  it("carries every snapshot when a page has no flat Source (DW-571)", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("snapshots-only", "# Snapshots Only\n\nA thin overview.");
+    await updateIndex([
+      { slug: "snapshots-only", title: "Snapshots Only", summary: "Intake only" },
+    ]);
+    await saveRawSourceFor(
+      "snapshots-only",
+      "aa11",
+      "# Snapshots Only\n\nFirst arrival: 44% of jobs retried.",
+    );
+    await saveRawSourceFor(
+      "snapshots-only",
+      "bb22",
+      "# Snapshots Only\n\nSecond arrival: 55% of queues drained.",
+    );
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["snapshots-only"]);
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("44% of jobs retried");
+    expect(message).toContain("55% of queues drained");
+    expect(message).not.toContain("[flat]");
+  });
+
+  it("warns and carries on when one listed snapshot cannot be read", async () => {
+    // Skipped, never fatal — but not silent either: the two listing catches in
+    // this same function log rather than swallow, on the rationale that a
+    // broken listing and an empty one must not look alike. A page compared
+    // against a partial Source set is that same lie in a smaller shape.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("partly-readable", "# Partly Readable\n\nA thin overview.");
+    await updateIndex([
+      { slug: "partly-readable", title: "Partly Readable", summary: "Intake only" },
+    ]);
+    await saveRawSourceFor(
+      "partly-readable",
+      "aa11",
+      "# Partly Readable\n\nReadable arrival: 66% of writes landed.",
+    );
+    await saveRawSourceFor(
+      "partly-readable",
+      "bb22",
+      "# Partly Readable\n\nUnreadable arrival: 77% of writes landed.",
+    );
+
+    // The snapshot stays LISTED (the walk uses `listFiles`); only the read of
+    // its bytes fails, which is the shape of a file that vanishes or turns
+    // unreadable between the listing and the read.
+    const storage = getStorage();
+    const realReadFile = storage.readFile.bind(storage);
+    const readFile = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (rel: string) =>
+        rel.includes("bb22.md")
+          ? Promise.reject(new Error("snapshot read failed"))
+          : realReadFile(rel),
+      );
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    // `mockRestore` clears the recorded calls too, so the warnings are copied
+    // out before the spies come down.
+    let warnings: string[] = [];
+    try {
+      await checkIncompleteCoverage(["partly-readable"]);
+    } finally {
+      warnings = warn.mock.calls.map((call) => `${call[0]}: ${call[1]}`);
+      readFile.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const message = mockedCallLLM.mock.calls[0][1];
+    expect(message).toContain("66% of writes landed");
+    expect(message).not.toContain("77% of writes landed");
+    expect(
+      warnings.some(
+        (warning) =>
+          warning.startsWith("lint: ") &&
+          warning.includes("partly-readable/bb22"),
+      ),
+    ).toBe(true);
+  });
+
+  it("skips a slug silently when no Source at all can be read", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("all-unreadable", "# All Unreadable\n\nA thin overview.");
+    await updateIndex([
+      { slug: "all-unreadable", title: "All Unreadable", summary: "Intake only" },
+    ]);
+    // No flat blob at all, so `readRawSource` throws on its own; the one
+    // snapshot is listed but its bytes will not come back.
+    await saveRawSourceFor(
+      "all-unreadable",
+      "aa11",
+      "# All Unreadable\n\nDetail nobody can read.",
+    );
+
+    const storage = getStorage();
+    const realReadFile = storage.readFile.bind(storage);
+    const readFile = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (rel: string) =>
+        rel.includes("aa11.md")
+          ? Promise.reject(new Error("snapshot read failed"))
+          : realReadFile(rel),
+      );
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    try {
+      issues = await checkIncompleteCoverage(["all-unreadable"]);
+    } finally {
+      readFile.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(issues).toHaveLength(0);
+    expect(mockedCallLLM).not.toHaveBeenCalled();
+  });
+
+  it("sends byte-identical Sources once so the budget is not spent twice", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    const shared = "# Duplicate\n\nIdentical detail: 88% of replicas agreed.";
+    await writeWikiPage("duplicate-source", "# Duplicate\n\nA thin overview.");
+    await updateIndex([
+      { slug: "duplicate-source", title: "Duplicate", summary: "Same bytes twice" },
+    ]);
+    await saveRawSource("duplicate-source", shared);
+    await saveRawSourceFor("duplicate-source", "aa11", shared);
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["duplicate-source"]);
+
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    const parts = coverageRawParts(mockedCallLLM.mock.calls[0][1]);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].label).toBe("flat");
+    expect(
+      mockedCallLLM.mock.calls[0][1].split("88% of replicas agreed").length - 1,
+    ).toBe(1);
+  });
+
+  it("gives a lone Source the whole budget and drops what is past it", async () => {
+    // Both sides on purpose: a lower bound alone would pass with truncation
+    // removed entirely, and an upper bound alone would pass with no budget
+    // reaching the model at all.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("lone-source", "# Lone Source\n\nA thin overview.");
+    await updateIndex([
+      { slug: "lone-source", title: "Lone Source", summary: "One flat blob" },
+    ]);
+    const marker = "PAST-THE-BUDGET";
+    await saveRawSource(
+      "lone-source",
+      "L".repeat(COVERAGE_MAX_RAW_CHARS + 500) + marker,
+    );
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["lone-source"]);
+
+    const message = mockedCallLLM.mock.calls[0][1];
+    const parts = coverageRawParts(message);
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toHaveLength(COVERAGE_MAX_RAW_CHARS);
+    expect(message).not.toContain(marker);
+  });
+
+  it("splits the budget evenly when every Source is oversized", async () => {
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("even-split", "# Even Split\n\nA thin overview.");
+    await updateIndex([
+      { slug: "even-split", title: "Even Split", summary: "Four big arrivals" },
+    ]);
+    const big = COVERAGE_MAX_RAW_CHARS; // Every part far longer than its share.
+    await saveRawSource("even-split", "F".repeat(big));
+    await saveRawSourceFor("even-split", "aa11", "A".repeat(big));
+    await saveRawSourceFor("even-split", "bb22", "B".repeat(big));
+    await saveRawSourceFor("even-split", "cc33", "C".repeat(big));
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["even-split"]);
+
+    const parts = coverageRawParts(mockedCallLLM.mock.calls[0][1]);
+    expect(parts).toHaveLength(4);
+    // Every Source represented — none starved out of the payload...
+    for (const part of parts) {
+      expect(part.content.length).toBeGreaterThan(0);
+    }
+    // ...and the total still inside the budget, a quarter each.
+    const total = parts.reduce((sum, part) => sum + part.content.length, 0);
+    expect(total).toBeLessThanOrEqual(COVERAGE_MAX_RAW_CHARS);
+    for (const part of parts) {
+      expect(part.content).toHaveLength(COVERAGE_MAX_RAW_CHARS / 4);
+    }
+  });
+
+  it("redistributes the unused share of short Sources to a long one", async () => {
+    // The regression a plain `MAX_RAW_CHARS / n` split would introduce: an
+    // oversized flat blob beside three tiny snapshots would keep 2 000 chars
+    // and leave ~5 970 of the budget unspent, so bytes that reach the model
+    // today would stop reaching it.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage("need-aware", "# Need Aware\n\nA thin overview.");
+    await updateIndex([
+      { slug: "need-aware", title: "Need Aware", summary: "One big, three tiny" },
+    ]);
+    await saveRawSource("need-aware", "F".repeat(30_000));
+    await saveRawSourceFor("need-aware", "aa11", "tiny-aa11.");
+    await saveRawSourceFor("need-aware", "bb22", "tiny-bb22.");
+    await saveRawSourceFor("need-aware", "cc33", "tiny-cc33.");
+
+    mockedCallLLM.mockResolvedValue("[]");
+
+    await checkIncompleteCoverage(["need-aware"]);
+
+    const parts = coverageRawParts(mockedCallLLM.mock.calls[0][1]);
+    expect(parts).toHaveLength(4);
+    const flat = parts.find((part) => part.label === "flat");
+    const snapshots = parts.filter((part) => part.label !== "flat");
+    // The short Sources arrive whole...
+    expect(snapshots).toHaveLength(3);
+    for (const snapshot of snapshots) {
+      expect(snapshot.content).toBe(`tiny-${snapshot.label.split(" ")[1]}.`);
+    }
+    // ...and the long one takes the rest, far more than an equal 2 000 share.
+    expect(flat?.content.length).toBe(COVERAGE_MAX_RAW_CHARS - 30);
+    const total = parts.reduce((sum, part) => sum + part.content.length, 0);
+    expect(total).toBeLessThanOrEqual(COVERAGE_MAX_RAW_CHARS);
   });
 
   // 30 pages, each costing a page write plus a raw-source write, plus the index

@@ -4341,7 +4341,9 @@ location: src/lib/__tests__/email-ingest-worker.test.ts (multipartEmail)
 source_spec: `spec-dw-446-email-inline-part-eligibility.md`
 severity: low
 reason: `inlineAttachment`'s doc treats a `null` disposition as a deliberate decision: an unlabelled part is likelier to be a real attachment than a decoration, and "guessing wrong there would silently drop a file the sender really did send". After DW-446 that sentence is literal rather than figurative. `multipartEmail` in `src/lib/__tests__/email-ingest-worker.test.ts` always emits a `Content-Disposition` header — the `disposition` option replaces the derived line, it cannot remove it — so the real-parser suite cannot express a headerless part, and the only coverage is incidental, from mocked fixtures that leave the field undefined.
-status: open
+status: done 2026-08-31
+resolution: resolved by sweep bundle dw-email-worker-test-fidelity
+resolution-undo: fee602981736015948778469cab29e9edf1d22991431f300ccd76609002a87cb 2026-08-31 7374617475733a206f70656e
 
 ### DW-568: `listRawSourceSnapshots` emits bogus `{slug: "sources"}` rows for any flat Source whose filename stem is all hexadecimal.
 origin: spec-deferred 1cde32eceb16
@@ -5377,4 +5379,28 @@ location: src/lib/lifecycle.ts:1179 and src/mcp.ts:434
 source_spec: `spec-dw-496-wiki-door-unreadable-contract.md`
 severity: low
 reason: `src/lib/lifecycle.ts:1179` runs `const page = await readWikiPage(slug)` with no options and throws `page not found: ${slug}` on the resulting `null`. That call happens AFTER the route's now-strict ACL read, and the route's catch keeps `page not found` -> 404, so a non-ENOENT blip landing on this second read still answers the caller "your page is gone" through the very door this bundle fixed. `src/mcp.ts:434` is the same shape on the agent-facing surface -- `readWikiPageWithFrontmatter(args.slug)` with no options, throwing `page not found: ${args.slug}` at :435-437 -- under a comment at :427 that claims it "mirrors the REST surface at DELETE /api/wiki/[slug]", a parity claim this change makes false. Neither site is named by DW-495 (merge-base reads), DW-496 (the three sites this bundle converted) or DW-497 (the revisions GET), so neither is covered by an open entry. Both are pre-existing and outside this bundle's enumerated scope; raised by three independent review layers.
+status: open
+
+### DW-692: Multipart transport inflates the forwarded body by one character per newline, so a body the Worker considers within the cap can still trip `/api/email/ingest`'s `> MAX_EMAIL_CONTENT_CHARS` gate — trun
+origin: spec-deferred c6b8dc0c71a5
+location: workers/email-ingest/index.ts:1029-1031, src/app/api/email/ingest/route.ts:292
+source_spec: `spec-dw-453-567-email-worker-truncation-boundary.md`
+severity: high
+reason: The multipart/form-data encoding algorithm normalizes every lone LF and CR in an entry value to CRLF, so the `content` the route reads is longer than the string the Worker computed. Measured under Node/undici in this repo: - a `MAX + 1` single-line body appends at 100000 and reads back at 100002 (the marker's `"\n\n"` arriving as `"\r\n\r\n"`); - an UNTRUNCATED 98,599-character body carrying 3,398 newlines reads back at 101,997. The second measurement is the one that reframes this. The problem is NOT confined to truncated bodies and is therefore NOT fixed by a Worker-side truncation budget: any body whose character count plus newline count exceeds `MAX_EMAIL_CONTENT_CHARS` trips the route's gate at `src/app/api/email/ingest/route.ts:292`, and the Worker's own `>` test at `workers/email-ingest/index.ts:1029` never fires on it. The sender then loses their body AND every attachment: the route's 400 sends the Worker down `if (!response.ok)` (`workers/email-ingest/index.ts:1142`), which rep
+status: open
+
+### DW-693: `ingestImage` derives the asset key from the pre-uniquified slug, so two image ingests that share a title and filename collide on one `raw/assets/<slug>/<filename>` key and one of the two pages render
+origin: spec-deferred 5585c25d7e6c
+location: src/lib/ingest.ts:425
+source_spec: `spec-dw-570-572-content-addressed-write-immutability.md`
+severity: medium
+reason: `src/lib/ingest.ts:425` calls `storeImageBytes(bytes, slug, filename)` with `slug = slugify(title)`, computed BEFORE `ingest()` uniquifies the page slug (`findFreeSlug`). Two ingests deriving the same title and sanitized filename therefore address the same asset key while landing on two different pages. This change did not create the collision, but it moved which page is wrong: with the overwrite door the second upload replaced the first page's image; with the create-only door the second page renders the first upload's bytes. The freeze is now logged (`storeImageBytes` warns on an occupied key) but nothing surfaces it to the user, and no test exercises the collision at the `ingestImage` boundary — every ingest-level suite mocks `storeImageBytes` away. The fix is to key the asset off the final page slug or off a digest, not to revert the create-only door.
+status: open
+
+### DW-694: `handleRevertRevision` performs no write ACL at all, so on the HTTP MCP surface any authenticated principal can revert a Page they cannot edit through `update_page`.
+origin: spec-deferred 09fbd9dcf213
+location: src/mcp.ts:1421
+source_spec: `spec-dw-424-426-mcp-and-delete-fresh-merge-bases.md`
+severity: high
+reason: `src/mcp.ts:1421` declares `args: { slug; timestamp; author? }` — no `principal` — and the handler never calls `canWriteFrontmatter`; the lifecycle writer it delegates to adds none. Its REST twin runs `canWriteFrontmatter(existing.frontmatter, principal, "body")` with the 404/403 cloak immediately after the identical fresh+strict read (`src/app/api/wiki/[slug]/revisions/route.ts:138` and just below), and the sibling MCP write doors (`handleUpdatePage`, `handleDeletePage`, `handleUpdateMetadata`) all take a `principal`. `src/lib/mcp-http.ts:763` registers `revert_revision` with `write: true` but passes only `author: p!.handle` (`:777`), so the caller's identity never reaches an authorization check. A caller `handleUpdatePage` would refuse can restore any prior revision of the same Page — including a private one in another owner's realm — which is a write-authorization bypass, not a wording bug. The only `revert_revision` rows in `src/lib/__tests__/mcp-http.test.ts` (`:1491-1552`) assert
 status: open

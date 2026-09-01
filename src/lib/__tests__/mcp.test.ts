@@ -818,6 +818,111 @@ describe("MCP write tools", () => {
       ).rejects.toThrow("Page not found: nonexistent-page");
     });
 
+    /**
+     * The STRICT half. Without `strict: true` a non-ENOENT storage failure on
+     * the merge-base read flattens to `null`, and this handler's own null
+     * branch then tells the MCP caller `Page not found` — a deletion the store
+     * never made, off a Page that is sitting right there. Classification is
+     * what is pinned, not the provider's wording.
+     */
+    it("rejects with the STORAGE error — not `Page not found` — when the merge-base read blips", async () => {
+      await handleCreatePage({
+        slug: "blip-update",
+        content: "# Blip update\n\nThe stored bytes.",
+      });
+      const before = (await readWikiPageWithFrontmatter("blip-update"))!.content;
+
+      const storage = getStorage();
+      const originalRead = storage.readFile.bind(storage);
+      // ONE-SHOT, for the same reason as the create row above: a spy that
+      // failed EVERY read of `blip-update.md` would also break the write's own
+      // CAS re-read, so the call would reject whether or not the merge-base
+      // read rethrows — a green row that pins nothing.
+      let blipped = false;
+      const readSpy = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (filePath: string) => {
+          if (!blipped && filePath.endsWith("blip-update.md")) {
+            blipped = true;
+            throw new Error("storage unavailable");
+          }
+          return originalRead(filePath);
+        });
+
+      let caught: unknown;
+      try {
+        await handleUpdatePage({
+          slug: "blip-update",
+          content: "# Blip update\n\nShould never land.",
+        });
+      } catch (err) {
+        caught = err;
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      expect(blipped).toBe(true);
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toContain("storage unavailable");
+      expect(message).not.toContain("Page not found");
+
+      // And the stored Page is untouched, byte for byte.
+      expect((await readWikiPageWithFrontmatter("blip-update"))!.content).toBe(before);
+    });
+
+    /**
+     * The FRESH half, which `strict` cannot pin: drop `fresh: true` and the
+     * strict row above still passes. `pageCache` is module-global and
+     * ref-counted around bulk scans, so one can be holding a SUPERSEDED entry
+     * open. Those bytes are this update's merge base (`expectedContent`) and
+     * the frontmatter it merges into, so off the cached entry the merge base is
+     * a file that is no longer stored — the write's CAS then refuses it and a
+     * legitimate update fails as a spurious conflict for the duration of the
+     * unrelated scan. The CAS is the backstop; `fresh` is the fix.
+     */
+    it("takes the merge base from storage while a stale page cache is open", async () => {
+      const { beginPageCache, readWikiPage } = await import("../wiki");
+      const cachedBytes =
+        "---\ntitle: Stale Update\ncreated: '2025-01-15'\n---\n# Stale Update\n\nCached body.\n";
+      await writeTestPage("mcp-stale-update", cachedBytes);
+
+      const cleanup = beginPageCache();
+      try {
+        // A concurrent scan reads the Page and caches these bytes.
+        expect((await readWikiPage("mcp-stale-update"))!.content).toBe(cachedBytes);
+
+        // Newer bytes land underneath it. Written DIRECTLY to the flat path,
+        // bypassing `writeWikiPage` — which invalidates — because a stale
+        // entry is exactly what this row is about. `stored_marker` exists only
+        // in the stored bytes.
+        const storedBytes =
+          "---\ntitle: Stale Update\ncreated: '2025-01-15'\nstored_marker: only-in-stored\n---\n# Stale Update\n\nStored body.\n";
+        const flatPath = path.join(process.env.WIKI_DIR!, "mcp-stale-update.md");
+        await fs.writeFile(flatPath, storedBytes, "utf-8");
+        // The cache is genuinely stale: a cached read still answers the old bytes.
+        expect((await readWikiPage("mcp-stale-update"))!.content).toBe(cachedBytes);
+
+        // THE CALL THAT FAILS WITHOUT THE FRESH READ — and it fails HERE, not
+        // at the assertions below: off the cached entry the merge base is the
+        // superseded file, so the write's CAS rejects with
+        // `LifecyclePageConflictError: Page "mcp-stale-update" changed`.
+        await handleUpdatePage({
+          slug: "mcp-stale-update",
+          content: "# Stale Update\n\nBrand new body.",
+        });
+
+        // Reaching here at all is the load-bearing half; the marker then
+        // confirms the merge went into the STORED bytes rather than the cached
+        // ones.
+        const after = await fs.readFile(flatPath, "utf-8");
+        expect(after).toContain("stored_marker: only-in-stored");
+        expect(after).toContain("Brand new body.");
+      } finally {
+        cleanup();
+      }
+    });
+
     it("preserves frontmatter", async () => {
       // Create a page with specific frontmatter
       await writeTestPage(
@@ -4603,6 +4708,129 @@ describe("revert_revision", () => {
     await expect(
       handleRevertRevision({ slug: "no-such-page", timestamp: 1234567890 }),
     ).rejects.toThrow("page not found: no-such-page");
+  });
+
+  /**
+   * The STRICT half. Without `strict: true` a non-ENOENT storage failure on the
+   * merge-base read flattens to `null` and the null branch below tells the MCP
+   * caller `page not found` — a deletion the store never made.
+   */
+  it("rejects with the STORAGE error — not `page not found` — when the merge-base read blips", async () => {
+    const stored = "---\ntitle: Blip revert\n---\n# Blip revert\n\nCurrent body.";
+    await writeTestPage("blip-revert", stored);
+
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision("blip-revert", "# Blip revert\n\nOld body.", "yoyo", "snapshot");
+    const list = await handleListRevisions({ slug: "blip-revert" });
+    const ts = list.revisions[0].timestamp;
+    const before = (await readWikiPageWithFrontmatter("blip-revert"))!.content;
+
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    // ONE-SHOT: failing every read of `blip-revert.md` would also break the
+    // write's own CAS re-read, so the call would reject either way.
+    let blipped = false;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!blipped && filePath.endsWith("blip-revert.md")) {
+          blipped = true;
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    let caught: unknown;
+    try {
+      await handleRevertRevision({ slug: "blip-revert", timestamp: ts });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("storage unavailable");
+    expect(message).not.toContain("page not found");
+
+    // And the stored Page is untouched, byte for byte — a handler that rejected
+    // only AFTER a partial write would pass every assertion above.
+    expect((await readWikiPageWithFrontmatter("blip-revert"))!.content).toBe(before);
+  });
+
+  /**
+   * The FRESH half, which `strict` cannot pin. These bytes wear three hats at
+   * once — the merge base (`expectedContent`), the `extractTitle` fallback, and
+   * the seed for `mergedFrontmatter` (title and `created` included) — so off a
+   * superseded `pageCache` entry every one of them describes a file that is not
+   * stored, and the write's CAS refuses the stale merge base rather than
+   * landing those metadata. Every field below therefore differs between the
+   * cached bytes and the stored ones, so a stale read cannot pass by accident.
+   */
+  it("takes the merge base and frontmatter from storage while a stale page cache is open", async () => {
+    const cachedBytes =
+      "---\ntitle: Cached Revert Title\ncreated: '2025-01-15'\n---\n# Cached Revert Heading\n\nCached body.\n";
+    await writeTestPage("mcp-stale-revert", cachedBytes);
+
+    // A revision with NO frontmatter block, so the handler serializes
+    // `mergedFrontmatter` over it rather than restoring the snapshot verbatim —
+    // and with NO H1, so `extractTitle(revisionContent, existing.title)`
+    // actually falls back to the read's title instead of taking one from the
+    // snapshot.
+    const { saveRevision } = await import("../../lib/revisions");
+    await saveRevision(
+      "mcp-stale-revert",
+      "Revision body with no heading of its own.\n",
+      "yoyo",
+      "snapshot",
+    );
+    const list = await handleListRevisions({ slug: "mcp-stale-revert" });
+    const ts = list.revisions[0].timestamp;
+
+    const { beginPageCache, readWikiPage } = await import("../wiki");
+    const cleanup = beginPageCache();
+    try {
+      expect((await readWikiPage("mcp-stale-revert"))!.content).toBe(cachedBytes);
+
+      // Newer bytes land underneath the open cache, written DIRECTLY to the
+      // flat path. Title, `created`, the H1 the title fallback reads, and the
+      // `stored_only` marker are ALL different from the cached copy.
+      const storedBytes =
+        "---\ntitle: Stored Revert Title\ncreated: '2024-06-30'\nstored_only: yes-it-is\n---\n# Stored Revert Heading\n\nStored body.\n";
+      const flatPath = path.join(process.env.WIKI_DIR!, "mcp-stale-revert.md");
+      await fs.writeFile(flatPath, storedBytes, "utf-8");
+      expect((await readWikiPage("mcp-stale-revert"))!.content).toBe(cachedBytes);
+
+      // THE CALL THAT FAILS WITHOUT THE FRESH READ — and it fails HERE, not at
+      // the assertions below: off the cached entry the merge base is the
+      // superseded file, so the write's CAS rejects with
+      // `LifecyclePageConflictError: Page "mcp-stale-revert" changed`.
+      await handleRevertRevision({ slug: "mcp-stale-revert", timestamp: ts });
+
+      // Reaching here at all is the load-bearing half. The rest confirms every
+      // role those bytes play was filled from STORAGE: the `mergedFrontmatter`
+      // seed (title, `created`, the stored-only marker) …
+      const after = await fs.readFile(flatPath, "utf-8");
+      expect(after).toContain("stored_only: yes-it-is");
+      expect(after).toContain("title: Stored Revert Title");
+      expect(after).toContain("created: 2024-06-30");
+      expect(after).not.toContain("Cached Revert Title");
+      expect(after).not.toContain("2025-01-15");
+      expect(after).toContain("Revision body with no heading of its own.");
+
+      // … and the `extractTitle` fallback, whose only observable is the index
+      // entry this write upserts (the reverted body carries no H1 of its own).
+      const indexAfter = await fs.readFile(
+        path.join(process.env.WIKI_DIR!, "index.md"),
+        "utf-8",
+      );
+      expect(indexAfter).toContain("Stored Revert Heading");
+      expect(indexAfter).not.toContain("Cached Revert Heading");
+    } finally {
+      cleanup();
+    }
   });
 
   it("throws for a nonexistent revision timestamp", async () => {

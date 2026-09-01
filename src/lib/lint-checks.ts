@@ -926,16 +926,16 @@ export async function checkSupersededDangling(
 // Incomplete coverage — raw source content missing from wiki page
 // ---------------------------------------------------------------------------
 
-const INCOMPLETE_COVERAGE_SYSTEM_PROMPT = `You are a wiki coverage auditor. You will be given two documents:
-1. A "raw source" — the original ingested material.
-2. A "wiki page" — the wiki's distillation of that source.
+const INCOMPLETE_COVERAGE_SYSTEM_PROMPT = `You are a wiki coverage auditor. You will be given:
+1. One or more "raw sources" — the original ingested material for a single page. A page built from several ingests arrives as several parts, each shown under its own "--- Raw Source: ... ---" header. Read every part and judge them together as one body of source material.
+2. A "wiki page" — the wiki's distillation of those sources.
 
-Your job: identify significant information present in the raw source that is absent from or poorly represented in the wiki page. Ignore formatting differences, reorganization, and minor wording changes — focus on substantive facts, claims, data, or concepts that a reader of the wiki page would miss.
+Your job: identify significant information present in the raw sources that is absent from or poorly represented in the wiki page. Ignore formatting differences, reorganization, and minor wording changes — focus on substantive facts, claims, data, or concepts that a reader of the wiki page would miss. Information covered by the wiki page is not a gap no matter which raw source part it came from.
 
 Return a JSON array of objects: [{"gap": "Brief description of missing information", "importance": "high" | "medium"}]
 
 Only include gaps that a knowledgeable reader would consider important. Omit trivial details, boilerplate, and navigation text.
-If the wiki page adequately covers the raw source, return an empty array: []
+If the wiki page adequately covers the raw sources, return an empty array: []
 
 Respond ONLY with the JSON array — no additional text, no markdown code fences.`;
 
@@ -969,8 +969,13 @@ export const MAX_COVERAGE_CHECKS = 20;
 
 /**
  * Check for incomplete coverage — raw source content that is missing from the
- * corresponding wiki page. For each wiki page that has a matching raw source,
- * calls the LLM to compare the two and report significant gaps.
+ * corresponding wiki page. For each sampled wiki page, EVERY stored Source for
+ * that page is collected — the flat `raw/sources/<slug>.md` blob when it exists
+ * plus each hashed `raw/sources/<slug>/<id>.md` Intake snapshot — and all of
+ * them go to the LLM in a single call, each under its own header, to be judged
+ * against the page together (DW-571). Comparing against whichever Source
+ * happened to open first judged a multi-arrival page by directory-listing
+ * order.
  *
  * At most `MAX_COVERAGE_CHECKS` pages are checked per run to avoid uncapped
  * LLM calls. The sample is shuffled so successive runs cover different pages.
@@ -1053,29 +1058,83 @@ export async function checkIncompleteCoverage(
     const wikiPage = await readWikiPage(slug);
     if (!wikiPage) continue;
 
-    // Flat Source first, then the hashed snapshots for this slug. A slug that
-    // only arrived through Intake has no `raw/sources/<slug>.md` to read, and
-    // without this fallback it would be counted as a candidate and then
-    // silently skipped — a candidate that never reaches the comparison.
-    let rawContent: string | null = null;
+    // EVERY readable Source for this slug, not the first one that opens. The
+    // flat Source first — a slug that only arrived through Intake has no
+    // `raw/sources/<slug>.md` at all — then every hashed snapshot listed for
+    // it. Stopping at the first readable one judged a page assembled from
+    // several Intake arrivals against exactly one of them, picked by
+    // directory-listing order, and never compared the snapshots of a page that
+    // also had a flat blob (DW-571).
+    const rawParts: { label: string; content: string }[] = [];
+    const seenRawContent = new Set<string>();
+    const collectRawPart = (label: string, content: string) => {
+      // Byte-identical parts are the same text twice: sending both would spend
+      // the budget on a duplicate instead of on a sibling Source.
+      if (seenRawContent.has(content)) return;
+      seenRawContent.add(content);
+      rawParts.push({ label, content });
+    };
     try {
-      rawContent = (await readRawSource(slug)).content;
+      collectRawPart("flat", (await readRawSource(slug)).content);
     } catch {
-      for (const rawId of snapshotIdsBySlug.get(slug) ?? []) {
-        try {
-          rawContent = (await readRawSourceById(slug, rawId)).content;
-          break;
-        } catch {
-          // Unreadable snapshot — try the next one, then skip the slug.
-        }
+      // No flat blob — the normal shape for an Intake-only page, not a fault.
+    }
+    for (const rawId of snapshotIdsBySlug.get(slug) ?? []) {
+      try {
+        collectRawPart(
+          `snapshot ${rawId}`,
+          (await readRawSourceById(slug, rawId)).content,
+        );
+      } catch (error) {
+        // Listed but unreadable. The two listing catches above log rather than
+        // swallow so that a broken listing and an empty one cannot look alike;
+        // a page silently compared against a partial Source set is that same
+        // lie in a smaller shape. Skipped, never fatal.
+        logger.warn(
+          "lint",
+          `raw snapshot ${slug}/${rawId} unreadable for coverage`,
+          error,
+        );
       }
     }
-    if (rawContent === null) continue; // Raw source unreadable, skip
+    if (rawParts.length === 0) continue; // No readable Source, skip
 
-    const rawSnippet = rawContent.slice(0, MAX_RAW_CHARS);
+    // Spread MAX_RAW_CHARS across the collected Sources need-aware: the equal
+    // share is the FLOOR, not the cap, so parts shorter than their share
+    // release the remainder to the parts that can still use it. A flat blob
+    // beside three tiny snapshots therefore keeps nearly the whole budget
+    // rather than MAX_RAW_CHARS/4, and four equally oversized Sources still
+    // get a quarter each. Shortest first, so an unspent share flows onward.
+    // A single `.slice(0, MAX_RAW_CHARS)` over the joined parts is the shape
+    // that must not ship: it pushes every snapshot out behind a long flat
+    // blob, which is DW-571 in a new form.
+    const takes = new Array<number>(rawParts.length);
+    let remaining = MAX_RAW_CHARS;
+    let left = rawParts.length;
+    const byAscendingLength = rawParts
+      .map((_, index) => index)
+      .sort((a, b) => rawParts[a].content.length - rawParts[b].content.length);
+    for (const index of byAscendingLength) {
+      const share = Math.max(1, Math.floor(remaining / left));
+      const take = Math.min(rawParts[index].content.length, share);
+      takes[index] = take;
+      remaining -= take;
+      left -= 1;
+    }
+
+    // Rendered in collection order (flat, then snapshots as listed) so the
+    // message shape stays stable regardless of how the budget was split. The
+    // per-part headers sit outside the budget, exactly as the single
+    // `--- Raw Source: <slug> ---` header always did.
+    const rawSection = rawParts
+      .map(
+        (part, index) =>
+          `--- Raw Source: ${slug} [${part.label}] ---\n${part.content.slice(0, takes[index])}`,
+      )
+      .join("\n\n");
     const wikiSnippet = wikiPage.content.slice(0, MAX_WIKI_CHARS);
 
-    const userMessage = `--- Raw Source: ${slug} ---\n${rawSnippet}\n\n--- Wiki Page: ${slug} ---\n${wikiSnippet}`;
+    const userMessage = `${rawSection}\n\n--- Wiki Page: ${slug} ---\n${wikiSnippet}`;
 
     try {
       const response = await callLLM(

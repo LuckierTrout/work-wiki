@@ -80,6 +80,17 @@ import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-
  *     serializer rewrites lone LFs into CRLFs, so the wire length of a
  *     truncated body is the transport's number rather than the worker's.
  *
+ *     That is the LIMIT of what these cases claim, and the limit is not
+ *     academic: measured under this suite's serializer, the same truncated body
+ *     reads back off the wire at `MAX_EMAIL_CONTENT_CHARS + 2`, and an
+ *     UNtruncated 98,599-character body carrying 3,398 newlines reads back at
+ *     101,997 — both over the route's gate. So these cases pin the worker's
+ *     arithmetic; they do NOT establish that what the route receives is under
+ *     the cap. Whether that is a live production defect turns on whether
+ *     `workerd`'s serializer normalizes the way Node's does, which nothing in
+ *     this repo can measure; it is recorded as deferred work rather than
+ *     answered here.
+ *
  * The `Blob` *type* the worker builds is pinned next door in
  * `email-ingest-worker-normalization.test.ts`, which mocks `postal-mime`: it is
  * invisible from the `Request` captured here, because the multipart serializer
@@ -2933,8 +2944,20 @@ async function appendedContent(raw: string, subject: string, slug: string): Prom
  * off-by-one in that subtraction -- or dropping it -- would ship green here and
  * 400 every long email in production, costing the sender their body AND every
  * attachment on the message. The route half of the same boundary is pinned in
- * `email-ingest-route.test.ts` ("body length ceiling", DW-366); this is the
- * other half of that pair.
+ * `email-ingest-route.test.ts` ("body length ceiling", DW-366).
+ *
+ * The two halves do NOT meet, and saying so is the point. The route half posts
+ * JSON; this half stops at the `form.append` call. In between sits the
+ * multipart serializer, which rewrites every lone LF into a CRLF -- so the
+ * value the route actually reads is longer than the one pinned here, by one
+ * character per newline in the sender's text plus two for the marker's own
+ * `"\n\n"`. Measured: the `MAX + 1` fixture below reads back off the wire at
+ * `MAX_EMAIL_CONTENT_CHARS + 2`, and an untruncated 98,599-character body with
+ * 3,398 newlines reads back at 101,997 -- over a gate the worker never
+ * triggered. Nothing here asserts otherwise, and nothing here should be read as
+ * proof that the route accepts what the worker sends. Whether that is live in
+ * production depends on `workerd`'s serializer, which this repo cannot measure;
+ * it is recorded as deferred work.
  */
 describe("email-ingest body truncation", () => {
   /**

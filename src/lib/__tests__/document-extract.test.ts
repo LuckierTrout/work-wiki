@@ -112,6 +112,55 @@ describe("document extraction", () => {
     expect(result.text).not.toContain("Company logo");
   });
 
+  /**
+   * A relationship `Target` is attacker-supplied, and `resolveArchiveTarget`
+   * boils `../constructor` down to the bare key `constructor` — which a plain
+   * `files[target]` answers with the inherited `Object.prototype` function
+   * rather than entry bytes. `assetFromArchive` now reads that map through
+   * `ownLookup` (DW-365).
+   *
+   * Be honest about what this row is: it is green both with and without the
+   * `ownLookup` change, because `mediaTypeFor` returns `null` for every
+   * extensionless name and no `Object.prototype` member name carries an
+   * extension, so both versions return `null` here. It is a characterization
+   * pin on the OUTCOME, not a red-then-green proof: no asset for the
+   * prototype-named target, the real sibling image unaffected, and no
+   * `TypeError` out of the extractor. What it protects is that outcome should
+   * `mediaTypeFor`'s extensionless rejection ever change — the accident that
+   * currently keeps the raw index inert.
+   */
+  it("produces no asset when a DOCX relationship target names an Object.prototype member", () => {
+    const result = office("prototype-target.docx", {
+      "word/document.xml": `<w:document><w:body>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Logo" descr="Company logo"/><a:graphic><a:blip r:embed="rId1"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+        <w:p><w:r><w:drawing><wp:inline><wp:docPr name="Chart" descr="Revenue chart"/><a:graphic><a:blip r:embed="rId2"/></a:graphic></wp:inline></w:drawing></w:r></w:p>
+      </w:body></w:document>`,
+      // `../constructor` from `word/document.xml` resolves to the bare string
+      // `constructor` — no archive entry of that name exists, so the only way
+      // the lookup answers is through the prototype chain.
+      "word/_rels/document.xml.rels": '<Relationships><Relationship Id="rId1" Target="../constructor"/><Relationship Id="rId2" Target="media/chart.png"/></Relationships>',
+      "word/media/chart.png": new Uint8Array([137, 80, 78, 71]),
+    });
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]).toMatchObject({
+      filename: "chart.png",
+      mediaType: "image/png",
+      alt: "Revenue chart",
+      context: "Paragraph 2",
+    });
+    // Its OWN bytes: an asset carrying `chart.png`'s name over something
+    // else's payload would pass every assertion above.
+    expect(Array.from(new Uint8Array(result.assets[0].bytes))).toEqual([137, 80, 78, 71]);
+    expect(result.assets.map((asset) => asset.filename)).not.toContain("constructor");
+    // Same strength as the DW-254 row above: a `mediaType` that is the
+    // `Object` constructor function fails this, a `typeof` check would not.
+    for (const asset of result.assets) {
+      expect(asset.mediaType).toMatch(/^image\//);
+    }
+    expect(result.text).toContain("Embedded image: Revenue chart");
+    expect(result.text).not.toContain("Company logo");
+  });
+
   it("extracts PPTX slides in presentation order with linked speaker notes", () => {
     const result = office("deck.pptx", {
       "ppt/presentation.xml": '<p:presentation><p:sldIdLst><p:sldId r:id="rId2"/><p:sldId r:id="rId1"/></p:sldIdLst></p:presentation>',

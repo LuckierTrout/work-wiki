@@ -455,7 +455,17 @@ function assetFromArchive(
   alt: string,
   context: string,
 ): ExtractedDocumentAsset | null {
-  const bytes = files[target];
+  // `ownLookup`, not `files[target]`: `target` comes from a relationship
+  // `Target` inside the uploaded archive, and `resolveArchiveTarget` can boil
+  // one down to a bare `constructor` / `valueOf` / `toString`, which a plain
+  // index answers with the inherited `Object.prototype` function instead of
+  // entry bytes (DW-365). No asset escapes today only because
+  // `mediaTypeFor` returns `null` for every extensionless name and no
+  // `Object.prototype` member name carries an extension — the guard below is
+  // one combined `!bytes || !mediaType` test, so the safety lives entirely in
+  // that other function's rejection rule. Looking the key up on the object's
+  // own properties removes that dependency, and matches the line beneath it.
+  const bytes = ownLookup(files, target);
   const mediaType = mediaTypeFor(target);
   if (!bytes || !mediaType) return null;
   const filename = target.split("/").pop() || "image";

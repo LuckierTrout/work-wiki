@@ -315,7 +315,23 @@ export async function handleUpdatePage(args: {
   owner?: string;
   principal?: Principal | null;
 }): Promise<{ slug: string; title: string; updated: true }> {
-  const existingPage = await readWikiPageWithFrontmatter(args.slug);
+  // Read the existing page. FRESH+STRICT (DW-495; the pattern originates in
+  // DW-195/DW-378 and was swept elsewhere as DW-379). These bytes are the merge
+  // base at `expectedContent` below, and they also authorize the write via the
+  // ACL below. `pageCache` is module-global and ref-counted around bulk scans,
+  // so one can hold a superseded entry open — and then both roles describe a
+  // file that is no longer stored: the ACL rules on stale frontmatter, and the
+  // write's own CAS refuses the stale merge base, so a legitimate update fails
+  // as a spurious conflict for the duration of an unrelated scan. FRESH is what
+  // keeps that from happening; the CAS is the backstop, not the fix.
+  //
+  // STRICT so a non-ENOENT storage blip reaches the MCP caller as a storage
+  // error instead of flattening to `null` and posing as `Page not found` — a
+  // deletion the store never made.
+  const existingPage = await readWikiPageWithFrontmatter(args.slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!existingPage) {
     throw new Error(`Page not found: ${args.slug}`);
   }
@@ -1427,7 +1443,22 @@ export async function handleRevertRevision(args: {
     throw new Error("timestamp must be a positive number");
   }
 
-  const existing = await readWikiPageWithFrontmatter(args.slug);
+  // Read the existing page. FRESH+STRICT (DW-495; the pattern originates in
+  // DW-195/DW-378 and was swept elsewhere as DW-379). These bytes wear three
+  // hats at once: the revert's merge base at `expectedContent` below, the
+  // `extractTitle` fallback, and the seed for `mergedFrontmatter` (including
+  // the `created` fallback). Off a superseded `pageCache` entry an open bulk
+  // scan holds, every one of them describes a file that is not stored — the
+  // title and `created` would be carried over from bytes that are gone, and the
+  // write's own CAS refuses the stale merge base, so the revert fails as a
+  // spurious conflict. FRESH is what keeps that from happening.
+  //
+  // STRICT so a non-ENOENT storage blip reaches the MCP caller as a storage
+  // error rather than posing as `page not found`.
+  const existing = await readWikiPageWithFrontmatter(args.slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!existing) {
     throw new Error(`page not found: ${args.slug}`);
   }
