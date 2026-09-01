@@ -1499,6 +1499,198 @@ describe("the orphan-directory sweep", () => {
     expect(await exists(readable)).toBe(false);
   });
 
+  it("skips a candidate whose per-file mtime cannot be represented as a date (DW-674)", async () => {
+    // The THIRD way an age goes unread, and the quiet one: the listing succeeds
+    // AND the `stat` resolves — it just answers with a date this isolate cannot
+    // use. A dropped-and-continue would have left `newest` holding the readable
+    // sibling FILE's mtime, which is aged, so the directory would be deleted on
+    // the strength of an age nothing ever read. Unusable is unknown, and unknown
+    // poisons the whole answer exactly as the depth bound does.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const unreadable = await plantOrphan("aaaaaaaa-8888-4888-8888-888888888888");
+    // A second file, and it is stamped SEPARATELY at a distinctly older instant.
+    // `stampDirectory` puts every file and the directory itself on ONE mtime, so
+    // "the sibling is older" is only true if it is stamped on its own — and the
+    // gap is what makes the row fail against a walk that keeps the best age it
+    // happened to see rather than refusing to answer.
+    const sibling = path.join(unreadable, "schema.md");
+    await fs.writeFile(sibling, "# Orphan schema\n");
+    const readable = await plantOrphan("aaaaaaaa-9999-4999-8999-999999999999");
+    await ageDirectory(unreadable);
+    await ageDirectory(readable);
+    const older = new Date(Date.now() - ORPHAN_SWEEP_GRACE_MS * 8);
+    await fs.utimes(sibling, older, older);
+
+    const storage = getStorage();
+    const stat = storage.stat.bind(storage);
+    const spy = vi
+      .spyOn(storage, "stat")
+      .mockImplementation(async (target: string) => {
+        if (target.endsWith("aaaaaaaa-8888-4888-8888-888888888888/purpose.md")) {
+          return { ...(await stat(target)), lastModified: new Date(NaN) };
+        }
+        return stat(target);
+      });
+    try {
+      // The readable orphan beside it is still reclaimed: one unusable age
+      // poisons ITS OWN candidate, never the pass.
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await exists(unreadable)).toBe(true);
+    expect(await exists(readable)).toBe(false);
+  });
+
+  it("warns that an unrepresentable mtime made the age unreadable (DW-674)", async () => {
+    // The operator-facing half: the sweep says the same sentence it says for a
+    // `stat` that threw, because from the age gate's side they are the same
+    // non-answer — "could not read the age", never "the directory is young".
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const unreadable = await plantOrphan("aaaaaaaa-8181-4818-8818-818181818181");
+    await ageDirectory(unreadable);
+
+    const storage = getStorage();
+    const stat = storage.stat.bind(storage);
+    const spy = vi
+      .spyOn(storage, "stat")
+      .mockImplementation(async (target: string) => {
+        if (target.includes("aaaaaaaa-8181-4818-8818-818181818181")) {
+          return { ...(await stat(target)), lastModified: new Date(NaN) };
+        }
+        return stat(target);
+      });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+      expect(
+        warn.mock.calls.filter(
+          ([scope, message]) =>
+            scope === "wikis" &&
+            String(message).includes("could not read the age of wiki directory") &&
+            String(message).includes("treating it as too young to sweep"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      spy.mockRestore();
+    }
+
+    expect(await exists(unreadable)).toBe(true);
+  });
+
+  /**
+   * A `stat` that RESOLVES for every path under `id` but answers with
+   * `lastModified`, leaving every other path alone. `Date` is the declared type,
+   * so a finite-but-out-of-range instant has to arrive as a stub with its own
+   * `getTime` — no real `Date` past ±8.64e15 has one (they are all NaN).
+   */
+  function statAnswers(id: string, lastModified: Date) {
+    const storage = getStorage();
+    const stat = storage.stat.bind(storage);
+    return vi
+      .spyOn(storage, "stat")
+      .mockImplementation(async (target: string) =>
+        target.includes(id) ? { ...(await stat(target)), lastModified } : stat(target),
+      );
+  }
+
+  /** Finite, ordered, older than any cutoff — and unrenderable by `toISOString`. */
+  function outOfRangeDate(): Date {
+    return Object.assign(new Date(0), { getTime: () => -1e16 });
+  }
+
+  /** How many "could not read the age" lines `run` emitted. */
+  async function ageWarningsDuring(run: () => Promise<void>): Promise<number> {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await run();
+      return warn.mock.calls.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes("could not read the age of wiki directory") &&
+          String(message).includes("treating it as too young to sweep"),
+      ).length;
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  it("skips a file-less candidate whose directory mtime cannot be represented (DW-674)", async () => {
+    // The fallback arm of the same predicate. The row above it — "sweeps an
+    // aged orphan that holds no files at all" — proves this fallback is the
+    // ONLY thing that can age a bare directory, so an unusable answer from it
+    // leaves nothing else to fall back to and the directory must stay.
+    //
+    // NaN is what a real provider can actually produce (an `Invalid Date`), and
+    // `Number.isFinite` already rejected it, so the SKIP here is not new. What
+    // is new is that the skip now SPEAKS: this exit used to return null in
+    // silence, which made `sweepOrphans`' "newestWriteTime already warned" false
+    // for a directory that can never be reclaimed while the condition holds.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bare = wikiDir("aaaaaaaa-1111-4111-8111-111111111111");
+    await fs.mkdir(bare, { recursive: true });
+    await ageDirectory(bare);
+
+    const spy = statAnswers("aaaaaaaa-1111-4111-8111-111111111111", new Date(NaN));
+    try {
+      expect(
+        await ageWarningsDuring(async () => {
+          expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+        }),
+      ).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await exists(bare)).toBe(true);
+  });
+
+  it("skips a file-less candidate whose directory mtime is finite but out of range (DW-674)", async () => {
+    // THE FALLBACK'S RANGE HALF, which is the only behaviour the predicate adds
+    // at this site: `Number.isFinite` accepted this value and the directory was
+    // reclaimed on an age `toISOString()` cannot even print. Nothing we ship can
+    // produce it — `stat` types `lastModified` as a real `Date` — so the stub
+    // stands in for a future provider that builds the value some other way. The
+    // row exists because the future-dated warn RENDERS this number, so "usable"
+    // has to mean renderable, not merely comparable.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const bare = wikiDir("aaaaaaaa-3333-4333-8333-333333333333");
+    await fs.mkdir(bare, { recursive: true });
+    await ageDirectory(bare);
+
+    const spy = statAnswers("aaaaaaaa-3333-4333-8333-333333333333", outOfRangeDate());
+    try {
+      expect(
+        await ageWarningsDuring(async () => {
+          expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+        }),
+      ).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await exists(bare)).toBe(true);
+  });
+
+  it("skips a candidate whose per-file mtime is finite but outside Date's range (DW-674)", async () => {
+    // The same range half at the WALK site, where the value would have been
+    // compared, kept as `newest`, and then handed to the age gate.
+    await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    const orphan = await plantOrphan("aaaaaaaa-2222-4222-8222-222222222222");
+    await ageDirectory(orphan);
+
+    const spy = statAnswers("aaaaaaaa-2222-4222-8222-222222222222", outOfRangeDate());
+    try {
+      expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await exists(orphan)).toBe(true);
+  });
+
   it("skips a candidate whose tombstone probe throws, under an empty registry", async () => {
     // An unreadable probe is NOT a tombstone. Treating it as one would delete
     // live wiki directories in precisely the lost-`wikis.json` state the whole
@@ -2725,13 +2917,29 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
       const versionBefore = await readDataVersion();
 
       const spy = failWritesTo(suffix);
+      let warned: unknown[][] = [];
       try {
-        await expect(
-          createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
-        ).rejects.toThrow(FAULT);
+        warned = await warnsDuring(async () => {
+          await expect(
+            createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+          ).rejects.toThrow(FAULT);
+        });
       } finally {
         spy.mockRestore();
       }
+
+      // THE NEGATIVE, on every one of the four. Without it a read-back predicate
+      // that answered "the registry names it" for a create that never landed
+      // would still satisfy every assertion below — they only say the directory
+      // is gone, and a discard that ran for the wrong reason looks identical. On
+      // the three seed faults the read must not be attempted at all; on the
+      // `wikis.json` fault `failWritesTo` rejects WITHOUT calling through, so
+      // the read runs and must answer absent. Both are silence here.
+      expect(
+        warned.filter(([, message]) =>
+          String(message).includes("after a create that reported failure"),
+        ),
+      ).toEqual([]);
 
       // No directory for the attempted id — whether the fault came before the
       // first byte landed or after two files were already written.
@@ -2748,6 +2956,227 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
       expect(await readDataVersion()).toBe(versionBefore);
     });
   }
+
+  /**
+   * Writes every path THROUGH and then rejects on `wikis.json` — the
+   * landed-then-threw provider the four rows above cannot produce, because
+   * `failWritesTo` rejects WITHOUT calling through. Same spy shape the DW-484
+   * re-template row uses.
+   */
+  function landRegistryWriteThenThrow() {
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    return vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        await write(target, content);
+        if (target.endsWith("wikis.json")) throw new Error(FAULT);
+      });
+  }
+
+  /** The one id in the stored registry that is not `existingId`. */
+  async function mintedWikiId(existingId: string): Promise<string> {
+    const ids = (await listWikis(OWNER)).map((item) => item.id);
+    const minted = ids.filter((id) => id !== existingId);
+    expect(minted).toHaveLength(1);
+    return minted[0];
+  }
+
+  it("keeps the new wiki when the registry write landed before reporting failure (DW-675)", async () => {
+    // THE COMPENSATION'S UNVERIFIED BELIEF. The discard is a RECURSIVE delete of
+    // the whole new directory, justified by "no registry entry names it" — which
+    // was never read. `writeFile` is specified atomic about the FILE, not about
+    // the throw: a provider can store `wikis.json` and still fail on the way
+    // back. Discarding then leaves the tenant's CURRENT wiki with no purpose.md,
+    // no schema.md and no profile — a record `normalizeRegistry` keeps and no
+    // sweep can reclaim, because the registry names it.
+    const existing = await createWiki(OWNER, { name: "Existing", scenario: "business" });
+    await seedTenantTrees();
+    const versionBefore = await readDataVersion();
+    expect(versionBefore).toBeGreaterThan(0); // so "moved" is not "left zero"
+
+    const spy = landRegistryWriteThenThrow();
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        // The ORIGINAL diagnosis, unwrapped: the read-back neither replaces nor
+        // wraps what actually broke.
+        await expect(
+          createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+        ).rejects.toThrow(FAULT);
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // The registry really does name it, and `currentId` really does point at it
+    // — read from the store, not inferred from the mock having been called.
+    const minted = await mintedWikiId(existing.id);
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(minted);
+    // …so its directory and ALL THREE seeded artifacts are still on disk.
+    expect(await wikisRootEntries()).toEqual([existing.id, minted].sort());
+    expect(await seededBytes(minted)).not.toContain(null);
+    // Nothing was discarded, so no tombstone was written either.
+    expect(await exists(path.join(wikiDir(minted), ".discarded"))).toBe(false);
+    // The detection is LOGGED: this is a create the caller was told failed and
+    // the tenant is now sitting on, so an operator needs the id.
+    expect(
+      warned.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes(`the registry names wiki "${minted}"`) &&
+          String(message).includes("after a create that reported failure"),
+      ),
+    ).toHaveLength(1);
+    // …and the compensation stayed silent — no "half-created" line, because the
+    // destructive branch was never entered.
+    expect(warned.filter(([, message]) => String(message).includes("half-created"))).toEqual(
+      [],
+    );
+    // The disk moved under a reported failure, so the signal moves too — once.
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+    // Blast-radius controls: the other wiki and the tenant-wide trees.
+    await expectTenantTreesIntact();
+    expect(await seededBytes(existing.id)).not.toContain(null);
+  });
+
+  it("keeps the new wiki when the registry read-back itself throws (DW-675)", async () => {
+    // UNKNOWN NEVER AUTHORISES A DELETE. A read that throws cannot tell the
+    // landed case from the not-landed one, and the two ways to be wrong are not
+    // symmetric: leftover bytes are recoverable, a deleted current wiki's
+    // artifacts are not. So the directory stays — AND NOTHING BUMPS, because
+    // refusing to destroy under uncertainty is not the same claim as observing
+    // that the disk moved, and only the first is safe to make without evidence.
+    //
+    // The registry write here does NOT land (the spy rejects without calling
+    // through), so this is the arm's genuinely costly case: bytes kept that
+    // did not need keeping. The tail of the row pins exactly what that costs.
+    const versionBefore = await readDataVersion();
+
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const read = storage.readFile.bind(storage);
+    // The registry read that OPENS the locked body must still succeed, so the
+    // reader only starts failing once the registry write has been issued.
+    let registryWriteIssued = false;
+    const writeSpy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        if (target.endsWith("wikis.json")) {
+          registryWriteIssued = true;
+          throw new Error(FAULT);
+        }
+        return write(target, content);
+      });
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        if (registryWriteIssued && target.endsWith("wikis.json")) {
+          throw new Error("the registry is unreadable");
+        }
+        return read(target);
+      });
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        // The ORIGINAL diagnosis, unwrapped: the read-back neither replaces nor
+        // wraps what actually broke.
+        await expect(
+          createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+        ).rejects.toThrow(FAULT);
+      });
+    } finally {
+      readSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    // Nothing was deleted, and the directory keeps all three seeded files.
+    const [leftover] = await wikisRootEntries();
+    expect(leftover).toBeDefined();
+    expect(await seededBytes(leftover)).not.toContain(null);
+    // The read failure is reported, and reported as a READ failure — it must
+    // never be mistaken for the positive detection, which did not happen.
+    expect(
+      warned.filter(
+        ([scope, message]) =>
+          scope === "wikis" &&
+          String(message).includes(
+            `reading the registry back after a failed create of wiki "${leftover}" failed`,
+          ),
+      ),
+    ).toHaveLength(1);
+    expect(
+      warned.filter(([, message]) =>
+        String(message).includes("after a create that reported failure"),
+      ),
+    ).toEqual([]);
+    // NO BUMP. The read could not say the registry gained anything, so telling
+    // every open tab to refetch would assert a change nobody observed.
+    expect(await readDataVersion()).toBe(versionBefore);
+
+    // WHAT THE ARM COSTS, PINNED RATHER THAN LEFT TO INFERENCE. No `.discarded`
+    // marker is written, and deliberately: `unknown` cannot rule out that the
+    // registry names this wiki with `currentId` on it, and a marker would arm a
+    // delete of a possibly-live CURRENT wiki's artifacts on the day this
+    // tenant's `wikis.json` goes missing — which is this empty-registry state.
+    expect(await exists(path.join(wikiDir(leftover), ".discarded"))).toBe(false);
+    expect(await listWikis(OWNER)).toEqual([]);
+    // So while the registry names nothing, no pass reclaims it however aged it
+    // is — the documented DW-162 residual, reached by a second route.
+    await ageDirectory(wikiDir(leftover));
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    expect(await wikisRootEntries()).toEqual([leftover]);
+    // …and it is not lost: the moment the tenant owns a wiki the empty-registry
+    // rule stops applying and an ordinary sweep takes it, exactly as the
+    // untombstoned half-create leftover row below pins.
+    const recovered = await createWiki(OWNER, { name: "Ops", scenario: "business" });
+    await ageDirectory(wikiDir(leftover));
+    expect(await sweepOrphanWikiDirectories(OWNER)).toBe(1);
+    expect(await wikisRootEntries()).toEqual([recovered.id]);
+  });
+
+  it("never even asks the registry when the fault came before the write (DW-675)", async () => {
+    // `registryWriteAttempted` is load-bearing and would otherwise be unpinned:
+    // on a seed fault the read-back answers "absent" anyway, so DELETING the
+    // flag leaves every other row in this file green while spending a read on a
+    // question control flow has already answered — and putting a registry read
+    // failure in the log for a registry write that was never issued.
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    const read = storage.readFile.bind(storage);
+    let seedFaulted = false;
+    let registryReadsAfterFault = 0;
+    const writeSpy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        if (target.endsWith("schema.md")) {
+          seedFaulted = true;
+          throw new Error(FAULT);
+        }
+        return write(target, content);
+      });
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        if (seedFaulted && target.endsWith("wikis.json")) registryReadsAfterFault += 1;
+        return read(target);
+      });
+    try {
+      await warnsDuring(async () => {
+        await expect(
+          createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
+        ).rejects.toThrow(FAULT);
+      });
+    } finally {
+      readSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    // Not "the answer was absent" — the question was never asked.
+    expect(registryReadsAfterFault).toBe(0);
+    // …and the compensation still ran on control-flow evidence alone.
+    expect(await wikisRootEntries()).toEqual([]);
+  });
 
   it("re-throws the seed error, not the cleanup error, when the discard also fails", async () => {
     // Compensation removes wreckage; it must never replace the diagnosis with

@@ -721,6 +721,18 @@ function wikiDiscardTombstonePath(owner: string, wikiId: string): string {
  * `deleteDirectory` is a no-op when the directory is absent, so this is also
  * correct when the fault came before the first byte landed.
  *
+ * "NO REGISTRY ENTRY NAMES IT" IS NO LONGER INFERRED FROM A REJECTED WRITE
+ * (DW-675) — but it is established two different ways, and they are not the
+ * same evidence. When a registry write WAS issued, {@link registryNamesWiki}
+ * re-reads `wikis.json` and this function runs only on a positive `absent`; a
+ * record that is there, or a read that threw, skips it entirely. When NO
+ * registry write was issued — a seed fault, which is most of them — nothing is
+ * read at all, and the claim rests on CONTROL FLOW instead: the id was minted
+ * inside `wikis:<tenant>` and `writeRegistry` was never called, so the registry
+ * is provably in the state this call found it in. Both are evidence; only the
+ * first is a read. Everything below may therefore keep saying the leftovers are
+ * an orphan.
+ *
  * WHEN THE REMOVAL ITSELF FAILS it leaves a {@link WIKI_DISCARD_TOMBSTONE}
  * behind instead, which is what makes those bytes reclaimable on a FIRST create
  * — the case where the tenant's registry still names nothing and
@@ -746,8 +758,17 @@ async function discardCreatedWikiDirectory(
       `removing the directory of half-created wiki "${wikiId}" failed — no registry entry names it, so its bytes are an orphan`,
       error,
     );
-    // The registry never named this id, so the leftovers ARE an orphan — and
-    // the tombstone is how the sweep learns that without the registry's help.
+    // The registry does not name this id — established before this function was
+    // called, by a {@link registryNamesWiki} read when a registry write was
+    // issued and by control flow when none was, never by inference from the
+    // failed write itself — so the leftovers ARE an orphan, and the tombstone is
+    // how the sweep learns that without the registry's help.
+    //
+    // `setCurrentWiki`, `renameWiki` and `deleteWiki` carry the milder version
+    // of the same landed-then-threw gap and are deliberately untouched: none of
+    // them runs a destructive compensation, so a registry write that stored its
+    // bytes and then rejected costs them a misreported outcome and a missed
+    // bump — never bytes.
     let tombstoned = false;
     try {
       await getStorage().writeFile(
@@ -1153,9 +1174,14 @@ export async function getCurrentWiki(owner: string): Promise<WikiRecord | null> 
  * for the same reasons: OUTSIDE the lock, because `bumpDataVersion` takes
  * `DATA_VERSION_LOCK` and `withFileLock` is not reentrant; fail-soft, because a
  * create whose four writes landed must not be reported as failed just because
- * the counter did not move; and only on the success path, because the
- * `discardCreatedWikiDirectory` branch re-throws and there is then nothing new
- * for a client to refresh to.
+ * the counter did not move; and on the success path plus the one failure a
+ * read-back POSITIVELY OBSERVED the disk moving under (DW-675) — a `wikis.json`
+ * write that stored its bytes and then rejected, leaving the tenant naming a new
+ * current Wiki under a call that reported failure. Neither other failure bumps:
+ * a discarded create's bytes are gone and its registry never moved, and a
+ * read-back that could not answer keeps the bytes without claiming anything
+ * changed, because "do not destroy under uncertainty" and "assert a change" are
+ * different claims and only the first is safe to make without evidence.
  */
 export async function createWiki(
   owner: string,
@@ -1170,7 +1196,7 @@ export async function createWiki(
   // future MCP tool — reaching the kernel with no route in front.
   assertWritable(READ_ONLY_REFUSAL.wikiCreate);
   const { name, scenario } = parseCreateWikiInput(input);
-  const created = await withWikiLock(owner, async (held) => {
+  const outcome = await withWikiLock(owner, async (held): Promise<CreateWikiOutcome> => {
     const registry = await readRegistry(owner);
     if (registry.wikis.length >= MAX_WIKIS) {
       throw new ClientInputError(
@@ -1188,25 +1214,83 @@ export async function createWiki(
     };
     // The cap check above throws BEFORE this point on purpose: it writes
     // nothing, so it must not be inside the compensation.
+    //
+    // Set IMMEDIATELY BEFORE the registry write, so a throw from the write
+    // itself counts as attempted while a seed that faulted first does not.
+    // Control flow answers "was a registry write issued" exactly; the error is
+    // not interrogated. The `registry.wikis.push` stays ABOVE it so the flag
+    // means "the write was issued", not "the array was mutated".
+    let registryWriteAttempted = false;
     try {
       await seedWikiArtifacts(held, owner, wiki, { seedProfile: true });
       registry.wikis.push(wiki);
       registry.currentId = wiki.id;
+      registryWriteAttempted = true;
       await writeRegistry(owner, registry);
     } catch (error) {
-      // Any of the four writes may have landed and any may not have. The id is
-      // this call's own, and no registry entry names it, so discarding the
-      // whole directory is the exact undo — see the compensation block above.
-      await discardCreatedWikiDirectory(owner, wiki.id);
-      throw error;
+      // Any of the four writes may have landed and any may not have, and the id
+      // is this call's own — so discarding the whole directory is the exact undo
+      // for every fault EXCEPT the one where `wikis.json` stored its bytes and
+      // then rejected. That case is no longer taken on trust (DW-675): the
+      // registry is READ BACK, and its answer decides.
+      //
+      // THREE ANSWERS, THREE BEHAVIOURS, and the two decisions are separate.
+      // `absent` is the ONLY one that authorises the destructive discard — a
+      // record that IS there means the tenant's current Wiki is this one, and
+      // deleting its directory would leave that record pointing at nothing any
+      // sweep can reclaim. `named` is the ONLY one that earns the bump, because
+      // it is the only one that OBSERVED the stored registry gain this Wiki.
+      // `unknown` is neither: it keeps the bytes, because uncertainty on a
+      // destructive path resolves towards not destroying them, and it moves no
+      // counter, because it has no evidence anything changed to refetch.
+      //
+      // Guarded by the flag rather than asked unconditionally, like
+      // `applyScenarioTemplate`'s: a seed fault issued no registry write, so
+      // asking would spend a read on a question whose answer is already known
+      // by control flow — and could log a read failure for a write never made.
+      const readBack = registryWriteAttempted
+        ? await registryNamesWiki(owner, wiki.id)
+        : // No registry write was issued, so the registry is provably in the
+          // state this call found it in. Control flow is the evidence here, and
+          // it is at least as good as a read.
+          "absent";
+      if (readBack === "absent") await discardCreatedWikiDirectory(owner, wiki.id);
+      // The failure leaves as a VALUE, not a throw, so the tail below can bump
+      // outside `wikis:<tenant>`. NOT RECONCILED on the way out: no repair
+      // write, no removal of the entry, and never a failed create reported as a
+      // success.
+      return {
+        kind: "failed",
+        error,
+        wikiId: wiki.id,
+        registryLanded: readBack === "named",
+      };
     }
-    return wiki;
+    return { kind: "created", wiki };
   });
 
-  // Only reached when the locked body committed — the compensation branch above
+  if (outcome.kind === "failed") {
+    // A discarded create bumps nothing: its bytes are gone and the stored
+    // registry never moved, so there is nothing for an open tab to refetch. Nor
+    // does a read-back that could not answer — its bytes are kept, but keeping
+    // them is a refusal to destroy, not an observation that anything changed.
+    // Only a read that POSITIVELY found the record earns the same fail-soft tail
+    // a success does, because only then was the disk seen to move: the tenant's
+    // registry names a new Wiki and `currentId` points at it.
+    if (outcome.registryLanded) {
+      await bumpRefreshSignal(
+        `a registry write that landed under the failed create of wiki "${outcome.wikiId}"`,
+      );
+    }
+    // The original diagnosis, unwrapped and unreplaced: compensation reports
+    // what it did in the log, never in the error the caller receives.
+    throw outcome.error;
+  }
+
+  // Only reached when the locked body committed — the failure branch above
   // re-throws, so a discarded create never moves the signal.
-  await bumpRefreshSignal(`creating wiki "${created.id}"`);
-  return created;
+  await bumpRefreshSignal(`creating wiki "${outcome.wiki.id}"`);
+  return outcome.wiki;
 }
 
 /**
@@ -1288,6 +1372,143 @@ async function registryNamesScenario(
     return true;
   }
 }
+
+/**
+ * What a read-back of the stored registry could say about the id
+ * {@link createWiki} minted THIS CALL (DW-675).
+ *
+ * THREE ANSWERS, NOT TWO, because the caller owes each a different thing and
+ * collapsing them would make one of the two lie. `absent` is the only one that
+ * authorises the destructive discard; `named` is the only one that proves the
+ * disk moved and so earns a bump; `unknown` proves NEITHER, so it keeps the
+ * bytes AND moves no counter. A boolean here would have to fold `unknown` into
+ * one of the other two — into `named` and the failure tail bumps `dataVersion`
+ * for a registry that may never have changed, into `absent` and a read that
+ * merely failed authorises a recursive delete.
+ */
+type RegistryReadBack = "named" | "absent" | "unknown";
+
+/**
+ * Does the STORED registry now name `wikiId` — the id {@link createWiki} minted
+ * THIS CALL (DW-675)?
+ *
+ * Same fact {@link registryNamesScenario} reads, for the compensation with the
+ * teeth. `StorageProvider.writeFile` is specified atomic from the caller's
+ * view, but atomic is a claim about the FILE, never about the THROW: a provider
+ * can store the object and still fail on the way back — a flush, a close, an
+ * ack lost after the bytes landed. A `writeRegistry` that rejected is therefore
+ * not proof the registry does not name the new Wiki, and `createWiki`'s
+ * compensation deletes that Wiki's WHOLE DIRECTORY. Believing the throw where
+ * it is wrong leaves the tenant's CURRENT Wiki with no `purpose.md`, no
+ * `schema.md` and no profile — a record `normalizeRegistry` keeps and no sweep
+ * can reclaim, because the registry names it.
+ *
+ * "ABSENT" MEANS DID NOT LAND HERE, WHICH IS THE OPPOSITE OF
+ * {@link registryNamesScenario}. There the id was already in the registry when
+ * the call began, so its disappearance said the registry stopped naming a Wiki
+ * it named moments ago — unknown. Here the id was minted by this call inside
+ * `wikis:<tenant>`, so ABSENT is precisely the state the registry was in before
+ * `writeRegistry` ran.
+ *
+ * AND THE TWO DEGRADE PATHS THAT MAKE ABSENCE UNKNOWN OVER THERE CANNOT FORGE
+ * AN ABSENCE HERE — which has to be argued rather than assumed, because this
+ * answer authorises a recursive delete.
+ * (1) {@link readRegistry} turns a MISSING or unparseable `wikis.json` into an
+ * empty registry. An empty registry does not name this id — but it did not name
+ * it before `writeRegistry` ran either, since the id was minted seconds ago
+ * inside this lock and no other writer can be in the file. So the reported state
+ * is the pre-write state, which is exactly what `absent` claims; the tenant may
+ * separately have lost a registry, and that is a different (already handled)
+ * problem that the sweep's empty-registry rule protects.
+ * (2) `normalizeRegistry` silently DROPS an entry whose shape no longer parses.
+ * The only entry at issue is one this call wrote, in a single `JSON.stringify`
+ * of a record built from validated fields, through a write specified atomic —
+ * so an entry that landed at all landed whole and parses. A drop would need
+ * bytes this call never could have written.
+ *
+ * ONLY A THROWN READ IS UNKNOWN, and unknown resolves the way every uncertainty
+ * on a destructive path has to: towards NOT destroying bytes. A false `absent`
+ * costs a live current Wiki's artifacts, which nothing can bring back; a false
+ * `named` costs leftover bytes.
+ *
+ * AND THOSE LEFTOVER BYTES ARE NOT ALWAYS RECLAIMABLE — the honest bound, not
+ * the comfortable one. {@link sweepOrphans} reclaims an unreferenced directory
+ * only while the tenant's registry names at least ONE Wiki; under an EMPTY
+ * registry it runs `tombstonedOnly`, and this arm deliberately writes no
+ * tombstone. So a FIRST-EVER create that faults with the provider unhealthy in
+ * both directions leaves a directory no pass reclaims until that tenant owns a
+ * Wiki — precisely the documented DW-162 residual, reached by a second route.
+ *
+ * WHY NO TOMBSTONE ON `unknown`, THEN: because `.discarded` ARMS A DELETE, and
+ * this arm cannot rule out that the registry names this Wiki with `currentId`
+ * pointing at it. Marking it would stage the removal of a possibly-LIVE current
+ * Wiki's artifacts on the very day that tenant's `wikis.json` goes missing —
+ * the empty-registry state where the marker is the sweep's only evidence. That
+ * is the destructive act under uncertainty this whole change exists to stop, and
+ * `clearStaleDiscardTombstones` is not an answer to it: it clears a stale marker
+ * only on a SCHEDULED pass, so the window between the two is real. The tombstone
+ * {@link discardCreatedWikiDirectory} writes when a delete it was AUTHORISED to
+ * make fails is unaffected — there the registry was read and said `absent`.
+ *
+ * DETECTS, DOES NOT RECONCILE, and is scoped to this call's own id: no repair
+ * write, no removal of the entry, and it never looks at another Wiki's record.
+ * Reads `wikis.json` only, so the caller's `wikis:<tenant>` is enough.
+ */
+async function registryNamesWiki(
+  owner: string,
+  wikiId: string,
+): Promise<RegistryReadBack> {
+  try {
+    const registry = await readRegistry(owner);
+    // The expected answer, and the only evidence of NOT landing: the registry is
+    // still in the state this call found it in.
+    if (!registry.wikis.some((item) => item.id === wikiId)) return "absent";
+    logger.warn(
+      "wikis",
+      `the registry names wiki "${wikiId}" after a create that reported failure — its directory is kept rather than discarded, so the stored record still has its artifacts`,
+    );
+    return "named";
+  } catch (error) {
+    logger.warn(
+      "wikis",
+      `reading the registry back after a failed create of wiki "${wikiId}" failed — keeping its directory, since a discard needs evidence the registry does not name it`,
+      error,
+    );
+    return "unknown";
+  }
+}
+
+/**
+ * What {@link createWiki}'s locked body hands back to its tail.
+ *
+ * Modelled on {@link RetemplateOutcome}, and private for the same reason: the
+ * shape exists so `bumpRefreshSignal` can sit OUTSIDE `wikis:<tenant>` (it takes
+ * `DATA_VERSION_LOCK`, and `withFileLock` is not reentrant), which means the
+ * failure fact has to leave the locked callback as a VALUE rather than as a
+ * throw. `failed` re-throws `error` unwrapped, having first bumped IF AND ONLY
+ * IF `registryLanded` — set from a read-back that POSITIVELY found the record,
+ * never from one that merely failed to rule it out.
+ *
+ * WHAT `registryLanded` PROVES, EXACTLY: that `wikis.json` NOW names this call's
+ * id, which for a freshly minted id means the write this call issued is the one
+ * that put it there — so the stored registry really did gain a Wiki, and
+ * `currentId` really does point at it, under a call that reported failure. There
+ * is no over-signal to trade away here the way {@link RetemplateOutcome} has
+ * one: nothing else could have named an id minted seconds ago under this lock.
+ *
+ * WHAT IT DELIBERATELY DOES NOT COVER is the `unknown` read. That case is not
+ * "landed" and is not reported as one: the directory is kept, because keeping
+ * bytes is how uncertainty resolves on a destructive path, but no counter moves,
+ * because a bump would tell every open tab to refetch a registry that may be
+ * byte-identical to the one it already has. Keeping bytes and asserting a change
+ * are different claims, and only the first is safe to make without evidence.
+ *
+ * There is no `unknown` arm on the OUTCOME: unlike a re-template, a create has
+ * no id to miss.
+ */
+type CreateWikiOutcome =
+  | { kind: "created"; wiki: WikiRecord }
+  | { kind: "failed"; error: unknown; wikiId: string; registryLanded: boolean };
 
 /**
  * What {@link applyScenarioTemplate}'s locked body hands back to its tail.
@@ -1813,6 +2034,38 @@ function rotatingSweepWindow(names: string[], now: number): string[] {
 }
 
 /**
+ * The widest instant an ECMAScript `Date` can represent, in epoch millis
+ * (±8.64e15 — 100 000 000 days either side of the epoch). Beyond it a `Date`
+ * is `Invalid Date`: comparisons answer false and `toISOString()` throws.
+ */
+const MAX_TIME_VALUE_MS = 8.64e15;
+
+/**
+ * Is `at` a write time THIS ISOLATE CAN USE — both ordered against another and
+ * rendered back as a date (DW-674)?
+ *
+ * Two failures, and only one of them is reachable through the providers we
+ * have. A `stat` whose `lastModified` is `Invalid Date` yields NaN, which loses
+ * every comparison, so `at > newest` is false and the value is silently DROPPED
+ * — leaving `newest` holding an older sibling's mtime, or the directory
+ * fallback, for a directory whose newest write was never actually read. That is
+ * the reachable half, and it is exactly the state {@link sweepOrphans} must not
+ * age-qualify: an age it cannot trust must never gate a delete (DW-290).
+ *
+ * THE RANGE HALF STATES AN INVARIANT RATHER THAN FIXING A LIVE BUG.
+ * `StorageProvider.stat` types `lastModified` as a real `Date`, and both
+ * providers build it from a filesystem mtime or an R2 `uploaded`, so a FINITE
+ * out-of-range number cannot arrive today and the `toISOString()` RangeError in
+ * {@link warnOnceAboutFutureDatedWrite} is not reachable through them. It is
+ * checked here anyway because that warn is the one consumer that RENDERS this
+ * value, so "usable" has to mean renderable, not merely comparable — and the
+ * predicate is where a future provider learns that.
+ */
+function isUsableWriteTime(at: number): boolean {
+  return Number.isFinite(at) && Math.abs(at) <= MAX_TIME_VALUE_MS;
+}
+
+/**
  * The most recent write anywhere under `dir`, in epoch millis — or NULL when
  * that cannot be established.
  *
@@ -1825,7 +2078,10 @@ function rotatingSweepWindow(names: string[], now: number): string[] {
  * mistaken for "the newest write there is". THE DEPTH BOUND OBEYS THAT RULE TOO
  * — exceeding it throws rather than returning, because a truncated walk that
  * reported the shallow mtime it did see could age-qualify a directory whose
- * deeper, newer writes it never looked at.
+ * deeper, newer writes it never looked at. SO DOES AN MTIME THIS ISOLATE CANNOT
+ * USE ({@link isUsableWriteTime}): a `stat` that answered with an
+ * unrepresentable date is a write whose age was NOT read, and skipping it would
+ * hand the age gate an older sibling's mtime as if it were the newest.
  */
 async function newestWriteTime(dir: string): Promise<number | null> {
   const storage = getStorage();
@@ -1844,7 +2100,16 @@ async function newestWriteTime(dir: string): Promise<number | null> {
         continue;
       }
       const at = (await storage.stat(child)).lastModified.getTime();
-      if (Number.isFinite(at) && (newest === null || at > newest)) newest = at;
+      // THROWS rather than skipping, for the same reason the depth bound does:
+      // a per-file mtime that cannot be represented is an age this walk did not
+      // read, and continuing would let an older sibling's mtime — or the
+      // directory fallback below — stand in for it and age-qualify a delete.
+      if (!isUsableWriteTime(at)) {
+        throw new Error(
+          `wiki file "${child}" reports a write time this isolate cannot represent`,
+        );
+      }
+      if (newest === null || at > newest) newest = at;
     }
   };
   try {
@@ -1852,8 +2117,22 @@ async function newestWriteTime(dir: string): Promise<number | null> {
     if (newest !== null) return newest;
     // No files: on the filesystem provider the directory itself still has an
     // mtime; on R2 there is no such object and this throws → unknown → skip.
+    // An unusable one is the same non-answer, so it takes the same exit — AND
+    // SAYS SO, in the same sentence the outer catch uses. A file-less directory
+    // whose own stat is unusable can never be reclaimed while that holds, and
+    // `sweepOrphans` states that `newestWriteTime` "already warned when the age
+    // was unreadable" and prints nothing itself for a `null`. Returning here
+    // silently would make that comment false and the skip invisible.
     const at = (await storage.stat(dir)).lastModified.getTime();
-    return Number.isFinite(at) ? at : null;
+    if (isUsableWriteTime(at)) return at;
+    logger.warn(
+      "wikis",
+      `could not read the age of wiki directory "${dir}" — treating it as too young to sweep`,
+      new Error(
+        `the directory reports a write time this isolate cannot represent`,
+      ),
+    );
+    return null;
   } catch (error) {
     logger.warn(
       "wikis",

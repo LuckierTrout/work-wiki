@@ -1221,16 +1221,20 @@ describe("the bump lives at the exact write-owner tails", () => {
       /try \{\s*await bumpDataVersion\(\);\s*\} catch \(error\) \{[\s\S]{0,160}logger\.warn\(\s*"wikis"/,
     );
 
-    // EIGHT calls: one apiece for six writers, two for `applyScenarioTemplate`,
+    // NINE calls: one apiece for five writers, two for `applyScenarioTemplate`,
     // whose failure path bumps as well when the rollback could not put every
-    // file back (DW-210). Counted over the whole module first, so a call from a
-    // body this loop does not name cannot hide inside the per-body totals.
-    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(8);
+    // file back (DW-210) or the registry write landed before reporting failure
+    // (DW-484), and two for `createWiki`, whose failure path bumps on that same
+    // landed-then-threw registry write (DW-675) — the one create failure under
+    // which the tenant's stored registry really did move. Counted over the whole
+    // module first, so a call from a body this loop does not name cannot hide
+    // inside the per-body totals.
+    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(9);
 
     let counted = 0;
     for (const [name, calls] of [
       ["writeWikiArtifact", 1],
-      ["createWiki", 1],
+      ["createWiki", 2],
       ["applyScenarioTemplate", 2],
       ["renameWiki", 1],
       ["deleteWiki", 1],
@@ -1279,13 +1283,13 @@ describe("the bump lives at the exact write-owner tails", () => {
         from = bump + 1;
       }
     }
-    // The eight counted over the module are accounted for by seven
+    // The nine counted over the module are accounted for by seven
     // DISJOINT bodies, so no other function in the module has one — including
     // `seedWikiArtifacts`, which is the whole reason the tails live at the
     // callers: it always runs while `wikis:<tenant>` is held. Asserted directly
     // as well, because that is the refactor this guard exists to catch and a
     // count mismatch names no function.
-    expect(counted).toBe(8);
+    expect(counted).toBe(9);
     const seeder = topLevelFunctionBody(raw, "async function seedWikiArtifacts(");
     expect(seeder).not.toContain("bumpDataVersion");
     expect(seeder).not.toContain("bumpRefreshSignal");

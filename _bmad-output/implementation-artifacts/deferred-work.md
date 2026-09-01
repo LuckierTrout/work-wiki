@@ -5269,7 +5269,9 @@ location: src/lib/wikis.ts:1688
 source_spec: `spec-dw-483-485-488-wiki-sweep-warn-and-tombstones.md`
 severity: low
 reason: `newestWriteTime` accepts any finite number (src/lib/wikis.ts:1592, :1601), and the future-dated branch formats it with `new Date(newest).toISOString()` (src/lib/wikis.ts:1688), which throws `RangeError: Invalid time value` outside that range. The throw escapes `sweepOrphans` — every other per-candidate step in that loop is deliberately fail-soft — and `sweepOrphanWikiDirs` swallows it as "removed 0", so a single bogus mtime silently stops the tenant's reclaim on every pass. Pre-existing: the same expression shipped with DW-290; this change only moved it into a helper.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-wikis-sweep-compensation-guards
+resolution-undo: c8dd7a5cb1b45e4c52c6519b7e2159ea749b4c97f2af089075852d3f5a23a411 2026-09-01 7374617475733a206f70656e
 
 ### DW-675: `createWiki`'s compensation still assumes a `writeRegistry` that threw never landed — the assumption DW-484 has just falsified for `applyScenarioTemplate`.
 origin: spec-deferred 970513e5d9db
@@ -5277,7 +5279,9 @@ location: src/lib/wikis.ts (createWiki failure path; also setCurrentWiki, rename
 source_spec: `spec-dw-381-484-scenario-template-failure-truth.md`
 severity: medium
 reason: `createWiki`'s catch reasons "no registry entry names it, so discarding the whole directory is the exact undo", and `discardCreatedWikiDirectory` repeats "The registry never named this id". A review agent drove the case against the repo's real temp-DATA_DIR harness with a `writeFile` spy that writes `wikis.json` through and THEN throws: `createWiki` rejects, and afterwards the stored registry contains the new entry AND `currentId` points at it, while the compensation has deleted that wiki's directory — a tenant whose CURRENT wiki has no `purpose.md`, no `schema.md` and no profile on disk, and no bump. The record is well-formed so `normalizeRegistry` keeps it, and `sweepOrphanWikiDirectories` has no directory left to reclaim, so it persists. Every existing create row passes because `failWritesTo` rejects WITHOUT calling through, so the registry those rows compare byte-for-byte never moves. `setCurrentWiki`, `renameWiki` and `deleteWiki` carry the milder version of the same shape: the re
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-wikis-sweep-compensation-guards
+resolution-undo: c8dd7a5cb1b45e4c52c6519b7e2159ea749b4c97f2af089075852d3f5a23a411 2026-09-01 7374617475733a206f70656e
 
 ### DW-676: Nothing reconciles or surfaces the registry/artifact divergence DW-484 now detects — the bump and a server-side warning are the whole remedy.
 origin: spec-deferred a6d2e8e62045
@@ -5531,4 +5535,12 @@ location: src/lib/workbench-files.ts:726
 source_spec: `spec-dw-608-610-611-silo-sync-gate-coverage.md`
 severity: low
 reason: `listRawSourceFilePaths` (src/lib/workbench-files.ts:726) walks the silo `raw/` root but descends only toward `raw/sources` (`underSources`/`towardSources`, :770-776), while `listWorkbenchFilePaths` walks the whole root. Both legacy addresses this mirror writes — `tenants/<t>/raw/<slug>.md` (pre-existing) and `tenants/<t>/raw/<slug>/<rawId>.<ext>` (DW-610, added here) — therefore list in Files and never in the Sources pane. DW-610's harm is stated as "invisible in Files" and that surface IS closed; the Sources pane is a second surface the bundle never named. Pre-existing for the flat legacy address, and unchanged by the address-preserving choice recorded in this spec's Design Notes.
+status: open
+
+### DW-708: `POST /api/wikis` answers 500 while the wiki was in fact created and made current, whenever `writeRegistry` stores `wikis.json` and then rejects.
+origin: spec-deferred d843fdc55060
+location: src/app/api/wikis/route.ts (POST); src/lib/wikis.ts createWiki failure tail
+source_spec: `spec-dw-674-675-wikis-sweep-compensation-guards.md`
+severity: low
+reason: DW-675's fix makes `createWiki` keep the new wiki's directory when the read-back positively finds the record, and bump `dataVersion` — but the original storage error is still re-thrown unwrapped, so the route answers 500. The owner is told the create failed while the switcher, the workbench heading and every artifact read now resolve against the new wiki, and a retry mints a second one against `MAX_WIKIS`. This is the create-route sibling of the shape DW-676 already records for `POST /api/wikis/[id]/template` after DW-484; neither the bundle intent nor either ledger entry names the route surface, both stop at the bytes.
 status: open
