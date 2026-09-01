@@ -29,7 +29,7 @@ export interface PageReadMeta {
 export type WriteKind = "body" | "metadata" | "delete";
 
 /** A reader identity (id is used for the spoof-proof admin match). */
-type Reader = { id?: string; handle: string } | null;
+export type Reader = { id?: string; handle: string } | null;
 
 /**
  * Admins — listed in the comma-separated `ADMIN_HANDLES` Worker var — may READ,

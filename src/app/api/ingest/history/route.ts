@@ -4,9 +4,15 @@ import { getPrincipal } from "@/lib/auth";
 import {
   deleteWikiPage,
   listReadableWikiPages,
+  listWikiPages,
   readWikiPageWithFrontmatter,
 } from "@/lib/wiki";
-import { canWriteFrontmatter } from "@/lib/authz";
+import {
+  canReadEntry,
+  canReadFrontmatter,
+  canWriteFrontmatter,
+  type Reader,
+} from "@/lib/authz";
 import { resolveWriteDenial } from "@/lib/write-denial";
 import {
   deleteIngestJob,
@@ -18,7 +24,31 @@ import { logger } from "@/lib/logger";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 
+/**
+ * Cap on the ids one `DELETE` batch accepts — and, since DW-432, the value
+ * `MAX_ORPHAN_PROBES` below borrows for `GET`'s per-request probe budget. It
+ * now bounds TWO unrelated things, so changing it moves both; if they ever need
+ * to differ, give the listing its own literal here rather than re-typing 50 at
+ * one of the two use sites.
+ */
 const MAX_BULK_DELETE = 50;
+
+/**
+ * How many index-missing slugs `GET` will probe on disk in one request
+ * (DW-432). Aliased rather than re-stated: the human decision names
+ * `MAX_BULK_DELETE` as the cap, so that stays the single source of the VALUE,
+ * while the listing budget gets to read as its own concept at its use site
+ * instead of borrowing the delete path's name for an unrelated bound.
+ *
+ * NOT EXPORTED, and not by choice: a Next.js route module may export only the
+ * HTTP handlers and the framework's own config names, so `export`ing this is a
+ * type error against the generated route types. The suite therefore restates
+ * the number behind this same name — the identical arrangement, and the
+ * identical reason, as `SELECTION_NOT_FOUND` below. The copy is self-policing:
+ * lowering the budget here without touching the suite turns its read-count
+ * assertions red rather than letting them agree with a number that moved.
+ */
+const MAX_ORPHAN_PROBES = MAX_BULK_DELETE;
 
 /**
  * The one sentence this route answers for "that is not a selection you can
@@ -79,6 +109,97 @@ function parseIdList(
   return [...new Set(ids)];
 }
 
+/** What one orphan probe learned about one slug. */
+interface ProbeResult {
+  /** True only when a page exists at this slug AND the caller may read it. */
+  readable: boolean;
+  /**
+   * True when the read THREW, as distinct from answering "no page here" or
+   * "not readable by you". Reported out rather than logged in place so the walk
+   * can emit exactly ONE warn per request: a systemic storage fault makes every
+   * probe throw, and `MAX_ORPHAN_PROBES` identical lines buries the first one
+   * instead of reporting it.
+   */
+  failed: boolean;
+  /** The thrown value, carried out for that one warn. */
+  error?: unknown;
+}
+
+/**
+ * Probes ONE slug the page index does not know at all, for `GET`'s orphan
+ * fallback (DW-432). The predicate is stated once, here, by delegating to
+ * `canReadFrontmatter` — the exact per-page counterpart of the `canReadEntry`
+ * the index path applies (both call `canReadPage`) — so re-deriving it by hand
+ * is what would let the two answers drift apart.
+ *
+ * WHAT THIS PROVES, EXACTLY. "A page exists at this slug that this caller may
+ * read." That is SLUG-scoped, not provenance-scoped: it does NOT prove the page
+ * read is the page this ledger row produced. Nothing is lost by that, because
+ * it is the same question the index path has always answered — the ledger
+ * carries no owner field, so this route has only ever scoped by slug — and the
+ * fallback neither widens nor narrows the question. It only stops the answer
+ * from depending on whether the index happens to still know the slug.
+ *
+ * WHAT THIS KNOWINGLY LEAVES BEHIND. `owner` makes the resolution
+ * CALLER-RELATIVE, and slug scope plus caller-relative resolution has a
+ * residue: a caller holding their OWN crash-left silo file at slug `s` — with
+ * `s` absent from the page index AND from the flat path — surfaces ANOTHER
+ * user's ledger row for `s`, meaning its `source_url`, timestamps and ids,
+ * though never that other user's bytes, which this hint cannot reach. That is a
+ * deliberate trade, not an oversight. `ReadWikiPageOptions.owner`
+ * (`src/lib/wiki.ts:392-398`) is documented for precisely this crash-recovery
+ * use and can never displace another owner's committed same-slug Page, so the
+ * residue exists only in the window where NO committed Page owns the slug at
+ * all; and closing it would mean persisting an owner on every ledger entry —
+ * the migration this route's GET doc comment already scopes out as the larger
+ * change it is not making.
+ *
+ * THE SAME HINT COSTS SOMETHING TOO. Being caller-relative, it is not a
+ * privilege: an ADMIN does not see another owner's silo-only orphan here, even
+ * though `canReadPage` would admit them to the page itself, because the hint
+ * only ever opens the ADMIN's own silo. The fallback under-reports for admins
+ * rather than over-reporting to them.
+ *
+ * READ MODE MATCHES THE INDEX'S OWN AUTHORITATIVE READ. `listWikiPages`
+ * re-reads every dirty slug with `{ fresh: true, strict: true }` and, when that
+ * read throws or returns null, forces `visibility: "private"` — "missing/
+ * unreadable authoritative bytes are not permission to expose a stale public
+ * row". A plain cached read can SUCCEED where that hardening failed, because
+ * `pageCache` is module-global and ref-counted across bulk scans; probing that
+ * way would list a row the index deliberately hid. So the probe reads exactly
+ * as the index does.
+ *
+ * FAILS CLOSED BOTH WAYS: a missing page (`null`) and a throwing read both
+ * answer `readable: false`, the same direction `listWikiPages` takes.
+ *
+ * @see canReadSlug (`src/lib/authz.ts:145`) — near-identical body, deliberately
+ * NOT reused. Its missing-page polarity is the opposite of what is needed here:
+ * it returns `true` for an absent page so the caller's own 404 may speak, while
+ * an absent page here must HIDE the row. And it passes no owner hint, so it
+ * cannot see the crash-left silo that is this fallback's whole reason to exist.
+ */
+async function readableOnDisk(
+  slug: string,
+  // Non-null: `GET` 401s long before the walk, so the hint is always available
+  // here. Typed that way so a future caller passing `null` is a compile error
+  // rather than a silent probe that quietly loses the silo branch.
+  principal: NonNullable<Reader>,
+): Promise<ProbeResult> {
+  try {
+    const page = await readWikiPageWithFrontmatter(slug, {
+      fresh: true,
+      strict: true,
+      owner: principal.handle,
+    });
+    return {
+      readable: page ? canReadFrontmatter(page.frontmatter, principal) : false,
+      failed: false,
+    };
+  } catch (error) {
+    return { readable: false, failed: true, error };
+  }
+}
+
 /**
  * GET /api/ingest/history?limit=50
  *
@@ -90,6 +211,39 @@ function parseIdList(
  * the page itself, and private pages are hidden from non-owners. (A stricter
  * "my ingests only" view would persist an owner on each ledger entry — a larger
  * change; readability-scoping closes the leak without a ledger migration.)
+ *
+ * ORPHAN FALLBACK (DW-432). The page INDEX is not the same set as "pages that
+ * exist". A page on disk but absent from the index — the drift
+ * `checkOrphanPages` exists for, and what a crash-left ingest silo looks like —
+ * used to have its ledger row silently dropped here, so its owner never saw the
+ * row at all. For a slug the index does not know AT ALL we now fall back to a
+ * single per-page read and admit the row only when the page exists and the
+ * caller may read its frontmatter ({@link readableOnDisk}).
+ *
+ * THE READ SCOPE IS UNCHANGED. `canReadFrontmatter` and `canReadEntry` both
+ * delegate to `canReadPage`, so the fallback re-derives the SAME predicate from
+ * frontmatter that the index path derives from an index entry, over the same
+ * authoritative bytes. A slug the index DOES know keeps the index's answer with
+ * zero extra reads — including when that answer is "hidden", which is both why
+ * the common multi-user request costs exactly what it costs today and why a
+ * dirty slug the index forced private stays hidden. What the probe establishes
+ * is slug-scoped rather than provenance-scoped, and the owner hint makes it
+ * caller-relative; {@link readableOnDisk} states both precisely, along with the
+ * narrow cross-silo residue that follows from them.
+ *
+ * BOUNDED WORK. At most `MAX_ORPHAN_PROBES` reads per request, counted over
+ * DISTINCT slugs; `limit` bounds the ANSWER, not the WORK, so a page of rows
+ * that all turn out unlistable still spends the full budget. Index-missing rows
+ * left over after the budget is spent stay hidden — exactly today's outcome for
+ * them, never an error — and the walk keeps going, because a readable INDEXED
+ * row further down the ledger must still list.
+ *
+ * DELIBERATELY NOT IN `DELETE`. The decision scopes this to the listing path
+ * only, and DW-393 shipped the opposite constraint for the delete path ("do not
+ * add a disk fallback for orphan slugs"), so a listed orphan still answers
+ * `SELECTION_NOT_FOUND` when selected. That residual gap is carried in this
+ * change's own spec (its `deferred` frontmatter) rather than settled here by
+ * overturning a shipped decision.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -109,14 +263,79 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Only surface entries whose resulting page the caller can read (O(1) page
-    // index + in-memory canReadEntry). Drops other users' private-page ingests.
+    // TWO sets, from ONE index listing. `indexed` is every slug the index
+    // knows; `readable` is the subset this caller may read. Keeping them apart
+    // is the whole safety of the fallback below: a slug missing from `readable`
+    // ALONE is an indexed page the caller may not read — the exact population
+    // this scoping exists to hide — and probing those would cost a disk read
+    // per hidden row on the busiest multi-user path while starving the budget
+    // for the orphans it is actually for.
+    const all = await listWikiPages();
+    const indexed = new Set(all.map((p) => p.slug));
     const readable = new Set(
-      (await listReadableWikiPages(principal)).map((p) => p.slug),
+      all.filter((e) => canReadEntry(e, principal)).map((e) => e.slug),
     );
-    const entries = (await readLedger())
-      .filter((e) => e.primary_slug && readable.has(e.primary_slug))
-      .slice(0, limit ?? 50);
+
+    const wanted = limit ?? 50;
+    const probed = new Map<string, boolean>();
+    let budget = MAX_ORPHAN_PROBES;
+    // Both counted so this request can say ONE thing about each: the first
+    // storage fault, and the drift the budget could not cover. Silence on the
+    // second is what makes a deployment whose budget is spent on every request
+    // — the very drift this fallback exists to surface — look identical to one
+    // with no orphans at all.
+    let faultReported = false;
+    let unprobedRows = 0;
+    const entries: LedgerEntry[] = [];
+    for (const entry of await readLedger()) {
+      if (entries.length >= wanted) break;
+      const slug = entry.primary_slug;
+      if (!slug) continue;
+      if (readable.has(slug)) {
+        entries.push(entry);
+        continue;
+      }
+      // The index already answered for this slug — hidden — and no disk read
+      // may overturn that: a dirty slug whose authoritative read failed is
+      // forced private on purpose. Costs nothing and spends no budget.
+      if (indexed.has(slug)) continue;
+      let ok = probed.get(slug);
+      if (ok === undefined) {
+        // `continue`, never `break`: the budget bounds the READS, not the walk,
+        // and a readable indexed row after this point must still list.
+        if (budget <= 0) {
+          unprobedRows += 1;
+          continue;
+        }
+        budget -= 1;
+        const probe = await readableOnDisk(slug, principal);
+        ok = probe.readable;
+        if (probe.failed && !faultReported) {
+          // Once per request, not once per slug: a storage fault fails every
+          // probe, and MAX_ORPHAN_PROBES copies of this line would bury it.
+          faultReported = true;
+          logger.warn(
+            "ingest",
+            `orphan probe failed for "${slug}"; hiding it (further probe failures this request are not logged)`,
+            probe.error,
+          );
+        }
+        // BOTH verdicts memoized — a slug two ledger rows share costs one probe
+        // whether the answer was yes or no.
+        probed.set(slug, ok);
+      }
+      if (ok) entries.push(entry);
+    }
+
+    if (unprobedRows > 0) {
+      // Not an error — those rows stay hidden, exactly as they did before this
+      // fallback existed. But it is the one signal that the index has drifted
+      // further than one request can cover, so it must not be silent.
+      logger.warn(
+        "ingest",
+        `orphan probe budget (${MAX_ORPHAN_PROBES}) exhausted; ${unprobedRows} further ledger row(s) with index-missing slugs stayed hidden`,
+      );
+    }
 
     // The deployment fact, carried on the answer the surface already asks for
     // (DW-265). `/ingest` is a `"use client"` page all the way down, so
@@ -147,7 +366,13 @@ export async function GET(request: NextRequest) {
  *
  * Raw source snapshots and the append-only ingest ledger are intentionally
  * retained for provenance and recovery. Once a page is gone, GET no longer
- * returns its ledger entries because the readability filter excludes it.
+ * returns its ledger entries — but since DW-432 that conclusion takes BOTH
+ * halves rather than the index alone: GET falls back to a per-page read for a
+ * slug the index does not know, so a row leaves the listing only when its slug
+ * is absent from the page index AND no readable page answers on disk. A real
+ * delete satisfies both. An orphan the index merely lost satisfies neither and
+ * now lists — while still refusing selection here, because DW-432 is
+ * listing-only.
  */
 export async function DELETE(request: NextRequest) {
   const principal = await getPrincipal();

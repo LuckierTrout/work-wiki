@@ -3174,7 +3174,9 @@ source_spec: `spec-dw-411-pnpm-workspace-root.md`
 location: .github/workflows/deploy-cloudflare.yml (paths filter)
 severity: low
 reason: The filter names `pnpm-lock.yaml`, `package.json` and `workers/**`. The root workspace file is now load-bearing for `pnpm --dir workers/sandbox-runner install --frozen-lockfile` at deploy-cloudflare.yml:82, but a commit touching only that file skips the workflow. `.github/` is declared protected in AGENTS.md, so this run could not edit it.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw3-decision-dw-432
+resolution-undo: 79ff9d6505e892e971f9f5bddefda4bf8271ba4377d7e84b19e49851c64332da 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-22 Bounded per-page read fallback — For slugs the index misses, fall back to a bounded per-page read (cap at MAX_BULK_DELETE) on this listing path only, so orphan rows list and become deletable while the read cost stays bounded.
 
 ### DW-433: The bundle this story came from is keyed to DW-415, but its Intent prose describes DW-411; the work done resolves DW-411 and leaves DW-415 untouched.
@@ -5485,4 +5487,12 @@ location: src/components/WikiEditor.tsx (handleSave outer catch) and src/compone
 source_spec: `spec-dw-428-editor-per-leg-save-reporting.md`
 severity: medium
 reason: `handleSave`'s prefix sits inside the metadata leg's `!res.ok` branch, so a dropped or aborted `PATCH` falls straight to the outer `catch` and the owner reads only "Failed to fetch" over a body that is already on disk — and retypes or reloads over it, which is the whole harm the change exists to remove. The omission is deliberate and argued (`partialSaveMessage`'s docblock, and the case `makes no claim about a metadata leg whose fetch never came back`): the decision's frozen sentence asserts "the metadata change was not", which nobody can claim about a request that never came back, and it interpolates a `<served error>` that branch does not have. Saying only the provable half — that the text was saved, and that the metadata outcome is unknown — needs a SECOND owner-facing sentence, which is an intent-level copy decision the 2026-08-22 decision did not open.
+status: open
+
+### DW-704: A ledger row the listing now surfaces because its page is on disk but missing from the page index is still refused by DELETE, so the owner sees a row that can never be cleared.
+origin: spec-deferred 450979fe0e60
+location: src/app/api/ingest/history/route.ts (DELETE ingestIds preflight and the DW-270 read gate)
+source_spec: `spec-dw-432-ingest-history-orphan-listing.md`
+severity: medium
+reason: GET now admits an index-missing slug whose page the caller can read (src/app/api/ingest/history/route.ts, the orphan probe in the ledger walk). DELETE was deliberately left alone: its `ingestIds` preflight and its DW-270 read gate both test the index-backed `readable` set built from `listReadableWikiPages`, so the same row answers `SELECTION_NOT_FOUND` and lands in `failed[]`. The owner therefore gets a visible, selectable row whose delete always fails with a sentence that says it was "not found", which is a wrong answer about a row the same route just listed. The gap is the second half of this bundle's own decision ("orphan rows list AND become deletable"); it was not shipped because that decision also says "on this listing path only", and `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md` shipped the opposing constraint for the delete path ("Do not add a disk fallback for orphan slugs -- the ledger/index contract stays as-is"). Closing it means overturning a shipped human decisio
 status: open

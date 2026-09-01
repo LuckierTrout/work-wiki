@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 vi.mock("@/lib/ingest", () => ({ readLedger: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 /**
- * `@/lib/wiki` is stubbed down to the three functions this route calls — plus
+ * `@/lib/wiki` is stubbed down to the four functions this route calls — plus
  * the two pure `type` predicates `belongsInCommons` re-exports from it. Those
  * are needed because the route's 403 sentence is now resolved through the REAL
  * realm predicate (below): with them missing, `belongsInCommons` would call
@@ -17,6 +17,7 @@ vi.mock("@/lib/wiki", async () => {
   return {
     deleteWikiPage: vi.fn(),
     listReadableWikiPages: vi.fn(),
+    listWikiPages: vi.fn(),
     readWikiPageWithFrontmatter: vi.fn(),
     isAgentScopedType,
     isArtifactType,
@@ -53,21 +54,25 @@ import { getPrincipal } from "@/lib/auth";
 import {
   deleteWikiPage,
   listReadableWikiPages,
+  listWikiPages,
   readWikiPageWithFrontmatter,
 } from "@/lib/wiki";
 import { canWriteFrontmatter } from "@/lib/authz";
 import { deleteIngestJob, getIngestJob } from "@/lib/ingest-jobs";
+import { logger } from "@/lib/logger";
 import { DELETE, GET } from "@/app/api/ingest/history/route";
 import { WRITE_DENIAL, WRITE_DENIAL_REALM } from "@/lib/write-denial";
 
 const mockedReadLedger = vi.mocked(readLedger);
 const mockedGetPrincipal = vi.mocked(getPrincipal);
 const mockedListReadable = vi.mocked(listReadableWikiPages);
+const mockedListWikiPages = vi.mocked(listWikiPages);
 const mockedReadPage = vi.mocked(readWikiPageWithFrontmatter);
 const mockedCanWrite = vi.mocked(canWriteFrontmatter);
 const mockedDeletePage = vi.mocked(deleteWikiPage);
 const mockedGetJob = vi.mocked(getIngestJob);
 const mockedDeleteJob = vi.mocked(deleteIngestJob);
+const mockedWarn = vi.mocked(logger.warn);
 
 /**
  * The route's one not-found sentence, restated here as a LITERAL rather than
@@ -123,6 +128,13 @@ beforeEach(() => {
   mockedGetPrincipal.mockResolvedValue({ id: "owner-id", handle: "owner" });
   mockedReadLedger.mockResolvedValue([ledgerEntry("ing-a", "page-a")]);
   mockedListReadable.mockResolvedValue([
+    { slug: "page-a", title: "Page A", summary: "" },
+  ]);
+  // GET derives BOTH its `indexed` and `readable` sets from this one listing
+  // (DELETE keeps using `listReadableWikiPages` above). Defaulted to the same
+  // `page-a` fixture — public, so the real `canReadEntry` admits it — so every
+  // pre-existing case that only stubbed the readable list keeps its meaning.
+  mockedListWikiPages.mockResolvedValue([
     { slug: "page-a", title: "Page A", summary: "" },
   ]);
   mockedReadPage.mockResolvedValue({
@@ -779,4 +791,389 @@ describe("GET /api/ingest/history serves the read-only fact", () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({ error: "Unauthorized" });
   });
+});
+
+/**
+ * DW-432 — the listing's orphan fallback.
+ *
+ * The page INDEX is not the set of pages that exist. A page on disk but absent
+ * from the index (the drift `checkOrphanPages` exists for; a crash-left ingest
+ * silo is the common case) had its ledger row dropped here, so its owner could
+ * never see it. GET now falls back to ONE per-page read for a slug the index
+ * does not know AT ALL, and admits the row only if the page exists and the
+ * caller may read its frontmatter.
+ *
+ * Every assertion below is about a boundary a reviewer showed a mutant can slip
+ * through: WHICH slugs get probed (index-missing only, never merely
+ * unreadable), HOW they are read (the index's own `{fresh,strict,owner}`
+ * options — a cached read can succeed where the index's hardening failed and
+ * would expose a row the index hid on purpose), how much the probing may COST,
+ * and that the walk keeps going once that cost is spent.
+ */
+describe("GET /api/ingest/history falls back to disk for orphan slugs", () => {
+  /**
+   * The route's per-request probe budget, restated here rather than imported —
+   * for exactly the reason `SELECTION_NOT_FOUND` above is restated, and one the
+   * route cannot escape: a Next.js route module may export only its HTTP
+   * handlers, so `MAX_ORPHAN_PROBES` cannot leave that file. The copy is
+   * self-policing: move the budget in the route without touching this line and
+   * every read-count assertion below turns red.
+   */
+  const MAX_ORPHAN_PROBES = 50;
+  /** Comfortably more index-missing rows than one request may probe. */
+  const OVER_BUDGET = MAX_ORPHAN_PROBES + 10;
+
+  const listRequest = (query = "") =>
+    new NextRequest(`http://localhost/api/ingest/history${query}`);
+
+  const diskPage = (slug: string, frontmatter: Record<string, string>) => ({
+    slug,
+    title: slug,
+    content: "",
+    path: `/test/wiki/${slug}.md`,
+    body: `# ${slug}`,
+    frontmatter,
+  });
+
+  /** Readable by the default `owner` principal; unreadable by anyone else. */
+  const ownedByCaller = (slug: string) =>
+    diskPage(slug, { owner: "owner", visibility: "private" });
+
+  const listedIds = async (response: Response) => {
+    const body = (await response.json()) as { entries: { ingest_id: string }[] };
+    return body.entries.map((e) => e.ingest_id);
+  };
+
+  const slugsRead = () =>
+    mockedReadPage.mock.calls.map(([slug]) => slug as string);
+
+  it("takes the index's answer with zero page reads when every slug is indexed", async () => {
+    // The common request. If this ever reads a page, the fallback has leaked
+    // onto the hot multi-user path it was explicitly kept off.
+    const response = await GET(listRequest());
+
+    expect(response.status).toBe(200);
+    expect(await listedIds(response)).toEqual(["ing-a"]);
+    expect(mockedReadPage).not.toHaveBeenCalled();
+  });
+
+  it("derives both of its sets from ONE index listing", async () => {
+    // `indexed` and `readable` come from a single `listWikiPages()` call. A
+    // regression that listed twice — or that reached for
+    // `listReadableWikiPages` again for the readable half — doubles the cost of
+    // the hot path while every other assertion in this file stays green.
+    await GET(listRequest());
+
+    expect(mockedListWikiPages).toHaveBeenCalledTimes(1);
+    expect(mockedListReadable).not.toHaveBeenCalled();
+  });
+
+  it("hides an INDEXED but unreadable row without reading the page", async () => {
+    // The mutant this kills: gating the probe on `readable.has(slug)` instead
+    // of `indexed.has(slug)`. That fires a disk read for every indexed page the
+    // caller may not read — the exact population this route's scoping hides —
+    // and starves the budget with rows that end up hidden anyway.
+    mockedListWikiPages.mockResolvedValue([
+      {
+        slug: "page-bob",
+        title: "Page Bob",
+        summary: "",
+        owner: "bob",
+        visibility: "private",
+      },
+    ]);
+    mockedReadLedger.mockResolvedValue([ledgerEntry("ing-bob", "page-bob")]);
+
+    const response = await GET(listRequest());
+
+    expect(response.status).toBe(200);
+    expect(await listedIds(response)).toEqual([]);
+    expect(mockedReadPage).not.toHaveBeenCalled();
+  });
+
+  it("lists a readable orphan the page index does not know", async () => {
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-orphan", "page-orphan"),
+    ]);
+    mockedReadPage.mockResolvedValue(ownedByCaller("page-orphan"));
+
+    const response = await GET(listRequest());
+
+    expect(response.status).toBe(200);
+    expect(await listedIds(response)).toEqual(["ing-orphan"]);
+    expect(slugsRead()).toEqual(["page-orphan"]);
+  });
+
+  it("probes with the index's own authoritative read options", async () => {
+    // `{fresh, strict}` is how `listWikiPages` re-reads a slug it cannot trust,
+    // and it forces `visibility: private` when that read fails. A plain cached
+    // read can SUCCEED where that hardening failed and list a row the index
+    // deliberately hid. `owner` is what finds a crash-left ingest silo at all.
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-orphan", "page-orphan"),
+    ]);
+    mockedReadPage.mockResolvedValue(ownedByCaller("page-orphan"));
+
+    await GET(listRequest());
+
+    expect(mockedReadPage).toHaveBeenCalledWith("page-orphan", {
+      fresh: true,
+      strict: true,
+      owner: "owner",
+    });
+  });
+
+  it("hides an orphan the caller may not read", async () => {
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([ledgerEntry("ing-bob", "page-bob")]);
+    mockedReadPage.mockResolvedValue(
+      diskPage("page-bob", { owner: "bob", visibility: "private" }),
+    );
+
+    const response = await GET(listRequest());
+
+    expect(response.status).toBe(200);
+    expect(await listedIds(response)).toEqual([]);
+  });
+
+  it("hides a row whose page is gone from the index AND from disk", async () => {
+    // "Once a page is gone, GET no longer returns its ledger entries."
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([ledgerEntry("ing-gone", "page-gone")]);
+    mockedReadPage.mockResolvedValue(null);
+
+    const response = await GET(listRequest());
+
+    expect(response.status).toBe(200);
+    expect(await listedIds(response)).toEqual([]);
+  });
+
+  it("hides a row whose probe throws, and still lists its siblings", async () => {
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-bad", "page-bad"),
+      ledgerEntry("ing-good", "page-good"),
+    ]);
+    mockedReadPage.mockImplementation(async (slug: string) => {
+      if (slug === "page-bad") throw new Error("disk exploded");
+      return ownedByCaller(slug);
+    });
+
+    const response = await GET(listRequest());
+
+    // A throwing read is fail-closed, not a 500: the one row disappears and
+    // the rest of the page is served.
+    expect(response.status).toBe(200);
+    expect(await listedIds(response)).toEqual(["ing-good"]);
+  });
+
+  it("logs ONE probe failure per request, however many probes throw", async () => {
+    // A systemic storage fault fails every probe. Logging per slug would write
+    // up to `MAX_ORPHAN_PROBES` identical lines per GET and bury the first.
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-bad-1", "page-bad-1"),
+      ledgerEntry("ing-bad-2", "page-bad-2"),
+      ledgerEntry("ing-good", "page-good"),
+    ]);
+    mockedReadPage.mockImplementation(async (slug: string) => {
+      if (slug.startsWith("page-bad")) throw new Error("storage is down");
+      return ownedByCaller(slug);
+    });
+
+    const response = await GET(listRequest());
+
+    expect(await listedIds(response)).toEqual(["ing-good"]);
+    // Both bad slugs were still PROBED — the cap is on the logging, not on the
+    // work — and only the first was reported.
+    expect(slugsRead()).toEqual(["page-bad-1", "page-bad-2", "page-good"]);
+    expect(mockedWarn).toHaveBeenCalledTimes(1);
+    expect(mockedWarn.mock.calls[0][1]).toContain("page-bad-1");
+  });
+
+  it("spends at most MAX_ORPHAN_PROBES reads and lists exactly the resolved rows", async () => {
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue(
+      Array.from({ length: OVER_BUDGET }, (_, i) =>
+        ledgerEntry(`ing-${i}`, `orphan-${i}`),
+      ),
+    );
+    mockedReadPage.mockImplementation(async (slug: string) =>
+      ownedByCaller(slug),
+    );
+
+    const response = await GET(listRequest(`?limit=${OVER_BUDGET}`));
+
+    expect(response.status).toBe(200);
+    expect(mockedReadPage).toHaveBeenCalledTimes(MAX_ORPHAN_PROBES);
+    // Ids, not just a length: the cap must take the FIRST `MAX_ORPHAN_PROBES`
+    // in ledger order (most-recent-first), which a length assertion alone
+    // would not pin.
+    expect(await listedIds(response)).toEqual(
+      Array.from({ length: MAX_ORPHAN_PROBES }, (_, i) => `ing-${i}`),
+    );
+  });
+
+  it("reports the exhausted budget once, so persistent drift is not silent", async () => {
+    // Hiding the leftover rows is correct — it is what this route did before
+    // the fallback existed — but doing it SILENTLY makes a deployment whose
+    // budget is spent on every request look exactly like one with no orphans,
+    // which is the drift this whole feature exists to surface.
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue(
+      Array.from({ length: OVER_BUDGET }, (_, i) =>
+        ledgerEntry(`ing-${i}`, `orphan-${i}`),
+      ),
+    );
+    mockedReadPage.mockImplementation(async (slug: string) =>
+      ownedByCaller(slug),
+    );
+
+    await GET(listRequest(`?limit=${OVER_BUDGET}`));
+
+    expect(mockedWarn).toHaveBeenCalledTimes(1);
+    const [scope, message] = mockedWarn.mock.calls[0];
+    expect(scope).toBe("ingest");
+    expect(message).toContain(String(MAX_ORPHAN_PROBES));
+    expect(message).toContain(String(OVER_BUDGET - MAX_ORPHAN_PROBES));
+  });
+
+  it("stays quiet when the budget covers every index-missing slug", async () => {
+    // The discriminator: a handler that warned unconditionally would satisfy
+    // the case above and make the signal meaningless.
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue(
+      Array.from({ length: MAX_ORPHAN_PROBES }, (_, i) =>
+        ledgerEntry(`ing-${i}`, `orphan-${i}`),
+      ),
+    );
+    mockedReadPage.mockImplementation(async (slug: string) =>
+      ownedByCaller(slug),
+    );
+
+    await GET(listRequest(`?limit=${OVER_BUDGET}`));
+
+    expect(mockedReadPage).toHaveBeenCalledTimes(MAX_ORPHAN_PROBES);
+    expect(mockedWarn).not.toHaveBeenCalled();
+  });
+
+  it("keeps walking past the budget wall so a readable indexed row still lists", async () => {
+    // The mutant this kills: `break` instead of `continue` when the budget is
+    // spent. That would drop `ing-indexed`, which costs no read at all.
+    mockedListWikiPages.mockResolvedValue([
+      { slug: "page-a", title: "Page A", summary: "" },
+    ]);
+    mockedReadLedger.mockResolvedValue([
+      ...Array.from({ length: OVER_BUDGET }, (_, i) =>
+        ledgerEntry(`ing-${i}`, `orphan-${i}`),
+      ),
+      ledgerEntry("ing-indexed", "page-a"),
+    ]);
+    mockedReadPage.mockResolvedValue(null);
+
+    const response = await GET(listRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockedReadPage).toHaveBeenCalledTimes(MAX_ORPHAN_PROBES);
+    expect(await listedIds(response)).toEqual(["ing-indexed"]);
+  });
+
+  it("reads a slug shared by two rows exactly once and lists both", async () => {
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-one", "page-shared"),
+      ledgerEntry("ing-two", "page-shared"),
+    ]);
+    mockedReadPage.mockResolvedValue(ownedByCaller("page-shared"));
+
+    const response = await GET(listRequest());
+
+    expect(await listedIds(response)).toEqual(["ing-one", "ing-two"]);
+    expect(mockedReadPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("memoizes a NEGATIVE verdict too, so a repeated unreadable slug costs one probe", async () => {
+    // The mutant this kills: caching only `true`. The two `page-bad` rows would
+    // then burn two of the fifty probes, and the last readable orphan below
+    // would fall off the end of the budget instead of listing.
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-bad-1", "page-bad"),
+      ledgerEntry("ing-bad-2", "page-bad"),
+      ...Array.from({ length: MAX_ORPHAN_PROBES - 1 }, (_, i) =>
+        ledgerEntry(`ing-${i}`, `orphan-${i}`),
+      ),
+    ]);
+    mockedReadPage.mockImplementation(async (slug: string) =>
+      slug === "page-bad"
+        ? diskPage("page-bad", { owner: "bob", visibility: "private" })
+        : ownedByCaller(slug),
+    );
+
+    const response = await GET(listRequest(`?limit=${OVER_BUDGET}`));
+
+    expect(slugsRead().filter((s) => s === "page-bad")).toHaveLength(1);
+    expect(mockedReadPage).toHaveBeenCalledTimes(MAX_ORPHAN_PROBES);
+    expect(await listedIds(response)).toEqual(
+      Array.from({ length: MAX_ORPHAN_PROBES - 1 }, (_, i) => `ing-${i}`),
+    );
+  });
+
+  it("skips a row with no primary_slug without spending a probe", async () => {
+    mockedListWikiPages.mockResolvedValue([]);
+    mockedReadLedger.mockResolvedValue([
+      { ...ledgerEntry("ing-empty", "unused"), primary_slug: "" },
+      ledgerEntry("ing-orphan", "page-orphan"),
+    ]);
+    mockedReadPage.mockResolvedValue(ownedByCaller("page-orphan"));
+
+    const response = await GET(listRequest());
+
+    expect(await listedIds(response)).toEqual(["ing-orphan"]);
+    expect(slugsRead()).toEqual(["page-orphan"]);
+  });
+
+  it("stops at `limit` without probing rows it will never return", async () => {
+    mockedListWikiPages.mockResolvedValue([
+      { slug: "page-a", title: "Page A", summary: "" },
+    ]);
+    mockedReadLedger.mockResolvedValue([
+      ledgerEntry("ing-a", "page-a"),
+      ledgerEntry("ing-orphan", "page-orphan"),
+    ]);
+
+    const response = await GET(listRequest("?limit=1"));
+
+    expect(await listedIds(response)).toEqual(["ing-a"]);
+    expect(mockedReadPage).not.toHaveBeenCalled();
+  });
+
+  it("401s an unauthenticated caller before any ledger or page read", async () => {
+    mockedGetPrincipal.mockResolvedValue(null);
+
+    const response = await GET(listRequest());
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "Unauthorized" });
+    expect(mockedReadLedger).not.toHaveBeenCalled();
+    expect(mockedListWikiPages).not.toHaveBeenCalled();
+    expect(mockedReadPage).not.toHaveBeenCalled();
+  });
+
+  it.each(["?limit=0", "?limit=abc"])(
+    "400s %s before any ledger or page read",
+    async (query) => {
+      const response = await GET(listRequest(query));
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "limit must be a positive integer",
+      });
+      expect(mockedReadLedger).not.toHaveBeenCalled();
+      expect(mockedListWikiPages).not.toHaveBeenCalled();
+      expect(mockedReadPage).not.toHaveBeenCalled();
+    },
+  );
 });

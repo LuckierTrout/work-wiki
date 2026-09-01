@@ -17,6 +17,7 @@ import {
   listWikiPages,
   listReadableWikiPages,
   readLog,
+  tenantForOwner,
 } from "../wiki";
 import { updateIndex } from "../wiki";
 import { listRevisions, readRevisionMeta, saveRevision } from "../revisions";
@@ -504,6 +505,48 @@ describe("writeWikiPageWithSideEffects", () => {
     expect(page?.frontmatter.owner).toBe("bob");
     expect(page?.body).toContain("Bob committed this Page");
     expect(page?.body).not.toContain("Alice crash-left orphan");
+  });
+
+  it("recovers a crash-left silo that neither the index nor the flat path knows", async () => {
+    // The POSITIVE twin of the case above, and the branch DW-432's ingest-
+    // history orphan listing stands on. Every other owner-hint case in this
+    // repo names an already-committed slug and asserts the hint must NOT
+    // displace it; none proves the hint ever resolves anything. Break this
+    // branch and that listing silently becomes a no-op for its primary orphan
+    // class — a first write whose silo landed before its flat copy and index
+    // entry did — with nothing going red.
+    const orphan = serializeFrontmatter(
+      { owner: "alice", visibility: "private" },
+      "# Crash left\n\nAlice's silo landed; the flat copy never did.\n",
+    );
+    await getStorage().writeFile(
+      `tenants/${tenantForOwner("alice")}/wiki/silo-only.md`,
+      orphan,
+    );
+    await rebuildPageIndex();
+
+    // The drift is real, not a fixture shortcut: no index row, no flat copy.
+    expect((await listWikiPages()).map((e) => e.slug)).not.toContain(
+      "silo-only",
+    );
+    await expect(
+      getStorage().fileExists("wiki/silo-only.md"),
+    ).resolves.toBe(false);
+
+    const page = await readWikiPageWithFrontmatter("silo-only", {
+      fresh: true,
+      strict: true,
+      owner: "alice",
+    });
+
+    expect(page?.frontmatter.owner).toBe("alice");
+    expect(page?.body).toContain("Alice's silo landed");
+
+    // …and it stays invisible WITHOUT the hint, which is what makes the hint —
+    // rather than some other fallback — the thing this case actually pins.
+    await expect(
+      readWikiPageWithFrontmatter("silo-only", { fresh: true, strict: true }),
+    ).resolves.toBeNull();
   });
 
   it("leaves no global Page when authoritative create fails and succeeds on retry", async () => {
