@@ -1996,7 +1996,9 @@ source_spec: `spec-dw-120-122-123-authz-realm-parity-and-copy.md`
 location: src/lib/commons.ts:17
 severity: low
 reason: `commons.ts` imports `isAgentScopedType`/`isArtifactType` from `./wiki`, which merely re-exports them from the client-safe `./page-types`. Because `belongsInCommons` is now on the 403 path, two suites (`ingest-history-delete-route.test.ts`, `ingest-routes.test.ts`) had to widen their `vi.mock("@/lib/wiki")` factories to keep the predicate from calling `undefined`. Importing from `./page-types` directly would remove the trap for every future route suite at no behavioural cost. The import is pre-existing and unchanged by this pass.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-module-graph-fragility
+resolution-undo: 3b6de595a5695a7cd945cc07198a564a1a29c8e59dbd7d8d94fb6846c2032adb 2026-09-02 7374617475733a206f70656e
 
 ### DW-272: The two-file token scheme has no coverage on the Cloudflare R2 backend, where the read-your-writes guarantee the design leans on does not hold across two separate objects.
 
@@ -4533,7 +4535,9 @@ location: src/lib/errors.ts:21
 source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
 severity: low
 reason: `src/lib/read-only.ts:20-22` states `isReadOnlyError` matches on `err.name` rather than `instanceof` "so a duplicated module graph (vitest's two projects, bundler chunking, the stdio MCP entry point) cannot turn a route's 403 back into a 500." The identical failure mode applies to every `error instanceof ClientInputError` site and would degrade silently to 500 in production with no test able to see it. A `isClientInputError(err)` helper beside the class in `errors.ts` would close it repo-wide. Pre-existing across every such site; this change added four more.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-module-graph-fragility
+resolution-undo: 3b6de595a5695a7cd945cc07198a564a1a29c8e59dbd7d8d94fb6846c2032adb 2026-09-02 7374617475733a206f70656e
 
 ### DW-579: `research-completion.ts` dereferences `project.completion.sources` after only a phase check, so a wrong-shaped `completion` still dies with an opaque TypeError.
 
@@ -5798,4 +5802,12 @@ location: src/lib/document-extract.ts:605
 source_spec: `spec-dw-232-695-inherited-prototype-indexing.md`
 severity: low
 reason: src/lib/document-extract.ts:605 filters the presentation-order list with `Boolean(files[slide.path])` only — it never checks that the resolved path is a slide part. `resolveArchiveTarget("ppt/presentation.xml", "media/photo.jpg")` yields `ppt/media/photo.jpg`, a key the archive really holds, so the bogus entry survives, `ordered.length` is non-zero and it overrides `fallbackSlides`. The deck's readable `ppt/slides/slideN.xml` parts are then never extracted and the image bytes are decoded as slide XML, producing an empty section instead. Reachable through the live ZIP door (`extractDocumentTextAsync`'s zip branch), and distinct from the inherited-prototype defect this bundle closed: it is path confusion, not prototype indexing, and a null-prototype archive does not address it. A `/^ppt\/slides\/slide\d+\.xml$/i` test on `slide.path` alongside the existence check is the shape of the fix.
+status: open
+
+### DW-725: `isStoreFault` still leads with `error instanceof StoreFaultError`, the exact identity check DW-578 removed from `ClientInputError` three lines above it in the same file.
+origin: spec-deferred dcc09c8cca55
+location: src/lib/errors.ts:82
+source_spec: `spec-dw-271-578-module-graph-fragility.md`
+severity: low
+reason: `src/lib/errors.ts` now classifies `ClientInputError` structurally on `err.name`, and its doc block cites `isStoreFault` as the ordering precedent — but `isStoreFault` itself is still an identity check plus an errno probe. A `StoreFaultError` from a second copy of the module carries no errno `code`, so it falls through to `false`. At `src/app/api/tasks/run/route.ts:929` that loses the transient 500-and-retry and drops the task onto the `/not found/i` 422 below it, poisoning work that should have been retried. A `err.name === "StoreFaultError"` arm would close it the same way this pass closed the sibling. Out of scope here: the bundle intent names `ClientInputError` and `commons.ts` only.
 status: open

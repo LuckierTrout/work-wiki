@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { ClientInputError, getErrorMessage, isClientInputError } from "@/lib/errors";
 import {
   createResearchProject,
   filterResearchProjects,
@@ -153,7 +153,7 @@ export async function POST(request: Request) {
     // "EINVAL: invalid argument, open …" as the caller's bad input — inviting a
     // client to fix and resubmit a body that was never the problem.
     const message = getErrorMessage(error);
-    const status = error instanceof ClientInputError ? 400 : 500;
+    const status = isClientInputError(error) ? 400 : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

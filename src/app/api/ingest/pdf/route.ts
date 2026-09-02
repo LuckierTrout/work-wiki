@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { IngestOptions } from "@/lib/ingest";
 import { fetchPdfBytes, isUrl } from "@/lib/fetch";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import {
   enqueueExtract,
   type EnqueueExtractResult,
@@ -190,7 +190,7 @@ export async function POST(request: NextRequest) {
       );
     }
     const msg = getErrorMessage(error);
-    if (error instanceof ClientInputError) {
+    if (isClientInputError(error)) {
       logger.warn("ingest", `PDF ingest rejected: ${msg}`);
       return NextResponse.json({ error: msg }, { status: 400 });
     }

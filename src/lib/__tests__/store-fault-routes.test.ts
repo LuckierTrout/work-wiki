@@ -54,6 +54,24 @@ function errnoFault(code = "EINVAL"): Error {
   );
 }
 
+/**
+ * The SAME error a route would classify correctly, arriving from a SECOND copy
+ * of `errors.ts` (DW-578): identical shape, identical `name`, different
+ * constructor — what vitest's two projects, a bundler splitting server and edge
+ * chunks, or the stdio MCP entry compiled on its own actually produce.
+ *
+ * `instanceof` answers false for it, so while these ladders classified by
+ * identity the caller's 400 became a 500 in production only, where no test could
+ * see it. The message is deliberately one NO door's residual regex matches
+ * (`required|invalid|blocked|threshold|at most`, `…|add at least`,
+ * `…|owner|does not change|too large`): if the residual ladder could answer 400
+ * on its own, these rows would stay green against an identity check and pin
+ * nothing.
+ */
+function foreignClientInputError(message: string): Error {
+  return Object.assign(new Error(message), { name: "ClientInputError" });
+}
+
 type Door = {
   name: string;
   /** POST the door with a body its own shape checks accept, so the store is reached. */
@@ -178,6 +196,23 @@ describe("store-fault classification at the three sibling POST doors", () => {
       // "Invalid slug" would have matched the ladder anyway; a message that
       // does NOT match is what proves the TYPE branch is doing the work.
       door.store.mockRejectedValueOnce(new ClientInputError("Slug belongs to someone else."));
+
+      const response = await door.call();
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "Slug belongs to someone else.",
+      });
+      expect(door.store).toHaveBeenCalledTimes(1);
+    });
+
+    it("400s a FOREIGN-REALM ClientInputError — the same status, by name not identity", async () => {
+      // The row this change exists for. Same message as the case above, so the
+      // two are directly comparable: whichever realm the error came from, the
+      // door owes the caller the same 400.
+      const foreign = foreignClientInputError("Slug belongs to someone else.");
+      expect(foreign).not.toBeInstanceOf(ClientInputError);
+      door.store.mockRejectedValueOnce(foreign);
 
       const response = await door.call();
 

@@ -7,7 +7,7 @@ import { createIngestJob } from "@/lib/ingest-jobs";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { stageText } from "@/lib/ingest-staging";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
@@ -236,7 +236,7 @@ export async function POST(request: NextRequest) {
     // Bad-input failures (e.g. a deleted/private X post, an unsafe URL) are
     // tagged ClientInputError → 400 + warn. Anything else is a real server
     // failure → 500 + error log, so genuine bugs aren't buried as 500 noise.
-    if (error instanceof ClientInputError) {
+    if (isClientInputError(error)) {
       logger.warn("ingest", `Ingest rejected: ${msg}`);
       return NextResponse.json({ error: msg }, { status: 400 });
     }

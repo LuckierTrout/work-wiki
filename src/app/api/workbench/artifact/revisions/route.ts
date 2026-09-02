@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isOwnerPrincipal } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
@@ -182,7 +182,7 @@ function fail(error: unknown, where: string) {
   if (isReadOnlyError(error)) {
     return json({ error: getErrorMessage(error) }, 403);
   }
-  const status = error instanceof ClientInputError ? 400 : 500;
+  const status = isClientInputError(error) ? 400 : 500;
   if (status === 500) {
     logger.error("workbench-artifact-revisions", where, error);
   }

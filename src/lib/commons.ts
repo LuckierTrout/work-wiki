@@ -14,7 +14,13 @@
 
 import { getStorage } from "./storage";
 import { withFileLock } from "./lock";
-import { listWikiPages, isAgentScopedType, isArtifactType, tenantForOwner } from "./wiki";
+import { listWikiPages, tenantForOwner } from "./wiki";
+// The two predicates come from their OWN module, not through `./wiki`'s
+// re-export of them (DW-271). `wiki.ts` is the module route suites mock, and a
+// `vi.mock("@/lib/wiki")` factory that omits them leaves `belongsInCommons`
+// calling `undefined` — a permission path answering 500 instead of 403. Reached
+// directly, `page-types.ts` is pure and unmockable-by-accident.
+import { isAgentScopedType, isArtifactType } from "./page-types";
 import { logger } from "./logger";
 import type { IndexEntry } from "./types";
 

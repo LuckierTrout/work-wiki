@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { ClientInputError, getErrorMessage, isEnoent, isStoreFault, StoreFaultError } from "../errors";
+import {
+  ClientInputError,
+  getErrorMessage,
+  isClientInputError,
+  isEnoent,
+  isStoreFault,
+  StoreFaultError,
+} from "../errors";
 
 describe("getErrorMessage", () => {
   it("returns .message from an Error instance", () => {
@@ -139,5 +146,59 @@ describe("isStoreFault", () => {
     expect(isStoreFault(undefined)).toBe(false);
     expect(isStoreFault("EINVAL")).toBe(false);
     expect(isStoreFault({ code: "EINVAL" })).toBe(false);
+  });
+});
+
+/**
+ * DW-578. Every route that answers a caller's 400 does so by classifying the
+ * caught value, and `instanceof` is the one mechanism that cannot survive a
+ * duplicated module graph. Swap the implementation back to an identity check
+ * against the imported class and every OTHER assertion in the repo stays
+ * green — each of them throws through the same module instance the route
+ * imported. Only the foreign-realm case below fails, and only it stands between
+ * a 400 and a production-only 500.
+ */
+describe("isClientInputError classifies structurally, not by identity", () => {
+  it("accepts a ClientInputError from this module", () => {
+    expect(isClientInputError(new ClientInputError("Invalid slug: 'a b'"))).toBe(true);
+  });
+
+  it("accepts a ClientInputError from a DIFFERENT copy of this module", () => {
+    // Exactly what a duplicated module graph produces: same shape, same `name`,
+    // different constructor. An identity check returns false here — the first
+    // assertion is the one that fails the moment the implementation switches.
+    const foreign = Object.assign(new Error("bad"), { name: "ClientInputError" });
+    expect(foreign).not.toBeInstanceOf(ClientInputError);
+    expect(isClientInputError(foreign)).toBe(true);
+  });
+
+  it("returns false for a StoreFaultError — a 500 ladder still ends in 500", () => {
+    expect(isClientInputError(new StoreFaultError("boom"))).toBe(false);
+  });
+
+  it("returns false for a plain Error", () => {
+    expect(isClientInputError(new Error("bad"))).toBe(false);
+  });
+
+  it("returns false for non-Error values, without throwing on a property read", () => {
+    expect(isClientInputError(null)).toBe(false);
+    expect(isClientInputError(undefined)).toBe(false);
+    expect(isClientInputError("bad")).toBe(false);
+    // A bare object wearing the name is NOT an Error: `instanceof Error` is
+    // proven first, so the classifier never reads `name` off a hostile value.
+    expect(isClientInputError({ name: "ClientInputError" })).toBe(false);
+    expect(
+      isClientInputError({
+        get name() {
+          throw new Error("property getter exploded");
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("narrows to Error, so `.message` is readable after the check", () => {
+    const err: unknown = new ClientInputError("no extractable text layer");
+    if (!isClientInputError(err)) throw new Error("expected a client-input error");
+    expect(err.message).toBe("no extractable text layer");
   });
 });

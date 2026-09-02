@@ -4,7 +4,7 @@ import { isReadOnly } from "@/lib/config";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { extension } from "@/lib/document-formats";
 import { contentHash } from "@/lib/embeddings";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { enqueueExtract, rememberExtractMeeting } from "@/lib/extract-dispatch";
 import { fetchUrlContent } from "@/lib/fetch";
 import { ingest, recordSourceResee, sameHumanOwner, type IngestOptions } from "@/lib/ingest";
@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
     }
     const message = getErrorMessage(error);
-    if (error instanceof ClientInputError) {
+    if (isClientInputError(error)) {
       logger.warn("intake", `workbench intake rejected: ${message}`);
       return NextResponse.json({ error: message }, { status: 400 });
     }

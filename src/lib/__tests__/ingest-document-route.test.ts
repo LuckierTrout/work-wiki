@@ -21,6 +21,7 @@ vi.mock("@/lib/extract-dispatch", () => ({
 vi.mock("@/lib/source-sha256", () => ({ bytesSha256: vi.fn(async () => "ab".repeat(32)) }));
 
 import { getPrincipal } from "@/lib/auth";
+import { ClientInputError } from "@/lib/errors";
 import { enqueueExtract } from "@/lib/extract-dispatch";
 import { ingestDocument } from "@/lib/ingest";
 import { enqueueTask } from "@/lib/tasks";
@@ -114,5 +115,48 @@ describe("POST /api/ingest/document", () => {
     });
     await POST(request as never);
     expect(mockedExtract.mock.calls[0][0].tags).toEqual(["alpha", "beta"]);
+  });
+
+  /**
+   * DW-578. This door's catch has no residual message ladder: a caught value is
+   * either a client-input error (400 + `logger.warn`) or a server fault (500 +
+   * `logger.error`). So the classifier is the ONLY thing deciding which, and a
+   * misclassification here is silent — the caller gets a 500 for their own bad
+   * file and retries it forever.
+   */
+  describe("client-input classification does not depend on module identity", () => {
+    const csv = () =>
+      upload(new File(["csv"], "report.csv", { type: "text/csv" }), "Report");
+
+    it("400s a same-realm ClientInputError", async () => {
+      mockedIngest.mockRejectedValueOnce(
+        new ClientInputError("The document is empty."),
+      );
+      const response = await POST(csv() as never);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "The document is empty." });
+    });
+
+    it("400s a FOREIGN-REALM ClientInputError — the same status, by name not identity", async () => {
+      // A second copy of `errors.ts`: same `name`, different constructor, which
+      // is what vitest's two projects and a split bundle actually produce.
+      // `instanceof` answers false for it, so this row — and only this row —
+      // fails if the route goes back to classifying by identity.
+      const foreign = Object.assign(new Error("The document is empty."), {
+        name: "ClientInputError",
+      });
+      expect(foreign).not.toBeInstanceOf(ClientInputError);
+      mockedIngest.mockRejectedValueOnce(foreign);
+
+      const response = await POST(csv() as never);
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({ error: "The document is empty." });
+    });
+
+    it("still 500s a plain Error — the 400 branch did not widen", async () => {
+      mockedIngest.mockRejectedValueOnce(new Error("disk on fire"));
+      expect((await POST(csv() as never)).status).toBe(500);
+    });
   });
 });

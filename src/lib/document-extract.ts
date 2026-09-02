@@ -2,7 +2,7 @@ import { unzipSync, zlibSync } from "fflate";
 import { MAX_CONTENT_LENGTH, MAX_DOCUMENT_SIZE } from "./constants";
 import { detectDocumentFormat, ownLookup } from "./document-formats";
 import type { DocumentFormat } from "./document-formats";
-import { ClientInputError } from "./errors";
+import { ClientInputError, isClientInputError } from "./errors";
 import { extractTitle, htmlToMarkdown } from "./html-parse";
 import { describeImage } from "./vision";
 
@@ -454,7 +454,7 @@ function openOfficeArchive(
     });
     return Object.assign(Object.create(null) as Record<string, Uint8Array>, entries);
   } catch (error) {
-    if (error instanceof ClientInputError) throw error;
+    if (isClientInputError(error)) throw error;
     throw new ClientInputError(`The .${format} file could not be opened.`);
   }
 }
@@ -958,7 +958,7 @@ function safeArchiveEntries(bytes: ArrayBuffer): Array<[string, Uint8Array]> {
     });
     return Object.entries(files).sort(([a], [b]) => a.localeCompare(b));
   } catch (error) {
-    if (error instanceof ClientInputError) throw error;
+    if (isClientInputError(error)) throw error;
     throw new ClientInputError("The .zip file could not be opened.");
   }
 }
@@ -999,7 +999,7 @@ export async function extractDocumentTextAsync(input: {
         sections.push(`## File: ${relativePath}\n\n${nested.text}`);
         assets.push(...nested.assets);
       } catch (error) {
-        if (error instanceof ClientInputError && /no extractable text layer/i.test(error.message)) {
+        if (isClientInputError(error) && /no extractable text layer/i.test(error.message)) {
           continue;
         }
         throw error;

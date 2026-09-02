@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { editResearchProject, getResearchProject } from "@/lib/research-projects";
 import { retireResearchProject } from "@/lib/research-runtime";
@@ -96,7 +96,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     // a stored row the patch does not overwrite — and a 500 tells the client to
     // retry a request that will never succeed. Everything else stays a server
     // fault, message unchanged.
-    const status = error instanceof ClientInputError ? 400 : 500;
+    const status = isClientInputError(error) ? 400 : 500;
     return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }
 }
@@ -129,7 +129,7 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
     }
     // Same classification as PATCH above: a store-side input refusal is the
     // caller's fault at every door, and a storage fault is still a 500.
-    const status = error instanceof ClientInputError ? 400 : 500;
+    const status = isClientInputError(error) ? 400 : 500;
     return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }
 }

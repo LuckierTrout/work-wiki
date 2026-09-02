@@ -6,7 +6,7 @@ import { createIngestJob } from "@/lib/ingest-jobs";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { stageBytes } from "@/lib/ingest-staging";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { logger } from "@/lib/logger";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
@@ -206,7 +206,7 @@ export async function POST(request: NextRequest) {
     // Bad-input failures (unsafe/oversized/non-image URL) are tagged
     // ClientInputError by the store helpers → 400. Anything else is a real
     // server failure → 500 + error log (always log so nothing is masked).
-    if (error instanceof ClientInputError) {
+    if (isClientInputError(error)) {
       logger.warn("ingest", `Image ingest rejected: ${msg}`);
       return NextResponse.json({ error: msg }, { status: 400 });
     }

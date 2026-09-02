@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { isOwnerPrincipal } from "@/lib/owner";
 import { isReadOnlyError } from "@/lib/read-only";
 import { createWiki, getWikiRegistry, parseCreateWikiInput } from "@/lib/wikis";
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     if (isReadOnlyError(error)) {
       return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
     }
-    const status = error instanceof ClientInputError ? 400 : 500;
+    const status = isClientInputError(error) ? 400 : 500;
     return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }
 }

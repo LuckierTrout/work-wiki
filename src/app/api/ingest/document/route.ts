@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { detectDocumentFormat } from "@/lib/document-extract";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { enqueueExtract } from "@/lib/extract-dispatch";
 import { ingestDocument, type IngestOptions } from "@/lib/ingest";
 import { bytesSha256 } from "@/lib/source-sha256";
@@ -190,7 +190,7 @@ export async function POST(request: NextRequest) {
       );
     }
     const message = getErrorMessage(error);
-    if (error instanceof ClientInputError) {
+    if (isClientInputError(error)) {
       logger.warn("ingest", `document ingest rejected: ${message}`);
       return NextResponse.json({ error: message }, { status: 400 });
     }

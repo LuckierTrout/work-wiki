@@ -26,6 +26,31 @@ export class ClientInputError extends Error {
 }
 
 /**
+ * Whether a caught value is a caller-input fault.
+ *
+ * Matches on `name`, not `instanceof`: a `ClientInputError` thrown by a SECOND
+ * copy of this module — vitest's two projects, a bundler splitting server and
+ * edge chunks, the stdio MCP entry compiled separately — fails `instanceof`
+ * against the copy the route imported, and the caller's 400 would silently
+ * become a 500 in production only, where no test can see it. So the check is
+ * structural on purpose; `errors.test.ts` pins it against a foreign error
+ * object. The same reasoning, and the same shape, as
+ * {@link import("./read-only").isReadOnlyError}.
+ *
+ * `instanceof Error` is proven BEFORE `name` is read, for the reason
+ * {@link isStoreFault} documents: the caught value in a route's catch block is
+ * arbitrary, and a property read on it can itself throw.
+ *
+ * Narrows to `Error`, not to `ClientInputError`: under a duplicated graph the
+ * value genuinely is NOT an instance of the imported class, so claiming that
+ * type would be a lie — while `Error` is both true and enough to read
+ * `.message` off it under `strict`.
+ */
+export function isClientInputError(err: unknown): err is Error {
+  return err instanceof Error && err.name === "ClientInputError";
+}
+
+/**
  * A stored-artifact fault: the bytes we persisted are unreadable, wrong-shaped,
  * or the filesystem refused us. Always a server fault (5xx), never the
  * caller's, and repairable in place. The mirror image of

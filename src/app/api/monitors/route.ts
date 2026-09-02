@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
-import { ClientInputError, getErrorMessage, isStoreFault } from "@/lib/errors";
+import { getErrorMessage, isClientInputError, isStoreFault } from "@/lib/errors";
 import {
   createSourceMonitor,
   listSourceMonitors,
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
     if (isStoreFault(error)) {
       return NextResponse.json({ error: message }, { status: 500 });
     }
-    if (error instanceof ClientInputError) {
+    if (isClientInputError(error)) {
       return NextResponse.json({ error: message }, { status: 400 });
     }
     return NextResponse.json(

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isReadOnly } from "@/lib/config";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { isReadOnlyError, READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { normalizeReviewCount } from "@/lib/review-count";
 import {
@@ -164,7 +164,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     // (DW-478). `deep_research` calls `createResearchProject`, so both the
     // `MAX_PROJECTS` refusal and `cleanInput`'s verdict on `item.title` land
     // here — and an agent told "500" retries a request that can never succeed.
-    const status = error instanceof ClientInputError ? 400 : 500;
+    const status = isClientInputError(error) ? 400 : 500;
     return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }
 }

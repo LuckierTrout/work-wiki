@@ -23,7 +23,7 @@ import {
 } from "@/lib/agents";
 import { hasIngestAnalysis } from "@/lib/ingest-analysis";
 import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "@/lib/review-queue";
-import { ClientInputError, getErrorMessage, isStoreFault } from "@/lib/errors";
+import { getErrorMessage, isClientInputError, isStoreFault } from "@/lib/errors";
 import { getVectorSearchSettings, isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
@@ -885,7 +885,7 @@ export async function POST(req: Request) {
     }
     const graphifyFailureIsTerminal =
       /not found/i.test(message) ||
-      err instanceof ClientInputError ||
+      isClientInputError(err) ||
       (Number.isFinite(queueAttempt) && queueAttempt >= 4);
     if (
       task.kind === "extract-knowledge" &&
@@ -935,7 +935,7 @@ export async function POST(req: Request) {
       logger.warn("tasks", `task "${task.kind}" permanently failed: ${message}`);
       return NextResponse.json({ error: message }, { status: 422 });
     }
-    if (err instanceof ClientInputError) {
+    if (isClientInputError(err)) {
       await Promise.all(stagedKeys.map((key) => deleteStaged(key)));
       logger.warn("tasks", `task "${task.kind}" rejected: ${message}`);
       return NextResponse.json({ error: message }, { status: 422 });

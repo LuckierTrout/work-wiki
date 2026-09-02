@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { ClientInputError, getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { enqueueTask } from "@/lib/tasks";
 import {
@@ -124,7 +124,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     const status =
       error instanceof ResearchProviderUnconfiguredError
         || error instanceof ResearchProviderOverrideError
-        || error instanceof ClientInputError
+        || isClientInputError(error)
         ? 400
         : error instanceof ResearchProjectNotFoundError
           ? 404

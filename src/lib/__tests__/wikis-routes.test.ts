@@ -516,4 +516,48 @@ describe("a flag that flips mid-request on the wiki-lifecycle writes", () => {
     mockedDelete.mockRejectedValueOnce(new Error("disk on fire"));
     expect((await DELETE_WIKI(deleteRequest(), idContext())).status).toBe(500);
   });
+
+  it("400s a FOREIGN-REALM ClientInputError past the 403 branch, on every write", async () => {
+    // DW-578, at the HTTP surface. Every OTHER client-input row in this file
+    // throws through the same `errors.ts` instance the route imported, so all of
+    // them pass whether the route classifies by identity or by name. This one
+    // does not: the error carries the right `name` and the wrong constructor —
+    // exactly what a duplicated module graph produces — and an `instanceof`
+    // check answers false for it, dropping the caller's 400 to a 500 in
+    // production only.
+    //
+    // These five doors are also the awkward shape: `isReadOnlyError` runs FIRST
+    // in each catch. That branch matches on `name` too, so a client-input error
+    // must fall PAST it rather than be swallowed as a 403 — which is why the
+    // status asserted here is 400 and not merely "not 500".
+    const foreign = () =>
+      Object.assign(new Error("Wiki name is required."), { name: "ClientInputError" });
+    expect(foreign()).not.toBeInstanceOf(ClientInputError);
+
+    mockedCreate.mockRejectedValueOnce(foreign());
+    expect((await POST(createRequest({ name: "x", scenario: "business" }))).status).toBe(400);
+    mockedRename.mockRejectedValueOnce(foreign());
+    expect((await RENAME_WIKI(renameRequest({ name: "x" }), idContext())).status).toBe(400);
+    mockedDelete.mockRejectedValueOnce(foreign());
+    expect((await DELETE_WIKI(deleteRequest(), idContext())).status).toBe(400);
+    mockedApply.mockRejectedValueOnce(foreign());
+    expect(
+      (await APPLY_TEMPLATE(templateRequest({ scenario: "reading" }), templateContext()))
+        .status,
+    ).toBe(400);
+    mockedSetCurrent.mockRejectedValueOnce(foreign());
+    expect((await PUT(currentRequest({ id: WIKI.id }))).status).toBe(400);
+  });
+
+  it("keeps the 403 for a foreign-realm ReadOnlyError — the branches stay distinct", async () => {
+    // The mirror of the row above: the two structural classifiers sit in the
+    // same catch and match on the same property, so a foreign-realm refusal must
+    // still reach 403 rather than be re-read as the caller's input.
+    mockedRename.mockRejectedValueOnce(
+      Object.assign(new Error(READ_ONLY_REFUSAL.wikiRename), { name: "ReadOnlyError" }),
+    );
+    const response = await RENAME_WIKI(renameRequest({ name: "x" }), idContext());
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: READ_ONLY_REFUSAL.wikiRename });
+  });
 });
