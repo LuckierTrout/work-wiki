@@ -8,6 +8,40 @@ import { resolveSlugPath, type SlugTenantMap } from "@/lib/links";
 let cache: SlugTenantMap | null = null;
 let inflight: Promise<SlugTenantMap> | null = null;
 
+// Mounted hooks, so a map that arrives AFTER they mounted still reaches them
+// (DW-234). A component mounted while `/api/wiki/routes` was failing used to
+// keep its DEFAULT_TENANT hrefs for its whole lifetime: its effect ran once,
+// resolved the degraded `{}`, and nothing ever re-read the session cache — so a
+// later cold caller's successful load warmed the module for everyone EXCEPT the
+// components already on screen.
+const listeners = new Set<(map: SlugTenantMap) => void>();
+
+/**
+ * Bumped by {@link _resetSlugTenants}. A request created before a reset keeps
+ * running (nothing cancels a `fetch`), so without this it would land LATE and
+ * write its map over the one the post-reset caller already cached — and
+ * broadcast that stale map to every listener that subscribed after the reset.
+ * The abandoned chain still ANSWERS its own caller; it just stops writing to
+ * module state it no longer owns.
+ */
+let generation = 0;
+
+/**
+ * Run `listener` when a later `loadSlugTenants()` caches a map. Returns the
+ * unsubscribe, which the hook calls from its effect cleanup — without it a
+ * remounted tree would accumulate one listener per mount, each setting state on
+ * a component that is gone.
+ *
+ * Module-private on purpose: the recovery signal is another caller's successful
+ * load, not something app code subscribes to.
+ */
+function subscribe(listener: (map: SlugTenantMap) => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /**
  * Fetch the readability-gated slug→tenant map from `/api/wiki/routes`.
  * Concurrent callers share the in-flight request and later callers get the
@@ -28,7 +62,8 @@ let inflight: Promise<SlugTenantMap> | null = null;
 export function loadSlugTenants(): Promise<SlugTenantMap> {
   if (cache) return Promise.resolve(cache);
   if (!inflight) {
-    inflight = fetch("/api/wiki/routes")
+    const era = generation;
+    const request = fetch("/api/wiki/routes")
       .then((r) => {
         if (!r.ok) throw new Error(`/api/wiki/routes responded ${r.status}`);
         return r.json();
@@ -49,15 +84,89 @@ export function loadSlugTenants(): Promise<SlugTenantMap> {
           throw new Error("/api/wiki/routes returned a non-object body");
         }
         const m = parsed as SlugTenantMap;
+        // Abandoned by a reset while this request was in flight: answer the
+        // caller that asked for it, but touch no module state — see
+        // {@link generation}.
+        if (era !== generation) return m;
         cache = m;
+        // Only a SUCCESSFUL cache fill broadcasts. A degraded `{}` never
+        // reaches here (it comes out of the `.catch` below), which is the
+        // point: notifying on it would hand every mounted component a state
+        // change carrying no new information.
+        //
+        // Iterate a SNAPSHOT of the set: `Set` iteration already tolerates a
+        // listener deleting its own entry, so the copy is not about that — it
+        // is so one broadcast reaches exactly the listeners that were
+        // subscribed when it began, whichever of them a neighbour adds or
+        // removes mid-loop. (A listener removed by a neighbour is therefore
+        // still called; the hook's `on` flag is what makes that harmless.)
+        // A try/catch per listener so one throwing hook does not strand the
+        // rest — and, because this runs INSIDE the success `.then`, does not
+        // reject the shared promise into the degrading `.catch` below.
+        for (const listener of [...listeners]) {
+          try {
+            listener(m);
+          } catch {
+            // Deliberately ignored — see above.
+          }
+        }
         return m;
       })
       .catch(() => ({}) as SlugTenantMap)
       .finally(() => {
-        inflight = null;
+        // Only if it is still OURS. An abandoned pre-reset request settling
+        // late would otherwise clear the slot belonging to the request that
+        // replaced it, and concurrent callers would each start a duplicate.
+        if (inflight === request) inflight = null;
       });
+    inflight = request;
   }
   return inflight;
+}
+
+/**
+ * Register `listener` from a test. **Test-only** — a thin door onto the private
+ * {@link subscribe} above, because the resilience the notify loop is written for
+ * (one throwing listener must not strand its neighbours, and must not reject the
+ * shared promise into the degrading `.catch`) has no other way in: every real
+ * listener is a hook's `setMap`, which does not throw. Returns the unsubscribe.
+ * Nothing the app ships calls this — app code gets the map from the hook.
+ */
+export function _subscribeSlugTenants(
+  listener: (map: SlugTenantMap) => void,
+): () => void {
+  return subscribe(listener);
+}
+
+/**
+ * How many hooks are currently subscribed. **Test-only**, and the counterpart of
+ * the effect cleanup: "the listener is gone after unmount" is otherwise
+ * invisible from outside the module — React no longer warns on a `setState`
+ * against an unmounted component, so a leaked listener would be silent until it
+ * had accumulated one per mount for the life of the tab.
+ */
+export function _slugTenantListenerCount(): number {
+  return listeners.size;
+}
+
+/**
+ * Drop the session cache and disown any in-flight request, so the next
+ * `loadSlugTenants()` re-fetches. **Test-only** — exported so a suite can
+ * express "the map is still loading" or "routes failed" on a MOUNTED component
+ * (DW-262), which is otherwise unreachable once any test in the file has warmed
+ * the singleton. Nothing the app ships calls this.
+ *
+ * It deliberately does NOT clear {@link listeners}. Subscriptions belong to
+ * mounts, and a mount removes its own on cleanup; clearing them here would
+ * silently detach every component still on screen and turn its cleanup into a
+ * no-op — so a suite that reset mid-life to stage an outage would watch those
+ * components never recover and read the DW-234 bug back as product behavior.
+ * Leaving them alone means a reset changes only what its name says.
+ */
+export function _resetSlugTenants(): void {
+  cache = null;
+  inflight = null;
+  generation += 1;
 }
 
 /**
@@ -84,11 +193,21 @@ export function useSlugTenants() {
   const [map, setMap] = useState<SlugTenantMap>(cache ?? {});
   useEffect(() => {
     let on = true;
+    // Empty deps ON PURPOSE: module scope is the tab, so this must run once per
+    // mount. What keeps the mount live afterwards is the subscription, not a
+    // dependency — a mount that resolved a degraded `{}` gets the recovered map
+    // from the next caller's successful load instead of staying on the
+    // DEFAULT_TENANT fallback for its whole lifetime (DW-234). No polling, no
+    // timer, no retry here: the ONLY recovery signal is another caller's load.
+    const unsubscribe = subscribe((m) => {
+      if (on) setMap(m);
+    });
     loadSlugTenants().then((m) => {
       if (on) setMap(m);
     });
     return () => {
       on = false;
+      unsubscribe();
     };
   }, []);
   const hrefForSlug = (slug: string): string => hrefFromMap(map, slug);

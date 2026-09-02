@@ -1720,7 +1720,9 @@ source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
 location: src/hooks/useSlugTenants.ts:56
 severity: low
 reason: src/hooks/useSlugTenants.ts's effect has an empty dependency array, so it loads once per mount. DW-87's fix makes the SESSION recover — the next cold caller re-fetches and caches a good map — but a component already mounted during the outage never re-reads it. Links still work through the 308 fallback, so the consequence is a stale wrong-handle hop on one component until it remounts, not breakage. The empty-dep mount effect pre-dates this story; DW-87 only changed what the cache holds.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-slug-tenant-map-lifecycle
+resolution-undo: 4e90e1d24f934455fa9aa9826734cb64350c2896842017832859f3bd9cc22315 2026-09-02 7374617475733a206f70656e
 
 ### DW-235: scripts/setup-cloudflare.sh:113 prints the stale display brand "yopedia — Cloudflare Infrastructure Setup" to the operator's terminal.
 
@@ -1923,7 +1925,9 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/hooks/useSlugTenants.ts
 severity: low
 reason: The map is cached in a module-level singleton in `src/hooks/useSlugTenants.ts`, warmed once per file by `await loadSlugTenants()` in `beforeEach`. Once warmed it cannot be un-warmed, so `owner-scoped-anchors.test.tsx` can only ever assert the resolved-map branch. `renderer-slug-tenant-adoption.test.tsx` covers the unknown-slug fallback via a slug absent from the map, but the degraded-map path (session fetch failed) has no component witness.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-slug-tenant-map-lifecycle
+resolution-undo: 4e90e1d24f934455fa9aa9826734cb64350c2896842017832859f3bd9cc22315 2026-09-02 7374617475733a206f70656e
 
 ### DW-263: ChatWorkspace's save-failure and slug-less-response banner paths are untested; only the happy path and the url-absent fallback are pinned.
 origin: spec-deferred 3149502ae75b
@@ -5774,4 +5778,12 @@ location: src/lib/__tests__/storage-fs.test.ts:1229
 source_spec: `spec-dw-257-468-469-mounted-rail-tree-split-coverage.md`
 severity: low
 reason: Reproduced at BASELINE with every file from this bundle removed from the working tree (`git stash` + the new file moved aside): three consecutive `pnpm vitest run --project node` runs failed, 2/2/1 cases respectively, always in `FilesystemStorageProvider > reapStrandedScratchFiles` ("stops at STRANDED_SCRATCH_CANDIDATE_CAP…" and "honours an explicit window…", `AssertionError: expected 3 to be 1`). The same file passes in 685ms when run alone. The cases plant scratch files at explicit mtimes and reap against a grace window measured in wall-clock milliseconds (1_000 / 5_000), so under parallel load a candidate crosses the window mid-pass. Independently observed by a review layer on the unmodified tree. This bundle touches only the `dom` project, which is fully green (72 files, 1111 tests).
+status: open
+
+### DW-723: A component mounted while /api/wiki/routes was failing still keeps its DEFAULT_TENANT hrefs for its whole lifetime when no OTHER component mounts afterwards, because the only recovery signal is anothe
+origin: spec-deferred be34af8b6828
+location: src/hooks/useSlugTenants.ts:165
+source_spec: `spec-dw-234-262-slug-tenant-map-lifecycle.md`
+severity: low
+reason: DW-234 is closed by propagation: `loadSlugTenants` broadcasts a successful cache fill to every mounted hook. Verified by grep over src/, e2e/ and workers/ that nothing outside `useSlugTenants` calls `loadSlugTenants()`, so "the next cold caller" is always a later MOUNT. On a surface that goes idle after the outage — a Workbench sitting still, no navigation, no panel opening — no later mount occurs, nothing re-fetches, and that component stays on the wrong-handle 308 hop until reload. Closing it needs a self-initiated refresh (retry-after-degraded, or a visibility/focus signal), which this spec's Never clause rules out on the authority of DW-234's own reason field ("the next cold caller re-fetches").
 status: open

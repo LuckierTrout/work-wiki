@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { loadSlugTenants } from "@/hooks/useSlugTenants";
+import { _resetSlugTenants, loadSlugTenants } from "@/hooks/useSlugTenants";
 import { ArticleView } from "@/components/ArticleView";
 import { VaultExplorer } from "@/components/VaultExplorer";
 import { ChatWorkspace } from "@/components/ChatWorkspace";
@@ -110,6 +110,18 @@ function ok(body: unknown) {
   return { ok: true, status: 200, json: async () => body } as unknown as Response;
 }
 
+/**
+ * A route table value meaning "this endpoint is DOWN" — the stub rejects it.
+ *
+ * Deleting the entry instead would also make the stub throw, but through the
+ * `unexpected fetch` guard, whose whole job is the opposite claim: a component
+ * asked for a URL no fixture ever described, which is a bug in the test or a
+ * new call site, not a state under test. An outage is a DESCRIBED state, so it
+ * gets its own value and its own message — and a fixture that later forgets a
+ * route still fails as "unexpected", not as a staged outage.
+ */
+const ROUTE_UNAVAILABLE = Symbol("route unavailable");
+
 /** Per-test route table, consulted by the one `fetch` stub below. */
 let routes: Record<string, unknown>;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -136,6 +148,9 @@ beforeEach(async () => {
   fetchMock = vi.fn(async (url: string) => {
     const key = Object.keys(routes).find((route) => route === url);
     if (key === undefined) throw new Error(`unexpected fetch: ${url}`);
+    if (routes[key] === ROUTE_UNAVAILABLE) {
+      throw new Error(`staged outage: ${url}`);
+    }
     return ok(routes[key]);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -659,5 +674,109 @@ describe("BulkDocumentImport", () => {
     // an upload that stalled.
     const link = screen.getByRole("link", { name: "Open page →" });
     expect(link.getAttribute("href")).toBe(ALICE_TARGET);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The degraded map, and the recovery out of it
+// ---------------------------------------------------------------------------
+
+/**
+ * What every component in this file is built to survive, finally witnessed on a
+ * mounted one (DW-262), plus the refresh path out of it (DW-234).
+ *
+ * Every case above warms the session cache first, so the map is on screen from
+ * the first paint — which means the FALLBACK branch each converted call site
+ * carries had no component witness at all. `useSlugTenants` caches at module
+ * scope, so it is not enough to fail the route: this file has already warmed
+ * the singleton by the time any case runs, and a warm cache never re-fetches.
+ * `_resetSlugTenants()` (test-only) is what makes the module cold again, and
+ * `ROUTE_UNAVAILABLE` is what keeps it that way for the mount.
+ *
+ * `RecentIngests` is the fixture because it is the only component here with TWO
+ * map-driven rows and no `tenant` fallback prop, so the degraded answers
+ * (`/u/yopedia/target`, `/u/yopedia/other`) are distinguishable from both
+ * canonical ones — and it needs no clock.
+ */
+const DEGRADED_TARGET = "/u/yopedia/target";
+const DEGRADED_OTHER = "/u/yopedia/other";
+
+/**
+ * Let a `loadSlugTenants()` chain run out: `fetch` → the two `.then`s →
+ * `.catch` → `.finally`. One macrotask turn, because the number of microtask
+ * turns is not something a test should have to know — and because a recovery
+ * issued while the failed request is still in `inflight` would JOIN it and be
+ * answered `{}`.
+ */
+async function settleLoad() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+/** How many times `/api/wiki/routes` was actually requested. */
+function routeFetches() {
+  return fetchMock.mock.calls.filter(([url]) => url === "/api/wiki/routes").length;
+}
+
+describe("RecentIngests with a failing /api/wiki/routes", () => {
+  beforeEach(() => {
+    // Registered AFTER the file-level hook, which vitest therefore runs first —
+    // so this undoes its `await loadSlugTenants()` warm-up rather than racing
+    // it. Both halves are needed: the sentinel fails the NEXT fetch, the reset
+    // is what makes there be a next fetch.
+    routes["/api/wiki/routes"] = ROUTE_UNAVAILABLE;
+    _resetSlugTenants();
+    // The file-level warm-up above may or may not have paid for a fetch — it
+    // returns from the module cache whenever the previous case left one warm —
+    // so the counts below are this case's own, not the file's running total.
+    fetchMock.mockClear();
+  });
+
+  it("falls back to the DEFAULT_TENANT href for every row while the map is unavailable", async () => {
+    renderRecentIngests();
+    // The rows first, then the load run out. Without the settle these hrefs
+    // would also be satisfied by a map that had not loaded YET — the loading
+    // fallback and the failed fallback are the same string — so the fetch
+    // count below is what makes this the degraded branch and not a race the
+    // assertions happened to win.
+    expect(await hrefOf("target")).toBe(DEGRADED_TARGET);
+    await settleLoad();
+    expect(routeFetches()).toBe(1); // the staged outage really was requested
+
+    // Both rows, because "one tenant for the whole list" is exactly what the
+    // fallback looks like — the assertion has to be that the rows still RENDER
+    // and still link, not that the component degraded to no anchor at all.
+    expect(await hrefOf("target")).toBe(DEGRADED_TARGET);
+    expect(await hrefOf(EMAIL_SUBJECT)).toBe(DEGRADED_OTHER);
+  });
+
+  it("adopts a recovered map without a remount", async () => {
+    renderRecentIngests();
+    expect(await hrefOf("target")).toBe(DEGRADED_TARGET);
+    await settleLoad(); // the failed request is out of `inflight` before we retry
+
+    // The SAME DOM nodes, held across the recovery. If the tree were remounted
+    // (or these rows re-created) the assertions below would read detached
+    // elements and fail — which is what makes this "the mounted component
+    // re-rendered" rather than "something on screen has the right href".
+    const ledgerLink = await screen.findByRole("link", { name: "target" });
+    const emailLink = await screen.findByRole("link", { name: EMAIL_SUBJECT });
+
+    // Routes comes back, and ANOTHER caller loads it — the only recovery signal
+    // the hook has. No polling, no timer and no remount is involved.
+    routes["/api/wiki/routes"] = { ...SLUG_TENANTS };
+    await act(async () => {
+      await loadSlugTenants();
+    });
+
+    expect(ledgerLink.isConnected, "the ledger row was remounted").toBe(true);
+    expect(emailLink.isConnected, "the email row was remounted").toBe(true);
+    expect(ledgerLink.getAttribute("href")).toBe(ALICE_TARGET);
+    expect(emailLink.getAttribute("href")).toBe(BOB_OTHER);
+    // Twice: the mount's failed load and this one. A hook that re-fetched per
+    // render, or once per notification, would pass every href assertion above
+    // and show up only here.
+    expect(routeFetches()).toBe(2);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { SlugTenantMap } from "@/lib/links";
 
 /**
  * Pins the load-bearing seams of `useSlugTenants` without a renderer (the hook
@@ -142,6 +143,152 @@ describe("loadSlugTenants", () => {
     expect(await loadSlugTenants()).toEqual({});
     expect(await loadSlugTenants()).toEqual({});
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("_resetSlugTenants() drops the warm cache — the next call re-fetches", async () => {
+    // The reset is a CONTRACT, not a convenience: it is what lets a mounted
+    // suite express "routes failed" (DW-262), which is unreachable once any
+    // earlier case in that file has warmed this module-level singleton. This
+    // project has no DOM, so it pins the cache/in-flight clearing only.
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ a: "alice" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { loadSlugTenants, _resetSlugTenants } = await importCold();
+
+    expect(await loadSlugTenants()).toEqual({ a: "alice" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    _resetSlugTenants();
+
+    expect(await loadSlugTenants()).toEqual({ a: "alice" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("_resetSlugTenants() unwires an IN-FLIGHT request — the next call issues its own", async () => {
+    // Clearing only `cache` would leave the stale promise in `inflight`, so the
+    // next caller would silently join the request the reset was meant to
+    // discard — and a suite that reset to stage an outage would still be
+    // answered by the pre-reset fetch.
+    let release!: (response: { ok: boolean; json: () => Promise<unknown> }) => void;
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ b: "bob" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const { loadSlugTenants, _resetSlugTenants, _subscribeSlugTenants } =
+      await importCold();
+
+    const abandoned = loadSlugTenants(); // in flight when the reset lands
+    _resetSlugTenants();
+
+    expect(await loadSlugTenants()).toEqual({ b: "bob" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Subscribed AFTER the reset, so anything it hears came from the abandoned
+    // request writing to state it no longer owns.
+    const seen: SlugTenantMap[] = [];
+    _subscribeSlugTenants((m) => {
+      seen.push(m);
+    });
+
+    // The abandoned request settles LATE — nothing cancels a `fetch`. It still
+    // answers its own caller, and that is all it may do: writing `{a:"alice"}`
+    // into the cache here would hand every later caller the map the reset
+    // discarded, and broadcasting it would push that stale map into every
+    // component mounted since.
+    release({ ok: true, json: async () => ({ a: "alice" }) });
+    expect(await abandoned).toEqual({ a: "alice" });
+
+    expect(await loadSlugTenants()).toEqual({ b: "bob" }); // cache not clobbered
+    expect(fetchMock).toHaveBeenCalledTimes(2); // inflight slot not stolen either
+    expect(seen).toEqual([]); // and nothing was broadcast
+  });
+
+  it("an abandoned request does not free the in-flight slot of the one that replaced it", async () => {
+    // The other half of the reset's disowning. The abandoned chain's `.finally`
+    // still runs, and clearing `inflight` unconditionally there would empty a
+    // slot the POST-reset request is still using — so the next caller, instead
+    // of joining it, would open a duplicate `/api/wiki/routes`.
+    const releases: Array<(response: unknown) => void> = [];
+    const fetchMock = vi.fn(
+      () => new Promise((resolve) => releases.push(resolve as (r: unknown) => void)),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { loadSlugTenants, _resetSlugTenants } = await importCold();
+
+    const abandoned = loadSlugTenants(); // request 1, parked
+    _resetSlugTenants();
+    const replacement = loadSlugTenants(); // request 2, parked, now owns the slot
+
+    // Request 1 settles LATE, while request 2 is still in flight.
+    releases[0]({ ok: true, json: async () => ({ a: "alice" }) });
+    expect(await abandoned).toEqual({ a: "alice" });
+
+    // A third caller must join request 2, not open a request 3.
+    const joined = loadSlugTenants();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    releases[1]({ ok: true, json: async () => ({ b: "bob" }) });
+    expect(await replacement).toEqual({ b: "bob" });
+    expect(await joined).toEqual({ b: "bob" });
+  });
+
+  it("a DEGRADED load notifies nobody", async () => {
+    // The broadcast lives inside the success `.then` precisely so this is true:
+    // `{}` is not news, and a hook that adopted it would re-render for a map it
+    // already has. Moved below the `.catch`, every href assertion in the mounted
+    // suites would still pass — the degraded href and the not-yet-loaded href
+    // are the same string — so this is the only place the distinction is
+    // observable at all.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })),
+    );
+    const { loadSlugTenants, _subscribeSlugTenants } = await importCold();
+
+    const seen: SlugTenantMap[] = [];
+    _subscribeSlugTenants((m) => {
+      seen.push(m);
+    });
+
+    expect(await loadSlugTenants()).toEqual({});
+    expect(seen).toEqual([]);
+  });
+
+  it("a throwing listener strands neither its neighbours nor the map", async () => {
+    // The notify loop runs INSIDE the success `.then`, so an unguarded throw
+    // would reject the shared promise straight into the degrading `.catch` —
+    // and every caller of a load that actually succeeded would be handed `{}`.
+    // That is the failure this guard exists for, and the reason the subscribe
+    // door is exported at all: every real listener is a hook's `setMap`, which
+    // does not throw.
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ a: "alice" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { loadSlugTenants, _subscribeSlugTenants } = await importCold();
+
+    const seen: SlugTenantMap[] = [];
+    // Registered FIRST, so the recording listener below is genuinely downstream
+    // of the throw rather than merely unaffected by it.
+    _subscribeSlugTenants(() => {
+      throw new Error("a listener blew up");
+    });
+    _subscribeSlugTenants((m) => {
+      seen.push(m);
+    });
+
+    // The map, not the degraded `{}`: the throw never reached the `.catch`.
+    expect(await loadSlugTenants()).toEqual({ a: "alice" });
+    expect(seen).toEqual([{ a: "alice" }]);
   });
 });
 

@@ -121,6 +121,43 @@ describe("the dom shim controls are reached through one aliased door (DW-112)", 
     ).toEqual([]);
   });
 
+  it("no production module imports a test-only `_` seam from useSlugTenants", async () => {
+    // `useSlugTenants.ts` is a client module the app SHIPS, and three of its
+    // exports exist only so suites can drive the slug→tenant singleton:
+    // `_resetSlugTenants` (drop the session cache), `_subscribeSlugTenants`
+    // (register a listener the hook would never produce) and
+    // `_slugTenantListenerCount`. Unlike the `@/test/` barrel above they carry
+    // no import-time side effect and no devDependency, so a production call
+    // site would build, ship, and simply be wrong: a shipped
+    // `_resetSlugTenants()` re-opens DW-87 for real owners by throwing away a
+    // good map mid-session. The `_` prefix and the doc comments are prose; this
+    // is the enforcement.
+    const files = await sourceFiles();
+    const production = files.filter(
+      (file) => !file.includes("__tests__/") && file !== DOM_HELPERS,
+    );
+    // The scan reached the module that DEFINES them, which is the one
+    // production file guaranteed to mention the names — so an exclusion that
+    // swallowed the tree cannot leave this trivially satisfied.
+    expect(production).toContain("hooks/useSlugTenants.ts");
+    expect(production.length).toBeGreaterThan(200);
+
+    const offenders: string[] = [];
+    for (const file of production.filter((f) => f !== "hooks/useSlugTenants.ts")) {
+      if (/_resetSlugTenants|_subscribeSlugTenants|_slugTenantListenerCount/.test(await read(file))) {
+        offenders.push(file);
+      }
+    }
+    expect(
+      offenders,
+      `A module outside a __tests__ directory references a test-only seam of ` +
+        `hooks/useSlugTenants.ts. Those exports drive the session cache the ` +
+        `whole app reads: resetting or subscribing to it from shipped code ` +
+        `puts every in-content link back on the DEFAULT_TENANT 308 hop. App ` +
+        `code gets the map from useSlugTenants().`,
+    ).toEqual([]);
+  });
+
   it("src/test/dom-helpers.ts re-exports and defines nothing", async () => {
     // AGENTS.md states that `vitest.setup.dom.ts` holds every shim and nothing
     // in `src/` does. That claim survived DW-112 only because this module is a
