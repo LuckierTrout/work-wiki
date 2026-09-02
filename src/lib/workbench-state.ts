@@ -131,15 +131,26 @@ export function writeStoredTreeTab(tab: TreeTabId): void {
  * left behind.
  */
 function readStoredRecord(key: string): Record<string, unknown> | null {
+  const parsed = readStoredValue(key);
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return null;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * The same read, WITHOUT the object narrowing — for the one key whose legacy
+ * shape is a bare number (see {@link readStoredSourcesScroll}). A migration has
+ * to be able to SEE the value it is migrating, and `readStoredRecord` answers
+ * `null` for a scalar just as it does for unreadable storage, which would erase
+ * the offset it exists to carry forward.
+ */
+function readStoredValue(key: string): unknown {
   if (typeof window === "undefined") return null;
   try {
     const raw = window.localStorage.getItem(key);
     if (raw === null) return null;
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
+    return JSON.parse(raw) as unknown;
   } catch {
     // Unreadable storage or unparseable JSON — both mean "no stored value".
     return null;
@@ -325,27 +336,70 @@ export function writeStoredTreeScroll(
   });
 }
 
-export function readStoredSourcesScroll(): number {
-  if (typeof window === "undefined") return 0;
-  try {
-    const raw = window.localStorage.getItem(WORKBENCH_SOURCES_SCROLL_KEY);
-    const value = raw ? Number.parseInt(raw, 10) : 0;
-    return Number.isInteger(value) && value >= 0 ? value : 0;
-  } catch {
-    return 0;
+/**
+ * How far the Sources tree was scrolled, per WIDTH BAND (DW-519).
+ *
+ * The same argument {@link readStoredTreeScroll} makes one column over, for the
+ * surface that was left out of it — reached by a different route in the
+ * stylesheet, which is worth saying plainly because the two are easy to
+ * conflate. `.wb-tree-body` is capped at `40vh` inside `@media (max-width:
+ * 899px)`; `.wb-sources-tree` has NO narrow rule at all. It carries one
+ * declaration block in the whole sheet (`flex: 1 1 auto; min-height: 0;
+ * overflow: auto`), so what differs between the two layouts is the box it flexes
+ * inside: above 900px `.wb-left` is a bounded column inside a `.wb-shell`
+ * clamped to `100dvh`, and below it the shell stacks to one column, `.wb-left`
+ * becomes `overflow: visible`, and — with a Preview docked — the shell's clamp
+ * is released so the DOCUMENT scrolls instead.
+ *
+ * Either way the tree has two scroll RANGES and not one, so a single stored
+ * number is recorded in whichever layout the owner happened to be in and
+ * restored into the other, where the browser CLAMPS it. The clamp fires a
+ * `scroll`, the persist writes it straight back, and one crossing of the
+ * breakpoint destroys the desktop offset.
+ *
+ * There is no per-TAB dimension here: Sources mode has one tree.
+ *
+ * LEGACY VALUES. Every build before DW-519 wrote a bare integer STRING under
+ * this key. `JSON.parse` reads it back as a number, and it is migrated into the
+ * WIDE band on read — the range only the desktop layout has, and the one that
+ * number was almost certainly recorded in — while the narrow band starts at the
+ * top rather than inheriting an offset from a range it does not share. The
+ * first write normalises the key to the banded shape. Anything else degrades to
+ * 0 for BOTH bands, the same rule every other read in this file follows.
+ */
+export function readStoredSourcesScroll(): Record<TreeScrollBand, number> {
+  const stored = readStoredValue(WORKBENCH_SOURCES_SCROLL_KEY);
+  const legacy = typeof stored === "number";
+  const banded =
+    typeof stored === "object" && stored !== null && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : null;
+  const bands = {} as Record<TreeScrollBand, number>;
+  for (const band of TREE_SCROLL_BANDS) {
+    bands[band] = legacy
+      ? band === "wide"
+        ? storedOffset(stored)
+        : 0
+      : banded
+        ? storedOffset(banded[band])
+        : 0;
   }
+  return bands;
 }
 
-export function writeStoredSourcesScroll(offset: number): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      WORKBENCH_SOURCES_SCROLL_KEY,
-      String(storedOffset(Math.round(offset))),
-    );
-  } catch {
-    // private mode / quota
-  }
+export function writeStoredSourcesScroll(
+  band: TreeScrollBand,
+  offset: number,
+): void {
+  // Read-modify-write through the narrowing read above, so a legacy or partly
+  // unusable value is normalised into the banded shape by the first write
+  // rather than left for the next read to keep migrating — and so neither
+  // band's write can reach the other.
+  const current = readStoredSourcesScroll();
+  writeStoredJson(WORKBENCH_SOURCES_SCROLL_KEY, {
+    ...current,
+    [band]: storedOffset(Math.round(offset)),
+  });
 }
 
 export interface GraphNodePosition {

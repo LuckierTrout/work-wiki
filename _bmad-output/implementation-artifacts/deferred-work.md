@@ -3948,7 +3948,9 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/components/workbench/SourcesTree.tsx (the scroll-memory effect)
 severity: medium
 reason: `src/components/workbench/SourcesTree.tsx` scroll-memory effect is byte-for-byte the pre-DW-208 shape: the frame writes `writeStoredSourcesScroll(panel.scrollTop)` and the cleanup is only `removeEventListener` + `cancelAnimationFrame` with no flush. Its restore is a `[]`-keyed mount effect, and `Workbench.tsx` renders it as `mode === "sources" && ...` inside a `settingsOpen ? null : ...` branch, so the component genuinely unmounts on a mode switch and on opening Settings and the cleanup path really runs. `readStoredSourcesScroll` / `writeStoredSourcesScroll` / `WORKBENCH_SOURCES_SCROLL_KEY` appear only in those two files; no suite mounts SourcesTree, so deleting the effect outright would leave the suite green. `readStoredSourcesScroll()` is also a single number shared across the 900px breakpoint, and `.wb-sources-tree` is `overflow: auto` inside a column whose narrow layout is a stacked row.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-uncovered-scroll-surfaces
+resolution-undo: a77242f208825ae4061ba3c53569e4636dceb406df12f5e707f81015b64f8d8b 2026-09-02 7374617475733a206f70656e
 
 ### DW-520: The Preview column's scroll boxes are discarded by the same Settings visit DW-416 fixes for the mode canvas, with no restore and no test.
 origin: spec-deferred 23a6419658a0
@@ -3956,7 +3958,9 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/components/workbench/PreviewColumn.tsx (the `.wb-preview` aside)
 severity: medium
 reason: `globals.css` gives `.wb-preview` and `.wb-preview-body` `overflow: auto` (the latter capped at `50vh` below 899px) and `.wb-preview[hidden] { display: none }` withdraws the column for the same visit under DW-412, so `display: none` discards those scroll boxes exactly as it discards the canvas's. `PreviewColumn.tsx` holds no ref or effect for scroll. The existing DW-412 case only compares the editor node and its value, never `scrollTop`. Two of the three surfaces that visit withdraws now come back where the owner left them and the third does not.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-uncovered-scroll-surfaces
+resolution-undo: a77242f208825ae4061ba3c53569e4636dceb406df12f5e707f81015b64f8d8b 2026-09-02 7374617475733a206f70656e
 
 ### DW-521: The restore-clamp-persist echo DW-206 describes still exists WITHIN a band and on the mode canvas; band keying removes the cross-breakpoint route only.
 origin: spec-deferred 470a00a54a16
@@ -5703,4 +5707,12 @@ location: src/components/workbench/ModeCanvas.tsx (the DW-416/DW-523 effect)
 source_spec: `spec-dw-521-523-524-scroll-restore-clamp-and-timing.md`
 severity: low
 reason: `canvasScroller` answers a layout question but the effect is keyed on `[hidden]` alone, and `globals.css` flips which element scrolls on three conditions that never change `hidden`: docking a Preview below 899px (`:5341-5370`), crossing the breakpoint, and opening the mode sheet, which re-applies the clamp (`:5372-5382`). `previewOpen` flips when the owner picks a tree row (`Workbench.tsx` `onDockPreview={selectRow}`) with the canvas still showing, so at narrow width the listener stays on `.wb-canvas` after the document has become the scroller and records nothing for the rest of the visit -- DW-523's failure shape reached by dock rather than by width. Across runs the single `canvasScrollRef` can also re-apply an offset recorded on one scroller to the other. Closing it needs either a preview/breakpoint input threaded into `ModeCanvas` (it takes neither today) or a re-probe trigger; the spec's contract forbids listening on both surfaces at once, so it is a mechanism decision rather than
+status: open
+
+### DW-720: WorkspacePreview, the Agent-output Preview column, renders the same two `.wb-preview` / `.wb-preview-body` scroll boxes under the same `hidden` withdrawal and did not get DW-520's scroll memory.
+origin: spec-deferred 2876b98a3cb2
+location: src/components/workbench/WorkspacePreview.tsx:77-113
+source_spec: `spec-dw-519-520-uncovered-scroll-surfaces.md`
+severity: low
+reason: `Workbench.tsx:1917-1923` mounts `WorkspacePreview` from the same block as `PreviewColumn`, with the same `id={PREVIEW_ID}` and the same `hidden={!previewOpen}` (`previewOpen = previewDocked && !settingsOpen`, `Workbench.tsx:401`). `WorkspacePreview.tsx:77-113` renders `<aside className="wb-preview">` around `<div className="wb-preview-body">` — both `overflow: auto` (`globals.css:4214`, `:4262`) and both discarded by `.wb-preview[hidden] { display: none }` (`globals.css:2782`) — and holds no ref, no restore and no listener. In Chat mode with an `agent-workspace/` file picked (`shouldDockPreview` docks for `mode === "chat"`, `workbench-tree.ts:511-525`) an owner who scrolls a long Agent report, opens Settings and closes it lands back at the top of both boxes: exactly the loss DW-520 names, at a component neither ledger entry mentions. The only suite that mounts it (`epic8-chat-ui.test.tsx:233`) passes no `hidden` prop and asserts only the fetched body.
 status: open

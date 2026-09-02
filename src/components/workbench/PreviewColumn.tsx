@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -442,6 +443,127 @@ function PreviewPane({
   // Wikilinks resolve against the same set the Knowledge tab renders, so a link
   // is actionable exactly when the row it would select is visible.
   const readableSlugs = useMemo(() => readableSlugsFromKnowledge(knowledge), [knowledge]);
+
+  // ---------------------------------------------------------------------------
+  // The column comes back where the owner left it (DW-520)
+  // ---------------------------------------------------------------------------
+  //
+  // `ModeCanvas`'s withdrawal-keyed restore, one column over — and TWICE, because
+  // this column has TWO scroll boxes: `.wb-preview` (the `<aside>` itself) and
+  // `.wb-preview-body` are both `overflow: auto` in `globals.css`, and
+  // `.wb-preview[hidden] { display: none }` DISCARDS a scroll box. So the very
+  // Settings visit DW-416 made free for the canvas still dropped the owner at
+  // the top of both of these.
+  //
+  // REFS, not storage. The column survives the visit MOUNTED (DW-412), so
+  // neither offset ever has to cross a reload: no new localStorage key is
+  // invented here and no FR-8 cross-session claim is made for them. `null` until
+  // something has actually been recorded, which is not the same as 0 — a first
+  // restore that assigned a 0 nobody stored would move a box that has not gone
+  // off screen even once.
+  const asideRef = useRef<HTMLElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const asideScrollRef = useRef<number | null>(null);
+  const bodyScrollRef = useRef<number | null>(null);
+  // One echo per box, each armed with the value the browser ACTUALLY landed on
+  // and spent by the first `scroll` event whatever that event says (DW-521). A
+  // boolean would be a latch with no way to spend it: a restore that assigns the
+  // offset a box already holds fires no `scroll` at all.
+  const asideEchoRef = useRef<number | null>(null);
+  const bodyEchoRef = useRef<number | null>(null);
+
+  // The `<aside>` is BOTH this component's own scroll box and the shell's
+  // scroll-into-view target (DW-34), so the node has to reach two places. The
+  // shell hands down a plain `RefObject`; a callback `ref` is still honoured,
+  // because the prop's type allows one and silently dropping it would be a
+  // failure with nothing to see.
+  const mergeAsideRef = useCallback(
+    (node: HTMLElement | null) => {
+      asideRef.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
+
+  // WHICH DOCUMENT the two offsets belong to. They are a memory of what was on
+  // SCREEN, not a property of the column: `PreviewColumn` renders `PreviewPane`
+  // with no key, so picking another row keeps the same instance and the same two
+  // numbers — and because the restore below runs on `hidden` alone, picking a
+  // row without scrolling it and then making a Settings round trip would assign
+  // the PREVIOUS row's offsets to a document that never had them. Cleared here
+  // instead, so a new row starts with nothing recorded and therefore has nothing
+  // assigned.
+  //
+  // Keyed on a PRIMITIVE derived from the pick, never on the object: the shell
+  // rebuilds that object freely across renders, and an identity key would clear
+  // the offsets the owner is still looking at.
+  const selectionKey =
+    selection.kind === "page" ? `page:${selection.slug}` : `file:${selection.path}`;
+  // Declared BEFORE the restore, so on the rare commit that changes both the row
+  // and `hidden` React runs them in that order: cleared, then restored from
+  // nothing.
+  useLayoutEffect(() => {
+    asideScrollRef.current = null;
+    bodyScrollRef.current = null;
+    asideEchoRef.current = null;
+    bodyEchoRef.current = null;
+  }, [selectionKey]);
+
+  // A LAYOUT effect (DW-524): a passive one runs after the browser has painted,
+  // so a column the owner is being handed back paints at the top and then
+  // visibly jumps. Keyed on `hidden` ALONE — that prop IS the withdrawal, and
+  // coming back is the moment the browser has just reset both `scrollTop`s to 0.
+  useLayoutEffect(() => {
+    const aside = asideRef.current;
+    // Whatever the previous run armed is spent HERE, before the guard: a stale
+    // echo is the owner's own scroll, dropped for matching a number no restore
+    // actually wrote.
+    asideEchoRef.current = null;
+    bodyEchoRef.current = null;
+    if (!aside || hidden) return;
+    // The nodes are read through functions rather than captured, because
+    // `.wb-preview-body` only exists on the text branch of `body()` — a column
+    // that mounts loading, or comes back before its payload has landed, has no
+    // body div at the moment this effect runs and grows one afterwards.
+    const boxes = [
+      { node: () => asideRef.current, stored: asideScrollRef, echo: asideEchoRef },
+      { node: () => bodyRef.current, stored: bodyScrollRef, echo: bodyEchoRef },
+    ];
+    for (const box of boxes) {
+      const node = box.node();
+      const stored = box.stored.current;
+      // Nothing recorded means nothing assigned: the box starts where the
+      // browser left it rather than being dragged to a 0 nobody chose.
+      if (!node || stored === null) continue;
+      node.scrollTop = stored;
+      // What the browser actually landed on — where the box is shorter than the
+      // stored offset the assignment is CLAMPED, and recording that clamp would
+      // replace the owner's offset with the maximum of a box still filling in.
+      box.echo.current = node.scrollTop;
+    }
+    // ONE listener, in the CAPTURE phase, on the stable `<aside>`. `scroll` does
+    // not bubble, so a bubble-phase listener here could never hear
+    // `.wb-preview-body` — but a non-bubbling event still runs the capture path
+    // from the root to the target, and a capture listener on an ancestor
+    // therefore sees it, while one registered on the `<aside>` itself also fires
+    // at `AT_TARGET`. That is what keeps a body div that renders AFTER this
+    // effect ran covered, which a per-element listener attached here would not.
+    const onScroll = (event: Event) => {
+      const box = boxes.find((candidate) => candidate.node() === event.target);
+      if (!box) return;
+      const landed = (event.target as HTMLElement).scrollTop;
+      const echo = box.echo.current;
+      // Spent unconditionally — a VALUE, not a latch.
+      box.echo.current = null;
+      if (echo !== null && landed === echo) return;
+      box.stored.current = landed;
+    };
+    aside.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    return () => {
+      aside.removeEventListener("scroll", onScroll, { capture: true });
+    };
+  }, [hidden]);
 
   useEffect(() => {
     // WHY this effect is running, and therefore what it may touch — decided by
@@ -1215,7 +1337,7 @@ function PreviewPane({
         {state.payload.truncated && (
           <p className="wb-preview-note">{PREVIEW_TRUNCATED_COPY}</p>
         )}
-        <div className="wb-preview-body">
+        <div className="wb-preview-body" ref={bodyRef}>
           <PreviewBody
             format={state.payload.format}
             content={state.payload.body}
@@ -1229,7 +1351,7 @@ function PreviewPane({
   }
 
   return (
-    <aside id={id} className="wb-preview" hidden={hidden} aria-label="Preview" ref={ref}>
+    <aside id={id} className="wb-preview" hidden={hidden} aria-label="Preview" ref={mergeAsideRef}>
       <header className="wb-preview-head">
         <strong className="wb-preview-title">Preview</strong>
         <span className="wb-preview-name">{name}</span>

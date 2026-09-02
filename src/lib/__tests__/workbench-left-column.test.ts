@@ -52,6 +52,18 @@ function globals(): Promise<string> {
 }
 
 /**
+ * Source with its commentary removed, the `workbench-chrome.test.ts` helper.
+ * Every scan below counts hook CALLS, and these two files argue their scroll
+ * design at length in prose that names the very hooks being counted.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1")
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+}
+
+/**
  * The sources this file scans as text. `__tests__` is skipped by `walkFiles`
  * itself, for the same reason `single-ia.test.ts` needed it skipped: a scan that
  * reads its own assertion text can only ever fail.
@@ -571,7 +583,10 @@ describe("PreviewColumn is view-first over a rendered body", () => {
     // learn the page was cut off is to scroll to an end that is not there —
     // and it is also why the `Edit` control is absent, which is visible at once.
     const note = source.indexOf("{state.payload.truncated && (");
-    const body = source.indexOf('<div className="wb-preview-body">');
+    // The opening tag, not the whole element: DW-520 put a `ref` on this div so
+    // the column can restore the offset the owner left it at, and the ORDER is
+    // what this case is about.
+    const body = source.indexOf('<div className="wb-preview-body"');
     expect(note).toBeGreaterThan(-1);
     expect(note).toBeLessThan(body);
     // WHICH of the five states is showing is decided by an executed function,
@@ -814,6 +829,93 @@ describe("the shell follows a wikilink without clearing the selection", () => {
     );
     expect(source).not.toMatch(/\buseRouter\(/);
   });
+});
+
+/**
+ * Both columns come back where the owner left them (DW-519 / DW-520).
+ *
+ * The half a mounted suite cannot reach. `uncovered-scroll-surfaces.test.tsx`
+ * executes the offsets, the bands, the echoes and the flush against live nodes —
+ * but jsdom paints nothing, so WHICH KIND of effect does the restoring is
+ * invisible from there: demote either one to a passive `useEffect` and every
+ * mounted case stays green while the surface visibly paints at the top and then
+ * jumps. That is what these two scans pin, alongside the dependency keys whose
+ * omission is silent in the same way.
+ */
+describe("the two scroll restores beat the paint", () => {
+  it("restores the Sources offset before the paint, not after it (DW-524)", async () => {
+    // UNOBSERVABLE FROM THE `dom` PROJECT, which is the whole reason this scan
+    // exists: jsdom paints nothing, so swapping `useLayoutEffect` back to
+    // `useEffect` here leaves every mounted case in
+    // `uncovered-scroll-surfaces.test.tsx` green while the tree visibly paints
+    // at the top and then jumps to the offset on every mode switch. The same
+    // pin `workbench-split.test.ts` keeps for `TreePanel` and
+    // `workbench-chrome.test.ts` keeps for `ModeCanvas`.
+    const code = stripComments(await read("SourcesTree.tsx"));
+    expect(code).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*?panel\.scrollTop = readStoredSourcesScroll\(\)\[band\]/,
+    );
+    // Exactly one. The persist side attaches a listener and has nothing to put
+    // on screen, so it stays PASSIVE — a layout effect there would only move
+    // work ahead of a paint that does not depend on it.
+    expect(code.match(/useLayoutEffect\(/g) ?? []).toHaveLength(1);
+    expect(code).toMatch(
+      /useEffect\(\(\) => \{[\s\S]*?writeStoredSourcesScroll\(band, pending\)/,
+    );
+    // Three passive effects remain — the breakpoint subscription, the window
+    // growth and the persist — so the switch moved exactly one of them.
+    expect(code.match(/useEffect\(/g) ?? []).toHaveLength(3);
+    // Both effects carry the panel's EXISTENCE, not just the band: the panel is
+    // not rendered until the files land, and that commit moves nothing else
+    // either effect watches.
+    expect(code).toContain("}, [band, treeShowing]);");
+    expect(code).toContain("}, [leafCount, band, treeShowing]);");
+    // And the echo is cleared at the TOP of the restore, ahead of the guard: an
+    // arm that outlived its effect instance would be spent by the owner's next
+    // genuine scroll instead of by a restore.
+    const restore = code.slice(code.indexOf("useLayoutEffect(() => {"));
+    expect(restore.indexOf("restoreEchoRef.current = null;")).toBeLessThan(
+      restore.indexOf("if (!panel) return;"),
+    );
+  });
+
+  it("restores the Preview's two boxes before the paint (DW-524)", async () => {
+    const code = stripComments(await read("PreviewColumn.tsx"));
+    // The restore beats the paint, for the same reason the tree's does.
+    expect(code).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*?node\.scrollTop = stored;/,
+    );
+    // TWO layout effects, and the ORDER is load-bearing: the row reset is
+    // declared first so a commit that changes both the pick and `hidden` clears
+    // the offsets before the restore could assign the previous row's.
+    expect(code.match(/useLayoutEffect\(/g) ?? []).toHaveLength(2);
+    expect(code.indexOf("}, [selectionKey]);")).toBeLessThan(
+      code.indexOf("}, [hidden]);"),
+    );
+    // Keyed on a PRIMITIVE derived from the pick, never on the object the shell
+    // rebuilds per render.
+    expect(code).toMatch(
+      /const selectionKey =\s*selection\.kind === "page" \? `page:\$\{selection\.slug\}` : `file:\$\{selection\.path\}`;/,
+    );
+    // The persist side needs no effect of its own — it is one CAPTURE-phase
+    // listener inside the restore, because `scroll` does not bubble and
+    // `.wb-preview-body` can appear after the effect has run.
+    expect(code).toContain(
+      'aside.addEventListener("scroll", onScroll, { passive: true, capture: true });',
+    );
+    // NEVER RECORDED is not the same as ZERO: a first restore that assigned a 0
+    // nobody stored would move a box that has not gone off screen even once.
+    expect(code).toContain("const asideScrollRef = useRef<number | null>(null);");
+    expect(code).toContain("const bodyScrollRef = useRef<number | null>(null);");
+    expect(code).not.toMatch(/const (aside|body)ScrollRef = useRef\(0\);/);
+    // The echoes are VALUES, spent by the first scroll event whatever it says.
+    expect(code).toContain("if (echo !== null && landed === echo) return;");
+    const restore = code.slice(code.indexOf("}, [selectionKey]);"));
+    expect(restore.indexOf("asideEchoRef.current = null;")).toBeLessThan(
+      restore.indexOf("if (!aside || hidden) return;"),
+    );
+  });
+
 });
 
 describe("Intake's controls sit on the left column's chrome (Story 2.1)", () => {
