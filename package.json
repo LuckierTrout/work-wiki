@@ -66,6 +66,7 @@
     "eslint": "^9",
     "eslint-config-next": "15.5.18",
     "jsdom": "^30.0.1",
+    "miniflare": "5.20260828.0-alpha",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5",

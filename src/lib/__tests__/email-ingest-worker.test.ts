@@ -80,20 +80,14 @@ import { base64PartWireSize, quotedPrintablePartWireSize } from "./email-ingest-
  *     in `MAX_EMAIL_CONTENT_CHARS - TRUNCATION_MARKER.length` would ship green
  *     while `/api/email/ingest`'s `> MAX_EMAIL_CONTENT_CHARS` gate 400s every
  *     long email, costing the sender their body and every attachment on it
- *     (DW-453). Read at the `form.append` call, not off the wire — the
- *     serializer rewrites lone LFs into CRLFs, so the wire length of a
- *     truncated body is the transport's number rather than the worker's.
- *
- *     That is the LIMIT of what these cases claim, and the limit is not
- *     academic: measured under this suite's serializer, the same truncated body
- *     reads back off the wire at `MAX_EMAIL_CONTENT_CHARS + 2`, and an
- *     UNtruncated 98,599-character body carrying 3,398 newlines reads back at
- *     101,997 — both over the route's gate. So these cases pin the worker's
- *     arithmetic; they do NOT establish that what the route receives is under
- *     the cap. Whether that is a live production defect turns on whether
- *     `workerd`'s serializer normalizes the way Node's does, which nothing in
- *     this repo can measure; it is recorded as deferred work rather than
- *     answered here.
+ *     (DW-453). Read at the `form.append` call so these cases pin the worker's
+ *     arithmetic independently of a serializer. Node/undici rewrites lone LFs
+ *     and CRs into CRLFs, but the locally pinned workerd binary, launched with
+ *     the email Worker's declared date and flags, preserves them across the
+ *     inline producer-to-receiver service binding in
+ *     `email-ingest-workerd.test.ts`. That local seam checks both the raw
+ *     multipart value and `Request.formData()` and retains Node as the negative
+ *     control; it does not identify Cloudflare's currently deployed binary.
  *
  * The `Blob` *type* the worker builds is pinned next door in
  * `email-ingest-worker-normalization.test.ts`, which mocks `postal-mime`: it is
@@ -3145,8 +3139,9 @@ const TRUNCATION_MARKER = "\n\n[Email body truncated]";
  * at the append call itself rather than off the wire.
  *
  * The append call is the OUTERMOST surface at which the worker's own number is
- * still visible. The multipart/form-data encoding algorithm normalizes every
- * lone LF and CR in an entry value to CRLF, so `form.get("content")` on a
+ * still visible. Node/undici's multipart/form-data encoding algorithm
+ * normalizes every lone LF and CR in an entry value to CRLF, so
+ * `form.get("content")` on a
  * truncated body returns `MAX_EMAIL_CONTENT_CHARS + 2` -- the marker's `"\n\n"`
  * arriving as `"\r\n\r\n"` -- plus one more character for every newline in the
  * sender's own text. That divergence is a property of the serializer, not of
@@ -3206,18 +3201,16 @@ async function appendedContent(raw: string, subject: string, slug: string): Prom
  * attachment on the message. The route half of the same boundary is pinned in
  * `email-ingest-route.test.ts` ("body length ceiling", DW-366).
  *
- * The two halves do NOT meet, and saying so is the point. The route half posts
- * JSON; this half stops at the `form.append` call. In between sits the
- * multipart serializer, which rewrites every lone LF into a CRLF -- so the
- * value the route actually reads is longer than the one pinned here, by one
- * character per newline in the sender's text plus two for the marker's own
- * `"\n\n"`. Measured: the `MAX + 1` fixture below reads back off the wire at
- * `MAX_EMAIL_CONTENT_CHARS + 2`, and an untruncated 98,599-character body with
- * 3,398 newlines reads back at 101,997 -- over a gate the worker never
- * triggered. Nothing here asserts otherwise, and nothing here should be read as
- * proof that the route accepts what the worker sends. Whether that is live in
- * production depends on `workerd`'s serializer, which this repo cannot measure;
- * it is recorded as deferred work.
+ * This suite still stops at `form.append`, but the transport halves now meet in
+ * `email-ingest-workerd.test.ts`: locally pinned Miniflare launches its bundled
+ * workerd with the email Worker's declared compatibility date and flags. An
+ * inline producer sends the production-shaped request through a service binding
+ * to an inline receiver, which keeps both recorded boundary shapes unchanged
+ * through raw multipart bytes and `Request.formData()`. Node/undici remains a
+ * deliberate negative control: it inflates the same truncated value to
+ * `MAX_EMAIL_CONTENT_CHARS + 2` and the 98,599-character, 3,398-newline value to
+ * 101,997. This is evidence about that pinned local runtime seam, not
+ * Cloudflare's currently deployed binary.
  */
 describe("email-ingest body truncation", () => {
   /**
