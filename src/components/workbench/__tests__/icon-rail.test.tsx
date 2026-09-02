@@ -36,6 +36,15 @@ import type { SidecarStatus } from "@/lib/sidecar";
  * sentences are literals because they have no module to import from — they are
  * written inline in `IconRail.tsx` itself, so pinning them here is the only
  * place they are held at all.
+ *
+ * The rail's THREE remaining rules were added later (DW-257). Every case above
+ * mounts `settingsActive: false`, and every one of them leaves `onSelect` and
+ * `onToggleSettings` as `BASE`'s inert stubs (the chevron case drives its own
+ * `onToggleCollapsed` spy, and that control alone): "exactly one control is
+ * ever `aria-current`" had no mount that could see the suppression, the ten
+ * `onSelect` wirings reported to a stub that remembered nothing, and UX-DR3's
+ * order was asserted only as an array in `workbench-modes.test.ts` — never as
+ * the sequence the rail actually renders.
  */
 
 // ONE stable router object: several components in this shell key effects on the
@@ -200,6 +209,152 @@ describe("the collapse chevron", () => {
     fireEvent.click(screen.getByRole("button", { name: "Collapse left column" }));
 
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the one current control (DW-257)", () => {
+  it("marks Settings, and un-marks the mode, while Settings is showing", () => {
+    // Asserted as a COUNT over the whole rail rather than as two independent
+    // attribute checks: a rail that marked BOTH a mode and Settings is exactly
+    // the state two separate `toBe("page")` assertions would let through, and
+    // two current controls describe two surfaces the owner cannot both be
+    // looking at.
+    const { rail } = mountRail({ settingsActive: true, mode: "wiki" });
+
+    const current = rail.querySelectorAll("[aria-current]");
+    expect(current).toHaveLength(1);
+    const settings = screen.getByRole("button", { name: "Settings" });
+    expect(current[0]).toBe(settings);
+    // The count is queried value-agnostically ABOVE, which is what catches a
+    // second current control; the VALUE is pinned here, because `page` is the
+    // literal other suites in this repo select the current rail control by.
+    expect(settings.getAttribute("aria-current")).toBe("page");
+    // And the class goes with the attribute, because colour is the other half
+    // of the same claim: Settings announcing itself current with no active wash
+    // also loses its forced-colours outline.
+    expect(settings.classList.contains("wb-rail-item--active")).toBe(true);
+
+    // The mode, meanwhile, is remembered but not SHOWING — neither half.
+    const wiki = screen.getByRole("button", { name: "Wiki" });
+    expect(wiki.getAttribute("aria-current")).toBeNull();
+    expect(wiki.classList.contains("wb-rail-item--active")).toBe(false);
+  });
+
+  it("marks the mode, and only the mode, while Settings is closed", () => {
+    // Deliberately NOT the first mode: `BASE` mounts `mode: "wiki"`, which is
+    // also `WORKBENCH_MODES[0]`, so a rail that marked the first button
+    // whatever `mode` said would pass on this file's fixture alone.
+    const { rail } = mountRail({ settingsActive: false, mode: "graph" });
+
+    const current = rail.querySelectorAll('[aria-current="page"]');
+    expect(current).toHaveLength(1);
+    const graph = screen.getByRole("button", { name: "Graph" });
+    expect(current[0]).toBe(graph);
+    expect(graph.classList.contains("wb-rail-item--active")).toBe(true);
+    // Nothing else in the rail carries the attribute in ANY value — Settings
+    // included, which is the direction the case above cannot see.
+    expect(rail.querySelectorAll("[aria-current]")).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "Settings" }).getAttribute("aria-current"),
+    ).toBeNull();
+  });
+});
+
+describe("what each control reports to its owner (DW-257)", () => {
+  it("reports each mode's OWN id, once per press", () => {
+    // Ten buttons wired `onSelect(item.id)` from inside one `.map` all break
+    // the same way — a hoisted `item`, a stale closure, an id read from the
+    // wrong end of the row — and they break for NINE of the ten while the
+    // fixture's own mode still looks right. So every button is pressed and the
+    // ids are read back as a sequence, sourced from `WORKBENCH_MODES` so a
+    // renamed mode cannot leave this loop asserting nothing.
+    const onSelect = vi.fn();
+    const onToggleSettings = vi.fn();
+    const onToggleCollapsed = vi.fn();
+    mountRail({ onSelect, onToggleSettings, onToggleCollapsed });
+
+    for (const mode of WORKBENCH_MODES) {
+      fireEvent.click(screen.getByRole("button", { name: mode.label }));
+    }
+
+    expect(onSelect).toHaveBeenCalledTimes(WORKBENCH_MODES.length);
+    expect(onSelect.mock.calls.map(([id]) => id)).toEqual(
+      WORKBENCH_MODES.map((mode) => mode.id),
+    );
+    // …and a mode press reaches the mode router ONLY. The three callbacks are
+    // adjacent props of one component, so every case in this describe asserts
+    // both directions: what the control called, and what it left alone.
+    expect(onToggleSettings).not.toHaveBeenCalled();
+    expect(onToggleCollapsed).not.toHaveBeenCalled();
+  });
+
+  it("toggles Settings without selecting a mode", () => {
+    const onSelect = vi.fn();
+    const onToggleSettings = vi.fn();
+    const onToggleCollapsed = vi.fn();
+    mountRail({ onSelect, onToggleSettings, onToggleCollapsed });
+
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(onToggleSettings).toHaveBeenCalledTimes(1);
+    // Settings is deliberately NOT a mode — `WORKBENCH_MODES` is the rail's ten
+    // — so a press of it must never reach the mode router, which would push a
+    // mode into the URL for a surface that is not one.
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onToggleCollapsed).not.toHaveBeenCalled();
+  });
+
+  it("collapses the column without selecting or toggling Settings", () => {
+    // The chevron's own count is pinned in "the collapse chevron" above; what
+    // is pinned HERE is that it is not cross-wired to either neighbour. It sits
+    // directly beneath Settings in the same `wb-rail-item` family, so a handler
+    // attached to the wrong button is a one-line edit that leaves the rendered
+    // rail identical.
+    const onSelect = vi.fn();
+    const onToggleSettings = vi.fn();
+    const onToggleCollapsed = vi.fn();
+    mountRail({ onSelect, onToggleSettings, onToggleCollapsed });
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse left column" }));
+
+    expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onToggleSettings).not.toHaveBeenCalled();
+  });
+});
+
+describe("the rail's order (UX-DR3)", () => {
+  it("stacks ten modes, the spacer, the dot, Settings and the chevron, in that order", () => {
+    // UX-DR3 in full: "ten modes above a flexible spacer, then the sidecar
+    // status dot, Settings, and the left-column collapse chevron".
+    //
+    // Read off `rail.children` rather than off `.wb-rail-item`, because the
+    // spacer is what PUTS the tail controls at the bottom of the column and it
+    // carries no `wb-rail-item` class — queried by that class, a spacer moved
+    // below Settings (or deleted outright, which pins all four tail controls to
+    // the top of the rail) leaves the sequence identical. Every child is
+    // therefore named, by whatever it is: the two non-buttons by role, the rest
+    // by the accessible name they already publish.
+    const { rail } = mountRail();
+
+    const order = Array.from(rail.children).map((child) =>
+      child.classList.contains("wb-rail-spacer")
+        ? "(spacer)"
+        : child.getAttribute("role") === "status"
+          ? "(sidecar dot)"
+          : child.getAttribute("aria-label"),
+    );
+
+    // `workbench-modes.test.ts` pins what the mode order IS; this pins that the
+    // rendered rail is in it — invisible to a source scan, since a `.map` over
+    // a re-sorted array changes nothing a grep can see.
+    expect(order).toEqual([
+      ...WORKBENCH_MODES.map((mode) => mode.label),
+      "(spacer)",
+      "(sidecar dot)",
+      "Settings",
+      "Collapse left column",
+    ]);
   });
 });
 

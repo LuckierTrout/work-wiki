@@ -1875,7 +1875,9 @@ source_spec: `spec-dw-105-109-dom-tests-dialogs-and-rail.md`
 location: src/components/workbench/IconRail.tsx:101
 severity: low
 reason: `icon-rail.test.tsx` mounts the rail with `settingsActive: false` throughout and passes inert stubs for `onSelect`/`onToggleSettings`, so a rail that marked both a mode and Settings current (the case the component's own comment forbids: "two current controls would describe two surfaces the owner cannot both be looking at"), or wired every mode button to the same id, passes. Rail ORDER is likewise unasserted, though UX-DR3 fixes the ten modes top to bottom.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-mounted-rail-tree-split-coverage
+resolution-undo: 799de0dacb06db7787a2e0686669e6e5f90cd096c1a99f801dff5da0a487db3b 2026-09-02 7374617475733a206f70656e
 
 ### DW-258: `Workbench`'s `aria-live="polite"` mode announcement — the OTHER live region — is still pinned only by source scan.
 
@@ -3511,7 +3513,9 @@ source_spec: `spec-dw-108-111-113-dom-test-environment-fidelity.md`
 location: src/components/workbench/__tests__/workbench-split-wiring.test.tsx
 severity: low
 reason: The width harness makes the branch reachable for the first time, but the new cases only exercise `previewOpen` (the Preview divider's condition) and the measured guard. A shell that rendered a tree divider over a zero-width track would keep the whole suite green: `showSplitHandle("tree", …)` returns `!layout.collapsed`, and no mounted case sets `writeStoredCollapsed(true)` at a declared width.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-mounted-rail-tree-split-coverage
+resolution-undo: 799de0dacb06db7787a2e0686669e6e5f90cd096c1a99f801dff5da0a487db3b 2026-09-02 7374617475733a206f70656e
 
 ### DW-469: DW-24's roving `tabindex` / arrow-key surface is now mountable, and the comment that used to excuse it no longer does.
 origin: spec-deferred fe6c2e7d46db
@@ -3519,7 +3523,9 @@ source_spec: `spec-dw-108-111-113-dom-test-environment-fidelity.md`
 location: src/components/workbench/TreePanel.tsx
 severity: low
 reason: `TreePanel.tsx`'s docblock rested the deliberate not-an-ARIA-tree decision on there being no way to verify focus machinery. That premise was corrected in this pass (the `dom` project executes focus order — `workbench-sheet.test.tsx` asserts `document.activeElement` after synthetic Tab), which leaves the decision itself defended only by the assistive-technology half. Whether the tablist and the tree rows keep their full keyboard surface is now testable and untested.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-mounted-rail-tree-split-coverage
+resolution-undo: 799de0dacb06db7787a2e0686669e6e5f90cd096c1a99f801dff5da0a487db3b 2026-09-02 7374617475733a206f70656e
 
 ### DW-470: Two source-tree walkers still hand-roll the traversal `walkFiles` now owns, and both descend into `__tests__`.
 origin: spec-deferred d6e15d9fde5e
@@ -5737,4 +5743,12 @@ location: src/components/WikiWorkbench.tsx (create, success branch) and src/comp
 source_spec: `spec-dw-515-516-517-unconfirmed-write-latch-shared.md`
 severity: low
 reason: Pre-existing and unchanged by DW-515/516/517, which share the UNCONFIRMED half only. `WikiWorkbench.create`'s success path raises the component-local `awaitingCreate` (read by that card's opener and confirm alone); `WikiSwitcher.create`'s success path raises nothing at all. Both surfaces stay mounted together and both POST `/api/wikis`, and nothing enforces unique wiki names. Demonstrated by mounting both under one `WorkbenchDataProvider`, letting the card's create resolve 2xx, and pressing the header's `Create`: a second `POST /api/wikis` is issued while every existing suite stays green. The consequence is the one the shared latch was built for — a duplicate wiki made active, moving every prompt onto its template.
+status: open
+
+### DW-722: `storage-fs.test.ts`'s `reapStrandedScratchFiles` cases fail under full `node`-project load, so `pnpm test` — the repo's own CI command — is not reliably green independent of any change.
+origin: spec-deferred 0cd1c133cb89
+location: src/lib/__tests__/storage-fs.test.ts:1229
+source_spec: `spec-dw-257-468-469-mounted-rail-tree-split-coverage.md`
+severity: low
+reason: Reproduced at BASELINE with every file from this bundle removed from the working tree (`git stash` + the new file moved aside): three consecutive `pnpm vitest run --project node` runs failed, 2/2/1 cases respectively, always in `FilesystemStorageProvider > reapStrandedScratchFiles` ("stops at STRANDED_SCRATCH_CANDIDATE_CAP…" and "honours an explicit window…", `AssertionError: expected 3 to be 1`). The same file passes in 685ms when run alone. The cases plant scratch files at explicit mtimes and reap against a grace window measured in wall-clock milliseconds (1_000 / 5_000), so under parallel load a candidate crosses the window mid-pass. Independently observed by a review layer on the unmodified tree. This bundle touches only the `dom` project, which is fully green (72 files, 1111 tests).
 status: open

@@ -330,6 +330,71 @@ describe("the shell's width-derived decisions, mounted (DW-113)", () => {
     expect(separator(SPLIT_TREE_LABEL).getAttribute("aria-valuemax")).toBe("1032");
   });
 
+  it("withdraws the TREE separator while the left column is collapsed (DW-468)", async () => {
+    // A collapsed left column is a zero-width track, so a divider drawn over it
+    // would resize nothing and announce a range no drag could reach — which is
+    // what `showSplitHandle("tree", …)`'s `!layout.collapsed` says, and what no
+    // mounted case said until this one.
+    writeStoredCollapsed(true);
+    // The Preview is docked so the OTHER divider is in scope: asserting only
+    // the tree's absence would pass on an unmeasured shell, where NEITHER
+    // separator exists — the same trap the "no Preview separator" case above
+    // names, read from the other side.
+    writeStoredSelection(WIKI_ID, { kind: "page", slug: "alpha" });
+    setElementRect(".wb-shell", { width: 1400 });
+    await renderShell();
+
+    // Measured, and collapsed: `splitStyleVars` is gated on the same
+    // `isSplitMeasured` the separators are, so the property being written is
+    // the measurement arriving, and `data-collapsed` is the shell agreeing it
+    // read the stored preference.
+    expect(shellElement().style.getPropertyValue("--wb-tree")).toBe("280px");
+    expect(shellElement().getAttribute("data-collapsed")).toBe("true");
+
+    expect(screen.queryByRole("separator", { name: SPLIT_TREE_LABEL })).toBeNull();
+    // The Preview's is asserted through `separator()` alone — it wraps
+    // `getByRole`, which THROWS on a miss, so a `not.toBeNull()` beside it would
+    // assert nothing it does not already assert by not throwing (the sibling
+    // case above spells the same rule out).
+    //
+    // …and the collapsed tree gives its track UP rather than merely losing its
+    // handle: `splitBounds` counts the other column as 0 here, so the Preview
+    // may grow to 1400 − 48 − 320 = 1032, where the docked-and-expanded case at
+    // the top of this describe reported 752.
+    expect(separator(SPLIT_PREVIEW_LABEL).getAttribute("aria-valuemax")).toBe("1032");
+  });
+
+  it("withdraws and restores that separator as the rail chevron is pressed", async () => {
+    // The case above enters collapsed through storage, so the tree separator is
+    // never rendered at all — a shell that drew the handle and simply failed to
+    // withdraw it on a collapse would pass. This is how a collapse actually
+    // happens: the owner presses the chevron, and the divider has to leave and
+    // come back with the column.
+    writeStoredSelection(WIKI_ID, { kind: "page", slug: "alpha" });
+    setElementRect(".wb-shell", { width: 1400 });
+    await renderShell();
+
+    // Present FIRST — the precondition the two transitions below act on, and
+    // the half the storage-seeded case cannot state.
+    expect(separator(SPLIT_TREE_LABEL).getAttribute("aria-valuenow")).toBe("280");
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse left column" }));
+
+    expect(shellElement().getAttribute("data-collapsed")).toBe("true");
+    expect(screen.queryByRole("separator", { name: SPLIT_TREE_LABEL })).toBeNull();
+    // The Preview's divider is untouched by the OTHER column collapsing, and
+    // widens by exactly the track the tree gave up: 1400 − 48 − 320 = 1032.
+    expect(separator(SPLIT_PREVIEW_LABEL).getAttribute("aria-valuemax")).toBe("1032");
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand left column" }));
+
+    expect(shellElement().getAttribute("data-collapsed")).toBe("false");
+    // Back, and back at the width it left with — the collapse is a withdrawal,
+    // not a resize to zero that the expand then has to guess its way out of.
+    expect(separator(SPLIT_TREE_LABEL).getAttribute("aria-valuenow")).toBe("280");
+    expect(separator(SPLIT_PREVIEW_LABEL).getAttribute("aria-valuemax")).toBe("752");
+  });
+
   it("leaves an undeclared shell exactly as jsdom reports it", async () => {
     // The other half of the harness's contract, and the reason every suite
     // written before it is unaffected: with no declaration the shell measures 0,
