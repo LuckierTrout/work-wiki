@@ -395,12 +395,19 @@ describe("WikiSwitcher", () => {
     // is the fourth and is guarded on `switching`, its own in-flight flag,
     // rather than on `busy`; it is pinned just below.
     //
-    // `awaitingWrite` rides ALONGSIDE `busy` in the same line (DW-375): the two
-    // shut the same door for different lengths of time — `busy` for the length
-    // of the request, the latch until a server render lands after one whose
+    // The latch rides ALONGSIDE `busy` in the same line (DW-375): the two shut
+    // the same door for different lengths of time — `busy` for the length of
+    // the request, the latch until a server render lands after one whose
     // outcome nobody knows. The dialogs stay open on that path, so the handler
     // is reachable with `busy` already back to false.
-    expect(switcher.match(/if \(busy \|\| awaitingWrite\) return;/g) ?? []).toHaveLength(3);
+    //
+    // `latched` and no longer `awaitingWrite`, because the latch is now SHARED
+    // with the canvas card (DW-516): both surfaces open `CreateWikiDialog` onto
+    // the same `POST /api/wikis`, nothing enforces unique wiki names, and a
+    // flag private to this component left the card's create fully live over a
+    // create nobody could account for. The spelling is what stops the guard
+    // being narrowed back to a local flag.
+    expect(switcher.match(/if \(busy \|\| latched\) return;/g) ?? []).toHaveLength(3);
     expect(switcher.match(/if \(busy\) return;/g) ?? []).toHaveLength(0);
 
     // The FOURTH write — and the one guard here that is NOT unreachable, so it
@@ -420,15 +427,39 @@ describe("WikiSwitcher", () => {
     // unknown. Fixing the literal here is what stops the guard being narrowed
     // back to `switching` alone — the exact shape DW-409 found.
     expect(
-      switcher.match(/if \(switching \|\| awaitingWrite\) return;/g) ?? [],
+      switcher.match(/if \(switching \|\| latched\) return;/g) ?? [],
     ).toHaveLength(1);
+    // …and DW-517's half of the same refusal: the picker announces it. The
+    // early return commits nothing and React puts the value back, which for a
+    // screen-reader owner was a live combobox silently discarding their choice.
+    // `aria-disabled` (never `disabled`, or the control leaves the tab order
+    // and they can no longer read which wiki is active) plus the latch's
+    // sentence in `selectDescribedBy` is what says why.
+    expect(switcher).toContain("aria-disabled={readOnly || latched || undefined}");
+    // The LATCH's sentence, and only the latch's, joins the picker's
+    // description while the latch is up. Two literals, because two things can
+    // go wrong independently: the note's own gate, and which node the
+    // description points at.
+    //
+    // A stated switch refusal and a latch raised on the CANVAS CARD can stand
+    // at once and be about DIFFERENT writes — the picker is dimmed for the
+    // latch, so describing it with the answered 404 would name the wrong one.
+    // Hence the pick: the latch note when it renders, the alert node only when
+    // that node IS the latch's sentence (the switch-raised case), and NOTHING
+    // while the latch is down, so a stated refusal alone describes nothing and
+    // the live picker announces as live.
+    expect(switcher).toContain(
+      "const latchNoteShown = latched && wikis.length > 0 && latchMessage !== error;",
+    );
+    expect(switcher).toContain("const latchDescribedById = latched");
+    expect(switcher).toContain("      latchDescribedById,");
 
     // The SECOND keyboard path into `rename`, guarded on exactly what the
     // confirm is guarded on. It is unreachable behind the handler's own early
     // return — deleting either one alone leaves every mounted case green — which
     // is precisely why it is pinned by a scan rather than trusted to a test.
     // `CreateWikiDialog.submit` carries the same pair for the same reason.
-    expect(switcher).toContain("if (busy || awaitingWrite || !renameReady) return;");
+    expect(switcher).toContain("if (busy || latched || !renameReady) return;");
     const createDialog = await readFile(
       path.join(SRC, "components/CreateWikiDialog.tsx"),
       "utf8",
@@ -436,26 +467,42 @@ describe("WikiSwitcher", () => {
     expect(createDialog).toContain("if (busy || confirmDisabled) return;");
 
     const card = await readFile(path.join(SRC, "components/WikiWorkbench.tsx"), "utf8");
-    // `create` and `applyTemplate` — the card's two writes, guarded differently
-    // on purpose (DW-407). `create`'s dialog stays OPEN when an outcome is
-    // unknown, with `busy` already back to false and the confirm plus its Enter
-    // path both live over a POST that may have seeded a wiki, so `awaitingCreate`
-    // rides alongside `busy` there exactly as `awaitingWrite` does in the
-    // switcher. `applyTemplate` is idempotent per scenario — a repeat overwrite
-    // writes the same template — so it carries `busy` alone.
-    expect(card.match(/if \(busy \|\| awaitingCreate\) return;/g) ?? []).toHaveLength(1);
-    expect(card.match(/if \(busy\) return;/g) ?? []).toHaveLength(1);
+    // `create` and `applyTemplate` — the card's two writes, and since DW-515
+    // BOTH carry the shared latch. `create`'s dialog stays OPEN when an outcome
+    // is unknown, with `busy` already back to false and the confirm plus its
+    // Enter path both live over a POST that may have seeded a wiki; it also
+    // carries the local `awaitingCreate`, which is the SUCCESS half — the empty
+    // state behind the closed dialog still offers `Create Wiki` for the length
+    // of the refresh.
+    //
+    // `applyTemplate` used to carry `busy` alone, argued from idempotence per
+    // scenario. That holds for the Schema, which History keeps, and not for
+    // purpose.md or the Workspace Purpose: a repeat overwrite rewrites both
+    // from the template with nothing kept, so a second press over an unresolved
+    // first one can destroy the bytes the first one already wrote. Hence
+    // `latched`, and hence no bare `if (busy) return;` left in this file.
+    expect(
+      card.match(/if \(busy \|\| awaitingCreate \|\| latched\) return;/g) ?? [],
+    ).toHaveLength(1);
+    expect(card.match(/if \(busy \|\| latched\) return;/g) ?? []).toHaveLength(1);
+    expect(card.match(/if \(busy\) return;/g) ?? []).toHaveLength(0);
     // The prop is the reachable half of the pair: the handler's early return is
-    // unreachable behind it, which is the whole reason the line above is pinned
-    // by a scan rather than trusted to a mounted test.
-    expect(card).toContain("confirmDisabled={awaitingCreate}");
+    // unreachable behind it, which is the whole reason the lines above are
+    // pinned by a scan rather than trusted to a mounted test.
+    expect(card).toContain("confirmDisabled={awaitingCreate || latched}");
   });
 
   it("mirrors every latch raise into the ref its release effect reads (DW-429)", async () => {
-    // Both surfaces hold the same pair: a `useState` latch the render reads, and
-    // a `useRef` mirror the release effect reads WITHOUT depending on — because
-    // a dependency would fire that effect on the very commit that raises the
-    // latch and drop it again before the write it guards has any answer.
+    // Both surfaces hold the same pair: a latch the render reads — one SHARED
+    // piece of state since DW-516 — and a `useRef` mirror the release effect
+    // reads WITHOUT depending on, because a dependency would fire that effect
+    // on the very commit that raises the latch and drop it again before the
+    // write it guards has any answer.
+    //
+    // Sharing the latch makes the ref MORE load-bearing, not less: it is now
+    // also what says whose latch is standing, and only the surface that raised
+    // it may clear its own errors when the render lands. So the count is per
+    // surface, against that surface's raises.
     //
     // Nothing in the type system ties the two halves together, and the failure
     // runs in the worst direction: a future raise that sets the state and
@@ -469,16 +516,54 @@ describe("WikiSwitcher", () => {
     // half wired. Both docblocks promise "on the adjacent line"; this is what
     // makes the promise enforceable.
     const switcher = await read("WikiSwitcher.tsx");
-    // `create`, `rename`, `remove`, `switchWiki` — the four writes.
-    expect(switcher.match(/setAwaitingWrite\(true\)/g) ?? []).toHaveLength(4);
-    expect(switcher.match(/awaitingWriteRef\.current = true/g) ?? []).toHaveLength(4);
+    // `create`, `rename`, `remove`, `switchWiki` — the four writes here.
+    expect(switcher.match(/raiseLatch\(message\)/g) ?? []).toHaveLength(4);
+    expect(switcher.match(/raisedLatchRef\.current = true/g) ?? []).toHaveLength(4);
 
     const card = await readFile(path.join(SRC, "components/WikiWorkbench.tsx"), "utf8");
-    // `create`'s two raises: the success path and the unconfirmed one. The card
-    // latches on success too, because the empty state behind the closed dialog
-    // still offers `Create Wiki` for the length of the refresh.
-    expect(card.match(/setAwaitingCreate\(true\)/g) ?? []).toHaveLength(2);
-    expect(card.match(/awaitingCreateRef\.current = true/g) ?? []).toHaveLength(2);
+    // The card's two SHARED raises: `create`'s unconfirmed branch and
+    // `applyTemplate`'s (DW-515). Both carry a sentence, and both shut controls
+    // on the other surface as well — which is the whole reason they are shared.
+    expect(card.match(/raiseLatch\(message\)/g) ?? []).toHaveLength(2);
+    expect(card.match(/raisedLatchRef\.current = true/g) ?? []).toHaveLength(2);
+    // …and the card's LOCAL success latch, which stays out of the shared state:
+    // it shuts one control, on this card only, and carries no sentence to
+    // explain a dimming anywhere else. Same pairing rule, its own ref.
+    expect(card.match(/setAwaitingCreate\(true\)/g) ?? []).toHaveLength(1);
+    expect(card.match(/awaitingCreateRef\.current = true/g) ?? []).toHaveLength(1);
+  });
+
+  it("keeps the latch provider nested around the workbench children (DW-516)", async () => {
+    // The nesting IS the sharing. `page.tsx` composes `Workbench` — which
+    // renders the header switcher — and `WikiWorkbench` as one provider's
+    // children, so a `WikiWriteLatchProvider` wrapped around exactly those
+    // children is the only thing putting ONE latch above both surfaces in the
+    // real shell.
+    //
+    // Pinned by a scan because losing it is SILENT: `useWikiWriteLatch`
+    // deliberately falls back to component-local state when no provider is
+    // above it — a bare-mounted `WikiSwitcher` must still latch — so a provider
+    // dropped, or moved outside `WorkbenchDataContext.Provider` where it no
+    // longer wraps these children, throws nothing and renders identically. Each
+    // surface simply gets a latch of its own again, which is the DW-516 defect
+    // restored in full, and every single-surface suite stays green.
+    const seam = await readFile(
+      path.join(SRC, "components/workbench/WorkbenchData.tsx"),
+      "utf8",
+    );
+    expect(seam).toContain("<WikiWriteLatchProvider>{children}</WikiWriteLatchProvider>");
+    // INSIDE the data provider, not around it: the wrap has to sit between
+    // `WorkbenchDataContext.Provider` and `{children}` or it is no longer the
+    // thing both surfaces are composed under.
+    const opens = seam.indexOf("<WorkbenchDataContext.Provider");
+    const wraps = seam.indexOf("<WikiWriteLatchProvider>");
+    const closes = seam.indexOf("</WorkbenchDataContext.Provider>");
+    expect(opens).toBeGreaterThan(-1);
+    expect(wraps).toBeGreaterThan(opens);
+    expect(closes).toBeGreaterThan(wraps);
+    // …and `{children}` is rendered nowhere else, so the wrap cannot be
+    // sidestepped by a second render of them outside it.
+    expect(seam.match(/\{children\}/g) ?? []).toHaveLength(1);
   });
 
   it("labels the switcher for assistive tech and names the create control", async () => {

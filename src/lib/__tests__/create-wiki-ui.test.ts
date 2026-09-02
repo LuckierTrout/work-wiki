@@ -237,7 +237,23 @@ describe("WikiWorkbench empty state and preview copy", () => {
 
   it("blocks the destructive confirm when the template would not change", async () => {
     const source = await read("WikiWorkbench.tsx");
-    expect(source).toContain("confirmDisabled={pendingScenario === current?.scenario}");
+    // TWO reasons `Overwrite` goes dead, joined in one expression. The no-op
+    // scenario is the original: the dialog opens on the wiki's CURRENT
+    // template, so the default path through a destructive confirm would rewrite
+    // purpose.md, the Schema and the Workspace Purpose to identical bytes.
+    //
+    // `latched` is DW-515's half — an overwrite whose outcome NOBODY KNOWS. The
+    // dialog does not close on that path, `busy` is back to false by the time
+    // the unconfirmed sentence appears, and the card's reset effect keys on the
+    // active wiki, which a re-template never moves; so before the latch the
+    // owner met a live `Overwrite` under a stale "the outcome is unknown"
+    // alert, over a card the refresh may already have moved onto the new
+    // scenario. A second press then rewrites purpose.md and the Workspace
+    // Purpose from the template again, discarding whatever the first one may
+    // already have written.
+    expect(source).toContain(
+      "confirmDisabled={pendingScenario === current?.scenario || latched}",
+    );
   });
 
   it("reports a failed overwrite inside the overlay, not behind it", async () => {
@@ -250,7 +266,14 @@ describe("WikiWorkbench empty state and preview copy", () => {
 
     const workbench = await read("WikiWorkbench.tsx");
     expect(workbench).toContain("setTemplateError(");
-    expect(workbench).toContain("error={templateError}");
+    // The card's own sentence still outranks everything: this dialog's request
+    // is the specific answer. The fallback behind it is the SHARED latch's
+    // message (DW-516) — the confirm can now be dead over a write the header
+    // switcher issued, in which case `templateError` is null and the overlay's
+    // backdrop covers every other sentence on the page.
+    expect(workbench).toContain(
+      "error={templateError ?? (latched ? latchMessage : null)}",
+    );
   });
 
   it("locks the controls that a request in flight would otherwise contradict", async () => {
@@ -267,12 +290,15 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // `finally` clears `switching` the moment the aborted PUT lands, so the
     // picker is live again while the unconfirmed sentence is still on screen —
     // and the second PUT that follows can settle behind the first, leaving the
-    // shell on a wiki the owner had already left. `awaitingWrite` is the half
-    // that outlives the request; the `<select>` carries `disabled={switching}`
-    // alone, so the handler's early return is the whole refusal.
+    // shell on a wiki the owner had already left. The shared `latched` is the
+    // half that outlives the request; the `<select>` carries
+    // `disabled={switching}` alone — a latch that took it out of the tab order
+    // would stop a keyboard owner reading which wiki is even active — so the
+    // handler's early return is the whole refusal, and `aria-disabled` plus the
+    // description is what makes it audible (DW-517).
     const switcher = await read("workbench/WikiSwitcher.tsx");
     expect(switcher).toContain("disabled={switching}");
-    expect(switcher).toContain("if (switching || awaitingWrite) return;");
+    expect(switcher).toContain("if (switching || latched) return;");
   });
 
   it("leaves switching and the persistent create control to the header (DW-33)", async () => {

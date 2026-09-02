@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateWikiDialog } from "@/components/CreateWikiDialog";
+import { useWikiWriteLatch } from "@/components/workbench/WikiWriteLatch";
 import { useWorkbenchData } from "@/components/workbench/WorkbenchData";
 import {
   CREATABLE_SCENARIOS,
@@ -65,6 +66,27 @@ export function WikiWorkbench() {
   const { wikis, currentWikiId, registryUnavailable, readOnly } =
     useWorkbenchData();
   /**
+   * The SHARED unconfirmed-write latch, and the sentence it was raised beside
+   * (DW-515, DW-516).
+   *
+   * Shared with the header `WikiSwitcher`, which `page.tsx` renders under the
+   * same provider: both surfaces open `CreateWikiDialog` onto the same
+   * `POST /api/wikis`, nothing enforces unique wiki names, and a latch that
+   * shut only the surface that raised it left the other's create one click from
+   * seeding the second wiki. It is also what `applyTemplate` raises now — see
+   * there — so a re-template whose outcome nobody knows shuts every wiki write
+   * on screen rather than only refreshing underneath a live `Overwrite`.
+   *
+   * `message` is `writeFailure`'s own sentence, never a copy constant, so a
+   * control this card dims for the HEADER's write can still say why.
+   */
+  const {
+    latched,
+    message: latchMessage,
+    raise: raiseLatch,
+    release: releaseLatch,
+  } = useWikiWriteLatch();
+  /**
    * Ids for the two standing refusal sentences below (DW-189, DW-282).
    *
    * Two, not one: `Change template` and this card's create action sit in
@@ -90,22 +112,24 @@ export function WikiWorkbench() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
   /**
-   * A create whose server render has not arrived yet — one that SUCCEEDED, or
-   * one whose OUTCOME IS UNKNOWN (DW-407).
+   * A create that SUCCEEDED and whose server render has not arrived yet
+   * (DW-407) — and, since DW-516, nothing else.
    *
    * The card is not optimistic, so on success the dialog closes and the empty
    * state — {@link WIKI_EMPTY_COPY} and an enabled `Create Wiki` — is still on
-   * screen for the length of `router.refresh()`. On the unconfirmed path the dialog
-   * deliberately stays OPEN — the sentence explaining what happened is inside
-   * it — and `busy` is already back to false, so the confirm button and the
-   * Enter path behind it are two more live routes to a second POST. Nothing
-   * enforces unique wiki names, so a press down any of them seeds a SECOND
-   * wiki and makes it active, moving every prompt onto its template.
+   * screen for the length of `router.refresh()`. Pressing it there seeds a
+   * SECOND wiki and makes it active, moving every prompt onto its template.
    *
-   * The latch rides `confirmDisabled` and NEVER `busy`: `busy` also kills
-   * Cancel, Esc and the outside-click dismiss, and the sentence the owner has
-   * just read tells them to go and look at the screen. A modal they cannot
-   * dismiss is not a screen they can look at.
+   * This half stays LOCAL and out of the shared latch deliberately: it shuts
+   * ONE control, the one whose empty state this card alone is rendering stale,
+   * and it carries no sentence — nothing failed, so there is nothing to explain
+   * to a control on the other surface. The UNCONFIRMED half is the opposite on
+   * both counts and now lives in {@link useWikiWriteLatch} above.
+   *
+   * Both halves ride `confirmDisabled` and the opener's `disabled`, and NEVER
+   * `busy`: `busy` also kills Cancel, Esc and the outside-click dismiss, and
+   * the sentence the owner has just read tells them to go and look at the
+   * screen. A modal they cannot dismiss is not a screen they can look at.
    *
    * The door stays shut until a new server render lands (the effect below),
    * which is the only thing that can say what is actually there.
@@ -115,17 +139,29 @@ export function WikiWorkbench() {
    * `awaitingCreate` mirrored where the release effect can READ it without
    * DEPENDING on it (DW-429).
    *
-   * The effect below has to know whether the latch was up, because that is what
-   * separates a sentence the arriving render makes stale from a stated refusal
-   * the owner is still reading — a 400 the route answered is not made untrue by
-   * somebody else's page write moving `wikis`. But `awaitingCreate` cannot join
-   * `[wikis, currentWikiId]`: the effect would then fire on the very commit that
-   * RAISES the latch and drop it again before the request it is guarding has any
-   * answer. A ref changes no identity and triggers no effect, so it carries the
-   * fact across without arming anything — which is exactly why every
-   * `setAwaitingCreate` below sets it on the adjacent line.
+   * The effect below has to know whether this card's own latch was up, because
+   * that is what separates a sentence the arriving render makes stale from a
+   * stated refusal the owner is still reading — a 400 the route answered is not
+   * made untrue by somebody else's page write moving `wikis`. But
+   * `awaitingCreate` cannot join `[wikis, currentWikiId]`: the effect would then
+   * fire on the very commit that RAISES the latch and drop it again before the
+   * request it is guarding has any answer. A ref changes no identity and
+   * triggers no effect, so it carries the fact across without arming anything —
+   * which is exactly why every `setAwaitingCreate` below sets it on the
+   * adjacent line.
    */
   const awaitingCreateRef = useRef(false);
+  /**
+   * "THIS card raised the standing shared latch" — the same trick, for the half
+   * that is no longer this component's state (DW-516).
+   *
+   * `latched` says a wiki write somewhere is unresolved; it does not say whose,
+   * and the release effect below must clear only ITS OWN surface's errors. So
+   * every `raiseLatch` call in this file sets this on the adjacent line, exactly
+   * as `setAwaitingCreate` sets the ref above, and the effect reads it without
+   * depending on it.
+   */
+  const raisedLatchRef = useRef(false);
   // Confirming Create Wiki unmounts the empty state that holds the opening
   // button, so the dialogs need somewhere else to put focus on close.
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -157,13 +193,16 @@ export function WikiWorkbench() {
    * So the sentence is rendered in the empty state too, and the opener points
    * its description at it.
    *
-   * Derived from `createError`, never a copy constant: it IS the sentence
-   * `writeFailure` composed, and a second spelling of it would drift. Gated on
-   * the latch so it is on screen for exactly as long as the button is dead —
-   * `createError` also carries stated refusals, which belong to the dialog and
-   * are gone from the empty state's problem the moment it closes.
+   * Derived from the SHARED latch's message, never a copy constant: it IS the
+   * sentence `writeFailure` composed, and a second spelling of it would drift.
+   * Read off the latch rather than off `createError` since DW-516, so a create
+   * the HEADER switcher left unconfirmed dims this opener with the header's own
+   * sentence beside it rather than with nothing at all. `createError` could not
+   * do that job in either direction: it also carries stated refusals, which
+   * belong to the dialog and are gone from the empty state's problem the moment
+   * it closes, and it never sees the other surface's write.
    */
-  const createUnknownNote = awaitingCreate ? createError : null;
+  const createUnknownNote = latched ? latchMessage : null;
   // `aria-describedby` takes a space-separated LIST, so the two sentences are
   // JOINED rather than one replacing the other — the switcher's
   // `selectDescribedBy` idiom. In practice they never co-occur (a read-only
@@ -207,20 +246,36 @@ export function WikiWorkbench() {
    * still give the owner their button back rather than leaving a control dead
    * with no explanation.
    *
-   * `createError` is dropped WITH the latch and only with it. "The outcome is
-   * unknown, go and look at the screen" is a statement about a question this
-   * render has just answered, so leaving it standing over a live confirm — in
-   * the dialog and in the empty state alike — tells the owner their create is
-   * still in doubt while the button beside it says otherwise. But clearing it
-   * unconditionally would wipe a STATED refusal ("Wiki name is required.") on
-   * any unrelated refresh, so the ref above gates the whole body.
+   * `createError` and `templateError` are dropped WITH the latch and only with
+   * it. "The outcome is unknown, go and look at the screen" is a statement
+   * about a question this render has just answered, so leaving it standing over
+   * a live confirm — in either dialog and in the empty state alike — tells the
+   * owner their write is still in doubt while the button beside it says
+   * otherwise. But clearing either unconditionally would wipe a STATED refusal
+   * ("Wiki name is required.", a 404 from the template route) on any unrelated
+   * refresh, so `raisedLatchRef` gates that half: it is true only when THIS
+   * card put the standing latch up, so a header-raised latch releasing here
+   * never touches a sentence this card's own route answered with.
+   *
+   * `templateError` joined `createError` with DW-515, which is what gave the
+   * re-template a latch to release in the first place.
+   *
+   * `releaseLatch` is safe in the dependency list precisely because it is
+   * stable; `latched` and `message` are not, and either would fire this effect
+   * on the commit that RAISES the latch. The release itself is idempotent, so
+   * the switcher's effect running on the same render is a no-op.
    */
   useEffect(() => {
-    if (!awaitingCreateRef.current) return;
+    const raisedLatch = raisedLatchRef.current;
+    if (!awaitingCreateRef.current && !raisedLatch) return;
     awaitingCreateRef.current = false;
+    raisedLatchRef.current = false;
     setAwaitingCreate(false);
+    if (!raisedLatch) return;
+    releaseLatch();
     setCreateError(null);
-  }, [wikis, currentWikiId]);
+    setTemplateError(null);
+  }, [wikis, currentWikiId, releaseLatch]);
 
   // React flushes every effect TEARDOWN before any effect body, so this lands
   // after `useDialogA11y` has restored focus to the `Create Wiki` button — the
@@ -242,12 +297,13 @@ export function WikiWorkbench() {
     if (readOnly) return;
     // Behind `CreateWikiDialog`'s own `disabled={busy || confirmDisabled}` and
     // its `submit`'s Enter guard, never instead of them — a second POST seeds a
-    // second wiki. `awaitingCreate` rides ALONGSIDE `busy` because the two shut
-    // the same door for different lengths of time: `busy` for the length of the
-    // request, the latch until a server render lands after one whose outcome
+    // second wiki. Both latches ride ALONGSIDE `busy` because they shut the
+    // same door for different lengths of time: `busy` for the length of the
+    // request, the latches until a server render lands after one whose outcome
     // nobody knows — and the dialog is still open then, with `busy` back to
-    // false.
-    if (busy || awaitingCreate) return;
+    // false. `latched` is the SHARED one, so a create the header switcher left
+    // unconfirmed refuses this POST too (DW-516).
+    if (busy || awaitingCreate || latched) return;
     setBusy(true);
     setCreateError(null);
     try {
@@ -291,8 +347,14 @@ export function WikiWorkbench() {
         // actually there. And the refresh is what fetches that render: without
         // it the owner is told the outcome is unknown in front of a screen that
         // will never resolve it.
-        setAwaitingCreate(true);
-        awaitingCreateRef.current = true;
+        //
+        // The SHARED latch, not `awaitingCreate` (DW-516): the header
+        // switcher's `New Wiki` opens onto this same route, so a door shut only
+        // here is a door with another frame standing open beside it. The
+        // sentence rides with it so every control either surface dims can say
+        // which write is in doubt.
+        raiseLatch(message);
+        raisedLatchRef.current = true;
         router.refresh();
       }
     } finally {
@@ -311,7 +373,18 @@ export function WikiWorkbench() {
     if (!current) return;
     // Behind the confirm's `disabled={busy}`. A second POST rewrites this
     // wiki's purpose.md, Schema and Workspace Purpose all over again.
-    if (busy) return;
+    //
+    // `latched` is the DW-515 half. A re-template whose outcome nobody knows
+    // used to refresh underneath a confirm that stayed live: the dialog does
+    // not close on that path, `busy` is back to false by the time the sentence
+    // appears, and the reset effect keys on the active wiki — which a
+    // re-template never moves — so the owner was left pressing `Overwrite`
+    // again under a stale "the outcome is unknown" alert, over a card the
+    // refresh may already have moved onto the new scenario. Idempotence is not
+    // the answer: the second POST rewrites purpose.md and the Workspace Purpose
+    // from the template a second time, discarding anything the first one may
+    // have already replaced them with.
+    if (busy || latched) return;
     setBusy(true);
     setTemplateError(null);
     try {
@@ -335,10 +408,22 @@ export function WikiWorkbench() {
       // NOTHING CAME BACK — a fired deadline, a dropped connection or a gateway
       // that gave up, all of which reach here since DW-374 — so the overwrite
       // may have landed. This card would otherwise go on naming the OLD
-      // template beside a message that does not claim it survived. No
-      // `awaitingCreate` equivalent here: the confirm is idempotent per
-      // scenario and re-running it rewrites the same bytes.
-      if (unconfirmed) router.refresh();
+      // template beside a message that does not claim it survived.
+      //
+      // And the latch goes up with the refresh (DW-515). It used to be argued
+      // that a re-template needs none because the confirm is idempotent per
+      // scenario; that is only true of the SCHEMA, which History keeps. A
+      // repeat overwrite rewrites purpose.md and the Workspace Purpose from the
+      // template with nothing kept, so a second press over an unresolved first
+      // one can destroy the very bytes the first one may have already written.
+      // The shared latch is what shuts `Overwrite` — and, because the sentence
+      // rides with it, what lets the header's controls say why they went dim
+      // too.
+      if (unconfirmed) {
+        raiseLatch(message);
+        raisedLatchRef.current = true;
+        router.refresh();
+      }
     } finally {
       setBusy(false);
     }
@@ -390,7 +475,7 @@ export function WikiWorkbench() {
             // On screen it explains the dimming to everyone; the description
             // ties the two together for anyone who reaches the button by other
             // means.
-            disabled={awaitingCreate}
+            disabled={awaitingCreate || latched}
             // The deployment's standing refusal, which is the opposite case:
             // `POST /api/wikis` has answered 403 since before this card existed,
             // and `disabled` here would take the owner's only explanation of the
@@ -406,7 +491,10 @@ export function WikiWorkbench() {
               // and submits before being refused is worse than a control that
               // says up front it will not run.
               if (readOnly) return;
-              if (awaitingCreate) return;
+              // `latched` included, so a write the HEADER left unconfirmed
+              // refuses this opener too — the dialog it would open onto is
+              // dead, and offering it is offering a form that cannot submit.
+              if (awaitingCreate || latched) return;
               setCreateError(null);
               setCreateOpen(true);
             }}
@@ -504,8 +592,13 @@ export function WikiWorkbench() {
         open={createOpen}
         busy={busy}
         // Cancel and Esc stay live behind it — see `awaitingCreate`.
-        confirmDisabled={awaitingCreate}
-        error={createError}
+        confirmDisabled={awaitingCreate || latched}
+        // Falls back to the SHARED sentence while the latch is up, because the
+        // latch may be the HEADER switcher's (DW-516) and this dialog's backdrop
+        // covers everything that could otherwise explain the dead confirm. The
+        // card's own `createError` still outranks it: this dialog's request is
+        // the more specific answer.
+        error={createError ?? (latched ? latchMessage : null)}
         fallbackFocusRef={headingRef}
         onCancel={() => setCreateOpen(false)}
         onCreate={(input) => void create(input)}
@@ -525,8 +618,15 @@ export function WikiWorkbench() {
         // through a destructive confirm would rewrite this wiki's purpose,
         // Schema and Workspace Purpose to identical template bytes — discarding
         // any hand-authored purpose — and bump updatedAt for nothing.
-        confirmDisabled={pendingScenario === current?.scenario}
-        error={templateError}
+        // `latched` is the other half (DW-515): an unknown-outcome overwrite
+        // leaves this dialog OPEN with `busy` already back to false, so without
+        // it the owner meets a live `Overwrite` under the sentence saying
+        // nobody knows what the last one did.
+        confirmDisabled={pendingScenario === current?.scenario || latched}
+        // Same fallback as the create dialog: the latch may have been raised on
+        // the header, in which case `templateError` is null and this overlay
+        // would otherwise present a dead `Overwrite` with nothing to explain it.
+        error={templateError ?? (latched ? latchMessage : null)}
         fallbackFocusRef={headingRef}
         onCancel={() => setTemplateOpen(false)}
         onConfirm={() => void applyTemplate()}

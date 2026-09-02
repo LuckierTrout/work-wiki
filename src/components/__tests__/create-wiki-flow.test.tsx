@@ -529,11 +529,66 @@ describe("a request that never settles (DW-175, DW-283)", () => {
       // The overwrite may have landed, so the card cannot go on rendering the
       // template it was showing before as though nothing had happened.
       await waitFor(() => expect(refresh).toHaveBeenCalled());
-      // The confirm comes back rather than staying on "Working…" forever — the
-      // whole point of the deadline, since `finally` cannot rescue a promise
-      // that never resolves.
-      await waitFor(() => expect(button("Overwrite").disabled).toBe(false));
+      // …and `Overwrite` is LATCHED DEAD until that render arrives (DW-515).
+      // It used to come back the moment `finally` cleared `busy`, under this
+      // very alert and over a card the refresh may already have moved onto the
+      // new scenario. Idempotence was the argument for leaving it live, and it
+      // only ever covered the Schema, which History keeps: a second POST
+      // rewrites purpose.md and the Workspace Purpose from the template with
+      // nothing kept, destroying whatever the first one may already have
+      // written there.
+      await waitFor(() => expect(button("Overwrite").disabled).toBe(true));
+
+      // Asserted on the SPY, not on the attribute: no second request leaves.
+      const before = fetchMock.mock.calls.length;
+      fireEvent.click(button("Overwrite"));
+      expect(fetchMock.mock.calls.length).toBe(before);
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).endsWith(`/api/wikis/${ENCODED_ID}/template`),
+        ),
+      ).toHaveLength(1);
+
+      // Every way OUT stays live — the latch rides `confirmDisabled` and never
+      // `busy`. The sentence just read tells the owner to go and look at the
+      // screen, and a modal they cannot dismiss is not a screen.
       expect(button("Cancel").disabled).toBe(false);
+      fireEvent.keyDown(document, { key: "Escape" });
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
+
+    it(`gives Overwrite back once a server render arrives after a ${name}`, async () => {
+      fetchMock.mockRejectedValueOnce(Object.assign(new Error(mechanism), { name }));
+      const view = mount([WIKI], WIKI.id);
+      fireEvent.click(button("Change template"));
+      fireEvent.change(screen.getByLabelText("Scenario Template"), {
+        target: { value: "research" },
+      });
+      fireEvent.click(button("Overwrite"));
+      const sentence = (await screen.findByRole("alert")).textContent ?? "";
+      expect(sentence).toContain("unknown");
+      await waitFor(() => expect(button("Overwrite").disabled).toBe(true));
+
+      // A fresh array is what a server render IS. Deliberately answering the
+      // SAME wiki on the SAME scenario: a refresh that says nothing changed
+      // must still give the owner their button back, or the confirm is dead
+      // with no explanation and no way to revive it. (It also cannot be the
+      // reset effect doing the work — that keys on the active wiki, which a
+      // re-template never moves, which is precisely why this needed a latch.)
+      view.rerender(
+        <WorkbenchDataProvider value={data([WIKI], WIKI.id)}>
+          <WikiWorkbench />
+        </WorkbenchDataProvider>,
+      );
+
+      await waitFor(() => expect(button("Overwrite").disabled).toBe(false));
+      // …and the SENTENCE goes with the latch. It said the outcome was unknown
+      // and sent the owner to look at the screen; this render is that screen.
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.queryByText(sentence)).toBeNull();
+      // The dialog is still open — the reset effect did not fire, so this is
+      // the latch's release and nothing else.
+      expect(screen.getByRole("dialog", { name: "Change Scenario Template" })).toBeTruthy();
     });
 
     it(`reports a create's outcome as unknown, and shuts the door, on a ${name}`, async () => {
@@ -692,6 +747,41 @@ describe("a request that never settles (DW-175, DW-283)", () => {
       ).toHaveLength(1);
     });
   }
+
+  it("leaves a STATED template refusal unlatched, and its sentence standing", async () => {
+    // The other edge of DW-515's rule, and the reason the latch cannot simply
+    // follow "the overwrite failed". A route that answered with a reason
+    // ANSWERED: nothing landed, nothing is unknown, and holding `Overwrite`
+    // would strand the owner waiting for a refresh that is never issued.
+    fetchMock.mockResolvedValueOnce(
+      answer({ error: "That wiki no longer exists." }, { ok: false, status: 404 }),
+    );
+    const view = mount([WIKI], WIKI.id);
+    fireEvent.click(button("Change template"));
+    fireEvent.change(screen.getByLabelText("Scenario Template"), {
+      target: { value: "research" },
+    });
+    fireEvent.click(button("Overwrite"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("That wiki no longer exists.");
+    expect(refresh).not.toHaveBeenCalled();
+    // Live again once a DIFFERENT scenario is picked — which it already is.
+    await waitFor(() => expect(button("Overwrite").disabled).toBe(false));
+
+    // And an unrelated server render — somebody ingesting a source moves
+    // `dataVersion` and the shell refetches — does not make it untrue. The
+    // release effect is gated on this card's own raise ref precisely so that a
+    // stated refusal survives a render the owner never caused.
+    view.rerender(
+      <WorkbenchDataProvider value={data([WIKI], WIKI.id)}>
+        <WikiWorkbench />
+      </WorkbenchDataProvider>,
+    );
+
+    expect(screen.getByRole("alert").textContent).toBe("That wiki no longer exists.");
+    expect(button("Overwrite").disabled).toBe(false);
+  });
 });
 
 describe("the read-failure branch", () => {

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CreateWikiDialog } from "@/components/CreateWikiDialog";
+import { useWikiWriteLatch } from "@/components/workbench/WikiWriteLatch";
 import {
   TREE_UNAVAILABLE_COPY,
   WIKI_READ_ONLY_COPY,
@@ -85,6 +86,12 @@ export function WikiSwitcher({
   const readOnlyNoteId = useId();
   const renameInputId = useId();
   const deleteSelectId = useId();
+  /**
+   * The two sentences that can sit under the switcher row, and TWO ids because
+   * they are two nodes (DW-517) — see the render for why they cannot be one.
+   */
+  const errorNoteId = useId();
+  const latchNoteId = useId();
   const [createOpen, setCreateOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -124,7 +131,27 @@ export function WikiSwitcher({
   const refocusNewRef = useRef(false);
   /**
    * A create, rename, delete or SWITCH whose OUTCOME IS UNKNOWN, and whose
-   * server render has not arrived yet (DW-375, DW-409).
+   * server render has not arrived yet (DW-375, DW-409) — and, since DW-516,
+   * the CANVAS CARD's create or re-template too.
+   *
+   * SHARED STATE, not this component's own (`WikiWriteLatch.tsx`). `page.tsx`
+   * renders `WikiWorkbench` under the same provider as the shell that holds
+   * this header, and both surfaces open `CreateWikiDialog` onto the same
+   * `POST /api/wikis`. While each held a flag of its own, a latch raised here
+   * left the card's `Create Wiki` fully live — and nothing enforces unique wiki
+   * names, so one click seeded the second wiki the latch exists to prevent.
+   * Six writes now, across two components, one door.
+   *
+   * The shared state carries the SENTENCE as well as the fact, so a control
+   * this component dims for the CARD's write can still say which write is in
+   * doubt — the three dialogs' `error` fallbacks and the `<select>`'s
+   * description all resolve to it.
+   *
+   * A shared RELEASE means the first holder whose effect runs on the arriving
+   * server render drops the latch for both; `release()` is idempotent, so the
+   * other's effect is a no-op. What is NOT shared is which errors get cleared:
+   * `raisedLatchRef` below is this surface's private answer to "was the
+   * standing latch mine", and only that clears these four messages.
    *
    * None of the three dialogs closes on that path — the owner's name is still in
    * the field, and the sentence explaining what happened is inside the overlay —
@@ -159,23 +186,36 @@ export function WikiSwitcher({
    *
    * It is also what DROPS the sentence each write raised it beside: see the
    * release effect below.
-   */
-  const [awaitingWrite, setAwaitingWrite] = useState(false);
-  /**
-   * `awaitingWrite` mirrored where the release effect can READ it without
-   * DEPENDING on it (DW-429).
    *
-   * The effect has to know whether the latch was up, because that is what
-   * separates a sentence the arriving render makes stale from a stated refusal
-   * the owner is still reading — a 400 the route answered is not made untrue by
-   * somebody else's page write moving `wikis`. But `awaitingWrite` cannot join
-   * `[wikis, currentWikiId]`: the effect would then fire on the very commit that
-   * RAISES the latch and drop it again before the write it is guarding has any
-   * answer. A ref changes no identity and triggers no effect, so it carries the
-   * fact across without arming anything — which is why every `setAwaitingWrite`
+   * Mounted BARE — with no provider above it, which is how this component's own
+   * suite renders it — the hook falls back to component-local state, so the
+   * LATCH MECHANICS are exactly what they were: the same writes raise it, the
+   * same release effect drops it, and nothing waits on a surface that is not
+   * there. (The picker's DW-517 announcement rides on it either way, which is a
+   * change a bare mount sees too.)
+   */
+  const {
+    latched,
+    message: latchMessage,
+    raise: raiseLatch,
+    release: releaseLatch,
+  } = useWikiWriteLatch();
+  /**
+   * "THIS switcher raised the standing latch", mirrored where the release
+   * effect can READ it without DEPENDING on it (DW-429).
+   *
+   * The effect has to know whether the latch was up AND whether it was ours,
+   * because that is what separates a sentence the arriving render makes stale
+   * from a stated refusal the owner is still reading — a 400 the route answered
+   * is not made untrue by somebody else's page write moving `wikis`, and since
+   * DW-516 not by the canvas card's latch releasing either. But the latch
+   * cannot join `[wikis, currentWikiId]`: the effect would then fire on the very
+   * commit that RAISES it and drop it again before the write it is guarding has
+   * any answer. A ref changes no identity and triggers no effect, so it carries
+   * the fact across without arming anything — which is why every `raiseLatch`
    * below sets it on the adjacent line.
    */
-  const awaitingWriteRef = useRef(false);
+  const raisedLatchRef = useRef(false);
 
   // The optimism ends the moment the server's answer arrives. Without this the
   // stale `pendingId` outranks `currentWikiId` forever, so any later change to
@@ -225,25 +265,34 @@ export function WikiSwitcher({
    * Gated on the ref, never cleared unconditionally: a stated refusal ("Wiki
    * name is required.") is not made untrue by an unrelated server render, and
    * wiping it would leave the owner a live confirm and no idea what went wrong.
+   * Since DW-516 that gate carries a second job — it is also what stops a latch
+   * the CANVAS CARD raised and released from wiping a stated refusal standing
+   * here. Only the surface that raised the standing latch clears its own
+   * errors, and this ref is this surface's answer.
+   *
+   * `releaseLatch` is safe in the dependency list precisely because it is
+   * stable, which `latched` and `latchMessage` are not — either would fire this
+   * effect on the commit that RAISES the latch. The release is idempotent, so
+   * the card's effect running on the same render is a no-op.
    */
   useEffect(() => {
-    if (!awaitingWriteRef.current) return;
-    awaitingWriteRef.current = false;
-    setAwaitingWrite(false);
+    if (!raisedLatchRef.current) return;
+    raisedLatchRef.current = false;
+    releaseLatch();
     setCreateError(null);
     setRenameError(null);
     setDeleteError(null);
     setError(null);
-  }, [wikis, currentWikiId]);
+  }, [wikis, currentWikiId, releaseLatch]);
 
   async function switchWiki(id: string) {
-    // `switching` is the in-flight half; `awaitingWrite` is the half that
+    // `switching` is the in-flight half; the shared latch is the half that
     // OUTLIVES it (DW-409). `finally` clears `switching` as soon as the aborted
     // PUT lands here, so without the latch the picker is live again the instant
     // the unconfirmed sentence appears — and a second PUT issued over one whose
     // outcome nobody knows can settle out of order, leaving the shell on a wiki
     // the owner had already left and every prompt on its `schema.md`.
-    if (switching || awaitingWrite) return;
+    if (switching || latched) return;
     setSwitching(true);
     setPendingId(id);
     setError(null);
@@ -281,24 +330,35 @@ export function WikiSwitcher({
         // standing ("A wiki with that name already exists.") would then be
         // re-presented by its opener beside a dead button — attached to a
         // request that is not the one in doubt. The openers'
-        // `if (!awaitingWrite)` guards keep an error precisely because the latch
+        // `if (!latched)` guards keep an error precisely because the latch
         // is assumed to be that dialog's own; they cannot tell whose it is, and
         // this is the one place that is known.
         //
-        // ONLY when no latch was already up, and read off the REF. `New Wiki`
-        // is the one action control without `disabled={switching}`, so a create
-        // can latch while a switch is still in flight — and that dialog's
-        // sentence is the one the owner is actually reading, so this must not
-        // reach it. `awaitingWrite` cannot answer the question: it is the render
-        // snapshot this async closure captured before the PUT left, so a create
-        // that latched in the meantime is invisible to it. The ref is current.
-        if (!awaitingWriteRef.current) {
+        // ONLY when THIS switcher did not already raise the standing latch, and
+        // read off the ref. `New Wiki` is the one action control without
+        // `disabled={switching}`, so a create HERE can latch while a switch is
+        // still in flight — and that dialog's sentence is the one the owner is
+        // actually reading, so this must not reach it. `latched` cannot answer
+        // the question: it is the render snapshot this async closure captured
+        // before the PUT left, so a write that latched in the meantime is
+        // invisible to it. The ref is current.
+        //
+        // The condition asks ONLY about this surface's own raises, and sharing
+        // the latch (DW-516) is what makes that the right question rather than
+        // an accident of the old private flag. A latch the CANVAS CARD raised
+        // is somebody else's: the sentence the owner is reading is in the
+        // card's overlay, and these three are stale refusals of this switcher's
+        // own dialogs — exactly the ones that would otherwise be re-presented
+        // beside a confirm dead for a write they have nothing to do with,
+        // because `error={createError ?? …}` makes a dialog's own message
+        // outrank the shared fallback. So they are cleared then too.
+        if (!raisedLatchRef.current) {
           setCreateError(null);
           setRenameError(null);
           setDeleteError(null);
         }
-        setAwaitingWrite(true);
-        awaitingWriteRef.current = true;
+        raiseLatch(message);
+        raisedLatchRef.current = true;
         router.refresh();
       }
     } finally {
@@ -311,7 +371,7 @@ export function WikiSwitcher({
     // button being dead is what the owner sees; this is what makes a second
     // entry impossible — `CreateWikiDialog.submit` also carries Enter, and a
     // handler that only the pointer path guards is a handler with a hole.
-    if (busy || awaitingWrite) return;
+    if (busy || latched) return;
     setBusy(true);
     setCreateError(null);
     try {
@@ -336,8 +396,8 @@ export function WikiSwitcher({
         // and a second Create, on a dialog that stays open holding the owner's
         // name, would seed another one. The confirm goes dead until a server
         // render says what is actually there; the refresh is what fetches it.
-        setAwaitingWrite(true);
-        awaitingWriteRef.current = true;
+        raiseLatch(message);
+        raisedLatchRef.current = true;
         router.refresh();
       }
     } finally {
@@ -350,7 +410,7 @@ export function WikiSwitcher({
     // sits on the handler rather than on either of them. A second PATCH could
     // settle out of order and leave the registry naming whichever answer
     // happened to land last.
-    if (busy || awaitingWrite) return;
+    if (busy || latched) return;
     setBusy(true);
     setRenameError(null);
     try {
@@ -370,8 +430,8 @@ export function WikiSwitcher({
         // The registry may already hold the new name while this <select> and the
         // canvas card go on showing the old one — and a second PATCH issued from
         // the still-open dialog could settle out of order behind the first.
-        setAwaitingWrite(true);
-        awaitingWriteRef.current = true;
+        raiseLatch(message);
+        raisedLatchRef.current = true;
         router.refresh();
       }
     } finally {
@@ -383,7 +443,7 @@ export function WikiSwitcher({
     // The irreversible one. A second DELETE issued behind the first answers 404
     // and paints a failure over an operation that in fact succeeded — and the
     // `refocusNewRef` bookkeeping below would run twice against one list.
-    if (busy || awaitingWrite) return;
+    if (busy || latched) return;
     setBusy(true);
     setDeleteError(null);
     try {
@@ -415,8 +475,8 @@ export function WikiSwitcher({
         // operation that in fact succeeded, so Delete goes dead; the refresh
         // replaces the list underneath — the same `wikis.length` gate that hides
         // the Delete control does the rest.
-        setAwaitingWrite(true);
-        awaitingWriteRef.current = true;
+        raiseLatch(message);
+        raisedLatchRef.current = true;
         router.refresh();
       }
     } finally {
@@ -437,14 +497,72 @@ export function WikiSwitcher({
   // offers only the others, and a delete aimed at the selection is impossible
   // by construction rather than by a message after the round trip.
   const deletable = wikis.filter((wiki) => wiki.id !== value);
+  /**
+   * The LATCH's own sentence under the switcher row — a description, never an
+   * announcement (DW-517).
+   *
+   * Rendered SEPARATELY from the `<p role="alert">` that carries `error`, and
+   * not as one node switching its role, for two reasons. A single node would
+   * have to gain and lose `role="alert"` on an element React keeps and reuses,
+   * and a live region that acquires its role while its text is already on
+   * screen is not reliably announced — the announcement is a side effect of the
+   * text ARRIVING in a region that already exists. And the two sentences can be
+   * true at once about DIFFERENT writes: a stated switch refusal the route
+   * answered ("That wiki no longer exists.") standing while the canvas card
+   * raises an unconfirmed latch. The picker is then dimmed for the LATCH, so
+   * the latch's sentence is the one that has to describe it, while the answered
+   * 404 keeps its own alert node and stays on screen.
+   *
+   * No alert role here at all: the overlay that raised the latch is already
+   * announcing exactly these words, and a second live region would say them
+   * twice — and break every `findByRole("alert")` that expects one.
+   *
+   * Suppressed when `error` is already showing this same text, which is the
+   * switch-raised case: `switchWiki` puts the sentence in `error` on the way
+   * up, so the alert node is already carrying it and a second copy would be
+   * the duplicate this is meant to avoid.
+   *
+   * Gated on the SELECT'S OWN gate, because the `<select>` is the only thing it
+   * describes. With no wikis yet there is no picker to refuse, and the surface
+   * that IS refusing — the canvas card's empty-state `Create Wiki` — is already
+   * rendering this same sentence beside itself (DW-430); a second copy here
+   * would describe nothing and say it twice.
+   */
+  const latchNoteShown = latched && wikis.length > 0 && latchMessage !== error;
   // `aria-describedby` takes a space-separated LIST, so the read-only sentence
   // is APPENDED to the scope sentence rather than replacing it: both are true at
   // once. Without it the switcher is the one refused control here with no reason
   // in its description — it would announce as "Active wiki, combobox, dimmed"
   // plus a sentence about what a switch shows, while `WIKI_READ_ONLY_COPY`
   // (which says wikis cannot be SWITCHED) was never reached.
+  //
+  // The LATCH's sentence joins the same list while and only while the latch is
+  // up (DW-517). Until then a latched picker announced as an ordinary live
+  // combobox: `disabled={switching}` was already false, `aria-disabled` spoke
+  // only for `readOnly`, the change event was swallowed by `switchWiki`'s early
+  // return and React put the value back — a refusal in total silence. The
+  // sentence is the one `writeFailure` composed for whichever write is in
+  // doubt, on THIS surface or on the canvas card.
+  //
+  // WHICHEVER NODE IS CARRYING THAT SENTENCE, which is the whole point of the
+  // pick below: the latch note when it renders, and otherwise the alert node —
+  // the switch-raised case, where `error` IS the latch's sentence and the two
+  // would be identical. Nothing at all while the latch is down, so a stated
+  // refusal on its own describes nothing: the picker is live then, and the
+  // dimming a description explains does not exist.
+  const latchDescribedById = latched
+    ? latchNoteShown
+      ? latchNoteId
+      : error !== null
+        ? errorNoteId
+        : null
+    : null;
   const selectDescribedBy =
-    [wikis.length > 0 ? scopeNoteId : null, readOnly ? readOnlyNoteId : null]
+    [
+      wikis.length > 0 ? scopeNoteId : null,
+      readOnly ? readOnlyNoteId : null,
+      latchDescribedById,
+    ]
       .filter(Boolean)
       .join(" ") || undefined;
   const deleteTarget = deletable.find((wiki) => wiki.id === deleteTargetId) ?? null;
@@ -485,19 +603,29 @@ export function WikiSwitcher({
                   // still hear which Wiki is active. Omitted rather than set to
                   // "false" on a writable deployment, so the hover face below
                   // can key off the attribute's presence.
-                  aria-disabled={readOnly || undefined}
+                  //
+                  // `latched` joins `readOnly` here and NEVER `disabled`
+                  // (DW-517), for the reason the prop's docstring gives in
+                  // full: a keyboard owner must still be able to reach this
+                  // control and read which wiki is active — which is exactly
+                  // what the unconfirmed sentence has just sent them to do.
+                  // What it buys is that the refusal is ANNOUNCED: the control
+                  // reads as dimmed, and `selectDescribedBy` above carries the
+                  // sentence saying why. `.wb-wiki-switch-select[aria-disabled]`
+                  // already paints the dimmed face, so no new rule is needed.
+                  aria-disabled={readOnly || latched || undefined}
                   onChange={(event) => {
                     // Committing nothing IS the refusal — see the `readOnly`
                     // prop's docstring for why the control puts itself back.
                     if (readOnly) return;
                     // A LATCHED switch is refused by that same route (DW-409):
-                    // `switchWiki` returns early on `awaitingWrite`, commits no
+                    // `switchWiki` returns early on the shared latch, commits no
                     // state, and React re-applies `value` — so the picker is
                     // back on the wiki the server last confirmed with no second
                     // affordance to build and nothing here to put it back by
-                    // hand. The sentence beneath the control is already
-                    // explaining why, which is why the hold needs no note of
-                    // its own.
+                    // hand. The sentence beneath the control is what explains
+                    // it, and `aria-disabled` above is what makes the refusal
+                    // audible rather than a value that silently snaps back.
                     void switchWiki(event.target.value);
                   }}
                 >
@@ -529,7 +657,7 @@ export function WikiSwitcher({
                 // hand the owner back a dead Create with nothing on screen
                 // saying why. The release effect drops both together, because a
                 // server render is what makes both stale at once.
-                if (!awaitingWrite) setCreateError(null);
+                if (!latched) setCreateError(null);
                 setCreateOpen(true);
               }}
             >
@@ -578,7 +706,7 @@ export function WikiSwitcher({
               if (readOnly) return;
               setRenameName(current.name);
               // Kept while the latch is up — see the New Wiki opener above.
-              if (!awaitingWrite) setRenameError(null);
+              if (!latched) setRenameError(null);
               setRenameOpen(true);
             }}
           >
@@ -602,7 +730,7 @@ export function WikiSwitcher({
                 // It matters most here: the wiki may already be gone, and a
                 // reopened Delete with no sentence beside it reads as a fresh
                 // start on an operation that may have finished.
-                if (!awaitingWrite) setDeleteError(null);
+                if (!latched) setDeleteError(null);
                 setDeleteOpen(true);
               }}
             >
@@ -612,27 +740,41 @@ export function WikiSwitcher({
         </div>
       )}
 
+      {/* The SWITCH's own failure — unchanged except for the id, which is what
+          `selectDescribedBy` points the `<select>` at when this node is the one
+          carrying the latch's sentence. It keeps `role="alert"` unconditionally:
+          nothing else on screen announces a failed switch, and a role that came
+          and went would leave the region unreliable in both directions. */}
       {error && (
-        <p role="alert" className="wb-wiki-switch-error">
+        <p id={errorNoteId} role="alert" className="wb-wiki-switch-error">
           {error}
+        </p>
+      )}
+      {/* And the latch's sentence, when it is not already the one above — see
+          `latchNoteShown` for why this is a second node and not a role toggle
+          on the first. Description-only: the overlay that raised the latch owns
+          the announcement. */}
+      {latchNoteShown && (
+        <p id={latchNoteId} className="wb-wiki-switch-error">
+          {latchMessage}
         </p>
       )}
 
       <CreateWikiDialog
         open={createOpen}
         busy={busy}
-        // Cancel and Esc stay live behind it — see `awaitingWrite`.
-        confirmDisabled={awaitingWrite}
+        // Cancel and Esc stay live behind it — see the shared latch above.
+        confirmDisabled={latched}
         // Falls back to the SWITCHER's sentence while the latch is up, because
-        // the latch is shared and this dialog may be dead over somebody else's
-        // write (DW-409). The switcher's own `<p role="alert">` sits behind this
+        // the latch is shared and this dialog may be dead over a write from the
+        // OTHER SURFACE entirely (DW-409, DW-516). The switcher's own `<p role="alert">` sits behind this
         // overlay's `fixed inset-0` backdrop and outside its `aria-modal`
         // subtree, so it is covered for a sighted owner and unreachable for a
         // screen-reader one — leaving exactly the dimmed-control-that-says-
         // nothing shape DW-430 removes on the canvas card. `createError` still
         // outranks it: this dialog's own refusal is the more specific answer.
         // A STATED switch refusal raises no latch, so it never leaks in here.
-        error={createError ?? (awaitingWrite ? error : null)}
+        error={createError ?? (latched ? latchMessage : null)}
         fallbackFocusRef={newRef}
         onCancel={() => setCreateOpen(false)}
         onCreate={(input) => void create(input)}
@@ -647,9 +789,9 @@ export function WikiSwitcher({
         // The switcher's sentence stands in while a switch holds the shared
         // latch — see the create dialog above for why the alert behind this
         // backdrop cannot do that job.
-        error={renameError ?? (awaitingWrite ? error : null)}
+        error={renameError ?? (latched ? latchMessage : null)}
         fallbackFocusRef={newRef}
-        confirmDisabled={!renameReady || awaitingWrite}
+        confirmDisabled={!renameReady || latched}
         onCancel={() => setRenameOpen(false)}
         onConfirm={() => {
           if (current) void rename(current, renameName);
@@ -666,7 +808,7 @@ export function WikiSwitcher({
               value={renameName}
               maxLength={MAX_WIKI_NAME_CHARS}
               // `busy` ALONE. The latch is the confirm's and nothing else's —
-              // see `awaitingWrite`, which says so in as many words. A disabled
+              // see the shared latch above, which says so in as many words. A disabled
               // input leaves the tab order, so a keyboard owner could not reach
               // the name they were about to submit, let alone correct it; and
               // the sentence they have just read tells them to go and look at
@@ -685,12 +827,12 @@ export function WikiSwitcher({
               // half-composed name — the reason the platform exposes the flag.
               onKeyDown={(event) => {
                 if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-                // Gated on exactly what Rename is gated on — `awaitingWrite`
+                // Gated on exactly what Rename is gated on — the shared latch
                 // included. The field stays LIVE (see `disabled` above), so this
                 // is the only thing standing between a keystroke in an editable
                 // input and a second PATCH; a rule the button carries and the key
                 // does not is a guard with a hole.
-                if (busy || awaitingWrite || !renameReady) return;
+                if (busy || latched || !renameReady) return;
                 event.preventDefault();
                 if (current) void rename(current, renameName);
               }}
@@ -712,9 +854,9 @@ export function WikiSwitcher({
         // Same fallback as the two dialogs above, and it matters most here:
         // this confirm names an irreversible delete, so a dead button with no
         // sentence in the overlay reads as the operation having been refused.
-        error={deleteError ?? (awaitingWrite ? error : null)}
+        error={deleteError ?? (latched ? latchMessage : null)}
         fallbackFocusRef={newRef}
-        confirmDisabled={deleteTarget === null || awaitingWrite}
+        confirmDisabled={deleteTarget === null || latched}
         onCancel={() => setDeleteOpen(false)}
         onConfirm={() => {
           if (deleteTarget) void remove(deleteTarget);

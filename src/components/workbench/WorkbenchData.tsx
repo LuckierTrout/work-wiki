@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { WikiWriteLatchProvider } from "@/components/workbench/WikiWriteLatch";
 import { FILES_ROUTE } from "@/lib/source-delete";
 import { send } from "@/lib/workbench-request";
 import { buildFileTree, type FileNode, type KnowledgeGroup } from "@/lib/workbench-tree";
@@ -127,7 +128,15 @@ export function WorkbenchDataProvider({
     <WorkbenchDataContext.Provider
       value={{ ...value, files, filesTruncated }}
     >
-      {children}
+      {/* INSIDE this provider, and with the same children, because that is the
+          one seam both wiki write surfaces are already composed around:
+          `page.tsx` puts `Workbench` — which renders the header `WikiSwitcher`
+          — and `WikiWorkbench` under it. Both open the same `POST /api/wikis`,
+          and until DW-516 each held its own unconfirmed-write flag, so a latch
+          raised on one left the other's create live. One provider, one latch,
+          one sentence (see `WikiWriteLatch.tsx`). It takes no props: each
+          surface's existing release effect calls `release()`. */}
+      <WikiWriteLatchProvider>{children}</WikiWriteLatchProvider>
     </WorkbenchDataContext.Provider>
   );
 }

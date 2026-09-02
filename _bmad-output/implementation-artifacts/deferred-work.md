@@ -3915,7 +3915,9 @@ source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
 location: src/components/WikiWorkbench.tsx (applyTemplate)
 severity: medium
 reason: `applyTemplate` (src/components/WikiWorkbench.tsx) composes the same unconfirmed sentence through `writeFailure` and fires `router.refresh()`, but raises no latch, so there is nothing for the new release effect to gate on and `templateError` is not among the errors it clears. The dialog stays open (`setTemplateOpen(false)` runs only on success) and the reset effect keys on `[currentWikiId, currentId]`, which a re-template does not move. After the refresh the owner sees a live `Overwrite` under an alert saying nobody knows what happened, over a card already showing the new scenario. Deliberately out of this bundle's scope — the confirm is idempotent per scenario, which answers the double-write risk but not the stale-sentence one.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-unconfirmed-write-latch-shared
+resolution-undo: 914c2a4c0ce15566f349d93894c9882140d41913af71eaa25a9b1e26f7fbbdcf 2026-09-02 7374617475733a206f70656e
 
 ### DW-516: The card's `awaitingCreate` and the header switcher's `awaitingWrite` are independent flags on two components rendered in the same viewport, so an unconfirmed create on one surface leaves the other's
 origin: spec-deferred 4dcd16aec101
@@ -3923,7 +3925,9 @@ source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
 location: src/components/WikiWorkbench.tsx and src/components/workbench/WikiSwitcher.tsx
 severity: medium
 reason: `Workbench.tsx` renders `WikiSwitcher` in the left column header and `WikiWorkbench` as `children` at the same time. An unconfirmed create from the card raises `awaitingCreate` and dims its `Create Wiki`, while the header's `New Wiki` — which opens the same `CreateWikiDialog` onto the same `POST /api/wikis` — is not latched at all, and the inverse holds. Nothing enforces unique wiki names, so one click on the other surface seeds the second wiki the latch exists to prevent. Pre-existing since DW-375/DW-407 shipped the two flags separately; no suite mounts both surfaces together.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-unconfirmed-write-latch-shared
+resolution-undo: 914c2a4c0ce15566f349d93894c9882140d41913af71eaa25a9b1e26f7fbbdcf 2026-09-02 7374617475733a206f70656e
 
 ### DW-517: A latched `<select>` refuses a switch silently: it reports as enabled, snaps back with no announcement, and `selectDescribedBy` names no reason.
 origin: spec-deferred 36079a9e55f4
@@ -3931,7 +3935,9 @@ source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
 location: src/components/workbench/WikiSwitcher.tsx (the switcher <select> and selectDescribedBy)
 severity: low
 reason: While `awaitingWrite` is up the picker carries `disabled={switching}` (false) and `aria-disabled` only for `readOnly`, so it announces as an ordinary live combobox; the change is swallowed by `switchWiki`'s early return and React re-applies the value. The switcher's own `<p role="alert">` is on screen and was announced when it appeared, but it carries no id and is not in `selectDescribedBy`, so a keyboard or screen-reader owner who tries again gets nothing at all. This is the shape the neighbouring `WIKI_READ_ONLY_COPY` description exists to avoid for the read-only refusal.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-unconfirmed-write-latch-shared
+resolution-undo: 914c2a4c0ce15566f349d93894c9882140d41913af71eaa25a9b1e26f7fbbdcf 2026-09-02 7374617475733a206f70656e
 
 ### DW-518: DW-429's recorded `decision:` names a kernel remedy this bundle did not implement, and its cited coordinates no longer match the tree.
 origin: spec-deferred 9ea259f90049
@@ -5715,4 +5721,12 @@ location: src/components/workbench/WorkspacePreview.tsx:77-113
 source_spec: `spec-dw-519-520-uncovered-scroll-surfaces.md`
 severity: low
 reason: `Workbench.tsx:1917-1923` mounts `WorkspacePreview` from the same block as `PreviewColumn`, with the same `id={PREVIEW_ID}` and the same `hidden={!previewOpen}` (`previewOpen = previewDocked && !settingsOpen`, `Workbench.tsx:401`). `WorkspacePreview.tsx:77-113` renders `<aside className="wb-preview">` around `<div className="wb-preview-body">` — both `overflow: auto` (`globals.css:4214`, `:4262`) and both discarded by `.wb-preview[hidden] { display: none }` (`globals.css:2782`) — and holds no ref, no restore and no listener. In Chat mode with an `agent-workspace/` file picked (`shouldDockPreview` docks for `mode === "chat"`, `workbench-tree.ts:511-525`) an owner who scrolls a long Agent report, opens Settings and closes it lands back at the top of both boxes: exactly the loss DW-520 names, at a component neither ledger entry mentions. The only suite that mounts it (`epic8-chat-ui.test.tsx:233`) passes no `hidden` prop and asserts only the fetched body.
+status: open
+
+### DW-721: A create that SUCCEEDS on either wiki surface leaves the other surface's create fully live for the length of `router.refresh()`, so one click there still seeds the second wiki the latch exists to prev
+origin: spec-deferred d337f0eae1fc
+location: src/components/WikiWorkbench.tsx (create, success branch) and src/components/workbench/WikiSwitcher.tsx (create, success branch)
+source_spec: `spec-dw-515-516-517-unconfirmed-write-latch-shared.md`
+severity: low
+reason: Pre-existing and unchanged by DW-515/516/517, which share the UNCONFIRMED half only. `WikiWorkbench.create`'s success path raises the component-local `awaitingCreate` (read by that card's opener and confirm alone); `WikiSwitcher.create`'s success path raises nothing at all. Both surfaces stay mounted together and both POST `/api/wikis`, and nothing enforces unique wiki names. Demonstrated by mounting both under one `WorkbenchDataProvider`, letting the card's create resolve 2xx, and pressing the header's `Create`: a second `POST /api/wikis` is issued while every existing suite stays green. The consequence is the one the shared latch was built for — a duplicate wiki made active, moving every prompt onto its template.
 status: open

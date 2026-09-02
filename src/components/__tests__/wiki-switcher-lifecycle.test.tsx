@@ -1024,6 +1024,23 @@ describe("an unconfirmed switch holds the picker too (DW-409)", () => {
     await waitFor(() => expect(select().value).toBe(CURRENT.id));
     expect(select().disabled).toBe(false);
 
+    // …and it now SAYS so (DW-517). `aria-disabled`, never `disabled`: the
+    // refusal must not take the picker out of the tab order, because a keyboard
+    // owner still has to be able to reach it and read which wiki is active —
+    // the convention `WikiSwitcherProps.readOnly` states in full.
+    expect(select().getAttribute("aria-disabled")).toBe("true");
+    // The reason, resolved through the DOM: an id pointing at nothing describes
+    // nothing, and the attribute alone cannot tell the two apart. The scope
+    // sentence stays — both are true at once — and the latch's sentence is the
+    // one `writeFailure` composed, appended to it.
+    const described = (select().getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean);
+    expect(described).toHaveLength(2);
+    expect(
+      described.map((id) => document.getElementById(id)?.textContent ?? ""),
+    ).toEqual([WIKI_SCOPE_COPY, sentence]);
+
     // A DIFFERENT wiki, so the value really moves and React really fires the
     // change — re-picking the one it already holds is a no-op event and would
     // ask the guard nothing.
@@ -1044,6 +1061,20 @@ describe("an unconfirmed switch holds the picker too (DW-409)", () => {
     );
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
     expect(screen.queryByText(sentence)).toBeNull();
+    // The announcement goes with it: a picker that is live again must not go on
+    // reporting as dimmed, and its description must not name a paragraph that
+    // is no longer on screen. Resolved through the DOM and compared as a LIST,
+    // not inferred from the absence of a space — an attribute that had gone
+    // missing entirely would satisfy "contains no space" while describing
+    // nothing at all, and the non-null assertion needed to look it up would
+    // throw rather than fail.
+    expect(select().hasAttribute("aria-disabled")).toBe(false);
+    const releasedDescription = (select().getAttribute("aria-describedby") ?? "")
+      .split(/\s+/)
+      .filter(Boolean);
+    expect(
+      releasedDescription.map((id) => document.getElementById(id)?.textContent ?? ""),
+    ).toEqual([WIKI_SCOPE_COPY]);
 
     fireEvent.change(select(), { target: { value: THIRD.id } });
     await waitFor(() => expect(currentWrites()).toHaveLength(2));
