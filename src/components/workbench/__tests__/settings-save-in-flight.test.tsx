@@ -21,7 +21,7 @@ import {
   announcedFor,
   installSettingsFetchMock,
   settingsPayload,
-} from "./settings-harness";
+} from "@/test/settings-harness";
 
 /**
  * The save window, MOUNTED (DW-67/DW-626).

@@ -55,7 +55,8 @@ vi.mock("@/components/VaultExportButton", () => ({
   VaultExportButton: () => null,
 }));
 
-const VERSION = "w1:1a-1111111122222222";
+/** A stamp in the settings store's own `s1:` scheme (`newConfigVersion`). */
+const VERSION = "s1:1a1a1a1a2b2b2b2b3c3c3c3c4d4d4d4d";
 
 /**
  * `GET /api/settings` with stored values in every field this page renders.

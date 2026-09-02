@@ -49,7 +49,7 @@ import {
   announcedFor,
   installSettingsFetchMock,
   settingsPayload,
-} from "./settings-harness";
+} from "@/test/settings-harness";
 
 /**
  * The API + MCP pane, MOUNTED — the first DOM-level coverage it has ever had.

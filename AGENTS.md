@@ -86,17 +86,22 @@ scan reads this file too.
 - Shared test helpers are NOT named `*.test.ts(x)` — either project would
   otherwise collect one as a suite with no assertions in it, and the
   config-load guard rejects a `*.test.tsx` outside the dom include. There are
-  six. Five sit beside the suites that use them and are imported as `./name`:
+  six. Four sit beside the suites that use them and are imported as `./name`:
   `src/lib/__tests__/source-scan.ts`, `src/lib/__tests__/discuss-fixtures.ts`
   (the only writer of `discuss/<slug>.json` in the tests),
-  `src/lib/__tests__/email-ingest-wire.ts`,
-  `src/lib/__tests__/internal-link-fixture.ts` and
-  `src/components/workbench/__tests__/settings-harness.tsx`.
-  `src/test/dom-helpers.ts` is the exception, living outside `__tests__`
-  because it must be aliasable as `@/test/…`. Nothing the app ships may
-  import from `@/test/` — it pulls
-  `vitest` and `@testing-library/react` and mutates `HTMLElement.prototype` at
-  load. `src/lib/__tests__/test-infra-conventions.test.ts` enforces all of this.
+  `src/lib/__tests__/email-ingest-wire.ts` and
+  `src/lib/__tests__/internal-link-fixture.ts`. The other two live under
+  `src/test/` and are imported as `@/test/name`, because their users sit in more
+  than one directory and a `./` sibling import reaches only one:
+  `src/test/dom-helpers.ts` (the dom shim controls — which have the SECOND
+  reason the bullet above gives, that `@/` cannot express a path outside `src/`
+  and a relative ladder encodes the importer's own depth) and
+  `src/test/settings-harness.tsx` (the Settings fixture, `fetch` stub and mount
+  helpers the mounted Settings suites share). Nothing the app ships may
+  import from `@/test/`: both modules pull `vitest` and
+  `@testing-library/react`, which are devDependencies, and `dom-helpers.ts`
+  additionally mutates `window.matchMedia` and `HTMLElement.prototype` at import
+  time. `src/lib/__tests__/test-infra-conventions.test.ts` enforces all of this.
 - Browser-level questions — real layout, real focus across platforms, real
   assistive technology — are Playwright's, `pnpm test:e2e`
   (`playwright.config.ts`, specs in `e2e/`). Not in CI; run it locally. Focus

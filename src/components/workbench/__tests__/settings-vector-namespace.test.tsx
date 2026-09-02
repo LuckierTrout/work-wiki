@@ -25,7 +25,7 @@ import {
   installSettingsFetchMock,
   mountSettings,
   settingsPayload,
-} from "./settings-harness";
+} from "@/test/settings-harness";
 
 /**
  * The DW-73 namespace refusal, MOUNTED.
@@ -48,11 +48,9 @@ import {
  * gate would refuse for a SECOND reason (DW-225) — which would change every
  * sentence asserted below and leave nothing here about the namespace at all.
  * The binding leg has its own cases at the end, which override it back off.
- * The `version` is the store's own stamp shape for this deployment.
  */
 function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
   return settingsPayload({
-    version: "w1:2-0000000000000000",
     embeddingProvider: "workers-ai",
     hasWorkersAiBinding: true,
     ...overrides,

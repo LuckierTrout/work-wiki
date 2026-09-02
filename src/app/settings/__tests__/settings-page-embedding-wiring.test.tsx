@@ -60,7 +60,8 @@ const SUBSTITUTED = {
   structuredKnowledgeModelSource: "none",
   structuredKnowledgeConfigured: false,
   readOnly: false,
-  version: "w1:1a-1111111122222222",
+  // A stamp in the settings store's own `s1:` scheme (`newConfigVersion`).
+  version: "s1:1a1a1a1a2b2b2b2b3c3c3c3c4d4d4d4d",
 };
 
 /**

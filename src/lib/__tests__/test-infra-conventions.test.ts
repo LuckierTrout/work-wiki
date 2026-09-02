@@ -37,6 +37,21 @@ const SELF = "lib/__tests__/test-infra-conventions.test.ts";
 const DOM_HELPERS = "test/dom-helpers.ts";
 
 /**
+ * The Settings mount harness, which lives beside the barrel for the same reason
+ * (DW-471): a mounted suite under `src/app/settings/__tests__/` needs it, and
+ * `./settings-harness` only ever reached the one directory it sat in.
+ */
+const SETTINGS_HARNESS = "test/settings-harness.tsx";
+
+/**
+ * Everything under `src/test/` — test-only by construction, and therefore never
+ * "production" for the two scans below.
+ */
+function isTestOnly(file: string): boolean {
+  return file.startsWith("test/");
+}
+
+/**
  * Every `.ts`/`.tsx` file under `src/`, as `/`-joined `src`-relative paths,
  * INCLUDING those under `__tests__` — see the header.
  */
@@ -100,7 +115,7 @@ describe("the dom shim controls are reached through one aliased door (DW-112)", 
     // import, and nothing replaced the signal the ladder used to carry.
     const files = await sourceFiles();
     const production = files.filter(
-      (file) => !file.includes("__tests__/") && file !== DOM_HELPERS,
+      (file) => !file.includes("__tests__/") && !isTestOnly(file),
     );
     // The scan reached real production modules, not just test files.
     expect(production).toContain("components/workbench/Workbench.tsx");
@@ -134,7 +149,7 @@ describe("the dom shim controls are reached through one aliased door (DW-112)", 
     // is the enforcement.
     const files = await sourceFiles();
     const production = files.filter(
-      (file) => !file.includes("__tests__/") && file !== DOM_HELPERS,
+      (file) => !file.includes("__tests__/") && !isTestOnly(file),
     );
     // The scan reached the module that DEFINES them, which is the one
     // production file guaranteed to mention the names — so an exclusion that
@@ -190,12 +205,50 @@ describe("the dom shim controls are reached through one aliased door (DW-112)", 
     }
   });
 
-  it("is the only src/ module under a test/ directory", async () => {
-    // A second module here would be the natural place for someone to put a
+  it("src/test/settings-harness.tsx defines no shim of its own", async () => {
+    // The barrel's "re-exports and defines nothing" rule above covers
+    // `dom-helpers.ts` and nothing else, and it CANNOT be widened to cover this
+    // module: the harness is a real implementation — it defines functions and
+    // consts by design, so every pattern that case tests for is legitimate
+    // here. Before DW-471 the whole of `src/test/` was one barrel, and the
+    // "exactly one module" pin was what made that rule load-bearing for the
+    // directory; a second module took that cover away.
+    //
+    // What survives is the part that matters: `AGENTS.md` claims
+    // `vitest.setup.dom.ts` holds every shim and nothing in `src/` does. The
+    // relative-import case at the top of this file already catches a harness
+    // that reached the setup file by ladder, but an INLINE shim — a
+    // `defineProperty` on a prototype, the way the setup file installs
+    // `offsetParent` and `getClientRects` — would import nothing and pass it.
+    // So the two patterns that spell "shim" are pinned directly.
+    const source = await read(SETTINGS_HARNESS);
+    const withoutComments = source
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    for (const shim of [/Object\.defineProperty/, /\bprototype\b/]) {
+      expect(
+        shim.test(withoutComments),
+        `src/${SETTINGS_HARNESS} matched ${shim}. It is a mount harness, not a ` +
+          `place for a DOM shim: every shim lives in vitest.setup.dom.ts, ` +
+          `reached through ${DOM_HELPERS}, so that the dom project has ONE ` +
+          `module instance of the state the setup file's afterEach resets. ` +
+          `Adding one here also makes AGENTS.md's "nothing in src/ holds a ` +
+          `shim" false.`,
+      ).toBe(false);
+    }
+  });
+
+  it("holds only the two modules that must be aliasable", async () => {
+    // A THIRD module here would be the natural place for someone to put a
     // shim, so the barrel's "re-exports only" rule is only as strong as the
-    // guarantee that it is the whole of `src/test/`.
-    const inTestDir = (await sourceFiles()).filter((file) => file.startsWith("test/"));
-    expect(inTestDir).toEqual([DOM_HELPERS]);
+    // guarantee that it and the harness are the whole of `src/test/`.
+    //
+    // The barrel rule itself is held by the case ABOVE, which reads
+    // `DOM_HELPERS` by name — so widening this list to two does not weaken it.
+    // A module earns a place here only by needing to be reached as `@/test/…`
+    // from more than one directory; anything else belongs beside its suites.
+    const inTestDir = (await sourceFiles()).filter(isTestOnly);
+    expect(inTestDir.slice().sort()).toEqual([DOM_HELPERS, SETTINGS_HARNESS].sort());
   });
 });
 
@@ -212,7 +265,7 @@ describe("shared test helpers are not collected as suites (DW-117, DW-228)", () 
       "lib/__tests__/discuss-fixtures.ts",
       "lib/__tests__/email-ingest-wire.ts",
       "lib/__tests__/internal-link-fixture.ts",
-      "components/workbench/__tests__/settings-harness.tsx",
+      SETTINGS_HARNESS,
       DOM_HELPERS,
     ]) {
       // Present…

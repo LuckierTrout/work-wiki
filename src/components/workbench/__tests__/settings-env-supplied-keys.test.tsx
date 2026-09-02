@@ -12,7 +12,7 @@ import {
   installSettingsFetchMock,
   mountSettings,
   settingsPayload,
-} from "./settings-harness";
+} from "@/test/settings-harness";
 
 /**
  * The two key rows an ENVIRONMENT variable can supply, MOUNTED (DW-66).

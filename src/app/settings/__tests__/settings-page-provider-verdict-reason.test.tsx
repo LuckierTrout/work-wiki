@@ -36,7 +36,8 @@ vi.mock("@/components/VaultExportButton", () => ({
   VaultExportButton: () => null,
 }));
 
-const VERSION = "w1:1a-1111111122222222";
+/** A stamp in the settings store's own `s1:` scheme (`newConfigVersion`). */
+const VERSION = "s1:1a1a1a1a2b2b2b2b3c3c3c3c4d4d4d4d";
 
 /** The resolver's own sentence, never a second wording composed for this file. */
 const ISSUE = ollamaBaseUrlRefusedCopy("env", "localhost:11434");

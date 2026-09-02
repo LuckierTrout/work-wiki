@@ -7,6 +7,7 @@ import {
   vectorSearchInactiveCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import { settingsPayload } from "@/test/settings-harness";
 
 /**
  * The legacy flat `/settings` page saying what it can and cannot do, MOUNTED.
@@ -46,68 +47,50 @@ vi.mock("@/components/VaultExportButton", () => ({
   VaultExportButton: () => null,
 }));
 
-const VERSION = "w1:1a-1111111122222222";
+/** A stamp in the settings store's own `s1:` scheme (`newConfigVersion`). */
+const VERSION = "s1:1a1a1a1a2b2b2b2b3c3c3c3c4d4d4d4d";
 
-/** The `workbench` object as `getWorkbenchSettings()` builds it, fresh. */
+/**
+ * The `workbench` object as `getWorkbenchSettings()` builds it, fresh.
+ *
+ * The shared fixture (DW-228/DW-471) plus this page's own deltas — everything
+ * else, including every field a later story adds to the payload type, tracks
+ * `settingsPayload()`. Before DW-471 this was a verbatim ~50-field copy, only
+ * reachable because the harness sat in `components/workbench/__tests__/` where
+ * a suite in THIS directory could not import it.
+ *
+ * The deltas are all one fact: the shared base describes a deployment already
+ * CONFIGURED for OpenAI, and this page's subject is a deployment that has
+ * chosen nothing — the flat form rendering its "not configured" answers, which
+ * is what the `Custom` provider case (DW-61) and the vector sentence (DW-327)
+ * are asserted against. `version` is this file's own stamp because `body()`
+ * below repeats it in the flat half, where the two must agree.
+ *
+ * THE TRADE, stated because the verbatim fixture this replaced made it
+ * impossible: base-tracking cuts both ways. The shared base describes a
+ * CONFIGURED deployment, and this file's premise is one that has chosen
+ * NOTHING — so a field added to `settingsPayload()` with a configured-looking
+ * value silently moves that premise here, and the cases below would start
+ * asserting about a page in a state no one chose for them. Adding a field to
+ * the base? Ask whether a fresh, unconfigured deployment would answer it the
+ * same way, and if not, override it back in the deltas above.
+ */
 function workbench(
   overrides: Partial<WorkbenchSettingsPayload> = {},
 ): WorkbenchSettingsPayload {
-  return {
+  return settingsPayload({
     version: VERSION,
+    // Nothing chosen for either LLM leg…
     chatProvider: null,
     chatModel: null,
     ingestProvider: null,
     ingestModel: null,
-    customBaseUrl: null,
-    hasCustomApiKey: false,
-    envCustomApiKey: false,
-    llmTimeoutSeconds: null,
-    vectorSearchEnabled: false,
+    // …nor for embeddings, which is what makes the flat page's embedding rows
+    // render their unconfigured shape.
     embeddingProvider: null,
     embeddingModel: null,
-    embeddingBaseUrl: null,
-    hasEmbeddingApiKey: false,
-    embeddingModelInEffect: null,
-    embeddingModelOverridden: false,
-    envEmbeddingProvider: null,
-    envEmbeddingModel: null,
-    envCustomBaseUrl: null,
-    envEmbeddingApiKeyProviders: [],
-    hasWorkersAiBinding: false,
-    firecrawlBaseUrl: null,
-    hasFirecrawlApiKey: false,
-    envFirecrawlApiKey: false,
-    // Deep Research, fresh: nothing chosen, nothing configured. This file is
-    // about the FLAT page, which renders none of these — they are here because
-    // the payload type is one type.
-    researchProvider: null,
-    envResearchProvider: null,
-    hasTavilyApiKey: false,
-    hasSerpApiKey: false,
-    serpApiEngine: null,
-    searxngBaseUrl: null,
-    envSearxngBaseUrl: null,
-    searxngCategories: null,
-    envResearchProviders: [],
-    // Epic 7's panes are not what this file is about: the Intake door has no
-    // inbound address configured and MinerU is off, which is the fresh-
-    // deployment answer for both.
-    inboundEmailAddress: null,
-    inboundEmailEnabled: false,
-    intakeKeepParsed: false,
-    mineruMode: "off",
-    mineruLocalBaseUrl: null,
-    hasMinerUApiKey: false,
-    // The loopback door, shut — the fail-closed answer every one of these
-    // fixtures wants, since none of them is about Epic 8's pane.
-    apiEnabled: false,
-    allowUnauthenticated: false,
-    hasLoopbackApiToken: false,
-    loopbackTokenSource: "none",
-    language: "English",
-    readOnly: false,
     ...overrides,
-  };
+  });
 }
 
 /** The flat legacy half of the body, which this page has always read. */

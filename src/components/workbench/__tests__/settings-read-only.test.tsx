@@ -30,8 +30,10 @@ import {
   announcedFor,
   installSettingsFetchMock,
   mountSettings,
+  mountSettingsQueue,
+  patchOf,
   settingsPayload,
-} from "./settings-harness";
+} from "@/test/settings-harness";
 
 /**
  * The Settings controls a read-only deployment refuses, MOUNTED (DW-37, DW-65).
@@ -370,18 +372,6 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
   /** What the RECOVERY read answers once the held version is gone (DW-555). */
   const RECOVERED = "s1:55555555555555556666666666666666";
 
-  /** Mount writable, with one response per call rather than one for all. */
-  async function mountWritable(responses: Array<() => unknown>) {
-    let call = 0;
-    fetchMock.mockImplementation(async () => {
-      const next = responses[Math.min(call, responses.length - 1)];
-      call += 1;
-      return next() as Response;
-    });
-    render(<SettingsCanvas category="llm-models" headingId="wb-set-heading" />);
-    await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
-  }
-
   function read(version: string) {
     return () => ({
       ok: true,
@@ -417,15 +407,8 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     return init.method;
   }
 
-  /** The `workbench` patch the nth call sent. */
-  function patchOf(call: number): Record<string, unknown> {
-    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
-    return (JSON.parse(String(init.body)) as { workbench: Record<string, unknown> })
-      .workbench;
-  }
-
   it("puts the seeded payload's version on the save, and adopts the answered one", async () => {
-    await mountWritable([read(SEEDED), saved(LANDED), saved(LANDED)]);
+    await mountSettingsQueue("llm-models", [read(SEEDED), saved(LANDED), saved(LANDED)]);
 
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -469,7 +452,12 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
         })(),
       }),
     });
-    await mountWritable([read(SEEDED), versionless, read(RECOVERED), saved(LANDED)]);
+    await mountSettingsQueue("llm-models", [
+      read(SEEDED),
+      versionless,
+      read(RECOVERED),
+      saved(LANDED),
+    ]);
 
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -501,7 +489,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // different everything — and none of it may reach the draft. This surface
     // has no refresh precisely because a re-seed throws away unsaved edits, and
     // the recovery must not become one by the back door.
-    await mountWritable([
+    await mountSettingsQueue("llm-models", [
       read(SEEDED),
       () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
       () => ({
@@ -570,7 +558,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
         ...payload({ readOnly: false }),
         version: held,
       } as unknown as WorkbenchSettingsPayload;
-      await mountWritable([
+      await mountSettingsQueue("llm-models", [
         () => ({ ok: true, status: 200, json: async () => ({ workbench: loaded }) }),
         read(RECOVERED),
         saved(LANDED),
@@ -603,7 +591,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // `verdictClearsHeldVersion` leaves the held payload exactly as the
     // adoption left it. That is what makes the second press an observation of
     // the adoption rather than of anything else.
-    await mountWritable([
+    await mountSettingsQueue("llm-models", [
       read(SEEDED),
       () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
       read(RECOVERED),
@@ -641,7 +629,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // config the draft was seeded from, so refreshing one behind the owner's
     // back would silently turn every conflict into a clobber. Only the absent
     // case has nothing left to lose.
-    await mountWritable([read(SEEDED), saved(LANDED)]);
+    await mountSettingsQueue("llm-models", [read(SEEDED), saved(LANDED)]);
 
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -670,7 +658,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
         ...payload({ readOnly: false }),
         version: answered,
       } as unknown as WorkbenchSettingsPayload;
-      await mountWritable([
+      await mountSettingsQueue("llm-models", [
         read(SEEDED),
         () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
         () => ({ ok: true, status: 200, json: async () => ({ workbench: served }) }),
@@ -710,7 +698,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // Same answer for a read that never lands: the 428 is a sentence about a
     // header, which is at least true, where a swallowed save would be a draft
     // the owner cannot get rid of.
-    await mountWritable([
+    await mountSettingsQueue("llm-models", [
       read(SEEDED),
       () => ({ ok: true, status: 200, json: async () => ({ saved: true }) }),
       () => ({ ok: false, status: 503, json: async () => ({ error: "nope" }) }),
@@ -813,7 +801,12 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
 
   for (const [label, unconfirmed] of UNCONFIRMED) {
     it(`keeps every edit and drops the stale If-Match after ${label} (DW-376)`, async () => {
-      await mountWritable([read(SEEDED), unconfirmed, read(RECOVERED), saved(LANDED)]);
+      await mountSettingsQueue("llm-models", [
+        read(SEEDED),
+        unconfirmed,
+        read(RECOVERED),
+        saved(LANDED),
+      ]);
 
       typeChatModel("gpt-4.1");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -894,7 +887,12 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       // applied", blamed on a change made somewhere else, when the change would
       // be this owner's own. Sending nothing gets the 428, which claims only
       // that the save could not be checked, and is true either way.
-      await mountWritable([read(SEEDED), unreadable, read(RECOVERED), saved(LANDED)]);
+      await mountSettingsQueue("llm-models", [
+        read(SEEDED),
+        unreadable,
+        read(RECOVERED),
+        saved(LANDED),
+      ]);
 
       typeChatModel("gpt-4.1");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -938,7 +936,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // the version the canvas holds is still current, and throwing it away would
     // send the next save into a needless 428 on the strength of a refusal that
     // arrived intact.
-    await mountWritable([
+    await mountSettingsQueue("llm-models", [
       read(SEEDED),
       () => ({
         ok: false,
@@ -971,7 +969,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // same dead socket answers it when it kills a 2xx body read, and the status
     // line is the whole difference. `saveWorkbenchSettings` pins the returned
     // verdict; only a mounted canvas can show what it does with it.
-    await mountWritable([
+    await mountSettingsQueue("llm-models", [
       read(SEEDED),
       () => ({
         ok: false,
@@ -1002,7 +1000,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
   });
 
   it("keeps every edit on screen and shows the SERVER's conflict sentence", async () => {
-    await mountWritable([
+    await mountSettingsQueue("llm-models", [
       read(SEEDED),
       () => ({
         ok: false,

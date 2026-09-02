@@ -26,7 +26,7 @@ import {
   installSettingsFetchMock,
   mountSettings,
   settingsPayload,
-} from "./settings-harness";
+} from "@/test/settings-harness";
 
 /**
  * The shared fixture, unchanged: this file's claims are all about a FRESH

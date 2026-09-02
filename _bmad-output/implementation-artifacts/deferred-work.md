@@ -3561,7 +3561,9 @@ source_spec: `spec-dw-112-117-228-test-infra-shared-helpers.md`
 location: src/app/settings/__tests__/settings-page-legacy-surface-parity.test.tsx
 severity: low
 reason: `src/app/settings/__tests__/settings-page-legacy-surface-parity.test.tsx` duplicates the fixture the new `settings-harness.tsx` consolidates for the four workbench suites, but the harness lives inside `src/components/workbench/__tests__/` and is reachable only by a `./` sibling import. Folding it in would need the harness to move somewhere aliasable (mirroring `src/test/`), which the intent did not ask for.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-test-harness-consolidation
+resolution-undo: ccb2e9575c2032e960306922bd121dc1431d74a0658669a4eb7435a96b013cc3 2026-09-02 7374617475733a206f70656e
 
 ### DW-472: Two settings fixtures override `version` to a different stamp shape than the shared base with no explanation of why both shapes exist.
 origin: spec-deferred 5159aae5de1b
@@ -3569,7 +3571,9 @@ source_spec: `spec-dw-112-117-228-test-infra-shared-helpers.md`
 location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
 severity: low
 reason: `settings-vector-namespace.test.tsx` and `settings-embedding-provider-switch.test.tsx` state `version: "w1:2-0000000000000000"` where `settingsPayload()`'s base is `"s1:00000000000000000000000000000000"`. No assertion in either file reads `version`, and both values predate this change, so the consolidation preserved rather than caused the divergence — but it is now visible as an unexplained delta on the shared base.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-test-harness-consolidation
+resolution-undo: ccb2e9575c2032e960306922bd121dc1431d74a0658669a4eb7435a96b013cc3 2026-09-02 7374617475733a206f70656e
 
 ### DW-473: IDENTIFIER_ALLOWLIST still waives the X-Yopedia-* wire headers as an unanchored SHAPE, which is the same defect DW-352 fixed for the lowercase-hyphen family.
 
@@ -4967,7 +4971,9 @@ location: src/components/workbench/__tests__/settings-harness.tsx
 source_spec: `spec-dw-553-555-settings-save-refusal-recovery.md`
 severity: low
 reason: `settings-read-only.test.tsx` and `settings-embedding-provider-switch.test.tsx` each carry their own one-response-per-call mount helper and PUT-body reader, differing only in the category mounted. `settings-harness.tsx` already exists as the stated shared home for exactly this kind of helper, and its header explains why a per-file copy is what drifts.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-test-harness-consolidation
+resolution-undo: ccb2e9575c2032e960306922bd121dc1431d74a0658669a4eb7435a96b013cc3 2026-09-02 7374617475733a206f70656e
 
 ### DW-628: `PUT /api/settings` sends no machine-readable code for the env-pin refusal, so the browser recognises it by matching the English sentence.
 origin: spec-deferred 96463401329e
@@ -5832,4 +5838,12 @@ location: src/app/api/query/stream/route.ts:124-128
 source_spec: `spec-dw-667-669-query-stream-mock-fidelity.md`
 severity: medium
 reason: `src/lib/query.ts:298-306` filters `!isArtifactType(e.type)` BEFORE the scope branch, with an explicit comment: artifacts "must never enter the LLM context - so exclude them REGARDLESS of scope (incl. a vault that curated one, or the owner/'Mine' scope)". `src/app/api/query/stream/route.ts:124-128` applies the same predicate INSIDE `if (!scopeSlugs)`, so it only runs on an unscoped query. `resolveScopeSlugs` for `mine` / `owner:<handle>` returns that owner's slugs, which include their saved `html`/`slides` pages - so an owner-scoped streaming question can answer from raw artifact markup (and inlined illustration data URIs) that the non-streaming path deliberately withholds. Pre-existing and untouched by this story; surfaced by the review because DW-667 widened the artifact stub at exactly that filter. No test covers the scoped-artifact case in either streaming suite.
+status: open
+
+### DW-727: A sixth verbatim ~50-field WorkbenchSettingsPayload literal survives in a mounted Settings suite that the harness could always have reached, so the "one home for the payload" property this bundle clai
+origin: spec-deferred 825944fdb6e0
+location: src/components/workbench/__tests__/epic8-skills-canvas.test.tsx:50
+source_spec: `spec-dw-471-472-627-settings-test-harness-consolidation.md`
+severity: low
+reason: `src/components/workbench/__tests__/epic8-skills-canvas.test.tsx:50-98` holds the same ~50-field literal, differing from `settingsPayload()` in exactly four fields (`hasEmbeddingApiKey: true`, `apiEnabled: true`, `hasLoopbackApiToken: true`, `loopbackTokenSource: "store"`). It sits in the directory the harness used to occupy, so the reachability argument DW-471 makes never applied to it — it was simply not named by DW-228's census or by this bundle's intent, which names the fifth suite only. It can import `settingsPayload` alone, exactly as the parity suite now does, with no `installSettingsFetchMock`. Left as-is here because the intent names one suite; folding it is the same mechanical change and would finish the property.
 status: open

@@ -27,7 +27,7 @@ import {
   writeStoredSelection,
   writeStoredTreeTab,
 } from "@/lib/workbench-state";
-import { settingsPayload } from "./settings-harness";
+import { settingsPayload } from "@/test/settings-harness";
 
 /**
  * DW-36 and DW-46 — the two ways the tree selection mishandled a pick, observed

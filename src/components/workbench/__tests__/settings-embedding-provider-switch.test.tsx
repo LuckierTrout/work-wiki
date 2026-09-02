@@ -21,8 +21,10 @@ import {
   announcedFor,
   installSettingsFetchMock,
   mountSettings,
+  mountSettingsQueue,
+  patchOf,
   settingsPayload,
-} from "./settings-harness";
+} from "@/test/settings-harness";
 
 /**
  * Clear on switch, MOUNTED (DW-69/DW-72).
@@ -43,11 +45,13 @@ import {
  *
  * Both deltas are the subject: what clearing on switch has to clear. The shared
  * base has no endpoint and no stored key, which would leave nothing to clear.
- * The `version` is the store's own stamp shape for this deployment.
+ * The `version` is a stamp in the store's own `s1:` scheme (`newConfigVersion`
+ * in `src/lib/config.ts`), distinct from the base's only so that a save answer
+ * below can move it; nothing here reads it.
  */
 function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
   return settingsPayload({
-    version: "w1:2-0000000000000000",
+    version: "s1:22222222222222222222222222222222",
     embeddingBaseUrl: "https://o/v1",
     hasEmbeddingApiKey: true,
     ...overrides,
@@ -306,18 +310,6 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
   /** The sentence the route mints from its own `EMBEDDING_PROVIDER`. */
   const PINNED = settingsEnvProviderPinRefusalCopy("workers-ai");
 
-  /** Mount the embeddings category with one response per call. */
-  async function mountWritable(responses: Array<() => unknown>) {
-    let call = 0;
-    fetchMock.mockImplementation(async () => {
-      const next = responses[Math.min(call, responses.length - 1)];
-      call += 1;
-      return next() as Response;
-    });
-    render(<SettingsCanvas category="embeddings" headingId="wb-set-heading" />);
-    await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
-  }
-
   /** The stale tab's read: OpenAI stored, and NO pin visible to the browser. */
   const staleRead = () => ({
     ok: true,
@@ -334,15 +326,8 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
   const modelBox = () => screen.getByLabelText("Embedding model") as HTMLInputElement;
   const saveButton = () => screen.getByRole("button", { name: SETTINGS_SAVE_COPY });
 
-  /** The `workbench` patch of the nth `fetch` call. */
-  function patchOf(call: number): Record<string, unknown> {
-    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
-    return (JSON.parse(String(init.body)) as { workbench: Record<string, unknown> })
-      .workbench;
-  }
-
   it("re-seeds the three embedding legs and keeps every other edit", async () => {
-    await mountWritable([staleRead, refusal]);
+    await mountSettingsQueue("embeddings", [staleRead, refusal]);
 
     // The owner moves the vendor — and edits something else, which is what
     // keeps Save reachable after the re-seed cleans the embedding legs.
@@ -379,7 +364,7 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
     // every retry re-sent the identical refused move for the rest of the
     // session.
     const REWORDED = "The embedding provider is fixed by this deployment.";
-    await mountWritable([
+    await mountSettingsQueue("embeddings", [
       staleRead,
       () => ({
         ok: false,
@@ -405,7 +390,7 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
   });
 
   it("makes the RETRY a request the pin does not refuse", async () => {
-    await mountWritable([
+    await mountSettingsQueue("embeddings", [
       staleRead,
       refusal,
       () => ({
@@ -416,7 +401,7 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
           workbench: payload({
             envEmbeddingProvider: null,
             embeddingModel: "text-embedding-3-large",
-            version: "w1:3-0000000000000000",
+            version: "s1:33333333333333333333333333333333",
           }),
         }),
       }),
@@ -459,7 +444,7 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
     // sentence on screen says why. There is genuinely nothing left to save, and
     // a Save button live over a draft identical to the store would only offer
     // to re-send the request that was just refused.
-    await mountWritable([staleRead, refusal]);
+    await mountSettingsQueue("embeddings", [staleRead, refusal]);
 
     fireEvent.change(providerSelect(), { target: { value: "google" } });
     expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
@@ -480,7 +465,7 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
   it("leaves the embedding legs ALONE on any other refusal", async () => {
     // The recognition is exact equality over the closed set, so a refusal about
     // anything else — here the 412 conflict — must not re-seed a thing.
-    await mountWritable([
+    await mountSettingsQueue("embeddings", [
       staleRead,
       () => ({
         ok: false,
@@ -505,7 +490,7 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
     // NOT write that into the store state it is holding: it was not served it,
     // and inventing it would pin the select and change every vector sentence on
     // the strength of a 400 body. The next READ is what corrects the tab.
-    await mountWritable([staleRead, refusal]);
+    await mountSettingsQueue("embeddings", [staleRead, refusal]);
 
     fireEvent.change(modelBox(), { target: { value: "text-embedding-3-large" } });
     fireEvent.change(providerSelect(), { target: { value: "google" } });
