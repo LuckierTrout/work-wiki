@@ -80,7 +80,7 @@ Write the following details to `{spec_file}` under `## Auto Run Result`:
 - Summary of implemented change
 - Files changed with one-line descriptions
 - Review findings breakdown: patches applied, items deferred, items rejected
-- Follow-up review recommendation: count only this pass's findings triaged `patch` — never defer or reject. `true` if any patched finding was `high` severity, or if `3 × medium count + 1 × low count` is 5 or more; otherwise `false`. Record the patched counts by severity and the score.
+- Follow-up review recommendation: count only this pass's findings triaged `patch` — never defer or reject. `true` only if any patched finding was `high` severity; otherwise `false`. Medium and low patched findings are fixed in this pass and recorded, but they never recommend another review iteration — they go to the backlog, not loop fuel. Record the patched counts by severity and the score.
 - Verification performed, including command outcomes or manual inspection notes
 - Any residual risks
 
