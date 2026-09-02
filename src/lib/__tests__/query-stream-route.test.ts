@@ -76,7 +76,7 @@ vi.mock("@/lib/names-terms", () => ({
 
 import { listReadableWikiPages } from "@/lib/wiki";
 import { resolveScopeSlugs } from "@/lib/search";
-import { selectPagesForQuery } from "@/lib/query";
+import { selectPagesForQuery, buildQuerySystemPrompt } from "@/lib/query";
 import { getPrincipal } from "@/lib/auth";
 import { callLLMStream, hasLLMKey } from "@/lib/llm";
 import { POST } from "@/app/api/query/stream/route";
@@ -84,6 +84,7 @@ import { POST } from "@/app/api/query/stream/route";
 const mockedList = vi.mocked(listReadableWikiPages);
 const mockedScope = vi.mocked(resolveScopeSlugs);
 const mockedSelect = vi.mocked(selectPagesForQuery);
+const mockedPrompt = vi.mocked(buildQuerySystemPrompt);
 const mockedGetPrincipal = vi.mocked(getPrincipal);
 const mockedStream = vi.mocked(callLLMStream);
 const mockedHasKey = vi.mocked(hasLLMKey);
@@ -215,12 +216,28 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
     expect(passedEntries.map((e) => (e as { slug: string }).slug)).toEqual([
       "concept-a",
     ]);
+
+    // DW-671: the "accepts format:html" half of this title. A 200 alone does
+    // not show the format survived the route — one that coerced every request
+    // to "prose" would still stream a 200 with the same body. `queryFormat` is
+    // argument index 3 of the real `buildQuerySystemPrompt`
+    // (`context, entries, selectedSlugs, format, owner` — query.ts:180-186), so
+    // the assertion pins THAT position rather than the whole call: the other
+    // arguments are the mocked context/entries/slugs this case does not speak
+    // to, and spelling them out here would break on any unrelated fixture edit.
+    expect(mockedPrompt).toHaveBeenCalledTimes(1);
+    expect(mockedPrompt.mock.calls[0][3]).toBe("html");
   });
 
   it("rejects an invalid format with 400", async () => {
     const res = await POST(makeRequest({ question: "?", format: "bogus" }));
     expect(res.status).toBe(400);
+    // Stopped before any expensive work — no page selection, no LLM stream.
+    // Both are pinned (DW-668): `callLLMStream` runs after
+    // `selectPagesForQuery` in the route, so asserting only the latter left the
+    // "no LLM stream" claim resting on statement order instead of on a check.
     expect(mockedSelect).not.toHaveBeenCalled();
+    expect(mockedStream).not.toHaveBeenCalled();
   });
 
   it("401s an unauthenticated caller and never selects pages / calls the LLM", async () => {
@@ -229,7 +246,34 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
     expect(res.status).toBe(401);
     expect((await res.json()).error).toMatch(/sign in/i);
     // Stopped before any expensive work — no page selection, no LLM stream.
+    // Both are pinned (DW-668): `callLLMStream` runs after
+    // `selectPagesForQuery` in the route, so asserting only the latter left the
+    // "no LLM stream" claim resting on statement order instead of on a check.
     expect(mockedSelect).not.toHaveBeenCalled();
+    expect(mockedStream).not.toHaveBeenCalled();
+  });
+
+  // DW-670: the `#413` filter's own user-visible failure mode. When every
+  // readable page is agent-scoped, an UNSCOPED query filters `entries` down to
+  // nothing and the route answers the "wiki is empty" 400 (route.ts:124-139) —
+  // not an empty wiki, but a commons emptied BY the filter. The other filtering
+  // cases all keep at least one public page, so nothing covered this outcome.
+  it("400s an unscoped query whose readable pages are ALL agent-scoped", async () => {
+    mockedList.mockResolvedValue([
+      { slug: "yoyo-identity", title: "Y", summary: "", type: "agent-identity" },
+      { slug: "yoyo-notes", title: "N", summary: "", type: "agent-knowledge" },
+    ] as unknown as Awaited<ReturnType<typeof listReadableWikiPages>>);
+
+    const res = await POST(makeRequest({ question: "what is yoyo?" }));
+
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/wiki is empty/i);
+    // The empty-entries 400 sits ABOVE the key gate (route.ts:141), so an
+    // unreached `hasLLMKey` also pins that ordering — as does the untouched
+    // selection/stream pair below it.
+    expect(mockedHasKey).not.toHaveBeenCalled();
+    expect(mockedSelect).not.toHaveBeenCalled();
+    expect(mockedStream).not.toHaveBeenCalled();
   });
 
   // DW-669: this case is what makes the `hasLLMKey` double's ASYNC shape

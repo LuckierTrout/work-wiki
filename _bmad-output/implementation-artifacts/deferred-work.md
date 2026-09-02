@@ -5349,7 +5349,9 @@ location: src/lib/__tests__/query-stream-route.test.ts:186
 source_spec: `spec-dw-546-query-stream-test-fidelity.md`
 severity: low
 reason: The claim holds only transitively — the route reaches `callLLMStream` (route.ts:174) strictly after `selectPagesForQuery` (route.ts:156). `mockedStream` is now in scope in the test file but is never asserted. Confirmed independently by two review layers. Left alone because the intent covers only the three filtering cases.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-query-stream-assertion-coverage
+resolution-undo: f163537416edcd225ae11115ce86825fb3596ceebf8e008553b8ec41575442d5 2026-09-02 7374617475733a206f70656e
 
 ### DW-669: `hasLLMKey` is mocked synchronously (`vi.fn(() => true)`) while production is `async` — the same species of mock-shape drift DW-546 just fixed one line below it, in the same factory.
 origin: spec-deferred 204e0da86d06
@@ -5367,7 +5369,9 @@ location: src/lib/__tests__/query-stream-route.test.ts:155
 source_spec: `spec-dw-546-query-stream-test-fidelity.md`
 severity: low
 reason: route.ts:124-139 — the filter runs, then the empty-entries branch returns 400. That outcome is produced entirely by the filter this file exists to test, and only the non-streaming path covers it (`query.test.ts:726`). Pre-existing gap.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-query-stream-assertion-coverage
+resolution-undo: f163537416edcd225ae11115ce86825fb3596ceebf8e008553b8ec41575442d5 2026-09-02 7374617475733a206f70656e
 
 ### DW-671: The `format: "html"` test's title promises "(and accepts format:html)" but nothing asserts the format reached `buildQuerySystemPrompt`; a route that coerced every request to `"prose"` would still pass
 origin: spec-deferred d8e5399a588a
@@ -5375,7 +5379,9 @@ location: src/lib/__tests__/query-stream-route.test.ts:155
 source_spec: `spec-dw-546-query-stream-test-fidelity.md`
 severity: low
 reason: `buildQuerySystemPrompt` is mocked and observable (test file line 45), and the route passes `queryFormat` to it at route.ts:165-171. The test asserts only a 200 and the filtered entry list. Pre-existing naming/coverage mismatch.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-query-stream-assertion-coverage
+resolution-undo: f163537416edcd225ae11115ce86825fb3596ceebf8e008553b8ec41575442d5 2026-09-02 7374617475733a206f70656e
 
 ### DW-672: Array elements declared as objects reach the handler unchecked, and `seed_agent` answers a malformed section with a TypeError the stdio door refuses cleanly at zod.
 origin: spec-deferred 5bc1e171e489
