@@ -4634,7 +4634,9 @@ location: src/components/IngestSuccess.tsx:20
 source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
 severity: medium
 reason: This story's intent enumerated three components (RecentIngests, ActionInbox, BulkDocumentImport) and those are now pinned. `src/components/IngestSuccess.tsx:20,35` (rendered by `src/app/ingest/page.tsx:71`), `src/components/BatchItemRow.tsx:43` (fed `hrefForSlug` as a prop from `src/components/BatchIngestForm.tsx:319`) and `src/hooks/useGlobalSearch.ts:197` (`router.push(hrefForSlug(slug))`, consumed by `GlobalSearch.tsx`) come from the same sweep, and no `*.test.ts`/`*.test.tsx` under `src/` references any of the three. Demonstrated during review: all four sites were reverted to a `/u/yopedia/${slug}` answer at once and `pnpm test` was byte-identical to the unmutated tree -- 13 failed / 331 passed files, 233 failed / 7728 passed tests -- not one extra failure. `IngestSuccess` and `BatchItemRow` take plain props and drop straight into `owner-scoped-anchors.test.tsx`; `useGlobalSearch` is a navigation, so it fits that file's existing `nav.router.push` mock instead of an href assertion.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-owner-scoped-anchor-coverage
+resolution-undo: 318b6dbe48121400504d2c2e9904638ba9d872615ae0de480663dd4e2480a269 2026-09-02 7374617475733a206f70656e
 
 ### DW-591: On Node 26 the runtime's own localStorage global shadows jsdom's, so `window.localStorage` is undefined in the dom project and 13 workbench suites (233 tests) fail before any assertion.
 
@@ -5602,7 +5604,9 @@ location: src/components/QueryResultPanel.tsx:201
 source_spec: `spec-owner-scoped-anchor-pins.md`
 severity: medium
 reason: src/components/__tests__/renderer-slug-tenant-adoption.test.tsx:110,122 mount QueryResultPanel with `result={{ answer: ..., sources: [] }}` and assert only the in-content wikilink, so the `result.sources.length > 0` branch at QueryResultPanel.tsx:192 and the `saveState.status === "saved"` branch at :277 never render. Demonstrated during review: both anchors reverted to `/u/yopedia/<slug>` at once and `pnpm vitest run --project dom` stayed green -- 68 files / 1000 tests, not one extra failure. Out of scope here: this story's intent named exactly three consumers (IngestSuccess, useGlobalSearch, LintClient) and this is a fourth. The saved-answer link is the more interesting half: its `saveState.url ?? hrefForSlug(...)` fallback is the branch that matters, and ChatWorkspace's "falls back to the map when the save response carries no url" case is the existing model for it.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-owner-scoped-anchor-coverage
+resolution-undo: 318b6dbe48121400504d2c2e9904638ba9d872615ae0de480663dd4e2480a269 2026-09-02 7374617475733a206f70656e
 
 ### DW-700: A fixed client margin cannot bound the server's TOTAL work, so DW-439's unconfirmed-write report is still reachable on two intake paths this story's ordering does not reach.
 origin: spec-deferred b3a0e1fc00d6

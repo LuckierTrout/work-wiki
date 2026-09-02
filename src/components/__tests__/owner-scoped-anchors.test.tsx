@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { _resetSlugTenants, loadSlugTenants } from "@/hooks/useSlugTenants";
+import { _resetSlugTenants, loadSlugTenants, useSlugTenants } from "@/hooks/useSlugTenants";
 import { ArticleView } from "@/components/ArticleView";
 import { VaultExplorer } from "@/components/VaultExplorer";
 import { ChatWorkspace } from "@/components/ChatWorkspace";
@@ -8,7 +8,12 @@ import { KnowledgeStudio } from "@/components/KnowledgeStudio";
 import { RecentIngests } from "@/components/RecentIngests";
 import { ActionInbox } from "@/components/ActionInbox";
 import { BulkDocumentImport } from "@/components/BulkDocumentImport";
+import { IngestSuccess } from "@/components/IngestSuccess";
+import { BatchItemRow } from "@/components/BatchItemRow";
+import { QueryResultPanel } from "@/components/QueryResultPanel";
+import { GlobalSearch } from "@/components/GlobalSearch";
 import { forgetRecentJobs, getRecentJobIds } from "@/lib/recent-ingests";
+import type { BatchItem } from "@/components/BatchItemRow";
 import type { ActionItem } from "@/lib/action-items";
 import type { Vault } from "@/lib/vault";
 import type { VaultExplorerEntry } from "@/lib/vault-explorer";
@@ -21,14 +26,24 @@ import type { Frontmatter } from "@/lib/frontmatter";
  * Owner-scoped anchors, per COMPONENT (DW-86).
  *
  * `renderer-slug-tenant-adoption.test.tsx` is the sibling of this file: it
- * covers the five RENDERER call sites. The seven components below were
- * converted in the same sweep and got only per-hook coverage — `useSlugTenants`
+ * covers the five RENDERER call sites. The eleven components below were
+ * converted in the same sweep and their anchors got only per-hook coverage —
+ * `useSlugTenants`
  * and `resolveSlugPath` each have their own suite, and neither can see which
  * components ask them — so reverting any one call site to `slugPath(...)`, or
  * dropping a `slugTenants` prop, left the entire run green while every internal
  * link in that surface went back to a wrong-handle `/u/yopedia/…` hop.
  *
- * Every assertion is therefore on the RENDERED `href`. A component that obtains
+ * The last four (DW-590, DW-699) are the ones whose ANCHORS the sweep left with
+ * no rendering test — `IngestSuccess`, `BatchItemRow`, and `QueryResultPanel`'s
+ * Sources chips and saved-answer banner. The panel is not otherwise untested:
+ * the sibling file mounts it for its IN-CONTENT links, but always with
+ * `sources: []` and no save state, so neither of these two branches renders
+ * there. Last comes the ONE call site here that emits no anchor at all:
+ * `useGlobalSearch`'s `router.push`, witnessed on the argument the router
+ * actually received rather than on a rendered `href`.
+ *
+ * Every other assertion is on the RENDERED `href`. A component that obtains
  * the map and forgets to forward it passes an import check and fails here.
  *
  * THE MAP IS BUILT SO THAT EVERY WRONG ANSWER IS A DISTINGUISHABLE ONE:
@@ -674,6 +689,262 @@ describe("BulkDocumentImport", () => {
     // an upload that stalled.
     const link = screen.getByRole("link", { name: "Open page →" });
     expect(link.getAttribute("href")).toBe(ALICE_TARGET);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// IngestSuccess
+// ---------------------------------------------------------------------------
+
+/**
+ * The confirmation screen's two call sites (DW-590).
+ *
+ * Plain props and no network of its own: the component asks `useSlugTenants()`
+ * directly, so the warm map is on screen from the first paint and the only way
+ * either anchor can be wrong is a reverted call site.
+ *
+ * `target` is alice's and `other` is bob's, so the related row cannot be
+ * satisfied by whatever tenant the primary link resolved to.
+ */
+describe("IngestSuccess", () => {
+  function renderSuccess() {
+    return render(
+      <IngestSuccess slug="target" relatedUpdated={["other"]} onReset={() => {}} />,
+    );
+  }
+
+  it("addresses the ingested page by ITS owner", async () => {
+    renderSuccess();
+    // Matched loosely because the label carries typographic quotes around the
+    // slug; the assertion that matters is the href, not the punctuation.
+    const link = await screen.findByRole("link", { name: /^View .*target.*→$/ });
+    expect(link.getAttribute("href")).toBe(ALICE_TARGET);
+  });
+
+  it("addresses each related page by its OWN owner", async () => {
+    renderSuccess();
+    // A second owner, so "one tenant for the whole screen" — which is what the
+    // primary link's answer reused for the list would look like — fails here.
+    expect(await hrefOf("other")).toBe(BOB_OTHER);
+  });
+
+  it("keeps both call sites of one render on the map", async () => {
+    renderSuccess();
+    const link = await screen.findByRole("link", { name: /^View .*target.*→$/ });
+    expect(link.getAttribute("href")).toBe(ALICE_TARGET);
+    expect(await hrefOf("other")).toBe(BOB_OTHER);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BatchItemRow
+// ---------------------------------------------------------------------------
+
+/**
+ * The batch manifest's per-row link (DW-590).
+ *
+ * The row receives `hrefForSlug` as a PROP, so a test that handed it a stub
+ * returning `/u/yopedia/<slug>` would assert the very answer a reverted call
+ * site emits and pass either way. The harness below therefore obtains the
+ * function from the real hook, exactly as `BatchIngestForm` does, so the map is
+ * what has to produce the row's href.
+ *
+ * What this does NOT witness is `BatchIngestForm.tsx:319` itself: the harness
+ * REPLICATES that hand-off rather than executing it, so dropping the real one
+ * still leaves the suite green. Reaching the row through the form would mean
+ * driving its NDJSON upload, and nothing currently mounts `BatchIngestForm` on
+ * any route — so the uncovered half has no reachable surface today.
+ */
+
+/** `BatchIngestForm.tsx:319`'s wiring, minus its NDJSON upload. */
+function BatchRows({ items }: { items: BatchItem[] }) {
+  const { hrefForSlug } = useSlugTenants();
+  return (
+    <ul>
+      {items.map((item, i) => (
+        <BatchItemRow key={i} item={item} hrefForSlug={hrefForSlug} />
+      ))}
+    </ul>
+  );
+}
+
+/** Two finished rows with two DIFFERENT owners, plus one that links to nothing. */
+const BATCH_ITEMS: BatchItem[] = [
+  { url: "https://example.com/one", status: "success", slug: "target" },
+  { url: "https://example.com/two", status: "success", slug: "other" },
+  // Not a link at all — the `status === "success" && item.slug` gate is what
+  // this row proves is still a gate, so "every row links somewhere" cannot
+  // pass by accident.
+  { url: "https://example.com/three", status: "error", error: "fetch failed" },
+];
+
+describe("BatchItemRow", () => {
+  it("addresses each created page by the page's own owner", async () => {
+    render(<BatchRows items={BATCH_ITEMS} />);
+
+    // The row's link text IS the slug, so a row that rendered no anchor fails
+    // on the missing link rather than passing on an absent element.
+    expect(await hrefOf("target")).toBe(ALICE_TARGET);
+    expect(await hrefOf("other")).toBe(BOB_OTHER);
+  });
+
+  it("renders no anchor for a row that produced no page", async () => {
+    render(<BatchRows items={BATCH_ITEMS} />);
+    await screen.findByRole("link", { name: "target" });
+
+    // Two links for three rows: the failed row is the reason the two above are
+    // about resolution rather than about "there are links on screen".
+    expect(screen.getAllByRole("link").length).toBe(2);
+    expect(screen.getByText("fetch failed")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QueryResultPanel
+// ---------------------------------------------------------------------------
+
+/**
+ * The answer panel's Sources chips and its saved-answer banner (DW-699).
+ *
+ * `renderer-slug-tenant-adoption.test.tsx` already owns this component's
+ * IN-CONTENT wikilinks, so the answer body here is deliberately link-free: the
+ * two call sites below are the panel's own, and neither is reachable through
+ * the renderer.
+ *
+ * The banner's href is `saveState.url ?? hrefForSlug(saveState.slug)`. The
+ * `url` half is the server's canonical answer for a page created just now; the
+ * FALLBACK half is the `hrefForSlug` call site, so the save fixture answers
+ * with a slug and no url — the one response shape that reaches it.
+ */
+const ANSWER = "A prose answer that cites nothing inline.";
+const QUESTION = "who owns target?";
+
+describe("QueryResultPanel", () => {
+  it("addresses each source chip by the cited page's owner", async () => {
+    render(
+      <QueryResultPanel
+        result={{ answer: ANSWER, sources: ["target", "other"] }}
+        streaming={false}
+        question={QUESTION}
+        currentHistoryId={null}
+      />,
+    );
+
+    // The chip names the slug it cites. A second owner on the second chip is
+    // what makes this one lookup per chip rather than one tenant per answer.
+    expect(await hrefOf("target")).toBe(ALICE_TARGET);
+    expect(await hrefOf("other")).toBe(BOB_OTHER);
+  });
+
+  it("falls back to the map when the save response carries no url", async () => {
+    // No chips, so the only `target` link on screen is the banner's.
+    render(
+      <QueryResultPanel
+        result={{ answer: ANSWER, sources: [] }}
+        streaming={false}
+        question={QUESTION}
+        currentHistoryId={null}
+      />,
+    );
+
+    // An older route (or a degraded one) answers with the slug alone; the
+    // banner must still address the page's real owner rather than taking a
+    // wrong-handle hop on every saved answer.
+    routes["/api/query/save"] = { slug: "target" };
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save to Wiki" }));
+    // `handleSaveClick` pre-fills the title from the question, so the submit is
+    // already enabled and nothing has to be typed.
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const link = await screen.findByRole("link", { name: "View →" });
+    expect(link.getAttribute("href")).toBe(ALICE_TARGET);
+
+    // (the `url` half of the same expression is the case below)
+    // `currentHistoryId` is null, so the save is the panel's ONLY write.
+    // Asserted rather than left to the `unexpected fetch` guard because the
+    // history POST is wrapped in its own `catch` (`QueryResultPanel.tsx:146`),
+    // so the stub's throw would be SWALLOWED and the case would still pass.
+    const posted = fetchMock.mock.calls.map(([url]) => url);
+    expect(posted).toContain("/api/query/save");
+    expect(posted).not.toContain("/api/query/history");
+  });
+
+  it("links a saved answer by the URL the save returned", async () => {
+    render(
+      <QueryResultPanel
+        result={{ answer: ANSWER, sources: [] }}
+        streaming={false}
+        question={QUESTION}
+        currentHistoryId={null}
+      />,
+    );
+
+    // The other half of `saveState.url ?? hrefForSlug(...)`. A slug created
+    // just now CANNOT be in the session-cached map, so a panel that dropped the
+    // `url` and always mapped would answer `/u/yopedia/fresh-answer` and 308 on
+    // every fresh save — which the fallback case above cannot see, because
+    // there the map already holds the right answer. A THIRD owner, so this is
+    // also distinguishable from both canonical hrefs in the fixture.
+    routes["/api/query/save"] = { slug: "fresh-answer", url: "/u/carol/fresh-answer" };
+
+    fireEvent.click(await screen.findByRole("button", { name: "Save to Wiki" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const link = await screen.findByRole("link", { name: "View →" });
+    expect(link.getAttribute("href")).toBe("/u/carol/fresh-answer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GlobalSearch
+// ---------------------------------------------------------------------------
+
+/**
+ * The one converted call site in this file that renders NO anchor (DW-590).
+ *
+ * `useGlobalSearch`'s `navigate(slug)` ends in `router.push(hrefForSlug(slug))`,
+ * so the witness is the argument the router actually received. Asserting that
+ * the hook imports `useSlugTenants` would pass on a `router.push(slugPath(...))`
+ * left behind next to it.
+ */
+const WIKI_PAGES_ROUTE = "/api/wiki";
+const SEARCH_QUERY = "tar";
+
+describe("GlobalSearch", () => {
+  beforeEach(() => {
+    routes[WIKI_PAGES_ROUTE] = { pages: [{ slug: "target", title: "Target page" }] };
+    // The 300ms content-search debounce is normally cleared by unmount, but the
+    // stub throws on any URL no fixture describes — so a case that stays mounted
+    // past it must not fail as "unexpected fetch" instead of as itself.
+    routes[`/api/wiki/search?q=${encodeURIComponent(SEARCH_QUERY)}`] = { results: [] };
+    // `nav.router` is hoisted and shared by the whole file, so its call log is
+    // only this case's if this case empties it first.
+    nav.router.push.mockClear();
+  });
+
+  // And left empty again, so this is the only describe whose cases can put a
+  // navigation in the shared log.
+  afterEach(() => {
+    nav.router.push.mockClear();
+  });
+
+  it("navigates to the selected page's OWN owner", async () => {
+    render(<GlobalSearch />);
+
+    const input = screen.getByLabelText("Search wiki pages");
+    fireEvent.focus(input); // opens the dropdown and loads the page list
+    fireEvent.change(input, { target: { value: SEARCH_QUERY } });
+
+    // The dropdown only renders once the page list has arrived AND the query
+    // matches one, so reaching this is what makes the mousedown below a real
+    // selection rather than a click on nothing.
+    const option = await screen.findByRole("option", { name: "Target page" });
+    fireEvent.mouseDown(option);
+
+    // The canonical href, not `/u/yopedia/target` and not the raw slug.
+    expect(nav.router.push).toHaveBeenCalledTimes(1);
+    expect(nav.router.push).toHaveBeenCalledWith(ALICE_TARGET);
   });
 });
 
