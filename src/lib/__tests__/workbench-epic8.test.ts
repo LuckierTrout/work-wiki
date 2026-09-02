@@ -12,7 +12,6 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import type { Server } from "node:http";
 import http from "node:http";
 import { mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -42,7 +41,6 @@ import {
   V1_RATE_LIMITED_ERROR,
   V1_UNAUTHORIZED_ERROR,
 } from "../../../sidecar/loopback.mjs";
-import { createSidecarServer } from "../../../sidecar/server.mjs";
 import {
   callDoor,
   MCP_BASE_URL,
@@ -71,14 +69,11 @@ import {
   selectedSkillSummary,
   staleSkillCopy,
 } from "../chat-agent";
-
-type Settings = {
-  enabled: boolean;
-  allowUnauthenticated: boolean;
-  token: string | null;
-  tokenSource: string;
-  skillEnablement: Record<string, boolean>;
-};
+import {
+  settingsSource,
+  sidecarHarness,
+  type SidecarSettings as Settings,
+} from "./sidecar-harness";
 
 function settings(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -93,7 +88,9 @@ function settings(overrides: Partial<Settings> = {}): Settings {
 
 const ROOT = path.resolve(__dirname, "../../..");
 
-const open: Server[] = [];
+// No `wikiRegistry` default: this suite never set one, and the door tests
+// depend on the server's own.
+const harness = sidecarHarness();
 
 /**
  * A listening sidecar with the settings this test wants, and a kernel that is
@@ -108,28 +105,11 @@ async function listen(
   value: Settings,
   extra: Record<string, unknown> = {},
 ): Promise<string> {
-  const source = { current: () => value, refresh: async () => value };
-  const server = createSidecarServer({
-    settingsSource: source,
-    kernel: { base: "", token: "" },
-    ...extra,
-  }) as Server;
-  open.push(server);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  return `http://127.0.0.1:${port}`;
+  return harness.listen({ settingsSource: settingsSource(value), ...extra });
 }
 
 afterEach(async () => {
-  await Promise.all(
-    open.splice(0).map(
-      (server) =>
-        new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        }),
-    ),
-  );
+  await harness.closeAll();
 });
 
 describe("the two copies of the contract cannot drift", () => {
@@ -622,7 +602,7 @@ describe("who owns which path", () => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ projects: [] }));
     });
-    open.push(kernel);
+    harness.track(kernel);
     await new Promise<void>((resolve) => kernel.listen(0, "127.0.0.1", resolve));
     const kernelPort = (kernel.address() as { port: number }).port;
 

@@ -258,13 +258,14 @@ describe("shared test helpers are not collected as suites (DW-117, DW-228)", () 
     // `*.test.tsx` into the dom project, and throws at CONFIG LOAD when a
     // `*.test.tsx` falls outside its include. A helper wearing either suffix
     // is collected as a suite with no assertions in it.
-    // Keep this list and AGENTS.md's "There are six" bullet in step — the
+    // Keep this list and AGENTS.md's "There are seven" bullet in step — the
     // prose and its enforcement are two halves of one convention.
     for (const helper of [
       "lib/__tests__/source-scan.ts",
       "lib/__tests__/discuss-fixtures.ts",
       "lib/__tests__/email-ingest-wire.ts",
       "lib/__tests__/internal-link-fixture.ts",
+      "lib/__tests__/sidecar-harness.ts",
       SETTINGS_HARNESS,
       DOM_HELPERS,
     ]) {

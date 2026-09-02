@@ -26,8 +26,10 @@
  * make of it here.
  */
 import { describe, expect, it } from "vitest";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+
+import { walkFiles } from "./source-scan";
 
 const API = path.resolve(__dirname, "../../app/api");
 const LIB = path.resolve(__dirname, "..");
@@ -185,15 +187,6 @@ const WRITER_MODULES = [
   "workspace-profile",
 ] as const;
 
-async function routeFiles(dir: string, out: string[] = []): Promise<string[]> {
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) await routeFiles(full, out);
-    else if (entry.name === "route.ts") out.push(full);
-  }
-  return out;
-}
-
 /** Which writer-reaching symbols this route module imports, if any. */
 function writerImports(source: string): string[] {
   const found: string[] = [];
@@ -223,8 +216,36 @@ const rel = (file: string) => path.relative(path.resolve(__dirname, "../../.."),
 
 describe("read-only coverage of every kernel-writer door", () => {
   it("every API route that can reach a kernel writer answers the refusal", async () => {
-    const files = await routeFiles(API);
-    expect(files.length).toBeGreaterThan(20); // the scan actually found routes
+    const files = await walkFiles(API, { include: /^route\.ts$/ });
+
+    // MEMBER PINS PLUS A COUNT FLOOR — the `english-only.test.ts` idiom
+    // `AGENTS.md` prescribes for every caller of `walkFiles`.
+    //
+    // This case asserts `untreated` is EMPTY, which a SMALLER corpus satisfies
+    // by construction. Since DW-470 the scan inherits `SKIPPED_DIRS`, so one
+    // name appended there — or one `skipDirs` entry added here — deletes a
+    // whole subtree from the walk and the assertion below stays green while
+    // covering less. One real `route.ts` per major `src/app/api` subtree makes
+    // that cut fail BY NAME instead.
+    const scanned = files.map(rel);
+    for (const pin of [
+      "src/app/api/wiki/route.ts",
+      "src/app/api/wikis/route.ts",
+      "src/app/api/agents/route.ts",
+      "src/app/api/chat/conversations/route.ts",
+      "src/app/api/workbench/activity/route.ts",
+      "src/app/api/query/route.ts",
+      "src/app/api/ingest/route.ts",
+      "src/app/api/v1/projects/route.ts",
+    ]) {
+      expect(scanned, `${pin} is a real route the scan must reach`).toContain(pin);
+    }
+    // A floor, not the exact count (149 at the time of writing): routes are
+    // added and removed continuously, and a number that has to be edited on
+    // every unrelated PR gets edited without being thought about. The headroom
+    // is wide enough to survive normal churn and far too narrow to survive a
+    // lost subtree.
+    expect(files.length).toBeGreaterThan(100);
 
     const untreated: string[] = [];
     const reached: string[] = [];
@@ -246,7 +267,13 @@ describe("read-only coverage of every kernel-writer door", () => {
     expect(untreated, "routes reaching a kernel writer with neither treatment").toEqual([]);
     // The scan is only evidence if it actually matched something — a broken
     // regex would produce an empty `untreated` and a green, meaningless test.
-    expect(reached.length).toBeGreaterThanOrEqual(20);
+    //
+    // A floor, not the exact count, for the reason above (31 writer-reaching
+    // routes at the time of writing). It is set so that losing the LARGEST
+    // single `src/app/api` subtree — `ingest`, which contributes 7 — drops the
+    // count below it, while leaving room for a handful of routes to be retired
+    // without anyone having to edit this line to make an unrelated PR green.
+    expect(reached.length).toBeGreaterThanOrEqual(25);
   });
 
   it("names every writer-reaching export, so the map cannot go stale", async () => {

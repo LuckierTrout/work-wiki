@@ -79,18 +79,27 @@ scan reads this file too.
   `skipDirs`), matches the BASENAME, and returns absolute paths. The seven
   suites' hand-rolled copies had drifted into covering different trees before
   DW-117 merged them; `source-scan.test.ts` pins its rules, and its header names
-  the three walkers deliberately left alone. The exclusions apply to CHILD directories only — the root
+  `read-only-kernel-gate.test.ts`'s `walk()` as the snapshot-shaped walker this
+  module deliberately does not reach — it reads a temp directory's CONTENTS and
+  must exclude nothing. That is not a census: other hand-rolled walkers matching
+  the `walkFiles` contract are still on disk unmigrated, and the header names
+  the ones known at the time. The exclusions apply to CHILD directories only — the root
   argument is never name-checked. Because every caller asserts "no offenders",
   a narrowed walk passes: give each new scan a member pin naming one real file
   per subtree plus a count floor, the `english-only.test.ts` idiom.
 - Shared test helpers are NOT named `*.test.ts(x)` — either project would
   otherwise collect one as a suite with no assertions in it, and the
   config-load guard rejects a `*.test.tsx` outside the dom include. There are
-  six. Four sit beside the suites that use them and are imported as `./name`:
+  seven. Five sit beside the suites that use them and are imported as `./name`:
   `src/lib/__tests__/source-scan.ts`, `src/lib/__tests__/discuss-fixtures.ts`
   (the only writer of `discuss/<slug>.json` in the tests),
-  `src/lib/__tests__/email-ingest-wire.ts` and
-  `src/lib/__tests__/internal-link-fixture.ts`. The other two live under
+  `src/lib/__tests__/email-ingest-wire.ts`,
+  `src/lib/__tests__/internal-link-fixture.ts` and
+  `src/lib/__tests__/sidecar-harness.ts` (the one `listen()` for the suites that
+  bind a REAL sidecar on an ephemeral loopback port — it builds the server from
+  per-suite defaults, tracks it, and closes everything in `closeAll()`; the
+  three copies it replaced had drifted apart in their failure paths, DW-606).
+  The other two live under
   `src/test/` and are imported as `@/test/name`, because their users sit in more
   than one directory and a `./` sibling import reaches only one:
   `src/test/dom-helpers.ts` (the dom shim controls — which have the SECOND

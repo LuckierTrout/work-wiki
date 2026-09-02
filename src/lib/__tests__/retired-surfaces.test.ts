@@ -23,6 +23,7 @@ import { canSetPrivate } from "../authz";
 import { dispatchMcp } from "../mcp-http";
 import { _resetStorage } from "../storage";
 import { ensureDirectories } from "../wiki";
+import { walkFiles } from "./source-scan";
 
 // --- The retired modules, imported statically so vite can resolve them. ------
 import WikiIndexPage from "@/app/wiki/page";
@@ -54,21 +55,17 @@ const APP_DIR = path.resolve(__dirname, "../../app");
  * {@link RETIRED_SURFACES} is what stops the constant from silently drifting
  * out of sync with the tree.
  */
-async function retiredSurfacesOnDisk(dir = APP_DIR): Promise<string[]> {
+async function retiredSurfacesOnDisk(): Promise<string[]> {
   const found: string[] = [];
-  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      found.push(...(await retiredSurfacesOnDisk(full)));
-      continue;
-    }
-    if (!/^(page|route|opengraph-image)\.tsx?$/.test(entry.name)) continue;
-    const src = await fs.readFile(full, "utf8");
+  for (const file of await walkFiles(APP_DIR, {
+    include: /^(page|route|opengraph-image)\.tsx?$/,
+  })) {
+    const src = await fs.readFile(file, "utf8");
     if (!/from\s+["']@\/lib\/retired["']/.test(src)) continue;
     const routeDir =
       "/" +
       path
-        .relative(APP_DIR, dir)
+        .relative(APP_DIR, path.dirname(file))
         .split(path.sep)
         // An optional catch-all (`[[...waitlist]]`) matches the parent path
         // itself, so the addressable surface is the parent — `/waitlist`.
@@ -76,7 +73,7 @@ async function retiredSurfacesOnDisk(dir = APP_DIR): Promise<string[]> {
         .join("/");
     // `opengraph-image` is its own addressable route; page/route are the dir.
     found.push(
-      entry.name.startsWith("opengraph-image")
+      path.basename(file).startsWith("opengraph-image")
         ? `${routeDir}/opengraph-image`
         : routeDir,
     );

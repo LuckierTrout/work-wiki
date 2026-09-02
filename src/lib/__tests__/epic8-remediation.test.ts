@@ -9,7 +9,6 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Server } from "node:http";
 import { EventEmitter } from "node:events";
 import fsSync from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -20,7 +19,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 import {
   createChatTurnSession,
-  createSidecarServer,
   productionWikiRegistry,
 } from "../../../sidecar/server.mjs";
 import {
@@ -71,9 +69,23 @@ import { listIngestJobs } from "../ingest-jobs";
 import { saveRawSource, saveRawSourceFor, saveRawSourceTree } from "../raw";
 import { listRawSourceFilePaths } from "../workbench-files";
 import * as tasks from "../tasks";
+import { settingsSource, sidecarHarness } from "./sidecar-harness";
 
-const open: Server[] = [];
 const TEST_CURRENT_WIKI_ID = "aaaa1111-0000-4000-8000-000000000000";
+
+const harness = sidecarHarness({
+  settingsSource: settingsSource({
+    enabled: true,
+    allowUnauthenticated: true,
+    token: null,
+    tokenSource: "none",
+    skillEnablement: {},
+  }),
+  wikiRegistry: {
+    current: () => [],
+    currentId: () => TEST_CURRENT_WIKI_ID,
+  } as never,
+});
 
 function completeDiskWiki(id: string, name = "Test Wiki") {
   return {
@@ -92,41 +104,11 @@ async function mkdirMany(paths: string[]) {
 }
 
 async function listen(extra: Record<string, unknown> = {}): Promise<string> {
-  const source = {
-    current: () => ({
-      enabled: true,
-      allowUnauthenticated: true,
-      token: null,
-      tokenSource: "none",
-      skillEnablement: {},
-    }),
-    refresh: async () => source.current(),
-  };
-  const server = createSidecarServer({
-    settingsSource: source,
-    kernel: { base: "", token: "" },
-    wikiRegistry: {
-      current: () => [],
-      currentId: () => TEST_CURRENT_WIKI_ID,
-    } as never,
-    ...extra,
-  }) as Server;
-  open.push(server);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  return `http://127.0.0.1:${port}`;
+  return harness.listen(extra);
 }
 
 afterEach(async () => {
-  await Promise.all(
-    open.splice(0).map(
-      (server) =>
-        new Promise<void>((resolve) => {
-          server.close(() => resolve());
-        }),
-    ),
-  );
+  await harness.closeAll();
 });
 
 describe("sidecar Chat extract boundaries", () => {

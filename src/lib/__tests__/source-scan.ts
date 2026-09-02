@@ -9,26 +9,37 @@
  * its comment claims is the one failure a source guard cannot notice about
  * itself.
  *
- * WHAT THIS IS NOT THE SINGLE DEFINITION OF. Three other recursive walkers
- * survive on purpose, and a future consolidation should leave them alone:
+ * WHAT THIS IS DELIBERATELY NOT REACHING. `read-only-kernel-gate.test.ts`'s
+ * `walk()` is a different function wearing the same name: it snapshots the
+ * CONTENTS of a temp data directory into a map keyed by relative path, reading
+ * every file rather than selecting by name, tolerating a missing directory, and
+ * excluding nothing. Nothing here fits it, and a consolidation should leave it
+ * alone. The same is true of the temp-tree snapshot walks in
+ * `read-only-store-gate.test.ts` and `stale-index-lifecycle.test.ts`.
  *
- * - `read-only-kernel-gate.test.ts`'s `walk()` snapshots the CONTENTS of a temp
- *   data directory into a map keyed by relative path. It is a different
- *   function wearing the same name: it reads every file rather than selecting
- *   by name, tolerates a missing directory, and must not exclude anything.
- * - `read-only-door-coverage.test.ts`'s `routeFiles()` and
- *   `retired-surfaces.test.ts`'s `retiredSurfacesOnDisk()` do match this
- *   contract, but walk `src/app` — a tree with no `__tests__`, `node_modules`,
- *   `.git` or `.next` in it — and `retiredSurfacesOnDisk()` reads and filters
- *   each file as it descends rather than returning paths. They were out of
- *   scope for DW-117 and are named here so the next reader does not have to
- *   rediscover that this module's reach stops short of them.
+ * THIS IS NOT A CENSUS. Other recursive walkers that DO match this contract are
+ * still on disk and simply have not been migrated — `owner-single-reader.test.ts`
+ * and `owner-gate-parity.test.ts` carry a byte-identical `sourceFiles(dir)`
+ * between them, and `read-only-copy-parity.test.ts` has `storageModuleFiles`.
+ * They are candidates, not exceptions; do not read the paragraph above as
+ * saying they do not exist.
+ *
+ * `read-only-door-coverage.test.ts` and `retired-surfaces.test.ts` used to be
+ * two more: both matched this contract but walked `src/app` with no exclusions
+ * at all, and DW-470 pointed them here. Their covered sets did not change — no
+ * file under a `src/app` `__tests__` matches `route.ts` or
+ * `page|route|opengraph-image.tsx?` — but a cut to `SKIPPED_DIRS` now shrinks
+ * them too, so each states what it covered: `read-only-door-coverage.test.ts`
+ * pins one real `route.ts` per major `src/app/api` subtree plus a count floor,
+ * and `retired-surfaces.test.ts` already compared its whole result for EQUALITY
+ * against `RETIRED_SURFACES`, which is both pin and floor by construction.
  *
  * Not named `*.test.ts`: `vitest.config.ts` collects
  * `src/**\/__tests__/**\/*.test.ts` into the `node` project, so a helper wearing
  * that suffix would be collected as a suite with no assertions in it. The
- * sibling `internal-link-fixture.ts` and `email-ingest-wire.ts` follow the same
- * rule and are imported the same way, as `./source-scan`.
+ * siblings `discuss-fixtures.ts`, `internal-link-fixture.ts`,
+ * `email-ingest-wire.ts` and `sidecar-harness.ts` follow the same rule and are
+ * imported the same way, as `./source-scan`.
  *
  * `source-scan.test.ts` executes the rules below against a temp fixture tree.
  * They are load-bearing for every caller at once — appending one name to

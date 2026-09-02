@@ -3553,7 +3553,9 @@ source_spec: `spec-dw-112-117-228-test-infra-shared-helpers.md`
 location: src/lib/__tests__/read-only-door-coverage.test.ts:113
 severity: low
 reason: `routeFiles()` (src/lib/__tests__/read-only-door-coverage.test.ts:113) and `retiredSurfacesOnDisk()` (src/lib/__tests__/retired-surfaces.test.ts:49) implement the same "descend and collect by basename" contract as the seven suites migrated here, with no exclusions at all. Neither is named `walk()`, so neither appeared in the intent's census of eight; migrating them was out of scope on the intent's own authority. No file exists under a `__tests__` directory that either would currently mishandle, so this is latent rather than active.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-shared-test-helper-extraction
+resolution-undo: 48060ee7b14d816f7b1256e34b9a261a5a5e2d6b6603343dde92f9e75b28e0c0 2026-09-02 7374617475733a206f70656e
 
 ### DW-471: The fifth mounted Settings suite still carries its own ~50-field payload because the shared harness is not reachable from its directory.
 origin: spec-deferred 9a412cc9857a
@@ -4777,7 +4779,9 @@ location: src/lib/__tests__/sidecar.test.ts
 source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
 severity: low
 reason: Near-verbatim copies live in src/lib/__tests__/sidecar.test.ts, src/lib/__tests__/workbench-epic8.test.ts and src/lib/__tests__/epic8-remediation.test.ts, `as never` casts included. AGENTS.md's test-infra conventions call for one shared helper per concern (the DW-117 precedent for `walkFiles`); extracting one is a separate change touching three suites.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-shared-test-helper-extraction
+resolution-undo: 48060ee7b14d816f7b1256e34b9a261a5a5e2d6b6603343dde92f9e75b28e0c0 2026-09-02 7374617475733a206f70656e
 
 ### DW-607: An owner on an unconfigured deployed origin still sees "Start the local sidecar..." for a sidecar that is running — the product copy cannot distinguish "not running" from "running but unreachable from
 origin: spec-deferred d3589d54789c
@@ -5846,4 +5850,12 @@ location: src/components/workbench/__tests__/epic8-skills-canvas.test.tsx:50
 source_spec: `spec-dw-471-472-627-settings-test-harness-consolidation.md`
 severity: low
 reason: `src/components/workbench/__tests__/epic8-skills-canvas.test.tsx:50-98` holds the same ~50-field literal, differing from `settingsPayload()` in exactly four fields (`hasEmbeddingApiKey: true`, `apiEnabled: true`, `hasLoopbackApiToken: true`, `loopbackTokenSource: "store"`). It sits in the directory the harness used to occupy, so the reachability argument DW-471 makes never applied to it — it was simply not named by DW-228's census or by this bundle's intent, which names the fifth suite only. It can import `settingsPayload` alone, exactly as the parity suite now does, with no `installSettingsFetchMock`. Left as-is here because the intent names one suite; folding it is the same mechanical change and would finish the property.
+status: open
+
+### DW-728: `reapStrandedScratchFiles`' two grace-window cases in `storage-fs.test.ts` fail intermittently under full-suite load, so `pnpm test` is not reliably green.
+origin: spec-deferred 535aa7a613ec
+location: src/lib/__tests__/storage-fs.test.ts
+source_spec: `spec-dw-470-606-shared-test-helper-extraction.md`
+severity: low
+reason: Two cases — "stops at STRANDED_SCRATCH_CANDIDATE_CAP and reclaims the remainder next pass" and "honours an explicit window, so the grace period is a parameter and not a hardcode" — failed in three of five full-suite runs during this story and passed in the other two. They pass standalone every time. Proven pre-existing and unrelated to this change: with every file of this story stashed (`git stash -u`, tree at f095692c), a full `pnpm test` failed the same two cases. The assertions turn on real wall-clock mtime grace windows (one case took 5352 ms), so they lose under the scheduling pressure of 369 parallel test files. Nothing in this story touches `storage-fs.ts` or its suite.
 status: open

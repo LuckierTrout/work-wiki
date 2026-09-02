@@ -14,12 +14,10 @@
  * stub would only re-state the assertion.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Server } from "node:http";
 
 import {
   SIDECAR_ALLOWED_ORIGINS_ENV,
   allowSidecarOrigin,
-  createSidecarServer,
   parseSidecarAllowedOrigins,
 } from "../../../sidecar/server.mjs";
 import {
@@ -28,6 +26,7 @@ import {
   SIDECAR_PROBE_TIMEOUT_MS,
   probeSidecar,
 } from "../sidecar";
+import { settingsSource, sidecarHarness } from "./sidecar-harness";
 
 function respond(ok: boolean, status: number): Response {
   return { ok, status } as Response;
@@ -121,7 +120,16 @@ describe("probeSidecar", () => {
  * for an origin already admitted.
  */
 describe("sidecar cross-origin contract (DW-25)", () => {
-  const open: Server[] = [];
+  const harness = sidecarHarness({
+    settingsSource: settingsSource({
+      enabled: true,
+      allowUnauthenticated: true,
+      token: null,
+      tokenSource: "none",
+      skillEnablement: {},
+    }),
+    wikiRegistry: { current: () => [], currentId: () => null } as never,
+  });
   let savedEnv: string | undefined;
 
   beforeEach(() => {
@@ -134,17 +142,7 @@ describe("sidecar cross-origin contract (DW-25)", () => {
   afterEach(async () => {
     if (savedEnv === undefined) delete process.env[SIDECAR_ALLOWED_ORIGINS_ENV];
     else process.env[SIDECAR_ALLOWED_ORIGINS_ENV] = savedEnv;
-    await Promise.all(
-      open.splice(0).map(
-        (server) =>
-          new Promise<void>((resolve) => {
-            // undici keeps sockets alive, and `close()` alone waits for every
-            // one of them — which is a hung afterEach, not a failing test.
-            server.closeAllConnections();
-            server.close(() => resolve());
-          }),
-      ),
-    );
+    await harness.closeAll();
   });
 
   async function listen(allowedOrigins?: string[]): Promise<string> {
@@ -155,37 +153,12 @@ describe("sidecar cross-origin contract (DW-25)", () => {
     extra: Record<string, unknown>,
     allowedOrigins?: string[],
   ): Promise<string> {
-    const source = {
-      current: () => ({
-        enabled: true,
-        allowUnauthenticated: true,
-        token: null,
-        tokenSource: "none",
-        skillEnablement: {},
-      }),
-      refresh: async () => source.current(),
-    };
-    const server = createSidecarServer({
-      settingsSource: source,
-      kernel: { base: "", token: "" },
-      wikiRegistry: { current: () => [], currentId: () => null } as never,
+    return harness.listen({
       ...extra,
       // Absent entirely when the caller passes nothing, so the option's own
       // default — the env read — is what runs.
       ...(allowedOrigins === undefined ? {} : { allowedOrigins }),
-    }) as Server;
-    open.push(server);
-    await new Promise<void>((resolve, reject) => {
-      // Without this a taken port or a permissions refusal hangs the test out
-      // to the suite timeout instead of naming what went wrong.
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
     });
-    const address = server.address();
-    if (typeof address !== "object" || address === null) {
-      throw new Error(`sidecar test server did not bind a port: ${String(address)}`);
-    }
-    return `http://127.0.0.1:${address.port}`;
   }
 
   it("admits loopback with nothing configured, exactly as before", async () => {
