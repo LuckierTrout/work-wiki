@@ -1,5 +1,6 @@
 /**
- * The Workbench left column's tree vocabulary and shaping rules (Story 1.4).
+ * The Workbench left column's tree vocabulary and shaping rules (Story 1.4),
+ * plus the Wiki CANVAS CARD's sentences that answer them.
  *
  * Pure and client-safe on purpose, exactly like `workbench-modes.ts`: the tree
  * component imports it in the browser, `page.tsx` imports it on the server to
@@ -7,9 +8,20 @@
  * ordering, label and count rule. Nothing here touches storage, auth or the
  * DOM, so "why is this group first?" has one answer in one file.
  *
- * Every sentence the tree can render is a constant here rather than a literal
- * in the component, for the same reason `workbench-modes.ts` owns the mode
- * empty states: the UX handoff fixes the wording, so a second copy is drift.
+ * ONE OWNER PER WORDING. Every sentence these surfaces can render is a constant
+ * here rather than a literal in the component, for the same reason
+ * `workbench-modes.ts` owns the mode empty states: the UX handoff fixes the
+ * wording, so a second copy is drift — between the render site and the tests
+ * that pin it, and between two surfaces that meant to say the same thing.
+ *
+ * The `WIKI_*` family is here for the second half of that rule rather than
+ * because the card is part of the tree. The column and the card sit side by
+ * side in one viewport and answer the same questions about the same registry,
+ * so which surface may make which claim is a decision about the PAIR: the card
+ * owns "no Wiki exists yet" because it owns the action that ends the state
+ * (DW-176), and the card's failure sentence is COMPOSED from the column's so
+ * the shared half cannot drift (DW-285). Neither fact is expressible from
+ * inside one component, and both are executable from here.
  */
 
 import { isAgentScopedType } from "./page-types";
@@ -77,17 +89,38 @@ export function isTreeTabId(value: unknown): value is TreeTabId {
 }
 
 // ---------------------------------------------------------------------------
-// Copy — every user-visible sentence the tree can show
+// Copy — every user-visible sentence the tree and the Wiki canvas card can show
 // ---------------------------------------------------------------------------
 
-/** No Wiki exists yet, so neither tab has anything of this Wiki's to show. */
-export const TREE_NO_WIKI_COPY = "No wiki yet.";
+/**
+ * The tree's row when there is no Wiki to describe — deliberately QUIETER than
+ * the canvas card's {@link WIKI_EMPTY_COPY}, and deliberately not the same
+ * sentence (DW-176).
+ *
+ * In the zero-Wiki wiki-mode viewport this row and the card are on screen at
+ * the same moment, and both used to read the card's sentence word for word: one
+ * claim said twice, which reads as two separate findings and forced every
+ * mounted assertion about the card to scope itself away from the column. The
+ * card is the one surface that says a Wiki does not exist yet, because it is
+ * the one offering the action that ends the state.
+ *
+ * This row therefore makes NO registry claim at all. It reports only that this
+ * panel has nothing of a Wiki's to list — true on either tab, true whether the
+ * owner can create a Wiki or not, and never a second answer to the question the
+ * card has already answered beside it.
+ */
+export const TREE_NO_WIKI_COPY = "Nothing to show yet.";
 
 /**
  * A read the column depends on failed, so it can make no claim about what is
  * there. Deliberately the same OPENING SENTENCE `WikiWorkbench` shows for the
- * same state (its own copy continues "Reload to try again."), because two
- * wordings for one failure read as two different failures.
+ * same state, because two wordings for one failure read as two different
+ * failures.
+ *
+ * Since DW-285 that shared opening is a FACT rather than a coincidence: the
+ * card's {@link WIKI_UNAVAILABLE_COPY} is COMPOSED from this constant and only
+ * adds the recovery half. Rewording here carries the card with it, and no edit
+ * can leave the two surfaces disagreeing about what failed.
  */
 export const TREE_UNAVAILABLE_COPY = "Your wikis couldn’t be loaded.";
 
@@ -164,6 +197,30 @@ export const WIKI_TEMPLATE_READ_ONLY_COPY =
  */
 export const WIKI_CREATE_READ_ONLY_COPY =
   "Wikis cannot be created while this deployment is read-only.";
+
+/**
+ * The Wiki canvas card's empty state — the ONE surface that says a Wiki does
+ * not exist yet (DW-176, DW-285).
+ *
+ * `WikiWorkbench` renders it beside the `Create Wiki` button that ends the
+ * state; {@link TREE_NO_WIKI_COPY} records why the left column's row no longer
+ * repeats it. It lives here rather than inline in the card for the reason the
+ * module docstring gives: the mounted card suites and the e2e canvas pin all
+ * quote this wording, and a literal in the component is a second definition
+ * every one of them can drift away from.
+ */
+export const WIKI_EMPTY_COPY = "No wiki yet.";
+
+/**
+ * The Wiki canvas card's registry-read failure, in its `role="alert"` (DW-285).
+ *
+ * DERIVED from {@link TREE_UNAVAILABLE_COPY}, never retyped: the column and the
+ * card open with the same sentence on purpose, and composition is what makes
+ * that a shared fact instead of two literals that happen to match today. The
+ * card adds the half the column has no room for — the reload is the whole
+ * recovery, and a one-line tree row cannot spend a sentence naming it.
+ */
+export const WIKI_UNAVAILABLE_COPY = `${TREE_UNAVAILABLE_COPY} Reload to try again.`;
 
 /**
  * The page index — not the registry — is what failed. Named separately because

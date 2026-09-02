@@ -15,7 +15,9 @@ import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
 import { send, writeFailure } from "@/lib/workbench-request";
 import {
   WIKI_CREATE_READ_ONLY_COPY,
+  WIKI_EMPTY_COPY,
   WIKI_TEMPLATE_READ_ONLY_COPY,
+  WIKI_UNAVAILABLE_COPY,
 } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
@@ -23,8 +25,8 @@ import type { WikiRecord } from "@/lib/wikis";
  * The Wiki surface on the owner's landing page — the Wiki-mode canvas.
  *
  * It owns the artifact receipt (`purpose.md`, `schema.md`), the wiki's name and
- * scenario heading, `Change template`, and the `No wiki yet.` empty state whose
- * `Create Wiki` action lands the owner somewhere real. It does NOT own
+ * scenario heading, `Change template`, and the {@link WIKI_EMPTY_COPY} empty
+ * state whose `Create Wiki` action lands the owner somewhere real. It does NOT own
  * switching: the left column header's `WikiSwitcher` is the single owner of the
  * active-wiki `<select>` and of the persistent `New Wiki` control (DW-33), so
  * one viewport never offers two of either.
@@ -92,8 +94,8 @@ export function WikiWorkbench() {
    * one whose OUTCOME IS UNKNOWN (DW-407).
    *
    * The card is not optimistic, so on success the dialog closes and the empty
-   * state — `No wiki yet.` and an enabled `Create Wiki` — is still on screen
-   * for the length of `router.refresh()`. On the unconfirmed path the dialog
+   * state — {@link WIKI_EMPTY_COPY} and an enabled `Create Wiki` — is still on
+   * screen for the length of `router.refresh()`. On the unconfirmed path the dialog
    * deliberately stays OPEN — the sentence explaining what happened is inside
    * it — and `busy` is already back to false, so the confirm button and the
    * Enter path behind it are two more live routes to a second POST. Nothing
@@ -282,8 +284,8 @@ export function WikiWorkbench() {
         // thing: the request left and no verdict came back.
         //
         // Two things follow, and neither is optional. The empty state behind
-        // this dialog still says `No wiki yet.` and still offers a Create Wiki
-        // button — pressing it now would seed a second wiki and move every
+        // this dialog still shows `WIKI_EMPTY_COPY` and still offers a Create
+        // Wiki button — pressing it now would seed a second wiki and move every
         // prompt onto its template — so the door is held shut exactly as a
         // succeeding create holds it, until a server render says what is
         // actually there. And the refresh is what fetches that render: without
@@ -355,24 +357,24 @@ export function WikiWorkbench() {
       </h2>
 
       {registryUnavailable ? (
-        // NOT the empty state: "No wiki yet." would be a claim about the
+        // NOT the empty state: `WIKI_EMPTY_COPY` would be a claim about the
         // registry that this render cannot make, and its Create Wiki button
         // would seed a duplicate wiki and move every prompt onto its template
         // on the strength of a read error.
         <div className="mt-4 rounded-xl border border-foreground/15 p-6">
           <p role="alert" className="text-sm text-foreground/60">
-            Your wikis couldn’t be loaded. Reload to try again.
+            {WIKI_UNAVAILABLE_COPY}
           </p>
         </div>
       ) : !current ? (
         <div className="mt-4 rounded-xl border border-foreground/15 p-6">
-          <p className="text-sm text-foreground/60">No wiki yet.</p>
+          <p className="text-sm text-foreground/60">{WIKI_EMPTY_COPY}</p>
           <button
             type="button"
             className={`btn primary mt-4${readOnly ? " opacity-60" : ""}`}
             // The window this card can seed a duplicate wiki in: a create has
             // gone out — landed, or with nobody able to say — the refresh has
-            // not come back, and `No wiki yet.` may already be false. See
+            // not come back, and `WIKI_EMPTY_COPY` may already be false. See
             // `awaitingCreate` for both halves.
             //
             // `disabled`, not `aria-disabled`: this is a transient in-flight

@@ -26,7 +26,9 @@ import {
   TREE_NO_WIKI_COPY,
   TREE_TABS,
   TREE_UNAVAILABLE_COPY,
+  WIKI_EMPTY_COPY,
   WIKI_SCOPE_COPY,
+  WIKI_UNAVAILABLE_COPY,
 } from "../workbench-tree";
 import {
   PREVIEW_EMPTY_COPY,
@@ -216,7 +218,7 @@ describe("TreePanel", () => {
 
   it("distinguishes a failed registry read from an owner with no Wiki", async () => {
     const source = await read("TreePanel.tsx");
-    // Both tabs share one branch, so neither tab can claim "No wiki yet." while
+    // Both tabs share one branch, so neither tab can report an empty Wiki while
     // the truth is that the read failed — the order of the two guards is what
     // makes that impossible, so it is pinned rather than merely present.
     expect(source).toMatch(
@@ -233,6 +235,64 @@ describe("TreePanel", () => {
     expect(source).toMatch(/if \(filesUnavailable\) \{[\s\S]{0,120}FILES_UNAVAILABLE_COPY/);
     expect(KNOWLEDGE_UNAVAILABLE_COPY).not.toBe(TREE_UNAVAILABLE_COPY);
     expect(FILES_UNAVAILABLE_COPY).not.toBe(TREE_UNAVAILABLE_COPY);
+  });
+
+  it("leaves the canvas card the only surface that says a Wiki does not exist (DW-176)", () => {
+    // The zero-Wiki wiki-mode viewport puts this row and the card on screen at
+    // the same moment. They used to say the byte-identical sentence, so the
+    // owner read one claim twice and the mounted suite had to scope its
+    // empty-state query away from the column to see anything at all.
+    //
+    // The card owns the claim, because it owns the action that ends the state;
+    // the row is a claim-free placeholder. An inequality is what keeps that
+    // settled — a reworded row that drifted back onto the card's sentence would
+    // otherwise reintroduce the duplicate silently.
+    expect(TREE_NO_WIKI_COPY).not.toBe(WIKI_EMPTY_COPY);
+  });
+
+  it("composes the card's failure sentence from the column's, rather than restating it", async () => {
+    // The two surfaces open with the same sentence ON PURPOSE — two wordings
+    // for one failure read as two different failures — so what DW-285 removed
+    // is the second DEFINITION, not the second render. `startsWith` is that
+    // derivation made executable: rewording the column carries the card with
+    // it, and no edit can leave the halves disagreeing about what failed.
+    expect(WIKI_UNAVAILABLE_COPY.startsWith(TREE_UNAVAILABLE_COPY)).toBe(true);
+    // And not merely equal: the card adds the recovery the tree row has no room
+    // to name, so a composition collapsed to a bare re-export is a regression.
+    expect(WIKI_UNAVAILABLE_COPY).not.toBe(TREE_UNAVAILABLE_COPY);
+
+    // The two pins above are about the VALUES, and values are exactly what a
+    // retyped literal gets right. `"Your wikis couldn’t be loaded. Reload to try
+    // again."` spelled out in full satisfies both of them while the constant's
+    // own docstring goes on claiming it is "DERIVED …, never retyped" — and the
+    // drift the derivation exists to stop would be back, silently, one reword
+    // of `TREE_UNAVAILABLE_COPY` later. So the DERIVATION is read from the
+    // source: the composition has to be literally how the constant is defined.
+    const copyModule = await readFile(path.join(SRC, "lib/workbench-tree.ts"), "utf8");
+    expect(copyModule).toContain(
+      "export const WIKI_UNAVAILABLE_COPY = `${TREE_UNAVAILABLE_COPY} Reload to try again.`;",
+    );
+  });
+
+  it("keeps the canvas sentence out of both trees", async () => {
+    // Not the same pin as `not.toContain(TREE_NO_WIKI_COPY)` above: that one
+    // bans a literal copy of the row's OWN sentence. This bans the CARD's,
+    // which is how the duplication would come back — a tree row "helpfully"
+    // restating the empty state the canvas already owns.
+    //
+    // Both card sentences, not just the empty state. Banning the failure one is
+    // safe alongside the trees' own `TREE_UNAVAILABLE_COPY` render, because that
+    // constant is only the OPENING HALF: the card's adds " Reload to try again.",
+    // which no tree row says and none has room to. So this catches a tree that
+    // grew the card's fuller sentence without touching the shared opening the
+    // two surfaces say on purpose.
+    for (const file of ["TreePanel.tsx", "SourcesTree.tsx"]) {
+      const source = await read(file);
+      expect(source).not.toContain(WIKI_EMPTY_COPY);
+      expect(source).not.toContain("WIKI_EMPTY_COPY");
+      expect(source).not.toContain(WIKI_UNAVAILABLE_COPY);
+      expect(source).not.toContain("WIKI_UNAVAILABLE_COPY");
+    }
   });
 
   it("keeps every disclosure reference resolvable and free of stray whitespace", async () => {
@@ -414,8 +474,9 @@ describe("WikiSwitcher", () => {
     expect(source).toContain("Active wiki");
     expect(source).toContain("htmlFor={selectId}");
     expect(source).toContain("New Wiki");
-    // A read failure is not "you have no wikis": same state, same sentence as
-    // the canvas card already shows.
+    // A read failure is not "you have no wikis": same state, same OPENING
+    // sentence as the canvas card already shows — the card's own constant is
+    // composed from this one, so all three surfaces move together.
     expect(source).toContain("TREE_UNAVAILABLE_COPY");
     // An owner with no Wiki gets no switcher — but still gets the one control
     // that ends that state, so `New Wiki` sits outside the gate.

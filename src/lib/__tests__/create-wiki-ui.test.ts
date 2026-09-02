@@ -22,6 +22,7 @@ import {
   WIKI_ARTIFACT_FILES,
 } from "../wiki-scenarios";
 import { PREVIEW_HISTORY_COPY, PREVIEW_UNSELECTED_COPY } from "../workbench-preview";
+import { WIKI_EMPTY_COPY, WIKI_UNAVAILABLE_COPY } from "../workbench-tree";
 
 const COMPONENTS = path.resolve(__dirname, "../../components");
 
@@ -146,9 +147,37 @@ describe("both dialogs share one accessibility implementation", () => {
 });
 
 describe("WikiWorkbench empty state and preview copy", () => {
-  it("uses the AC's exact sentences", async () => {
+  it("freezes the AC's two exact sentences at their one definition", () => {
+    // This file is the AC-invariants file, and the AC quotes both sentences
+    // VERBATIM — so somebody has to hold the wording still. Every other
+    // assertion in the repo now reads these constants, which is right for a
+    // render pin and useless as a copy pin: rewording `WIKI_EMPTY_COPY` would
+    // leave all of them green and only e2e would notice.
+    //
+    // Hence a VALUE assertion here and nowhere else, the same idiom
+    // `workbench-settings.test.ts` uses for `SETTINGS_LOAD_FAILED_COPY`. The
+    // constant is where the sentence lives (DW-285); this is where the AC says
+    // which sentence it has to be.
+    expect(WIKI_EMPTY_COPY).toBe("No wiki yet.");
+    expect(WIKI_UNAVAILABLE_COPY).toBe("Your wikis couldn’t be loaded. Reload to try again.");
+  });
+
+  it("renders the empty-state sentence from the module that owns it, not a literal", async () => {
+    // DW-285: the card used to restate the AC's sentence inline, so the wording
+    // had two definitions — and DW-176 settled which surface owns it, which a
+    // literal here cannot express.
+    //
+    // The pin is the RENDER SHAPE, not the identifier. `toContain("WIKI_EMPTY_COPY")`
+    // looks like it proves the card renders the constant and proves nothing of
+    // the sort: this file's own subject reworded five COMMENTS to name the
+    // symbol, so the scan stays green with the render site swapped back to a
+    // plain literal. Matching the JSX text child is what a scan can actually
+    // hold — paired with `not.toContain` on the sentence, which is the half
+    // that catches the literal coming back.
     const source = await read("WikiWorkbench.tsx");
-    expect(source).toContain("No wiki yet.");
+    expect(source).toContain(">{WIKI_EMPTY_COPY}</p>");
+    expect(source).toContain('from "@/lib/workbench-tree"');
+    expect(source).not.toContain(WIKI_EMPTY_COPY);
   });
 
   it("takes the preview sentence from the module that owns it, not a literal", async () => {
@@ -293,7 +322,7 @@ describe("WikiWorkbench empty state and preview copy", () => {
   });
 
   it("does not offer Create Wiki when the registry could not be read", async () => {
-    // "No wiki yet." is a claim about the registry. On a read failure the
+    // `WIKI_EMPTY_COPY` is a claim about the registry. On a read failure the
     // workbench cannot make it, and its primary action would seed a duplicate
     // wiki and move every prompt onto its template on a transient error.
     const workbench = await read("WikiWorkbench.tsx");
@@ -302,7 +331,16 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // cannot disagree about whether the registry was read.
     expect(workbench).toContain("registryUnavailable");
     expect(workbench).toContain("useWorkbenchData()");
-    expect(workbench).toContain("Your wikis couldn’t be loaded.");
+    // Same shape as the empty state above (DW-285), and for the same reason it
+    // is a SHAPE: the constant has to be the thing inside the alert, not merely
+    // a symbol mentioned somewhere in the file. The window ties `role="alert"`
+    // to the interpolation so a scan cannot be satisfied by a comment naming the
+    // symbol while the alert itself carries a retyped sentence. `not.toContain`
+    // on the text is the other half — a `toContain` there would now pass off
+    // this file's own prose rather than off anything the card renders.
+    expect(workbench).toMatch(/role="alert"[\s\S]{0,120}\{WIKI_UNAVAILABLE_COPY\}/);
+    expect(workbench).toContain('from "@/lib/workbench-tree"');
+    expect(workbench).not.toContain(WIKI_UNAVAILABLE_COPY);
 
     const page = await readFile(
       path.resolve(__dirname, "../../app/page.tsx"),

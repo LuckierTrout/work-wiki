@@ -1277,7 +1277,9 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/components/WikiWorkbench.tsx:160 with src/lib/workbench-tree.ts:71
 severity: low
 reason: The canvas empty state inlines the literal while the left column's tree renders `TREE_NO_WIKI_COPY` (`src/lib/workbench-tree.ts:71`) — the same string, on two surfaces, at the same moment. Same class of defect as DW-33, and the new mounted suite scopes its assertion to `.wb-canvas` to work around it. Deciding which surface owns the sentence is a UX call, not a mechanical de-duplication.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-workbench-card-copy-constants
+resolution-undo: 2f567eade7e497cea873a21ba1f848f3fbce09a7059096095479ba5a852e5db6 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-19 Canvas owns the sentence — Keep the canvas empty state as the one place that says "No wiki yet." (rendering the shared TREE_NO_WIKI_COPY constant rather than an inline literal) and let the tree render a quieter row-level placeholder, then drop the .wb-canvas scoping workaround from the mounted suite.
 
 ### DW-177: `Select a file to preview.` is still an inline literal restated in three files while every sibling sentence is an exported constant.
@@ -2071,7 +2073,9 @@ source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
 location: src/components/WikiWorkbench.tsx:151,146
 severity: low
 reason: DW-177 named only the preview sentence, and extracting it leaves the card the one component that both imports a copy constant and restates two sentences of its own. `TREE_NO_WIKI_COPY` and `TREE_UNAVAILABLE_COPY` already exist in `workbench-tree.ts` for the left column's versions of the same two states, so the card is a second definition of both wordings.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-workbench-card-copy-constants
+resolution-undo: 2f567eade7e497cea873a21ba1f848f3fbce09a7059096095479ba5a852e5db6 2026-09-02 7374617475733a206f70656e
 
 ### DW-286: A network-level `fetch` rejection reaches the owner verbatim as "Failed to fetch", the same class of defect `failureMessage`'s abort branch exists to prevent.
 

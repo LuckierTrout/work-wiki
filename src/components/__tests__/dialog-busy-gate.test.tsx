@@ -6,6 +6,7 @@ import {
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
 import { CREATABLE_SCENARIOS } from "@/lib/wiki-scenarios";
+import { WIKI_EMPTY_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -256,7 +257,7 @@ describe("the Create submit", () => {
     // longer optimistic (DW-174): the provider is its single source, so the
     // empty state stays put until the server render that `router.refresh()`
     // asks for arrives with the new record.
-    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
@@ -335,6 +336,6 @@ describe("the Create submit", () => {
 
     fireEvent.click(button("Cancel"));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
   });
 });

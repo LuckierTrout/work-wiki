@@ -8,6 +8,7 @@ import {
 import {
   WIKI_CREATE_READ_ONLY_COPY,
   WIKI_TEMPLATE_READ_ONLY_COPY,
+  WIKI_UNAVAILABLE_COPY,
 } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
@@ -183,9 +184,7 @@ describe("a registry that could not be read still owns its own panel", () => {
       </WorkbenchDataProvider>,
     );
 
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Your wikis couldn’t be loaded.",
-    );
+    expect(screen.getByRole("alert").textContent).toBe(WIKI_UNAVAILABLE_COPY);
     expect(screen.queryByRole("button", { name: "Create Wiki" })).toBeNull();
     expect(screen.queryByText(WIKI_CREATE_READ_ONLY_COPY)).toBeNull();
     expect(screen.queryByText(WIKI_TEMPLATE_READ_ONLY_COPY)).toBeNull();

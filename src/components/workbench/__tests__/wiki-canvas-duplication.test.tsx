@@ -9,6 +9,12 @@ import {
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
 import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
+import {
+  KNOWLEDGE_EMPTY_COPY,
+  TREE_NO_WIKI_COPY,
+  WIKI_EMPTY_COPY,
+  WIKI_UNAVAILABLE_COPY,
+} from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -177,6 +183,11 @@ afterEach(() => {
   cleanup();
   styleEl.remove();
   vi.unstubAllGlobals();
+  // jsdom carries ONE location across every test in a file, and the shell seeds
+  // `?mode=` into it on mount — a param that then OUTRANKS stored state for the
+  // next test's opening mode. Without this reset a test that switches modes
+  // silently reopens the shell somewhere else for everything after it.
+  window.history.replaceState(null, "", "/");
 });
 
 /** The subset of `Response` both components' `send` helpers read. */
@@ -348,20 +359,76 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
   it("keeps the canvas empty state and the header create control with no wiki", async () => {
     const { container } = await renderShell([], null);
 
-    // Scoped to the canvas: the left column's tree shows its own
-    // `TREE_NO_WIKI_COPY` sentence, which is that panel's empty state and not a
-    // duplicate of this one.
     const canvas = container.querySelector(".wb-canvas") as HTMLElement;
     expect(canvas).not.toBeNull();
-    // The canvas's AC-quoted empty state names the next step; it is not a second
-    // copy of the header's persistent chrome control.
-    expect(within(canvas).getByText("No wiki yet.")).toBeTruthy();
+    // DOCUMENT-WIDE, and a count rather than a presence check: this assertion
+    // used to be scoped `within(canvas)` because the left column's tree row said
+    // the very same sentence at the very same moment (DW-176), so one viewport
+    // made the owner read one claim twice. `TREE_NO_WIKI_COPY` is now the
+    // quieter, claim-free placeholder and the card is the single owner of this
+    // wording — the count is what keeps the duplicate retired, since a scoped
+    // query would go green again the moment a second surface restated it.
+    const empty = screen.getAllByText(WIKI_EMPTY_COPY);
+    expect(empty).toHaveLength(1);
+    expect(canvas.contains(empty[0])).toBe(true);
+    // The OTHER side of the count, and the half it cannot see: "exactly one" is
+    // equally satisfied by a left column that shows nothing at all. The row has
+    // to still be there, on screen, and outside the canvas.
+    //
+    // What that catches: a tree that drops the placeholder branch outright, and
+    // — worse, because it stays green everywhere else — one that falls through
+    // to `KNOWLEDGE_EMPTY_COPY` instead. "No pages yet. Ingest a source to
+    // compile one." is a false instruction with no Wiki to compile a page into,
+    // and it is what the panel says the moment the `!hasWiki` guard goes.
+    const row = screen.getByText(TREE_NO_WIKI_COPY);
+    expect(row.closest("[hidden]")).toBeNull();
+    expect(canvas.contains(row)).toBe(false);
+    expect(screen.queryByText(KNOWLEDGE_EMPTY_COPY)).toBeNull();
     const create = screen.getByRole("button", { name: "Create Wiki" });
     expect(create.className).toContain("btn primary");
     expect(container.querySelectorAll(".btn.primary")).toHaveLength(1);
     // The header still offers creating, and no switcher for a registry of none.
     expect(screen.getAllByRole("button", { name: /new wiki/i })).toHaveLength(1);
     expect(screen.queryByLabelText(/active wiki/i)).toBeNull();
+  });
+
+  it("says nothing about a missing Wiki in Sources mode, where the card is withdrawn", async () => {
+    // The other half of the same ownership rule (DW-176). `SourcesTree` reads
+    // the SAME `TREE_NO_WIKI_COPY` the Knowledge/Files tree does, so a row that
+    // drifted back onto the card's sentence would put the claim on screen in a
+    // mode where nothing offers the action that ends the state — and no
+    // canvas-scoped query in this file would ever see it.
+    // Switched by PRESSING the rail, not by seeding storage or a `?mode=` param:
+    // that is the control an owner actually drives, so this test asserts against
+    // the mode the shell really lands in and never has to agree with how the
+    // shell resolves its OPENING mode. Seeding either input would couple the
+    // test to that precedence order and go quietly wrong when it changed.
+    await renderShell([], null);
+    fireEvent.click(screen.getByRole("button", { name: "Sources" }));
+    await act(async () => {});
+
+    // The mode really did change; otherwise every assertion below proves
+    // nothing. Asserted on the LABEL and by equality: `textContent` of the whole
+    // surface contains the word "Sources" in the label, in a tree row and in any
+    // seeded path, so `toContain` on it would pass in several modes this test is
+    // not in. And the element is checked for existence first — an optional-chained
+    // `sources?.textContent` goes `undefined` when the surface is missing, which
+    // fails as "combination of arguments (undefined and string) is invalid"
+    // rather than as the thing that actually went wrong.
+    const surface = document.querySelector(".wb-left-surface");
+    expect(surface, "the left surface did not render — the rail press missed").not.toBeNull();
+    const label = surface?.querySelector(".wb-left-surface-label");
+    expect(label?.textContent).toBe("Sources");
+
+    // ON SCREEN, not merely in the document: the Wiki canvas stays MOUNTED
+    // behind `hidden` in every other mode (`ModeCanvas`'s `wb-canvas-mode`), so
+    // a plain `queryByText` would find the card's sentence in withdrawn content
+    // and read as a duplicate that no owner can see. Same `[hidden]` filter
+    // `visibleSelects` uses, for the same reason.
+    const empty = screen.getByText(WIKI_EMPTY_COPY);
+    expect(empty.closest("[hidden]")).not.toBeNull();
+    const row = screen.getByText(TREE_NO_WIKI_COPY);
+    expect(row.closest("[hidden]")).toBeNull();
   });
 
   it("locks the one switcher while its own write is in flight", async () => {
@@ -508,7 +575,7 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
 
     expect(screen.queryByRole("dialog")).toBeNull();
     // The card fell back to the empty state rather than rendering half a card.
-    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
     expect(
       fetchMock.mock.calls.filter((call) => String(call[0]).includes("/template")),
     ).toHaveLength(0);
@@ -539,9 +606,9 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
 
   it("keeps the read-failure branch a claim-free alert with no create action", async () => {
     // Untouched by DW-33, and the row most easily broken by deleting controls
-    // from this card: "No wiki yet." is a claim about the registry that a failed
-    // read cannot make, and its primary action would seed a duplicate wiki on a
-    // transient error.
+    // from this card: `WIKI_EMPTY_COPY` is a claim about the registry that a
+    // failed read cannot make, and its primary action would seed a duplicate
+    // wiki on a transient error.
     // One flag, one wire: the card reads the provider's `registryUnavailable`
     // rather than a prop of its own (DW-174), so the header and the canvas
     // cannot disagree about whether the registry was read — the document where
@@ -555,10 +622,14 @@ describe("one Wiki switcher and one create control per viewport (DW-33)", () => 
     );
     await act(async () => {});
 
+    // `getByRole("alert")` stays canvas-scoped on purpose, and this one is not
+    // the DW-176 workaround: `WikiSwitcher` renders its own alert for the same
+    // failed read, so the document holds two alerts by design. Only the TEXT
+    // moves onto the constants.
     const canvas = container.querySelector(".wb-canvas") as HTMLElement;
     const alert = within(canvas).getByRole("alert");
-    expect(alert.textContent).toBe("Your wikis couldn’t be loaded. Reload to try again.");
-    expect(within(canvas).queryByText("No wiki yet.")).toBeNull();
+    expect(alert.textContent).toBe(WIKI_UNAVAILABLE_COPY);
+    expect(screen.queryByText(WIKI_EMPTY_COPY)).toBeNull();
     expect(within(canvas).queryByRole("button", { name: "Create Wiki" })).toBeNull();
     // Document-wide, not canvas-scoped: a failed read flattens to no create
     // action anywhere, so the owner cannot seed a duplicate wiki on what may be

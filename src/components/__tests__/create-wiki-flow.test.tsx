@@ -6,6 +6,7 @@ import {
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
 import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
+import { WIKI_EMPTY_COPY, WIKI_UNAVAILABLE_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
 /**
@@ -313,7 +314,7 @@ describe("Create Wiki", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
   });
 
   it("posts the picked scenario and asks for the server render that carries it", async () => {
@@ -341,12 +342,12 @@ describe("Create Wiki", () => {
     // `router.refresh()` asks for. Until then the empty state is still the
     // truth, exactly as `WikiSwitcher.create` already documents for the header.
     expect(refresh).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
     expect(screen.queryByText(WIKI.name)).toBeNull();
   });
 
   it("shuts its own door until the server render lands", async () => {
-    // The card is not optimistic, so on success `No wiki yet.` and its primary
+    // The card is not optimistic, so on success `WIKI_EMPTY_COPY` and its primary
     // action are STILL on screen for the length of the refresh — and the
     // sentence is already false. Nothing enforces unique wiki names, so a
     // second press there seeds a SECOND wiki and makes it active, moving every
@@ -421,7 +422,7 @@ describe("Create Wiki", () => {
     expect(alert.textContent).toBe("A wiki with that name already exists.");
     expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(true);
     // Nothing was seeded, so the empty state is still the truth behind it.
-    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
     expect(refresh).not.toHaveBeenCalled();
   });
 
@@ -470,7 +471,7 @@ describe("Create Wiki", () => {
     expect(alert.textContent).toBe("Couldn’t create the wiki.");
     expect(screen.getByRole("dialog", { name: "Create Wiki" }).contains(alert)).toBe(true);
     // The canvas behind it is intact: no blank render, no wiki card.
-    expect(screen.getByText("No wiki yet.")).toBeTruthy();
+    expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
     expect(screen.queryByText(WIKI.name)).toBeNull();
     expect(refresh).not.toHaveBeenCalled();
   });
@@ -572,7 +573,7 @@ describe("a request that never settles (DW-175, DW-283)", () => {
         fetchMock.mock.calls.filter(([url]) => url === "/api/wikis"),
       ).toHaveLength(1);
       // The empty state behind the overlay offers no second way in either.
-      expect(screen.getByText("No wiki yet.")).toBeTruthy();
+      expect(screen.getByText(WIKI_EMPTY_COPY)).toBeTruthy();
       expect(button("Create Wiki").disabled).toBe(true);
       // Every way OUT stays live — the latch rides `confirmDisabled`, never
       // `busy`. The sentence just read tells the owner to go and look at the
@@ -703,11 +704,11 @@ describe("the read-failure branch", () => {
     mount([WIKI], WIKI.id, true);
 
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toBe("Your wikis couldn’t be loaded. Reload to try again.");
-    // Not the empty state: "No wiki yet." is a claim about the registry this
+    expect(alert.textContent).toBe(WIKI_UNAVAILABLE_COPY);
+    // Not the empty state: `WIKI_EMPTY_COPY` is a claim about the registry this
     // render cannot make, and its Create Wiki button would seed a duplicate
     // wiki and move every prompt onto its template on a transient read error.
-    expect(screen.queryByText("No wiki yet.")).toBeNull();
+    expect(screen.queryByText(WIKI_EMPTY_COPY)).toBeNull();
     expect(screen.queryByRole("button", { name: "Create Wiki" })).toBeNull();
     // …and not the wiki card either, which is the half an empty-list render
     // cannot ask about at all.
