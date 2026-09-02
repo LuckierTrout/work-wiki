@@ -24,8 +24,12 @@ import {
   MCP_SERVER_INFO,
   _internal,
 } from "../mcp-http";
-import { ensureDirectories, writeWikiPage } from "../wiki";
-import { saveRevision } from "../revisions";
+import {
+  ensureDirectories,
+  readWikiPageWithFrontmatter,
+  writeWikiPage,
+} from "../wiki";
+import { listRevisions, readRevision, saveRevision } from "../revisions";
 import { _resetStorage } from "../storage";
 import { createVault, vaultSlugs } from "../vault";
 import { registerAgent } from "../agents";
@@ -1529,6 +1533,23 @@ describe("dispatchMcp — revert_revision", () => {
     expect(tools.map((t) => t.name)).toContain("revert_revision");
   });
 
+  it("keeps principal out of the caller-controlled HTTP input schema", async () => {
+    const res = await dispatchMcp({ id: 1, method: "tools/list" }, null);
+    const tools = (res!.result as {
+      tools: {
+        name: string;
+        inputSchema: {
+          properties?: Record<string, unknown>;
+          required?: string[];
+        };
+      }[];
+    }).tools;
+    const revert = tools.find((tool) => tool.name === "revert_revision")!;
+
+    expect(revert.inputSchema.properties).not.toHaveProperty("principal");
+    expect(revert.inputSchema.required ?? []).not.toContain("principal");
+  });
+
   it("rejects revert_revision without auth (write-gated)", async () => {
     const res = await dispatchMcp(
       {
@@ -1546,34 +1567,22 @@ describe("dispatchMcp — revert_revision", () => {
     expect(r.content[0].text).toMatch(/authentication required/i);
   });
 
-  it("passes principal.handle as author to handleRevertRevision", async () => {
-    // Create a page with a revision to revert to
-    await writeWikiPage("rev-revert-test", "# Revert\nOriginal");
-    await saveRevision("rev-revert-test", "# Revert\nOriginal");
-    await writeWikiPage("rev-revert-test", "# Revert\nChanged");
+  it("forwards the principal to an owner-authorized private-page revert", async () => {
+    const original =
+      "---\ntitle: Revert\nowner: alice\nvisibility: private\n---\n# Revert\n\nOriginal";
+    const changed =
+      "---\ntitle: Revert\nowner: alice\nvisibility: private\n---\n# Revert\n\nChanged";
+    await writeWikiPage("rev-revert-test", changed);
+    await saveRevision("rev-revert-test", original, "snapshotter", "snapshot");
+    const timestamp = (await listRevisions("rev-revert-test"))[0].timestamp;
 
-    // Get the timestamp
-    const listRes = await dispatchMcp(
-      {
-        id: 1,
-        method: "tools/call",
-        params: { name: "list_revisions", arguments: { slug: "rev-revert-test" } },
-      },
-      ALICE, // every tools/call needs a principal (private deployment)
-    );
-    const listParsed = JSON.parse(
-      (listRes!.result as { content: { text: string }[] }).content[0].text,
-    );
-    const ts = listParsed.revisions[0].timestamp;
-
-    // Revert as ALICE
     const res = await dispatchMcp(
       {
         id: 2,
         method: "tools/call",
         params: {
           name: "revert_revision",
-          arguments: { slug: "rev-revert-test", timestamp: ts },
+          arguments: { slug: "rev-revert-test", timestamp },
         },
       },
       ALICE,
@@ -1582,6 +1591,87 @@ describe("dispatchMcp — revert_revision", () => {
     expect(r.isError).toBeFalsy();
     const parsed = JSON.parse(r.content[0].text);
     expect(parsed.slug).toBe("rev-revert-test");
+    expect((await readWikiPageWithFrontmatter("rev-revert-test"))!.content)
+      .toContain("Original");
+
+    const [revertCreatedRevision] = await listRevisions("rev-revert-test");
+    expect(revertCreatedRevision.author).toBe("alice");
+    expect(
+      await readRevision("rev-revert-test", revertCreatedRevision.timestamp),
+    ).toContain("Changed");
+  });
+
+  it("forwards a regular principal and denies a public-page revert without mutation", async () => {
+    const current =
+      "---\ntitle: Public HTTP revert\nvisibility: public\n---\n# Public HTTP revert\n\nCurrent";
+    const revision =
+      "---\ntitle: Public HTTP revert\nvisibility: public\n---\n# Public HTTP revert\n\nRevision";
+    await writeWikiPage("public-http-revert", current);
+    await saveRevision("public-http-revert", revision, "service:test", "snapshot");
+    const timestamp = (await listRevisions("public-http-revert"))[0].timestamp;
+    const pageBefore = (await readWikiPageWithFrontmatter("public-http-revert"))!.content;
+    const revisionBefore = await readRevision("public-http-revert", timestamp);
+    const revisionHistoryBefore = await listRevisions("public-http-revert");
+
+    const res = await dispatchMcp(
+      {
+        id: 3,
+        method: "tools/call",
+        params: {
+          name: "revert_revision",
+          arguments: { slug: "public-http-revert", timestamp },
+        },
+      },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain(WRITE_DENIAL_REALM.revert);
+    expect((await readWikiPageWithFrontmatter("public-http-revert"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("public-http-revert", timestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("public-http-revert")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("forwards a non-owner principal and cloaks a private-page revert without mutation", async () => {
+    const current =
+      "---\ntitle: Private HTTP revert\nowner: alice\nvisibility: private\n---\n# Private HTTP revert\n\nCurrent";
+    const revision =
+      "---\ntitle: Private HTTP revert\nowner: alice\nvisibility: private\n---\n# Private HTTP revert\n\nRevision";
+    await writeWikiPage("private-http-revert", current);
+    await saveRevision("private-http-revert", revision, "alice", "snapshot");
+    const timestamp = (await listRevisions("private-http-revert"))[0].timestamp;
+    const pageBefore = (await readWikiPageWithFrontmatter("private-http-revert"))!.content;
+    const revisionBefore = await readRevision("private-http-revert", timestamp);
+    const revisionHistoryBefore = await listRevisions("private-http-revert");
+
+    const res = await dispatchMcp(
+      {
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "revert_revision",
+          arguments: { slug: "private-http-revert", timestamp },
+        },
+      },
+      BOB,
+    );
+    const r = res!.result as { isError?: boolean; content: { text: string }[] };
+
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("Error: page not found: private-http-revert");
+    expect(r.content[0].text).not.toMatch(/realm|public knowledge/i);
+    expect((await readWikiPageWithFrontmatter("private-http-revert"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("private-http-revert", timestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("private-http-revert")).toEqual(
+      revisionHistoryBefore,
+    );
   });
 });
 

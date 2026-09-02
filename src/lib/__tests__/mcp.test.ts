@@ -54,7 +54,7 @@ import { _resetStorage, getStorage } from "../storage";
 import { _resetConfigCache } from "../config";
 import { parseFrontmatter } from "../frontmatter";
 import { registerAgent } from "../agents";
-import { WRITE_DENIAL_REALM } from "../write-denial";
+import { WRITE_DENIAL, WRITE_DENIAL_REALM } from "../write-denial";
 
 // ---------------------------------------------------------------------------
 // Mock fetchUrlContent, fetchImageBytes, and storeImageBytes so no test makes
@@ -4646,7 +4646,7 @@ describe("vault_delete", () => {
 // ---------------------------------------------------------------------------
 
 describe("revert_revision", () => {
-  it("reverts a page to a previous revision", async () => {
+  it("reverts a page to a previous revision through the omitted-principal stdio fallback", async () => {
     const v1Content = "---\ntitle: Test\n---\n# Test\nVersion 1";
     await writeTestPage("revert-test", v1Content);
 
@@ -4673,6 +4673,146 @@ describe("revert_revision", () => {
     // Verify the page now has v1 content
     const page = await handleReadPage({ slug: "revert-test" });
     expect(page.content).toContain("Version 1");
+  });
+
+  it("denies a public-page revert before revision lookup and preserves stored bytes", async () => {
+    const current =
+      "---\ntitle: Public revert\nvisibility: public\n---\n# Public revert\n\nCurrent body.";
+    const storedRevision =
+      "---\ntitle: Public revert\nvisibility: public\n---\n# Public revert\n\nStored revision.";
+    await writeTestPage("public-revert-acl", current);
+
+    const { listRevisions, readRevision, saveRevision } = await import(
+      "../../lib/revisions"
+    );
+    await saveRevision(
+      "public-revert-acl",
+      storedRevision,
+      "service:test",
+      "snapshot",
+    );
+    const revisions = await handleListRevisions({ slug: "public-revert-acl" });
+    const storedTimestamp = revisions.revisions[0].timestamp;
+    const missingTimestamp = storedTimestamp + 10_000;
+    const pageBefore = (await readWikiPageWithFrontmatter("public-revert-acl"))!.content;
+    const revisionBefore = await readRevision("public-revert-acl", storedTimestamp);
+    const revisionHistoryBefore = await listRevisions("public-revert-acl");
+
+    await expect(
+      handleRevertRevision({
+        slug: "public-revert-acl",
+        timestamp: missingTimestamp,
+        author: "alice",
+        principal: { id: "user:alice", handle: "alice" },
+      }),
+    ).rejects.toThrow(WRITE_DENIAL_REALM.revert);
+
+    expect((await readWikiPageWithFrontmatter("public-revert-acl"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("public-revert-acl", storedTimestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("public-revert-acl")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("cloaks a private non-owner denial and preserves Page and revision bytes", async () => {
+    const current =
+      "---\ntitle: Private revert\nowner: bob\nvisibility: private\n---\n# Private revert\n\nCurrent body.";
+    const storedRevision =
+      "---\ntitle: Private revert\nowner: bob\nvisibility: private\n---\n# Private revert\n\nStored revision.";
+    await writeTestPage("private-revert-acl", current);
+
+    const { listRevisions, readRevision, saveRevision } = await import(
+      "../../lib/revisions"
+    );
+    await saveRevision(
+      "private-revert-acl",
+      storedRevision,
+      "bob",
+      "snapshot",
+    );
+    const revisions = await handleListRevisions({ slug: "private-revert-acl" });
+    const timestamp = revisions.revisions[0].timestamp;
+    const pageBefore = (await readWikiPageWithFrontmatter("private-revert-acl"))!.content;
+    const revisionBefore = await readRevision("private-revert-acl", timestamp);
+    const revisionHistoryBefore = await listRevisions("private-revert-acl");
+
+    let caught: unknown;
+    try {
+      await handleRevertRevision({
+        slug: "private-revert-acl",
+        timestamp,
+        author: "alice",
+        principal: { id: "user:alice", handle: "alice" },
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toBe("page not found: private-revert-acl");
+    expect((caught as Error).message).not.toMatch(/realm|public knowledge/i);
+    expect((await readWikiPageWithFrontmatter("private-revert-acl"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("private-revert-acl", timestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("private-revert-acl")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("fails explicit null closed on a public artifact before revision lookup", async () => {
+    const current =
+      "---\ntitle: Null principal\nvisibility: public\ntype: html\n---\n# Null principal\n\nCurrent body.";
+    const storedRevision =
+      "---\ntitle: Null principal\nvisibility: public\ntype: html\n---\n# Null principal\n\nStored revision.";
+    await writeTestPage("null-principal-revert", current);
+
+    const { listRevisions, readRevision, saveRevision } = await import(
+      "../../lib/revisions"
+    );
+    await saveRevision(
+      "null-principal-revert",
+      storedRevision,
+      "service:test",
+      "snapshot",
+    );
+    const revisions = await handleListRevisions({ slug: "null-principal-revert" });
+    const storedTimestamp = revisions.revisions[0].timestamp;
+    const missingTimestamp = storedTimestamp + 10_000;
+    const pageBefore = (await readWikiPageWithFrontmatter("null-principal-revert"))!.content;
+    const revisionBefore = await readRevision(
+      "null-principal-revert",
+      storedTimestamp,
+    );
+    const revisionHistoryBefore = await listRevisions("null-principal-revert");
+
+    await expect(
+      handleRevertRevision({
+        slug: "null-principal-revert",
+        timestamp: missingTimestamp,
+        principal: null,
+      }),
+    ).rejects.toThrow(WRITE_DENIAL.revert);
+    expect((await readWikiPageWithFrontmatter("null-principal-revert"))!.content)
+      .toBe(pageBefore);
+    expect(await readRevision("null-principal-revert", storedTimestamp))
+      .toBe(revisionBefore);
+    expect(await listRevisions("null-principal-revert")).toEqual(
+      revisionHistoryBefore,
+    );
+  });
+
+  it("keeps principal out of the stdio revert_revision input schema", () => {
+    const server = createMcpServer();
+    // `_registeredTools` is private in TypeScript and readable at runtime —
+    // the same schema inspection used by the stdio argument-gate tests.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (server as any)._registeredTools.revert_revision;
+    const shape = entry.inputSchema.shape ?? entry.inputSchema;
+
+    expect(shape).not.toHaveProperty("principal");
   });
 
   it("defaults author to 'agent' when not provided", async () => {

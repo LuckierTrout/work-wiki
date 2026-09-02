@@ -4,12 +4,13 @@
  *
  * `canWritePage`'s realm branch (`src/lib/authz.ts`) denies EVERY write kind —
  * body rewrites, metadata patches and deletes — on a public knowledge page, the
- * class `belongsInCommons` names. That one deny reaches nine surfaces (two REST
- * wiki routes, the revert route, the re-ingest route, the bulk-delete route, two
- * `src/mcp.ts` handlers, the HTTP MCP `reingest` tool, and `patchMetadata`), and
+ * class `belongsInCommons` names. That one deny reaches ten surfaces (two REST
+ * wiki routes, the REST revert route, the re-ingest route, the bulk-delete
+ * route, three `src/mcp.ts` handlers, the HTTP MCP `reingest` tool, and
+ * `patchMetadata`), and
  * before DW-120/122/123 every one of them answered the same generic "You don't
  * have permission to …" while the edit page explained the realm. Same refusal,
- * nine different stories.
+ * ten different stories.
  *
  * WHAT THIS MODULE OWNS. Every sentence a SERVER answers for a *write* denial
  * that is not the read-only refusal: the generic table {@link WRITE_DENIAL} and
@@ -23,7 +24,7 @@
  * true where the realm predicate actually holds, so it may never be a route's
  * fixed string:
  *
- *   - EIGHT of the nine cloak by READ: they check `canReadFrontmatter` (or a
+ *   - NINE of the ten cloak by READ: they check `canReadFrontmatter` (or a
  *     readable-slug set) before the ACL's sentence, which makes the claim
  *     provable there — readable AND write-denied implies the realm branch,
  *     since a READABLE private page is writable by exactly the principals that
@@ -38,7 +39,7 @@
  *     — public, non-agent-scoped, non-artifact — gets the resolver's sentence;
  *     everything else, private pages included, keeps the merged error. So it
  *     reaches the same guarantee by a different route, and the guarantee is
- *     what the eight above have: no site can emit a realm sentence for a page
+ *     what the nine above have: no site can emit a realm sentence for a page
  *     its caller could not read.
  *   - `DELETE /api/ingest/history` was the exception until DW-270, cloaked on
  *     only ONE of its two selection paths: `ingestIds` were preflighted against
@@ -55,14 +56,14 @@
  *     entry, a job that is not yours, and a job whose page you may not read —
  *     only the blast radius of the refusal did.
  *
- * WHAT `patchMetadata` CONTRIBUTES. It is one of the eight read-cloaking sites
+ * WHAT `patchMetadata` CONTRIBUTES. It is one of the nine read-cloaking sites
  * (its `else` throws `NOT_FOUND`). It used to be set apart by its `writeKind: "metadata"`,
  * which the realm branch did not gate — so it kept the generic sentence by
  * construction. DW-121 made the realm kind-independent, so it is now an
  * ordinary member of the set: readable + denied there implies the realm too,
  * and its `NOT_OWNER` carries the realm sentence.
  *
- * WHERE THE GENERIC SENTENCE IS REACHABLE, AND WHERE IT IS NOT. At all nine
+ * WHERE THE GENERIC SENTENCE IS REACHABLE, AND WHERE IT IS NOT. At all ten
  * sites the two branches are now mutually exclusive: a page that reaches the
  * resolver at all is one the caller could read, and readable + denied implies
  * the realm — so those sites can only ever emit the REALM sentence, and
@@ -81,8 +82,8 @@
  * rather than inventing one. This is recorded so the absence of route-level
  * generic-sentence tests reads as a proof, not as an oversight.
  *
- * THE CLOAK COMES FIRST WHERE IT IS A READ CHECK. All eight read-cloaking sites
- * evaluate it before asking this module for a sentence; the ninth decides
+ * THE CLOAK COMES FIRST WHERE IT IS A READ CHECK. All nine read-cloaking sites
+ * evaluate it before asking this module for a sentence; the tenth decides
  * whether it may speak at all before it asks. Either way an unreadable private
  * page must never learn that it exists, or what its realm is, from this copy.
  *
@@ -105,7 +106,7 @@ export type WriteDenialAction =
   | "edit"
   /** `DELETE /api/wiki/[slug]`, `src/mcp.ts` `delete_page`. */
   | "delete"
-  /** `POST /api/wiki/[slug]/revisions {action:"revert"}`. */
+  /** REST and MCP revision-revert surfaces. */
   | "revert"
   /** `POST /api/ingest/reingest` and the HTTP MCP `reingest` tool. */
   | "reingest"

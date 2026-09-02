@@ -1442,6 +1442,7 @@ export async function handleRevertRevision(args: {
   slug: string;
   timestamp: number;
   author?: string;
+  principal?: Principal | null;
 }): Promise<{ slug: string; updatedSlugs: string[] }> {
   if (!args.slug) {
     throw new Error("slug is required");
@@ -1473,6 +1474,28 @@ export async function handleRevertRevision(args: {
     strict: true,
   });
   if (!existing) {
+    throw new Error(`page not found: ${args.slug}`);
+  }
+
+  // Realm-aware write ACL — mirrors the REST revert surface. An omitted
+  // principal is the deployment-trusted stdio compatibility signal; explicit
+  // null remains unauthenticated and therefore fails closed.
+  const principal: Principal | null =
+    args.principal !== undefined
+      ? args.principal
+      : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
+  // `canWriteFrontmatter` assumes an authenticated caller for public Pages
+  // outside the commons realm. This handler also accepts explicit null, so
+  // close that upstream-authentication gap here before asking the Page ACL.
+  if (
+    principal === null ||
+    !canWriteFrontmatter(existing.frontmatter, principal, "body")
+  ) {
+    if (canReadFrontmatter(existing.frontmatter, principal)) {
+      throw new Error(
+        resolveWriteDenial("revert", existing.frontmatter, "body"),
+      );
+    }
     throw new Error(`page not found: ${args.slug}`);
   }
 
