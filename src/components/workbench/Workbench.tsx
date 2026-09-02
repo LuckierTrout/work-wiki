@@ -1532,7 +1532,18 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     for (const modal of modals) {
       if (modal.closest("[hidden]") === null) return;
     }
-    document.getElementById(CANVAS_ID)?.focus();
+    // `preventScroll`, because this effect is PASSIVE and the mode canvas's
+    // scroll restore is a LAYOUT effect (DW-523): React runs every layout
+    // effect before any passive one, so a plain `focus()` here lands after the
+    // restore has already put the offset back. Where the DOCUMENT is the
+    // scroller — below the stacking breakpoint with a Preview docked, the one
+    // case DW-523 exists for — focusing `#wb-canvas` scrolls it into view and
+    // undoes exactly that, one frame later. Nothing is lost by suppressing it:
+    // the canvas is being revealed at the offset the owner left, which is
+    // already where they should be looking. jsdom cannot see this — its
+    // `focus()` does not scroll — so the guard is a source-scanned claim in
+    // `workbench-chrome.test.ts`.
+    document.getElementById(CANVAS_ID)?.focus({ preventScroll: true });
   }, [canvasFocusNonce]);
 
   // Where inside the grab strip the press landed, in width space (DW-44).

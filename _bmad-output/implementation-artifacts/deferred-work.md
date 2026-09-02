@@ -3964,7 +3964,9 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/components/workbench/TreePanel.tsx (restore + persist effects), src/components/workbench/ModeCanvas.tsx (the DW-416 effect)
 severity: low
 reason: Both TreePanel's and ModeCanvas's restores assign a stored offset and then leave a `scroll` listener live. A `scrollTop` assignment's own `scroll` event is dispatched at the next rendering update (CSSOM View), so the listener receives it regardless of attachment order. Where the surface has not reached its previously persisted content height (async tree data, a shorter list after a refresh, a shorter viewport against `40vh`), the browser clamps the assignment and the echo records the clamp over the owner's offset. Closing it means suppressing a write the restore itself provoked - the second fix DW-206's ledger entry offered and the intent did not choose - which is a mechanism decision, not a patch.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-scroll-restore-clamp-and-timing
+resolution-undo: f4ff31b9d10103cffa554d3315b914a8fee23c87de8b65ba53ef656058c6c3db 2026-09-02 7374617475733a206f70656e
 
 ### DW-522: `useDialogA11y`'s widened `withdrawn()` still misses `visibility: hidden`, `content-visibility: hidden` and `inert`, which drop a focus() the same way.
 origin: spec-deferred 42d31b7c4a2c
@@ -3980,7 +3982,9 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/components/workbench/ModeCanvas.tsx (the DW-416 effect)
 severity: low
 reason: `globals.css`'s narrow block makes `.wb-shell` `overflow: visible` / `height: auto` while a Preview is docked, and its own comment says the canvas row then "resolves to its content instead of scrolling inside `.wb-canvas`'s own `overflow: auto`". At that width the owner's real position lives on the scrolling element, which the new effect never reads, and ModeCanvas's comment states "`.wb-canvas` is the mode canvas's SCROLL CONTAINER" without qualifying the width.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-scroll-restore-clamp-and-timing
+resolution-undo: f4ff31b9d10103cffa554d3315b914a8fee23c87de8b65ba53ef656058c6c3db 2026-09-02 7374617475733a206f70656e
 
 ### DW-524: Both scroll restores run in `useEffect` rather than `useLayoutEffect`, so the surface paints at the top before it is scrolled back.
 origin: spec-deferred 87f90b629902
@@ -3988,7 +3992,9 @@ source_spec: `spec-dw-206-208-410-416-421-workbench-surface-visibility-lifecycle
 location: src/components/workbench/TreePanel.tsx, src/components/workbench/ModeCanvas.tsx
 severity: low
 reason: `TreePanel`'s restore (pre-existing) and `ModeCanvas`'s new one both assign `scrollTop` from a passive effect, which runs after paint. The `hidden` attribute is removed in the commit, the browser paints the surface at 0, and only then is the offset re-applied - a visible jump on every un-withdrawal. `useLayoutEffect` puts the pixels back before paint. jsdom cannot observe the difference, so no suite would catch a regression either way.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-scroll-restore-clamp-and-timing
+resolution-undo: f4ff31b9d10103cffa554d3315b914a8fee23c87de8b65ba53ef656058c6c3db 2026-09-02 7374617475733a206f70656e
 
 ### DW-525: The `dom` vitest project is red at BASELINE — 13 files / 229 tests fail with `TypeError: Cannot read properties of undefined (reading 'clear')` on `window.localStorage`. Unrelated to this change and o
 
@@ -5689,4 +5695,12 @@ location: src/components/workbench/WorkspacePreview.tsx:84
 source_spec: `spec-dw-205-207-split-handle-hit-and-focus.md`
 severity: low
 reason: `WorkspacePreview.tsx:77` renders its own `<aside className="wb-preview">` for Agent-workspace picks, and its header at `:84` carries the class `wb-preview-header` — one letter off `wb-preview-head`, and `grep -n "wb-preview-header" src/app/globals.css` returns nothing. The class is dead: no padding, no `border-bottom`, no flex row, so the `<h2>` and the path sit flush at the column's x=0 while `PreviewColumn`'s equivalent header is a padded, bordered strip. That is pre-existing and independent of this change, but DW-205 widens the mismatch inside that one column from 16px to 24px, because `.wb-preview-body` there IS matched by the clearance rule and the header still is not. The fix is a component change (render `wb-preview-head`, or declare the missing rule), which moves that column's header geometry — outside a stylesheet-only bundle.
+status: open
+
+### DW-719: ModeCanvas picks its scroller once per `hidden` transition, so docking or undocking a Preview, or crossing the stacking breakpoint, leaves the listener on the element that no longer scrolls.
+origin: spec-deferred 081c8fe49767
+location: src/components/workbench/ModeCanvas.tsx (the DW-416/DW-523 effect)
+source_spec: `spec-dw-521-523-524-scroll-restore-clamp-and-timing.md`
+severity: low
+reason: `canvasScroller` answers a layout question but the effect is keyed on `[hidden]` alone, and `globals.css` flips which element scrolls on three conditions that never change `hidden`: docking a Preview below 899px (`:5341-5370`), crossing the breakpoint, and opening the mode sheet, which re-applies the clamp (`:5372-5382`). `previewOpen` flips when the owner picks a tree row (`Workbench.tsx` `onDockPreview={selectRow}`) with the canvas still showing, so at narrow width the listener stays on `.wb-canvas` after the document has become the scroller and records nothing for the rest of the visit -- DW-523's failure shape reached by dock rather than by width. Across runs the single `canvasScrollRef` can also re-apply an offset recorded on one scroller to the other. Closing it needs either a preview/breakpoint input threaded into `ModeCanvas` (it takes neither today) or a re-probe trigger; the spec's contract forbids listening on both surfaces at once, so it is a mechanism decision rather than
 status: open

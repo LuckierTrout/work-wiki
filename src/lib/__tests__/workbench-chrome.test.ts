@@ -23,6 +23,20 @@ function read(file: string): Promise<string> {
   return readFile(path.join(WORKBENCH, file), "utf8");
 }
 
+/**
+ * A component with its prose removed, for the scans that BAN a token.
+ *
+ * A docblock that names the mistake it is arguing against — `localStorage`, the
+ * inverted overflow test — would fail a bare `not.toContain` on its own, which
+ * would ban the explanation rather than the code.
+ */
+function stripComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1")
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "");
+}
+
 function globals(): Promise<string> {
   return readFile(path.join(SRC, "app/globals.css"), "utf8");
 }
@@ -335,6 +349,108 @@ describe("ModeCanvas", () => {
     expect(source).toContain('mode !== "graph"');
     expect(source).toContain('mode !== "lint"');
     expect(source).toContain('mode !== "review"');
+  });
+
+  it("restores the offset on the element that is really scrolling (DW-523)", async () => {
+    // Below the stacking breakpoint with a Preview docked, `globals.css`
+    // releases `.wb-shell`'s clamp and the DOCUMENT scrolls — so a restore that
+    // only ever reads `.wb-canvas` reads 0, writes 0, and hands the owner the
+    // top of the page at that width with every other assertion here green.
+    const source = await read("ModeCanvas.tsx");
+    // The branch has a NAME, so the mounted case can be about the behaviour and
+    // this can be about the wiring.
+    expect(source).toContain("function canvasScroller(canvas: HTMLElement): HTMLElement {");
+    expect(source).toContain("const scroller = canvasScroller(canvas);");
+    // The DOCUMENT is asked whether it overflows, and the canvas is the default:
+    // asking the canvas inverts the failure, because a not-yet-laid-out canvas
+    // (and every canvas in jsdom) reports `scrollHeight === clientHeight === 0`
+    // and would hand the document every restore it should not have.
+    expect(source).toContain("root.scrollHeight > root.clientHeight ? root : canvas");
+    expect(stripComments(source)).not.toContain(
+      "canvas.scrollHeight > canvas.clientHeight",
+    );
+    expect(source).toContain(
+      "document.scrollingElement as HTMLElement | null) ?? document.documentElement",
+    );
+    // Read, written and listened to through the ONE chosen element…
+    expect(source).toContain("scroller.scrollTop = stored;");
+    expect(source).toContain("const landed = scroller.scrollTop;");
+    expect(source).not.toContain("canvas.scrollTop = canvasScrollRef.current;");
+    // …with the listener on the DOCUMENT when that element is not the canvas: a
+    // viewport scroll is dispatched at `Document` and does not bubble up from
+    // `documentElement`, so a listener on the root element never fires.
+    expect(source).toContain(
+      "const target: EventTarget = scroller === canvas ? canvas : document;",
+    );
+    expect(source).toContain('target.addEventListener("scroll", onScroll, { passive: true })');
+    expect(source).toContain('target.removeEventListener("scroll", onScroll)');
+    // Not window as well, and not both surfaces at once. Every BAN below runs
+    // against the STRIPPED copy: a docblock that names the mistake it argues
+    // against would otherwise fail these, which bans the explanation rather
+    // than the code.
+    const code = stripComments(source);
+    expect(code).not.toContain('window.addEventListener("scroll"');
+    // The width itself stays in the stylesheet, which owns the condition. A
+    // word boundary rather than a bare substring, which would also reject
+    // `9000`, `1900` and `900ms`.
+    expect(code).not.toMatch(/\b900\b/);
+    expect(code).not.toContain("max-width");
+    expect(code).not.toContain("matchMedia");
+    // And the docblock no longer states the wrong premise unconditionally.
+    expect(source).not.toContain(
+      "`.wb-canvas` is the mode canvas's SCROLL CONTAINER",
+    );
+    // The keyboard must not undo the restore either. Closing Settings bumps
+    // `canvasFocusNonce`, and that PASSIVE effect focuses `#wb-canvas` — after
+    // every layout effect, so after the restore has already run. On the
+    // document branch a plain `focus()` scrolls the section into view and puts
+    // the page back at the top one frame later. jsdom's `focus()` does not
+    // scroll, so no mounted case in this repo can see it.
+    const shell = await read("Workbench.tsx");
+    expect(shell).toContain(
+      "document.getElementById(CANVAS_ID)?.focus({ preventScroll: true });",
+    );
+    expect(stripComments(shell)).not.toMatch(
+      /getElementById\(CANVAS_ID\)\?\.focus\(\)/,
+    );
+  });
+
+  it("keeps the canvas offset in a ref and puts it back before paint (DW-521, DW-524)", async () => {
+    const source = await read("ModeCanvas.tsx");
+    const code = stripComments(source);
+    // Before the paint, so an un-withdrawn canvas never shows its top first and
+    // then jumps. Neither kind of effect runs during a server render, so this
+    // costs the SSR output nothing.
+    expect(code).toContain("useLayoutEffect(() => {");
+    expect(code.match(/useLayoutEffect\(/g) ?? []).toHaveLength(1);
+    // NEVER RECORDED is not the same as ZERO. On the document branch the
+    // scroller is the PAGE, so a first mount that wrote a 0 into it would
+    // destroy the browser's own scroll restoration or a `#hash` landing — for a
+    // surface that has not gone off screen even once and has nothing to restore.
+    expect(code).toContain("const canvasScrollRef = useRef<number | null>(null);");
+    expect(code).not.toContain("const canvasScrollRef = useRef(0);");
+    expect(code).toMatch(
+      /const stored = canvasScrollRef\.current;\s*if \(stored !== null\) \{\s*scroller\.scrollTop = stored;/,
+    );
+    // The restore's own echo, armed with what the browser LANDED on and spent
+    // by the first scroll event whatever it says — a boolean latch could never
+    // be spent by a restore that changed nothing, and would swallow the owner's
+    // next genuine scroll.
+    expect(code).toContain("const restoreEchoRef = useRef<number | null>(null);");
+    expect(code).toContain("restoreEchoRef.current = scroller.scrollTop;");
+    expect(code).toContain("if (echo !== null && landed === echo) return;");
+    // …and it is cleared at the TOP of the effect, before the `hidden` guard
+    // can return past it: an arm that outlived its effect instance would be
+    // spent by the owner's next genuine scroll instead of by a restore.
+    const body = code.slice(code.indexOf("useLayoutEffect(() => {"));
+    expect(body).toContain("restoreEchoRef.current = null;");
+    expect(body.indexOf("restoreEchoRef.current = null;")).toBeLessThan(
+      body.indexOf("if (!canvas || hidden) return;"),
+    );
+    // Still a REF, and still not keyed per mode: no storage key is invented for
+    // a value that never crosses a reload.
+    expect(code).not.toContain("localStorage");
+    expect(source).toContain("}, [hidden]);");
   });
 });
 

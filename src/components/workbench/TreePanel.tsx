@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -201,6 +202,18 @@ export function TreePanel({
   // the module.
   const band = treeScrollBand(narrow);
 
+  // The restore's own echo, armed by the restore below and spent by the persist
+  // effect under it (DW-521).
+  //
+  // A VALUE, not a boolean, and it disarms on the FIRST scroll event whatever
+  // that event says. A restore that assigns the offset the panel already holds
+  // fires no `scroll` at all, so a boolean latch would still be set when the
+  // owner's next genuine scroll arrived and would swallow it — the tree would
+  // stop remembering its offset with every other assertion green. Comparing
+  // against the landed value makes a stale arm harmless: a real scroll reports
+  // a different number and is recorded.
+  const restoreEchoRef = useRef<number | null>(null);
+
   // Where the owner left this tab. Restored per tab because the two trees are
   // different lengths — one shared offset would drop them somewhere arbitrary on
   // whichever tab they did not leave — and per band for the reason above. Keyed
@@ -210,10 +223,32 @@ export function TreePanel({
   // reached by resizing rather than by clicking. And on `hidden`: a Settings
   // visit withdraws this panel and closing Settings brings it back, which is
   // that same moment reached a third way.
-  useEffect(() => {
+  //
+  // A LAYOUT effect (DW-524). A passive effect runs after the browser has
+  // painted, so a panel the owner is being handed back paints once at the top
+  // and then visibly jumps to the offset — on the very transition whose premise
+  // is that it costs nothing. This one puts the pixels back before that paint.
+  // The persist effect below stays passive: it attaches a listener and has
+  // nothing to put on screen. Neither kind of effect runs during a server
+  // render, so nothing about this component's SSR output changes.
+  useLayoutEffect(() => {
     const panel = bodyRef.current;
+    // Whatever the previous run armed is spent HERE, before the guard, not left
+    // behind by it: a re-key into a layout where the panel is not showing would
+    // otherwise leave a stale echo for the persist effect to collide with when
+    // the panel comes back — the owner's own scroll, dropped for matching a
+    // number no restore actually wrote.
+    restoreEchoRef.current = null;
     if (!panel || !treeBodyShowing(panel, collapsed)) return;
     panel.scrollTop = readStoredTreeScroll()[tab][band];
+    // The value the browser ACTUALLY landed on, armed for the persist effect
+    // below to drop (DW-521). The assignment's own `scroll` event is dispatched
+    // at the next rendering update rather than synchronously (CSSOM View), so
+    // restoring before the listener is attached does not keep that event out of
+    // it — and where the box is shorter than the stored offset, the browser
+    // clamps the assignment and the echo carries the CLAMP. Recorded, it
+    // overwrites the offset the owner is about to grow back into.
+    restoreEchoRef.current = panel.scrollTop;
   }, [tab, band, collapsed, narrow, hidden]);
 
   // …and remembering it. Coalesced through `requestAnimationFrame` because a
@@ -251,6 +286,17 @@ export function TreePanel({
       // Read while the panel is demonstrably showing: a scroll event is proof
       // of that on its own.
       pending = panel.scrollTop;
+      // Drop exactly one event — the restore's own echo (DW-521) — before this
+      // starts recording. The arm is cleared UNCONDITIONALLY, so a restore that
+      // changed nothing (and therefore fires no event at all) leaves an arm the
+      // owner's next real scroll spends harmlessly instead of a latch that
+      // swallows it.
+      const echo = restoreEchoRef.current;
+      restoreEchoRef.current = null;
+      if (echo !== null && pending === echo) {
+        pending = -1;
+        return;
+      }
       if (frame !== 0) return;
       frame = requestAnimationFrame(() => {
         frame = 0;

@@ -730,6 +730,86 @@ describe("a Settings visit gives the tree's scroll memory back too", () => {
     });
     expect(readStoredTreeScroll().knowledge.wide).toBe(240);
   });
+
+  it("does not write the browser's clamp back over the stored offset (DW-521)", async () => {
+    // The restore ASSIGNS an offset; the browser CLAMPS it to whatever the box
+    // can currently reach and dispatches a `scroll` for the assignment at the
+    // next rendering update — after the listener on the next line is attached.
+    // Recorded, that echo replaces the offset the owner left with the clamp,
+    // and the tree quietly forgets where it was every time it comes back
+    // shorter than it left (a canvas still filling in, a tab whose rows have
+    // not rendered yet).
+    writeStoredTreeScroll("knowledge", "wide", 900);
+    await renderShell();
+    const panel = treeBody();
+
+    // A shorter box, stated rather than laid out — jsdom runs no layout, so the
+    // clamp has to be declared the way this file's `scrollTop = 0` stand-ins
+    // declare the browser's own reset. `configurable`, so the setup file's
+    // teardown is not left with a permanent accessor: the node is discarded
+    // with the tree.
+    let value = 0;
+    Object.defineProperty(panel, "scrollTop", {
+      configurable: true,
+      get: () => value,
+      set: (next: number) => {
+        value = Math.min(next, 200);
+      },
+    });
+
+    // Re-key both effects the way a Settings visit does — the panel is
+    // withdrawn and handed back, which is when the restore runs again.
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+
+    // The pixels went where the box allows…
+    expect(panel.scrollTop).toBe(200);
+
+    // …and the echo the browser dispatches for that assignment is DROPPED.
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(readStoredTreeScroll().knowledge.wide).toBe(900);
+
+    // The arm is spent, so the owner's next GENUINE scroll is recorded exactly
+    // as it was before any of this — a suppression that latched would leave the
+    // tree unable to remember its offset for the rest of the session.
+    panel.scrollTop = 150;
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(readStoredTreeScroll().knowledge.wide).toBe(150);
+  });
+
+  it("records the owner's scroll after a restore that changed nothing", async () => {
+    // The case a boolean latch gets wrong. The stored offset is the one the
+    // panel already holds, so the restore's assignment moves nothing and the
+    // browser dispatches NO `scroll` at all — a latch would still be armed when
+    // the owner's next scroll arrived and would swallow it.
+    writeStoredTreeScroll("knowledge", "wide", 120);
+    await renderShell();
+    const panel = treeBody();
+    expect(panel.scrollTop).toBe(120);
+
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_LABEL }));
+    await act(async () => {});
+    // Restored onto the value it already held: no event fires here, exactly as
+    // a browser would behave.
+    expect(panel.scrollTop).toBe(120);
+
+    panel.scrollTop = 260;
+    await act(async () => {
+      panel.dispatchEvent(new Event("scroll"));
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(readStoredTreeScroll().knowledge.wide).toBe(260);
+  });
 });
 
 /**

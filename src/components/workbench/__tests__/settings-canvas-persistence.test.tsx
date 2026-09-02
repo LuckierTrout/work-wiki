@@ -852,6 +852,167 @@ describe.each(OPENERS)(
       await closeSettings();
       expect(section.scrollTop).toBe(80);
     });
+
+    it("keeps the owner's offset when the restore is clamped (DW-521)", async () => {
+      // The restore ASSIGNS an offset; the browser CLAMPS it to what the box
+      // can currently reach and dispatches a `scroll` for that assignment at
+      // the next rendering update — after the listener the effect attaches on
+      // the line below it. Recorded, that echo replaces the offset the owner
+      // left with the clamp, and the canvas forgets where it was every time it
+      // comes back before its content has finished filling in.
+      //
+      // The `TreePanel` case in `workbench-split-wiring.test.tsx` is this one,
+      // one column over. Both halves need executing: the suppression can be
+      // deleted from EITHER component with the other's case still green.
+      await renderShell();
+      const canvas = modeCanvas();
+      expect(canvas).not.toBeNull();
+      const section = canvas as HTMLElement;
+
+      // Where the owner actually left it, recorded the ordinary way.
+      section.scrollTop = 300;
+      await act(async () => {
+        section.dispatchEvent(new Event("scroll"));
+      });
+
+      await open();
+      expect(section.hasAttribute("hidden")).toBe(true);
+
+      // A SHORTER BOX, stated rather than laid out — jsdom runs no layout, so
+      // the clamp has to be declared the way this file's `scrollTop = 0`
+      // stand-ins declare the browser's own reset. It starts at 0, which is
+      // that reset.
+      let value = 0;
+      Object.defineProperty(section, "scrollTop", {
+        configurable: true,
+        get: () => value,
+        set: (next: number) => {
+          value = Math.min(next, 200);
+        },
+      });
+
+      await closeSettings();
+      // The pixels went where the box allows…
+      expect(section.scrollTop).toBe(200);
+      // …and the echo the browser dispatches for that assignment is DROPPED.
+      await act(async () => {
+        section.dispatchEvent(new Event("scroll"));
+      });
+
+      // The content finishes filling in and the box can reach the offset again.
+      await open();
+      Reflect.deleteProperty(section, "scrollTop");
+      section.scrollTop = 0;
+      await closeSettings();
+      // The owner's OWN offset, not the clamp that briefly stood in for it.
+      expect(section.scrollTop).toBe(300);
+
+      // …and the arm is spent, so a genuine scroll after the restore is
+      // recorded exactly as it was before any of this.
+      section.scrollTop = 80;
+      await act(async () => {
+        section.dispatchEvent(new Event("scroll"));
+      });
+      await open();
+      section.scrollTop = 0;
+      await closeSettings();
+      expect(section.scrollTop).toBe(80);
+    });
+
+    it("restores the DOCUMENT's offset where the document is what scrolls (DW-523)", async () => {
+      // `.wb-canvas` is not unconditionally the scroll container. Below the
+      // stacking breakpoint with a Preview docked, `globals.css` releases
+      // `.wb-shell`'s clamp (`height: auto`, `overflow: visible`) so the
+      // Preview's fourth row is reachable at all — and the canvas row then
+      // resolves to its CONTENT rather than scrolling inside its own
+      // `overflow: auto`, which leaves the DOCUMENT as the thing that moves. A
+      // restore that only ever reads and writes the section reads 0, writes 0,
+      // and hands the owner the top of the page at that width, with the DW-416
+      // case above still green.
+      //
+      // The overflow is DECLARED, not laid out — jsdom runs no layout, so
+      // `documentElement` reports `scrollHeight === clientHeight === 0` and the
+      // canvas is the default. Declaring it here is what puts the component on
+      // the other branch, exactly as `setElementRect` declares the shell's box
+      // for the split cases.
+      const root = document.documentElement;
+      Object.defineProperty(root, "scrollHeight", { configurable: true, value: 4000 });
+      Object.defineProperty(root, "clientHeight", { configurable: true, value: 800 });
+      try {
+        // The page is ALREADY somewhere when the shell mounts — the browser's
+        // own scroll restoration, a `#hash` landing, a reload part-way down.
+        root.scrollTop = 555;
+
+        await renderShell();
+        const canvas = modeCanvas();
+        expect(canvas).not.toBeNull();
+        const section = canvas as HTMLElement;
+
+        // THE FIRST MOUNT WRITES NOTHING. Nothing has gone off screen yet, so
+        // there is no offset to restore — and on this branch the scroller is
+        // the PAGE, so a mount that wrote its "starting" 0 into it would throw
+        // the owner to the top of the document and destroy all three of those.
+        // That is why the ref starts `null` rather than 0.
+        expect(root.scrollTop).toBe(555);
+
+        // The section's own `scrollTop` is watched rather than assumed: on this
+        // branch nothing may read or write it, and a restore that quietly kept
+        // touching it would leave every assertion below satisfiable by accident.
+        let canvasWrites = 0;
+        let canvasValue = 0;
+        Object.defineProperty(section, "scrollTop", {
+          configurable: true,
+          get: () => canvasValue,
+          set: (next: number) => {
+            canvasWrites += 1;
+            canvasValue = next;
+          },
+        });
+
+        // The owner scrolls the PAGE. A viewport scroll is dispatched at
+        // `Document` and does not bubble from `documentElement`, which is why
+        // the listener has to be on the document at all.
+        root.scrollTop = 300;
+        await act(async () => {
+          document.dispatchEvent(new Event("scroll"));
+        });
+
+        await open();
+        expect(settingsShowing()).toBe(true);
+        expect(section.hasAttribute("hidden")).toBe(true);
+        // Standing in for the reset a browser performs on the way out.
+        root.scrollTop = 0;
+
+        await closeSettings();
+
+        expect(modeCanvas()).toBe(section);
+        expect(section.hasAttribute("hidden")).toBe(false);
+        expect((document.scrollingElement ?? root).scrollTop).toBe(300);
+        // …and the canvas was never the thing being restored.
+        expect(canvasWrites).toBe(0);
+
+        // THE LISTENER GOES ON RECORDING AFTER THE RESTORE. The restore arms an
+        // echo on this branch too, and an arm that latched — or a listener the
+        // re-run failed to re-attach to the document — would leave the page
+        // stuck at the first offset for the rest of the session, with every
+        // assertion above still green.
+        root.scrollTop = 620;
+        await act(async () => {
+          document.dispatchEvent(new Event("scroll"));
+        });
+        await open();
+        root.scrollTop = 0;
+        await closeSettings();
+        expect((document.scrollingElement ?? root).scrollTop).toBe(620);
+        expect(canvasWrites).toBe(0);
+      } finally {
+        // The declarations are own properties on a node the whole run shares —
+        // left in place they would put every later case on the document branch.
+        Reflect.deleteProperty(root, "scrollHeight");
+        Reflect.deleteProperty(root, "clientHeight");
+        root.scrollTop = 0;
+      }
+    });
   },
 );
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import {
   CHAT_SIDECAR_DOWN_COPY,
@@ -93,6 +93,35 @@ export interface ModeCanvasProps {
  */
 export const CANVAS_ID = "wb-canvas";
 
+/**
+ * Which element is ACTUALLY scrolling behind the mode canvas (DW-523).
+ *
+ * Usually `.wb-canvas` itself — it carries `overflow: auto` and lives inside a
+ * shell that clamps itself to the viewport. But below the stacking breakpoint,
+ * with a Preview docked, `globals.css` releases that clamp (`height: auto`,
+ * `overflow: visible` on `.wb-shell`) so the Preview's fourth row is reachable
+ * at all; the canvas row then resolves to its CONTENT instead of scrolling
+ * inside its own overflow, and the DOCUMENT is what moves. A restore that reads
+ * and writes `.wb-canvas` there reads 0, writes 0, and hands the owner the top
+ * of the page every time. The stylesheet owns that condition and the width that
+ * triggers it — nothing here spells either.
+ *
+ * THE DOCUMENT IS ASKED, AND THE CANVAS IS THE DEFAULT. Asking the canvas
+ * instead (`canvas.scrollHeight > canvas.clientHeight`) inverts the failure:
+ * both report 0 with no layout — in jsdom, and on any not-yet-laid-out first
+ * run — so the document would take every restore it should not have. The
+ * document overflows only where the shell's clamp is off, which is exactly the
+ * case this exists for.
+ *
+ * `document.scrollingElement` is the standard handle on the viewport's scroll
+ * box; `documentElement` is the fallback for the environments that return null.
+ */
+function canvasScroller(canvas: HTMLElement): HTMLElement {
+  const root =
+    (document.scrollingElement as HTMLElement | null) ?? document.documentElement;
+  return root.scrollHeight > root.clientHeight ? root : canvas;
+}
+
 export function ModeCanvas({
   mode,
   sidecar,
@@ -115,42 +144,83 @@ export function ModeCanvas({
   // two can never disagree.
   const wikiShowing = wikiActive && !hidden;
 
-  // Where the canvas was scrolled to before it went off screen (DW-416).
+  // Where the surface was scrolled to before it went off screen (DW-416).
   //
-  // `.wb-canvas` is the mode canvas's SCROLL CONTAINER (`overflow: auto` in
-  // `globals.css`), and `display: none` discards a scroll box: a Settings visit
-  // — whose whole premise under DW-373 is that it costs nothing, the section
-  // stays MOUNTED — still drops the owner at the top of a long canvas on the way
-  // back. This is `TreePanel`'s withdrawal-keyed restore, one column over.
+  // `display: none` discards a scroll box: a Settings visit — whose whole
+  // premise under DW-373 is that it costs nothing, the section stays MOUNTED —
+  // still drops the owner at the top of a long canvas on the way back. This is
+  // `TreePanel`'s withdrawal-keyed restore, one column over.
+  //
+  // WHICH element holds that offset is a layout question, not a constant, and
+  // {@link canvasScroller} is where it is answered: `.wb-canvas` carries
+  // `overflow: auto` and is the scroll container for the layout the shell
+  // clamps, but the stylesheet releases that clamp for a docked Preview below
+  // the stacking breakpoint and the DOCUMENT scrolls there instead (DW-523).
+  // One run of this effect picks one scroller and reads, writes and listens on
+  // that one — never on both.
   //
   // A REF, not storage. The section survives the visit mounted, so the offset
   // never has to cross a reload and there is no FR-8 claim to make here: no new
-  // localStorage key, and nothing keyed per MODE either — the section is one
+  // localStorage key, and nothing keyed per MODE either — the surface is one
   // scroll container whichever mode is rendering inside it, exactly as the
   // browser treats it.
   const canvasRef = useRef<HTMLElement>(null);
-  const canvasScrollRef = useRef(0);
-  useEffect(() => {
+  // `null` until something has actually been recorded, which is NOT the same as
+  // 0. On the document branch the scroller is the PAGE, and a first mount that
+  // wrote a 0 into it would undo the browser's own scroll restoration, a
+  // `#hash` landing, or whatever position the document was already at before
+  // hydration — for a surface that has not gone off screen even once and so has
+  // nothing to restore. A number here means "the owner left it here"; `null`
+  // means "leave the page where you found it".
+  const canvasScrollRef = useRef<number | null>(null);
+  // The restore's own echo, armed with the value the browser landed on and
+  // spent by the first `scroll` event whatever that event says (DW-521). A
+  // boolean would be a latch with no way to spend it: a restore that assigns
+  // the offset the surface already holds fires no `scroll` at all, so the arm
+  // would still be set when the owner's next genuine scroll arrived and would
+  // swallow it.
+  const restoreEchoRef = useRef<number | null>(null);
+  // A LAYOUT effect (DW-524): a passive one runs after the browser has painted,
+  // so an un-withdrawn canvas paints at the top and then visibly jumps to the
+  // offset. On the server this simply does not run — an effect of either kind
+  // only runs in the browser — so nothing about the server render changes.
+  useLayoutEffect(() => {
     const canvas = canvasRef.current;
+    // Whatever the previous run armed is spent HERE, before the guard, not left
+    // behind by it: an early return would otherwise leave a stale echo that the
+    // owner's next genuine scroll could collide with — the same value, arrived
+    // at honestly, silently dropped.
+    restoreEchoRef.current = null;
     // Keyed on `hidden` ALONE: that prop IS the withdrawal, and coming back is
     // the moment the browser has just reset `scrollTop` to 0.
     if (!canvas || hidden) return;
-    // The restore runs BEFORE the listener is attached so the position is
-    // established before anything can observe it. It does NOT keep the
-    // assignment's own `scroll` out of the listener: that event is dispatched at
-    // the next rendering update, not synchronously (CSSOM View), so the listener
-    // installed on the next line still receives it and re-records the value just
-    // re-applied — a no-op, EXCEPT where the browser clamped the assignment
-    // because the canvas has not reached its previous content height yet. That
-    // clamp-echo is the one residual here, and it is the same shape `TreePanel`
-    // carries within a band: keying removes the cross-surface route, not the
-    // clamp.
-    canvas.scrollTop = canvasScrollRef.current;
+    const scroller = canvasScroller(canvas);
+    // A viewport scroll is dispatched at `Document` and does NOT bubble from
+    // `documentElement`, so listening on the element that scrolls only works
+    // while that element is the canvas.
+    const target: EventTarget = scroller === canvas ? canvas : document;
+    // The restore runs BEFORE the listener is attached, and that is still not
+    // enough on its own: the assignment's own `scroll` is dispatched at the
+    // next rendering update rather than synchronously (CSSOM View), so the
+    // listener installed below receives it anyway and re-records the value just
+    // re-applied — a no-op, EXCEPT where the browser CLAMPED the assignment
+    // because the surface has not reached its previous content height yet.
+    // Arming the echo with what the browser actually landed on is what keeps
+    // that clamp out of the ref.
+    const stored = canvasScrollRef.current;
+    if (stored !== null) {
+      scroller.scrollTop = stored;
+      restoreEchoRef.current = scroller.scrollTop;
+    }
     const onScroll = () => {
-      canvasScrollRef.current = canvas.scrollTop;
+      const landed = scroller.scrollTop;
+      const echo = restoreEchoRef.current;
+      restoreEchoRef.current = null;
+      if (echo !== null && landed === echo) return;
+      canvasScrollRef.current = landed;
     };
-    canvas.addEventListener("scroll", onScroll, { passive: true });
-    return () => canvas.removeEventListener("scroll", onScroll);
+    target.addEventListener("scroll", onScroll, { passive: true });
+    return () => target.removeEventListener("scroll", onScroll);
   }, [hidden]);
 
   return (

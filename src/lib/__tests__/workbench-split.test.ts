@@ -1747,6 +1747,65 @@ describe("TreePanel remembers where each tree was left", () => {
     expect(source).toContain('addEventListener("scroll", onScroll, { passive: true })');
     expect(source).toContain('removeEventListener("scroll", onScroll)');
   });
+
+  it("drops the restore's own echo instead of recording the clamp (DW-521)", async () => {
+    const source = await component("TreePanel.tsx");
+    const code = stripComments(source);
+    // The arm is the value the browser ACTUALLY landed on, read back off the
+    // element after the assignment — not the stored offset, which is the number
+    // the clamp differs from and would therefore never match the echo.
+    expect(code).toContain("restoreEchoRef.current = panel.scrollTop;");
+    expect(code).not.toContain(
+      "restoreEchoRef.current = readStoredTreeScroll()[tab][band]",
+    );
+    // A VALUE, not a boolean latch: `useRef<number | null>(null)`.
+    expect(code).toContain("const restoreEchoRef = useRef<number | null>(null);");
+    expect(code).not.toMatch(/useRef\(false\)/);
+    // Spent inside the persist handler, AFTER the capture the DW-208 case pins,
+    // and cleared UNCONDITIONALLY — a restore that changes nothing fires no
+    // `scroll` at all, so an arm that only cleared on a match would still be
+    // set when the owner's next genuine scroll arrived and would swallow it.
+    const onScroll = code.slice(code.indexOf("const onScroll = () => {"));
+    expect(onScroll.indexOf("pending = panel.scrollTop;")).toBeLessThan(
+      onScroll.indexOf("const echo = restoreEchoRef.current;"),
+    );
+    expect(onScroll).toContain("restoreEchoRef.current = null;");
+    expect(onScroll.indexOf("restoreEchoRef.current = null;")).toBeLessThan(
+      onScroll.indexOf("if (echo !== null && pending === echo)"),
+    );
+    // …and the matched echo queues no frame and leaves nothing for the DW-208
+    // cleanup to flush.
+    expect(onScroll).toMatch(
+      /if \(echo !== null && pending === echo\) \{\s*pending = -1;\s*return;\s*\}/,
+    );
+    // The arm is also cleared at the TOP of the RESTORE effect, ahead of the
+    // showing guard: a re-key into a layout where the panel is not showing
+    // returns without arming anything, and an arm left over from the previous
+    // run would then be spent by the owner's next genuine scroll instead — that
+    // offset dropped for matching a number no restore actually wrote.
+    const restore = code.slice(code.indexOf("useLayoutEffect(() => {"));
+    expect(restore.indexOf("restoreEchoRef.current = null;")).toBeLessThan(
+      restore.indexOf("if (!panel || !treeBodyShowing(panel, collapsed)) return;"),
+    );
+  });
+
+  it("restores the offset before the paint, not after it (DW-524)", async () => {
+    const source = await component("TreePanel.tsx");
+    const code = stripComments(source);
+    // The RESTORE is the effect that has to beat the paint: a passive effect
+    // runs after the browser has painted, so a panel handed back by a Settings
+    // visit paints at the top and then visibly jumps to the offset.
+    expect(code).toMatch(
+      /useLayoutEffect\(\(\) => \{[\s\S]*?panel\.scrollTop = readStoredTreeScroll\(\)\[tab\]\[band\]/,
+    );
+    // Exactly one: the persist side attaches a listener and has nothing to put
+    // on screen, so it stays passive.
+    expect(code.match(/useLayoutEffect\(/g) ?? []).toHaveLength(1);
+    // And the persist effect is still an ordinary one — three `useEffect` calls
+    // remain here (the breakpoint listener and the persist, plus none for the
+    // restore), so the switch moved exactly one of them.
+    expect(code.match(/\buseEffect\(/g) ?? []).toHaveLength(2);
+  });
 });
 
 describe("globals.css positions the divider from the grid's own properties", () => {
