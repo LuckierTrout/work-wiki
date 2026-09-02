@@ -1702,7 +1702,9 @@ source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
 location: src/lib/wiki.ts:126
 severity: low
 reason: src/lib/wiki.ts:130 does `pageIdx[slug]` and :136 does `map[slug] ?? tenantForOwner(undefined)`, both over plain object literals — so a page titled "Constructor" would short-circuit the fast path on Object.prototype.constructor, or return that function as a tenant. Currently inert: the function's only callers are in tenant-paths.test.ts, no production path. The structural fix is to build these maps with a null prototype at their construction sites (buildSlugTenantMap, /api/wiki/routes, the log page's literal) rather than guarding each lookup. Byte-identical to the pre-story idiom; this story hardened only the link path.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-inherited-prototype-indexing
+resolution-undo: e1b250c9774399a4fd7170de3d0862fe2b5f07daf4488461685aefe4992c8165 2026-09-02 7374617475733a206f70656e
 
 ### DW-233: The machine surfaces GET /api/wiki/[slug] and /api/raw/[slug] still hard-404 a merged-away slug, so agents and MCP clients now get a different answer than the UI for the same bookmark.
 origin: spec-deferred f09cb6af046e
@@ -5562,7 +5564,9 @@ location: src/lib/document-extract.ts:595
 source_spec: `spec-dw-365-571-snapshot-coverage-and-archive-lookup.md`
 severity: medium
 reason: `src/lib/document-extract.ts:595` filters slides with `Boolean(files[slide.path])` and `:602` reads `const bytes = files[path]`, where `path` comes from `relationshipMap` -> `resolveArchiveTarget` over an uploaded archive's `Target` attribute. A `ppt/_rels/presentation.xml.rels` entry of `Target="../constructor"` resolves to the bare key `constructor`, which the plain index answers with the inherited `Object` constructor function: the `Boolean(...)` filter keeps the bogus slide, `ordered.length` is non-zero so it OVERRIDES the correct `fallbackSlides`, and `new TextDecoder().decode(fn)` throws `TypeError: The "list" argument must be an instance of SharedArrayBuffer, ArrayBuffer or ArrayBufferView`. Three independent reviewers built the fixture and reproduced it. Because it is not a `ClientInputError`, `src/app/api/ingest/document/route.ts` answers 500 rather than the 400 the extractor's contract promises, and the readable `ppt/slides/slide1.xml` in the same archive is never extracted.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-inherited-prototype-indexing
+resolution-undo: e1b250c9774399a4fd7170de3d0862fe2b5f07daf4488461685aefe4992c8165 2026-09-02 7374617475733a206f70656e
 
 ### DW-696: A concurrently in-review spec lists `src/cli.ts:366` — this bundle's create-conflict guard — in its Never clause as a "pure display read", so a later sweep acting on that clause could revert the guard
 origin: spec-deferred 8d301557101f
@@ -5786,4 +5790,12 @@ location: src/hooks/useSlugTenants.ts:165
 source_spec: `spec-dw-234-262-slug-tenant-map-lifecycle.md`
 severity: low
 reason: DW-234 is closed by propagation: `loadSlugTenants` broadcasts a successful cache fill to every mounted hook. Verified by grep over src/, e2e/ and workers/ that nothing outside `useSlugTenants` calls `loadSlugTenants()`, so "the next cold caller" is always a later MOUNT. On a surface that goes idle after the outage — a Workbench sitting still, no navigation, no panel opening — no later mount occurs, nothing re-fetches, and that component stays on the wrong-handle 308 hop until reload. Closing it needs a self-initiated refresh (retry-after-degraded, or a visibility/focus signal), which this spec's Never clause rules out on the authority of DW-234's own reason field ("the next cold caller re-fetches").
+status: open
+
+### DW-724: extractPptx accepts any archive entry as a slide, so a crafted presentation rel aimed at a real non-slide part (an image, docProps) passes the existence filter, makes `ordered` non-empty and silently
+origin: spec-deferred d2fdde158ba7
+location: src/lib/document-extract.ts:605
+source_spec: `spec-dw-232-695-inherited-prototype-indexing.md`
+severity: low
+reason: src/lib/document-extract.ts:605 filters the presentation-order list with `Boolean(files[slide.path])` only — it never checks that the resolved path is a slide part. `resolveArchiveTarget("ppt/presentation.xml", "media/photo.jpg")` yields `ppt/media/photo.jpg`, a key the archive really holds, so the bogus entry survives, `ordered.length` is non-zero and it overrides `fallbackSlides`. The deck's readable `ppt/slides/slideN.xml` parts are then never extracted and the image bytes are decoded as slide XML, producing an empty section instead. Reachable through the live ZIP door (`extractDocumentTextAsync`'s zip branch), and distinct from the inherited-prototype defect this bundle closed: it is path confusion, not prototype indexing, and a null-prototype archive does not address it. A `/^ppt\/slides\/slide\d+\.xml$/i` test on `slide.path` alongside the existence check is the shape of the fix.
 status: open

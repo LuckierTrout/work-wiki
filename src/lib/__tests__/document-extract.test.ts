@@ -6,9 +6,10 @@ import {
   extractDocumentTextAsync,
   parseCsv,
 } from "@/lib/document-extract";
+import { ClientInputError } from "@/lib/errors";
 
-function office(filename: string, files: Record<string, string | Uint8Array>) {
-  const zipped = zipSync(
+function officeBytes(files: Record<string, string | Uint8Array>): Uint8Array {
+  return zipSync(
     Object.fromEntries(
       Object.entries(files).map(([name, value]) => [
         name,
@@ -16,10 +17,60 @@ function office(filename: string, files: Record<string, string | Uint8Array>) {
       ]),
     ),
   );
+}
+
+function office(filename: string, files: Record<string, string | Uint8Array>) {
   return extractDocumentText({
-    bytes: Uint8Array.from(zipped).buffer,
+    bytes: Uint8Array.from(officeBytes(files)).buffer,
     filename,
   });
+}
+
+/**
+ * `../<member>` from `ppt/presentation.xml` is boiled down by
+ * `resolveArchiveTarget` to the bare key `<member>`. Against a plain-object
+ * archive `constructor` / `toString` / `valueOf` answer with an inherited
+ * FUNCTION and `__proto__` with `Object.prototype` itself (an inherited
+ * ACCESSOR, so an object rather than a function) — every one of them a truthy
+ * non-entry. The bogus slides then survived `Boolean(files[slide.path])`,
+ * displaced the deck's real slides, and `TextDecoder.decode` threw an uncaught
+ * `TypeError` instead of the promised `ClientInputError` (DW-695).
+ */
+const PROTOTYPE_MEMBERS = ["constructor", "__proto__", "toString", "valueOf"] as const;
+
+/**
+ * A deck whose presentation order aims one `p:sldId` at each
+ * {@link PROTOTYPE_MEMBERS} key. `realSlide` prepends a genuine
+ * `slides/slide1.xml` relationship AND its part, so the ordered list is
+ * non-empty once the crafted entries are dropped — the case where a bogus
+ * slide would otherwise override the real one rather than merely emptying the
+ * list.
+ */
+function craftedDeck(options: { realSlide?: string } = {}): Record<string, string> {
+  const targets = [
+    ...(options.realSlide ? ["slides/slide1.xml"] : []),
+    ...PROTOTYPE_MEMBERS.map((member) => `../${member}`),
+  ];
+  const id = (index: number) => `rId${index + 1}`;
+  return {
+    "ppt/presentation.xml": `<p:presentation><p:sldIdLst>${targets
+      .map((_, index) => `<p:sldId r:id="${id(index)}"/>`)
+      .join("")}</p:sldIdLst></p:presentation>`,
+    "ppt/_rels/presentation.xml.rels": `<Relationships>${targets
+      .map((target, index) => `<Relationship Id="${id(index)}" Target="${target}"/>`)
+      .join("")}</Relationships>`,
+    ...(options.realSlide
+      ? {
+          "ppt/slides/slide1.xml":
+            `<p:sld><a:p><a:r><a:t>${options.realSlide}</a:t></a:r></a:p></p:sld>`,
+        }
+      : {}),
+  };
+}
+
+/** How many `## Slide N` sections the extractor actually emitted. */
+function slideHeadings(text: string): string[] {
+  return text.match(/^## Slide \d+$/gm) ?? [];
 }
 
 describe("document extraction", () => {
@@ -232,6 +283,83 @@ describe("document extraction", () => {
     expect(result.text).toContain("- Revenue chart (chart.png)");
     expect(result.text).not.toContain("logo.constructor");
     expect(result.text).not.toContain("Company logo");
+  });
+
+  it("keeps the readable fallback slides when every presentation rel resolves to an Object.prototype key", () => {
+    const result = office("crafted.pptx", {
+      ...craftedDeck(),
+      "ppt/slides/slide1.xml":
+        "<p:sld><a:p><a:r><a:t>Readable slide</a:t></a:r></a:p></p:sld>",
+    });
+    // The ordered list resolves to nothing, so the numbered fallback survives —
+    // and it is the ONLY slide: a surviving crafted entry would emit a second
+    // `## Slide` section (or throw before either was written).
+    expect(result.text).toContain("Readable slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+  });
+
+  it("drops only the crafted slides when the presentation order mixes real and Object.prototype targets", () => {
+    const result = office("mixed.pptx", craftedDeck({ realSlide: "Real slide" }));
+    // The case the ledger actually names: `ordered` is NON-empty here, so it
+    // REPLACES the fallback list rather than leaving it alone. The crafted
+    // entries have to be filtered out of it, leaving exactly one slide's worth
+    // of content under the real slide's own number.
+    expect(result.text).toContain("Real slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+    for (const member of PROTOTYPE_MEMBERS) {
+      expect(result.text).not.toContain(member);
+    }
+  });
+
+  it("throws ClientInputError, not TypeError, when a crafted PPTX yields no readable slide", () => {
+    let thrown: unknown;
+    try {
+      office("crafted-empty.pptx", craftedDeck());
+    } catch (error) {
+      thrown = error;
+    }
+    // The 400 door, not the 500 one: a `TypeError` here is answered 500 by
+    // `/api/ingest/document`.
+    expect(thrown).toBeInstanceOf(ClientInputError);
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/no slides/i);
+  });
+
+  it("extracts a crafted PPTX nested inside a ZIP without a TypeError escaping", async () => {
+    // `zip` is not an extract format, so this is the live Worker-side route
+    // into `extractPptx`: a bare `.pptx` at the HTTP doors is diverted to the
+    // sidecar, but a ZIP wrapping one keeps the inline path.
+    const zipped = zipSync({
+      "decks/crafted.pptx": officeBytes(craftedDeck({ realSlide: "Nested readable slide" })),
+    });
+    const archive = await extractDocumentTextAsync({
+      bytes: Uint8Array.from(zipped).buffer,
+      filename: "decks.zip",
+    });
+    expect(archive.text).toContain("## File: decks/crafted.pptx");
+    expect(archive.text).toContain("Nested readable slide");
+    expect(slideHeadings(archive.text)).toEqual(["## Slide 1"]);
+  });
+
+  it("rejects a ZIP whose nested crafted deck has no readable slide with ClientInputError", async () => {
+    const zipped = zipSync({ "decks/crafted.pptx": officeBytes(craftedDeck()) });
+    let thrown: unknown;
+    try {
+      await extractDocumentTextAsync({
+        bytes: Uint8Array.from(zipped).buffer,
+        filename: "decks.zip",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    // The ZIP branch swallows only the "no extractable text layer"
+    // `ClientInputError` and rethrows the rest, so this is the value that
+    // reaches the door — and `src/app/api/ingest/document/route.ts:193-198`
+    // maps exactly it to 400. A `TypeError` here is the 500 the ledger
+    // reported, pinned without an HTTP harness.
+    expect(thrown).toBeInstanceOf(ClientInputError);
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/no slides/i);
   });
 
   it("extracts XLSX shared strings, inline strings, values, and sheet names", () => {

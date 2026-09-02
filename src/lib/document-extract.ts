@@ -412,7 +412,21 @@ function openOfficeArchive(
   let imageTotal = 0;
   let imageCount = 0;
   try {
-    return unzipSync(input, {
+    // Null prototype, not the plain object `unzipSync` hands back: entry names
+    // are attacker-supplied and so are the keys read out of this map — a
+    // relationship `Target` inside the uploaded archive can boil down to a bare
+    // `constructor` / `valueOf` / `toString` (see `resolveArchiveTarget`). A
+    // plain index then answers with the inherited `Object.prototype` function
+    // instead of `undefined`, which is how a crafted deck kept a bogus slide
+    // past `extractPptx`'s `Boolean(files[slide.path])` filter and threw an
+    // uncaught `TypeError` out of `TextDecoder.decode` (DW-695). Fixing it at
+    // the construction site covers every read of the OOXML archive this
+    // function returns — docx/pptx/xlsx alike, including reads added later.
+    // The ODT/ODS/ODP and EPUB paths build their own plain-prototype maps from
+    // `safeArchiveEntries`; those are read by literal key (`content.xml`,
+    // `meta.xml`) or by walking `Object.entries` (`extractEpub`), never
+    // indexed by a content-derived path, so the hazard does not reach them.
+    const entries = unzipSync(input, {
       filter(file) {
         const kind = archiveEntryKind(format, file.name);
         if (!kind) return false;
@@ -438,6 +452,7 @@ function openOfficeArchive(
         return true;
       },
     });
+    return Object.assign(Object.create(null) as Record<string, Uint8Array>, entries);
   } catch (error) {
     if (error instanceof ClientInputError) throw error;
     throw new ClientInputError(`The .${format} file could not be opened.`);
@@ -465,6 +480,13 @@ function assetFromArchive(
   // one combined `!bytes || !mediaType` test, so the safety lives entirely in
   // that other function's rejection rule. Looking the key up on the object's
   // own properties removes that dependency, and matches the line beneath it.
+  //
+  // `openOfficeArchive` has returned a NULL-PROTOTYPE map since DW-695, so on
+  // that path the inherited member is already unreachable and this call can no
+  // longer answer differently from a bare index. It stays as defence in depth
+  // — the guard is per-lookup and holds for any caller that hands in a plain
+  // object — which is why the two idioms sit side by side rather than one
+  // contradicting the other.
   const bytes = ownLookup(files, target);
   const mediaType = mediaTypeFor(target);
   if (!bytes || !mediaType) return null;

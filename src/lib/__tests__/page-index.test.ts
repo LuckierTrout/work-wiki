@@ -155,6 +155,27 @@ describe("page-index", () => {
     expect(beta?.confidence).toBe(0.5);
   });
 
+  it("returns a null-prototype index so a prototype-named slug reads as a miss", async () => {
+    await createPage("a", "owner: alice", "Alpha");
+    await rebuildPageIndex();
+
+    const idx = await getPageIndex();
+    expect(idx).not.toBeNull();
+    // Real entries still resolve...
+    expect(idx!["a"]?.owner).toBe("alice");
+    // ...while a slug naming an `Object.prototype` member reads `undefined`
+    // rather than an inherited function. Callers (`tenantForSlug`,
+    // `wikiPageExists`, `readWikiPage`) index this map directly, so the miss
+    // has to come from the map itself (DW-232).
+    expect(Object.getPrototypeOf(idx!)).toBeNull();
+    for (const key of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect((idx as Record<string, unknown>)[key]).toBeUndefined();
+    }
+    // The map still serializes and enumerates exactly as before.
+    expect(Object.keys(idx!)).toEqual(["a"]);
+    expect(JSON.parse(JSON.stringify(idx))).toEqual({ a: idx!["a"] });
+  });
+
   it("falls back to the scan when the index is unseeded (identical result)", async () => {
     await createPage("a", "owner: alice\ntags: [x]", "Alpha");
     // No rebuild → index absent → listWikiPages must equal the scan.

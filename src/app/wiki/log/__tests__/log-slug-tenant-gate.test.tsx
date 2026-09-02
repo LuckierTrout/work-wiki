@@ -98,6 +98,18 @@ describe("activity log slug→tenant map", () => {
     expect(map).toEqual({ "public-thing": "alice" });
   });
 
+  it("builds the map with a null prototype, so a prototype-named slug reads as a miss", async () => {
+    const map = renderedSlugTenants(await LogPage());
+    // The DW-232 construction-site fix, asserted where it is observable: of the
+    // three slug→tenant construction sites, this is the only one whose map a
+    // test can hold (the API route's is visible only as JSON, by which point
+    // the prototype is gone).
+    expect(Object.getPrototypeOf(map)).toBeNull();
+    for (const member of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect((map as Record<string, unknown> | undefined)?.[member]).toBeUndefined();
+    }
+  });
+
   it("still redacts the hidden page's line from the prose", async () => {
     render(await LogPage());
     expect(screen.queryByRole("link", { name: "Secret Thing" })).toBeNull();

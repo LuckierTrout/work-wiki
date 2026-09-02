@@ -13,7 +13,14 @@ import { getPrincipal } from "@/lib/auth";
  */
 export async function GET() {
   const pages = await listReadableWikiPages(await getPrincipal());
-  const map: Record<string, string> = {};
+  // Null prototype, the same construction-site idiom as the other slug→tenant
+  // maps (DW-232): the keys are content-derived slugs, so the literal that
+  // builds them is where the guard belongs. Nothing indexes this map here — it
+  // is written once and serialized — and the client rebuilds a fresh object
+  // from `r.json()` (`useSlugTenants`), where `resolveSlugPath`'s own-property
+  // guard is what actually protects the lookup. `NextResponse.json` walks own
+  // enumerable properties, so the response body is byte-identical.
+  const map: Record<string, string> = Object.create(null);
   for (const p of pages) map[p.slug] = ownerToTenant(p.owner);
   return NextResponse.json(map);
 }

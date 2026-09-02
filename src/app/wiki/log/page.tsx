@@ -34,7 +34,14 @@ export default async function LogPage() {
   //     of the renderer, not of this page — the moment it or any child of it
   //     becomes a client component, this value is serialized into the payload.
   //     The gate is what makes that change safe instead of a leak.
-  const slugTenants: SlugTenantMap = {};
+  //
+  // Null prototype, the same construction-site idiom as the other slug→tenant
+  // maps (DW-232): the keys are content-derived slugs, so the literal that
+  // builds them is where the guard belongs. This map is read only through
+  // `resolveSlugPath`, which already guards its own lookup — the prototype is
+  // consistency across the three construction sites, not the thing standing
+  // between a crafted slug and an inherited member.
+  const slugTenants: SlugTenantMap = Object.create(null);
   if (raw) {
     const principal = await getPrincipal();
     // ONE listing, ONE `canReadEntry` pass, partitioned — the two halves are

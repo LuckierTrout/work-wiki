@@ -113,7 +113,11 @@ export function tenantForOwner(owner: string | undefined | null): string {
  * tenant. Cheap (tens of pages); computed once per server render.
  */
 export async function buildSlugTenantMap(): Promise<Record<string, string>> {
-  const map: Record<string, string> = {};
+  // Null prototype: keys are content-derived slugs and so are the lookups, so a
+  // plain literal answers `map["constructor"]` with an inherited function
+  // instead of `undefined`, defeating the `?? tenantForOwner(undefined)`
+  // fallback below (DW-232). `JSON.stringify`, spread and `in` are unaffected.
+  const map: Record<string, string> = Object.create(null);
   for (const p of await listWikiPages()) map[p.slug] = tenantForOwner(p.owner);
   return map;
 }

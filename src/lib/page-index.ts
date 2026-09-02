@@ -152,7 +152,14 @@ export async function getPageIndex(
     // malformed entry can at worst mis-enrich, never drop or leak a page; the
     // daily rebuild overwrites it.
     if (!idx || typeof idx !== "object") return null;
-    return idx;
+    // Null prototype: callers index this map with a page slug
+    // (`tenantForSlug`, `wikiPageExists`, `readWikiPage`), and a page whose
+    // title slugifies to `constructor` / `valueOf` / `toString` would otherwise
+    // read back the inherited `Object.prototype` member — a truthy non-entry
+    // that suppresses the miss path and can yield a function-derived tenant
+    // (DW-232). Every consumer only indexes / `in` / `delete` / `JSON.stringify`
+    // this map, all of which are prototype-agnostic.
+    return Object.assign(Object.create(null), idx) as PageMetaIndex;
   } catch (err) {
     if (options?.strict) throw err;
     logger.warn("page-index", "read failed; falling back to scan", err);
@@ -189,7 +196,9 @@ export async function rebuildPageIndex(): Promise<number> {
   const { scanWikiPagesUncached } = await import("./wiki");
   return withDurableLock(PAGE_INDEX_LOCK, async () => {
     const all = await scanWikiPagesUncached();
-    const map: PageMetaIndex = {};
+    // Null prototype, matching the read side above: the keys are
+    // content-derived slugs (DW-232).
+    const map: PageMetaIndex = Object.create(null);
     for (const entry of all) map[entry.slug] = entry;
     await getStorage().writeFile(PAGE_INDEX_PATH, JSON.stringify(map));
     await getStorage().putIndex(PAGE_INDEX_KEY, map);
