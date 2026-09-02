@@ -36,6 +36,29 @@ export interface EmbeddingSettingsProps {
    */
   modelInEffect: string | null;
   /**
+   * Which embedding provider this deployment ACTUALLY embeds through, as
+   * `GET /api/settings` resolved it (DW-616).
+   *
+   * Read for ONE purpose: gating the Cloudflare Workers AI dimensions sentence
+   * below, which is a claim about the deployment's INFRASTRUCTURE. The model id
+   * alone does not carry it — an `EMBEDDING_MODEL=@cf/baai/bge-m3` pin on an
+   * OpenAI deployment is reported truthfully in the locked box while the
+   * resolver substitutes, and the sentence used to fire there and describe an
+   * index that does not exist.
+   *
+   * SERVED, never derived here. `resolveEmbeddingProvider` auto-detects Workers
+   * AI from the runtime binding with neither `EMBEDDING_PROVIDER` nor the stored
+   * provider set — the normal shape of the deployment the sentence IS true of —
+   * so an env→store ladder walked in the browser would silence the sentence
+   * exactly where it belongs.
+   *
+   * Optional, and absent means "nobody answered the question", which makes NO
+   * Workers AI claim rather than assuming one: a statement about infrastructure
+   * is only worth rendering when something actually resolved it. Every caller
+   * that does not pass it renders byte-identically to before this prop existed.
+   */
+  providerInEffect?: string | null;
+  /**
    * True when the model above is SET but something else is embedding — the
    * embedding provider cannot serve it, so the resolver substitutes its own
    * default. False renders exactly what this component rendered before the
@@ -146,6 +169,7 @@ export function EmbeddingSettings({
   effectiveModel,
   modelSource,
   modelInEffect,
+  providerInEffect = null,
   overridden,
   vectorNotice,
   rebuilding,
@@ -339,9 +363,20 @@ export function EmbeddingSettings({
             // replaced: it answers a different question — what an index built
             // here has to match — and it was the only sentence this branch had,
             // so dropping it would trade one gap for another.
+            //
+            // It is gated on the PROVIDER as well as on the model id (DW-616).
+            // The id alone is what is SET, and `EMBEDDING_MODEL=@cf/baai/bge-m3`
+            // can be pinned on a deployment that embeds through OpenAI — the
+            // resolver substitutes, the override note above already says so, and
+            // this sentence was still claiming a Vectorize index that is not
+            // there. `providerInEffect` is what the resolver ANSWERED, so both
+            // halves of the condition have to hold. Absent (`null`) makes no
+            // claim: the model term is deliberately unchanged, so the inverse
+            // gap — Workers AI in effect under a non-Workers pin — stays as it
+            // was.
             "The environment sets EMBEDDING_MODEL, and that wins at runtime. " +
             "This box is fixed until that variable is unset." +
-            (effectiveModel === "@cf/baai/bge-m3"
+            (providerInEffect === "workers-ai" && effectiveModel === "@cf/baai/bge-m3"
               ? " This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index."
               : "")
           : "Leave empty to use the embedding provider default."}

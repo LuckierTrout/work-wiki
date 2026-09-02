@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { ProviderInfo } from "./types";
-import { getEmbeddingModelName, hasEmbeddingSupport } from "./embeddings";
+import { getEmbeddingResolution, hasEmbeddingSupport } from "./embeddings";
 import { isEnoent } from "./errors";
 import { VALID_PROVIDERS, DEFAULT_MODELS, isEmbeddingProvider } from "./providers";
 import type { EmbeddingProvider, ProviderValue } from "./providers";
@@ -201,7 +201,7 @@ export interface EffectiveSettings {
   embeddingModelSource: SettingSource;
   /**
    * The model this deployment ACTUALLY embeds with, resolved through
-   * {@link getEmbeddingModelName} — the same door `embedText` goes through
+   * {@link getEmbeddingResolution} — the same door `embedText` goes through
    * (DW-274). Null when nothing embeds, which is exactly when
    * `embeddingSupport` is false.
    *
@@ -212,6 +212,25 @@ export interface EffectiveSettings {
    * resolvers derive this pair from (DW-312).
    */
   embeddingModelInEffect: string | null;
+  /**
+   * The PROVIDER half of the same in-effect answer — which embedding provider
+   * this deployment actually embeds through (DW-616). Null exactly when
+   * {@link EffectiveSettings.embeddingModelInEffect} is, because the model is
+   * resolved from the provider.
+   *
+   * Served because it cannot be re-derived by the browser. `/settings` renders
+   * one sentence about the embedding INFRASTRUCTURE — the Workers AI /
+   * Vectorize dimensions note — and the only inputs the browser held were
+   * `EMBEDDING_PROVIDER` and the stored provider; the resolver's Workers AI
+   * auto-detect leg fires with both of them unset, which is the normal shape of
+   * the deployment that sentence is true of. Gating in the browser would
+   * therefore drop the sentence on exactly those deployments.
+   *
+   * Resolved from the SAME snapshot and the SAME single resolution as
+   * `embeddingModelInEffect` (see {@link embeddingModelAnswer}), so the pair
+   * cannot describe different config generations.
+   */
+  embeddingProviderInEffect: EmbeddingProvider | null;
   /**
    * True when a model IS reported, something IS in effect, and they differ —
    * i.e. the reported model is being substituted on the embed path. False when
@@ -1972,7 +1991,7 @@ export function envResearchProviders(): ResearchProviderId[] {
  * `getEffectiveSettings` carried the second half.
  *
  * `cfg` is a PARAMETER, and every leg below resolves against it — including
- * `getEmbeddingModelName(cfg)`, which threads it all the way through the
+ * `getEmbeddingResolution(cfg)`, which threads it all the way through the
  * provider and key resolution (DW-313). `loadConfigSync()` is a 5 s-TTL cache,
  * so a helper that re-read it per leg could describe a snapshot its caller
  * never saw — on a cold cache, "set to X from config" beside "in effect: the
@@ -2000,11 +2019,19 @@ export function envResearchProviders(): ResearchProviderId[] {
  * `@cf/baai/bge-m3`. A surface whose whole job is "what is in effect and where
  * did it come from" has to be able to say both.
  *
- * Read through `getEmbeddingModelName()` — the resolver's own door, the one
+ * Read through `getEmbeddingResolution()` — the resolver's own door, the one
  * every embed path uses — and NOT by re-applying the predicate here. A rule
  * stated twice is two rules that agree today. (The resolver's mismatch warning
  * is throttled once per `(provider, override)` per process (DW-273), so a
  * settings read cannot make it spam.)
+ *
+ * `providerInEffect` is the OTHER half that same door returns, taken from the
+ * SAME call rather than a second one (DW-616). It is here because a surface
+ * that renders a claim about the embedding infrastructure — `/settings`' "this
+ * deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize
+ * index" — has to be told which provider is actually embedding: the browser
+ * holds only the env variable and the stored value, and the resolver's Workers
+ * AI auto-detect leg fires with both of those unset.
  *
  * The reported pair is deliberately left alone rather than replaced with the
  * resolved name: `useSettings` seeds the editable model input from
@@ -2021,6 +2048,7 @@ function embeddingModelAnswer(cfg: AppConfig): {
   model: string | null;
   source: SettingSource;
   inEffect: string | null;
+  providerInEffect: EmbeddingProvider | null;
   overridden: boolean;
 } {
   const envEmbeddingModel = getEmbeddingModelOverride();
@@ -2038,11 +2066,18 @@ function embeddingModelAnswer(cfg: AppConfig): {
     source = "none";
   }
 
-  const inEffect = getEmbeddingModelName(cfg);
+  // ONE walk of the ladder for both halves (DW-616). `getEmbeddingResolution`
+  // resolves the provider and then the model FROM it, so a second call for the
+  // provider would be a second resolution over `process.env` and the snapshot —
+  // two answers that agree today and describe two config generations the moment
+  // anything moves between them.
+  const resolution = getEmbeddingResolution(cfg);
+  const inEffect = resolution.model;
   return {
     model,
     source,
     inEffect,
+    providerInEffect: resolution.provider,
     overridden: model !== null && inEffect !== null && inEffect !== model,
   };
 }
@@ -2580,6 +2615,11 @@ export function getEffectiveSettings(): EffectiveSettings {
     embeddingModel: embedding.model,
     embeddingModelSource: embedding.source,
     embeddingModelInEffect: embedding.inEffect,
+    // The provider half, from the SAME single resolution as the model above
+    // (DW-616) — `/settings` renders a sentence about the embedding
+    // infrastructure and the browser cannot resolve which provider embeds.
+    // Flat, beside its siblings, so the route's `...settings` spread carries it.
+    embeddingProviderInEffect: embedding.providerInEffect,
     embeddingModelOverridden: embedding.overridden,
     hasApiKey: resolvedApiKey !== null,
     apiKeySource,

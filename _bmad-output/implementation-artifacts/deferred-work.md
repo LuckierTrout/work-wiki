@@ -4785,7 +4785,9 @@ location: src/components/EmbeddingSettings.tsx:303
 source_spec: `spec-dw-66-559-env-locked-credential-affordances.md`
 severity: low
 reason: `EmbeddingSettings.tsx`'s hint appends the sentence on `effectiveModel === "@cf/baai/bge-m3"` with no provider term, and the component is never handed the embedding provider. Pre-existing: the same name-only condition selected the same sentence before this change, which only added the pin sentence in front of it. Reaching the state needs `EMBEDDING_MODEL` pinned to the Workers AI model while `embeddingProvider` is something else, where the resolver substitutes and the override note already fires — so the dimensions claim is the one sentence still wrong.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-workers-ai-dimension-hint
+resolution-undo: 230d26a038a235adb0b6b87f9e0696c484f9e3040fbdab982ccde3f9ed66bf85 2026-09-01 7374617475733a206f70656e
 
 ### DW-617: The env-locked `Ollama Base URL` box has the same nameless-locked-box defect DW-562 just fixed on the two model boxes, and no mounted test renders that branch at all.
 origin: spec-deferred d980917f3388
@@ -5619,4 +5621,12 @@ location: src/components/SourceBadge.tsx and the SourceBadge-bearing labels in s
 source_spec: `spec-dw-561-617-provider-form-pick-and-env-label.md`
 severity: low
 reason: `SourceBadge.tsx` relies on the badge span's `ml-2` class for visual spacing only, and the labels in `ProviderForm.tsx` render `{settings && <SourceBadge …/>}` directly after the label text with no whitespace node between them. The accessible name is therefore the two strings run together, which both `provider-form.test.tsx` cases now pin verbatim ("Modelfrom environment", "Ollama Base URLfrom environment") as the name a browser computes. `EmbeddingSettings.tsx` already writes `Embedding Model{" "}` before its span, so the repo carries both spellings and the fix pattern is settled. Pre-existing and repo-wide across Provider, Model and Ollama Base URL; surfaced here because DW-617 pinned a second instance of it.
+status: open
+
+### DW-715: The `/settings` embedding hint claims "a 1,024-dimensional Vectorize index" on the strength of the resolved Workers AI provider alone, but the Vectorize binding is independently optional, so a deploym
+origin: spec-deferred 29bf19d57bde
+location: src/components/EmbeddingSettings.tsx:380
+source_spec: `spec-dw-616-workers-ai-dimension-hint.md`
+severity: low
+reason: `resolveEmbeddingProvider` answers `workers-ai` when the Cloudflare `AI` binding is bound (src/lib/embeddings.ts); that says nothing about `YOPEDIA_VECTORIZE`. `R2Storage` holds `this.vectorize` as `VectorizeIndex | undefined` (src/lib/storage/r2.ts:86,91) and guards every vector operation on it (:404, :430, :454, :467, :477), so the index half of the sentence can be false while the provider half is true. Pre-existing and untouched by DW-616, which narrowed only the provider half. The settings route already resolves binding facts server-side (`getWorkersAiBinding()`, served as `hasWorkersAiBinding`), so the same door could answer this one.
 status: open

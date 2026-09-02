@@ -279,6 +279,7 @@ export default function SettingsPage() {
           effectiveModel={settings?.embeddingModel ?? null}
           modelSource={settings?.embeddingModelSource ?? "none"}
           modelInEffect={settings?.embeddingModelInEffect ?? null}
+          providerInEffect={settings?.embeddingProviderInEffect ?? null}
           overridden={settings?.embeddingModelOverridden ?? false}
           vectorNotice={vectorNotice}
           rebuilding={rebuilding}

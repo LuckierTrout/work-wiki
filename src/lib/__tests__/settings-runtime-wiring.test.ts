@@ -990,13 +990,22 @@ describe("the stored embedding credential and endpoint are read", () => {
     expect(settings.embeddingModelInEffect).toBe("@cf/baai/bge-m3");
     expect(settings.embeddingModelOverridden).toBe(true);
     expect(settings.embeddingSupport).toBe(true);
+    // …and WHICH PROVIDER is embedding (DW-616). This is the case the browser
+    // provably cannot derive: `EMBEDDING_PROVIDER` is unset and nothing is
+    // stored, so an env→store ladder walked in the page answers `null` while
+    // the resolver auto-detects Workers AI from the binding. `/settings`' one
+    // infrastructure sentence hangs off this field, so it is served or it is
+    // wrong.
+    expect(process.env.EMBEDDING_PROVIDER ?? null).toBeNull();
+    expect(settings.embeddingProviderInEffect).toBe("workers-ai");
 
-    // And both ride at the TOP LEVEL of the legacy object, so the route's
+    // And ALL of them ride at the TOP LEVEL of the legacy object, so the route's
     // `...settings` spread carries them with no route change (DW-63).
     const { GET } = await import("@/app/api/settings/route");
     const body = (await (await GET()).json()) as Record<string, unknown>;
     expect(body.embeddingModel).toBe("text-embedding-3-small");
     expect(body.embeddingModelInEffect).toBe("@cf/baai/bge-m3");
+    expect(body.embeddingProviderInEffect).toBe("workers-ai");
     expect(body.embeddingModelOverridden).toBe(true);
   });
 
@@ -1468,6 +1477,11 @@ describe("both Settings surfaces answer the substitution question the same way",
     expect(substituting.embeddingModel).toBe("@cf/baai/bge-m3");
     expect(substituting.embeddingModelInEffect).toBe("text-embedding-3-small");
     expect(substituting.embeddingModelOverridden).toBe(true);
+    // THE DW-616 deployment, from the resolver rather than from a fixture: the
+    // `@cf/` id is pinned and the provider embedding it is openai. `/settings`
+    // reads this field to decide whether the Workers AI / Vectorize sentence is
+    // true, and here it is not — the model id alone would have said it was.
+    expect(substituting.embeddingProviderInEffect).toBe("openai");
     expect(getWorkbenchSettings(false)).toMatchObject({
       embeddingModelInEffect: substituting.embeddingModelInEffect,
       embeddingModelOverridden: substituting.embeddingModelOverridden,
@@ -1494,6 +1508,10 @@ describe("both Settings surfaces answer the substitution question the same way",
     const dark = getEffectiveSettings();
     expect(dark.embeddingSupport).toBe(false);
     expect(dark.embeddingModelInEffect).toBeNull();
+    // Null EXACTLY when nothing embeds, which is the one condition the model
+    // half is null under too — the model is resolved FROM the provider, so
+    // there is no state where one is reported and the other is not (DW-616).
+    expect(dark.embeddingProviderInEffect).toBeNull();
     expect(dark.embeddingModelOverridden).toBe(false);
     expect(getWorkbenchSettings(false)).toMatchObject({
       embeddingModelInEffect: null,

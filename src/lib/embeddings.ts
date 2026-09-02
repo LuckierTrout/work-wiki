@@ -600,29 +600,70 @@ function resolveEmbeddingModelName(
  * Returns the name of the currently selected embedding model, or null if no
  * embedding-capable provider is configured.
  *
- * Provider is resolved by {@link resolveEmbeddingProvider} (override →
- * Workers AI auto-detect → LLM provider). Model name resolution:
+ * The MODEL half of {@link getEmbeddingResolution}, and nothing else — the same
+ * single walk of the same ladder, with `cfg` handed straight through. Provider
+ * is resolved by {@link resolveEmbeddingProvider} (override → Workers AI
+ * auto-detect → LLM provider). Model name resolution:
  *   1. `EMBEDDING_MODEL` env var (highest priority)
  *   2. `config.embeddingModel` from config file
  *   3. Provider-specific default
  *
- * @param cfg OPTIONAL, and defaulting to `loadConfigSync()` — which is what
- *   every caller outside the two settings resolvers wants, so passing nothing
- *   is byte-identical to the behaviour before the parameter existed. What
- *   passing one buys is "resolve against THIS snapshot": `loadConfigSync()` is
- *   a 5 s-TTL cache, so a caller that already read it and then asks this door
- *   for the other half of its answer can otherwise be told about a different
- *   snapshot than the one it is describing (DW-313). `getEffectiveSettings`
- *   and `getWorkbenchSettings` both hold a `cfg` and both pass it, which is how
- *   their "what is set" and "what is in effect" halves are guaranteed to be
- *   about the same config.
+ * A caller that needs the PROVIDER as well comes through
+ * `getEmbeddingResolution` instead of calling this door and then a second one —
+ * the two settings resolvers do, since DW-616. This function is for the callers
+ * that only ever wanted the name.
+ *
+ * @param cfg OPTIONAL, defaulting to `loadConfigSync()` and passed straight to
+ *   {@link getEmbeddingResolution}, which documents what handing one in buys
+ *   (DW-313). Passing nothing is byte-identical to the behaviour before the
+ *   parameter existed.
  */
 export function getEmbeddingModelName(
   cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),
 ): string | null {
+  return getEmbeddingResolution(cfg).model;
+}
+
+/**
+ * BOTH halves of the embed path's answer — which provider embeds, and which
+ * model it embeds with — from ONE walk of the ladder (DW-616).
+ *
+ * {@link getEmbeddingModelName} is this function's `.model`, so the two can
+ * never disagree. A caller that needs the pair must come through here rather
+ * than calling the model door and then asking again for the provider: the
+ * ladder reads `process.env` and the config snapshot on every leg, so two calls
+ * are two resolutions that merely agree today.
+ *
+ * The PROVIDER is exported at all because it cannot be re-derived by anyone
+ * holding only the served config. `resolveEmbeddingProvider` has a Workers AI
+ * auto-detect leg that fires with BOTH `EMBEDDING_PROVIDER` and
+ * `config.embeddingProvider` unset — the normal shape of a Workers deployment —
+ * so an env→store ladder walked anywhere else answers `null` on exactly the
+ * deployments the provider matters most for.
+ *
+ * `provider` is null exactly when nothing embeds, which is the same condition
+ * `model` is null under: the model is resolved FROM the provider, so there is
+ * no state where one is set and the other is not.
+ *
+ * @param cfg OPTIONAL, and defaulting to `loadConfigSync()` — which is what
+ *   every caller outside the two settings resolvers wants, so passing nothing
+ *   is byte-identical to calling it with no snapshot in hand. What passing one
+ *   buys is "resolve against THIS snapshot": `loadConfigSync()` is a 5 s-TTL
+ *   cache, so a caller that already read it and then asks this door for the
+ *   rest of its answer can otherwise be told about a different snapshot than
+ *   the one it is describing (DW-313). `getEffectiveSettings` and
+ *   `getWorkbenchSettings` both hold a `cfg` and both pass it — through this
+ *   door since DW-616 — which is how their "what is set" and "what is in
+ *   effect" halves are guaranteed to be about the same config. It is threaded
+ *   all the way through the provider and key resolution, not just the model
+ *   lookup.
+ */
+export function getEmbeddingResolution(
+  cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),
+): { provider: EmbeddingProvider | null; model: string | null } {
   const provider = resolveEmbeddingProvider(cfg);
-  if (!provider) return null;
-  return resolveEmbeddingModelName(provider, cfg);
+  if (!provider) return { provider: null, model: null };
+  return { provider, model: resolveEmbeddingModelName(provider, cfg) };
 }
 
 /**
@@ -746,11 +787,11 @@ function _createEmbeddingModel(
 /**
  * Returns true if an embedding-capable provider is configured.
  *
- * @param cfg OPTIONAL, defaulting to `loadConfigSync()`, and threaded straight
- *   through to {@link getEmbeddingModelName} — see the note there. Passing the
- *   snapshot a caller already holds is what stops "does this deployment embed?"
- *   and "with what?" from being answered about two different reads of the
- *   5 s-TTL config cache (DW-313).
+ * @param cfg OPTIONAL, defaulting to `loadConfigSync()`, and threaded through
+ *   {@link getEmbeddingModelName} to {@link getEmbeddingResolution} — which is
+ *   where the note lives. Passing the snapshot a caller already holds is what
+ *   stops "does this deployment embed?" and "with what?" from being answered
+ *   about two different reads of the 5 s-TTL config cache (DW-313).
  */
 export function hasEmbeddingSupport(
   cfg: ReturnType<typeof loadConfigSync> = loadConfigSync(),

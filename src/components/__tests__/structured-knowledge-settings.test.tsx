@@ -34,6 +34,7 @@ function settings(
     embeddingModel: null,
     embeddingModelSource: "none",
     embeddingModelInEffect: null,
+    embeddingProviderInEffect: null,
     embeddingModelOverridden: false,
     hasApiKey: false,
     ollamaBaseUrl: null,

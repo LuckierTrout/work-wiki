@@ -403,7 +403,13 @@ describe("EmbeddingSettings — the default-model hint", () => {
     // order is what carries the hint there.
     render(
       <EmbeddingSettings
-        {...props({ modelSource: "env", effectiveModel: "@cf/baai/bge-m3" })}
+        {...props({
+          modelSource: "env",
+          effectiveModel: "@cf/baai/bge-m3",
+          // The deployment the sentence is ABOUT (DW-616): the resolved
+          // provider, served by `GET /api/settings`, not inferred from the id.
+          providerInEffect: "workers-ai",
+        })}
       />,
     );
 
@@ -441,6 +447,65 @@ describe("EmbeddingSettings — the default-model hint", () => {
     expect(document.querySelector("input#embeddingModel")).toBeNull();
     expect(hint()!.textContent).toBe(ENV_PIN_COPY);
     expect(hint()!.textContent).not.toContain("Leave empty");
+    expect(hint()!.textContent).not.toContain("Vectorize");
+  });
+
+  it("makes NO Workers AI claim when another provider is what actually embeds", () => {
+    // THE DW-616 state. `EMBEDDING_MODEL=@cf/baai/bge-m3` is pinned on a
+    // deployment that embeds through OpenAI: the resolver substitutes, the
+    // override note above already says so, and this sentence was nonetheless
+    // announcing a Vectorize index that does not exist. The id is what is SET;
+    // only the resolved provider says what the infrastructure IS.
+    render(
+      <EmbeddingSettings
+        {...props({
+          modelSource: "env",
+          effectiveModel: "@cf/baai/bge-m3",
+          providerInEffect: "openai",
+        })}
+      />,
+    );
+
+    expect(hint()!.textContent).toBe(ENV_PIN_COPY);
+    expect(hint()!.textContent).not.toContain("Vectorize");
+    expect(hint()!.textContent).not.toContain("Workers AI");
+    // The pin sentence is untouched — this entry narrows ONE condition, it does
+    // not take a sentence away from the branch.
+    expect(hint()!.textContent).not.toContain("Leave empty");
+  });
+
+  it("makes no claim at all when the caller was told nothing", () => {
+    // The prop is OPTIONAL and defaults to "nobody answered the question". A
+    // claim about the deployment's infrastructure is only worth rendering when
+    // something actually resolved it, so absent means silent rather than
+    // "assume Workers AI" — and every caller predating the prop renders exactly
+    // as it did.
+    render(
+      <EmbeddingSettings
+        {...props({ modelSource: "env", effectiveModel: "@cf/baai/bge-m3" })}
+      />,
+    );
+
+    expect(hint()!.textContent).toBe(ENV_PIN_COPY);
+    expect(hint()!.textContent).not.toContain("Vectorize");
+  });
+
+  it("makes no claim for a Workers AI deployment pinned to another model", () => {
+    // Both halves of the condition are load-bearing, in both directions. The
+    // model term is deliberately UNCHANGED by DW-616: the sentence follows what
+    // is SET, so a non-Workers pin keeps it away even where Workers AI is the
+    // provider in effect. A gate that dropped the model half would fire here.
+    render(
+      <EmbeddingSettings
+        {...props({
+          modelSource: "env",
+          effectiveModel: "text-embedding-3-small",
+          providerInEffect: "workers-ai",
+        })}
+      />,
+    );
+
+    expect(hint()!.textContent).toBe(ENV_PIN_COPY);
     expect(hint()!.textContent).not.toContain("Vectorize");
   });
 

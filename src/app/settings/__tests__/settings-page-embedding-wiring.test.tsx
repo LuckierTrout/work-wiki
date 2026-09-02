@@ -48,6 +48,8 @@ const SUBSTITUTED = {
   embeddingModelSource: "env",
   // …and what actually embeds, which is a different model.
   embeddingModelInEffect: "@cf/baai/bge-m3",
+  // …through Workers AI, which is the provider half of the same answer (DW-616).
+  embeddingProviderInEffect: "workers-ai",
   embeddingModelOverridden: true,
   hasApiKey: true,
   ollamaBaseUrl: null,
@@ -82,6 +84,11 @@ function stubFetch(payload: unknown) {
 /** The override note, or null when the page rendered none. */
 function overrideNote(): HTMLElement | null {
   return document.getElementById("embeddingModelOverride");
+}
+
+/** The default-model hint, or null when the page rendered none (DW-506). */
+function hint(): HTMLElement | null {
+  return document.getElementById("embeddingModelHint");
 }
 
 beforeEach(() => {
@@ -128,5 +135,86 @@ describe("/settings names the model that actually embeds (DW-274)", () => {
     await waitFor(() => expect(screen.getByText("text-embedding-3-small")).toBeTruthy());
     expect(overrideNote()).toBeNull();
     expect(document.body.textContent).not.toContain("Not in effect");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Workers AI sentence follows the SERVED provider (DW-616)
+// ---------------------------------------------------------------------------
+
+describe("/settings gates the Workers AI dimensions sentence on the provider", () => {
+  /**
+   * `EMBEDDING_MODEL=@cf/baai/bge-m3` pinned, as `GET /api/settings` ACTUALLY
+   * serves it for each provider — not the id held constant with one field
+   * swapped.
+   *
+   * The two shapes differ in more than the provider on purpose, because the
+   * route cannot produce them any other way: openai cannot serve a `@cf/` id,
+   * so the resolver substitutes its own default and reports `inEffect:
+   * "text-embedding-3-small"` with `overridden: true` — exactly what
+   * `settings-runtime-wiring.test.ts` asserts against the real resolver for this
+   * deployment. Workers AI serves the id, so nothing is substituted. A fixture
+   * that pinned `overridden: false` on the openai leg would be asserting the
+   * rendering of a payload no deployment can produce.
+   */
+  function pinned(provider: "openai" | "workers-ai") {
+    const substituting = provider !== "workers-ai";
+    return {
+      ...SUBSTITUTED,
+      embeddingModel: "@cf/baai/bge-m3",
+      embeddingModelSource: "env",
+      embeddingModelInEffect: substituting ? "text-embedding-3-small" : "@cf/baai/bge-m3",
+      embeddingProviderInEffect: provider,
+      embeddingModelOverridden: substituting,
+    };
+  }
+
+  it("stays silent when the deployment embeds through another provider", async () => {
+    // THE DW-616 deployment, whole: the `@cf/` id is pinned, openai cannot serve
+    // it, the resolver substitutes, and the override note fires and SAYS so. The
+    // dimensions sentence was the one thing on this screen still wrong — a claim
+    // about a Vectorize index on a deployment the page has just finished
+    // explaining does not embed through Workers AI at all.
+    stubFetch(pinned("openai"));
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(hint()).not.toBeNull());
+    await waitFor(() =>
+      expect(hint()!.textContent).toContain("The environment sets EMBEDDING_MODEL"),
+    );
+    expect(hint()!.textContent).not.toContain("Vectorize");
+    expect(hint()!.textContent).not.toContain("Workers AI");
+    // The two facts TOGETHER, which is the state the entry is about and which
+    // nothing else renders: the substitution is announced…
+    await waitFor(() => expect(overrideNote()).not.toBeNull());
+    expect(overrideNote()!.textContent).toContain("text-embedding-3-small");
+    // …while the box above goes on showing what is SET, and the infrastructure
+    // claim beside it is withheld.
+    expect(screen.getByText("@cf/baai/bge-m3")).toBeTruthy();
+  });
+
+  it("says it on the deployment the sentence is actually true of", async () => {
+    // THE mutation guard for the new wire, and the reason this case is the pair
+    // of the one above rather than a nicety. Dropping
+    // `providerInEffect={settings?.embeddingProviderInEffect ?? null}` from
+    // `page.tsx` drops the component back to its `= null` default, which
+    // WITHHOLDS the sentence — so the openai case above still passes and only
+    // this one fails. It is the direction that requires the served value to
+    // arrive; the case above is the direction that requires it to be read.
+    stubFetch(pinned("workers-ai"));
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(hint()).not.toBeNull());
+    await waitFor(() =>
+      expect(hint()!.textContent).toContain(
+        "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.",
+      ),
+    );
+    // COMPOSED with the pin, byte-identically to before this change (DW-559).
+    expect(hint()!.textContent).toBe(
+      "The environment sets EMBEDDING_MODEL, and that wins at runtime. " +
+        "This box is fixed until that variable is unset." +
+        " This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.",
+    );
   });
 });

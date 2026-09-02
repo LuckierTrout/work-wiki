@@ -21,12 +21,18 @@ vi.mock("@/lib/config", async (original) => ({
  * refusal and drown out the leg each test is actually about. Mocking it lets a
  * test say "the binding is there" and keep the sentence about the MODEL.
  *
- * `getEmbeddingModelName` is the SECOND thing the route needs from this module,
+ * `getEmbeddingResolution` is the SECOND thing the route needs from this module,
  * and it is load-bearing: since DW-312 `getWorkbenchSettings` resolves
  * `embeddingModelInEffect`/`embeddingModelOverridden` through
  * `embeddingModelAnswer`, which calls it — and `getWorkbenchSettings` builds the
  * payload every 200 in this file serves back. A mock that stopped at the binding
- * left it `undefined` and turned all of them into 500s.
+ * left it `undefined` and turned all of them into 500s. It answers the PAIR
+ * since DW-616 (`{ provider, model }`), which is why the stub is an object and
+ * not a bare `null`: `embeddingModelAnswer` reads `.model` off it.
+ *
+ * `getEmbeddingModelName` is no longer reached from `config.ts` at all — it is
+ * now `getEmbeddingResolution(...).model` inside `embeddings.ts` — so it is not
+ * stubbed here. Nothing this file drives imports it.
  *
  * `hasEmbeddingSupport` is DEFENSIVE rather than load-bearing: the only route
  * path that reaches it is `getEffectiveSettings`/`getEffectiveProvider`, and
@@ -35,7 +41,7 @@ vi.mock("@/lib/config", async (original) => ({
  */
 vi.mock("@/lib/embeddings", () => ({
   getWorkersAiBinding: vi.fn(() => null),
-  getEmbeddingModelName: vi.fn(() => null),
+  getEmbeddingResolution: vi.fn(() => ({ provider: null, model: null })),
   hasEmbeddingSupport: vi.fn(() => false),
 }));
 
@@ -147,6 +153,7 @@ beforeEach(() => {
     embeddingModel: null,
     embeddingModelSource: "none",
     embeddingModelInEffect: null,
+    embeddingProviderInEffect: null,
     embeddingModelOverridden: false,
     hasApiKey: false,
     apiKeySource: "none",

@@ -32,6 +32,22 @@ export interface EffectiveSettings {
    * be written into the store by the next save.
    */
   embeddingModelInEffect: string | null;
+  /**
+   * The PROVIDER half of the in-effect pair above — which embedding provider
+   * this deployment actually embeds through, as the route resolved it (DW-616).
+   *
+   * `string | null` rather than a provider union, like every other served
+   * identifier in this hand-duplicated view: the page hands it to
+   * `EmbeddingSettings`, which compares it against one literal and otherwise
+   * makes no claim, so an unexpected value degrades to "say nothing" rather
+   * than to a wrong sentence.
+   *
+   * SERVED rather than derived from `workbench.embeddingProvider` /
+   * `workbench.envEmbeddingProvider`: the resolver's Workers AI auto-detect leg
+   * fires with both of those unset, so a browser-side env→store ladder would
+   * answer `null` on exactly the deployments the Workers AI sentence is true of.
+   */
+  embeddingProviderInEffect: string | null;
   embeddingModelOverridden: boolean;
   hasApiKey: boolean;
   ollamaBaseUrl: string | null;
