@@ -5,7 +5,6 @@
  * Covers issue #500:
  * - Revision sidecar carries the reverter's handle
  * - Service principal fallback works for service-token reverts
- * - Contributor index reflects the reverter's edit
  *
  * And DW-379/DW-378, the revert's MERGE BASE — the page read whose bytes the
  * route hands on as `expectedContent`:
@@ -37,10 +36,6 @@ import {
   readWikiPage,
 } from "../wiki";
 import { listRevisions, readRevisionMeta } from "../revisions";
-import {
-  getContributorIndex,
-  rebuildContributorIndex,
-} from "../contributor-index";
 import { _resetStorage, getStorage } from "../storage";
 import { _resetLocks } from "../lock";
 import { serializeFrontmatter } from "../frontmatter";
@@ -167,40 +162,6 @@ describe("POST /api/wiki/[slug]/revisions — revert attribution", () => {
     const meta = await readRevisionMeta("svc-test", newestTs);
     expect(meta).not.toBeNull();
     expect(meta!.author).toBe("bot");
-  });
-
-  it("contributor index reflects the reverter's edit", async () => {
-    // Seed + overwrite.
-    await seedPage("contrib-test", "# Contrib Test\n\nOriginal.");
-    await writeWikiPage(
-      "contrib-test",
-      serializeFrontmatter(
-        { title: "contrib-test", created: "2025-01-01", updated: "2025-01-02", owner: "alice", visibility: "private" },
-        "# Contrib Test\n\nUpdated.",
-      ),
-    );
-
-    // Bootstrap a contributor index so recordEditForAuthor has something to update.
-    await rebuildContributorIndex();
-
-    const revisions = await listRevisions("contrib-test");
-    const oldTimestamp = revisions[0].timestamp;
-
-    // Grab pre-revert state.
-    const priorIdx = await getContributorIndex();
-    const priorEdit = priorIdx?.authors["alice"]?.editCount ?? 0;
-
-    // Revert as "alice"
-    mockedGetPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
-    const res = await callRevert("contrib-test", oldTimestamp);
-    expect(res.status).toBe(200);
-
-    // The contributor index should have incremented alice's edit count.
-    const updatedIdx = await getContributorIndex();
-    expect(updatedIdx).not.toBeNull();
-    const postEdit = updatedIdx!.authors["alice"]?.editCount ?? 0;
-    expect(postEdit).toBeGreaterThan(priorEdit);
-    expect(updatedIdx!.authors["alice"]?.pagesEdited).toContain("contrib-test");
   });
 });
 

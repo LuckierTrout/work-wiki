@@ -29,9 +29,13 @@ import type { TalkThread } from "./types";
 // `listThreads`, `getThread`, `createThread`, `addComment`, `resolveThread`
 // and `hasOpenThread` no longer exist here, along with the discuss-file writer
 // and the derived-index hooks (`syncDiscussStatsForSlug`,
-// `recordTalkForAuthor`) that only those writers called. Both index modules
-// are untouched and still correct — they simply have no production writer
-// left; their entries are (re)built by the rebuild scans instead.
+// `recordTalkForAuthor`) that only those writers called. Both index modules are
+// untouched and still correct — they simply have no production writer left.
+// What became of their entries then differs, so don't read the two alike:
+// discuss-stats is still rebuilt from ground truth by the daily maintenance
+// scan, but the contributor index no longer is — DW-126 dropped it from
+// `rebuildDerivedIndexes` (and DW-125 removed its lifecycle write hook) once
+// nothing read it, so nothing rebuilds it on any schedule.
 //
 // WHAT IS LEFT, HONESTLY — five exports plus the `DiscussionStats` type, and
 // only two of them are reached from production:

@@ -374,6 +374,9 @@ async function mergePagesWhileSourceLocked({
       await getStorage()
         .deleteFile(`${operationPath}.${receipt.generation}.delete`)
         .catch(() => undefined);
+      // LEGACY receipt: nothing mints this any more — the contributor-index
+      // decrement it guarded was removed with the index's last reader (DW-126).
+      // The delete stays only to reap files older deployments left behind.
       await getStorage()
         .deleteFile(`${operationPath}.${receipt.generation}.delete.contributor`)
         .catch(() => undefined);
@@ -394,6 +397,8 @@ async function mergePagesWhileSourceLocked({
     await getStorage()
       .deleteFile(`${operationPath}.${receipt.generation}.delete`)
       .catch(() => undefined);
+    // LEGACY receipt — see above: nothing writes it since DW-126; the delete
+    // only reaps what older deployments left behind.
     await getStorage()
       .deleteFile(`${operationPath}.${receipt.generation}.delete.contributor`)
       .catch(() => undefined);
@@ -751,6 +756,8 @@ async function completeMergeOperation(
   await getStorage()
     .deleteFile(`${operationPath}.${receipt.generation}.delete`)
     .catch(() => undefined);
+  // LEGACY receipt — see `mergePages`: nothing writes it since DW-126; the
+  // delete only reaps what older deployments left behind.
   await getStorage()
     .deleteFile(`${operationPath}.${receipt.generation}.delete.contributor`)
     .catch(() => undefined);

@@ -39,7 +39,6 @@ import { removeSourceForPage } from "./source-index";
 import { syncCommonsForPage, removeCommonsEntryBySlug, belongsInCommons } from "./commons";
 import { syncOwnerIndexForPage, removeOwnerIndexForSlug, tenantsForPage } from "./owner-index";
 import { syncBacklinksForPage, removeBacklinksForSlug } from "./backlink-index";
-import { recordEditForAuthor, reverseEditForAuthor } from "./contributor-index";
 import { pushRecentEvent, removeRecentForSlug } from "./recent-index";
 import { isAgentHandle, removeSlugFromAgentPages } from "./agents";
 import { removeSlugFromAllVaults } from "./vault";
@@ -178,7 +177,9 @@ type PageLifecycleOp =
       kind: "delete";
       /** Title used in the log entry (captured before unlink). */
       title: string;
-      /** Who performed the deletion — used for contributor-index cleanup. */
+      /** Who performed the deletion. Carried for symmetry with the write op;
+       *  no step reads it today — the per-author index decrement that did was
+       *  removed with the contributor index's last reader. */
       author?: string;
       /** Refuse deletion unless the authoritative Page still has these bytes. */
       expectedContent?: string;
@@ -324,7 +325,6 @@ async function runPageLifecycleOp(
     primaryDeleteAlreadyApplied?: boolean;
     previousContent?: string;
     logIdempotencyKey?: string;
-    contributorIdempotencyPath?: string;
   },
   pageLockAlreadyHeld = false,
   skipDeleteBacklinks = false,
@@ -812,36 +812,6 @@ async function runPageLifecycleOp(
     logger.warn("backlink-index", `backlink index sync skipped for "${slug}":`, err);
   }
 
-  // 3b-iv. Contributor index — incremental edit facts only. We bump editCount /
-  //         pagesEdited / firstSeen / lastSeen for op.author (decrement on
-  //         delete); revertCount and talk counts are left to the daily rebuild
-  //         (see contributor-index.ts header). No-op until the daily rebuild has
-  //         seeded the index (recordEditForAuthor returns early when absent).
-  //         Fail-soft.
-  try {
-    if (op.kind === "delete") {
-      // Decrement per-author edit counts when the delete op carries an author.
-      if (op.author) {
-        if (recovery?.contributorIdempotencyPath) {
-          // Claim before the fail-soft derived-index mutation. A crash can make
-          // the daily rebuild repair a missed decrement, but can never apply the
-          // non-idempotent decrement twice on lifecycle Retry.
-          const claimed = await getStorage().writeFileIfAbsent(
-            recovery.contributorIdempotencyPath,
-            new Date().toISOString(),
-          );
-          if (claimed) await reverseEditForAuthor(op.author, slug);
-        } else {
-          await reverseEditForAuthor(op.author, slug);
-        }
-      }
-    } else if (op.author) {
-      await recordEditForAuthor(op.author, slug);
-    }
-  } catch (err) {
-    logger.warn("contributor-index", `contributor index sync skipped for "${slug}":`, err);
-  }
-
   // 3b-v. Recent-activity index (the homepage Trail). PUBLIC, non-agent pages
   //        only — the public trail never surfaces private activity. No-op until
   //        the daily rebuild has seeded the index. Fail-soft.
@@ -1279,7 +1249,6 @@ export async function deleteWikiPageWhileLocked(
           primaryDeleteAlreadyApplied,
           previousContent: expectedContent,
           logIdempotencyKey: idempotency.key,
-          contributorIdempotencyPath: `${idempotency.receiptPath}.contributor`,
         }
       : undefined,
     true,

@@ -902,7 +902,9 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/lib/contributors.ts:278
 severity: low
 reason: `src/lib/contributors.ts` exports `buildContributorProfile` (:278) and `listContributors` (:331). Their only remaining callers are `src/lib/__tests__/contributors.test.ts` and `src/lib/__tests__/contributor-index.test.ts:13`; the production call sites in `src/mcp.ts` (`handleListContributors` / `handleGetContributor`) were deleted in this pass. The sibling `buildContributorProfiles` (:313) is in the same test-only state, which predates this pass. The module itself must stay: `src/lib/contributor-index.ts:37-43` imports `computeScanData` and `computeTrustScore` from it, and `lifecycle.ts:33`, `talk.ts:46`, `maintenance.ts:231` keep the index live. The spec's Code Map called this residue explicitly out of scope ("record as deferred, do not delete") because deleting the scan functions would mean deciding whether the trust-score surface returns, which is a product call rather than a cleanup.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-contributor-and-discuss-index-residue
+resolution-undo: 2baf9665322cad66955e33280ea2f14cc21bb9001001db28e5c48764a5941ea4 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-19 Retire the scan functions — Delete buildContributorProfile, buildContributorProfiles and listContributors along with their now-orphaned tests, keeping computeScanData and computeTrustScore for contributor-index.ts. Resolve DW-126 the same way by dropping the contributors step from rebuildDerivedIndexes.
 
 ### DW-126: The daily maintenance scan still rebuilds the contributor index, but after this pass no production code reads what it builds.
@@ -911,7 +913,9 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/lib/maintenance.ts:231
 severity: low
 reason: `src/lib/maintenance.ts:231` registers `["contributors", () => rebuildContributorIndex()]`, and `lifecycle.ts:33` / `talk.ts:46` still write into the index. The read side (`profilesFromIndex`, `contributorProfileFromIndex`) is reached only through `src/lib/contributors.ts`'s fast paths, whose own callers are now test-only. So the cron pays for a full-wiki scan whose output nothing consumes. Removing it is not a cleanup decision: it depends on whether the contributor trust surface returns, the same product call recorded in the entry above.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-contributor-and-discuss-index-residue
+resolution-undo: 2baf9665322cad66955e33280ea2f14cc21bb9001001db28e5c48764a5941ea4 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-19 Drop the contributors step — Remove the ["contributors", rebuildContributorIndex] entry from rebuildDerivedIndexes and the now-dead index writes from lifecycle.ts:33 and talk.ts:46, together with the DW-125 scan functions, and pin that the daily scan no longer walks the wiki for contributor data.
 
 ### DW-127: `src/lib/maintenance.ts`'s module header documents only three deterministic `fix` lint types while the scan emits eight.
@@ -4115,7 +4119,9 @@ location: src/lib/discuss-stats-index.ts:69, src/lib/contributor-index.ts:218
 source_spec: `spec-dw-390-retire-dead-talk-writers.md`
 severity: medium
 reason: `src/lib/talk.ts`'s `syncDiscussStatsHook` and `recordTalkContributorHook` were the only production callers of `syncDiscussStatsForSlug` (discuss-stats-index.ts:69) and `recordTalkForAuthor` (contributor-index.ts:218). After DW-390 both are reached only from their own unit tests. Their prose is now stale: discuss-stats-index.ts:6 says the index is "maintained incrementally directly from talk.ts", :65 says the function is "called from talk.ts mutations ... under the discuss:<slug> lock" (that lock is gone), and contributor-index.ts:25 and :214 still call it "the talk hook". Both modules were deliberately left untouched: the DW-390 decision says to leave the discuss-stats/contributor indexes exactly as they are, so this is recorded rather than resolved. This is the DW-390 shape one module out.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-contributor-and-discuss-index-residue
+resolution-undo: 2baf9665322cad66955e33280ea2f14cc21bb9001001db28e5c48764a5941ea4 2026-09-02 7374617475733a206f70656e
 
 ### DW-536: `/api/assets/[...path]` gates only on `visibility: private`, so the assets of a page the Knowledge tab hides for any OTHER reason are still served to anyone, unauthenticated.
 origin: spec-deferred 898a204cc270

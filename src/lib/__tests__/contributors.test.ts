@@ -1,8 +1,21 @@
+/**
+ * Tests for the contributor SCAN — what survives in `src/lib/contributors.ts`
+ * after DW-125 deleted the three profile builders (one handle, a batch of
+ * handles, and every contributor) along with the retired contributor product
+ * surfaces they fed. SCHEMA.md's "Contributor profiles" section names them.
+ *
+ * The subjects here are the exports that remain: `computeScanData` (the
+ * wiki-wide activity + revert + talk scan), `computeTrustScore` (the trust
+ * formula the contributor index applies on read) and the pure `reduceReverts`.
+ * Every semantic the deleted builders used to assert through — agent-page
+ * exclusion, automation-actor folding, talk counting, revert detection,
+ * first/last seen, the trust formula — is asserted below against those.
+ */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { buildContributorProfile, buildContributorProfiles, listContributors, computeScanData, reduceReverts } from "../contributors";
+import { computeScanData, computeTrustScore, reduceReverts } from "../contributors";
 import { ensureDirectories, writeWikiPage } from "../wiki";
 import { saveRevision, type Revision } from "../revisions";
 import { writeDiscussFixture } from "./discuss-fixtures";
@@ -66,554 +79,329 @@ async function createPage(slug: string, title: string, content: string) {
   }
 }
 
-describe("contributors data layer", () => {
-  describe("listContributors", () => {
-    it("returns empty array when no revisions exist", async () => {
-      await ensureDirectories();
-      const result = await listContributors();
-      expect(result).toEqual([]);
-    });
-
-    it("aggregates multiple authors correctly", async () => {
-      await createPage("page-a", "Page A", "# Page A\n\nContent.");
-      await createPage("page-b", "Page B", "# Page B\n\nContent.");
-
-      // Alice edits page-a twice, bob edits page-b once
-      await saveRevision("page-a", "# Page A\n\nv1", "alice");
-      await saveRevision("page-a", "# Page A\n\nv2", "alice");
-      await saveRevision("page-b", "# Page B\n\nv1", "bob");
-
-      const contributors = await listContributors();
-      expect(contributors).toHaveLength(2);
-      // Alice first (2 edits > 1)
-      expect(contributors[0].handle).toBe("alice");
-      expect(contributors[0].editCount).toBe(2);
-      expect(contributors[1].handle).toBe("bob");
-      expect(contributors[1].editCount).toBe(1);
-    });
-
-    it("excludes agent-scoped pages so agents aren't listed as contributors", async () => {
-      // A human page edited by a human...
-      await createPage("page-a", "Page A", "# Page A\n\nContent.");
-      await saveRevision("page-a", "# Page A\n\nv1", "alice");
-
-      // ...and an agent-scoped page authored by the agent itself. Its author
-      // (the agent's composite id) must NOT surface as a human contributor.
-      await createPage(
-        "agent-note",
-        "Agent Note",
-        "---\ntype: agent-knowledge\n---\n\n# Agent Note\n\nLearned.",
-      );
-      await saveRevision("agent-note", "# Agent Note\n\nv1", "yuanhao--yoyo");
-
-      const contributors = await listContributors();
-      expect(contributors.map((c) => c.handle)).toEqual(["alice"]);
-    });
-
-    it("folds automation authors (system/lint-fix) into the agent, not their own handles", async () => {
-      await createPage(
-        "page-a",
-        "Page A",
-        "---\nowner: alice\nvisibility: public\n---\n\n# Page A\n\nc.",
-      );
-      await saveRevision("page-a", "# Page A\n\nv1", "alice");
-      await saveRevision("page-a", "# Page A\n\nv2", "system");
-      await saveRevision("page-a", "# Page A\n\nv3", "lint-fix");
-      // ...and a talk comment by an automation actor (the mergeTalkActivity path).
-      await writeDiscussFixture("page-a", [
-        {
-          title: "T",
-          comments: [
-            { author: "alice", body: "post" },
-            { author: "lint-fix", body: "auto comment" },
-          ],
-        },
-      ]);
-
-      // Live-scan path: system/lint-fix are credited to the agent (yoyo), never
-      // shown as their own contributors.
-      const scanned = await listContributors({ id: "alice", handle: "alice" });
-      const handles = scanned.map((c) => c.handle);
-      expect(handles).toContain("alice");
-      expect(handles).toContain("yoyo");
-      expect(handles).not.toContain("system");
-      expect(handles).not.toContain("lint-fix");
-      // The lint-fix comment counts toward yoyo, not its own handle.
-      expect(scanned.find((c) => c.handle === "yoyo")?.commentCount).toBe(1);
-
-      // Index fast path (anonymous) stays clean too.
-      const { rebuildContributorIndex } = await import("../contributor-index");
-      await rebuildContributorIndex();
-      const anon = await listContributors(null).then((cs) => cs.map((c) => c.handle));
-      expect(anon).not.toContain("system");
-      expect(anon).not.toContain("lint-fix");
-    });
-
-    it("takes the contributor-index fast path ONLY for an anonymous viewer; a non-null principal uses the per-principal scan (sees their own private pages)", async () => {
-      // A PUBLIC page edited by alice (visible to everyone, in the anon index).
-      await createPage(
-        "pub",
-        "Pub",
-        "---\nowner: alice\nvisibility: public\n---\n\n# Pub\n\nc.",
-      );
-      await saveRevision("pub", "# Pub\n\nv1", "alice");
-
-      // A PRIVATE page owned+edited by bob (invisible to anon → NOT in index).
-      await createPage(
-        "priv",
-        "Priv",
-        "---\nowner: bob\nvisibility: private\n---\n\n# Priv\n\nc.",
-      );
-      await saveRevision("priv", "# Priv\n\nv1", "bob");
-
-      // Build the index from the ANONYMOUS scan: only alice/pub.
-      const { rebuildContributorIndex, getContributorIndex } = await import(
-        "../contributor-index"
-      );
-      await rebuildContributorIndex();
-      expect(await getContributorIndex()).not.toBeNull();
-
-      // Anonymous: fast path → index only → bob (private) absent.
-      const anon = await listContributors(null);
-      expect(anon.map((c) => c.handle)).toEqual(["alice"]);
-
-      // bob as principal: must NOT take the anon fast path; the per-principal
-      // scan sees bob's own private page, so bob shows up.
-      const asBob = await listContributors({ id: "bob", handle: "bob" });
-      expect(asBob.map((c) => c.handle).sort()).toEqual(["alice", "bob"]);
-    });
+describe("computeScanData — revision activity", () => {
+  it("returns empty maps when no revisions exist", async () => {
+    await ensureDirectories();
+    const { activityMap, revertCounts } = await computeScanData();
+    expect(activityMap.size).toBe(0);
+    expect(revertCounts.size).toBe(0);
   });
 
-  describe("buildContributorProfile", () => {
-    it("counts edits correctly across multiple pages", async () => {
-      await createPage("page-x", "Page X", "# Page X\n\nContent.");
-      await createPage("page-y", "Page Y", "# Page Y\n\nContent.");
+  it("aggregates edits per author across pages", async () => {
+    await createPage("page-a", "Page A", "# Page A\n\nContent.");
+    await createPage("page-b", "Page B", "# Page B\n\nContent.");
 
-      // Alice edits both pages
-      await saveRevision("page-x", "# Page X\n\nv1", "alice");
-      await saveRevision("page-x", "# Page X\n\nv2", "alice");
-      await saveRevision("page-y", "# Page Y\n\nv1", "alice");
+    // Alice edits page-a twice, bob edits page-b once.
+    await saveRevision("page-a", "# Page A\n\nv1", "alice");
+    await saveRevision("page-a", "# Page A\n\nv2", "alice");
+    await saveRevision("page-b", "# Page B\n\nv1", "bob");
 
-      const profile = await buildContributorProfile("alice");
-      expect(profile.handle).toBe("alice");
-      expect(profile.editCount).toBe(3);
-      expect(profile.pagesEdited).toBe(2);
-    });
-
-    it("uses the contributor index when present (O(1) fast-path, not a live scan)", async () => {
-      await createPage("idx-page", "Idx", "# Idx\n\nc");
-      await saveRevision("idx-page", "# Idx\n\nv1", "alice");
-      // Seed the index from the current on-disk state → alice has 1 edit.
-      const { rebuildContributorIndex } = await import("../contributor-index");
-      await rebuildContributorIndex();
-      // Add MORE on-disk activity the index doesn't know about.
-      await saveRevision("idx-page", "# Idx\n\nv2", "alice");
-      // The profile must come from the (now-stale) index, not a fresh scan — so
-      // it still reports 1 edit. A re-scan would read the revisions → 2.
-      const profile = await buildContributorProfile("alice");
-      expect(profile.editCount).toBe(1);
-    });
-
-    it("returns an empty profile (no scan) for a handle absent from a present index", async () => {
-      await createPage("idx-page2", "Idx2", "# Idx2\n\nc");
-      await saveRevision("idx-page2", "# Idx2\n\nv1", "alice");
-      const { rebuildContributorIndex } = await import("../contributor-index");
-      await rebuildContributorIndex(); // index present, knows only alice
-      // bob isn't in the index; give him on-disk activity a scan WOULD find.
-      await saveRevision("idx-page2", "# Idx2\n\nv2", "bob");
-      // Index present → bob short-circuits to a zeroed profile, NOT a scan
-      // (which would report editCount 1). Guards the "absent handle still skips
-      // the scan" contract against a regression that re-scans unknown handles.
-      const profile = await buildContributorProfile("bob");
-      expect(profile.handle).toBe("bob");
-      expect(profile.editCount).toBe(0);
-    });
-
-    it("counts talk comments and threads", async () => {
-      await ensureDirectories();
-
-      // Alice creates the thread (1 thread, 1 comment), bob replies (1
-      // comment, 0 threads), alice follows up (2 comments total).
-      await writeDiscussFixture("some-page", [
-        {
-          title: "Discussion",
-          comments: [
-            { author: "alice", body: "Initial post" },
-            { author: "bob", body: "Reply to alice" },
-            { author: "alice", body: "Follow-up" },
-          ],
-        },
-      ]);
-
-      const aliceProfile = await buildContributorProfile("alice");
-      expect(aliceProfile.commentCount).toBe(2);
-      expect(aliceProfile.threadsCreated).toBe(1);
-
-      const bobProfile = await buildContributorProfile("bob");
-      expect(bobProfile.commentCount).toBe(1);
-      expect(bobProfile.threadsCreated).toBe(0);
-    });
-
-    it("returns a zeroed-out profile for unknown handle", async () => {
-      await ensureDirectories();
-      const profile = await buildContributorProfile("nobody");
-      expect(profile.handle).toBe("nobody");
-      expect(profile.editCount).toBe(0);
-      expect(profile.pagesEdited).toBe(0);
-      expect(profile.commentCount).toBe(0);
-      expect(profile.threadsCreated).toBe(0);
-      expect(profile.revertCount).toBe(0);
-      expect(profile.trustScore).toBe(0);
-    });
+    const { activityMap } = await computeScanData();
+    expect(activityMap.get("alice")!.editCount).toBe(2);
+    expect(activityMap.get("alice")!.pagesEdited).toEqual(new Set(["page-a"]));
+    expect(activityMap.get("bob")!.editCount).toBe(1);
   });
 
-  describe("trust score", () => {
-    // ~60 sequential `saveRevision` calls, each a whole-file write that since
-    // DW-161 fsyncs a tmp file before renaming it into place. Measured here:
-    // ~27ms before the change, ~0.5s after it solo, and ~5.1s under the full
-    // parallel suite — i.e. straddling the default 5s budget. Same situation as
-    // the query-history cap row: the durability cost is real and intended, but
-    // it leaves this row with no headroom, so it needs an explicit budget
-    // rather than a coin flip on CI. Only the budget moves.
-    it("caps at 1.0 for prolific contributors", async () => {
-      await createPage("page-trust", "Trust Page", "# Trust\n\nContent.");
+  it("counts distinct pages edited, not edits", async () => {
+    await createPage("page-x", "Page X", "# Page X\n\nContent.");
+    await createPage("page-y", "Page Y", "# Page Y\n\nContent.");
 
-      // Create 60 revisions by "prolific" (well above the /50 threshold)
-      for (let i = 0; i < 60; i++) {
-        await saveRevision("page-trust", `# Trust\n\nv${i}`, "prolific");
-      }
+    await saveRevision("page-x", "# Page X\n\nv1", "alice");
+    await saveRevision("page-x", "# Page X\n\nv2", "alice");
+    await saveRevision("page-y", "# Page Y\n\nv1", "alice");
 
-      const profile = await buildContributorProfile("prolific");
-      expect(profile.editCount).toBe(60);
-      expect(profile.trustScore).toBe(1);
-    }, 30_000);
-
-    it("computes trust proportionally for low activity", async () => {
-      await createPage("page-low", "Low Page", "# Low\n\nContent.");
-
-      // 10 edits → trust = min(1, 10/50) = 0.2
-      for (let i = 0; i < 10; i++) {
-        await saveRevision("page-low", `# Low\n\nv${i}`, "newcomer");
-      }
-
-      const profile = await buildContributorProfile("newcomer");
-      expect(profile.editCount).toBe(10);
-      expect(profile.trustScore).toBeCloseTo(0.2);
-    });
-
-    it("includes comment count in trust calculation", async () => {
-      await ensureDirectories();
-
-      // 5 comments, 0 edits → trust = min(1, 5/50) = 0.1
-      await writeDiscussFixture("discuss-page", [
-        {
-          title: "Thread 1",
-          comments: [
-            { author: "commenter", body: "post 1" },
-            { author: "commenter", body: "post 2" },
-            { author: "commenter", body: "post 3" },
-            { author: "commenter", body: "post 4" },
-            { author: "commenter", body: "post 5" },
-          ],
-        },
-      ]);
-
-      const profile = await buildContributorProfile("commenter");
-      expect(profile.commentCount).toBe(5);
-      expect(profile.editCount).toBe(0);
-      expect(profile.trustScore).toBeCloseTo(0.1);
-    });
+    const { activityMap } = await computeScanData();
+    const alice = activityMap.get("alice")!;
+    expect(alice.editCount).toBe(3);
+    expect(alice.pagesEdited).toEqual(new Set(["page-x", "page-y"]));
   });
 
-  describe("firstSeen and lastSeen", () => {
-    it("reflects actual date range from revisions", async () => {
-      await createPage("page-dates", "Dates", "# Dates\n\nContent.");
+  it("excludes agent-scoped pages so agents aren't scanned as contributors", async () => {
+    // A human page edited by a human...
+    await createPage("page-a", "Page A", "# Page A\n\nContent.");
+    await saveRevision("page-a", "# Page A\n\nv1", "alice");
 
-      // Create revisions with known timestamps by writing files directly
-      const revisionsDir = path.join(process.env.WIKI_DIR!, ".revisions", "page-dates");
-      await fs.mkdir(revisionsDir, { recursive: true });
+    // ...and an agent-scoped page authored by the agent itself. Its author
+    // (the agent's composite id) must NOT surface in the scan at all.
+    await createPage(
+      "agent-note",
+      "Agent Note",
+      "---\ntype: agent-knowledge\n---\n\n# Agent Note\n\nLearned.",
+    );
+    await saveRevision("agent-note", "# Agent Note\n\nv1", "yuanhao--yoyo");
 
-      const earlyTs = 1700000000000; // 2023-11-14
-      const lateTs  = 1800000000000; // 2027-01-15
-
-      await fs.writeFile(path.join(revisionsDir, `${earlyTs}.md`), "v1", "utf-8");
-      await fs.writeFile(
-        path.join(revisionsDir, `${earlyTs}.meta.json`),
-        JSON.stringify({ author: "timekeeper" }),
-        "utf-8",
-      );
-
-      await fs.writeFile(path.join(revisionsDir, `${lateTs}.md`), "v2", "utf-8");
-      await fs.writeFile(
-        path.join(revisionsDir, `${lateTs}.meta.json`),
-        JSON.stringify({ author: "timekeeper" }),
-        "utf-8",
-      );
-
-      const profile = await buildContributorProfile("timekeeper");
-      expect(profile.firstSeen).toBe(new Date(earlyTs).toISOString());
-      expect(profile.lastSeen).toBe(new Date(lateTs).toISOString());
-    });
-
-    it("uses epoch for unknown handle with no activity", async () => {
-      await ensureDirectories();
-      const profile = await buildContributorProfile("ghost");
-      expect(profile.firstSeen).toBe(new Date(0).toISOString());
-      expect(profile.lastSeen).toBe(new Date(0).toISOString());
-    });
+    const { activityMap } = await computeScanData();
+    expect([...activityMap.keys()]).toEqual(["alice"]);
   });
 
-  describe("revert detection", () => {
-    it("contributor with no reverts gets full trust score", async () => {
-      await createPage("page-norevert", "No Revert", "# No Revert\n\nContent.");
+  it("folds automation authors (system/lint-fix) into the agent, not their own handles", async () => {
+    await createPage(
+      "page-a",
+      "Page A",
+      "---\nowner: alice\nvisibility: public\n---\n\n# Page A\n\nc.",
+    );
+    await saveRevision("page-a", "# Page A\n\nv1", "alice");
+    await saveRevision("page-a", "# Page A\n\nv2", "system");
+    await saveRevision("page-a", "# Page A\n\nv3", "lint-fix");
+    // ...and a talk comment by an automation actor (the mergeTalkActivity path).
+    await writeDiscussFixture("page-a", [
+      {
+        title: "T",
+        comments: [
+          { author: "alice", body: "post" },
+          { author: "lint-fix", body: "auto comment" },
+        ],
+      },
+    ]);
 
-      // Alice makes several edits, no one reverts
-      for (let i = 0; i < 10; i++) {
-        await saveRevision("page-norevert", `# No Revert\n\nv${i} ${"x".repeat(100)}`, "alice");
-      }
-
-      const profile = await buildContributorProfile("alice");
-      expect(profile.revertCount).toBe(0);
-      // trust = min(1, 10/50) * (1 - min(0.5, 0*0.1)) = 0.2 * 1 = 0.2
-      expect(profile.trustScore).toBeCloseTo(0.2);
-    });
-
-    it("contributor whose content was reverted gets reduced trust score", async () => {
-      await createPage("page-reverted", "Reverted", "# Reverted\n\nContent.");
-
-      // Alice writes a long revision
-      await saveRevision("page-reverted", "# Reverted\n\n" + "x".repeat(1000), "alice");
-      // Bob substantially reduces it (>50% reduction = revert of alice)
-      await saveRevision("page-reverted", "# Reverted\n\nShort.", "bob");
-
-      const aliceProfile = await buildContributorProfile("alice");
-      expect(aliceProfile.revertCount).toBe(1);
-      // trust = min(1, 1/50) * (1 - min(0.5, 1*0.1)) = 0.02 * 0.9 = 0.018
-      expect(aliceProfile.trustScore).toBeCloseTo(0.018);
-
-      // Bob should have 0 reverts (his content wasn't reverted)
-      const bobProfile = await buildContributorProfile("bob");
-      expect(bobProfile.revertCount).toBe(0);
-    });
-
-    it("revert detection only triggers when different author reverts", async () => {
-      await createPage("page-self", "Self Edit", "# Self\n\nContent.");
-
-      // Alice writes a long revision then shortens it herself
-      await saveRevision("page-self", "# Self\n\n" + "x".repeat(1000), "alice");
-      await saveRevision("page-self", "# Self\n\nShort.", "alice");
-
-      const profile = await buildContributorProfile("alice");
-      // Same author reducing own content is NOT a revert
-      expect(profile.revertCount).toBe(0);
-    });
-
-    it("revert detection requires >50% size reduction", async () => {
-      await createPage("page-small-edit", "Small Edit", "# Small\n\nContent.");
-
-      // Alice writes 100 chars
-      await saveRevision("page-small-edit", "# Small\n\n" + "x".repeat(100), "alice");
-      // Bob trims only 30% (not enough to count as revert)
-      await saveRevision("page-small-edit", "# Small\n\n" + "x".repeat(77), "bob");
-
-      const profile = await buildContributorProfile("alice");
-      expect(profile.revertCount).toBe(0);
-    });
-
-    it("multiple reverts accumulate and cap trust penalty at 50%", async () => {
-      await createPage("page-multi", "Multi Revert", "# Multi\n\nContent.");
-
-      // Alice writes and bob reverts 6 times (above the 5-revert cap)
-      for (let i = 0; i < 6; i++) {
-        await saveRevision("page-multi", `# Multi\n\n${"x".repeat(1000)} round ${i}`, "alice");
-        await saveRevision("page-multi", "# Multi\n\nReverted.", "bob");
-      }
-
-      const aliceProfile = await buildContributorProfile("alice");
-      expect(aliceProfile.revertCount).toBe(6);
-      // trust = min(1, 6/50) * (1 - min(0.5, 6*0.1)) = 0.12 * 0.5 = 0.06
-      // (penalty capped at 0.5 even though 6*0.1 = 0.6)
-      expect(aliceProfile.trustScore).toBeCloseTo(0.06);
-    });
-
-    it("revert counts show up in listContributors", async () => {
-      await createPage("page-list", "List Test", "# List\n\nContent.");
-
-      // Alice writes, bob reverts
-      await saveRevision("page-list", "# List\n\n" + "x".repeat(500), "alice");
-      await saveRevision("page-list", "# List\n\nShort.", "bob");
-
-      const contributors = await listContributors();
-      const alice = contributors.find(c => c.handle === "alice");
-      const bob = contributors.find(c => c.handle === "bob");
-
-      expect(alice).toBeDefined();
-      expect(alice!.revertCount).toBe(1);
-      expect(bob).toBeDefined();
-      expect(bob!.revertCount).toBe(0);
-    });
+    const { activityMap } = await computeScanData({ id: "alice", handle: "alice" });
+    const handles = [...activityMap.keys()];
+    expect(handles).toContain("alice");
+    expect(handles).toContain("yoyo");
+    expect(handles).not.toContain("system");
+    expect(handles).not.toContain("lint-fix");
+    // Both automation revisions land on the agent, and so does its comment.
+    expect(activityMap.get("yoyo")!.editCount).toBe(2);
+    expect(activityMap.get("yoyo")!.commentCount).toBe(1);
   });
 
-  describe("batch lookup — buildContributorProfiles", () => {
-    it("returns profiles for multiple handles in one call", async () => {
-      await createPage("page-batch", "Batch", "# Batch\n\nContent.");
+  it("honors the principal's visibility — a private page is scanned only for its owner", async () => {
+    // A PUBLIC page edited by alice (visible to everyone).
+    await createPage(
+      "pub",
+      "Pub",
+      "---\nowner: alice\nvisibility: public\n---\n\n# Pub\n\nc.",
+    );
+    await saveRevision("pub", "# Pub\n\nv1", "alice");
 
-      await saveRevision("page-batch", "# Batch\n\nv1", "alice");
-      await saveRevision("page-batch", "# Batch\n\nv2", "alice");
-      await saveRevision("page-batch", "# Batch\n\nv3", "bob");
+    // A PRIVATE page owned+edited by bob (invisible to anonymous).
+    await createPage(
+      "priv",
+      "Priv",
+      "---\nowner: bob\nvisibility: private\n---\n\n# Priv\n\nc.",
+    );
+    await saveRevision("priv", "# Priv\n\nv1", "bob");
 
-      const profiles = await buildContributorProfiles(["alice", "bob"]);
-      expect(profiles).toHaveLength(2);
-      expect(profiles[0].handle).toBe("alice");
-      expect(profiles[0].editCount).toBe(2);
-      expect(profiles[1].handle).toBe("bob");
-      expect(profiles[1].editCount).toBe(1);
-    });
+    const anon = await computeScanData(null);
+    expect([...anon.activityMap.keys()]).toEqual(["alice"]);
 
-    it("returns zeroed-out profile for unknown handles in batch", async () => {
-      await ensureDirectories();
+    const asBob = await computeScanData({ id: "bob", handle: "bob" });
+    expect([...asBob.activityMap.keys()].sort()).toEqual(["alice", "bob"]);
+  });
+});
 
-      const profiles = await buildContributorProfiles(["ghost", "phantom"]);
-      expect(profiles).toHaveLength(2);
-      expect(profiles[0].handle).toBe("ghost");
-      expect(profiles[0].editCount).toBe(0);
-      expect(profiles[0].trustScore).toBe(0);
-      expect(profiles[1].handle).toBe("phantom");
-      expect(profiles[1].editCount).toBe(0);
-    });
+describe("computeScanData — talk activity", () => {
+  it("counts comments and credits the thread to its first commenter", async () => {
+    await ensureDirectories();
 
-    it("mixes known and unknown handles correctly", async () => {
-      await createPage("page-mix", "Mix", "# Mix\n\nContent.");
-      await saveRevision("page-mix", "# Mix\n\nv1", "alice");
+    // Alice creates the thread (1 thread, 1 comment), bob replies (1
+    // comment, 0 threads), alice follows up (2 comments total).
+    await writeDiscussFixture("some-page", [
+      {
+        title: "Discussion",
+        comments: [
+          { author: "alice", body: "Initial post" },
+          { author: "bob", body: "Reply to alice" },
+          { author: "alice", body: "Follow-up" },
+        ],
+      },
+    ]);
 
-      const profiles = await buildContributorProfiles(["alice", "nobody"]);
-      expect(profiles).toHaveLength(2);
-      expect(profiles[0].handle).toBe("alice");
-      expect(profiles[0].editCount).toBe(1);
-      expect(profiles[1].handle).toBe("nobody");
-      expect(profiles[1].editCount).toBe(0);
-    });
-
-    it("preserves order matching input handles", async () => {
-      await createPage("page-order", "Order", "# Order\n\nContent.");
-      await saveRevision("page-order", "# Order\n\nv1", "zara");
-      await saveRevision("page-order", "# Order\n\nv2", "alice");
-
-      const profiles = await buildContributorProfiles(["zara", "alice"]);
-      expect(profiles[0].handle).toBe("zara");
-      expect(profiles[1].handle).toBe("alice");
-    });
+    const { activityMap } = await computeScanData();
+    expect(activityMap.get("alice")!.commentCount).toBe(2);
+    expect(activityMap.get("alice")!.threadsCreated).toBe(1);
+    expect(activityMap.get("bob")!.commentCount).toBe(1);
+    expect(activityMap.get("bob")!.threadsCreated).toBe(0);
   });
 
-  describe("shared scan data — computeScanData", () => {
-    it("computes scan data that can be shared across multiple profile builds", async () => {
-      await createPage("page-shared", "Shared", "# Shared\n\nContent.");
-      await saveRevision("page-shared", "# Shared\n\nv1", "alice");
-      await saveRevision("page-shared", "# Shared\n\nv2", "bob");
+  it("has no entry at all for a handle with no activity", async () => {
+    await ensureDirectories();
+    const { activityMap, revertCounts } = await computeScanData();
+    expect(activityMap.has("nobody")).toBe(false);
+    expect(revertCounts.get("nobody")).toBeUndefined();
+  });
+});
 
-      // Compute scan data once
-      const scanData = await computeScanData();
+describe("computeScanData — first/last seen", () => {
+  it("carries the full date range of an author's revisions", async () => {
+    await createPage("page-dates", "Dates", "# Dates\n\nContent.");
 
-      // Build profiles using the shared scan data
-      const aliceProfile = await buildContributorProfile("alice", scanData);
-      const bobProfile = await buildContributorProfile("bob", scanData);
+    // Create revisions with known timestamps by writing files directly
+    const revisionsDir = path.join(process.env.WIKI_DIR!, ".revisions", "page-dates");
+    await fs.mkdir(revisionsDir, { recursive: true });
 
-      expect(aliceProfile.handle).toBe("alice");
-      expect(aliceProfile.editCount).toBe(1);
-      expect(bobProfile.handle).toBe("bob");
-      expect(bobProfile.editCount).toBe(1);
-    });
+    const earlyTs = 1700000000000; // 2023-11-14
+    const lateTs  = 1800000000000; // 2027-01-15
 
-    it("shared scan data includes talk activity", async () => {
-      await ensureDirectories();
-      await writeDiscussFixture("discuss-page", [
-        {
-          title: "Thread",
-          comments: [
-            { author: "alice", body: "Post" },
-            { author: "bob", body: "Reply" },
-          ],
-        },
-      ]);
+    await fs.writeFile(path.join(revisionsDir, `${earlyTs}.md`), "v1", "utf-8");
+    await fs.writeFile(
+      path.join(revisionsDir, `${earlyTs}.meta.json`),
+      JSON.stringify({ author: "timekeeper" }),
+      "utf-8",
+    );
 
-      const scanData = await computeScanData();
-      const aliceProfile = await buildContributorProfile("alice", scanData);
-      const bobProfile = await buildContributorProfile("bob", scanData);
+    await fs.writeFile(path.join(revisionsDir, `${lateTs}.md`), "v2", "utf-8");
+    await fs.writeFile(
+      path.join(revisionsDir, `${lateTs}.meta.json`),
+      JSON.stringify({ author: "timekeeper" }),
+      "utf-8",
+    );
 
-      expect(aliceProfile.commentCount).toBe(1);
-      expect(aliceProfile.threadsCreated).toBe(1);
-      expect(bobProfile.commentCount).toBe(1);
-      expect(bobProfile.threadsCreated).toBe(0);
-    });
+    const { activityMap } = await computeScanData();
+    // `dates` is what firstSeen/lastSeen are derived from (sorted min/max) by
+    // every consumer of a scan — `contributor-index.ts:scanDataToIndex` today.
+    const sorted = activityMap.get("timekeeper")!.dates.slice().sort();
+    expect(sorted[0]).toBe(new Date(earlyTs).toISOString());
+    expect(sorted[sorted.length - 1]).toBe(new Date(lateTs).toISOString());
+  });
+});
 
-    it("shared scan data includes revert detection", async () => {
-      await createPage("page-scan-revert", "Scan Revert", "# Scan\n\nContent.");
-      await saveRevision("page-scan-revert", "# Scan\n\n" + "x".repeat(1000), "alice");
-      await saveRevision("page-scan-revert", "# Scan\n\nShort.", "bob");
-
-      const scanData = await computeScanData();
-      const aliceProfile = await buildContributorProfile("alice", scanData);
-
-      expect(aliceProfile.revertCount).toBe(1);
-    });
-
-    it("batch profiles with shared scan data match individual builds", async () => {
-      await createPage("page-match", "Match", "# Match\n\nContent.");
-      await saveRevision("page-match", "# Match\n\nv1", "alice");
-      await saveRevision("page-match", "# Match\n\nv2", "bob");
-
-      const scanData = await computeScanData();
-
-      const batch = await buildContributorProfiles(["alice", "bob"], scanData);
-      const aliceSingle = await buildContributorProfile("alice", scanData);
-      const bobSingle = await buildContributorProfile("bob", scanData);
-
-      expect(batch[0]).toEqual(aliceSingle);
-      expect(batch[1]).toEqual(bobSingle);
-    });
+describe("computeTrustScore — the trust formula", () => {
+  it("caps the activity factor at 1.0 for prolific contributors", () => {
+    // 60 contributions is well above the /50 saturation point.
+    expect(computeTrustScore(60, 0, 0)).toBe(1);
+    expect(computeTrustScore(30, 30, 0)).toBe(1);
   });
 
-  describe("reduceReverts normalizeActor", () => {
-    /** Helper to build a minimal Revision object for unit tests. */
-    function rev(author: string, sizeBytes: number, timestamp = 0): Revision {
-      return { timestamp, date: new Date(timestamp).toISOString(), slug: "test-page", sizeBytes, author };
+  it("scales proportionally below the saturation point", () => {
+    // 10 edits → trust = min(1, 10/50) = 0.2
+    expect(computeTrustScore(10, 0, 0)).toBeCloseTo(0.2);
+  });
+
+  it("includes comment count in the activity factor", () => {
+    // 5 comments, 0 edits → trust = min(1, 5/50) = 0.1
+    expect(computeTrustScore(0, 5, 0)).toBeCloseTo(0.1);
+  });
+
+  it("penalizes each revert by 10%, capped at a 50% reduction", () => {
+    // 1 edit, 1 revert → 0.02 * 0.9 = 0.018
+    expect(computeTrustScore(1, 0, 1)).toBeCloseTo(0.018);
+    // 6 reverts → the penalty caps at 0.5 even though 6*0.1 = 0.6
+    expect(computeTrustScore(6, 0, 6)).toBeCloseTo(0.06);
+    expect(computeTrustScore(6, 0, 6)).toBe(computeTrustScore(6, 0, 5));
+  });
+
+  it("applies to the counts a real scan produces", async () => {
+    await createPage("page-low", "Low Page", "# Low\n\nContent.");
+    for (let i = 0; i < 10; i++) {
+      await saveRevision("page-low", `# Low\n\nv${i}`, "newcomer");
+    }
+    await writeDiscussFixture("page-low", [
+      { title: "T", comments: [{ author: "newcomer", body: "hi" }] },
+    ]);
+
+    const { activityMap, revertCounts } = await computeScanData();
+    const act = activityMap.get("newcomer")!;
+    expect(act.editCount).toBe(10);
+    expect(act.commentCount).toBe(1);
+    // 11 contributions, no reverts → 11/50.
+    expect(
+      computeTrustScore(act.editCount, act.commentCount, revertCounts.get("newcomer") ?? 0),
+    ).toBeCloseTo(0.22);
+  });
+});
+
+describe("computeScanData — revert detection", () => {
+  it("records no revert when nobody shrinks another author's content", async () => {
+    await createPage("page-norevert", "No Revert", "# No Revert\n\nContent.");
+
+    for (let i = 0; i < 10; i++) {
+      await saveRevision("page-norevert", `# No Revert\n\nv${i} ${"x".repeat(100)}`, "alice");
     }
 
-    it("treats different automation handles as same-author (no false revert)", () => {
-      // "system" writes 1000 bytes, then "lint-fix" shrinks to 100 bytes.
-      // Both normalise to "yoyo", so this is a same-author edit, NOT a revert.
-      const revisions: Revision[][] = [
-        [rev("lint-fix", 100, 2), rev("system", 1000, 1)], // newest-first
-      ];
-      const counts = reduceReverts(revisions);
-      // No revert should be counted — same normalized author.
-      expect(counts.size).toBe(0);
-    });
+    const { revertCounts } = await computeScanData();
+    expect(revertCounts.get("alice") ?? 0).toBe(0);
+  });
 
-    it("keys revert counts on the normalized handle", () => {
-      // "system" writes 1000 bytes, then "alice" shrinks to 100 (>50% reduction).
-      // The revert count should be keyed as "yoyo" (normalized "system"), not "system".
-      const revisions: Revision[][] = [
-        [rev("alice", 100, 2), rev("system", 1000, 1)], // newest-first
-      ];
-      const counts = reduceReverts(revisions);
-      expect(counts.get("yoyo")).toBe(1);
-      expect(counts.has("system")).toBe(false);
-    });
+  it("counts a >50% shrink by a different author against the reverted author", async () => {
+    await createPage("page-reverted", "Reverted", "# Reverted\n\nContent.");
 
-    it("trust score for yoyo reflects revert penalties from automation actors", async () => {
-      await createPage("page-auto-revert", "Auto Revert", "# Auto\n\nContent.");
-      // "system" writes a large revision...
-      await saveRevision("page-auto-revert", "# Auto\n\n" + "x".repeat(1000), "system");
-      // ...then a human substantially shrinks it (>50% reduction = revert).
-      await saveRevision("page-auto-revert", "# Auto\n\nShort.", "alice");
+    // Alice writes a long revision; bob substantially reduces it.
+    await saveRevision("page-reverted", "# Reverted\n\n" + "x".repeat(1000), "alice");
+    await saveRevision("page-reverted", "# Reverted\n\nShort.", "bob");
 
-      const scanData = await computeScanData();
-      // The normalized handle "yoyo" should appear in activityMap (from reduceActivity)
-      // and revertCounts (from reduceReverts) with matching keys.
-      const yoyoProfile = await buildContributorProfile("yoyo", scanData);
-      expect(yoyoProfile.revertCount).toBe(1);
-      expect(yoyoProfile.trustScore).toBeLessThan(1.0);
-    });
+    const { revertCounts } = await computeScanData();
+    expect(revertCounts.get("alice")).toBe(1);
+    // Bob's own content was never reverted.
+    expect(revertCounts.get("bob") ?? 0).toBe(0);
+  });
+
+  it("does not count an author shrinking their OWN content", async () => {
+    await createPage("page-self", "Self Edit", "# Self\n\nContent.");
+
+    await saveRevision("page-self", "# Self\n\n" + "x".repeat(1000), "alice");
+    await saveRevision("page-self", "# Self\n\nShort.", "alice");
+
+    const { revertCounts } = await computeScanData();
+    expect(revertCounts.get("alice") ?? 0).toBe(0);
+  });
+
+  it("requires more than a 50% size reduction", async () => {
+    await createPage("page-small-edit", "Small Edit", "# Small\n\nContent.");
+
+    // Alice writes 100 chars; bob trims only ~30% — not a revert.
+    await saveRevision("page-small-edit", "# Small\n\n" + "x".repeat(100), "alice");
+    await saveRevision("page-small-edit", "# Small\n\n" + "x".repeat(77), "bob");
+
+    const { revertCounts } = await computeScanData();
+    expect(revertCounts.get("alice") ?? 0).toBe(0);
+  });
+
+  it("accumulates repeated reverts of the same author", async () => {
+    await createPage("page-multi", "Multi Revert", "# Multi\n\nContent.");
+
+    for (let i = 0; i < 6; i++) {
+      await saveRevision("page-multi", `# Multi\n\n${"x".repeat(1000)} round ${i}`, "alice");
+      await saveRevision("page-multi", "# Multi\n\nReverted.", "bob");
+    }
+
+    const { activityMap, revertCounts } = await computeScanData();
+    expect(revertCounts.get("alice")).toBe(6);
+    // …and the trust formula caps the penalty those 6 reverts carry.
+    const act = activityMap.get("alice")!;
+    expect(computeTrustScore(act.editCount, act.commentCount, 6)).toBeCloseTo(0.06);
+  });
+
+  it("keys revert counts on the NORMALIZED handle, so automation reverts land on the agent", async () => {
+    await createPage("page-auto-revert", "Auto Revert", "# Auto\n\nContent.");
+    // "system" writes a large revision...
+    await saveRevision("page-auto-revert", "# Auto\n\n" + "x".repeat(1000), "system");
+    // ...then a human substantially shrinks it (>50% reduction = revert).
+    await saveRevision("page-auto-revert", "# Auto\n\nShort.", "alice");
+
+    const { activityMap, revertCounts } = await computeScanData();
+    // The normalized handle "yoyo" appears in BOTH maps with matching keys.
+    expect(activityMap.has("yoyo")).toBe(true);
+    expect(revertCounts.get("yoyo")).toBe(1);
+    expect(revertCounts.has("system")).toBe(false);
+  });
+});
+
+describe("reduceReverts — normalizeActor (pure)", () => {
+  /** Helper to build a minimal Revision object for unit tests. */
+  function rev(author: string, sizeBytes: number, timestamp = 0): Revision {
+    return { timestamp, date: new Date(timestamp).toISOString(), slug: "test-page", sizeBytes, author };
+  }
+
+  it("treats different automation handles as same-author (no false revert)", () => {
+    // "system" writes 1000 bytes, then "lint-fix" shrinks to 100 bytes.
+    // Both normalise to "yoyo", so this is a same-author edit, NOT a revert.
+    const revisions: Revision[][] = [
+      [rev("lint-fix", 100, 2), rev("system", 1000, 1)], // newest-first
+    ];
+    const counts = reduceReverts(revisions);
+    // No revert should be counted — same normalized author.
+    expect(counts.size).toBe(0);
+  });
+
+  it("keys revert counts on the normalized handle", () => {
+    // "system" writes 1000 bytes, then "alice" shrinks to 100 (>50% reduction).
+    // The revert count should be keyed as "yoyo" (normalized "system"), not "system".
+    const revisions: Revision[][] = [
+      [rev("alice", 100, 2), rev("system", 1000, 1)], // newest-first
+    ];
+    const counts = reduceReverts(revisions);
+    expect(counts.get("yoyo")).toBe(1);
+    expect(counts.has("system")).toBe(false);
   });
 });

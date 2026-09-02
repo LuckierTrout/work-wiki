@@ -209,15 +209,20 @@ export async function scanForMaintenance(
 // Precomputed-index self-heal (Phase 2)
 // ---------------------------------------------------------------------------
 //
-// The seven derived KV indexes (pages, commons, owner-slugs, backlinks,
-// discuss-stats, contributors, recent) are maintained incrementally on the
-// write/talk paths. Drift can still creep in (a failed fail-soft update, an
-// out-of-band edit, the coarse contributor fields left to rebuild). This
-// rebuilds all seven from ground truth in one daily pass so any drift
+// The six derived KV indexes (pages, commons, owner-slugs, backlinks,
+// discuss-stats, recent) are maintained incrementally on the write path. Drift
+// can still creep in (a failed fail-soft update, an out-of-band edit). This
+// rebuilds all six from ground truth in one daily pass so any drift
 // self-corrects. Fully fail-soft — each rebuild is independent and a failure
 // never aborts the others or the maintenance scan.
+//
+// The contributor index is deliberately NOT in this set: nothing reads it any
+// more (the contributor surfaces are retired), and its rebuild is a full
+// wiki-wide scan — every page's revisions plus every `discuss/` file — so the
+// daily pass stopped paying for it. `rebuildContributorIndex()` remains
+// callable on demand as a repair tool.
 
-/** Rebuild all seven precomputed indexes. Returns a per-index ok/error summary. */
+/** Rebuild all six precomputed indexes. Returns a per-index ok/error summary. */
 export async function rebuildDerivedIndexes(): Promise<
   Record<string, { ok: boolean; error?: string }>
 > {
@@ -233,7 +238,6 @@ export async function rebuildDerivedIndexes(): Promise<
     ["owner-slugs", async () => (await import("./owner-index")).rebuildOwnerIndex()],
     ["backlinks", async () => (await import("./backlink-index")).rebuildBacklinkIndex()],
     ["discuss-stats", async () => (await import("./discuss-stats-index")).rebuildDiscussStatsIndex()],
-    ["contributors", async () => (await import("./contributor-index")).rebuildContributorIndex()],
     ["recent", async () => (await import("./recent-index")).rebuildRecentIndex()],
   ];
   for (const [name, run] of steps) {

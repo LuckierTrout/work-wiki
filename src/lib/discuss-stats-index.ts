@@ -3,12 +3,26 @@
  *
  * Shape `Record<slug, { total: number; open: number }>`. Replaces the per-render
  * `discuss/` directory scan in {@link getDiscussionStatsForSlugs} with an O(1)
- * KV read. Maintained incrementally directly from `talk.ts` (talk mutations
- * bypass the page lifecycle op), and rebuilt daily as self-heal.
+ * KV read.
+ *
+ * The incremental writer it once had is gone: DW-390 deleted the `talk.ts`
+ * thread/comment mutations that called {@link syncDiscussStatsForSlug}, so
+ * nothing authors a thread or a comment any more. What still writes this index
+ * today:
+ *   • `deleteDiscussions` (`talk.ts`) → {@link removeDiscussStatsForSlug}, on
+ *     the page-lifecycle teardown path.
+ *   • {@link rebuildDiscussStatsIndex}, from the daily maintenance scan.
  *
  * Behavior-preserving: the read site falls back to the live directory scan
  * whenever the index is ABSENT (reader returns `null`). An empty-but-present
  * index (`{}`) is a valid seeded state.
+ *
+ * That read site is itself unreached, though — don't take it for live wiring.
+ * `getDiscussionStatsForSlugs` (`talk.ts`) is reached only from `browse.ts`,
+ * which has no non-test importer now that `/api/wiki/browse` is a
+ * `RETIRED_SURFACES` entry. `talk.ts`'s own banner and SCHEMA.md file it under
+ * "Present but unreached"; this index is maintained for it regardless, because
+ * the rebuild is cheap and the chain is one route away from returning.
  */
 
 import { getStorage } from "./storage";
@@ -62,9 +76,11 @@ export function statsFromThreads(threads: TalkThread[]): DiscussStat {
 }
 
 /**
- * Upsert one slug's stats. Called from `talk.ts` mutations with the in-memory
- * threads array already held under the `discuss:<slug>` lock. Fail-soft is the
- * caller's responsibility.
+ * Upsert one slug's stats from an in-memory threads array. UNREACHED: the
+ * `talk.ts` thread/comment mutations that called this (holding the threads they
+ * had just written) were deleted in DW-390, along with the `discuss:<slug>`
+ * lock they held it under. Kept as the incremental primitive beside
+ * {@link removeDiscussStatsForSlug}; fail-soft is the caller's responsibility.
  */
 export async function syncDiscussStatsForSlug(
   slug: string,

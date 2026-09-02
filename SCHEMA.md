@@ -65,8 +65,8 @@ These were added in Phase 1 of the work-wiki pivot.
 | `valid_from` | ISO date string (YYYY-MM-DD) | Today (ingest date) | Initial ingest and re-ingest (always resets to today — the content is re-verified) | `stale-page` lint check (flags pages verified over 180 days ago); page view temporal range ("Verified May 2026 · Review by Oct 2026") |
 | `owner` | string (principal handle) | the acting user (`"system"` for legacy/MCP) | Set from the authenticated session on write (never client-supplied); preserved on re-ingest | Accountability; basis (with `contributors`) for the "Mine" personal lens |
 | `visibility` | `"public"` \| `"private"` | `"public"` | Set on create; preserved on re-ingest (a private page is never silently re-published). `private` is a future paid feature | Read filtering (future, when private content lands) |
-| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | The contributor index (maintained on every write and rebuilt by the daily maintenance scan) and the contributor profiles computed from it — no product surface renders them today; the author union when two pages merge; the CLI page view's `Authors:` line |
-| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | The contributor index (maintained on every write and rebuilt by the daily maintenance scan) and the contributor profiles computed from it — no product surface renders them today; the contributor union when two pages merge; basis (with `owner`) for the "Mine" personal lens |
+| `authors` | string array | the acting user (`["system"]` for legacy/MCP) | Initial ingest from the session actor; preserved on re-ingest (never reset) | The contributor scan in `src/lib/contributors.ts` (`computeScanData()`), which `src/lib/contributor-index.ts` serializes into the contributor index on an explicit `rebuildContributorIndex()` — nothing maintains that index on write, nothing rebuilds it on a schedule, and no product surface renders it; the author union when two pages merge; the CLI page view's `Authors:` line |
+| `contributors` | string array | `[]` | Re-ingest / edit appends the acting identity (session principal) if not already present | The contributor scan in `src/lib/contributors.ts` (`computeScanData()`), which `src/lib/contributor-index.ts` serializes into the contributor index on an explicit `rebuildContributorIndex()` — nothing maintains that index on write, nothing rebuilds it on a schedule, and no product surface renders it; the contributor union when two pages merge; basis (with `owner`) for the "Mine" personal lens |
 | `content_hash` | string (FNV-1a hex) | hash of the ingested content | Set on ingest | Ingest dedup (`source_index`): identical content attaches to the existing page instead of re-synthesizing |
 | `disputed` | boolean | `false` | Set by ingest when a merge contradicts the existing page (or manually); nothing clears it automatically; preserved on re-ingest | Wiki page view warning badge (the `ArticleView` disputed banner); `disputed-page` lint check (lists the flagged pages for an owner to reconcile) |
 | `supersedes` | string (slug) | `""` (empty) | Set manually when a page replaces another; preserved on re-ingest | Future redirect system |
@@ -175,7 +175,7 @@ discussion badge counts went with the pages that carried them: `/wiki` and
 `src/lib/lifecycle.ts`; `src/lib/discuss-stats-index.ts` keeps the per-slug
 thread counts as a precomputed index that the maintenance scan rebuilds daily;
 and `src/lib/contributors.ts` scans the same `discuss/` files for the comment
-and thread-created counts in a contributor profile.
+and thread-created counts in its wiki-wide contributor scan.
 
 **Present but unreached:** one further piece is still exported and still
 correct, with nothing outside the tests reaching it.
@@ -198,9 +198,13 @@ Contributor profiles aggregate activity from two data sources — revision
 history and talk page discussions — to build a picture of each contributor's
 involvement and trustworthiness.
 
-**Built dynamically** by `buildContributorProfile()` and `listContributors()`
-in `src/lib/contributors.ts`. No persistent storage; profiles are computed on
-each request by scanning revisions and talk page JSON files.
+**Computed** by `computeScanData()` in `src/lib/contributors.ts` — one
+wiki-wide pass over every readable page's revisions plus every `discuss/` file,
+producing per-author activity and revert counts. `src/lib/contributor-index.ts`
+can persist that scan's RAW tallies as a KV index (edits, pages, comments,
+threads, reverts, first/last seen — no trust score is stored), and applies the
+trust formula below when it builds a profile on READ. Nothing calls either on a
+request path or on a schedule; see **Retired surfaces** below.
 
 **Trust score formula:**
 
@@ -225,12 +229,24 @@ is Next's `notFound()`, so it renders the app's own 404 UI. There is no
 `/wiki/contributors/:handle` detail page, and the `ContributorBadge` component
 no longer exists anywhere in `src/`.
 
-**Still live:** the library underneath. `buildContributorProfile()` and
-`listContributors()` in `src/lib/contributors.ts` are still exported and still
-compute the profile above (trust score, edit and comment counts, threads
-created, reverts, first/last seen), and the scan they share
-(`computeScanData()`) still backs `src/lib/contributor-index.ts`, which the
-maintenance scan rebuilds daily. No product surface renders them today.
+**Deleted with them:** the profile builders. `buildContributorProfile()`,
+`buildContributorProfiles()` and `listContributors()` are gone from
+`src/lib/contributors.ts` (DW-125) — the retired surfaces above were their last
+production callers, leaving only tests behind them.
+
+**Present but unreached:** the scan and the index. `computeScanData()`,
+`computeTrustScore()` and the pure reducers in `src/lib/contributors.ts` still
+compute the activity, revert and trust facts above, and every export of
+`src/lib/contributor-index.ts` is intact — the incremental hooks
+(`recordEditForAuthor` / `reverseEditForAuthor` / `recordTalkForAuthor`), the
+read helpers (`contributorProfileFromIndex` / `profilesFromIndex`) and
+`rebuildContributorIndex()`. None of them has a production caller. The lifecycle
+write/delete hook that maintained the index was removed once nothing read it,
+and the contributor rebuild is no longer one of `rebuildDerivedIndexes()`' steps
+(DW-126) — a daily wiki-wide scan whose output nothing consumed. Both modules
+are retained deliberately: `rebuildContributorIndex()` is an on-demand repair
+tool, and deleting them would decide whether the contributor trust surface ever
+returns, which is a product call rather than a cleanup.
 
 ## Revision attribution (Phase 2)
 
@@ -721,10 +737,11 @@ Phase 1 (schema evolution) is complete. Phase 2 (talk pages + attribution)
 shipped and then lost its product surfaces: the talk-page Discussion UI, the
 public contributor index and the REST routes behind both were cut with the move
 to a private, single-owner Workbench, and are entries in `RETIRED_SURFACES`
-(`src/lib/retired.ts`). What Phase 2 built underneath is unaffected — the
-`discuss/` storage format and its readers, the contributor profile library, and
-revision attribution — as the Talk pages, Contributor profiles and Revision
-attribution sections above describe.
+(`src/lib/retired.ts`). What Phase 2 built underneath is largely unaffected —
+the `discuss/` storage format and its readers, the contributor scan and index,
+and revision attribution — though the contributor *profile builders* went with
+their surfaces. The Talk pages, Contributor profiles and Revision attribution
+sections above describe exactly what is live, unreached and deleted.
 Phase 3 (X ingestion loop) library and API work is complete — `ingestXMention()`
 and `POST /api/ingest/x-mention` are implemented, along with the MCP tool
 `ingest_x_mention`. The remaining piece is the GitHub Actions polling workflow (#21),
@@ -734,8 +751,9 @@ registry, context API, `seedAgent()` utility, `agent-identity` page type, scoped
 search, MCP tools (`seed-agent`, `list-agents`, `update-agent`, `delete-agent`,
 `agent-context`), and the contributor profile library are implemented. The
 contributor product surfaces that library fed were retired afterwards
-(`src/lib/retired.ts`); the profiles themselves still compute. Remaining
-Phase 4 work:
+(`src/lib/retired.ts`), and its profile builders were then deleted; the
+underlying scan and trust score still compute (see Contributor profiles above).
+Remaining Phase 4 work:
 migrating yoyo's actual identity content into work-wiki pages and `grow.sh` integration.
 The schema will continue to evolve toward the full work-wiki model defined in
 [`work-wiki-concept.md`](work-wiki-concept.md). See YOYO.md for the phased roadmap.

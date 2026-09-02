@@ -1,14 +1,24 @@
 // ---------------------------------------------------------------------------
-// Contributor profiles — Phase 2 trust and attribution (data layer)
+// Contributor scan — Phase 2 trust and attribution (data layer)
 // ---------------------------------------------------------------------------
 //
-// Aggregates activity from two data sources:
+// Aggregates raw contributor activity from two data sources:
 //   1. Revision history — edits and page counts
 //   2. Talk page discussions — comments and threads created
 //
-// Scan data (revisions + reverts + threads) can be computed once and shared
-// across multiple profile builds, avoiding the N+1 problem when rendering
-// badges for several authors on a single page.
+// WHAT THIS MODULE IS NOW: the wiki-wide scan ({@link computeScanData}), the
+// pure reducers behind it, and the trust formula ({@link computeTrustScore}).
+// The three profile BUILDERS that used to sit on top — one handle, a batch of
+// handles, and every contributor — are deleted (DW-125; SCHEMA.md's
+// "Contributor profiles" section names them). The contributor product surfaces
+// they fed (`/wiki/contributors`, `GET /api/contributors[/:handle]`) are
+// `RETIRED_SURFACES` entries, so the builders had test-only callers left.
+//
+// The one importer left is `src/lib/contributor-index.ts`, which serializes a
+// scan into the persisted index shape and applies the trust formula on read.
+// That module has no production caller of its own either — it is retained as an
+// on-demand rebuild/repair tool, not live wiring. Nothing runs this scan on a
+// schedule or on a request path any more.
 // ---------------------------------------------------------------------------
 
 import { getStorage } from "./storage";
@@ -17,9 +27,8 @@ import type { Principal } from "./auth";
 import { listRevisions, type Revision } from "./revisions";
 import { getDiscussRelPrefix } from "./talk";
 import { isEnoent } from "./errors";
-import { logger } from "./logger";
-import { normalizeActor, isAutomationActor } from "./agent-handle";
-import type { ContributorProfile, TalkThread } from "./types";
+import { normalizeActor } from "./agent-handle";
+import type { TalkThread } from "./types";
 
 // ---------------------------------------------------------------------------
 // Internal: scan discuss directory for all thread files
@@ -185,10 +194,10 @@ export function computeTrustScore(editCount: number, commentCount: number, rever
 }
 
 // ---------------------------------------------------------------------------
-// Shared scan data — compute once, reuse for multiple profile builds
+// Shared scan data — one wiki-wide pass, reused by every consumer of a scan
 // ---------------------------------------------------------------------------
 
-/** Pre-computed wiki-wide scan data shared across profile builds. */
+/** The result of one wiki-wide contributor scan. */
 export interface ContributorScanData {
   /** Revision activity per author handle. */
   activityMap: Map<string, AuthorActivity>;
@@ -198,8 +207,9 @@ export interface ContributorScanData {
 
 /**
  * Perform a single wiki-wide scan: revision activity, talk threads, and
- * revert detection. Returns data that can be passed to profile builders
- * to avoid redundant scans.
+ * revert detection. Expensive — it lists every readable page, reads every
+ * page's revisions and every `discuss/` file — so it is computed once and the
+ * result handed on, never re-run per handle.
  */
 export async function computeScanData(
   principal: Principal | null = null,
@@ -225,157 +235,4 @@ export async function computeScanData(
   mergeTalkActivity(activityMap, threads);
   const revertCounts = reduceReverts(revisionsPerPage);
   return { activityMap, revertCounts };
-}
-
-// ---------------------------------------------------------------------------
-// Profile builder
-// ---------------------------------------------------------------------------
-
-function buildProfileFromActivity(
-  handle: string,
-  act: AuthorActivity,
-  revertCount: number,
-): ContributorProfile {
-  // Sort dates chronologically to find first/last.
-  const sorted = act.dates.slice().sort();
-  const firstSeen = sorted.length > 0 ? sorted[0] : new Date(0).toISOString();
-  const lastSeen =
-    sorted.length > 0 ? sorted[sorted.length - 1] : new Date(0).toISOString();
-
-  return {
-    handle,
-    editCount: act.editCount,
-    pagesEdited: act.pagesEdited.size,
-    commentCount: act.commentCount,
-    threadsCreated: act.threadsCreated,
-    firstSeen,
-    lastSeen,
-    revertCount,
-    trustScore: computeTrustScore(act.editCount, act.commentCount, revertCount),
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Build a contributor profile for a specific handle.
- *
- * When `scanData` is provided, the function skips the expensive wiki-wide
- * scan and uses the pre-computed data. This is the recommended path when
- * building profiles for multiple handles (e.g. batch badge rendering).
- *
- * Otherwise it reads the precomputed contributor index (the handle's public
- * edit/comment/thread/trust tallies) — an O(1) read instead of scanning every
- * page's revisions + every discuss file. Only a MISSING index falls through to
- * the live scan (which still honors `principal`). Because the index reflects
- * PUBLIC contributions, the profile shows public-contribution stats — the right
- * thing for this public surface, and consistent with `listContributors`.
- *
- * Returns a zeroed-out profile (not an error) when the handle has no activity.
- */
-export async function buildContributorProfile(
-  handle: string,
-  scanData?: ContributorScanData,
-  principal: Principal | null = null,
-): Promise<ContributorProfile> {
-  if (!scanData) {
-    try {
-      const { contributorProfileFromIndex } = await import("./contributor-index");
-      const fromIndex = await contributorProfileFromIndex(handle);
-      if (fromIndex) return fromIndex;
-    } catch (err) {
-      // The index is purely an accelerator — a module-load or build error here
-      // must degrade to the live scan, never crash the profile page awaiting
-      // this. Log it (don't swallow silently) so a broken index is visible.
-      logger.warn(
-        "contributors",
-        `contributor-index fast-path failed for "${handle}"; falling back to the live scan:`,
-        err,
-      );
-    }
-  }
-  const data = scanData ?? (await computeScanData(principal));
-  const act = data.activityMap.get(handle) ?? emptyActivity();
-  const revertCount = data.revertCounts.get(handle) ?? 0;
-  return buildProfileFromActivity(handle, act, revertCount);
-}
-
-/**
- * Build contributor profiles for multiple handles in one pass.
- *
- * Scans the wiki once, then builds a profile for each requested handle.
- * Handles with no activity get zeroed-out profiles (included in result).
- *
- * When `scanData` is provided, skips the scan entirely.
- */
-export async function buildContributorProfiles(
-  handles: string[],
-  scanData?: ContributorScanData,
-  principal: Principal | null = null,
-): Promise<ContributorProfile[]> {
-  const data = scanData ?? await computeScanData(principal);
-  return handles.map((handle) => {
-    const act = data.activityMap.get(handle) ?? emptyActivity();
-    const revertCount = data.revertCounts.get(handle) ?? 0;
-    return buildProfileFromActivity(handle, act, revertCount);
-  });
-}
-
-/**
- * Discover all contributors and build a profile for each.
- *
- * Returns profiles sorted by `editCount` descending.
- */
-export async function listContributors(
-  principal: Principal | null = null,
-): Promise<ContributorProfile[]> {
-  // Fast path: build profiles from the precomputed contributor index (O(1) read)
-  // instead of re-scanning every page's revisions + every talk thread. The index
-  // is built from `computeScanData(null)` (ANONYMOUS visibility), so it is only
-  // valid for an anonymous viewer. A non-null principal can see its own private
-  // pages, so it MUST use the per-principal scan below to match the fallback;
-  // taking the anonymous fast path would under-count the viewer's activity.
-  // Falls back to the full scan when the index is absent — behavior-preserving.
-  if (principal == null) {
-    try {
-      const { getContributorIndex, profilesFromIndex } = await import(
-        "./contributor-index"
-      );
-      const idx = await getContributorIndex();
-      if (idx) return profilesFromIndex(idx).filter(isRealContributor);
-    } catch {
-      // Fall through to the live scan — the index is purely an accelerator.
-    }
-  }
-
-  const data = await computeScanData(principal);
-
-  const profiles: ContributorProfile[] = [];
-  for (const [handle, act] of data.activityMap) {
-    const revertCount = data.revertCounts.get(handle) ?? 0;
-    profiles.push(buildProfileFromActivity(handle, act, revertCount));
-  }
-
-  // Sort by editCount descending, then handle ascending for stability.
-  profiles.sort((a, b) => b.editCount - a.editCount || a.handle.localeCompare(b.handle));
-  return profiles.filter(isRealContributor);
-}
-
-/** Keep only real contributors. Automation actors (system/lint-fix/work-wiki) are
- *  normally folded into the agent by {@link normalizeActor}, but a stale
- *  precomputed index may still carry their raw handles, so exclude them here too.
- *  An empty/whitespace handle is a real data defect (an edit attributed to a
- *  blank author); drop it but log so the upstream bug stays debuggable. */
-function isRealContributor(p: ContributorProfile): boolean {
-  if (isAutomationActor(p.handle)) return false;
-  if (p.handle.trim() === "") {
-    logger.warn(
-      "contributors",
-      `dropping a profile with an empty handle (editCount=${p.editCount}) — upstream attribution defect`,
-    );
-    return false;
-  }
-  return true;
 }

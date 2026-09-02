@@ -1594,3 +1594,74 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
     expect(secondPrompt).not.toContain(ALICE_PURPOSE);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The merge delete is the receipt-BEARING delete path (DW-125 / DW-126)
+// ---------------------------------------------------------------------------
+//
+// `mergePages` deletes the absorbed page through `deleteWikiPageWhileLocked`
+// WITH an `idempotency` argument — the only path that ever populated the
+// `.delete.contributor` idempotency receipt, and the only one that ever ran the
+// contributor-index decrement it guarded. (`deleteWikiPage` passes no recovery
+// at all, so a receipt assertion there proves nothing: it never minted one, even
+// before this change.) Both are now gone, and this is where that has teeth.
+// ---------------------------------------------------------------------------
+
+/** Every file under `dir` whose name ends in `suffix`, recursively. */
+async function findFilesEndingIn(dir: string, suffix: string): Promise<string[]> {
+  const found: string[] = [];
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return found;
+  }
+  for (const name of names) {
+    const full = path.join(dir, name);
+    if ((await fs.stat(full)).isDirectory()) {
+      found.push(...(await findFilesEndingIn(full, suffix)));
+    } else if (name.endsWith(suffix)) {
+      found.push(full);
+    }
+  }
+  return found;
+}
+
+describe("mergePages leaves the retired contributor index alone", () => {
+  it("mints no .delete.contributor receipt and does not decrement the absorbed page's author", async () => {
+    const { getContributorIndex, rebuildContributorIndex, recordEditForAuthor } =
+      await import("../contributor-index");
+
+    await seedPage("agent-harness", {
+      title: "Agent Harness",
+      created: "2026-02-01",
+      sources: [src("https://x.com/i/status/1")],
+    });
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents)",
+      created: "2026-01-15",
+      sources: [src("https://example.com/article")],
+    });
+
+    // Seed an index that a resurrected decrement would visibly damage: alice
+    // holds one edit on the page the merge is about to absorb.
+    await rebuildContributorIndex();
+    await recordEditForAuthor("alice", "harness-ai-agents", "2026-01-15T00:00:00Z");
+    const before = await getContributorIndex();
+    expect(before!.authors.alice.editCount).toBe(1);
+    expect(before!.authors.alice.pagesEdited).toContain("harness-ai-agents");
+
+    await mergePages({
+      from: "harness-ai-agents",
+      into: "agent-harness",
+      actor: "alice",
+    });
+
+    // The merge really did delete the absorbed page through that path…
+    expect(await readWikiPage("harness-ai-agents")).toBeNull();
+    // …yet alice's tally is untouched: no decrement ran.
+    expect(await getContributorIndex()).toEqual(before);
+    // …and the receipt that used to guard the decrement is never minted.
+    expect(await findFilesEndingIn(tmpDir, ".delete.contributor")).toEqual([]);
+  });
+});

@@ -147,8 +147,15 @@ const BATCH_THREE_DIRECTORIES_BARRIERS = 3;
  * happily, so a fixed-cost blow-up elsewhere on the path stays invisible.
  */
 
-/** `importPortableArchive`, all entries in one directory. MEASURED: 12 at N=4 AND at N=12 (marginal 0). */
-const IMPORT_FLAT_BARRIERS = { small: 12, large: 12 } as const;
+/**
+ * `importPortableArchive`, all entries in one directory. MEASURED: 11 at N=4
+ * AND at N=12 (marginal 0).
+ *
+ * Was 12 until DW-126 dropped the contributor step from `rebuildDerivedIndexes`
+ * (the import runs that rebuild at the end): one fewer derived index written is
+ * one fewer barrier of FIXED cost, on every shape below.
+ */
+const IMPORT_FLAT_BARRIERS = { small: 11, large: 11 } as const;
 
 /** `createOwnerBackup`, all files in one directory. MEASURED: 3 at N=4 AND at N=12 (marginal 0). */
 const BACKUP_FLAT_BARRIERS = { small: 3, large: 3 } as const;
@@ -156,15 +163,27 @@ const BACKUP_FLAT_BARRIERS = { small: 3, large: 3 } as const;
 /**
  * `importPortableArchive`, one directory per entry — the production shape.
  *
- * MEASURED: 18 at N=4, 34 at N=12 → marginal 2 per entry, which is exactly the
+ * MEASURED: 17 at N=4, 33 at N=12 → marginal 2 per entry, which is exactly the
  * two directories each entry creates (its tenant path and its flat compatibility
  * path). NOT 0, and it is not supposed to be: the door charges per directory.
+ * (Both totals are one lower than they were before DW-126 — see the FLAT
+ * constant above; the MARGINAL cost is untouched, which is the point.)
  *
- * What the batch still buys here is the payload fsyncs. With it switched off the
- * same measurement reads 29 → 61, i.e. 4 per entry — so the batch removes half
- * the marginal cost on this shape and all of it on the flat one.
+ * What the batch still buys here is the payload fsyncs.
+ *
+ * A note on the batch-DISABLED comparison this comment used to lean on ("29 →
+ * 61, i.e. 4 per entry"): those two absolute figures are a historical
+ * measurement. They were NOT re-measured for DW-126, and they predate its
+ * fixed-cost drop, so do not read them as current. An attempt to reproduce them by
+ * bypassing the batch wrapper in `portable-archive.ts` measured 19 → 35 (2 per
+ * entry) instead — a different enough answer that whatever "switched off" meant
+ * when they were recorded is not what a naive bypass does today. Rather than
+ * swap one unverified pair for another, the numbers are retired from this
+ * comment: what the rows below actually pin is the four EXACT totals in the
+ * constants and the marginal costs derived from them, all of which are measured
+ * by the assertions themselves.
  */
-const IMPORT_NESTED_BARRIERS = { small: 18, large: 34 } as const;
+const IMPORT_NESTED_BARRIERS = { small: 17, large: 33 } as const;
 
 /**
  * `createOwnerBackup`, one directory per file — the production shape.
