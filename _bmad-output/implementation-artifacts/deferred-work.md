@@ -4839,7 +4839,9 @@ location: src/app/api/status/route.ts:6-8
 source_spec: `spec-dw-548-549-551-cli-config-warm-and-status.md`
 severity: low
 reason: `src/app/api/status/route.ts:7` awaits `loadConfig()`, which flattens `readStoredConfig`'s `unreadable` answer to `{}` (`src/lib/config.ts:813`). The served `ProviderInfo` therefore reports `configured: false` for a config that exists but could not be parsed, exactly as `yopedia status` used to. `readConfig()` keeps the distinction and is the same single round-trip. DW-549's intent named `yopedia status` only, so the web route was out of scope for this bundle.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-config-read-and-set-text-arms
+resolution-undo: a9cfbe9fcdd5f656398928ae099370542c662a0f2e3631a21fbcc2d15c23a136 2026-09-01 7374617475733a206f70656e
 
 ### DW-623: `applyWorkbenchSettings`'s `setText` still resolves a non-string to `""` and then reads `""` as the delete, so the two halves of the settings body now answer differently about the same stored key.
 origin: spec-deferred fa5b85674318
@@ -4847,7 +4849,9 @@ location: src/lib/config.ts (applyWorkbenchSettings -> setText)
 source_spec: `spec-dw-328-372-settings-route-write-semantics.md`
 severity: low
 reason: DW-328 named only the route's four flat text fields, and the spec's Never list kept `setText` out on the grounds that its parameter is typed `string | null | undefined` and `validateWorkbenchSettingsPatch` runs above it, so the arm is unreachable by construction. That is still true. What changed is the symmetry: a flat `embeddingModel` carrying a non-string now leaves the stored key untouched, while `workbench.embeddingModel` carrying one would delete it. `config.ts` already imports from `workbench-settings.ts`, so `flatTextFieldAction` is importable there and the collapse is available.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-config-read-and-set-text-arms
+resolution-undo: a9cfbe9fcdd5f656398928ae099370542c662a0f2e3631a21fbcc2d15c23a136 2026-09-01 7374617475733a206f70656e
 
 ### DW-624: The DW-556 misclassification is still live on three sibling write paths: a 2xx body read that dies mid-stream is swallowed and the write is reported as LANDED.
 origin: spec-deferred 2d2d9d53df50

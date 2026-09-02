@@ -13,6 +13,7 @@ import {
   SETTINGS_LANGUAGE_VALUE,
   canEnableVectorSearch,
   embeddingProviderChanged,
+  flatTextFieldAction,
   isAbsoluteHttpUrl,
   isMinerUMode,
   isResearchProviderId,
@@ -1167,9 +1168,12 @@ const CACHE_TTL_MS = 5_000;
  *   - The config file is optional — `{}` is the documented default
  *   - Each surface warms the cache at its OWN call site, because this repo has
  *     no startup hook to warm it globally (DW-550): `src/app/api/status/
- *     route.ts` awaits `loadConfig()` per request immediately before
+ *     route.ts` awaits a config read per request immediately before
  *     `getProviderInfo()`, and `src/cli.ts` does the same before
- *     `getEffectiveSettings()`. A caller that reaches a resolver on a cold
+ *     `getEffectiveSettings()`. Both go through `readConfig()` rather than
+ *     `loadConfig()` (DW-549/DW-622) — the two warm this cache identically on
+ *     the ok path, and only `readConfig()` can also SAY that the store was
+ *     unreadable rather than absent. A caller that reaches a resolver on a cold
  *     cache gets `{}` — the empty-config answer — not a stale one.
  */
 export function loadConfigSync(): AppConfig {
@@ -2277,17 +2281,39 @@ export function applyWorkbenchSettings(
 ): AppConfig {
   const updated: AppConfig = { ...existing };
 
+  /**
+   * ONE decision for every text key on this patch — the SAME one the flat half
+   * of a settings body gets (DW-623).
+   *
+   * The decision is {@link flatTextFieldAction}, in `workbench-settings.ts`;
+   * only the typed mutation is local, exactly as `applyFlatTextField` splits it
+   * in `src/app/api/settings/route.ts`. Every REACHABLE arm is unchanged: absent
+   * keeps, `null`/`""`/whitespace-only delete, any other string stores TRIMMED.
+   *
+   * WHAT MOVED IS THE UNREACHABLE ARM. This closure used to collapse a
+   * non-string to `""` and then read `""` as a CLEAR, so a body whose
+   * `workbench` half carried a number for a text field would have ERASED the
+   * stored key — while the flat half of that same body, through
+   * `flatTextFieldAction`, left it untouched. Two answers to one question about
+   * one stored key, and the more destructive one belonged to the surface that
+   * holds the secrets. `validateWorkbenchSettingsPatch` answers 400 for a
+   * non-string well above this merge and the parameter type admits none, so
+   * nothing malformed reaches here; this is defence in depth BEHIND that door,
+   * and leaving the key alone is the only inert thing it can do — which is why
+   * the clear-on-switch decision below is routed through the SAME question
+   * rather than reading `patch.embeddingProvider` raw.
+   */
   const setText = <K extends keyof AppConfig>(
     key: K,
     value: string | null | undefined,
   ): void => {
-    if (value === undefined) return;
-    const trimmed = typeof value === "string" ? value.trim() : "";
-    if (value === null || trimmed.length === 0) {
+    const action = flatTextFieldAction(value);
+    if (action === "ignore") return;
+    if (action === "delete") {
       delete updated[key];
-    } else {
-      (updated as Record<string, unknown>)[key as string] = trimmed;
+      return;
     }
+    (updated as Record<string, unknown>)[key as string] = action.store;
   };
 
   // CLEAR ON SWITCH, decided from `existing` BEFORE any mutation (DW-69/DW-72).
@@ -2308,11 +2334,26 @@ export function applyWorkbenchSettings(
   // CLEAR, THEN APPLY. The delete drops what the STORE held; the `setText` calls
   // below then write whatever THIS request explicitly carried. That order is
   // what lets one save both switch vendor and supply the new credential.
+  //
+  // ASKED THROUGH `flatTextFieldAction`, exactly as `setText` above is (DW-623).
+  // `embeddingProviderChanged` normalises ANY non-string to `null`, so a patch
+  // carrying `embeddingProvider: 42` against a stored `"openai"` reads as a move
+  // to auto-detect and DELETES the key and the endpoint — a request the door
+  // should have refused destroying two fields, in the same merge where the
+  // non-string now leaves `embeddingProvider` itself alone. `ignore` is the
+  // shared decision's word for "this says nothing about the field", which is
+  // what `undefined` already meant here, so both land on `existing` together.
+  //
+  // NO REACHABLE ARM MOVES. `undefined` was already reading `existing`; `null`,
+  // `""`, whitespace-only and every real string still reach
+  // `embeddingProviderChanged` UNTRIMMED, which is what lets it apply its own
+  // normalisation and read `""`/`"   "`/`null` alike as the auto-detect rung.
+  const providerInput = flatTextFieldAction(patch.embeddingProvider);
   const embeddingProviderSwitched = embeddingProviderChanged(
     existing.embeddingProvider ?? null,
-    patch.embeddingProvider === undefined
+    providerInput === "ignore"
       ? existing.embeddingProvider ?? null
-      : patch.embeddingProvider,
+      : patch.embeddingProvider ?? null,
   );
   if (embeddingProviderSwitched) {
     // …and the derived `hasEmbeddingApiKey` flag follows for free: every payload

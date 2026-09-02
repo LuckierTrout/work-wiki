@@ -147,6 +147,7 @@ import {
   type SettingsSaveVerdict,
   type VectorSearchInputs,
   type VectorSearchLegField,
+  type WorkbenchSettingsPatch,
   type WorkbenchSettingsPayload,
 } from "../workbench-settings";
 import { UNCONFIRMED_STATUSES, unconfirmedWriteMessage } from "../workbench-request";
@@ -3183,6 +3184,15 @@ describe("applyWorkbenchSettings", () => {
       model: "gpt-4o",
       chatModel: "gpt-4o-mini",
     });
+    // Whitespace-only is a CLEAR too, and pinned HERE rather than only through
+    // `flatTextFieldAction`'s own suite: this merge is what a save actually runs,
+    // and a field that trimmed to nothing but stored `"   "` would be a stored
+    // key every reader compares literally and none recognises.
+    expect(applyWorkbenchSettings(existing, { firecrawlApiKey: "   " })).toEqual({
+      provider: "openai",
+      model: "gpt-4o",
+      chatModel: "gpt-4o-mini",
+    });
   });
 
   it("does not mutate the config it was handed", () => {
@@ -3225,6 +3235,43 @@ describe("applyWorkbenchSettings", () => {
     expect(
       applyWorkbenchSettings({ mineruApiKey: "mk-1" }, body).mineruApiKey,
     ).toBe("mk-1");
+  });
+
+  it("leaves the stored key alone for a NON-STRING, exactly as the flat half does", () => {
+    // DW-623. `setText` used to collapse a non-string to `""` and then read `""`
+    // as a CLEAR, so the `workbench` half of a body would have ERASED a stored
+    // key where the flat half — through `flatTextFieldAction` — left it
+    // untouched. Two answers to one question about one stored key, and the
+    // destructive one belonged to the surface that holds the secrets.
+    //
+    // CAST THROUGH `unknown`, because the arm is unreachable BY CONSTRUCTION:
+    // the patch type admits no non-string, and `validateWorkbenchSettingsPatch`
+    // answers 400 for one well above this merge. That is exactly why it needs
+    // executing directly — defence in depth nothing can reach is defence
+    // nothing can check.
+    //
+    // THE STORE HERE HOLDS THE CLEAR-ON-SWITCH TRIO on purpose. Leaving
+    // `embeddingProvider` alone is only half of inert: `embeddingProviderChanged`
+    // normalises any non-string to `null`, so a junk provider against a stored
+    // `"openai"` used to read as a move to auto-detect and DELETE the key and
+    // the endpoint — the field itself survived while two others were destroyed.
+    const existing: AppConfig = {
+      embeddingModel: "text-embedding-3-small",
+      customApiKey: "sk-1",
+      embeddingProvider: "openai",
+      embeddingApiKey: "sk-embed-1",
+      embeddingBaseUrl: "https://api.openai.com/v1",
+    };
+    expect(
+      applyWorkbenchSettings(existing, {
+        embeddingModel: 42,
+        customApiKey: { paste: "oops" },
+        embeddingProvider: 42,
+      } as unknown as WorkbenchSettingsPatch),
+    ).toEqual(existing);
+    // …the same answer the shared decision gives, which is the point: one rule,
+    // not two implementations that agree today.
+    expect(flatTextFieldAction(42)).toBe("ignore");
   });
 });
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { StatusBadge } from "@/components/StatusBadge";
+import { CONFIG_UNREADABLE_BADGE_COPY, StatusBadge } from "@/components/StatusBadge";
 import { ollamaBaseUrlRefusedCopy } from "@/lib/workbench-settings";
 
 /**
@@ -18,7 +18,7 @@ import { ollamaBaseUrlRefusedCopy } from "@/lib/workbench-settings";
 
 const REFUSAL = ollamaBaseUrlRefusedCopy("env", "localhost:11434");
 
-/** The `/api/status` body, with the two fields these cases move. */
+/** The `/api/status` body, with the three fields these cases move. */
 function status(overrides: Record<string, unknown> = {}) {
   return {
     configured: false,
@@ -26,6 +26,7 @@ function status(overrides: Record<string, unknown> = {}) {
     model: null,
     embeddingSupport: false,
     ollamaBaseUrlIssue: null,
+    configUnreadable: false,
     ...overrides,
   };
 }
@@ -123,5 +124,94 @@ describe("StatusBadge stops recommending a variable the deployment refused", () 
     await waitFor(() => expect(document.body.textContent).toContain("Connected"));
     expect(screen.queryByRole("button", { name: "How to configure" })).toBeNull();
     expect(document.body.textContent).not.toContain(REFUSAL);
+  });
+});
+
+/**
+ * The unreadable STORE, as `/api/status` now serves it (DW-622).
+ *
+ * The route used to read through `loadConfig()`, which flattens an unreadable
+ * store to `{}` — so this badge could not tell "nothing was ever saved" from
+ * "what was saved could not be read", and rendered the same reassuring line for
+ * both. The route now carries `configUnreadable`; whether the badge SAYS it, in
+ * BOTH of its states, is not something a source scan can check.
+ */
+describe("StatusBadge says when the stored settings could not be read", () => {
+  it("shows the caveat beside a provider the ENVIRONMENT resolved", async () => {
+    // The state most likely to mislead: everything reads as a success, and the
+    // stored half of the settings — a saved model, endpoint or key the owner
+    // expects to be in force — is silently not applied.
+    stubFetch(
+      status({
+        configured: true,
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        configUnreadable: true,
+      }),
+    );
+    render(<StatusBadge />);
+
+    await waitFor(() => expect(document.body.textContent).toContain("Connected"));
+    expect(screen.getByText(CONFIG_UNREADABLE_BADGE_COPY)).toBeTruthy();
+  });
+
+  it("shows the caveat in the not-configured state, without opening the panel", async () => {
+    // An owner who reads "no provider configured" goes off to set a variable.
+    // Burying this behind the disclosure would let them do exactly that while
+    // the provider they already saved sits in a file nothing could parse.
+    stubFetch(status({ configUnreadable: true }));
+    render(<StatusBadge />);
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("No LLM provider configured"),
+    );
+    expect(screen.getByText(CONFIG_UNREADABLE_BADGE_COPY)).toBeTruthy();
+    // …and it is not something the panel decides for itself: it was already on
+    // screen before the disclosure was touched.
+    await openHelp();
+    expect(screen.getAllByText(CONFIG_UNREADABLE_BADGE_COPY)).toHaveLength(1);
+  });
+
+  it("names no file, error or value — the flag it renders is a boolean", async () => {
+    // AD-23: the config file holds API keys and a `JSON.parse` message quotes
+    // the offending bytes back, so the route serves a boolean and this line is
+    // all there is to render. Pinned here because the copy is the only place a
+    // future edit could reintroduce detail the payload does not even carry.
+    stubFetch(status({ configUnreadable: true }));
+    render(<StatusBadge />);
+
+    await waitFor(() =>
+      expect(screen.getByText(CONFIG_UNREADABLE_BADGE_COPY)).toBeTruthy(),
+    );
+    // ASSERTED AGAINST WHAT WAS RENDERED, not only against the constant: detail
+    // added BESIDE the sentence in the JSX — a filename in a sibling span, a
+    // parser message appended after it — passes a constant-level check and still
+    // puts it on screen. The whole tree is in scope here precisely so that
+    // cannot happen.
+    const rendered = document.body.textContent ?? "";
+    expect(rendered).toContain(CONFIG_UNREADABLE_BADGE_COPY);
+    for (const leak of ["config.json", "JSON", "parse", "sk-", "/"]) {
+      expect(rendered).not.toContain(leak);
+      expect(CONFIG_UNREADABLE_BADGE_COPY).not.toContain(leak);
+    }
+  });
+
+  it("stays silent when the store read fine", async () => {
+    // Both states, because the caveat now lives on both branches: a flag that
+    // was rendered unconditionally would be a standing complaint on every
+    // healthy deployment.
+    render(<StatusBadge />);
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("No LLM provider configured"),
+    );
+    expect(screen.queryByText(CONFIG_UNREADABLE_BADGE_COPY)).toBeNull();
+    await openHelp();
+    expect(screen.queryByText(CONFIG_UNREADABLE_BADGE_COPY)).toBeNull();
+
+    cleanup();
+    stubFetch(status({ configured: true, provider: "anthropic", model: "claude-x" }));
+    render(<StatusBadge />);
+    await waitFor(() => expect(document.body.textContent).toContain("Connected"));
+    expect(screen.queryByText(CONFIG_UNREADABLE_BADGE_COPY)).toBeNull();
   });
 });
