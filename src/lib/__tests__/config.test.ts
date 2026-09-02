@@ -22,6 +22,9 @@ import {
   getIngestModelSettings,
   getWikiDir,
   getRawDir,
+  getWorkbenchSettings,
+  getFirecrawlSettings,
+  getResearchSettings,
   getEmbeddingModelOverride,
   getOllamaBaseUrl,
   envOllamaBaseUrlAnswer,
@@ -2190,6 +2193,30 @@ describe("single-read resolution", () => {
 
       expect(withClockSpy(frozen(), () => getIngestModelSettings()).clockReads).toBe(1);
     });
+
+    it("getWorkbenchSettings enters loadConfigSync exactly once", async () => {
+      // The `workbench` half of `GET /api/settings` (DW-620). It used to make
+      // THREE entries: its own, plus one each inside `getFirecrawlSettings` and
+      // `getResearchSettings` — and the route then made a fourth for
+      // `getEffectiveSettings` beside it. One response, up to three config
+      // generations across the panes it renders.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(
+        withClockSpy(frozen(), () => getWorkbenchSettings(false)).clockReads,
+      ).toBe(1);
+    });
+
+    it("getFirecrawlSettings and getResearchSettings each enter it once", async () => {
+      // Standalone, they still read the cache themselves — the parameter is
+      // OPTIONAL and trailing, so every existing caller is untouched.
+      await saveConfig(CUSTOM_GENERATION);
+      await loadConfig();
+
+      expect(withClockSpy(frozen(), () => getFirecrawlSettings()).clockReads).toBe(1);
+      expect(withClockSpy(frozen(), () => getResearchSettings()).clockReads).toBe(1);
+    });
   });
 
   describe("generation straddle — one snapshot answers the whole call", () => {
@@ -2234,6 +2261,39 @@ describe("single-read resolution", () => {
         apiKey: "sk-generation-a",
         model: "generation-a-model",
         customBaseUrl: "https://generation-a.example/v1",
+      });
+    });
+
+    it("getWorkbenchSettings answers from ONE generation when the cache expires mid-call", async () => {
+      // The concrete harm on the Settings surface: the Capture pane's Firecrawl
+      // rows and the Deep Research pane's rows came from later generations than
+      // the Model pane above them, so one response could show a key as stored
+      // in one pane and absent in another. Under this clock the second and
+      // third entries would have fallen to the cold-cache `{}`.
+      await saveConfig({
+        ...CUSTOM_GENERATION,
+        firecrawlApiKey: "fc-generation-a",
+        firecrawlBaseUrl: "https://firecrawl-a.example",
+        researchProvider: "tavily",
+        tavilyApiKey: "tvly-generation-a",
+      });
+      await loadConfig();
+
+      const { result, clockReads } = withClockSpy(jumpsAfterFirstRead(), () =>
+        getWorkbenchSettings(false),
+      );
+
+      expect(clockReads).toBe(1);
+      expect(result).toMatchObject({
+        // The legs that always came from the first read…
+        chatProvider: null,
+        hasCustomApiKey: true,
+        customBaseUrl: "https://generation-a.example/v1",
+        // …and the three that used to come from a second and a third.
+        hasFirecrawlApiKey: true,
+        firecrawlBaseUrl: "https://firecrawl-a.example",
+        researchProvider: "tavily",
+        hasTavilyApiKey: true,
       });
     });
   });
@@ -2292,6 +2352,54 @@ describe("single-read resolution", () => {
       });
     });
 
+    it("resolves the whole settings payload from an explicitly passed cfg", async () => {
+      // The route's case (DW-620): it holds the config it just read or just
+      // wrote, and every field of the response has to describe THAT one. The
+      // cache below names a different provider with different credentials, so a
+      // dropped argument at any of the four call sites shows up as the cached
+      // answer rather than this one.
+      await saveConfig({
+        ...CUSTOM_GENERATION,
+        firecrawlApiKey: "fc-cached",
+        researchProvider: "tavily",
+      });
+      await loadConfig();
+
+      const snapshot: AppConfig = {
+        provider: "openai",
+        chatProvider: "openai",
+        chatModel: "gpt-4o",
+        firecrawlBaseUrl: "https://snapshot-firecrawl.example",
+        researchProvider: "searxng",
+        searxngBaseUrl: "https://snapshot-searxng.example",
+      };
+
+      expect(getEffectiveSettings(snapshot)).toMatchObject({
+        provider: "openai",
+        providerSource: "config",
+      });
+      expect(getWorkbenchSettings(false, undefined, snapshot)).toMatchObject({
+        chatProvider: "openai",
+        chatModel: "gpt-4o",
+        // Threaded INTO the two nested resolvers, not just used for the fields
+        // this function reads itself: an untouched `getFirecrawlSettings()`
+        // would answer `hasFirecrawlApiKey: true` off the cache.
+        hasFirecrawlApiKey: false,
+        firecrawlBaseUrl: "https://snapshot-firecrawl.example",
+        researchProvider: "searxng",
+        searxngBaseUrl: "https://snapshot-searxng.example",
+      });
+      // …and the two resolvers answer the snapshot when called directly too.
+      expect(getFirecrawlSettings(snapshot)).toMatchObject({
+        hasStoredKey: false,
+        baseUrl: "https://snapshot-firecrawl.example",
+      });
+      expect(getResearchSettings(snapshot)).toMatchObject({
+        provider: "searxng",
+        tavilyApiKey: null,
+      });
+    });
+
     it("keeps env-over-store precedence even against an explicit cfg", async () => {
       // The invariant this bundle promised not to disturb. A later
       // "simplification" of `cfg ?? loadConfigSync()` into a leading read could
@@ -2316,6 +2424,14 @@ describe("single-read resolution", () => {
 
       expect(apiKeyForProvider("custom")).toBe("sk-generation-a");
       expect(getCustomBaseUrl()).toBe("https://generation-a.example/v1");
+      // The four resolvers this bundle widened, called the way `cli.ts` and
+      // `research-providers.ts` still call them.
+      expect(getEffectiveSettings().model).toBe("generation-a-model");
+      expect(getWorkbenchSettings(false).customBaseUrl).toBe(
+        "https://generation-a.example/v1",
+      );
+      expect(getFirecrawlSettings().hasStoredKey).toBe(false);
+      expect(getResearchSettings().provider).toBeNull();
       expect(providerIsConfigured("custom")).toBe(true);
       expect(providerIsUsable("custom", "generation-a-model")).toBe(true);
       expect(getEffectiveProvider()).toMatchObject({

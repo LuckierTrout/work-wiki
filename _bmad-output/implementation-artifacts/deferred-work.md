@@ -4833,7 +4833,9 @@ location: src/app/api/settings/route.ts, src/lib/config.ts:getWorkbenchSettings
 source_spec: `spec-dw-334-550-config-single-read-resolution.md`
 severity: low
 reason: `src/app/api/settings/route.ts` resolves `getEffectiveSettings()` and then `getWorkbenchSettings(...)` after an async hop; `getWorkbenchSettings` makes its own `loadConfigSync()` read and calls `getFirecrawlSettings()`, `getResearchSettings()` and `getVectorSearchSettings()`, none of which accepts a snapshot. One HTTP response can therefore describe two config generations across the two panes it renders.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-read-and-write-confirmation
+resolution-undo: 0695e4e7909c9421514bc7a7f8b25a5ec79d7345ee66f9e723598d198e60c235 2026-09-02 7374617475733a206f70656e
 
 ### DW-621: `hasLLMKey()` keys only off `cfg.provider`, so a store that selects a store-only provider through `chatProvider` or `ingestProvider` alone still reports that nothing is configured.
 origin: spec-deferred f1e1f0e2caf6
@@ -4869,7 +4871,9 @@ location: src/hooks/useSettings.ts:356, src/components/WikiEditor.tsx:282, src/l
 source_spec: `spec-dw-556-557-558-settings-save-verdict-shape.md`
 severity: medium
 reason: `savePreviewBody` and `saveWorkbenchSettings` now rethrow an `unconfirmedCause` out of their 2xx body parse. Three siblings do not. `useSettings.ts:356` reads `PUT /api/settings`'s answer with a bare `.catch(() => null)` and then shows "Settings saved."; `WikiEditor.tsx:282` does the same on `PUT /api/wiki/[slug]` and adopts the pre-save version before navigating away; `send` and `sendForm` (`workbench-request.ts:66,98`) swallow it into `{}`, so the destructure that follows can report a landed create, rename or delete as a failure. The same abort or dropped socket therefore still reaches the owner as a settled outcome on all three. Out of scope here — this bundle's intent names the two Workbench write clients only.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-read-and-write-confirmation
+resolution-undo: 0695e4e7909c9421514bc7a7f8b25a5ec79d7345ee66f9e723598d198e60c235 2026-09-02 7374617475733a206f70656e
 
 ### DW-625: `SkillsCanvas.toggle` shows the unknown-outcome sentence for a toggle that may have landed and never re-scans, so the rail can keep showing the pre-toggle state.
 origin: spec-deferred 644532dc68c4
@@ -5661,4 +5665,12 @@ location: src/components/workbench/SettingsApiMcpPane.tsx (the apiLive health no
 source_spec: `spec-dw-633-634-635-settings-api-mcp-pane-copy-a11y.md`
 severity: low
 reason: `probeLoopbackApiPane` runs the Skills scan independently of `/health` and swallows its failure into `skills: []`. `SettingsApiMcpPane` then renders `${apiLive.skills.length} Skills on disk.` unconditionally beside whichever health sentence it chose. With nothing serving on 19828 — the ordinary state of a wiki whose sidecar is not started — the pane says "The sidecar is not running on 127.0.0.1:19828. 0 Skills on disk.", asserting something about the machine that the failed scan could not establish: the count is "the scan did not answer", not zero. Same false-claim class as DW-633, which this bundle fixed for the health sentence only. Pre-existing and unchanged by this story; the count rides along with the sentence exactly as before.
+status: open
+
+### DW-717: Eighteen components and libs carry their own hand-rolled copy of `send`'s body parse, each with the bare `.catch(() => ({}))` this bundle just replaced — so the DW-556 misclassification is still live
+origin: spec-deferred 74dfd93a18c0
+location: src/components/*.tsx (16 files), src/lib/chat-session-transport.ts, src/lib/chat.ts
+source_spec: `spec-dw-620-624-settings-read-and-write-confirmation.md`
+severity: low
+reason: A repo-wide grep for the literal `response.json().catch(() => ({}))` finds it in `SystemHealthDesk.tsx`, `LocalSyncPanel.tsx`, `ActionInbox.tsx`, `SourceMonitorDesk.tsx`, `NamesTermsSettings.tsx`, `IntegrationDesk.tsx`, `MonitorDigestPanel.tsx`, `ReviewDesk.tsx`, `AgentWorkspaceDesk.tsx`, `BulkDocumentImport.tsx`, `ArticleActions.tsx`, `VaultExplorer.tsx`, `KnowledgeStudio.tsx`, `ChatWorkspace.tsx`, `KnowledgeAtlas.tsx`, `RecentIngests.tsx`, `chat-session-transport.ts` and `chat.ts` — none of which imports `workbench-request`. On each, a 2xx whose body read dies mid-stream resolves an empty object, so the destructure that follows reports a landed write as a failure (or a shapeless success), exactly the defect DW-624 names. The fix is `send`'s now-shipped gate: `if (response.ok && unconfirmedCause(cause)) throw cause;` plus a `writeFailure` at the catch. Not a call site of anything this bundle changed — these are independent copies of the helper.
 status: open

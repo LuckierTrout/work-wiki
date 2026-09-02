@@ -194,6 +194,123 @@ describe("send", () => {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // The 2xx whose body read never finished (DW-624)
+  // -------------------------------------------------------------------------
+
+  /**
+   * One `.catch(() => ({}))` used to serve both branches, and on a 2xx that
+   * empty object went straight back to the caller — so a landed create,
+   * rename or delete arrived at the destructure as a missing field and was
+   * reported as a failure. It is the OPPOSITE of what happened.
+   */
+  it("rethrows a 2xx body read that DIES, rather than resolving an empty object", async () => {
+    const cause = Object.assign(new Error("signal timed out"), {
+      name: "TimeoutError",
+    });
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw cause;
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(send("/api/wikis", { method: "POST" })).rejects.toBe(cause);
+    // …and that is exactly what the caller's verdict helper is looking for.
+    expect(writeFailure(cause, "create the wiki")).toEqual({
+      message: unconfirmedWriteMessage("create the wiki"),
+      unconfirmed: true,
+    });
+  });
+
+  it("keeps resolving `{}` for a 2xx body that merely fails to PARSE", async () => {
+    // An answer that ARRIVED and was shapeless. Unchanged: the caller reads its
+    // own missing fields and says what it always said.
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(send("/api/wikis", { method: "POST" })).resolves.toEqual({});
+  });
+
+  it("leaves the NON-2xx branch alone when its body read dies", async () => {
+    // The status line already IS the verdict here, so a refusal body that never
+    // arrived changes nothing: `{}` and `RequestFailedError(status)`, exactly as
+    // before. Reporting this as an unknown outcome would be a downgrade — the
+    // server plainly answered.
+    stubFetch(
+      () =>
+        ({
+          ok: false,
+          status: 500,
+          json: async () => {
+            throw new TypeError("Load failed");
+          },
+        }) as unknown as Response,
+    );
+
+    await expect(send("/api/wikis", { method: "POST" })).rejects.toMatchObject({
+      message: "Request failed (500)",
+      status: 500,
+    });
+  });
+
+  it("draws the same two lines for a multipart upload", async () => {
+    // `sendForm` is `send` minus the content type, and the guard is one of the
+    // invariants that keeps a failed upload reported in the same words as every
+    // other Workbench write.
+    const cause = new TypeError("Load failed");
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw cause;
+          },
+        }) as unknown as Response,
+    );
+    await expect(sendForm("/api/upload", new FormData())).rejects.toBe(cause);
+
+    stubFetch(
+      () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token '<'");
+          },
+        }) as unknown as Response,
+    );
+    await expect(sendForm("/api/upload", new FormData())).resolves.toEqual({});
+
+    stubFetch(
+      () =>
+        ({
+          ok: false,
+          status: 413,
+          json: async () => {
+            throw new TypeError("Load failed");
+          },
+        }) as unknown as Response,
+    );
+    await expect(sendForm("/api/upload", new FormData())).rejects.toMatchObject({
+      message: "Request failed (413)",
+      status: 413,
+    });
+  });
+
   it("has a deadline long enough to be a rescue rather than a second failure mode", () => {
     // Named rather than asserted exactly: what matters is that it exists and is
     // measured in seconds, not that it is any particular number.

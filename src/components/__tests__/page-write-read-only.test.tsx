@@ -6,9 +6,11 @@ import {
 } from "@/components/DeletePageButton";
 import {
   EDIT_PAGE_READ_ONLY_COPY,
+  EDIT_PAGE_SAVE_ACTION,
   partialSaveMessage,
   WikiEditor,
 } from "@/components/WikiEditor";
+import { unconfirmedWriteMessage } from "@/lib/workbench-request";
 import {
   REINGEST_READ_ONLY_COPY,
   ReingestButton,
@@ -736,10 +738,106 @@ describe("Edit page — a save that half landed", () => {
     expect(init.method).toBe("PUT");
   });
 
+  it("reports a GATEWAY refusal of the body leg as an outcome nobody knows", async () => {
+    // A 504 came from something in FRONT of the route, so whether the page was
+    // written is unknown — and `body save failed (504)` asserts an outcome
+    // nobody observed. The status has to ride the error for the verdict helper
+    // to see it at all (DW-624); a plain `Error` discards it.
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          ok: false,
+          status: 504,
+          json: async () => ({ error: "<html>gateway timeout</html>" }),
+        }) as unknown as Response,
+    );
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
+      ).toBeTruthy(),
+    );
+    // Whatever the proxy put in the body is not the route's verdict.
+    expect(screen.queryByText(/gateway timeout/)).toBeNull();
+    // The body leg short-circuits, so the PATCH never fired and the owner was
+    // never sent to a page rendered from a save nobody can confirm.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(router.push).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Your text was saved/)).toBeNull();
+  });
+
+  it("keeps a 500 and the route's own refusals reading exactly as before", async () => {
+    // Only 502 and 504 are unknown. A plain 500 IS the route answering.
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          ok: false,
+          status: 500,
+          json: async () => ({}),
+        }) as unknown as Response,
+    );
+
+    mountEditor();
+    rewriteBody();
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(screen.getByText("body save failed (500)")).toBeTruthy(),
+    );
+    expect(
+      screen.queryByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
+    ).toBeNull();
+  });
+
+  it("takes NO partial-save prefix when the metadata leg is refused by a gateway", async () => {
+    // The body landed and the metadata outcome is UNKNOWN — which is exactly
+    // the case the partial-save sentence must not describe: "the metadata
+    // change was not" is the one claim a 504 leaves nobody able to make. Same
+    // rule the dropped-connection case below states, reached through a status.
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ slug: "alpha", version: SEEDED_VERSION }),
+        } as unknown as Response;
+      }
+      return {
+        ok: false,
+        status: 504,
+        json: async () => ({ error: "gateway timeout" }),
+      } as unknown as Response;
+    });
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Your text was saved/)).toBeNull();
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
   it("makes no claim about a metadata leg whose fetch never came back", async () => {
     // A dropped connection leaves the metadata outcome UNKNOWN. "the metadata
     // change was not" would be a claim nobody is in a position to make, so this
-    // branch keeps the thrown message alone.
+    // branch never takes the partial-save prefix.
+    //
+    // What it says instead is the ONE unconfirmed sentence (DW-624). It used to
+    // relay the thrown message, which on this path is the engine's own
+    // `Failed to fetch` / `Load failed` / `NetworkError …` — transport
+    // vocabulary no Copy table in this app contains, and one wording per
+    // browser for a single fact.
     const DROPPED = "Failed to fetch";
     fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
       if (init?.method === "PUT") {
@@ -757,8 +855,85 @@ describe("Edit page — a save that half landed", () => {
     touchMetadata();
     fireEvent.click(save());
 
-    await waitFor(() => expect(screen.getByText(DROPPED)).toBeTruthy());
+    await waitFor(() =>
+      expect(
+        screen.getByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
+      ).toBeTruthy(),
+    );
     expect(screen.queryByText(partialSaveMessage(DROPPED))).toBeNull();
+    expect(screen.queryByText(DROPPED)).toBeNull();
+  });
+
+  /**
+   * The PUT's 2xx whose BODY READ DIES — the sibling of the `SyntaxError` case
+   * above, and the whole of DW-624 on this surface.
+   *
+   * Both are an arrived 200 whose payload never became readable, and until now
+   * both took the same `.catch(() => null)`: the form kept going, fired the
+   * PATCH, and on success navigated away. The distinction the guard draws is
+   * that an unparseable body is the route's ANSWER — it arrived, so today's
+   * behaviour is right — while a read that dies is the missing confirmation
+   * itself, and navigating away on it strands the owner on a page rendered from
+   * a save nobody can say landed.
+   */
+  it("stops the flow when the PUT's own 2xx body read dies mid-stream", async () => {
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            // The `TypeError` a dropped socket produces mid-body — the same
+            // class `fetch` itself rejects with, which is why `unconfirmedCause`
+            // treats it as "nobody answered" rather than as a bad payload.
+            throw new TypeError("Load failed");
+          },
+        } as unknown as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ slug: "alpha" }),
+      } as unknown as Response;
+    });
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
+      ).toBeTruthy(),
+    );
+    // The metadata leg never ran and the owner was never sent away: one call,
+    // the PUT, and the form still on screen with the draft in it.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(router.push).not.toHaveBeenCalled();
+    // No partial-save sentence of any wording — matched on the prefix, because
+    // `partialSaveMessage("")` is a string the component can never produce
+    // (`served` has a non-empty status fallback) and so asserting its absence
+    // would assert nothing at all.
+    expect(screen.queryByText(/Your text was saved/)).toBeNull();
+
+    // The held version is NOT cleared — a dying read is the same arrived 200 as
+    // an unparseable one, and the file's existing decision is that the seeded
+    // version stays so the next save is refused rather than blind.
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          ok: false,
+          status: 412,
+          json: async () => ({ error: WRITE_CONFLICT_COPY }),
+        }) as unknown as Response,
+    );
+    fireEvent.click(save());
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2));
+    const [, retry] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect((retry.headers as Record<string, string>)["If-Match"]).toBe(
+      `"${SEEDED_VERSION}"`,
+    );
   });
 });
 

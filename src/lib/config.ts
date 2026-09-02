@@ -1937,8 +1937,16 @@ export interface FirecrawlSettings {
  * Firecrawl credentials — an optional CAPTURE credential with no Deep Research
  * role. Deep Research reads {@link getResearchSettings} instead.
  */
-export function getFirecrawlSettings(): FirecrawlSettings {
-  const cfg = loadConfigSync();
+export function getFirecrawlSettings(
+  /**
+   * The snapshot to resolve against, defaulting to the cache — the same
+   * optional-trailing convention {@link getLoopbackApiSettings} uses. A caller
+   * composing ONE answer out of several resolvers (`getWorkbenchSettings`)
+   * passes the config it already holds, so no field of that answer can describe
+   * a generation another field never saw (DW-620).
+   */
+  cfg: AppConfig = loadConfigSync(),
+): FirecrawlSettings {
   // Truthiness, not nullishness, on BOTH halves: `FIRECRAWL_API_KEY=""` is
   // set-but-empty, so it is not a credential and must not mask a key the owner
   // stored through Settings.
@@ -1980,8 +1988,10 @@ export interface ResearchSettings {
   searxngCategories: string | null;
 }
 
-export function getResearchSettings(): ResearchSettings {
-  const cfg = loadConfigSync();
+export function getResearchSettings(
+  /** The snapshot to resolve against — see {@link getFirecrawlSettings}. */
+  cfg: AppConfig = loadConfigSync(),
+): ResearchSettings {
   const envProviderRaw = nonEmpty(process.env.RESEARCH_PROVIDER);
   const envProvider = isResearchProviderId(envProviderRaw) ? envProviderRaw : null;
   const invalidEnvProvider = envProviderRaw && !envProvider ? envProviderRaw : null;
@@ -2153,19 +2163,34 @@ export function getWorkbenchSettings(
    * answer for a payload that was not told one.
    */
   inboundEmail?: { enabled: boolean; address: string },
+  /**
+   * The snapshot the whole payload resolves from, defaulting to the cache.
+   *
+   * This object used to make THREE entries into the 5 s-TTL cache: its own
+   * `loadConfigSync()`, plus one each inside `getFirecrawlSettings` and
+   * `getResearchSettings` (`embeddingModelAnswer` and `getLoopbackApiSettings`
+   * already took the snapshot and entered nothing). The route then made a
+   * fourth beside it for `getEffectiveSettings` — so one settings response
+   * could describe two or three config generations across the panes it renders
+   * (DW-620). The route already holds the config it read (`ConfigRead.config`
+   * on `GET`, the merge base it just wrote on `PUT`); passing it here is what
+   * makes the whole answer one generation.
+   */
+  cfg: AppConfig = loadConfigSync(),
 ): WorkbenchSettingsValues {
-  const cfg = loadConfigSync();
-  const firecrawl = getFirecrawlSettings();
-  const research = getResearchSettings();
+  // From the SAME `cfg`, not from two fresh cache entries of their own.
+  const firecrawl = getFirecrawlSettings(cfg);
+  const research = getResearchSettings(cfg);
   // The filtered variable and the RAW value beside it, so "set to junk" and
   // "not set" stop being the same payload (DW-508) — through the ONE pair
   // builder the route's `workbenchSettingsStored` also calls, so the two halves
   // of the seam cannot drift apart (DW-638).
   const { filtered: envProvider, invalid: envProviderInvalid } =
     envEmbeddingProviderPair();
-  // Resolved from the `cfg` already read above, through the ONE helper
-  // `getEffectiveSettings` uses (DW-312/DW-313) — so the two Settings surfaces
-  // cannot answer "is the model I set being substituted?" differently.
+  // Resolved from the SAME `cfg` this whole answer resolves from, through the
+  // ONE helper `getEffectiveSettings` uses (DW-312/DW-313) — so the two
+  // Settings surfaces cannot answer "is the model I set being substituted?"
+  // differently.
   const embedding = embeddingModelAnswer(cfg);
   const loopback = getLoopbackApiSettings(cfg);
   return {
@@ -2527,8 +2552,14 @@ export function applyWorkbenchSettings(
 /**
  * Full effective settings with source annotations for the settings UI.
  */
-export function getEffectiveSettings(): EffectiveSettings {
-  const cfg = loadConfigSync();
+export function getEffectiveSettings(
+  /**
+   * The snapshot to resolve against, defaulting to the cache. `GET`/`PUT
+   * /api/settings` pass the config they already read, so the legacy half and
+   * the `workbench` half of one response describe one generation (DW-620).
+   */
+  cfg: AppConfig = loadConfigSync(),
+): EffectiveSettings {
   const env = detectEnvProvider();
 
   // Provider

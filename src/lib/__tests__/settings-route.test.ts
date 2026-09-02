@@ -499,6 +499,94 @@ describe("/api/settings", () => {
 });
 
 // ---------------------------------------------------------------------------
+// ONE config generation per response (DW-620)
+// ---------------------------------------------------------------------------
+//
+// Both verbs compose a body out of two resolvers, and each of those used to
+// enter the 5 s-TTL config cache on its own — with an `await inboundEmail()`
+// sitting between them for good measure. One response could therefore describe
+// two or three generations across the panes it renders.
+//
+// `getEffectiveSettings` and `getEffectiveProvider` are mocked in this file, so
+// the snapshot they are handed is asserted on the call. `getWorkbenchSettings`
+// is REAL, and that is what makes the second half of each case sharp: nothing
+// here ever warms `loadConfigSync`, so a route that dropped the argument would
+// answer every `workbench` field off a cold `{}` cache.
+
+describe("/api/settings — one snapshot per response", () => {
+  const STORED = {
+    chatProvider: "openai" as const,
+    chatModel: "gpt-4o",
+    firecrawlBaseUrl: "https://firecrawl.example",
+    researchProvider: "tavily",
+  };
+
+  it("GET resolves BOTH halves from the config it read", async () => {
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: STORED,
+      version: STORED_VERSION,
+      etag: STORED_ETAG,
+    });
+    const { GET } = await import("@/app/api/settings/route");
+
+    const body = await (await GET()).json();
+
+    // The legacy half, against the snapshot rather than the cache…
+    expect(mockedEffectiveSettings).toHaveBeenCalledWith(STORED);
+    // …and the `workbench` half, including the two NESTED resolvers: an
+    // untouched `getFirecrawlSettings()` / `getResearchSettings()` would answer
+    // `null` for the two fields below off the cold cache.
+    expect(body.workbench).toMatchObject({
+      chatProvider: "openai",
+      chatModel: "gpt-4o",
+      firecrawlBaseUrl: "https://firecrawl.example",
+      researchProvider: "tavily",
+    });
+    // ONE read of the store, as before — the snapshot is the one this request
+    // already had, not a new door into the config.
+    expect(mockedRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("PUT re-seeds BOTH halves from the object it just wrote", async () => {
+    mockedRead.mockResolvedValue({
+      status: "ok",
+      config: STORED,
+      version: STORED_VERSION,
+      etag: STORED_ETAG,
+    });
+    const { PUT } = await import("@/app/api/settings/route");
+
+    // A patch that MOVES A WORKBENCH-VISIBLE FIELD. A flat legacy edit
+    // (`{ model }`) has no `WorkbenchSettingsValues` counterpart, so `read.config`
+    // and `merged` would render a byte-identical `workbench` object and this
+    // case could not fail if the argument regressed to the pre-save snapshot.
+    const body = await (
+      await PUT(request({ workbench: { chatModel: "gpt-4.1-mini" } }))
+    ).json();
+
+    const written = mockedSave.mock.calls[0][0];
+    expect(written).toMatchObject({ ...STORED, chatModel: "gpt-4.1-mini" });
+    // The effective-provider half describes exactly what was persisted, not
+    // whatever the cache holds by the time the response is composed.
+    expect(mockedEffectiveProvider).toHaveBeenCalledWith(written);
+    expect(body.workbench).toMatchObject({
+      chatProvider: "openai",
+      // THE assertion: the value this request WROTE, never the one it read. A
+      // landed save re-seeds the surface's draft from this object, so serving
+      // the pre-save `gpt-4o` here would put the owner's own edit back the
+      // moment it succeeded.
+      chatModel: "gpt-4.1-mini",
+      // …and the two NESTED resolvers are threaded from the same object: off a
+      // cold cache these answer `null`.
+      firecrawlBaseUrl: "https://firecrawl.example",
+      researchProvider: "tavily",
+    });
+    expect(body.workbench.chatModel).not.toBe(STORED.chatModel);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The vector gate over the LEGACY FLAT branch (DW-217)
 // ---------------------------------------------------------------------------
 

@@ -92,7 +92,22 @@ export async function send<T>(url: string, init: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init.headers },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
+  // The DW-556 guard, GATED ON `response.ok` because this one parse serves both
+  // branches (DW-624).
+  //
+  // On a 2xx a body read that DIES MID-STREAM — an abort, a fired deadline, a
+  // `TypeError` off a dropped socket — is the missing confirmation itself, and
+  // `{}` here is what turned a landed create/rename/delete into the caller's
+  // destructure reading it as a failure. It is rethrown so the caller's
+  // {@link writeFailure} answers `unconfirmed: true`.
+  //
+  // On a NON-2xx the status line already IS the verdict: whatever happened to
+  // the refusal body, an answer arrived and said no. So that branch keeps `{}`
+  // and the {@link RequestFailedError} below, carrying the status.
+  const body = (await response.json().catch((cause: unknown) => {
+    if (response.ok && unconfirmedCause(cause)) throw cause;
+    return {};
+  })) as T & { error?: string };
   if (!response.ok) {
     throw new RequestFailedError(
       body.error || `Request failed (${response.status})`,
@@ -124,7 +139,12 @@ export async function sendForm<T>(url: string, body: FormData): Promise<T> {
     body,
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  const parsed = (await response.json().catch(() => ({}))) as T & { error?: string };
+  // `send`'s guard verbatim, for the same reason and with the same gate — see
+  // the note there for why the non-ok branch keeps `{}`.
+  const parsed = (await response.json().catch((cause: unknown) => {
+    if (response.ok && unconfirmedCause(cause)) throw cause;
+    return {};
+  })) as T & { error?: string };
   if (!response.ok) {
     throw new RequestFailedError(
       parsed.error || `Request failed (${response.status})`,

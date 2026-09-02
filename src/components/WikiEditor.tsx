@@ -3,7 +3,11 @@
 import Link from "next/link";
 import { useId, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { getErrorMessage } from "@/lib/errors";
+import {
+  RequestFailedError,
+  unconfirmedCause,
+  writeFailure,
+} from "@/lib/workbench-request";
 import { Alert } from "@/components/Alert";
 import { IF_MATCH_HEADER, formatIfMatch } from "@/lib/write-precondition";
 
@@ -29,6 +33,17 @@ export interface MetadataValues {
  */
 export const EDIT_PAGE_READ_ONLY_COPY =
   "This page cannot be saved while this deployment is read-only. Your edits here will not be stored.";
+
+/**
+ * The ONE phrase every failed save on this form is described with (DW-624).
+ *
+ * A phrase and not a sentence, like `SETTINGS_SAVE_ACTION`: `writeFailure`
+ * composes both renderings from it — the unknown-outcome sentence for a write
+ * nothing came back to confirm, and the `Couldn’t …` fallback for a throw that
+ * carried no message. Two sentences typed out beside each other is how they
+ * drift.
+ */
+export const EDIT_PAGE_SAVE_ACTION = "save this page";
 
 /**
  * THE partial-save sentence, for the save that half landed (DW-428).
@@ -301,15 +316,35 @@ export function WikiEditor({
           const body = (await res.json().catch(() => ({}))) as {
             error?: string;
           };
-          throw new Error(body.error ?? `body save failed (${res.status})`);
+          // The STATUS rides the error (DW-624). The message is unchanged, so
+          // every refusal this route composes — the 403 read-only sentence, the
+          // 412 conflict, the 428 — reads exactly as before. What the status
+          // buys is the gateway leg: a 502 or 504 came from something OTHER than
+          // the route, so whether the page was written is unknown, and
+          // `body save failed (504)` asserts an outcome nobody observed.
+          throw new RequestFailedError(
+            body.error ?? `body save failed (${res.status})`,
+            res.status,
+          );
         }
         bodyLanded = true;
         // The version of what LANDED, adopted before the PATCH leg can fail —
         // otherwise a retry after a failed PATCH re-sends a version this very
-        // request superseded. Parsed with the same guard the error branch
-        // above uses: a body that will not parse leaves the old version in
-        // place, and the next save is refused rather than blind.
-        const landed = (await res.json().catch(() => null)) as {
+        // request superseded.
+        //
+        // The guard splits the two failures that were hiding behind one
+        // `.catch(() => null)` (DW-624). A body that will not PARSE is the
+        // route's arrived answer: it stays `null`, the OLD version is left in
+        // place so the next save is refused rather than blind, and the PATCH
+        // still fires — today's behaviour, unchanged. A read that DIES
+        // mid-stream is the missing confirmation itself and is rethrown, so
+        // the flow stops here rather than navigating away on a pre-save
+        // version. The held version is deliberately NOT cleared on that path
+        // either: a dying read is the same arrived 200 as an unparseable one.
+        const landed = (await res.json().catch((cause: unknown) => {
+          if (unconfirmedCause(cause)) throw cause;
+          return null;
+        })) as {
           version?: unknown;
         } | null;
         if (typeof landed?.version === "string" && landed.version.length > 0) {
@@ -344,14 +379,33 @@ export function WikiEditor({
             typeof body.error === "string" && body.error.length > 0
               ? body.error
               : `metadata save failed (${res.status})`;
-          throw new Error(bodyLanded ? partialSaveMessage(served) : served);
+          // The composition is unchanged, and so is the status-carrying rule
+          // above. On a gateway status `writeFailure` never reaches this
+          // message anyway — it answers the unconfirmed sentence instead, which
+          // is the file's existing rule that an UNKNOWN metadata outcome takes
+          // no partial-save prefix: "the metadata change was not" is precisely
+          // the claim a 504 leaves nobody able to make.
+          throw new RequestFailedError(
+            bodyLanded ? partialSaveMessage(served) : served,
+            res.status,
+          );
         }
       }
 
       router.push(`/u/${tenant}/${slug}`);
       router.refresh();
     } catch (err) {
-      setError(getErrorMessage(err, "unknown error"));
+      // ONE owner for the verdict (DW-624). Both legs above throw the SERVER's
+      // own sentence on a refusal, so `writeFailure` relays it exactly as
+      // before — the DW-428 partial-save sentence included. What changes is the
+      // throw nobody answered: a fired deadline, a dropped socket, a gateway
+      // that gave up, or the dying 2xx body read above is now described as an
+      // UNKNOWN outcome rather than in transport vocabulary.
+      //
+      // The reconciliation is that the flow STOPS: `router.push` is inside the
+      // try, so the form stays open on the draft the owner typed, which is the
+      // only screen that can still tell them what happened.
+      setError(writeFailure(err, EDIT_PAGE_SAVE_ACTION).message);
       setBusy(false);
     }
   }

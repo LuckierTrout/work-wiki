@@ -3,11 +3,17 @@
 import { useState, useCallback, useEffect } from "react";
 import { providerLabel } from "@/lib/providers";
 import {
+  SETTINGS_SAVE_ACTION,
   storedVectorInputs,
   vectorSearchInactiveCopy,
   workbenchSettingsFrom,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import {
+  RequestFailedError,
+  unconfirmedCause,
+  writeFailure,
+} from "@/lib/workbench-request";
 import { IF_MATCH_HEADER, formatIfMatch } from "@/lib/write-precondition";
 
 // ---------------------------------------------------------------------------
@@ -364,12 +370,36 @@ export function useSettings(): UseSettingsReturn {
 
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        throw new Error(data?.error ?? `Save failed (${res.status})`);
+        // The STATUS rides the error, not just its rendering (DW-624). The
+        // message is unchanged, so every refusal this route composes itself —
+        // 412, 428, 403, its own 500 — reads exactly as it did. What the status
+        // buys is the leg `writeFailure` cannot reach without it: a 502 or 504
+        // is a GATEWAY answering in place of the route, so nobody knows whether
+        // the save landed, and `Save failed (504)` is a claim this client is in
+        // no position to make. `saveWorkbenchSettings` already answers unknown
+        // for those statuses through `refusedWriteFailure`, and it writes the
+        // same `AppConfig` through this same `PUT` — two verdicts for one fact
+        // is exactly the drift the one-owner rule exists to stop.
+        throw new RequestFailedError(
+          data?.error ?? `Save failed (${res.status})`,
+          res.status,
+        );
       }
 
-      // What the store now holds, straight from the save that landed. Parsed
-      // with the same guard the error branch above uses.
-      const landed = (await res.json().catch(() => null)) as {
+      // What the store now holds, straight from the save that landed.
+      //
+      // The guard splits the two failures that were hiding behind one
+      // `.catch(() => null)` (DW-624, the same three lines as
+      // `saveWorkbenchSettings` and `savePreviewBody`): a body that will not
+      // PARSE is the route's arrived answer, so it stays `null` and the version
+      // is left to the refresh below — today's behaviour exactly. A read that
+      // DIES mid-stream is the missing confirmation itself, and is rethrown to
+      // the catch, because "Settings saved." is a claim nobody is in a position
+      // to make about a 200 whose body never finished arriving.
+      const landed = (await res.json().catch((cause: unknown) => {
+        if (unconfirmedCause(cause)) throw cause;
+        return null;
+      })) as {
         version?: unknown;
       } | null;
 
@@ -389,10 +419,35 @@ export function useSettings(): UseSettingsReturn {
         setVersion(landed.version);
       }
     } catch (err) {
-      setSaveResult({
-        ok: false,
-        message: err instanceof Error ? err.message : "Save failed",
-      });
+      // ONE owner for the verdict (DW-624). A refusal thrown above still
+      // relays the server's own sentence, exactly as before; a transport
+      // failure — a fired deadline, a dropped socket, a gateway that gave up,
+      // or the dying 2xx body read above — is reported as an UNKNOWN outcome
+      // instead of as "Save failed" and instead of in transport vocabulary the
+      // Copy tables refuse ("Failed to fetch", "signal timed out").
+      const verdict = writeFailure(err, SETTINGS_SAVE_ACTION);
+      setSaveResult({ ok: false, message: verdict.message });
+      // …and an unknown outcome is RECONCILED rather than left behind a stale
+      // render: the save may have landed in full, so the screen the sentence
+      // sends the owner to has to be re-read. `fetchSettings` clears the held
+      // version when it too fails, which is the truthful precondition for a
+      // config nothing has confirmed, and `fetchStatus` re-reads the
+      // provider/model banner that sits at the top of that same screen.
+      //
+      // THE ASYMMETRY IS DELIBERATE. `fetchSettings` re-runs every prefill, so
+      // this overwrites whatever the owner had typed with what the store holds
+      // — the exact opposite of the REFUSED path, which does not refresh
+      // precisely so a refusal never loses the edit (pinned by "relays the
+      // SERVER's conflict sentence and keeps the form's values"). A refusal is
+      // a verdict: nothing was written, so the draft is still the only copy of
+      // the owner's intent and must survive. An unknown outcome is not: the
+      // write may have landed in full, so a form still showing the old draft
+      // would be a screen quietly disagreeing with the store, and the sentence
+      // has just sent the owner here to find out what is actually true.
+      if (verdict.unconfirmed) {
+        await fetchSettings();
+        await fetchStatus();
+      }
     } finally {
       setSaving(false);
     }

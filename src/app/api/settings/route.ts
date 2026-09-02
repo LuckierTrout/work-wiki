@@ -80,7 +80,18 @@ export async function GET() {
   // never chose, and the save that followed would write them in.
   const read = await readConfig();
   if (read.status === "unreadable") return configUnreadable();
-  const settings = getEffectiveSettings();
+  // Awaited BEFORE either resolver runs, rather than inline in the payload
+  // below (DW-620). An `await` sitting between the reads that compose one
+  // response is a window in which the 5 s-TTL config cache can expire — the
+  // same defect the threaded snapshot closes, reached from the other side, and
+  // the one an added `cfg` argument would not protect against on its own.
+  const inbound = await inboundEmail();
+  // From the snapshot this request already read (DW-620). `read.config` is the
+  // exact object `readStoredConfig` primed the sync cache with, so passing it
+  // is not a second source of truth — it is the ONE generation this whole
+  // response describes, rather than whatever the 5 s-TTL cache happens to hold
+  // by the time each resolver below runs.
+  const settings = getEffectiveSettings(read.config);
   // ONE precondition, served twice (DW-63). Both Settings surfaces write the
   // same `AppConfig` through the same `PUT`, so both need the same one —
   // `/settings` reads the top-level field through `useSettings`, the Workbench
@@ -124,7 +135,7 @@ export async function GET() {
     ...settings,
     version,
     workbench: {
-      ...getWorkbenchSettings(hasWorkersAiBinding, await inboundEmail()),
+      ...getWorkbenchSettings(hasWorkersAiBinding, inbound, read.config),
       version,
     },
   });
@@ -670,8 +681,18 @@ export async function PUT(request: Request) {
       await enqueueEmbeddingBackfill(principal.handle);
     }
 
-    // Return updated effective settings
-    const effective = getEffectiveProvider();
+    // Hoisted above BOTH resolvers, the way `GET` hoists it, and for the reason
+    // stated there: an `await` between the reads that compose one response is a
+    // window in which the config cache can expire.
+    const inbound = await inboundEmail();
+    // Return updated effective settings — RE-SEEDED FROM WHAT WAS JUST WRITTEN
+    // (DW-620). `merged` is the merge base `saveConfig` was just handed: that
+    // function strips its two reserved keys into a `stored` object of its own
+    // before persisting and caching it, so this is not byte-identical to what
+    // landed — but it IS the generation that landed, which is the whole of what
+    // both halves of this response have to agree about. Reading the 5 s-TTL
+    // cache again could answer them about a config this save superseded.
+    const effective = getEffectiveProvider(merged);
     return Response.json({
       saved: true,
       effective,
@@ -679,7 +700,7 @@ export async function PUT(request: Request) {
       // The fresh stored values, so a landed save re-seeds the surface's draft
       // from what the kernel actually holds rather than from what was sent.
       workbench: {
-        ...getWorkbenchSettings(hasWorkersAiBinding, await inboundEmail()),
+        ...getWorkbenchSettings(hasWorkersAiBinding, inbound, merged),
         version,
       },
     });

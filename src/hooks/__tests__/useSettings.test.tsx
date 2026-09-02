@@ -5,6 +5,8 @@ import {
   WRITE_CONFLICT_COPY,
   WRITE_PRECONDITION_REQUIRED_COPY,
 } from "@/lib/write-precondition";
+import { unconfirmedWriteMessage } from "@/lib/workbench-request";
+import { SETTINGS_SAVE_ACTION } from "@/lib/workbench-settings";
 
 /**
  * `/settings` — the OTHER surface that writes `AppConfig` (DW-63), MOUNTED.
@@ -63,6 +65,7 @@ function Harness() {
       <input id="model" value={model} onChange={(e) => setModel(e.target.value)} />
       <button type="submit">Save</button>
       <output data-testid="save-result">{saveResult?.message ?? ""}</output>
+      <output data-testid="save-ok">{saveResult ? String(saveResult.ok) : ""}</output>
       <output data-testid="load-error">{loadError ?? ""}</output>
     </form>
   );
@@ -71,6 +74,15 @@ function Harness() {
 let fetchMock: ReturnType<typeof vi.fn>;
 /** Every `/api/settings` call, in order, with the header the hook attached. */
 let settingsCalls: Array<{ method: string; ifMatch: string | undefined }>;
+/**
+ * Every `/api/status` call.
+ *
+ * Counted rather than ignored because it is HALF the reconcile: `/settings`
+ * renders a provider/model banner straight off that object, at the top of the
+ * very screen the unconfirmed sentence tells the owner to check. Without this,
+ * deleting `fetchStatus()` from the unconfirmed branch left every suite green.
+ */
+let statusCalls: number;
 
 /**
  * Drive the hook with one answer per `/api/settings` call. `/api/status` is
@@ -82,6 +94,7 @@ function stub(answers: Array<() => unknown>) {
   fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
     const href = String(url);
     if (href !== "/api/settings") {
+      if (href === "/api/status") statusCalls += 1;
       return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
     }
     settingsCalls.push({
@@ -122,8 +135,25 @@ function result(): string {
   return screen.getByTestId("save-result").textContent ?? "";
 }
 
+/** `"true"`, `"false"`, or `""` for a save that has not reported yet. */
+function verdict(): string {
+  return screen.getByTestId("save-ok").textContent ?? "";
+}
+
+/** A 200 whose BODY READ rejects — the two halves DW-624 tells apart. */
+function landedBodyThrows(cause: Error) {
+  return () => ({
+    ok: true,
+    status: 200,
+    json: async () => {
+      throw cause;
+    },
+  });
+}
+
 beforeEach(() => {
   settingsCalls = [];
+  statusCalls = 0;
 });
 
 afterEach(() => {
@@ -250,5 +280,164 @@ describe("useSettings — the write precondition (DW-63)", () => {
     // A GET that served no version means the hook had none to send — which is
     // exactly what the route answered 428 to.
     expect(settingsCalls[1].ifMatch).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The 2xx whose body never became readable (DW-624)
+// ---------------------------------------------------------------------------
+
+/**
+ * Two failures used to hide behind one `.catch(() => null)` on the save's own
+ * body read, and BOTH ended in "Settings saved." One of them deserves it and
+ * one is the exact case that sentence must never be said about.
+ */
+describe("useSettings — a 200 whose body read fails", () => {
+  it("reports an UNKNOWN outcome when the read dies mid-stream, and reconciles", async () => {
+    // The deadline fired while the payload was arriving. A 200 header is no
+    // proof the route ran to completion, and it is certainly no proof of what
+    // it stored — so the one thing that cannot be claimed here is that the
+    // settings were saved.
+    stub([
+      ok(body(SEEDED)),
+      landedBodyThrows(
+        Object.assign(new Error("signal timed out"), { name: "TimeoutError" }),
+      ),
+      ok(body(LANDED)),
+    ]);
+    await mount();
+
+    save();
+
+    await waitFor(() =>
+      expect(result()).toBe(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+    );
+    expect(verdict()).toBe("false");
+    // No transport vocabulary reaches the owner — the sentence has one owner.
+    expect(result()).not.toContain("timed out");
+    expect(result()).not.toBe("Settings saved.");
+    // …and the screen the sentence sends them to is RE-READ, because the save
+    // may well have landed in full: the mount's GET, then this one.
+    await waitFor(() =>
+      expect(settingsCalls.filter((call) => call.method === "GET")).toHaveLength(2),
+    );
+    // BOTH halves of that screen. The banner above the form is rendered off
+    // `/api/status`, so a reconcile that refreshed only the settings would send
+    // the owner to check a provider line still describing the config from
+    // before the save that may have landed.
+    await waitFor(() => expect(statusCalls).toBe(2));
+  });
+
+  it("is unchanged when the body merely fails to PARSE", async () => {
+    // An arrived answer that is not JSON — an HTML error page from a proxy, a
+    // truncated payload. The route answered; the version is simply left to the
+    // refresh, exactly as before.
+    stub([
+      ok(body(SEEDED)),
+      landedBodyThrows(new SyntaxError("Unexpected token <")),
+      ok(body(LANDED)),
+    ]);
+    await mount();
+
+    save();
+
+    await waitFor(() => expect(result()).toBe("Settings saved."));
+    expect(verdict()).toBe("true");
+    // The refresh that always follows a landed save re-seeds the version, so
+    // the next save carries the one the store now holds.
+    await waitFor(
+      () => expect(settingsCalls.filter((call) => call.method === "GET")).toHaveLength(2),
+    );
+    save();
+    await waitFor(
+      () => expect(settingsCalls.filter((call) => call.method === "PUT")).toHaveLength(2),
+    );
+    expect(settingsCalls.filter((call) => call.method === "PUT")[1].ifMatch).toBe(
+      `"${LANDED}"`,
+    );
+  });
+
+  it("reports a GATEWAY status as an outcome nobody knows, and reconciles", async () => {
+    // A 504 did not come from the route: something in front of it gave up
+    // waiting. The save may have been applied in full, so "Save failed (504)"
+    // is a claim this client cannot make — and the canvas, writing the SAME
+    // `AppConfig` through the SAME `PUT`, already answers unknown here.
+    stub([
+      ok(body(SEEDED)),
+      refused(504, "<html>gateway timeout</html>"),
+      ok(body(LANDED)),
+    ]);
+    await mount();
+
+    save();
+
+    await waitFor(() =>
+      expect(result()).toBe(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+    );
+    expect(verdict()).toBe("false");
+    // Whatever a proxy put in the body is not the route's verdict.
+    expect(result()).not.toContain("gateway");
+    // The same reconcile the dying-body case runs, for the same reason.
+    await waitFor(() =>
+      expect(settingsCalls.filter((call) => call.method === "GET")).toHaveLength(2),
+    );
+    await waitFor(() => expect(statusCalls).toBe(2));
+  });
+
+  it("leaves a 500 and the route's own refusals reading exactly as before", async () => {
+    // The other side of the status now riding the error: only 502 and 504 are
+    // unknown. A plain 500 IS the route answering, and a 412 is it answering in
+    // words — both keep today's sentence and neither reconciles.
+    // A 500 carrying no `error` key at all — the status names itself, exactly
+    // as it did before the status began riding the error.
+    stub([ok(body(SEEDED)), () => ({ ok: false, status: 500, json: async () => ({}) })]);
+    await mount();
+    save();
+    await waitFor(() => expect(result()).toBe("Save failed (500)"));
+    expect(verdict()).toBe("false");
+    expect(settingsCalls.filter((call) => call.method === "GET")).toHaveLength(1);
+    expect(statusCalls).toBe(1);
+
+    // …and a 500 that DID say something still says it.
+    cleanup();
+    settingsCalls = [];
+    statusCalls = 0;
+    stub([ok(body(SEEDED)), refused(500, "The store is unreadable.")]);
+    await mount();
+    save();
+    await waitFor(() => expect(result()).toBe("The store is unreadable."));
+    expect(settingsCalls.filter((call) => call.method === "GET")).toHaveLength(1);
+
+    cleanup();
+    settingsCalls = [];
+    statusCalls = 0;
+    stub([ok(body(SEEDED)), refused(412, WRITE_CONFLICT_COPY)]);
+    await mount();
+    save();
+    await waitFor(() => expect(result()).toBe(WRITE_CONFLICT_COPY));
+    expect(settingsCalls.filter((call) => call.method === "GET")).toHaveLength(1);
+  });
+
+  it("still relays the SERVER's sentence for a refusal whose body dies", async () => {
+    // The non-2xx leg is untouched: a status line that arrived IS the verdict,
+    // so this reads as a failed save and not as an unknown one.
+    stub([
+      ok(body(SEEDED)),
+      () => ({
+        ok: false,
+        status: 500,
+        json: async () => {
+          throw new TypeError("Load failed");
+        },
+      }),
+    ]);
+    await mount();
+
+    save();
+
+    await waitFor(() => expect(result()).toBe("Save failed (500)"));
+    expect(verdict()).toBe("false");
+    // No reconciling read — nothing is unknown.
+    expect(settingsCalls.filter((call) => call.method === "GET")).toHaveLength(1);
   });
 });
