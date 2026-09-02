@@ -1265,13 +1265,18 @@ describe("the stored embedding credential and endpoint are read", () => {
       invalid: false,
     });
 
-    // …and the route, which re-runs the rule over the merged config, answers
-    // with the very same sentence.
+    // …and the route, which re-runs the rule over the merged config, refuses
+    // over the same leg and carries the same NOTE. The frame is the switched-on
+    // one, because the request sends the flag on (DW-330) — the sentence above
+    // is the hint beside an UNTICKED box, which is the state the surface is in
+    // before Save is pressed and not after.
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(await turnVectorSearchOn());
     expect(response.status).toBe(400);
     const error = ((await response.json()) as { error: string }).error;
-    expect(error).toBe(sentence);
+    expect(error).toBe(
+      `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_ENV_NOTE}`,
+    );
     expect(error).toContain(
       "unset EMBEDDING_PROVIDER to choose another embedding provider",
     );

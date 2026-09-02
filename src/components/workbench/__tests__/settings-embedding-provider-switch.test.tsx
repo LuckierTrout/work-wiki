@@ -11,8 +11,11 @@ import {
   SETTINGS_LOADING_COPY,
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_COPY,
+  SETTINGS_ENV_PROVIDER_PIN_CODE,
   settingsEnvProviderPinRefusalCopy,
+  validateWorkbenchSettingsPatch,
   type WorkbenchSettingsPayload,
+  type WorkbenchSettingsStored,
 } from "@/lib/workbench-settings";
 import {
   announcedFor,
@@ -210,6 +213,95 @@ describe("the embeddings surface clears the vendor pair on a switch (DW-69/DW-72
 // select is not pinned, and the surface has no way to know until the route
 // answers. That is exactly why the recovery has to be driven by the refusal.
 
+/**
+ * ONE DRAFT, ONE SENTENCE — the ledger's composition, MOUNTED (DW-330).
+ *
+ * The node suite pins the two halves as pure functions, which cannot see the
+ * thing DW-330 is actually about: the checkbox's own SELECTOR
+ * (`vectorAllowed ? … : values.vectorSearchEnabled ? vectorInactive :
+ * vectorBlocked`) and the save bar, rendered together, from one draft, at one
+ * moment. That composition is what the ledger describes — "the checkbox hint
+ * reads … while the 400 that lands in the save bar a few rows below reads …" —
+ * and only a mounted surface driving a real PUT can put both strings on screen
+ * to compare.
+ *
+ * The stub does not TYPE the refusal: it runs `validateWorkbenchSettingsPatch`
+ * over the patch the surface actually sent, which is the route's own rule. A
+ * hand-written 400 body would assert only that this file and the component
+ * agree with each other.
+ */
+describe("the ticked box and the refused save say ONE thing (DW-330)", () => {
+  /** The store BEFORE the save: every OpenAI leg met, switch off. */
+  const BASELINE: WorkbenchSettingsStored = {
+    vectorSearchEnabled: false,
+    embeddingProvider: "openai",
+    embeddingBaseUrl: "https://o/v1",
+    embeddingModel: "text-embedding-3-small",
+    hasEmbeddingApiKey: true,
+    envEmbeddingProvider: null,
+    envEmbeddingProviderInvalid: null,
+    envEmbeddingModel: null,
+    envEmbeddingApiKeyProviders: [],
+    hasWorkersAiBinding: false,
+  };
+
+  it("answers the ticked box and the save bar with the same sentence", async () => {
+    let call = 0;
+    fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+      call += 1;
+      if (call === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ workbench: payload() }),
+        } as unknown as Response;
+      }
+      // What the ROUTE does with the body this surface sent: apply the patch
+      // over the baseline, then run the one gate over both views.
+      const patch = (
+        JSON.parse(String(init?.body)) as { workbench: Record<string, unknown> }
+      ).workbench;
+      const merged: WorkbenchSettingsStored = {
+        ...BASELINE,
+        vectorSearchEnabled: patch.vectorSearchEnabled === true,
+        embeddingBaseUrl:
+          patch.embeddingBaseUrl === undefined
+            ? BASELINE.embeddingBaseUrl
+            : (patch.embeddingBaseUrl as string | null),
+      };
+      const verdict = validateWorkbenchSettingsPatch(patch, merged, BASELINE);
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({ error: verdict.ok ? "" : verdict.error }),
+      } as unknown as Response;
+    });
+    render(<SettingsCanvas category="embeddings" headingId="wb-set-heading" />);
+    await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
+
+    // The reachable path the ledger names: the legs are met, so the box takes
+    // the tick — and THEN a leg is moved into an unmet state in the same draft.
+    const vectorSwitch = screen.getByLabelText("Enable vector search") as HTMLInputElement;
+    fireEvent.click(vectorSwitch);
+    expect(vectorSwitch.checked).toBe(true);
+    fireEvent.change(endpointBox(), { target: { value: "" } });
+
+    // The CHECKBOX's half, off the rendered description.
+    const hint = announcedFor(vectorSwitch);
+    expect(hint).toContain("Vector search is switched on, but it needs");
+
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
+
+    // …and the SAVE BAR's half, a few rows below, at the same moment. Before
+    // DW-330 this said "…before it can be turned on" beside that ticked box.
+    await waitFor(() => expect(screen.getByText(hint)).toBeTruthy());
+    expect(screen.queryByText(/before it can be turned on/)).toBeNull();
+    // Both are on screen together: the hint is still the checkbox's own
+    // description, so the match is not one sentence replacing the other.
+    expect(announcedFor(vectorSwitch)).toBe(hint);
+  });
+});
+
 describe("the embeddings surface recovers from the env-pin refusal (DW-553)", () => {
   /** The sentence the route mints from its own `EMBEDDING_PROVIDER`. */
   const PINNED = settingsEnvProviderPinRefusalCopy("workers-ai");
@@ -277,6 +369,39 @@ describe("the embeddings surface recovers from the env-pin refusal (DW-553)", ()
     // stands, and it is what leaves the draft dirty.
     expect(modelBox().value).toBe("text-embedding-3-large");
     expect((saveButton() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("recovers from the CODE alone, whatever the sentence says (DW-628)", async () => {
+    // The seam the wire code exists to remove. This body's sentence is one the
+    // closed-set equality cannot match — a reworded pin, which is precisely the
+    // drift the sentence match fails closed on — so the ONLY thing that can
+    // drive the re-seed here is `code`. Before DW-628 this owner was stuck:
+    // every retry re-sent the identical refused move for the rest of the
+    // session.
+    const REWORDED = "The embedding provider is fixed by this deployment.";
+    await mountWritable([
+      staleRead,
+      () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: REWORDED, code: SETTINGS_ENV_PROVIDER_PIN_CODE }),
+      }),
+    ]);
+
+    fireEvent.change(modelBox(), { target: { value: "text-embedding-3-large" } });
+    fireEvent.change(providerSelect(), { target: { value: "google" } });
+
+    fireEvent.click(saveButton());
+
+    // The SERVER's words, whatever they are — the code decides the recovery, it
+    // never decides the sentence.
+    await waitFor(() => expect(screen.getByText(REWORDED)).toBeTruthy());
+    // …and all three embedding legs read the STORE again, exactly as they do
+    // off the sentence match above.
+    expect(providerSelect().value).toBe("openai");
+    expect(endpointBox().value).toBe("https://o/v1");
+    expect(announcedFor(keyBox())).toContain(SETTINGS_KEY_STORED_COPY);
+    expect(modelBox().value).toBe("text-embedding-3-large");
   });
 
   it("makes the RETRY a request the pin does not refuse", async () => {

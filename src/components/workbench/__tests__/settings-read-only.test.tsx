@@ -12,12 +12,15 @@ import {
   SETTINGS_READ_ONLY_COPY,
   SETTINGS_SAVED_COPY,
   SETTINGS_SAVE_COPY,
+  SETTINGS_SAVE_ACTION,
   SETTINGS_SAVE_FAILED_COPY,
+  SETTINGS_SAVE_UNREADABLE_COPY,
   SETTINGS_TIMEOUT_HINT_COPY,
   settingsEnvKeyCopy,
   settingsEnvOverrideCopy,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
+import { unconfirmedWriteMessage } from "@/lib/workbench-request";
 import { embeddingProviderLabel } from "@/lib/providers";
 import {
   WRITE_CONFLICT_COPY,
@@ -522,7 +525,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
 
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_UNREADABLE_COPY)).toBeTruthy());
 
     typeChatModel("gpt-4.1-mini");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -614,7 +617,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
     // The clearing verdict: the held version goes.
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_UNREADABLE_COPY)).toBeTruthy());
 
     // The recovery: one GET, then a PUT carrying what it answered.
     typeChatModel("gpt-4.1-mini");
@@ -680,7 +683,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
 
       typeChatModel("gpt-4.1");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-      await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+      await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_UNREADABLE_COPY)).toBeTruthy());
 
       typeChatModel("gpt-4.1-mini");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -720,7 +723,7 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
 
     typeChatModel("gpt-4.1");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
-    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_UNREADABLE_COPY)).toBeTruthy());
 
     typeChatModel("gpt-4.1-mini");
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
@@ -896,10 +899,18 @@ describe("the Settings canvas sends the version it was seeded with (DW-63)", () 
       typeChatModel("gpt-4.1");
       fireEvent.click(screen.getByRole("button", { name: SETTINGS_SAVE_COPY }));
 
-      // The status line ARRIVED, so the unknown-outcome sentence stays off this
-      // branch — and a 2xx carrying no payload is not a landed save either.
-      await waitFor(() => expect(screen.getByText(SETTINGS_SAVE_FAILED_COPY)).toBeTruthy());
-      expect(screen.queryByText(/outcome is unknown/)).toBeNull();
+      // ITS OWN SENTENCE (DW-554). Something answered and had no settings in
+      // it, so neither of the other two verdicts' words are true here: the
+      // failure sentence would claim nothing was stored, on the same branch
+      // that drops the held version because the route may well have run, and
+      // the unconfirmed one would claim nothing came back at all.
+      await waitFor(() =>
+        expect(screen.getByText(SETTINGS_SAVE_UNREADABLE_COPY)).toBeTruthy(),
+      );
+      expect(screen.queryByText(SETTINGS_SAVE_FAILED_COPY)).toBeNull();
+      expect(
+        screen.queryByText(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+      ).toBeNull();
       expect(screen.queryByText(SETTINGS_SAVED_COPY)).toBeNull();
       // …and nothing off the unusable body reaches the owner, whichever way it
       // was unusable.

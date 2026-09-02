@@ -13,6 +13,7 @@ import {
 import { getEffectiveProvider } from "@/lib/config";
 import { loadEmailIngestConfig } from "@/lib/email-ingest";
 import {
+  SETTINGS_ENV_PROVIDER_PIN_CODE,
   SETTINGS_INVALID_URL_COPY,
   embeddingProviderChanged,
   flatMovableVectorLegs,
@@ -433,7 +434,18 @@ export async function PUT(request: Request) {
       );
       if (moves) {
         return Response.json(
-          { error: settingsEnvProviderPinRefusalCopy(storedBefore.envEmbeddingProvider) },
+          {
+            error: settingsEnvProviderPinRefusalCopy(storedBefore.envEmbeddingProvider),
+            // The MACHINE fact beside the human one (DW-628). The browser's
+            // recovery — put the three embedding legs back, so the retry is not
+            // the identical refused move — used to be triggered by exact-matching
+            // this English sentence. ADDITIVE: the sentence is unchanged, and a
+            // client that ignores `code` still matches on it. The ONLY refusal on
+            // this route that carries a code; nothing else on the wire branches
+            // on one, so there is nothing here for a second field to disagree
+            // with.
+            code: SETTINGS_ENV_PROVIDER_PIN_CODE,
+          },
           { status: 400 },
         );
       }
@@ -589,15 +601,18 @@ export async function PUT(request: Request) {
     // to requests naming a leg this body could have moved, while a
     // configuration this request BROKE still refuses over any leg at all.
     //
-    // …and its PRESENCE, separately, picks the switched-on FRAME (DW-329). The
-    // same fact, read a fourth time: a scoped argument means the flat page
-    // asked, and that page renders no vector switch, so the sentence ends by
-    // naming where the switch lives rather than telling the owner to turn off
-    // something they cannot see. WHICH sentence, never whether — and only for a
-    // switch already stored ON, since the THIRD argument's stored flag still
-    // decides that: a request turning the switch on reads "…before it can be
-    // turned on" on both surfaces, one against a switch already stored ON reads
-    // the switched-on frame (DW-308) in this surface's wording.
+    // …and its PRESENCE, separately, picks the switched-on frame's ACTION CLAUSE
+    // (DW-329). The same fact, read a fourth time: a scoped argument means the
+    // flat page asked, and that page renders no vector switch, so the sentence
+    // ends by naming where the switch lives rather than telling the owner to
+    // turn off something they cannot see. WHICH wording, never whether.
+    //
+    // There is no longer a second FRAME for it to choose against (DW-330): the
+    // gate frames from the flag the REQUEST carries, which is `true` for every
+    // refusal it can reach, so `vectorSearchInactiveCopy` is the only sentence
+    // this route sends. "…before it can be turned on" is the browser's hint
+    // beside an UNTICKED box and nothing this route can answer with. The THIRD
+    // argument's stored flag still decides WHETHER, and no longer which.
     //
     // Four readings of one fact, all written from the same expression so they
     // cannot drift into scoping a patch that was never applied, or into

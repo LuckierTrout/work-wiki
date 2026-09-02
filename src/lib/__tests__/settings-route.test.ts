@@ -66,6 +66,7 @@ import {
   SETTINGS_INVALID_URL_COPY,
   SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
   settingsEnvProviderPinRefusalCopy,
+  SETTINGS_ENV_PROVIDER_PIN_CODE,
   settingsRefusalPinsEmbeddingProvider,
   vectorSearchInactiveCopy,
 } from "@/lib/workbench-settings";
@@ -1491,6 +1492,8 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
       error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+      // The MACHINE half, ADDITIVE beside the unchanged sentence (DW-628).
+      code: SETTINGS_ENV_PROVIDER_PIN_CODE,
     });
     // Refused BEFORE `saveConfig`, so the store is byte-identical — the
     // endpoint and the key the env-selected vendor reads are both intact.
@@ -1509,20 +1512,27 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
     );
 
     expect(response.status).toBe(400);
-    const body = (await response.json()) as { error: string };
+    const body = (await response.json()) as { error: string; code?: string };
     expect(body).toEqual({
       error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+      code: SETTINGS_ENV_PROVIDER_PIN_CODE,
     });
     expect(mockedSave).not.toHaveBeenCalled();
 
     // THE COUPLING DW-553 RESTS ON, pinned against a REAL route body rather
-    // than against a sentence a test minted for itself. The route sends no
-    // machine-readable code for this refusal, so the browser recognises it by
-    // exact equality over the closed set `EMBEDDING_PROVIDERS` can mint — and
-    // this is the save path a Workbench owner actually takes, so if the two
-    // ever drift, `SettingsCanvas` silently stops re-seeding the draft and
-    // every retry re-sends the identical refused move.
-    expect(settingsRefusalPinsEmbeddingProvider(body.error)).toBe(true);
+    // than against one a test minted for itself — BOTH its fields since DW-628,
+    // relayed the way `saveWorkbenchSettings` relays them (`error` becomes the
+    // result's `message`; `code` travels under its own name). This is the save
+    // path a Workbench owner actually takes, so if the two ever drift,
+    // `SettingsCanvas` silently stops re-seeding the draft and every retry
+    // re-sends the identical refused move.
+    expect(
+      settingsRefusalPinsEmbeddingProvider({ message: body.error, code: body.code }),
+    ).toBe(true);
+    // The SENTENCE half still stands on its own, which is what makes the code
+    // additive rather than a wire break: a stale tab gets a body with no `code`
+    // and must recover exactly as before.
+    expect(settingsRefusalPinsEmbeddingProvider({ message: body.error })).toBe(true);
   });
 
   it("lets an UNRELATED edit land while the pin is on", async () => {
@@ -1586,6 +1596,7 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
       error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+      code: SETTINGS_ENV_PROVIDER_PIN_CODE,
     });
     expect(mockedSave).not.toHaveBeenCalled();
   });
@@ -1625,15 +1636,17 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
     const response = await PUT(request({ workbench: { vectorSearchEnabled: true } }));
 
     expect(response.status).toBe(400);
-    // `turningOn` is true — the store holds no flag — so the sentence is the
-    // "before it can be turned on" frame, naming the leg the join now refuses —
-    // AND the variable that is the only way to lift it (DW-636). This body is
-    // what a CLI caller sees and all they see: `OPENAI_STORE` is a complete,
-    // supported config, so the leg sentence alone sent them to fields that were
-    // already filled while the one broken thing went unnamed.
+    // The request sends the flag ON, so the sentence is the switched-on frame —
+    // the one the ticked checkbox shows for the same draft (DW-330) — naming the
+    // leg the join now refuses AND the variable that is the only way to lift it
+    // (DW-636). This body is what a CLI caller sees and all they see:
+    // `OPENAI_STORE` is a complete, supported config, so the leg sentence alone
+    // sent them to fields that were already filled while the one broken thing
+    // went unnamed.
     expect(await response.json()).toEqual({
       error:
-        "Vector search needs an embedding provider before it can be turned on. " +
+        "Vector search is switched on, but it needs an embedding provider before it can run. " +
+        "Turn it off, or supply what is missing. " +
         SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
     });
     expect(SETTINGS_VECTOR_PROVIDER_ENV_NOTE).toContain("EMBEDDING_PROVIDER");

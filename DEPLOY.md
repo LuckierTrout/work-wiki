@@ -70,8 +70,9 @@ or `ollama`, or leave it unset and let the app auto-detect.
 Cloudflare Workers AI as the embedding provider on a deployment with no `AI`
 binding now refuses the vector-search switch by name — *"Vector search needs the
 Cloudflare AI binding before it can be turned on"* — and a save that tries is
-rejected with the same sentence plus the two ways out (bind `ai` in
-`wrangler.jsonc`, or choose another embedding provider). This is the one place
+rejected over the same legs and the same two ways out (bind `ai` in
+`wrangler.jsonc`, or choose another embedding provider), in the switched-on
+frame described under *A switch that is already ON* below. This is the one place
 the missing binding is reported before content is ingested; the log stays silent
 because `getWorkersAiBinding()` only warns when it is ON the Workers runtime with
 `AI` unbound, which is a misconfiguration rather than "not Cloudflare".
@@ -95,12 +96,15 @@ ordered pair of steps rather than a dead end. In full:
 > only on the Workers runtime — bind ai in wrangler.jsonc, or unset
 > EMBEDDING_PROVIDER to choose another embedding provider.
 
-Both quotes above are the **turning-on** frame — what a save that asks to switch
-vector search on is answered with. A save against a switch the store already held
-on is answered over the same legs and the same notes, in the switched-on frame
-instead: *"Vector search is switched on, but it needs the Cloudflare AI binding
-before it can run. Turn it off, or supply what is missing."* See *A switch that
-is already ON* below for the rule that picks between them.
+Both quotes above are the **turning-on** frame — the hint the surface renders
+beside an UNTICKED box, where "before it can be turned on" is what the box is
+asking about. A refused SAVE is answered over the same legs and the same notes
+in the switched-on frame instead: *"Vector search is switched on, but it needs
+the Cloudflare AI binding before it can run. Turn it off, or supply what is
+missing."* The route frames from the flag the REQUEST carries, and a refusal is
+only reached for a request asking to hold that flag on — so the switched-on
+frame is the only one `PUT /api/settings` sends. See *A switch that is already
+ON* below.
 
 The select is **described but not marked invalid** here, for the same reason the
 model box is not marked for an `EMBEDDING_MODEL`-owned mismatch: marking a
@@ -113,8 +117,9 @@ select reads OpenAI while the sentence beside it is about Cloudflare Workers AI.
 The same limit applies here as to the model rule below: the older `/settings`
 page now runs this same gate on its flat request. It fires only when the
 request moves a vector input the rule reads and vector search is **already
-stored on** — that request cannot move `vectorSearchEnabled` itself, so it
-never refuses in the turning-on frame. A refusal is then normally narrowed to
+stored on** — that request cannot move `vectorSearchEnabled` itself. Its
+refusal ends by naming where the switch lives rather than telling the owner to
+turn one off, because that page renders none. A refusal is then normally narrowed to
 the legs that flat body could have moved: the embedding model, the only vector
 control that page renders, plus the provider and binding legs when a direct API
 caller sends `embeddingProvider`. The exception is a save that **breaks a
@@ -183,8 +188,11 @@ there is nothing else on the page left to fix:
 > provider comes from EMBEDDING_PROVIDER, so a provider chosen in the Embedding
 > provider select cannot lift this until that variable is unset or corrected.
 
-`PUT /api/settings` refuses a turn-on with that same sentence as its `400` body,
-so a CLI or a stale tab is told which variable to fix too.
+`PUT /api/settings` refuses a turn-on over the same leg and the same note as its
+`400` body, so a CLI or a stale tab is told which variable to fix too — in the
+switched-on frame: *"Vector search is switched on, but it needs an embedding
+provider before it can run. Turn it off, or supply what is missing."* followed by
+the same `EMBEDDING_PROVIDER` note.
 
 The same unservable value can also arrive from the **store**, because Settings
 saves an embedding provider of its own and the variable is only the first of the
@@ -319,13 +327,16 @@ Two separate things happen to an id the resolved provider cannot serve:
   operable in that state: turning vector search **off** is always allowed, so an
   owner is never stranded with a switch whose legs have since gone missing.
 
-  A **refused save** now carries the same frame. The route picks it from the flag
-  the store held *before* the request — its analogue of the ticked box the
-  browser reads: a save that asks to turn the switch **on** is still told *"…
-  before it can be turned on"*, while a save against a switch that was already on
-  is answered with the switched-on sentence, since that is what lands in the save
-  bar beside the still-checked box. Same unmet legs, same notes, same order in
-  either frame; which situations are refused at all is unchanged.
+  A **refused save** carries that same frame, and only that one. The route picks
+  it from the flag the **request** carries — the browser's analogue is the box the
+  owner is looking at, which is the draft and not the store — and a refusal is
+  only ever reached for a request asking to hold that flag on. So a save that asks
+  to turn the switch **on** and a save that breaks a switch already stored on are
+  answered with the same switched-on sentence, which is what lands in the save bar
+  beside a checked box either way. *"Before it can be turned on"* stays the
+  surface's hint beside an unticked box and is no longer a sentence the route can
+  send. Same unmet legs, same notes, same order; which situations are refused at
+  all is unchanged.
 
   An unrelated Workbench save — a chat model, an LLM timeout — is **not** refused
   by a mismatch it did not create, even on a deployment whose stored vector

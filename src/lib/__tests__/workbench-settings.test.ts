@@ -137,6 +137,8 @@ import {
   settingsEnvProviderInvalidCopy,
   settingsEnvProviderPinCopy,
   settingsEnvProviderPinRefusalCopy,
+  SETTINGS_ENV_PROVIDER_PIN_CODE,
+  SETTINGS_SAVE_UNREADABLE_COPY,
   settingsRefusalPinsEmbeddingProvider,
   settingsCategory,
   settingsPointer,
@@ -1947,7 +1949,11 @@ describe("validateWorkbenchSettingsPatch", () => {
       clean(),
     );
     expect(refusal.ok).toBe(false);
-    expect(refusal.ok === false && refusal.error).toContain("Vector search needs");
+    // The ONE frame the route mints since DW-330 — the request is sending the
+    // flag on, which is the state the sentence describes.
+    expect(refusal.ok === false && refusal.error).toContain(
+      "Vector search is switched on, but it needs",
+    );
 
     // All four legs in the SAME request is enough — the rule is about the merge,
     // not about what happened to be stored before it.
@@ -2007,7 +2013,8 @@ describe("validateWorkbenchSettingsPatch", () => {
       validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, googleWithOpenAiKey),
     ).toEqual({
       ok: false,
-      error: "Vector search needs an API key before it can be turned on.",
+      error:
+        "Vector search is switched on, but it needs an API key before it can run. Turn it off, or supply what is missing.",
     });
 
     // The same environment satisfies an OpenAI selection.
@@ -2041,7 +2048,8 @@ describe("validateWorkbenchSettingsPatch", () => {
     );
     expect(refusal).toEqual({
       ok: false,
-      error: "Vector search needs an embedding provider before it can be turned on.",
+      error:
+        "Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing.",
     });
   });
 
@@ -2300,14 +2308,11 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
       embeddingModel: "text-embedding-3-small",
     });
 
-  const MISSING_TRANSPORT =
-    "Vector search needs an endpoint and an API key before it can be turned on.";
-
   /**
-   * The same two legs in the SWITCHED-ON frame (DW-308). Scoping decides WHETHER
-   * the gate refuses; the baseline flag decides WHICH sentence it carries, and
-   * every case in this describe but "never scopes a patch that is TURNING IT ON"
-   * runs against a store that already held the flag `true`.
+   * The two unmet legs in the frame the route mints. Scoping decides WHETHER the
+   * gate refuses; since DW-330 it also decides which ACTION CLAUSE the one frame
+   * carries, and nothing decides between two frames any more — the request sends
+   * the flag on, so the switched-on words are the only ones there are.
    */
   const INACTIVE_TRANSPORT =
     "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.";
@@ -2512,7 +2517,7 @@ describe("validateWorkbenchSettingsPatch — actionableLegs (DW-303)", () => {
         baseline,
         new Set(),
       ),
-    ).toEqual({ ok: false, error: MISSING_TRANSPORT });
+    ).toEqual({ ok: false, error: INACTIVE_TRANSPORT_FLAT });
   });
 
   it("leaves a scoped patch that satisfies every leg alone", () => {
@@ -2580,48 +2585,84 @@ describe("validateWorkbenchSettingsPatch — the baseline argument (DW-306)", ()
 // refusal, so a save that broke an already-ON switch landed that same retired
 // sentence in the save bar — beside the same still-ticked box.
 //
-// The frame is picked from `baseline.vectorSearchEnabled`: the flag as the store
-// held it BEFORE the request, which is the server's analogue of the box the
-// client reads. Both frames stay reachable, and neither moves any refusal
-// boundary — `canEnableVectorSearch` is still the one rule.
+// DW-308 first picked the frame from `baseline.vectorSearchEnabled` — the flag
+// as the STORE held it. That closed half the mismatch and opened the other half
+// (DW-330): the client reads the DRAFT, so one draft that ticks the box and then
+// breaks a leg got the switched-on hint beside the box and the turned-on
+// sentence in the save bar, from the same request.
+//
+// The frame now follows the REQUEST's flag, which is what the draft becomes on
+// the wire and is `true` for every path that reaches the refusal — so the route
+// mints exactly one frame, and it is the one the ticked box already shows.
+// `vectorSearchMissingCopy` stays the client's UNTICKED-box hint and stops being
+// a sentence the route can send. No refusal boundary moves either way —
+// `canEnableVectorSearch` is still the one rule.
 
-describe("the refusal's FRAME follows the stored flag (DW-308)", () => {
+describe("the refusal's FRAME follows the REQUEST's flag (DW-308, DW-330)", () => {
   /** `openai` with a model and nothing else: the endpoint and key legs unmet. */
   const openaiLegs = {
     embeddingProvider: "openai",
     embeddingModel: "text-embedding-3-small",
   } as const;
 
-  it("keeps 'before it can be turned on' for a request that TURNS THE SWITCH ON", () => {
-    // The frame that would be retired outright if the choice were made from the
-    // post-merge `enabled`: the gate runs only inside `if (enabled)`, so that
-    // flag is always `true` there. This request is asking for vector search, and
-    // "before it can be turned on" is exactly what it is being told.
+  it("answers the SWITCHED-ON frame for a request that TURNS THE SWITCH ON", () => {
+    // The half DW-330 moved. The store held the flag off, so the old rule chose
+    // "…before it can be turned on" — but the REQUEST is sending the flag on,
+    // and the surface that sent it is already rendering the box ticked. The
+    // sentence describes the settings the request is asking for, which is the
+    // same thing the checkbox hint describes.
     const baseline = storedState({ vectorSearchEnabled: false, ...openaiLegs });
 
     expect(
       validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, baseline),
     ).toEqual({
       ok: false,
-      error: "Vector search needs an endpoint and an API key before it can be turned on.",
-    });
-  });
-
-  it("answers the SWITCHED-ON frame when the store already held the flag on", () => {
-    // Same legs, same order, same absence of notes — only the frame differs, and
-    // the action the owner actually has here (turning it off) is the one named.
-    const baseline = storedState({
-      vectorSearchEnabled: true,
-      embeddingProvider: "ollama",
-      embeddingModel: "nomic-embed-text",
-    });
-    const merged = storedState({ ...baseline, embeddingProvider: "openai" });
-
-    expect(validateWorkbenchSettingsPatch({}, merged, baseline)).toEqual({
-      ok: false,
       error:
         "Vector search is switched on, but it needs an endpoint and an API key before it can run. Turn it off, or supply what is missing.",
     });
+  });
+
+  it("answers ONE draft with ONE sentence, client half and route half (DW-330)", () => {
+    // THE LEDGER'S SYMPTOM, composed. The owner ticks the box on a draft whose
+    // legs are met, then breaks one — the checkbox hint reads the DRAFT and says
+    // the switched-on sentence, while the save that same draft produces used to
+    // buy a 400 saying the other one, because the STORE still held the flag off.
+    // Both halves are computed here from one draft and compared byte for byte.
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      vectorSearchEnabled: false,
+      embeddingProvider: "openai",
+      embeddingModel: "text-embedding-3-small",
+      embeddingBaseUrl: "https://embed.example",
+      hasEmbeddingApiKey: true,
+    };
+    // Ticked, and then the endpoint emptied.
+    const draft = {
+      ...settingsDraftFromPayload(payload),
+      vectorSearchEnabled: true,
+      embeddingBaseUrl: "",
+    };
+    // What `SettingsCanvas` renders beside the ticked box — its `vectorInactive`
+    // term, over the same `draftVectorInputs` the surface uses.
+    const hint = vectorSearchInactiveCopy(draftVectorInputs(draft, payload));
+    expect(hint).not.toBe("");
+
+    // What the route answers the save of that same draft with. The store still
+    // holds the flag OFF, which is exactly the situation the old rule framed as
+    // "before it can be turned on".
+    const refusal = validateWorkbenchSettingsPatch(
+      { vectorSearchEnabled: true, embeddingBaseUrl: null },
+      storedState({
+        vectorSearchEnabled: false,
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingBaseUrl: null,
+        hasEmbeddingApiKey: true,
+      }),
+    ) as { ok: false; error: string };
+
+    expect(refusal.ok).toBe(false);
+    expect(refusal.error).toBe(hint);
   });
 
   it("carries every leg NOTE through the switched-on frame unchanged", () => {
@@ -2659,9 +2700,13 @@ describe("the refusal's FRAME follows the stored flag (DW-308)", () => {
     const off = storedState({ vectorSearchEnabled: false, ...openaiLegs });
     const on = storedState({ vectorSearchEnabled: true, ...openaiLegs });
 
+    // ONE function on BOTH halves since DW-330: the stored flag no longer picks
+    // between two mints, so a request that turns the switch on and a request
+    // that breaks an already-on one are both `vectorSearchInactiveCopy` over
+    // their own merged inputs.
     expect(
       validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, off),
-    ).toEqual({ ok: false, error: vectorSearchMissingCopy(inputs) });
+    ).toEqual({ ok: false, error: vectorSearchInactiveCopy(inputs) });
     expect(
       validateWorkbenchSettingsPatch(
         {},
@@ -2703,9 +2748,12 @@ describe("the refusal's FRAME follows the stored flag (DW-308)", () => {
         ) as { ok: false; error: string },
     );
     expect(answers.map((answer) => answer.ok)).toEqual([false, false]);
-    expect(answers[0].error).not.toBe(answers[1].error);
-    expect(answers[0].error).toContain("before it can be turned on");
-    expect(answers[1].error).toContain("Vector search is switched on, but it needs");
+    // …and since DW-330 they are refused with the SAME sentence. The request
+    // sends the flag on in both, so the frame no longer moves with the store —
+    // which is the whole of what changed. What did NOT change is either `ok`.
+    expect(answers[0].error).toBe(answers[1].error);
+    expect(answers[0].error).toContain("Vector search is switched on, but it needs");
+    expect(answers[0].error).not.toContain("before it can be turned on");
   });
 });
 
@@ -2924,8 +2972,11 @@ describe("the client and the route read the same vector rule", () => {
       // The leg sentence AND the note that names the only thing which can lift
       // it (DW-636): the store here is a complete, supported OpenAI config, so
       // "supply what is missing" alone pointed at fields that are all supplied.
+      // The FRAME is the switched-on one, because the request sends the flag on
+      // (DW-330) — the same frame the ticked box beside it shows.
       error:
-        "Vector search needs an embedding provider before it can be turned on. " +
+        "Vector search is switched on, but it needs an embedding provider before it can run. " +
+        "Turn it off, or supply what is missing. " +
         SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
     });
 
@@ -3222,7 +3273,8 @@ describe("the client and the route read the same vector rule", () => {
     expect(SETTINGS_VECTOR_ENV_MODEL_NOTE).toContain("EMBEDDING_MODEL");
     // …the already-stored `true` reads as off…
     expect(getVectorSearchSettings().enabled).toBe(false);
-    // …and the route refuses the save with the same sentence. The flag is put
+    // …and the route refuses the save over the same LEG and the same NOTE, in
+    // the frame a request that sends the flag on gets (DW-330). The flag is put
     // back to OFF first so this is a genuine TURN-ON: since DW-219 the gate is
     // scoped to patches that move it, and a store that already holds `true` is
     // not moved by a patch repeating `true` (that skip is pinned in its own
@@ -3236,7 +3288,7 @@ describe("the client and the route read the same vector rule", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
+      `${UNSUPPORTED_WORKERS_MODEL_INACTIVE} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
     );
   });
 
@@ -3285,11 +3337,27 @@ describe("the client and the route read the same vector rule", () => {
     // The model row has nothing to complain about — the id is fine.
     expect(vectorSearchFieldIssue(draftVectorInputs(draft, payload), "model")).toBeNull();
 
-    // And the route, which reads the binding for itself, answers the same.
+    // And the route, which reads the binding for itself, refuses over the SAME
+    // leg and the SAME note. The frame differs, and correctly so (DW-330): the
+    // client sentence above is the hint beside an UNTICKED box, while the
+    // request below is asking to tick it — which is the state the route's one
+    // frame describes, and the state that box is in the instant Save is pressed.
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(await put({ workbench: { vectorSearchEnabled: true } }));
     expect(response.status).toBe(400);
-    expect(((await response.json()) as { error: string }).error).toBe(sentence);
+    expect(((await response.json()) as { error: string }).error).toBe(
+      `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
+    // …and that is the sentence the box shows the moment it is ticked, over the
+    // same inputs — the two halves are the two exported mints of one leg set,
+    // never a second spelling.
+    expect(
+      vectorSearchInactiveCopy(
+        draftVectorInputs({ ...draft, vectorSearchEnabled: true }, payload),
+      ),
+    ).toBe(
+      `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+    );
   });
 
   it("allows the same deployment once the binding is bound (DW-225)", async () => {
@@ -3355,7 +3423,9 @@ describe("the client and the route read the same vector rule", () => {
     expect(draftVectorInputs(typed, payload).model).toBe("text-embedding-3-small");
     expect(draftCanEnableVectorSearch(typed, payload)).toBe(false);
 
-    // The route answers identically for the very patch that draft would send.
+    // The route refuses the very patch that draft would send, over the same leg
+    // and the same note — in the switched-on frame, because the patch sends the
+    // flag on (DW-330).
     const { PUT } = await import("@/app/api/settings/route");
     const response = await PUT(
       await put({
@@ -3364,7 +3434,7 @@ describe("the client and the route read the same vector rule", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
+      `${UNSUPPORTED_WORKERS_MODEL_INACTIVE} ${SETTINGS_VECTOR_ENV_MODEL_NOTE}`,
     );
   });
 });
@@ -3736,13 +3806,17 @@ describe("the settings client", () => {
     const result = await saveWorkbenchSettings({}, { fetchImpl: shapeless });
     expect(result).toEqual({
       status: "error",
-      message: SETTINGS_SAVE_FAILED_COPY,
+      // THE THIRD SENTENCE (DW-554). Not the fallback: this branch clears the
+      // held version precisely because the route MAY have run, so it is in no
+      // position to say the settings were not saved.
+      message: SETTINGS_SAVE_UNREADABLE_COPY,
       verdict: "unreadable",
     });
+    expect(result.status === "error" && result.message).not.toBe(SETTINGS_SAVE_FAILED_COPY);
     // Asserted on its own too (DW-427): the body yielded no payload, so the
-    // caller must clear the version it was holding even though the route
-    // answered — and the outcome is NOT unknown. Which side of that line a
-    // cause falls on is the whole point, and one field now states it.
+    // caller must clear the version it was holding even though something
+    // answered. Which side of that line a cause falls on is the whole point,
+    // and one field now states it.
     expect(result.status === "error" && result.verdict).toBe("unreadable");
   });
 
@@ -3768,20 +3842,76 @@ describe("the settings client", () => {
     const result = await saveWorkbenchSettings({}, { fetchImpl: unparseable });
     expect(result).toEqual({
       status: "error",
-      message: SETTINGS_SAVE_FAILED_COPY,
+      message: SETTINGS_SAVE_UNREADABLE_COPY,
       verdict: "unreadable",
     });
-    // Asserted on its own as well as inside the object: the status line came
-    // back, so the patch's outcome is KNOWN and the owner must not be told
-    // otherwise — only the ability to re-seed the draft was lost. That is what
-    // `"unreadable"` is for (DW-427). "The outcome is unknown" is the one thing
-    // this branch must not say, and "the version I am holding is still good" is
-    // the other — so the fact gets its own NAME rather than being folded into
-    // `"unconfirmed"`.
+    // Asserted on its own as well as inside the object: something answered, so
+    // "nothing came back" is false here — and only the ability to re-seed the
+    // draft was lost, not the knowledge of which failure this is. That is what
+    // `"unreadable"` is for (DW-427). "The version I am holding is still good"
+    // is the claim this branch must not make, so the fact gets its own NAME
+    // rather than being folded into `"unconfirmed"`.
     expect(result.status === "error" && result.verdict).toBe("unreadable");
+    // THREE VERDICTS, THREE SENTENCES (DW-554): neither of the other two.
     expect(result.status === "error" && result.message).not.toBe(
       unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
     );
+    expect(result.status === "error" && result.message).not.toBe(SETTINGS_SAVE_FAILED_COPY);
+  });
+
+  /**
+   * The three sentences, each read off a PRODUCER that mints it (DW-554).
+   *
+   * Beside the DW-408 loop below rather than as a table of constants, because
+   * the claim is not that three strings differ — it is that the three verdicts
+   * a real save can reach put three different things in front of the owner. The
+   * `unreadable` one used to be the `refused` one, which flatly stated the save
+   * had failed while the same result told the caller to drop its version
+   * because the route may well have run.
+   */
+  it.each([
+    [
+      "refused",
+      "an arrived refusal that served nothing",
+      stubFetch(() => ({ ok: false, status: 400, body: {} })).impl,
+      SETTINGS_SAVE_FAILED_COPY,
+    ],
+    [
+      "unconfirmed",
+      "a gateway",
+      stubFetch(() => ({ ok: false, status: 502, body: {} })).impl,
+      unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+    ],
+    [
+      "unreadable",
+      "a shapeless 200",
+      stubFetch(() => ({ ok: true, status: 200, body: { saved: true } })).impl,
+      SETTINGS_SAVE_UNREADABLE_COPY,
+    ],
+  ] as const)(
+    "answers %s from %s with its own sentence",
+    async (verdict, _label, fetchImpl, sentence) => {
+      const result = await saveWorkbenchSettings({}, { fetchImpl });
+      expect(result).toEqual({ status: "error", message: sentence, verdict });
+    },
+  );
+
+  it("keeps the three verdicts' sentences three (DW-554)", () => {
+    // The pairwise claim the loop above cannot make from inside one row. All
+    // three are shown beside the SAME Save button, and two of them clear the
+    // held version — so a shared sentence would leave the owner unable to tell
+    // "nothing was stored" from "nobody knows".
+    const sentences = [
+      SETTINGS_SAVE_FAILED_COPY,
+      unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+      SETTINGS_SAVE_UNREADABLE_COPY,
+    ];
+    expect(new Set(sentences).size).toBe(3);
+    // …and the new one says what it is for: the outcome, and the way out.
+    expect(SETTINGS_SAVE_UNREADABLE_COPY).toContain("the outcome is unknown");
+    expect(SETTINGS_SAVE_UNREADABLE_COPY).toContain("Reload");
+    // No transport vocabulary — no Copy table contains any.
+    expect(SETTINGS_SAVE_UNREADABLE_COPY).not.toMatch(/fetch|JSON|parse|200|status/i);
   });
 
   /**
@@ -3889,6 +4019,79 @@ describe("the settings client", () => {
     }
   });
 
+  /**
+   * The relay, and the one thing it is not allowed to do (DW-628).
+   *
+   * `code` exists so `SettingsCanvas` can stop exact-matching an English
+   * sentence to decide whether the env pin refused it. It carries no verdict
+   * meaning, which is exactly why it must never ride an UNKNOWN outcome: a
+   * proxy answering 502 with a body of its own would otherwise be able to name
+   * a refusal that may never have happened, and the surface would re-seed a
+   * draft over a save that might have landed.
+   */
+  it("relays a refusal's `code` and attaches none to an unknown outcome (DW-628)", async () => {
+    const pinned = stubFetch(() => ({
+      ok: false,
+      status: 400,
+      body: {
+        error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+        code: SETTINGS_ENV_PROVIDER_PIN_CODE,
+      },
+    })).impl;
+    const refusal = await saveWorkbenchSettings({}, { fetchImpl: pinned });
+    expect(refusal).toEqual({
+      status: "error",
+      message: settingsEnvProviderPinRefusalCopy("workers-ai"),
+      verdict: "refused",
+      code: SETTINGS_ENV_PROVIDER_PIN_CODE,
+    });
+    // …and the consumer answers off it.
+    expect(
+      refusal.status === "error" && settingsRefusalPinsEmbeddingProvider(refusal),
+    ).toBe(true);
+
+    // A GATEWAY carrying the very same body. The status decides the verdict, so
+    // the code is dropped with it — an unknown outcome cannot be a named
+    // refusal.
+    for (const status of UNCONFIRMED_STATUSES) {
+      const gateway = stubFetch(() => ({
+        ok: false,
+        status,
+        body: {
+          error: settingsEnvProviderPinRefusalCopy("workers-ai"),
+          code: SETTINGS_ENV_PROVIDER_PIN_CODE,
+        },
+      })).impl;
+      const result = await saveWorkbenchSettings({}, { fetchImpl: gateway });
+      expect([status, result]).toEqual([
+        status,
+        {
+          status: "error",
+          message: unconfirmedWriteMessage(SETTINGS_SAVE_ACTION),
+          verdict: "unconfirmed",
+        },
+      ]);
+      expect([status, "code" in result]).toEqual([status, false]);
+    }
+
+    // A refusal that carries no code, and one whose `code` is not a string:
+    // read exactly like `error`, so neither becomes one.
+    for (const body of [
+      { error: "No." },
+      { error: "No.", code: 42 },
+      { error: "No.", code: { pin: true } },
+    ]) {
+      const result = await saveWorkbenchSettings(
+        {},
+        { fetchImpl: stubFetch(() => ({ ok: false, status: 400, body })).impl },
+      );
+      expect([body, result]).toEqual([
+        body,
+        { status: "error", message: "No.", verdict: "refused" },
+      ]);
+    }
+  });
+
   it("answers each verdict's held-version duty from ONE rule (DW-558)", async () => {
     // The action the canvas takes, pinned where the rule lives rather than only
     // through the DOM. `"refused"` KEEPS the version — nothing was applied, so
@@ -3978,7 +4181,15 @@ describe("the settings client", () => {
       if (result.status !== "error") continue;
       // Exactly three keys: no leftover boolean, and no second field a fourth
       // state could be assembled out of.
-      expect([label, Object.keys(result).sort()]).toEqual([
+      //
+      // `code` is destructured OFF rather than added to the expected list
+      // (DW-628). It is a RELAY of the server's own name for a refusal, not a
+      // state: nothing here interprets it, `verdictClearsHeldVersion` never
+      // reads it, and widening the list would quietly retire the guard this
+      // case exists to be. What must stay true is that the STATE is spelled by
+      // three keys and no more.
+      const { code: _relayed, ...state } = result;
+      expect([label, Object.keys(state).sort()]).toEqual([
         label,
         ["message", "status", "verdict"],
       ]);
@@ -4603,7 +4814,8 @@ describe("PUT /api/settings", () => {
     );
     expect(response.status).toBe(400);
     const body = (await response.json()) as { error: string };
-    expect(body.error).toContain("Vector search needs");
+    // The one frame the route mints (DW-330): the request sends the flag on.
+    expect(body.error).toContain("Vector search is switched on, but it needs");
     expect(body.error).toContain("an endpoint");
     expect(body.error).toContain("a model");
     expect(body.error).toContain("an API key");
@@ -4635,7 +4847,7 @@ describe("PUT /api/settings", () => {
     );
     expect(response.status).toBe(400);
     const body = (await response.json()) as { error: string };
-    expect(body.error).toBe(UNSUPPORTED_WORKERS_MODEL);
+    expect(body.error).toBe(UNSUPPORTED_WORKERS_MODEL_INACTIVE);
     expect(await stored()).toEqual({ provider: "openai" });
   });
 
@@ -4658,7 +4870,7 @@ describe("PUT /api/settings", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      "Vector search needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can be turned on.",
+      "Vector search is switched on, but it needs a model id outside the Cloudflare Workers AI @cf/ namespace before it can run. Turn it off, or supply what is missing.",
     );
     expect(await stored()).toEqual({ provider: "openai" });
   });
@@ -4739,7 +4951,7 @@ describe("PUT /api/settings", () => {
     );
     expect(refused.status).toBe(400);
     expect(((await refused.json()) as { error: string }).error).toBe(
-      UNSUPPORTED_WORKERS_MODEL,
+      UNSUPPORTED_WORKERS_MODEL_INACTIVE,
     );
 
     await store({
@@ -4867,7 +5079,7 @@ describe("PUT /api/settings", () => {
     );
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toBe(
-      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+      `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     );
     expect(await stored()).toEqual({ provider: "openai" });
   });
@@ -5424,24 +5636,24 @@ describe("PUT /api/settings", () => {
     });
   });
 
-  it("picks the refusal's FRAME from the STORED flag, on both paths (DW-308)", async () => {
-    // End to end against the real store, because the frame is chosen from the
-    // config as it was READ — and on the flat-legacy path the object the patch
-    // merges onto has already had the flat field folded into it. Only the third
-    // argument still holds the pre-request flag, so a route that passed the
-    // merge target for both would answer the wrong frame here.
+  it("mints ONE frame end to end, whatever the store held (DW-308, DW-330)", async () => {
+    // End to end against the real store, because the two paths reach the gate
+    // differently — on the flat-legacy path the object the patch merges onto has
+    // already had the flat field folded into it — and because the FLAG the frame
+    // now follows is the request's, which is the one thing both paths carry.
     //
     // Off the Workers runtime the binding leg joins the sentence, which is what
     // makes this case pin the NOTES surviving the reframe as well.
     const { PUT } = await import("@/app/api/settings/route");
 
-    // Stored OFF, and the request asks to turn it on: "before it can be turned
-    // on" is exactly what it is being told.
+    // Stored OFF, and the request asks to turn it on. The old rule read the
+    // STORE here and answered "before it can be turned on"; the request is
+    // sending the flag on, and that is the box the owner is looking at.
     await store({ embeddingProvider: "workers-ai", embeddingModel: "@cf/baai/bge-m3" });
     const turningOn = await PUT(await put({ workbench: { vectorSearchEnabled: true } }));
     expect(turningOn.status).toBe(400);
     expect(((await turningOn.json()) as { error: string }).error).toBe(
-      `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
+      `Vector search is switched on, but it needs the Cloudflare AI binding before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     );
     // The WHOLE stored object, not `not.toMatchObject({ vectorSearchEnabled:
     // true })`: that assertion passes just as happily when the key is absent —
@@ -5462,12 +5674,12 @@ describe("PUT /api/settings", () => {
     });
     const alreadyOn = await PUT(await put({ embeddingProvider: "workers-ai" }));
     expect(alreadyOn.status).toBe(400);
-    // Two legs and a note, in leg order — the reframe changes the sentence they
-    // are wrapped in and nothing about the legs themselves.
+    // Two legs and a note, in leg order — and the SAME frame as the turn-on
+    // above, differing only in the action clause the flat path earns (DW-329).
     expect(((await alreadyOn.json()) as { error: string }).error).toBe(
       `Vector search is switched on, but it needs ${UNSUPPORTED_WORKERS_MODEL_LIST} and the Cloudflare AI binding before it can run. Supply what is missing, or turn the switch off in Workbench Settings → Embeddings. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     );
-    // Nothing written either way — the frame is the only thing that changed.
+    // Nothing written either way — no refusal boundary moved.
     expect(await stored()).toMatchObject({ embeddingProvider: "ollama" });
   });
 });
@@ -6432,9 +6644,52 @@ describe("settingsRefusalPinsEmbeddingProvider (DW-553)", () => {
     // it is added, which is the point of enumerating rather than parsing.
     for (const provider of EMBEDDING_PROVIDERS) {
       expect(
-        settingsRefusalPinsEmbeddingProvider(settingsEnvProviderPinRefusalCopy(provider)),
+        settingsRefusalPinsEmbeddingProvider({
+          message: settingsEnvProviderPinRefusalCopy(provider),
+        }),
       ).toBe(true);
     }
+  });
+
+  it("prefers the CODE, and takes it whatever the sentence says (DW-628)", () => {
+    // The point of minting a code at all: the recovery stops depending on
+    // English. A sentence nobody here would recognise still matches when the
+    // route names the refusal.
+    expect(
+      settingsRefusalPinsEmbeddingProvider({
+        message: "Reworded by somebody, six months from now.",
+        code: SETTINGS_ENV_PROVIDER_PIN_CODE,
+      }),
+    ).toBe(true);
+    // And a code that is not this one does not become a match by being present.
+    expect(
+      settingsRefusalPinsEmbeddingProvider({
+        message: "Reworded by somebody, six months from now.",
+        code: "some_other_refusal",
+      }),
+    ).toBe(false);
+  });
+
+  it("still answers from the SENTENCE when no code arrives (DW-628)", () => {
+    // The stale tab, and every client stubbing the pre-DW-628 body. The code is
+    // ADDITIVE — the sentence is byte-identical to what it always was — so the
+    // fallback has to keep working or the change breaks the exact owners the
+    // recovery was written for.
+    const pinned = settingsEnvProviderPinRefusalCopy("workers-ai");
+    expect(settingsRefusalPinsEmbeddingProvider({ message: pinned })).toBe(true);
+    expect(settingsRefusalPinsEmbeddingProvider({ message: pinned, code: "" })).toBe(true);
+    // Fails CLOSED on a reworded sentence with no code — the old behaviour,
+    // which is the safe one: the draft is left exactly as the owner typed it.
+    expect(
+      settingsRefusalPinsEmbeddingProvider({ message: `${pinned} And another thing.` }),
+    ).toBe(false);
+    // A wrong code AND a wrong sentence is not a near miss on either half.
+    expect(
+      settingsRefusalPinsEmbeddingProvider({
+        message: SETTINGS_SAVE_FAILED_COPY,
+        code: "embedding_provider_env_pinned_v2",
+      }),
+    ).toBe(false);
   });
 
   it("refuses a NEAR MISS rather than matching loosely", () => {
@@ -6442,17 +6697,25 @@ describe("settingsRefusalPinsEmbeddingProvider (DW-553)", () => {
     // wording with the refusal that a loose match would take it — and each one
     // means something the re-seed is wrong for.
     const pinned = settingsEnvProviderPinRefusalCopy("workers-ai");
-    expect(settingsRefusalPinsEmbeddingProvider(`${pinned} `)).toBe(false);
-    expect(settingsRefusalPinsEmbeddingProvider(pinned.slice(0, -1))).toBe(false);
-    expect(settingsRefusalPinsEmbeddingProvider(pinned.toLowerCase())).toBe(false);
+    expect(settingsRefusalPinsEmbeddingProvider({ message: `${pinned} ` })).toBe(false);
+    expect(settingsRefusalPinsEmbeddingProvider({ message: pinned.slice(0, -1) })).toBe(
+      false,
+    );
+    expect(settingsRefusalPinsEmbeddingProvider({ message: pinned.toLowerCase() })).toBe(
+      false,
+    );
     // A value outside the closed set can never have been minted by the route.
     expect(
-      settingsRefusalPinsEmbeddingProvider(settingsEnvProviderPinRefusalCopy("deepseek")),
+      settingsRefusalPinsEmbeddingProvider({
+        message: settingsEnvProviderPinRefusalCopy("deepseek"),
+      }),
     ).toBe(false);
     // The ROW's pin sentence shares the whole first half and is not a refusal
     // at all: it is what the surface says beside a disabled select.
     expect(
-      settingsRefusalPinsEmbeddingProvider(settingsEnvProviderPinCopy("workers-ai")),
+      settingsRefusalPinsEmbeddingProvider({
+        message: settingsEnvProviderPinCopy("workers-ai"),
+      }),
     ).toBe(false);
   });
 
@@ -6466,7 +6729,7 @@ describe("settingsRefusalPinsEmbeddingProvider (DW-553)", () => {
       settingsEnvProviderInvalidCopy("deepseek"),
       "",
     ]) {
-      expect(settingsRefusalPinsEmbeddingProvider(other)).toBe(false);
+      expect(settingsRefusalPinsEmbeddingProvider({ message: other })).toBe(false);
     }
   });
 });

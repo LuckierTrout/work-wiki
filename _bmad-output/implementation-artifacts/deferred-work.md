@@ -2412,7 +2412,9 @@ source_spec: `spec-dw-307-308-vector-gate-copy-and-secret-row.md`
 location: src/components/workbench/SettingsCanvas.tsx (the checkbox hint selector) with src/lib/workbench-settings.ts:validateWorkbenchSettingsPatch
 severity: low
 reason: `SettingsCanvas` selects between `vectorSearchInactiveCopy` and `vectorSearchMissingCopy` on `values.vectorSearchEnabled` — the draft flag — while `validateWorkbenchSettingsPatch` selects on `baseline.vectorSearchEnabled`. Reachable: with the switch stored OFF and the legs met, the owner ticks the box (`vectorRefused` permits it), then moves a leg into an unmet state in the same draft. The checkbox hint reads "Vector search is switched on, but it needs …" while the 400 that lands in the save bar a few rows below reads "… before it can be turned on". The behaviour is unchanged by DW-308 — that composition answered the same way before — but it is the same two-sentences-for-one-state shape DW-279 and DW-308 exist to remove. DW-308's own intent excluded the literal "same frame the client picks" reading by also requiring both frames to be pinned at the route, so closing this needs a decision the intent does not contain: whether the route should read the REQUEST's flag for the frame while st
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-save-verdict-contract
+resolution-undo: 48ddddf59b44b2fa625d50086b3ffe9dfc1d4b907dd025ba89846c1f242105aa 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-28 Frame from the request — Have validateWorkbenchSettingsPatch select the refusal frame from the request's vectorSearchEnabled while still deciding refusal from the stored flag, so client and route agree; pin the previously contradictory composition.
 decision: 2026-08-26 Align the client instead — Have SettingsCanvas select its checkbox hint from the STORED flag rather than the draft, matching the route exactly and leaving DW-308's boundary intact.
 
@@ -4241,7 +4243,9 @@ location: src/lib/workbench-settings.ts:3232 and src/lib/workbench-settings.ts (
 source_spec: `spec-dw-427-428-applied-but-unreadable-save-verdict.md`
 severity: medium
 reason: The `unreadable` verdict clears the held version on the stated ground that a 2xx is no proof the route did not run (`src/lib/workbench-settings.ts:3103-3119`), and the canvas acts on it (`SettingsCanvas.tsx:343`). The sentence shown beside that action is "Settings couldn't be saved." — an assertion the same reasoning says nobody is in a position to make. The neighbouring `it.each` docblock in `workbench-settings.test.ts` spells out exactly that objection for the sibling branch. Fixing it means a new owner-facing sentence for a third outcome, which is an intent-level copy decision this bundle's intent did not open.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-save-verdict-contract
+resolution-undo: 48ddddf59b44b2fa625d50086b3ffe9dfc1d4b907dd025ba89846c1f242105aa 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-29 Add a third sentence for the unknown outcome — Add a distinct copy constant for the `unreadable` verdict saying the outcome is unknown and what to do about it (reload to see what landed), matching the vocabulary the unconfirmed-write sentences already use elsewhere in the Workbench. Route `SettingsCanvas` onto it for that branch only, leave `SETTINGS_SAVE_FAILED_COPY` for real failures, and extend the existing `it.each` to assert each verdict's sentence.
 decision: 2026-08-29 Add a third sentence for the unknown outcome — Add a distinct copy constant for the `unreadable` verdict saying the outcome is unknown and what to do about it (reload to see what landed), matching the vocabulary the unconfirmed-write sentences already use elsewhere in the Workbench. Route `SettingsCanvas` onto it for that branch only, leave `SETTINGS_SAVE_FAILED_COPY` for real failures, and extend the existing `it.each` to assert each verdict's sentence.
 
@@ -4899,7 +4903,9 @@ location: src/app/api/settings/route.ts:434-437
 source_spec: `spec-dw-553-555-settings-save-refusal-recovery.md`
 severity: low
 reason: `settingsRefusalPinsEmbeddingProvider` compares the refusal body against every sentence `settingsEnvProviderPinRefusalCopy` can mint. That is exact, closed and fails closed, and `settings-route.test.ts` now pins the route's body against the same predicate — but a surface branching on copy is a coupling a wire-level code would remove. Adding one was ruled out of this bundle as a wire-contract change.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-settings-save-verdict-contract
+resolution-undo: 48ddddf59b44b2fa625d50086b3ffe9dfc1d4b907dd025ba89846c1f242105aa 2026-09-02 7374617475733a206f70656e
 
 ### DW-629: `sidecar/mcp.mjs`'s `MCP_INSTRUCTIONS` still hand-types the `api-mcp` category label, the last copy of the destination DW-504 derived.
 origin: spec-deferred 97b7ae61e968

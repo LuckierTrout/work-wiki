@@ -212,6 +212,30 @@ export const SETTINGS_LOAD_FAILED_COPY = "Settings couldn’t be loaded.";
 export const SETTINGS_SAVE_FAILED_COPY = "Settings couldn’t be saved.";
 
 /**
+ * The `"unreadable"` verdict's own sentence (DW-554).
+ *
+ * A 2xx whose body yielded no payload. THREE VERDICTS, THREE SENTENCES: this
+ * one is neither {@link SETTINGS_SAVE_FAILED_COPY}, which states outright that
+ * nothing was stored, nor `unconfirmedWriteMessage`, which says nothing came
+ * back at all.
+ *
+ * The fallback used to stand here, and it was the ONE claim this branch is not
+ * in a position to make. `saveWorkbenchSettings` clears the held version on
+ * this verdict precisely BECAUSE the route may have run and moved the stored
+ * config past it — so the same result cannot also tell the owner the save
+ * failed. Something answered; what it answered with had no settings in it.
+ *
+ * "Reload to see what landed" is the only action that resolves it, and it is
+ * honest either way: the surface cannot say whether the patch is stored, and a
+ * fresh read is what would tell the owner. No transport vocabulary — no Copy
+ * table contains any, and naming a status line or a parse would describe the
+ * mechanism rather than what the owner now does not know.
+ */
+export const SETTINGS_SAVE_UNREADABLE_COPY =
+  "The answer came back with nothing to show, so the outcome is unknown. " +
+  "Reload to see what landed.";
+
+/**
  * The ACTION phrase, for the one sentence `workbench-request` composes when the
  * save's outcome is unknown (DW-376).
  *
@@ -534,12 +558,34 @@ export function settingsEnvProviderPinRefusalCopy(value: string): string {
 }
 
 /**
- * Is this refused save's sentence the env pin's? (DW-553)
+ * The MACHINE-READABLE name of the refusal above, on the wire (DW-628).
  *
- * The route sends no machine-readable code for the refusal above — adding one
- * would be a wire-contract change — so the browser recognises it by the only
- * thing it was sent: the sentence. That is safe here, and only here, because
- * the set is CLOSED AT BOTH ENDS. The route mints it exclusively from
+ * `PUT /api/settings` sends it as `code` beside the `error` sentence, and it is
+ * the only refusal on this route that carries one. ADDITIVE, deliberately: the
+ * sentence is byte-identical to what it always was, so a client that ignores
+ * `code` — a stale tab, a CLI, any test stubbing the old body — behaves exactly
+ * as before, and {@link settingsRefusalPinsEmbeddingProvider} still answers off
+ * the sentence when no code arrives.
+ *
+ * A stable identifier and not a sentence: it exists so the browser can stop
+ * branching on English. Reword the copy and this keeps matching; that is the
+ * whole point of minting it.
+ */
+export const SETTINGS_ENV_PROVIDER_PIN_CODE = "embedding_provider_env_pinned";
+
+/**
+ * Is this refused save the env pin's? (DW-553, DW-628)
+ *
+ * TWO WAYS IN, and the CODE is the one to prefer.
+ * {@link SETTINGS_ENV_PROVIDER_PIN_CODE} is the fact the route states about
+ * itself, relayed verbatim by `saveWorkbenchSettings` and carrying no verdict
+ * meaning of its own — so a match on it survives any rewording of the copy.
+ *
+ * The SENTENCE stays a fallback rather than being retired, because a body
+ * without a code is a body this predicate still has to answer about: a tab
+ * loaded before the route learned to send one, and every existing client that
+ * stubs the old shape. That match is safe here, and only here, because the set
+ * is CLOSED AT BOTH ENDS. The route mints the sentence exclusively from
  * `storedBefore.envEmbeddingProvider`, typed `EmbeddingProvider | null` and
  * filtered through `isEmbeddingProvider` by `envEmbeddingProviderPair()` in
  * `config.ts` — so every sentence the route can send is one of the four this
@@ -549,8 +595,9 @@ export function settingsEnvProviderPinRefusalCopy(value: string): string {
  * A loose match would drag in {@link settingsEnvProviderPinCopy}, which shares
  * the first half of the wording, and would go on matching a sentence somebody
  * later rewrote into something this recovery is wrong for. Equality against a
- * mint fails CLOSED: reword the copy and the match simply stops, leaving the
- * old behaviour rather than a re-seed nobody asked for.
+ * mint fails CLOSED: reword the copy with no code on the wire and the match
+ * simply stops, leaving the old behaviour rather than a re-seed nobody asked
+ * for.
  *
  * WHY THE SURFACE ASKS. The pin refuses a MOVE, and the draft that made the
  * move has already had its endpoint and key blanked by
@@ -558,9 +605,13 @@ export function settingsEnvProviderPinRefusalCopy(value: string): string {
  * re-sends the identical refused move for the rest of the session —
  * {@link settingsDraftAfterEmbeddingPinRefusal} is the undo.
  */
-export function settingsRefusalPinsEmbeddingProvider(message: string): boolean {
+export function settingsRefusalPinsEmbeddingProvider(refusal: {
+  message: string;
+  code?: string;
+}): boolean {
+  if (refusal.code === SETTINGS_ENV_PROVIDER_PIN_CODE) return true;
   return EMBEDDING_PROVIDERS.some(
-    (provider) => settingsEnvProviderPinRefusalCopy(provider) === message,
+    (provider) => settingsEnvProviderPinRefusalCopy(provider) === refusal.message,
   );
 }
 
@@ -1691,9 +1742,16 @@ function vectorSearchMissingLegs(v: VectorSearchInputs): VectorSearchLeg[] {
 
 /**
  * What is missing, as one sentence, for the provider actually selected. A
- * refusal that only said "no" would leave the owner to guess which field the
- * route was unhappy about — and one that demanded a key from Ollama would send
- * them looking for a credential that does not exist.
+ * refusal that only said "no" would leave the owner to guess which field was
+ * unhappy — and one that demanded a key from Ollama would send them looking for
+ * a credential that does not exist.
+ *
+ * THE UNTICKED BOX's hint, and since DW-330 nothing else. It says "…before it
+ * can be turned on", which is what a switch the owner has not ticked is asking
+ * about — and `validateWorkbenchSettingsPatch` no longer mints it, because every
+ * refusal it can reach is about a request asking to hold the flag ON. See
+ * {@link vectorSearchInactiveCopy}, which is that frame and the only one the
+ * route sends.
  */
 export function vectorSearchMissingCopy(v: VectorSearchInputs): string {
   const missing = vectorSearchMissingLegs(v);
@@ -1742,14 +1800,18 @@ const VECTOR_INACTIVE_ACTION = {
  *     on screen; the save bar's standing sentence is the one place unsaved edits
  *     are qualified, and it is already announced on this control.
  *   - {@link validateWorkbenchSettingsPatch}, as a REFUSED SAVE's error string
- *     (DW-308), chosen when `baseline` held the flag on. The inputs are the
- *     post-merge config the request asked for — what the store WOULD hold had
- *     the save landed — so "switched on" is the flag the store already holds and
- *     "it needs …" is what the requested config would still be missing. Nothing
- *     is written, so the running deployment is unchanged either way, which is
- *     what keeps the same words honest here. The consumer need not be a browser:
- *     any client of `PUT /api/settings` reads this string as the 400 body, and
- *     it is self-contained — it names the unmet legs and the action (turning the
+ *     (DW-308) — and since DW-330 the ONLY frame it can send, chosen from the
+ *     flag the REQUEST carries rather than from the one `baseline` held. That
+ *     flag is `true` for every path that reaches the refusal, which is the same
+ *     question the checkbox asks of the draft, so the two surfaces cannot
+ *     answer one draft with two sentences. The inputs are the post-merge config
+ *     the request asked for — what the store WOULD hold had the save landed —
+ *     so "switched on" is the flag the request is asking to hold and "it needs
+ *     …" is what the requested config would still be missing. Nothing is
+ *     written, so the running deployment is unchanged either way, which is what
+ *     keeps the same words honest here. The consumer need not be a browser: any
+ *     client of `PUT /api/settings` reads this string as the 400 body, and it is
+ *     self-contained — it names the unmet legs and the action (turning the
  *     switch off) without depending on a save bar or on anything else rendered
  *     beside it.
  *
@@ -2443,44 +2505,47 @@ export function validateWorkbenchSettingsPatch(
       if (!suppressed) {
         return {
           ok: false,
-          // Same legs, same notes, same order — only the FRAME differs, and it
-          // is the same question the client asks of its checkbox (DW-308).
-          // `vectorSearchMissingCopy` says "…before it can be turned on", which
-          // is exactly right for a request asking to turn the switch on and
-          // describes a state the surface is visibly not in when the switch was
-          // ALREADY on: the save bar would land that sentence beside a still-
-          // ticked box, which is the mismatch DW-279 closed on the client half.
+          // ONE FRAME, chosen from the REQUEST's flag (DW-330).
           //
-          // `baseline.vectorSearchEnabled` — the flag as the store held it
-          // BEFORE the request, already computed as `turningOn` — is the
-          // server's analogue of the ticked box the client reads. The POST-merge
-          // `enabled` would be useless: the gate only runs inside `if (enabled)`,
-          // so it is always `true` here and the missing frame would become
-          // unreachable.
+          // `enabled` — the request's own `vectorSearchEnabled` where it sends
+          // one, the stored flag where it does not — is the flag this refusal
+          // is about, and inside `if (enabled)` it is `true` by construction.
+          // So the switched-on frame is the only sentence the route can mint,
+          // and the ternary that used to choose one is gone rather than merely
+          // biased: there is no second answer left to give.
+          //
+          // WHY THE REQUEST AND NOT THE STORE. `SettingsCanvas` picks its
+          // checkbox hint from the DRAFT — the `vectorInactive`/`vectorBlocked`
+          // ternary on `values.vectorSearchEnabled` — and the draft is what the
+          // request carries. Framing from `baseline.vectorSearchEnabled` instead —
+          // which is what `turningOn` reads — made the two surfaces disagree
+          // about one draft: tick the box, then break a leg, and the ticked
+          // checkbox said "…is switched on, but it needs…" while the 400 the
+          // very same draft bought said "…before it can be turned on". The
+          // client half is the reference (DW-279 settled it there), so the
+          // route is aligned to it.
+          //
+          // `vectorSearchMissingCopy` is untouched and still exported: it is
+          // the hint beside an UNTICKED box, a state only the client can be in.
+          // It simply stops being a sentence this route can send.
           //
           // Which SENTENCE, never WHETHER: `canEnableVectorSearch` stays the one
           // rule both callers answer identically about whether a situation is
-          // refused at all.
+          // refused at all, and `turningOn` keeps its other two jobs above — the
+          // trigger and the scoping exemption — untouched by this.
           //
-          // …and the switched-on frame asks a SECOND question, off the same one
-          // fact the fourth argument already carries (DW-329). "Turn it off" is
-          // an action only a surface that renders the switch can offer, and a
-          // scoped request is by definition one from the flat `/settings` page,
-          // which renders none — so it gets the frame that says where the
-          // switch lives. `actionableLegs === undefined` is the whole test:
-          // absent means a surface reaching every control, present means the
-          // flat page. No second parameter, because there is no second fact.
-          //
-          // `turningOn` is exempt from this too, and for the same reason it is
-          // exempt from the scoping above: `vectorSearchMissingCopy` says
-          // "…before it can be turned on", which is what a request ASKING to
-          // turn the switch on is about, and which names no action at all.
-          error: turningOn
-            ? vectorSearchMissingCopy(merged)
-            : vectorSearchInactiveCopy(
-                merged,
-                actionableLegs === undefined ? "workbench" : "flat",
-              ),
+          // The frame asks a SECOND question, off the same one fact the fourth
+          // argument already carries (DW-329). "Turn it off" is an action only a
+          // surface that renders the switch can offer, and a scoped request is
+          // by definition one from the flat `/settings` page, which renders none
+          // — so it gets the clause that says where the switch lives.
+          // `actionableLegs === undefined` is the whole test: absent means a
+          // surface reaching every control, present means the flat page. No
+          // second parameter, because there is no second fact.
+          error: vectorSearchInactiveCopy(
+            merged,
+            actionableLegs === undefined ? "workbench" : "flat",
+          ),
         };
       }
     }
@@ -3398,11 +3463,18 @@ export type SettingsSaveVerdict =
    * when the change it is describing may be the owner's own save, one
    * moment earlier. Clearing it re-seeds instead.
    *
-   * Two things it is NOT. Not the UNKNOWN outcome: the status line came
-   * back, so this claims nothing about whether the patch landed, only that
-   * nothing usable came back to re-seed from. And not this route's own 503,
-   * which is an arrived refusal that applied nothing and whose held version
-   * is therefore still current.
+   * What is KNOWN is only that something answered. Whether the patch landed
+   * is precisely what the missing payload leaves open — which is why the
+   * sentence is {@link SETTINGS_SAVE_UNREADABLE_COPY} and not
+   * {@link SETTINGS_SAVE_FAILED_COPY} (DW-554): a result that clears the held
+   * version because the route MAY have run cannot also state that it did not.
+   *
+   * Still not `unconfirmed`, and still its own name. That verdict says
+   * NOTHING came back; this one says something did and had no settings in it.
+   * The two share an action — clear the held version — and differ in what the
+   * owner is told and in what they do about it. And still not this route's own
+   * 503, which is an arrived refusal that applied nothing and whose held
+   * version is therefore current.
    */
   | "unreadable";
 
@@ -3426,6 +3498,24 @@ export type SettingsSaveResult =
        * of fields is left that spells a fourth state.
        */
       verdict: SettingsSaveVerdict;
+      /**
+       * The server's own machine-readable name for THIS refusal, relayed
+       * verbatim (DW-628). Optional because most refusals carry none, and
+       * because a client stubbing the old body sends none at all.
+       *
+       * A RELAY, not a state. It carries no verdict meaning and nothing here
+       * interprets it: {@link verdictClearsHeldVersion} never reads it, and it
+       * is not part of the three-state space `verdict` spells. A consumer that
+       * recognises a particular code — {@link settingsRefusalPinsEmbeddingProvider}
+       * is the only one — reads it as a hint about WHICH refusal arrived, never
+       * about whether anything was applied.
+       *
+       * Present ONLY when `verdict` is `"refused"`. A gateway status and a
+       * thrown cause both mean the outcome is unknown, and a proxy that put a
+       * `code` in its own body must not be able to make an unknown outcome look
+       * like a named refusal.
+       */
+      code?: string;
     };
 
 /**
@@ -3515,9 +3605,12 @@ function failedSave(failure: WriteFailure): SettingsSaveFailure {
  * success: the caller re-seeds its draft from that object, and treating a
  * shapeless 200 as landed would clear the dirty flag over values nobody
  * confirmed were stored. It is the ONE branch that answers
- * `verdict: "unreadable"` (DW-427), which is how the caller learns that the
- * held version — not the outcome — is the thing that can no longer be relied
- * on.
+ * `verdict: "unreadable"` (DW-427), and it carries a THIRD sentence of its own
+ * — {@link SETTINGS_SAVE_UNREADABLE_COPY} — because neither of the other two is
+ * true of it (DW-554). The fallback would claim the save failed, which is the
+ * claim this branch contradicts by clearing the held version; the unknown-
+ * outcome sentence would claim nothing came back, when something did. What is
+ * unknown here is the outcome AND the version, and only a reload settles it.
  */
 export async function saveWorkbenchSettings(
   patch: WorkbenchSettingsPatch,
@@ -3553,8 +3646,13 @@ export async function saveWorkbenchSettings(
     if (!response.ok) {
       const body = (await response.json().catch(() => null)) as {
         error?: unknown;
+        code?: unknown;
       } | null;
       const served = typeof body?.error === "string" ? body.error.trim() : "";
+      // The server's own name for this refusal, relayed untouched (DW-628).
+      // Read exactly like `served` — a string or nothing — so a number, an
+      // object or a `code` on an HTML error page simply is not one.
+      const code = typeof body?.code === "string" ? body.code.trim() : "";
       // The message has ONE owner, in `workbench-request`: a gateway's status
       // wins over whatever it put in the body, and every other status relays the
       // server's sentence exactly as before. {@link failedSave} turns that same
@@ -3569,7 +3667,15 @@ export async function saveWorkbenchSettings(
       // too, with `served` empty and the fallback shown (pinned since DW-557).
       // Either way no 2xx payload was lost, which is the only thing
       // `"unreadable"` is about.
-      return failedSave(refusedWriteFailure(response.status, served, action, fallback));
+      const failure = failedSave(
+        refusedWriteFailure(response.status, served, action, fallback),
+      );
+      // ONLY on an ARRIVED refusal. `refusedWriteFailure` answers `unconfirmed`
+      // for a gateway status whatever the body said, and that verdict means the
+      // outcome is unknown — attaching a code there would let an intermediary's
+      // body name a refusal that may never have happened. The verdict decides,
+      // not the status list, so the two cannot drift.
+      return code && failure.verdict === "refused" ? { ...failure, code } : failure;
     }
     // Two different failures hide behind one `response.json()`, and they get
     // opposite verdicts (DW-408).
@@ -3607,13 +3713,22 @@ export async function saveWorkbenchSettings(
     });
     const payload = workbenchSettingsFrom(body);
     // A shapeless 200 is an answer that ARRIVED, and that is the whole of what
-    // is known: a status line came back, so the owner must not be told the
-    // outcome is unknown. Whether the ROUTE itself ran — and rotated the version
-    // this caller is holding — is precisely what the missing payload leaves
-    // open, which is why the verdict below is `"unreadable"` rather than `ok`.
+    // is known. Whether the ROUTE itself ran — and rotated the version this
+    // caller is holding — is precisely what the missing payload leaves open,
+    // which is why the verdict below is `"unreadable"` rather than `ok`, and
+    // why its sentence claims no outcome (DW-554).
     return payload
       ? { status: "ok", payload }
-      : { status: "error", message: fallback, verdict: "unreadable" };
+      : {
+          status: "error",
+          // NOT `fallback` (DW-554). That sentence says the settings were not
+          // saved, and this is the one branch whose whole point is that nobody
+          // knows — the caller is being told to drop the version it holds
+          // because the route may well have run. Its own sentence says what
+          // arrived, what is unknown, and the one thing that resolves it.
+          message: SETTINGS_SAVE_UNREADABLE_COPY,
+          verdict: "unreadable",
+        };
   } catch (cause) {
     // Deliberately discards the cause's message — see the docblock — but not the
     // FACT it carries: an abort and a `TypeError` mean the patch may have landed.

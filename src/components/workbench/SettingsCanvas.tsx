@@ -375,15 +375,19 @@ export function SettingsCanvas({
         // request the pin does not refuse, without costing the owner any other
         // edit on the surface.
         //
-        // RECOGNISED BY THE SENTENCE, because the route sends no code for it and
-        // adding one would be a wire-contract change. The rule that decides is
-        // pure and lives beside the copy it matches, where the node suite runs it
-        // against every member of the closed set the route can mint from.
+        // RECOGNISED BY THE CODE the route now sends for it, with the sentence
+        // kept as the fallback (DW-628). The whole refusal is handed over rather
+        // than one field of it, so the rule — which lives beside the copy it
+        // matches, where the node suite runs it against every member of the
+        // closed set the route can mint from — decides which of the two it used.
+        // The fallback is not vestigial: a tab loaded before the route learned
+        // to send a code gets a body with none, and that owner must still
+        // recover.
         //
         // The sentence above and the version handling below are untouched: the
         // owner still reads the SERVER's words, and an arrived refusal applied
         // nothing, so the held version is still current.
-        if (settingsRefusalPinsEmbeddingProvider(result.message)) {
+        if (settingsRefusalPinsEmbeddingProvider(result)) {
           const held = payloadRef.current;
           if (held) {
             setDraft((shown) =>
@@ -394,10 +398,12 @@ export function SettingsCanvas({
         if (verdictClearsHeldVersion(result.verdict)) {
           // TWO different facts, one action (DW-427). `"unconfirmed"`: nobody
           // answered, so the patch may already be stored (DW-376). `"unreadable"`:
-          // the route answered a 2xx and its body yielded nothing we could read —
-          // which is why the two get DIFFERENT sentences above, one saying the
-          // outcome is unknown and one not claiming that over a status line that
-          // arrived.
+          // something answered a 2xx and its body yielded nothing we could read.
+          // Both leave the outcome unknown — which is exactly why neither may
+          // show the failure sentence (DW-554) — and they still get DIFFERENT
+          // sentences above, because what came back and what the owner does
+          // about it differ: nothing at all, versus an answer with no settings
+          // in it that a reload would resolve.
           //
           // ASKED, not re-derived (DW-558). The rule lives beside
           // `SettingsSaveVerdict`, written as an exhaustive switch, so a fourth
