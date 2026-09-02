@@ -25,17 +25,35 @@ vi.mock("@/lib/search", () => ({
   resolveScopeSlugs: vi.fn(async () => ({ scopeSlugs: undefined })),
 }));
 
-vi.mock("@/lib/wiki", () => ({
-  listReadableWikiPages: vi.fn(),
-  // Real-ish predicates: agent-scoped types are the `agent-*` family; saved
-  // artifacts are `html`.
-  isAgentScopedType: (t: unknown) =>
-    typeof t === "string" && t.startsWith("agent-"),
-  isArtifactType: (t: unknown) => t === "html",
-}));
+// The realm predicates here are the REAL ones, not stubs. They come from
+// `@/lib/page-types`, the client-safe module `wiki.ts` itself re-exports them
+// from, so no logic is restated and nothing can drift.
+//
+// DW-667: this factory used to hand-copy them, and the copied `isArtifactType`
+// matched `html` while production matched `html` and `slides` — so a route that
+// stopped filtering decks still passed green. A comment telling the next reader
+// to mirror production is not enforcement; importing the predicate is. A stub
+// here can never again be narrower than the code it stands in for.
+vi.mock("@/lib/wiki", async () => {
+  const { isAgentScopedType, isArtifactType } = await import("@/lib/page-types");
+  return {
+    listReadableWikiPages: vi.fn(),
+    isAgentScopedType,
+    isArtifactType,
+  };
+});
 
 vi.mock("@/lib/llm", () => ({
-  hasLLMKey: vi.fn(() => true),
+  // Async on purpose (DW-669): production `hasLLMKey` is `async` and the route
+  // calls it as `await hasLLMKey()`. The "500s when no API key is configured"
+  // case at the bottom of this file is what makes that shape load-bearing —
+  // without a case that resolves FALSE, an async and a sync double behave
+  // identically everywhere and reverting this line would break nothing.
+  //
+  // The implementation lives on the `vi.fn` itself, not in `beforeEach`:
+  // `vi.clearAllMocks()` clears call history, not implementations, so this
+  // survives every case and the one `mockResolvedValueOnce(false)` override.
+  hasLLMKey: vi.fn(async () => true),
   // Bare mock; `scriptStream()` below resolves it to a fake `StreamTextResult`.
   // The SHAPE is load-bearing: `callLLMStream` is async and returns
   // `streamText()`'s result object, and the route reads
@@ -60,7 +78,7 @@ import { listReadableWikiPages } from "@/lib/wiki";
 import { resolveScopeSlugs } from "@/lib/search";
 import { selectPagesForQuery } from "@/lib/query";
 import { getPrincipal } from "@/lib/auth";
-import { callLLMStream } from "@/lib/llm";
+import { callLLMStream, hasLLMKey } from "@/lib/llm";
 import { POST } from "@/app/api/query/stream/route";
 
 const mockedList = vi.mocked(listReadableWikiPages);
@@ -68,6 +86,7 @@ const mockedScope = vi.mocked(resolveScopeSlugs);
 const mockedSelect = vi.mocked(selectPagesForQuery);
 const mockedGetPrincipal = vi.mocked(getPrincipal);
 const mockedStream = vi.mocked(callLLMStream);
+const mockedHasKey = vi.mocked(hasLLMKey);
 
 /** The whole answer these tests expect back out of the route's body. */
 const ANSWER = "A is a concept.";
@@ -175,10 +194,11 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
     expect(passedEntries.map((e) => e.type)).toContain("agent-knowledge");
   });
 
-  it("excludes saved html artifacts from an unscoped query (and accepts format:html)", async () => {
+  it("excludes saved html and slides artifacts from an unscoped query (and accepts format:html)", async () => {
     mockedList.mockResolvedValue([
       { slug: "concept-a", title: "A", summary: "", type: undefined },
       { slug: "saved-chart", title: "Chart", summary: "", type: "html" },
+      { slug: "saved-deck", title: "Deck", summary: "", type: "slides" },
     ] as unknown as Awaited<ReturnType<typeof listReadableWikiPages>>);
 
     const res = await POST(makeRequest({ question: "?", format: "html" }));
@@ -188,8 +208,10 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
 
     expect(mockedSelect).toHaveBeenCalledTimes(1);
     const passedEntries = mockedSelect.mock.calls[0][1] as Array<{ type?: string }>;
-    // The artifact's markup must never enter the LLM context.
+    // Neither artifact type's markup may enter the LLM context — `slides` is
+    // here so a route that filtered `html` only would fail (DW-667).
     expect(passedEntries.map((e) => e.type)).not.toContain("html");
+    expect(passedEntries.map((e) => e.type)).not.toContain("slides");
     expect(passedEntries.map((e) => (e as { slug: string }).slug)).toEqual([
       "concept-a",
     ]);
@@ -208,5 +230,26 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
     expect((await res.json()).error).toMatch(/sign in/i);
     // Stopped before any expensive work — no page selection, no LLM stream.
     expect(mockedSelect).not.toHaveBeenCalled();
+  });
+
+  // DW-669: this case is what makes the `hasLLMKey` double's ASYNC shape
+  // load-bearing. The route gates on `if (!(await hasLLMKey()))`; drop that
+  // `await` and the expression tests a Promise, which is always truthy, so the
+  // gate is skipped and this case sees a streamed 200 instead of the 500. With
+  // no false-resolving case, a sync double and an async one are indistinguish-
+  // able and nothing in the suite can see that slip.
+  //
+  // The default `ENTRIES` fixture is non-empty on purpose here — the route must
+  // reach the key gate rather than short-circuit on the empty-wiki 400 above it.
+  it("500s when no API key is configured and never selects pages / calls the LLM", async () => {
+    mockedHasKey.mockResolvedValueOnce(false);
+
+    const res = await POST(makeRequest({ question: "what is A?" }));
+
+    expect(res.status).toBe(500);
+    expect((await res.json()).error).toMatch(/API key/i);
+    // Gated before any expensive work — no page selection, no LLM stream.
+    expect(mockedSelect).not.toHaveBeenCalled();
+    expect(mockedStream).not.toHaveBeenCalled();
   });
 });

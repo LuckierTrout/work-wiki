@@ -5339,7 +5339,9 @@ location: src/lib/__tests__/query-stream-route.test.ts:27
 source_spec: `spec-dw-546-query-stream-test-fidelity.md`
 severity: low
 reason: `src/lib/page-types.ts:32-34` is `type === "html" || type === "slides"`. The test factory at `src/lib/__tests__/query-stream-route.test.ts:27` returns true for `"html"` only, and the fixture at the artifact test carries no `slides` page. Pre-existing (that mock line is untouched by DW-546).
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-query-stream-mock-fidelity
+resolution-undo: 626a80cf51e9055d13eb57089c4250fed7f09f165d6df5e5678ef86e858ff032 2026-09-02 7374617475733a206f70656e
 
 ### DW-668: The 401 test's comment claims "no page selection, no LLM stream" but only `selectPagesForQuery` is asserted; nothing pins that `callLLMStream` stayed uncalled, on either the 401 or the 400 path.
 origin: spec-deferred 45bfa2c22e06
@@ -5355,7 +5357,9 @@ location: src/lib/__tests__/query-stream-route.test.ts:31
 source_spec: `spec-dw-546-query-stream-test-fidelity.md`
 severity: low
 reason: `src/lib/llm.ts:248` is `export async function hasLLMKey(): Promise<boolean>`. The mock passes only because `await true` works. This repo already treats that gate's promise-ness as load-bearing (DW-548 / `llm-key-cold-config.test.ts`). Pre-existing; the mock line is untouched by DW-546.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-query-stream-mock-fidelity
+resolution-undo: 626a80cf51e9055d13eb57089c4250fed7f09f165d6df5e5678ef86e858ff032 2026-09-02 7374617475733a206f70656e
 
 ### DW-670: No test covers an unscoped query whose readable pages are ALL agent-scoped — the `#413` filter empties `entries` and the route answers a user-visible "The wiki is empty" 400.
 origin: spec-deferred 4ff35f3d03d1
@@ -5814,4 +5818,12 @@ location: src/lib/errors.ts:82
 source_spec: `spec-dw-271-578-module-graph-fragility.md`
 severity: low
 reason: `src/lib/errors.ts` now classifies `ClientInputError` structurally on `err.name`, and its doc block cites `isStoreFault` as the ordering precedent — but `isStoreFault` itself is still an identity check plus an errno probe. A `StoreFaultError` from a second copy of the module carries no errno `code`, so it falls through to `false`. At `src/app/api/tasks/run/route.ts:929` that loses the transient 500-and-retry and drops the task onto the `/not found/i` 422 below it, poisoning work that should have been retried. A `err.name === "StoreFaultError"` arm would close it the same way this pass closed the sibling. Out of scope here: the bundle intent names `ClientInputError` and `commons.ts` only.
+status: open
+
+### DW-726: The streaming query route excludes saved artifacts only on the UNSCOPED path, while the non-streaming query() excludes them regardless of scope, so a scoped stream query can feed artifact markup into
+origin: spec-deferred a3109c8fb2a9
+location: src/app/api/query/stream/route.ts:124-128
+source_spec: `spec-dw-667-669-query-stream-mock-fidelity.md`
+severity: medium
+reason: `src/lib/query.ts:298-306` filters `!isArtifactType(e.type)` BEFORE the scope branch, with an explicit comment: artifacts "must never enter the LLM context - so exclude them REGARDLESS of scope (incl. a vault that curated one, or the owner/'Mine' scope)". `src/app/api/query/stream/route.ts:124-128` applies the same predicate INSIDE `if (!scopeSlugs)`, so it only runs on an unscoped query. `resolveScopeSlugs` for `mine` / `owner:<handle>` returns that owner's slugs, which include their saved `html`/`slides` pages - so an owner-scoped streaming question can answer from raw artifact markup (and inlined illustration data URIs) that the non-streaming path deliberately withholds. Pre-existing and untouched by this story; surfaced by the review because DW-667 widened the artifact stub at exactly that filter. No test covers the scoped-artifact case in either streaming suite.
 status: open
