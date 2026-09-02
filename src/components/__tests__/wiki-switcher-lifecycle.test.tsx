@@ -9,6 +9,7 @@ import {
   within,
 } from "@testing-library/react";
 import { WikiSwitcher } from "@/components/workbench/WikiSwitcher";
+import { wikiOptionLabel } from "@/lib/wiki-scenarios";
 import { WIKI_READ_ONLY_COPY, WIKI_SCOPE_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 
@@ -1248,6 +1249,32 @@ describe("the Wiki-scope sentence", () => {
     expect(row!.nextElementSibling).toBe(note);
   });
 
+  it("shows the switcher's label rather than clipping it to screen readers", () => {
+    // DW-179: the label was `wb-sr-only` while the retired canvas card carried
+    // the only VISIBLE `Active wiki`; DW-33 took that card control away and a
+    // sighted owner was left with a bare combobox. Asserted on the MOUNTED
+    // tree — the source scan next door can see the class name and not that the
+    // element reaches the screen.
+    mount();
+    const label = screen.getByText("Active wiki");
+    expect(label.tagName).toBe("LABEL");
+    expect(label.className).toContain("wb-wiki-switch-label");
+    expect(label.className).not.toContain("wb-sr-only");
+    // The accessible name is UNCHANGED by the unclipping: the caps are CSS, so
+    // the same element still names the combobox by the same string.
+    expect(screen.getByLabelText("Active wiki").tagName).toBe("SELECT");
+    // Above the row, not inside it — the 280px column has no room for a caption
+    // beside the <select> and the create button. `contains` is the half
+    // `compareDocumentPosition` alone would miss: PRECEDING is not set for an
+    // ancestor, but a label folded back into the flex row would still sit first.
+    const row = document.querySelector(".wb-wiki-switch-row");
+    expect(row).not.toBeNull();
+    expect(row!.contains(label)).toBe(false);
+    expect(
+      row!.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+  });
+
   it("points the switcher at the sentence for a user who cannot see it sits below", () => {
     // Visual proximity is the whole affordance for a sighted owner and nothing
     // at all here: without this the control announces as "Active wiki,
@@ -1269,6 +1296,10 @@ describe("the Wiki-scope sentence", () => {
     render(<WikiSwitcher wikis={[]} currentWikiId={null} unavailable />);
     expect(screen.queryByText(WIKI_SCOPE_COPY)).toBeNull();
     expect(screen.queryByLabelText("Active wiki")).toBeNull();
+    // The visible caption is gated on the same failed branch (DW-179), and by
+    // TEXT for the reason the empty-state row below gives: a label with no
+    // control to point at is invisible to `queryByLabelText`.
+    expect(screen.queryByText("Active wiki")).toBeNull();
   });
 
   it("stays away before the first wiki exists", () => {
@@ -1276,6 +1307,13 @@ describe("the Wiki-scope sentence", () => {
     render(<WikiSwitcher wikis={[]} currentWikiId={null} />);
     expect(screen.queryByText(WIKI_SCOPE_COPY)).toBeNull();
     expect(screen.queryByLabelText("Active wiki")).toBeNull();
+    // …and no CAPTION over a row that holds only `New Wiki` (DW-179). By TEXT,
+    // because the `queryByLabelText` row above cannot catch this: that query
+    // returns labelled form CONTROLS, so an orphan <label> with no <select> to
+    // point at already answers null and the leak would pass unseen. Now that
+    // the label is visible rather than clipped, a gate that stopped tracking
+    // the <select> would paint a caption over nothing.
+    expect(screen.queryByText("Active wiki")).toBeNull();
     expect(screen.getByRole("button", { name: "New Wiki" })).toBeTruthy();
   });
 
@@ -1467,6 +1505,32 @@ describe("the option labels (DW-148)", () => {
       expect(text).toContain(wiki.id.slice(0, 8));
       expect(text).toContain(wiki.createdAt.slice(0, 10));
     }
+  });
+
+  it("names the wiki the Rename confirm acts on, in that same spelling", () => {
+    // DW-284, on this describe's own premise: `CURRENT` is spelled `Acme` and
+    // so are both twins, so a body reading "Renames this wiki" is IDENTICAL
+    // whichever of the three is active — and a body naming only the NAME is no
+    // better. Mounted, so this observes what the owner reads rather than a
+    // substring of the source.
+    mount([CURRENT, TWIN_A, TWIN_B]);
+    fireEvent.click(button("Rename Wiki"));
+
+    const body = screen.getByRole("dialog").textContent!.replace(/\s+/g, " ");
+    expect(body).toContain(`Renames ${wikiOptionLabel(CURRENT)} and the heading`);
+    // The three facts that are not the name, spelled out — the same
+    // discriminators the two pickers above are pinned on.
+    expect(body).toContain(CURRENT.id.slice(0, 8));
+    expect(body).toContain(CURRENT.createdAt.slice(0, 10));
+    // …and NEITHER twin is named, so the sentence cannot be read as being about
+    // one of them.
+    expect(body).not.toContain(TWIN_A.id.slice(0, 8));
+    expect(body).not.toContain(TWIN_B.id.slice(0, 8));
+    expect(body).not.toContain("this wiki");
+    // The unchanged half of the sentence, still whole.
+    expect(body).toContain(
+      "and the heading of its purpose.md. The Scenario Template, Schema, Pages and Sources are not changed.",
+    );
   });
 
   it("distinguishes them in the delete picker too, from the same helper", () => {

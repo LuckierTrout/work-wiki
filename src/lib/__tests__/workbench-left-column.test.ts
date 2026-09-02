@@ -578,11 +578,127 @@ describe("WikiSwitcher", () => {
     // An owner with no Wiki gets no switcher — but still gets the one control
     // that ends that state, so `New Wiki` sits outside the gate.
     expect(source).toContain("wikis.length > 0");
-    const gate = source.indexOf("{wikis.length > 0 && (");
+    // TWO ADJACENT gates on the same condition since DW-179 lifted the label out
+    // of the row: the label's, then the <select>'s, with the row opening between
+    // them. Asserted as two slices rather than as one span from the first gate
+    // to `</select>`, because that single slice now runs straight through the
+    // row opening and would keep passing however either gate was rewritten.
+    // (A third gate on the same condition follows further down — the scope
+    // sentence's — so these are taken by position, not by counting them all.)
+    const gates = [...source.matchAll(/\{wikis\.length > 0 && \(/g)].map(
+      (match) => match.index!,
+    );
+    expect(gates.length).toBeGreaterThanOrEqual(2);
+    const row = source.indexOf('<div className="wb-wiki-switch-row">');
+    expect(row).toBeGreaterThan(-1);
+    const labelGate = source.slice(gates[0], row);
+    expect(labelGate).toContain("Active wiki");
+    expect(labelGate).toContain("htmlFor={selectId}");
+    // The second gate opens INSIDE the row, and the <select> is its subject.
+    expect(gates[1]).toBeGreaterThan(row);
+    const selectGate = source.slice(gates[1], source.indexOf("</select>", gates[1]));
+    expect(selectGate).toContain("id={selectId}");
+    // …and the create control sits outside BOTH: it is the one thing that ends
+    // the no-wiki state, so it cannot be gated on already having a wiki.
+    expect(labelGate).not.toContain("New Wiki");
+    expect(selectGate).not.toContain("New Wiki");
+  });
+
+  it("shows the switcher's label rather than clipping it to screen readers", async () => {
+    const source = await read("WikiSwitcher.tsx");
+    // DW-179: the label was `wb-sr-only` while the retired canvas card carried
+    // the only VISIBLE `Active wiki`; DW-33 took that card control away and the
+    // tradeoff was never re-examined, so a sighted owner met a bare combobox.
+    // The clipped label came back once already and nothing pinned it visible.
+    const label = source.indexOf('<label htmlFor={selectId}');
+    expect(label).toBeGreaterThan(-1);
+    const tag = source.slice(label, source.indexOf(">", label));
+    expect(tag).toContain('className="wb-wiki-switch-label"');
+    expect(tag).not.toContain("wb-sr-only");
+    // Exactly one label for the switcher: no second switcher, and no
+    // `wb-sr-only` fallback copy whispering the name a second time.
+    expect(source.match(/<label htmlFor=\{selectId\}/g) ?? []).toHaveLength(1);
+    // ABOVE the row, not inside it — the 280px column has no room for a caption
+    // beside the <select> and the create button.
+    const row = source.indexOf('<div className="wb-wiki-switch-row">');
+    expect(row).toBeGreaterThan(-1);
+    expect(label).toBeLessThan(row);
+    // …and still INSIDE the same `wikis.length > 0` gate as the control it
+    // labels: no caption over a row that holds only `New Wiki`. Enclosure, not
+    // mere order — `gate < label` is what `lastIndexOf` returns by
+    // construction and could never fail, so it would prove only that a gate
+    // token precedes the label somewhere, never that the label is under it.
+    const gate = source.lastIndexOf("{wikis.length > 0 && (", label);
     expect(gate).toBeGreaterThan(-1);
-    const gated = source.slice(gate, source.indexOf("</select>", gate));
-    expect(gated).toContain("Active wiki");
-    expect(gated).not.toContain("New Wiki");
+    // Nothing but whitespace between the gate's `(` and the <label> — so the
+    // label is the gate's own subject and not a sibling further down it.
+    const opener = "{wikis.length > 0 && (";
+    expect(source.slice(gate + opener.length, label).trim()).toBe("");
+    // …and the gate CLOSES after the label and before the row, so the row is
+    // outside it. Found by walking the parens rather than by string search: a
+    // `)}` typed in the label's own text would otherwise close it early.
+    let depth = 0;
+    let close = -1;
+    for (let i = gate + opener.length - 1; i < row; i += 1) {
+      if (source[i] === "(") depth += 1;
+      else if (source[i] === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          close = i;
+          break;
+        }
+      }
+    }
+    expect(close).toBeGreaterThan(label);
+    expect(source.slice(close, row)).toContain("}");
+
+    const css = await globals();
+    // The caps are CSS and NEVER retyped text: the accessible name stays the
+    // DOM string `Active wiki`, so the ~30 `getByLabelText("Active wiki")` call
+    // sites keep resolving and a screen reader does not spell it out letter by
+    // letter. Unpinned, a later edit could "simplify" this to uppercase source
+    // text with every render test still green and the name silently changed.
+    expect(css).toMatch(
+      /\.wb-wiki-switch-label \{[^}]*text-transform: uppercase;/,
+    );
+    // Painted through the shell's own muted token — no Folio token may appear
+    // in a shell rule, and a hard literal here would not follow the column.
+    expect(css).toMatch(/\.wb-wiki-switch-label \{[^}]*color: var\(--wb-muted\);/);
+    // `display: block` is load-bearing and not cosmetic: a <label> is inline by
+    // default, vertical margins do not apply to an inline box, so dropping this
+    // line silently stops `margin-bottom` from applying and collapses the
+    // caption onto the <select> with every other assertion here still green.
+    expect(css).toMatch(/\.wb-wiki-switch-label \{[^}]*display: block;/);
+    expect(css).toMatch(
+      /\.wb-wiki-switch-label \{[^}]*margin-bottom: var\(--wb-space-1\);/,
+    );
+  });
+
+  it("names the wiki the Rename confirm acts on", async () => {
+    const source = await read("WikiSwitcher.tsx");
+    // Found first, then sliced: an unguarded `indexOf` miss yields `slice(-1)`
+    // and reports a one-character diff instead of "the sentence is gone".
+    const opens = source.indexOf("Renames <strong>");
+    expect(opens).toBeGreaterThan(-1);
+    const closes = source.indexOf("</p>", opens);
+    expect(closes).toBeGreaterThan(opens);
+    const body = source.slice(opens, closes).replace(/\s+/g, " ");
+    expect(body).toContain(
+      "Renames <strong>{current && wikiOptionLabel(current)}</strong>",
+    );
+    // DW-284, on DW-148's premise: with "this wiki" in the body a rename aimed
+    // at the wrong wiki reads identically to the right one. Scoped to the BODY
+    // and not to the file — a file-wide ban would outlaw the phrase in prose
+    // forever, and would be satisfied just as well by deleting the sentence.
+    expect(body).not.toContain("this wiki");
+    // Which is why the surviving clause is pinned POSITIVELY: the target was
+    // named in place of "this wiki", not at the cost of what the sentence said.
+    expect(body).toContain(
+      "and the heading of its purpose.md. The Scenario Template, Schema, Pages and Sources are not changed.",
+    );
+    // One disambiguated spelling, shared with the switcher options and the
+    // delete picker — never a re-spelled name, in any of its spellings.
+    expect(body).not.toMatch(/current(\?)?\.name|current && current\.name/);
   });
 
   it("sources the Wiki-scope sentence rather than inlining it", async () => {

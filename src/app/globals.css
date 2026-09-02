@@ -3769,6 +3769,32 @@ body:has(.wb-shell) {
 .wb-wiki-switch {
   margin-top: var(--wb-space-2);
 }
+/* The switcher's field label, visible rather than clipped (DW-179). It sits
+   ABOVE the row because the column is 280px and there is no room for a caption
+   beside the <select> and the create button.
+
+   The shell's first `text-transform` rule, and deliberately CSS-side: the caps
+   are a face, not the name. Retyping the text as `ACTIVE WIKI` would change the
+   accessible name — breaking every `getByLabelText("Active wiki")` call site
+   and making a screen reader spell the word out letter by letter — so the DOM
+   text stays `Active wiki` and the uppercase happens here.
+
+   `display: block` is load-bearing, not cosmetic: a <label> is inline by
+   default and vertical margins do not apply to an inline box, so without it the
+   `margin-bottom` below silently stops working and the caption collapses onto
+   the <select>.
+
+   12px is the shell's established secondary size, and the face is the muted
+   left-column one; no Folio token appears in a shell rule. */
+.wb-wiki-switch-label {
+  display: block;
+  margin-bottom: var(--wb-space-1);
+  color: var(--wb-muted);
+  font-size: 12px;
+  font-weight: var(--wb-weight-strong);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .wb-wiki-switch-row {
   display: flex;
   align-items: center;

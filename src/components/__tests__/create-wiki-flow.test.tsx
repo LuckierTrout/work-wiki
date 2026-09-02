@@ -5,6 +5,7 @@ import {
   WorkbenchDataProvider,
   type WorkbenchData,
 } from "@/components/workbench/WorkbenchData";
+import { wikiOptionLabel } from "@/lib/wiki-scenarios";
 import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
 import { WIKI_EMPTY_COPY, WIKI_UNAVAILABLE_COPY } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
@@ -150,6 +151,38 @@ describe("Change template confirm gate", () => {
     expect(dialog.textContent?.replace(/\s+/g, " ")).toContain(
       "The Schema it replaces is kept in the Preview’s History and can be restored; purpose.md and the Workspace Purpose are not kept and cannot be recovered.",
     );
+  });
+
+  it("names the wiki the overwrite acts on, in the pickers' own spelling", () => {
+    // DW-284, on DW-148's premise. Nothing enforces unique wiki names, so a
+    // body reading "…the Workspace Purpose for this wiki" is IDENTICAL whichever
+    // wiki is active — on the confirm that rewrites purpose.md and the Workspace
+    // Purpose with nothing kept. A same-named TWIN is mounted alongside so the
+    // disambiguation is load-bearing: a body naming only `Acme` would satisfy a
+    // laxer assertion and still leave the owner guessing.
+    const twin: WikiRecord = {
+      id: "wiki 3/4",
+      name: WIKI.name,
+      scenario: "reading",
+      createdAt: "2026-02-02T00:00:00.000Z",
+      updatedAt: "2026-02-02T00:00:00.000Z",
+    };
+    mount([WIKI, twin], WIKI.id);
+    fireEvent.click(button("Change template"));
+    const dialog = screen.getByRole("dialog", { name: "Change Scenario Template" });
+
+    // The head, the target and the first words of the tail in ONE string. The
+    // seam matters as much as the name: the JSX carries an explicit `{" "}`
+    // between "for" and the <strong>, and dropping it renders "…Purpose
+    // forAcme — …" with every source-side head/target/tail pin still green.
+    // Collapsing runs of whitespace cannot put that space back, so this is the
+    // assertion that sees it.
+    expect(dialog.textContent?.replace(/\s+/g, " ")).toContain(
+      `Workspace Purpose for ${wikiOptionLabel(WIKI)} — a purpose you wrote in Settings`,
+    );
+    // The twin is not named, so the sentence cannot be read as being about it.
+    expect(dialog.textContent).not.toContain(twin.id.slice(0, 8));
+    expect(dialog.textContent).not.toContain("for this wiki");
   });
 
   it("enables Overwrite once a different scenario is picked", () => {

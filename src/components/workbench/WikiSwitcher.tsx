@@ -576,15 +576,29 @@ export function WikiSwitcher({
         </p>
       ) : (
         <>
+          {/* Labelled, not placeholder-labelled (accessibility floor) — and
+              VISIBLY labelled (DW-179). The label was clipped to `wb-sr-only`
+              while the retired canvas card carried the only visible `Active
+              wiki` caption; DW-33 removed that card control and nothing
+              re-examined the tradeoff, so a sighted owner met a bare combobox.
+              It sits ABOVE the row rather than beside the <select>: the column
+              is 280px and has no room for a label next to the control and the
+              button.
+
+              The caps are CSS (`text-transform` on `.wb-wiki-switch-label`) and
+              never retyped text, so the accessible name is still the DOM string
+              `Active wiki` — the ~30 `getByLabelText("Active wiki")` call sites
+              keep resolving, and a screen reader does not spell it out letter by
+              letter. Same `wikis.length > 0` gate as the control it labels: no
+              caption over a row that holds only the create button. */}
+          {wikis.length > 0 && (
+            <label htmlFor={selectId} className="wb-wiki-switch-label">
+              Active wiki
+            </label>
+          )}
           <div className="wb-wiki-switch-row">
             {wikis.length > 0 && (
               <>
-                {/* Labelled, not placeholder-labelled (accessibility floor). The
-                    label is clipped rather than absent: the column is 280px and
-                    the control's own option text already names the Wiki. */}
-                <label htmlFor={selectId} className="wb-sr-only">
-                  Active wiki
-                </label>
                 <select
                   id={selectId}
                   className="wb-wiki-switch-select"
@@ -837,9 +851,19 @@ export function WikiSwitcher({
                 if (current) void rename(current, renameName);
               }}
             />
+            {/* The confirm NAMES its target (DW-284), on DW-148's premise: with
+                "this wiki" in the body, a rename aimed at the wrong wiki reads
+                identically to the right one. `wikiOptionLabel` and not
+                `current.name` — one disambiguated spelling, the same the
+                switcher options and the delete picker use, because name alone
+                is not unique. `open` is gated on `current !== null`, so no body
+                without a target is ever SHOWN — but `body` is a prop, built on
+                every render whether the dialog is open or not, so the call still
+                has to survive a null `current`. */}
             <p className="mt-2">
-              Renames this wiki and the heading of its purpose.md. The Scenario
-              Template, Schema, Pages and Sources are not changed.
+              Renames <strong>{current && wikiOptionLabel(current)}</strong> and the
+              heading of its purpose.md. The Scenario Template, Schema, Pages and
+              Sources are not changed.
             </p>
           </>
         }

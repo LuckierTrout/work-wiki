@@ -10,6 +10,7 @@ import {
   CREATABLE_SCENARIOS,
   SCENARIO_LABELS,
   WIKI_ARTIFACT_FILES,
+  wikiOptionLabel,
   type CreatableScenario,
 } from "@/lib/wiki-scenarios";
 import { PREVIEW_UNSELECTED_COPY } from "@/lib/workbench-preview";
@@ -632,12 +633,25 @@ export function WikiWorkbench() {
         onConfirm={() => void applyTemplate()}
         body={
           <>
+            {/* The confirm NAMES its target (DW-284), on DW-148's premise: with
+                "for this wiki" in the body, an overwrite aimed at the wrong wiki
+                reads identically to the right one — and this is the confirm that
+                rewrites purpose.md and the Workspace Purpose unrecoverably.
+                `wikiOptionLabel` and not `current.name`: one disambiguated
+                spelling, shared with the switcher options and the delete picker,
+                because name alone is not unique.
+
+                `open` is gated on `templateOpen && current !== null`, so no body
+                without a target is ever SHOWN — but `body` is a prop, built on
+                every render whether the dialog is open or not, so the call still
+                has to survive a null `current`. */}
             <p>
-              This overwrites purpose.md, Schema, and the Workspace Purpose for this
-              wiki — a purpose you wrote in Settings will be replaced by the new
-              template’s. The Schema it replaces is kept in the Preview’s History and
-              can be restored; purpose.md and the Workspace Purpose are not kept and
-              cannot be recovered. Other wikis, Pages and Sources are not changed.
+              This overwrites purpose.md, Schema, and the Workspace Purpose for{" "}
+              <strong>{current && wikiOptionLabel(current)}</strong> — a purpose you
+              wrote in Settings will be replaced by the new template’s. The Schema
+              it replaces is kept in the Preview’s History and can be restored;
+              purpose.md and the Workspace Purpose are not kept and cannot be
+              recovered. Other wikis, Pages and Sources are not changed.
             </p>
             <label
               htmlFor="wiki-workbench-template"

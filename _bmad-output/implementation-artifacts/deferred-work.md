@@ -1302,7 +1302,9 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/components/workbench/WikiSwitcher.tsx:262-264
 severity: low
 reason: The retired card control carried a VISIBLE `Active wiki` label; the survivor's is clipped (`WikiSwitcher.tsx:262-264`), justified on the 280px column width. The accessibility floor is still met — the input is labelled beyond a placeholder — but that tradeoff was made while a visible label existed elsewhere on the same viewport, and it has not been re-examined now that it does not.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-wiki-switcher-label-and-copy
+resolution-undo: b8fe045daf2a1db57da8fceb9ef2bb20469460eaecb647d3212237a42b64f1b4 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-19 Make the label visible — Render the `Active wiki` label visibly above the switcher within the 280px column (a small-caps field label in the existing left-column type scale), drop the `wb-sr-only` class, and update the chrome tests that pin the current markup.
 
 ### DW-180: Hiding the preview note leaves the canvas grid's second track empty, so a docked Preview strands the card at 320px beside blank space.
@@ -2069,7 +2071,9 @@ source_spec: `spec-dw-148-174-175-177-255-256-workbench-client-hardening.md`
 location: src/components/workbench/WikiSwitcher.tsx (Rename body) and WikiWorkbench.tsx (template body)
 severity: low
 reason: DW-148's premise is that a bare name does not identify a wiki. The Delete confirm leans entirely on its `<select>`, and the Rename and Change-template bodies say "this wiki" with no target named at all — so the two confirms that rewrite or rename an artifact set identify their target less precisely than the picker that chooses it.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-wiki-switcher-label-and-copy
+resolution-undo: b8fe045daf2a1db57da8fceb9ef2bb20469460eaecb647d3212237a42b64f1b4 2026-09-02 7374617475733a206f70656e
 
 ### DW-285: `No wiki yet.` and `Your wikis couldn't be loaded. Reload to try again.` are still inline literals in the card while every other sentence it shows is an exported constant.
 origin: spec-deferred f852398160ce

@@ -224,8 +224,34 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // written over with nothing kept. Calling the whole operation unrecoverable
     // was true before that and is not now, and a confirm that overstates what it
     // destroys is as wrong as one that understates it.
+    //
+    // Pinned as HEAD / TARGET / TAIL rather than as one string, because the
+    // sentence now interpolates the wiki it acts on (DW-284): the confirm has
+    // to NAME its target or an overwrite aimed at the wrong wiki reads
+    // identically to the right one — DW-148's premise, on the confirm that
+    // rewrites purpose.md and the Workspace Purpose unrecoverably. Split in
+    // three and not loosened to a substring: every unchanged clause is still
+    // pinned whole, so the interpolation cannot take any other wording with it.
     expect(warning).toContain(
-      "This overwrites purpose.md, Schema, and the Workspace Purpose for this wiki — a purpose you wrote in Settings will be replaced by the new template’s. The Schema it replaces is kept in the Preview’s History and can be restored; purpose.md and the Workspace Purpose are not kept and cannot be recovered. Other wikis, Pages and Sources are not changed.",
+      "This overwrites purpose.md, Schema, and the Workspace Purpose for",
+    );
+    // The TARGET, in the one disambiguated spelling the switcher options and
+    // the delete picker share — never a re-spelled `current.name`, which is not
+    // unique. Asserted on raw source, since JSX braces are what carry it.
+    expect(source).toContain("<strong>{current && wikiOptionLabel(current)}</strong>");
+    // Pointed at the IMPORT, not repeating the line above: what is worth
+    // holding separately is that the spelling is the SHARED one, so a local
+    // re-implementation drifting from the pickers fails here.
+    expect(source).toMatch(
+      /import \{[^}]*\bwikiOptionLabel\b[^}]*\} from "@\/lib\/wiki-scenarios";/s,
+    );
+    // Against the COLLAPSED string: the raw source wrapped this phrase across
+    // lines even before the change, so a `source`-side ban never could fire.
+    expect(warning).not.toContain("Workspace Purpose for this wiki");
+    // The TAIL, whole: the two halves no longer share a fate, and that is the
+    // part of the sentence this test has always existed to hold still.
+    expect(warning).toContain(
+      "a purpose you wrote in Settings will be replaced by the new template’s. The Schema it replaces is kept in the Preview’s History and can be restored; purpose.md and the Workspace Purpose are not kept and cannot be recovered. Other wikis, Pages and Sources are not changed.",
     );
     // The sentence sends the owner to a panel by NAME, and that name is owned
     // one module over. Joined here so renaming the disclosure fails on this row
