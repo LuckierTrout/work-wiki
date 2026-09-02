@@ -405,7 +405,8 @@ location: src/lib/wiki-scenarios.ts (EDITABLE_ARTIFACT_FILES)
 source_spec: `spec-1-8-edit-schema.md`
 severity: medium
 reason: PRD FR-34 reads "Christian can view/edit purpose and Schema from Settings or Wiki tree", and the UX run names both files. This story's acceptance covers Schema alone, so the exclusion is correct here — but it is now an asserted invariant (`expect(EDITABLE_ARTIFACT_FILES).not.toContain( "purpose.md")`), so a later story must edit a test to open it. Opening it also needs an answer to what `purpose.md` must contain to be valid (the Schema's `hasPageConventions` has no analogue) and to how it reconciles with the tenant-global workspace profile (DW-14, DW-21), which is why it was not simply widened here.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/lib/wiki-scenarios.ts:77 — EDITABLE_ARTIFACT_FILES now lists purpose.md, and src/lib/__tests__/wiki-schema-edit.test.ts:180 asserts toEqual(["purpose.md","schema.md"]); the inverted invariant the entry describes is gone.
 decision: 2026-08-16 Wait for DW-14
 
 ### DW-59: An overwritten Schema has no recovery path — the artifact write takes no revision snapshot, while the page write it is modelled on does.
@@ -2150,7 +2151,8 @@ source_spec: `spec-dw-161-164-storage-write-integrity.md`
 location: src/lib/storage/filesystem.ts
 severity: medium
 reason: Measured under the full parallel suite: contributors 27ms -> 5091ms, lint 35ms -> 4854ms, query-history 102ms -> 24204ms. The same per-write cost is paid by `portable-archive.ts` on import (one write per archive entry), `backups.ts` on restore (one per asset), `embeddings.ts` on rebuild (each `upsertEmbedding` rewrites AND fsyncs the whole `.indexes/embeddings.json`) and by ingest. The cost is the durability guarantee working as specified, not a defect — but no benchmark, batching, or bound exists for those paths.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/lib/storage/filesystem.ts:985 withBatchedWrites with the per-directory barrier at :309-326; the loop paths are converted at src/lib/backups.ts:270,:445 and src/lib/portable-archive.ts:326, and the bounds are pinned by src/lib/__tests__/write-batching-bounds.test.ts.
 decision: 2026-08-20 Batch the loop paths — Keep fsync as the default for single writes, and give the loop paths a batched form: a bulk-write door that fsyncs once per batch (or a directory sync at the end) for portable-archive import, backup restore and ingest, plus an accumulate-then-flush shape for `upsertEmbedding` so an embeddings rebuild stops rewriting and syncing the whole index per vector. Add a benchmark that fails if any of those paths regresses past a recorded bound.
 
 ### DW-294: `POST /api/research` has no `isReadOnly()` gate, unlike ~20 sibling write routes.
@@ -2358,7 +2360,8 @@ source_spec: `spec-dw-136-142-301-workspace-purpose-settings-freshness.md`
 location: src/components/WorkspacePurposeSettings.tsx (save catch / feedback banner)
 severity: low
 reason: `WRITE_CONFLICT_COPY` tells the owner to copy their text and reload. `load("retry")` would now re-seed `version` from a fresh read, but the Try again control renders only under `loadFailed`, so the conflict banner has no affordance of its own. Out of scope for this bundle — the intent names the no-Wiki and load-failed states, not the conflict one.
-status: open
+status: done 2026-09-02
+resolution: already resolved: commit 48412822 — src/components/WorkspacePurposeSettings.tsx is now a 33-line link-only callout that owns no draft and performs no write (:8), so there is no 412 conflict banner left to re-seed.
 
 ### DW-322: `buildNamesTermsGuidance` is still uncached in the exact same `Promise.all` pairs the DW-141 handle now covers, so one document still pays up to four dictionary reads while paying one profile read.
 
@@ -2440,7 +2443,8 @@ source_spec: `spec-dw-307-308-vector-gate-copy-and-secret-row.md`
 location: src/components/__tests__/workspace-purpose-settings.test.tsx
 severity: low
 reason: Observed during this change's verification: a full `npm test` reported 1 failed / 5514 passed in that file, and two subsequent full runs reported 5515/5515. Run in isolation three times it failed once and passed twice. The file is untouched by this change and shares nothing with the settings or vector-gate surface — the failing assertion is on the active-wiki status line ("This workspace now has an active wiki, ...") — so this is pre-existing suite noise rather than a regression. It makes every future run's green a coin flip on that one file.
-status: open
+status: done 2026-09-02
+resolution: already resolved: commit 48412822 — src/components/__tests__/workspace-purpose-settings.test.tsx is now a single synchronous 20-line case with no getByRole("status") and no fetch (:17); the intermittently failing assertion no longer exists.
 
 ### DW-332: The `drift:<active model>` key is never re-armed, so a corpus that is rebuilt and then drifts again under the same active model is silent for the rest of the process.
 
@@ -3762,7 +3766,8 @@ source_spec: `spec-dw-378-379-merge-base-freshness.md`
 location: src/app/api/wiki/[slug]/route.ts:50
 severity: medium
 reason: src/app/api/wiki/[slug]/route.ts:50 sits inside DELETE (handlers at 26 / 146 / 356), not a GET: its frontmatter feeds canWriteFrontmatter at :60, and a non-ENOENT failure answers `page not found: <slug>` at :51-56, the exact DW-378 symptom on the delete door. src/app/api/wiki/route.ts:104 and src/mcp.ts:222 are the mirror case: `const existing = await readWikiPage(slug)` refusing with 409 / "Page already exists" when truthy, so a blip reads as "absent" and lets a create proceed against a page that exists. Structurally identical to lint-fix.ts:351, which this bundle did convert. Not named by DW-378 or DW-379, so out of scope here. NOTE: this spec's Never clause misdescribes route.ts:50 as a GET read serving a response; the exclusion is right by the intent's enumeration, the stated reason is not.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/app/api/wiki/[slug]/route.ts:63-66, src/app/api/wiki/route.ts:114 and src/mcp.ts:258 now all read with { fresh: true, strict: true }, with the DW-378 rationale recorded at route.ts:57 and mcp.ts:254-257.
 
 ### DW-497: The revision-list GET still reports a storage blip as `page not found`, so DW-378's misreport survives on the read surface a human actually hits.
 origin: spec-deferred 4f2ccecea4f4
@@ -3957,7 +3962,8 @@ source_spec: `spec-dw-409-429-430-workbench-unconfirmed-write-latch.md`
 location: _bmad-output/implementation-artifacts/deferred-work.md (DW-429 decision text)
 severity: low
 reason: The ledger entry's decision reads "Add a fail-soft `bumpDataVersion()` tail to `setCurrentWiki` outside the lock ... rewrite the exemption rationale at workbench-data-version.test.ts:1067-1071 and raise the count guard at :1088-1089 to 6". This bundle's intent directed implementing the entry's REASON instead, which is a client-side release-effect fix, so nothing in `src/lib/wikis.ts` was touched. The decision's own line numbers are also stale: that suite already asserts six `bumpRefreshSignal` sites around line 1213 and states the `setCurrentWiki` exemption rationale near line 1174. So the decision's separate concern — that a switch moves no `dataVersion` — is neither implemented nor retired, and a future sweep re-reading it would chase dead coordinates.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/lib/wikis.ts:1738-1754 — setCurrentWiki now carries the fail-soft bumpDataVersion() tail outside the lock citing DW-518/DW-429, with the refreshed exemption rationale and count guard at src/lib/__tests__/workbench-data-version.test.ts:1163 and :1184.
 decision: 2026-08-28 Implement the kernel tail — Add the fail-soft bumpDataVersion() tail to setCurrentWiki outside the lock as the recorded DW-429 decision directs, updating the exemption rationale and raising the bumpRefreshSignal count guard in workbench-data-version.test.ts at their current lines rather than the decision's stale ones.
 
 ### DW-519: SourcesTree carries the exact rAF-cancel-without-flush cleanup DW-208 removed from TreePanel, plus DW-206's single-offset-across-the-breakpoint storage shape, and has no test coverage at all.
@@ -4150,7 +4156,8 @@ location: src/lib/backups.ts:94-120
 source_spec: `spec-dw-215-artifact-revision-retention.md`
 severity: medium
 reason: `walkFiles` recurses in raw `listFiles` order and the filesystem provider returns `fs.readdir` order unsorted (`src/lib/storage/filesystem.ts:315-327`), so a single oversized silo early in the walk can consume the whole file/byte budget and every later prefix — including `wiki/`, the owner's actual pages — is dropped, flagged only as "partial". DW-215's own framing ("so a large artifact history degrades") reads as: the oversized history is what should fall off first. The literal instruction was "truncate ... instead of throwing", which this satisfies, so an ordering policy (walk `wiki/` before `raw/`, or exclude `revisions/` from a truncating pass) is a separate decision, not this story's.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/lib/backups.ts:163-207 — walkFiles now runs three ordered, name-sorted passes (wiki, then live data, then history) with HISTORY_DIR_NAMES at :129 and the DW-540 citation at :133-135.
 decision: 2026-08-29 Priority walk order — Give `walkFiles` an explicit prefix priority — `wiki/` first, then the rest of the owner's live data, with `revisions/` and other append-only history last — so a truncating pass drops history before pages. Sort within a prefix so the result is deterministic rather than readdir-ordered. Pin that a budget exceeded by an oversized silo still yields a backup containing every `wiki/` page.
 decision: 2026-08-29 Priority walk order — Give `walkFiles` an explicit prefix priority — `wiki/` first, then the rest of the owner's live data, with `revisions/` and other append-only history last — so a truncating pass drops history before pages. Sort within a prefix so the result is deterministic rather than readdir-ordered. Pin that a budget exceeded by an oversized silo still yields a backup containing every `wiki/` page.
 
@@ -4622,7 +4629,8 @@ location: src/components/__tests__/workspace-purpose-settings.test.tsx:796
 source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
 severity: low
 reason: `src/components/__tests__/workspace-purpose-settings.test.tsx` still contains ~83 `waitFor(` calls, and the describe at `:796` holds roughly fourteen cases with the same `render -> waitFor(fieldset enabled) -> returnToTab() -> waitFor(badge/status)` shape -- including `await waitFor(() => expect(badge()).toBe("no wiki"))` at `:1008`, which is the literal assertion whose expiry produced the observed red. This story's intent named one case and its spec forbade widening, so the scoping is deliberate; the exposure is simply still there, and `settleUntil` now exists in the file as the clock-free replacement.
-status: open
+status: done 2026-09-02
+resolution: already resolved: commit 48412822 — src/components/__tests__/workspace-purpose-settings.test.tsx now holds one 20-line case with zero waitFor and zero returnToTab calls; the ~14-case describe block carrying the exposure no longer exists.
 
 ### DW-593: ActionInbox never reads `ActionItem.sourceMissing`, so a to-do whose cited Source was cascade-deleted still renders a live `source · <slug>` link into a page that is gone.
 origin: spec-deferred 0ee77ef63189
@@ -5394,7 +5402,8 @@ location: src/lib/backups.ts:176-186
 source_spec: `spec-dw-542-backup-oversize-read-avoidance.md`
 severity: low
 reason: `createOwnerBackupUnlocked` reads each fitting file with `readAsset` into a whole ArrayBuffer, then hashes and writes it. There is no per-file size guard and no streaming/chunked copy. `MAX_BACKUP_BYTES` is 2 GiB while the Workers isolate memory limit is a small fraction of that, so the OOM arrives from a single large object rather than from the ceiling that was designed to stop it. DW-542 removed the wasted read of a file that does NOT fit; it does not bound the read of one that does.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/lib/backups.ts:296 — the copy loop now skips a file above MAX_BACKUP_FILE_BYTES (32 MiB, :88) before reading it, with the DW-677 citation at :19-21 and :285.
 
 ### DW-678: A throw partway through the copy loop leaves already-written backup files orphaned with no manifest and no ledger line, and nothing ever prunes them.
 origin: spec-deferred 938b9e785214
@@ -5402,7 +5411,8 @@ location: src/lib/backups.ts:139-198
 source_spec: `spec-dw-542-backup-oversize-read-avoidance.md`
 severity: low
 reason: `createOwnerBackupUnlocked` has no try/catch: when `stat` or `readAsset` rejects mid-copy, the files already written under `backups/<tenant>/<id>/files/` stay forever, `writeManifest` never runs, and unlike `verifyOwnerBackup` — which records a `status: "failed"` operation — no ledger line is recorded at all. `backups.ts` has no pruning of any kind, so repeated failures accumulate silently and invisibly. Pre-existing; the new `stat` call rejects on exactly the same path the read did.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/lib/backups.ts:357-380 — createOwnerBackupUnlocked now wraps the copy in try/catch that deletes the orphaned prefix (:367) and records a status:"failed" ledger line (:369-375), citing DW-678 at :227.
 
 ### DW-679: `buildPortableArchive` has the read-then-check shape DW-542 just replaced in the backup loop.
 origin: spec-deferred ac599c73e868
@@ -5410,7 +5420,8 @@ location: src/lib/portable-archive.ts:89-92
 source_spec: `spec-dw-542-backup-oversize-read-avoidance.md`
 severity: low
 reason: It calls `readAsset` on each file, adds `data.byteLength` to `totalBytes`, and only then throws past `MAX_BYTES` — so the object that trips the 500 MB limit is pulled fully into memory before the failure. It throws rather than truncating, so its observable contract differs from the backup loop's, but the read-avoidance argument applies unchanged.
-status: open
+status: done 2026-09-02
+resolution: already resolved: src/lib/portable-archive.ts:122-126 — buildPortableArchive now stats and refuses past MAX_BYTES before the readAsset at :128, with the DW-679 citation at :94.
 
 ### DW-680: A read-only `queueResearchProject` releases the project's research slot before its CAS refuses, so a refused start still mutates the deployment.
 origin: spec-deferred 4cb96e41f86f
@@ -5511,7 +5522,8 @@ location: workers/email-ingest/index.ts:1029-1031, src/app/api/email/ingest/rout
 source_spec: `spec-dw-453-567-email-worker-truncation-boundary.md`
 severity: high
 reason: The multipart/form-data encoding algorithm normalizes every lone LF and CR in an entry value to CRLF, so the `content` the route reads is longer than the string the Worker computed. Measured under Node/undici in this repo: - a `MAX + 1` single-line body appends at 100000 and reads back at 100002 (the marker's `"\n\n"` arriving as `"\r\n\r\n"`); - an UNTRUNCATED 98,599-character body carrying 3,398 newlines reads back at 101,997. The second measurement is the one that reframes this. The problem is NOT confined to truncated bodies and is therefore NOT fixed by a Worker-side truncation budget: any body whose character count plus newline count exceeds `MAX_EMAIL_CONTENT_CHARS` trips the route's gate at `src/app/api/email/ingest/route.ts:292`, and the Worker's own `>` test at `workers/email-ingest/index.ts:1029` never fires on it. The sender then loses their body AND every attachment: the route's 400 sends the Worker down `if (!response.ok)` (`workers/email-ingest/index.ts:1142`), which rep
-status: open
+status: done 2026-09-02
+resolution: already resolved: Premise disproven and pinned: spec-dw-692-multipart-transport-newline-budget.md (status done) and src/lib/__tests__/email-ingest-workerd.test.ts, added by merge 9b4d5ab2, prove the Worker’s configured workerd runtime preserves lone LF and CR; the inflation was a Node/undici artifact and the Worker and route are byte-identical to baseline.
 
 ### DW-693: `ingestImage` derives the asset key from the pre-uniquified slug, so two image ingests that share a title and filename collide on one `raw/assets/<slug>/<filename>` key and one of the two pages render
 origin: spec-deferred 5585c25d7e6c
@@ -5527,7 +5539,8 @@ location: src/mcp.ts:1421
 source_spec: `spec-dw-424-426-mcp-and-delete-fresh-merge-bases.md`
 severity: high
 reason: `src/mcp.ts:1421` declares `args: { slug; timestamp; author? }` — no `principal` — and the handler never calls `canWriteFrontmatter`; the lifecycle writer it delegates to adds none. Its REST twin runs `canWriteFrontmatter(existing.frontmatter, principal, "body")` with the 404/403 cloak immediately after the identical fresh+strict read (`src/app/api/wiki/[slug]/revisions/route.ts:138` and just below), and the sibling MCP write doors (`handleUpdatePage`, `handleDeletePage`, `handleUpdateMetadata`) all take a `principal`. `src/lib/mcp-http.ts:763` registers `revert_revision` with `write: true` but passes only `author: p!.handle` (`:777`), so the caller's identity never reaches an authorization check. A caller `handleUpdatePage` would refuse can restore any prior revision of the same Page — including a private one in another owner's realm — which is a write-authorization bypass, not a wording bug. The only `revert_revision` rows in `src/lib/__tests__/mcp-http.test.ts` (`:1491-1552`) assert
-status: open
+status: done 2026-09-02
+resolution: already resolved: merge 0facd000 — src/mcp.ts handleRevertRevision now takes a principal and runs canWriteFrontmatter with the read-cloaked 404 denial, mirroring the REST revert surface, and src/lib/mcp-http.ts:787 passes principal: p.
 
 ### DW-695: `extractPptx` indexes the unzipped archive map with a relationship-derived path, so a crafted PPTX turns document ingest into an uncaught `TypeError` (HTTP 500) and silently discards the deck's real s
 origin: spec-deferred d1ac81be373c
