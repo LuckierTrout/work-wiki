@@ -966,7 +966,9 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/lib/__tests__/discuss-stats-index.test.ts:133
 severity: low
 reason: `getDiscussionStatsForSlugs` fast-paths through the discuss-stats index when one exists and falls back to a directory scan otherwise. The mixed-status case added in this pass (`src/lib/__tests__/talk.test.ts`, "counts a wontfix thread toward total but not open") seeds no index, so it covers only the scan path, and the fast-path parity test at `src/lib/__tests__/discuss-stats-index.test.ts:133-162` uses only `open` and `resolved` threads. So `wontfix` never reaches `statsFromThreads()`. Pre-existing: the deleted `getDiscussionStats` never touched the index path either, so this pass neither created nor widened the gap.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-talk-surface-truth
+resolution-undo: 6aa52e284f23545e6b9c56b7d5165ef2332d8c9cd738d7063d87f10bdf8ba617 2026-09-02 7374617475733a206f70656e
 
 ### DW-134: `/api/tasks/scan?dry=1` is documented as pure inspection but still rebuilds derived indexes and purges stale jobs.
 origin: spec-deferred 7049e961715f
@@ -3497,7 +3499,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: src/lib/talk.ts:63
 severity: low
 reason: src/lib/talk.ts:63 reads "Creates the `discuss/` directory if it doesn't exist" over a body whose only content is `/* Storage provider creates parent directories on write — no-op. */`. This pass corrected SCHEMA.md about exactly this fact and left the comment a caller actually reads as the stale one.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-talk-surface-truth
+resolution-undo: 6aa52e284f23545e6b9c56b7d5165ef2332d8c9cd738d7063d87f10bdf8ba617 2026-09-02 7374617475733a206f70656e
 
 ### DW-466: `.yoyo/status.md`'s header metrics are far staler than the two lines this pass pinned.
 origin: spec-deferred 6c491673c35d

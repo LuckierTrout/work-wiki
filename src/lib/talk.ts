@@ -66,7 +66,12 @@ export function getDiscussDir(): string {
   return `${getDataDir()}/${DISCUSS_DIR_NAME}`;
 }
 
-/** Creates the `discuss/` directory if it doesn't exist. */
+/**
+ * Despite the name, creates nothing: the storage provider makes parent
+ * directories on write, so `discuss/` never needs to exist ahead of the first
+ * one (SCHEMA.md, "Talk pages"). Why the export survives with an empty body is
+ * in the retired-surfaces banner at the top of this file.
+ */
 export async function ensureDiscussDir(): Promise<void> {
   /* Storage provider creates parent directories on write — no-op. */
 }
