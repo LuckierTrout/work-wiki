@@ -64,6 +64,7 @@ import { getWorkersAiBinding } from "@/lib/embeddings";
 import type { Ai } from "@/lib/storage/cloudflare-types";
 import {
   SETTINGS_INVALID_URL_COPY,
+  SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
   settingsEnvProviderPinRefusalCopy,
   settingsRefusalPinsEmbeddingProvider,
   vectorSearchInactiveCopy,
@@ -1625,10 +1626,17 @@ describe("PUT /api/settings — embedding provider secret isolation (DW-69/DW-72
 
     expect(response.status).toBe(400);
     // `turningOn` is true — the store holds no flag — so the sentence is the
-    // "before it can be turned on" frame, naming the leg the join now refuses.
+    // "before it can be turned on" frame, naming the leg the join now refuses —
+    // AND the variable that is the only way to lift it (DW-636). This body is
+    // what a CLI caller sees and all they see: `OPENAI_STORE` is a complete,
+    // supported config, so the leg sentence alone sent them to fields that were
+    // already filled while the one broken thing went unnamed.
     expect(await response.json()).toEqual({
-      error: "Vector search needs an embedding provider before it can be turned on.",
+      error:
+        "Vector search needs an embedding provider before it can be turned on. " +
+        SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
     });
+    expect(SETTINGS_VECTOR_PROVIDER_ENV_NOTE).toContain("EMBEDDING_PROVIDER");
     // …and the write never happened. A 400 that still persisted the flag would
     // leave the store in exactly the state the ledger describes.
     expect(mockedSave).not.toHaveBeenCalled();

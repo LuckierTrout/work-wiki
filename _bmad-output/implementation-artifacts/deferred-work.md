@@ -4975,7 +4975,9 @@ location: src/lib/workbench-settings.ts:1530
 source_spec: `spec-dw-552-settings-vector-provider-parity.md`
 severity: medium
 reason: `vectorSearchMissingLegs` attaches `SETTINGS_VECTOR_BINDING_ENV_NOTE` to the `binding` leg exactly when `providerOrigin === "env"` (DW-281), but the `provider` leg early-returns `{field: "provider", phrase: "an embedding provider"}` with no note at all. DW-552 makes `providerOrigin === "env"` reachable for the provider leg for the first time, so the refusal now reads "…needs an embedding provider…" / "Turn it off, or supply what is missing." on a deployment where the only fix is correcting the variable. Partly mitigated today: the provider ROW already renders `settingsEnvProviderInvalidCopy`, which does name the variable — so the fact is on screen, just not in the refusal. Adding the note is a new user-visible sentence and a copy decision, which is why it was not taken here.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-env-embedding-provider-seam
+resolution-undo: c5512aa2469afa8d8c6b97c0ced1a122f8201ecf81a5da1ca3a3b65e918695f0 2026-09-01 7374617475733a206f70656e
 
 ### DW-637: The embedding half refuses a junk env provider by JOINING and rewriting `provider`/`providerOrigin`, while the research twin in the same file refuses its own junk variable by an early return — two mec
 origin: spec-deferred c4ff31440000
@@ -4983,7 +4985,9 @@ location: src/lib/workbench-settings.ts:2873
 source_spec: `spec-dw-552-settings-vector-provider-parity.md`
 severity: low
 reason: `draftResearchProviderConfigured` (src/lib/workbench-settings.ts:2873) does `if (payload.envResearchProviderInvalid) return false` and leaves the reported provider untouched; `draftVectorInputs`/`mergedVectorInputs` instead join the filtered and invalid fields and derive the origin from the join. The DW-552 doc comments call the two fields "exact mirrors", which now overstates the symmetry. Either converge the mechanisms or say in the comment why they must differ (the vector rule reports a provider and an origin; the research predicate reports only a boolean).
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-env-embedding-provider-seam
+resolution-undo: c5512aa2469afa8d8c6b97c0ced1a122f8201ecf81a5da1ca3a3b65e918695f0 2026-09-01 7374617475733a206f70656e
 
 ### DW-638: "raw EMBEDDING_PROVIDER wins, then the store" is now spelled independently in three places, which is the same copy-drift shape DW-552 exists to close.
 origin: spec-deferred bad8126eda5f
@@ -4991,7 +4995,9 @@ location: src/lib/workbench-settings.ts:2463
 source_spec: `spec-dw-552-settings-vector-provider-parity.md`
 severity: low
 reason: `getVectorSearchSettings` (src/lib/config.ts:1623) reads the variable raw; `mergedVectorInputs` (src/lib/workbench-settings.ts:2463) and `draftVectorInputs` (:2969) each re-join the filtered and invalid halves in their own expression. DW-552 was caused by exactly this: one of three copies moved. A shared helper — `resolveEnvEmbeddingProvider(filtered, invalid)` used by both halves, over a single raw reader — would remove the remaining chances to drift. Today only the tests hold them together.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-env-embedding-provider-seam
+resolution-undo: c5512aa2469afa8d8c6b97c0ced1a122f8201ecf81a5da1ca3a3b65e918695f0 2026-09-01 7374617475733a206f70656e
 
 ### DW-639: DELETE /api/research/[id] still answers a mid-request read-only refusal as 500, the exact defect class this bundle fixed at nine sibling doors.
 origin: spec-deferred c60cf410a39a

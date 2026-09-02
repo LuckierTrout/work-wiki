@@ -1012,8 +1012,8 @@ export function SettingsCanvas({
         // `researchProviderRow` already applies.
         //
         // A JUNK `EMBEDDING_PROVIDER` is deliberately NOT pinned here:
-        // `envEmbeddingProvider()` filters through `isEmbeddingProvider`, so it
-        // arrives as `null` and this stays `false`.
+        // `envEmbeddingProviderPair()` filters through `isEmbeddingProvider`,
+        // so it arrives as `null` and this stays `false`.
         //
         // What discriminates the two is whether the variable names a REAL
         // SELECTION. A supported value does — including one this runtime cannot
@@ -1112,8 +1112,18 @@ export function SettingsCanvas({
                     the gate's complaint about it — the same order the model row
                     uses, and both as this control's OWN description so a screen
                     reader reads them here rather than on a checkbox three rows
-                    down. The complaint carries the leg's NOTE, because on this
-                    control the note names exactly what the control can do. */}
+                    down.
+
+                    WHICH complaints carry their NOTE is decided by
+                    `NOTE_ON_OWNING_ROW` (DW-636), not here. The PROVIDER leg's
+                    note is suppressed, because the first sentence above is
+                    already `settingsEnvProviderInvalidCopy` naming
+                    `EMBEDDING_PROVIDER` — an env-owned provider leg is always a
+                    junk variable — and joining them would say the variable
+                    twice in one description. The BINDING leg's note survives:
+                    it reaches this same control but names the two ways out of
+                    an unbound `workers-ai`, which nothing else on this row
+                    says. */}
                 {[
                   envInvalid
                     ? settingsEnvProviderInvalidCopy(envInvalid)

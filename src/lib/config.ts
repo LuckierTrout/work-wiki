@@ -1656,9 +1656,12 @@ export function getVectorSearchSettings(): VectorSearchSettings {
   const cfg = loadConfigSync();
   // THE RAW value, not the `isEmbeddingProvider`-filtered one (DW-509).
   //
-  // This is the ladder `resolveEmbeddingProvider` reads, line for line:
-  // `nonEmpty(process.env.EMBEDDING_PROVIDER) ?? nonEmpty(cfg.embeddingProvider)`,
-  // with the refusal made once, at the gate. Filtered, a junk
+  // This is the ladder `resolveEmbeddingProvider` reads, line for line: the raw
+  // variable, then `nonEmpty(cfg.embeddingProvider)`, with the refusal made
+  // once, at the gate. `envEmbeddingProviderRaw` is the module's one spelling of
+  // that read (DW-638) and applies the same trim-and-null the resolver does —
+  // the RAW/filtered distinction below is about the PREDICATE, not about the
+  // read, so sharing the read changes nothing here. Filtered, a junk
   // `EMBEDDING_PROVIDER=deepseek` fell THROUGH to the stored provider here — so
   // this function reported `provider: "openai"` with every leg met and
   // `enabled: true`, while the embed path resolved `null` and nothing embedded.
@@ -1668,7 +1671,7 @@ export function getVectorSearchSettings(): VectorSearchSettings {
   // is already `!v.provider || !isEmbeddingProvider(v.provider)`, so the junk
   // value fails the gate, and the reported `provider` stays the value the gate
   // was actually read against rather than a shadowed one.
-  const envProvider = nonEmpty(process.env.EMBEDDING_PROVIDER);
+  const envProvider = envEmbeddingProviderRaw();
   const provider = envProvider ?? nonEmpty(cfg.embeddingProvider);
   const envModel = nonEmpty(process.env.EMBEDDING_MODEL);
   const inputs: VectorSearchInputs = {
@@ -1779,14 +1782,55 @@ function nonEmpty(value: string | undefined | null): string | null {
 }
 
 /**
- * The `EMBEDDING_PROVIDER` override, when it names a provider that can actually
- * embed. A junk value is `null` here for the same reason
- * `resolveEmbeddingProvider` refuses it rather than falling through: it is a
- * misconfiguration, not a selection.
+ * THE read of `EMBEDDING_PROVIDER` in this module (DW-638).
+ *
+ * Trim-and-null, exactly as `resolveEmbeddingProvider` reads it, so a
+ * whitespace-only variable is "unset" to every caller here for the same reason
+ * it is unset to the resolver. Four hand-written copies of this line used to
+ * exist IN THIS MODULE — the runtime gate's, the filter's, and one in each of
+ * the two payload constructors — which is the shape that let the filtered and
+ * raw reads part company in DW-552. One spelling, so the next edit cannot move
+ * one of them.
+ *
+ * A repo-wide grep finds a FIFTH read, and it is deliberate:
+ * `resolveEmbeddingProvider` in `embeddings.ts` reads the variable itself. That
+ * one is the RESOLVER's, the answer everything here is aligned TO — this module
+ * imports nothing from `embeddings.ts` in that direction (see
+ * `getVectorSearchSettings`' note on the cycle), so the two cannot share a
+ * reader. What keeps them equal is that both spell the same trim-and-null, and
+ * `settings-runtime-wiring.test.ts` pins the gate's answer against the
+ * resolver's across every variable state.
  */
-function envEmbeddingProvider(): EmbeddingProvider | null {
-  const value = nonEmpty(process.env.EMBEDDING_PROVIDER);
-  return value !== null && isEmbeddingProvider(value) ? value : null;
+function envEmbeddingProviderRaw(): string | null {
+  return nonEmpty(process.env.EMBEDDING_PROVIDER);
+}
+
+/**
+ * The variable split into the two fields both settings feeders are served
+ * (DW-508/DW-638).
+ *
+ * `filtered` is the `EMBEDDING_PROVIDER` override when it names a provider that
+ * can actually embed — the SELECTION, and what pins the provider select. A junk
+ * value is `null` there for the same reason `resolveEmbeddingProvider` refuses
+ * it rather than falling through: it is a misconfiguration, not a selection.
+ * `invalid` is exactly what that filter threw away, so the row can say "set to
+ * junk" rather than reading as if no variable were set at all.
+ *
+ * The two are EXCLUSIVE BY CONSTRUCTION: one raw read, one predicate, and
+ * `invalid` is the `else` of the same branch. `mergedVectorInputs` and
+ * `draftVectorInputs` re-join them with `??`, which is a join rather than a
+ * precedence question only because of that exclusivity — and until now the
+ * exclusivity was two independently written expressions, one per constructor,
+ * held equal by a test rather than by the code. `settings-runtime-wiring.test.ts`
+ * still pins it; it is no longer the only thing that does.
+ */
+function envEmbeddingProviderPair(): {
+  filtered: EmbeddingProvider | null;
+  invalid: string | null;
+} {
+  const raw = envEmbeddingProviderRaw();
+  const filtered = raw !== null && isEmbeddingProvider(raw) ? raw : null;
+  return { filtered, invalid: filtered === null ? raw : null };
 }
 
 /**
@@ -2113,12 +2157,12 @@ export function getWorkbenchSettings(
   const cfg = loadConfigSync();
   const firecrawl = getFirecrawlSettings();
   const research = getResearchSettings();
-  const envProvider = envEmbeddingProvider();
-  // The RAW variable beside the filtered one, so "set to junk" and "not set"
-  // stop being the same payload (DW-508). Read exactly as `getResearchSettings`
-  // reads its own pair: raw first, filtered second, and the invalid string is
-  // whatever the raw read kept that the filter threw away.
-  const envProviderRaw = nonEmpty(process.env.EMBEDDING_PROVIDER);
+  // The filtered variable and the RAW value beside it, so "set to junk" and
+  // "not set" stop being the same payload (DW-508) — through the ONE pair
+  // builder the route's `workbenchSettingsStored` also calls, so the two halves
+  // of the seam cannot drift apart (DW-638).
+  const { filtered: envProvider, invalid: envProviderInvalid } =
+    envEmbeddingProviderPair();
   // Resolved from the `cfg` already read above, through the ONE helper
   // `getEffectiveSettings` uses (DW-312/DW-313) — so the two Settings surfaces
   // cannot answer "is the model I set being substituted?" differently.
@@ -2173,8 +2217,7 @@ export function getWorkbenchSettings(
     // …and the value the filter refused, which the row describes WITHOUT
     // pinning on: the select stays editable on junk, because the store is what
     // applies the moment the variable is corrected (DW-398's boundary).
-    envEmbeddingProviderInvalid:
-      envProviderRaw !== null && envProvider === null ? envProviderRaw : null,
+    envEmbeddingProviderInvalid: envProviderInvalid,
     envEmbeddingModel: nonEmpty(process.env.EMBEDDING_MODEL),
     // The THIRD variable that wins over a box on this surface (DW-71), served
     // for the same reason as the two above and read through the same `nonEmpty`
@@ -2269,9 +2312,12 @@ export function workbenchSettingsStored(
   // ONE read of the filter, feeding BOTH halves below (DW-552). The two fields
   // are EXCLUSIVE — the invalid one is exactly what the filter threw away — and
   // the join in `mergedVectorInputs` relies on that exclusivity for its `??` to
-  // be a join rather than a precedence question. Two independent calls would
-  // make it hold only incidentally; one local makes it structural.
-  const envProvider = envEmbeddingProvider();
+  // be a join rather than a precedence question. Since DW-638 that exclusivity
+  // lives inside `envEmbeddingProviderPair`, which is also what
+  // `getWorkbenchSettings` builds the payload's twin from — so the two halves
+  // are the same expression rather than two spellings held equal by a test.
+  const { filtered: envProvider, invalid: envProviderInvalid } =
+    envEmbeddingProviderPair();
   return {
     vectorSearchEnabled: cfg.vectorSearchEnabled === true,
     // The CONFIG halves — what a patch can move.
@@ -2282,16 +2328,15 @@ export function workbenchSettingsStored(
     // …and the ENV halves, which it cannot, kept apart so the merge answers
     // identically to the browser's own `draftVectorInputs`.
     envEmbeddingProvider: envProvider,
-    // …and the value that filter threw away, read as `getWorkbenchSettings`
-    // reads it for the payload (DW-508/DW-552) — the two expressions are pinned
-    // equal across all four variable states by
-    // `settings-runtime-wiring.test.ts`, because this one is what the ROUTE
-    // runs and the payload's is what the BROWSER gets. The route's half re-joins
-    // the two at the point of use, so a junk `EMBEDDING_PROVIDER` is refused
-    // here for the same reason `getVectorSearchSettings` refuses it — rather
-    // than falling through to the stored provider and waving the switch on.
-    envEmbeddingProviderInvalid:
-      envProvider === null ? nonEmpty(process.env.EMBEDDING_PROVIDER) : null,
+    // …and the value that filter threw away — now literally the same expression
+    // `getWorkbenchSettings` builds the payload's twin from (DW-508/DW-552/
+    // DW-638), because this one is what the ROUTE runs and the payload's is what
+    // the BROWSER gets. `settings-runtime-wiring.test.ts` still pins them equal
+    // across all four variable states. The route's half re-joins the two at the
+    // point of use, so a junk `EMBEDDING_PROVIDER` is refused here for the same
+    // reason `getVectorSearchSettings` refuses it — rather than falling through
+    // to the stored provider and waving the switch on.
+    envEmbeddingProviderInvalid: envProviderInvalid,
     envEmbeddingModel: nonEmpty(process.env.EMBEDDING_MODEL),
     envEmbeddingApiKeyProviders: envEmbeddingApiKeyProviders(),
     hasWorkersAiBinding,

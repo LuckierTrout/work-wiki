@@ -14,6 +14,7 @@ import {
   SETTINGS_VECTOR_ENV_MODEL_NOTE,
   SETTINGS_VECTOR_HINT_COPY,
   SETTINGS_VECTOR_PROVIDER_COPY,
+  SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
   settingsEnvOverrideCopy,
   settingsEnvProviderInvalidCopy,
   settingsEnvProviderPinCopy,
@@ -860,8 +861,19 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
     ) as HTMLInputElement;
     expect(vectorSwitch.getAttribute("aria-disabled")).toBe("true");
     expect(announcedFor(vectorSwitch)).toBe(
-      "Vector search needs an embedding provider before it can be turned on.",
+      "Vector search needs an embedding provider before it can be turned on. " +
+        SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
     );
+    // The variable is named at most ONCE PER DESCRIPTION (DW-636). Twice on the
+    // SCREEN is the design — the checkbox carries the note because it has no row
+    // of its own, and the row carries `settingsEnvProviderInvalidCopy` because
+    // the checkbox cannot quote the rejected value. What is ruled out is one
+    // hint saying `EMBEDDING_PROVIDER` twice, which is what appending the note
+    // to this row's own complaint would do.
+    expect(announced).not.toContain(SETTINGS_VECTOR_PROVIDER_ENV_NOTE);
+    // Split rather than `match`: a `String.match` with no hit answers `null` and
+    // fails as an opaque TypeError, where this fails with the count.
+    expect(announced.split("EMBEDDING_PROVIDER")).toHaveLength(2);
     // CLICKED, not merely inspected: "the owner cannot turn it on" is a claim
     // about the handler, and `aria-disabled` alone would pass even if `onChange`
     // stopped consulting the refusal.

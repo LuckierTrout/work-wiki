@@ -443,8 +443,9 @@ const EMBEDDING_PROVIDER_ENV = "EMBEDDING_PROVIDER";
  * what you save here applies later is promising a save that will not happen.
  *
  * It still says the variable wins, which is what
- * {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} and the `"model"` exception in
- * {@link vectorSearchFieldIssue} both lean on to avoid saying it a second time.
+ * {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} and {@link NOTE_ON_OWNING_ROW} — the
+ * set {@link vectorSearchFieldIssue} suppresses notes by, holding `model` and,
+ * since DW-636, `provider` — both lean on to avoid saying it a second time.
  */
 export function settingsEnvProviderPinCopy(value: string): string {
   return `The environment sets ${EMBEDDING_PROVIDER_ENV}=${value}, and that wins at runtime. This box is fixed until that variable is unset.`;
@@ -454,9 +455,10 @@ export function settingsEnvProviderPinCopy(value: string): string {
  * `EMBEDDING_PROVIDER` names something that cannot embed (DW-508).
  *
  * `resolveEmbeddingProvider` refuses an unsupported override outright and
- * `envEmbeddingProvider()` filters it to `null`, so before this sentence the
- * owner's only signal was a server log: the row read as if no variable were set
- * at all while nothing embedded. The sentence QUOTES the rejected value —
+ * `envEmbeddingProviderPair()` filters it to `null`, so before this sentence
+ * the owner's only signal was a server log: the row read as if no variable
+ * were set at all while nothing embedded. The sentence QUOTES the rejected
+ * value —
  * a typo is invisible otherwise — and points at the environment, which is the
  * only place it can be fixed.
  *
@@ -468,6 +470,44 @@ export function settingsEnvProviderPinCopy(value: string): string {
 export function settingsEnvProviderInvalidCopy(value: string): string {
   return `${EMBEDDING_PROVIDER_ENV} is set to unsupported value “${value}”. Nothing will embed until the environment is corrected.`;
 }
+
+/**
+ * The second sentence of a PROVIDER refusal the ENVIRONMENT owns (DW-636).
+ *
+ * The exact counterpart of {@link SETTINGS_VECTOR_ENV_MODEL_NOTE}, for the leg
+ * above it. `vectorSearchMissingLegs`' first leg returns on
+ * `!isEmbeddingProvider(v.provider)`, and where `providerOrigin` is `"env"` that
+ * value can only have come from `EMBEDDING_PROVIDER` — a FILTERED env provider
+ * always passes the predicate, so an env-owned provider leg is always a junk
+ * variable. Without this sentence the refusal read "Vector search needs an
+ * embedding provider … supply what is missing" on a deployment whose store held
+ * a complete, supported config: the only thing that could lift it was the
+ * variable, and the sentence named everything except the variable.
+ *
+ * It opens on "The provider" where the model note opens on "That value", and the
+ * difference is forced by the sentence each one RIDES ON. The model note follows
+ * a leg that quotes a wrong model id, so "that value" has something to point at;
+ * this one follows "Vector search needs an embedding provider before it can be
+ * turned on", which names an ABSENCE and offers no antecedent — "that value"
+ * there reads as a value the sentence never mentioned. Naming the provider makes
+ * the reference real without quoting the junk string a second time (the row's
+ * {@link settingsEnvProviderInvalidCopy} already quotes it).
+ *
+ * It NAMES the Embedding provider select rather than saying "here", for the same
+ * reason the model note does: it rides on the CHECKBOX's sentence, and "here"
+ * read from the checkbox would point at the checkbox. It says "unset or
+ * corrected" where the model note says only "unset", because an unsupported
+ * value is a typo as often as it is a decision — fixing the spelling is the
+ * likelier way out, and it is one the model note's variable does not have (any
+ * non-blank `EMBEDDING_MODEL` overrides).
+ *
+ * It does NOT restate "wins at runtime": on the provider ROW that fact is
+ * already carried by {@link settingsEnvProviderInvalidCopy}, which is why
+ * {@link vectorSearchFieldIssue} suppresses this note there.
+ */
+export const SETTINGS_VECTOR_PROVIDER_ENV_NOTE =
+  `The provider comes from ${EMBEDDING_PROVIDER_ENV}, so a provider chosen in the ` +
+  `Embedding provider select cannot lift this until that variable is unset or corrected.`;
 
 /**
  * `PUT /api/settings` refuses to MOVE the embedding provider under the pin
@@ -501,7 +541,7 @@ export function settingsEnvProviderPinRefusalCopy(value: string): string {
  * thing it was sent: the sentence. That is safe here, and only here, because
  * the set is CLOSED AT BOTH ENDS. The route mints it exclusively from
  * `storedBefore.envEmbeddingProvider`, typed `EmbeddingProvider | null` and
- * filtered through `isEmbeddingProvider` by `envEmbeddingProvider()` in
+ * filtered through `isEmbeddingProvider` by `envEmbeddingProviderPair()` in
  * `config.ts` — so every sentence the route can send is one of the four this
  * function mints from {@link EMBEDDING_PROVIDERS} and compares against.
  *
@@ -1069,10 +1109,19 @@ export interface WorkbenchSettingsPayload {
    * unsupported value arrives there as `null` — indistinguishable, on the
    * surface, from no variable at all, while `resolveEmbeddingProvider` refuses
    * it and nothing embeds. This carries the rejected string so the row can say
-   * so; it is the exact mirror of {@link envResearchProviderInvalid}, optional
-   * for the same reason, and it never PINS the select (DW-398's boundary: an
-   * unsupported value names no vendor, so there is no credential a move could
-   * sabotage and the store is what applies once the variable is corrected).
+   * so; it never PINS the select (DW-398's boundary: an unsupported value names
+   * no vendor, so there is no credential a move could sabotage and the store is
+   * what applies once the variable is corrected).
+   *
+   * As a WIRE FIELD it is the exact mirror of {@link envResearchProviderInvalid}
+   * — same shape, same optionality, same reason for both. Their CONSUMERS are
+   * not mirrors and cannot be (DW-637): this one is JOINED back to the field
+   * above by {@link resolveEnvEmbeddingProvider}, because the gate's `provider`
+   * input is `string | null` and its first leg refuses whatever it does not
+   * recognise — so a junk value is both representable and useful there.
+   * {@link draftResearchProvider} returns a closed `ResearchProviderId` union
+   * whose consumers branch on the value, so a junk string has no representation
+   * to be joined INTO, and its half early-returns `false` instead.
    */
   envEmbeddingProviderInvalid?: string | null;
   envEmbeddingModel: string | null;
@@ -1570,7 +1619,23 @@ export interface VectorSearchLeg {
 /** Which legs are unmet, in the order the sentence names them. */
 function vectorSearchMissingLegs(v: VectorSearchInputs): VectorSearchLeg[] {
   if (!v.provider || !isEmbeddingProvider(v.provider)) {
-    return [{ field: "provider", phrase: "an embedding provider" }];
+    return [
+      {
+        field: "provider",
+        phrase: "an embedding provider",
+        // Only when the environment owns the selection (DW-636), gated exactly
+        // as the model leg's note is gated on `modelOrigin` below. An env
+        // origin HERE implies a junk variable: a filtered `EMBEDDING_PROVIDER`
+        // always passes `isEmbeddingProvider`, so the only env value that can
+        // reach this leg is one the filter refused and the join carried through
+        // ({@link resolveEnvEmbeddingProvider}). Saying it for a STORED
+        // provider would send the owner to a variable that is not set, which is
+        // the mistake DW-218 fixed one leg down.
+        ...(v.providerOrigin === "env"
+          ? { note: SETTINGS_VECTOR_PROVIDER_ENV_NOTE }
+          : {}),
+      },
+    ];
   }
   const missing: VectorSearchLeg[] = [];
   if (!SELF_TRANSPORTING_EMBEDDING_PROVIDERS.has(v.provider) && !v.baseUrl) {
@@ -1883,6 +1948,21 @@ function vectorControlOrigin(
 }
 
 /**
+ * The legs whose note the OWNING ROW already carries in its own words.
+ *
+ * Both are env-override sentences about a variable the row names anyway —
+ * `EMBEDDING_MODEL` on the model row ({@link settingsEnvOverrideCopy}, DW-223)
+ * and `EMBEDDING_PROVIDER` on the provider row
+ * ({@link settingsEnvProviderInvalidCopy}, DW-636). A leg's note is only ever
+ * omitted from that leg's own control's hint; the checkbox's sentence, which
+ * has no row of its own to lean on, always carries every note.
+ *
+ * A SET of leg FIELDS rather than of controls, because `binding` shares the
+ * provider control and must keep its note — see {@link vectorSearchFieldIssue}.
+ */
+const NOTE_ON_OWNING_ROW = new Set<VectorSearchLegField>(["model", "provider"]);
+
+/**
  * What ONE refusable control has to say about its own value, or `null` when it
  * has nothing (DW-223, DW-277).
  *
@@ -1904,13 +1984,22 @@ function vectorControlOrigin(
  * unset provider.
  *
  * `copy` is the leg's sentence plus the leg's NOTE, which names what owns the
- * problem and rides on the owning control — except for `"model"`, whose row
- * already carries {@link settingsEnvOverrideCopy} about the very same variable
- * and would only repeat it. The provider row's own env sentences
- * ({@link settingsEnvProviderPinCopy}, {@link settingsEnvProviderInvalidCopy})
- * are the same shape of fact for `EMBEDDING_PROVIDER`, which is why
- * {@link SETTINGS_VECTOR_BINDING_ENV_NOTE} does not restate "wins at runtime"
- * either.
+ * problem and rides on the owning control — except where the leg's OWN ROW
+ * already says the same thing about the same variable, which is
+ * {@link NOTE_ON_OWNING_ROW}: the `model` row carries
+ * {@link settingsEnvOverrideCopy} about `EMBEDDING_MODEL`, and the `provider`
+ * row carries {@link settingsEnvProviderInvalidCopy} about `EMBEDDING_PROVIDER`
+ * — an env-owned provider leg is a junk variable, so that sentence is always the
+ * one rendered beside it (DW-636). Restating it would put the variable's name
+ * twice in one hint.
+ *
+ * The exception is keyed on the LEG'S FIELD, not on the control: the `binding`
+ * leg also maps to the provider control per {@link VECTOR_LEG_CONTROL}, and its
+ * note ({@link SETTINGS_VECTOR_BINDING_ENV_NOTE} /
+ * {@link SETTINGS_VECTOR_BINDING_NOTE}) is the only place the two ways out of an
+ * unbound `workers-ai` are named — suppressing by control would delete it. That
+ * note is also why the provider row's env sentences matter here: it does not
+ * restate "wins at runtime" for the same reason.
  *
  * `invalid` is true only when the CONTROL'S OWN value is the wrong one — an
  * origin of `"stored"`. An env-owned value is described without being marked,
@@ -1926,10 +2015,9 @@ export function vectorSearchFieldIssue(
   );
   if (!leg) return null;
   return {
-    copy:
-      control === "model"
-        ? vectorSearchLegSentence([leg])
-        : withLegNotes(vectorSearchLegSentence([leg]), [leg]),
+    copy: NOTE_ON_OWNING_ROW.has(leg.field)
+      ? vectorSearchLegSentence([leg])
+      : withLegNotes(vectorSearchLegSentence([leg]), [leg]),
     invalid: vectorControlOrigin(v, control) === "stored",
   };
 }
@@ -2013,8 +2101,14 @@ export interface WorkbenchSettingsStored {
   hasEmbeddingApiKey: boolean;
   envEmbeddingProvider: string | null;
   /**
-   * The EXACT mirror of {@link WorkbenchSettingsPayload.envEmbeddingProviderInvalid}
+   * The route's twin of {@link WorkbenchSettingsPayload.envEmbeddingProviderInvalid}
    * — `EMBEDDING_PROVIDER` set to something `isEmbeddingProvider` refuses (DW-552).
+   *
+   * The same FACT, read from the same variable by the same
+   * `envEmbeddingProviderPair()` in `config.ts`, and differing from the payload
+   * twin only in being required rather than optional (see below). Both are
+   * shaped exactly like `envResearchProviderInvalid`; what that mirror does NOT
+   * extend to is their consumers — see the payload field's own note (DW-637).
    *
    * The route's half cannot refuse a raw value it does not carry. The field
    * above is filtered, so a junk `EMBEDDING_PROVIDER=deepseek` arrives there as
@@ -2459,6 +2553,41 @@ export function embeddingProviderChanged(
 }
 
 /**
+ * The `EMBEDDING_PROVIDER` override, RE-JOINED from the two fields it is served
+ * as (DW-552/DW-637).
+ *
+ * `getVectorSearchSettings` reads the variable RAW, so a value
+ * `isEmbeddingProvider` refuses still wins there and still fails the gate's
+ * first leg. Both wire halves carry that one variable split in two — filtered
+ * for the provider select's PIN, invalid beside it for the row's sentence — for
+ * a SURFACE reason only, because an unsupported value names no vendor to pin
+ * (DW-398). Joining them back is what makes the two feeders read the same
+ * variable the runtime does; before it, a junk `EMBEDDING_PROVIDER=deepseek`
+ * fell THROUGH to the stored provider and both halves waved a switch on that
+ * nothing embeds.
+ *
+ * FILTERED FIRST, so a supported value is unchanged in every existing situation.
+ * The two are exclusive as their one constructor produces them, so the `??` is a
+ * join and never a precedence question — but `WorkbenchSettingsPayload` is a
+ * WIRE type that does not enforce the exclusivity, and where a body carries
+ * both, this order is what makes the PIN win, matching `SettingsCanvas`'
+ * explicit guard on the same disagreement.
+ *
+ * `invalid` is taken as `string | null | undefined` because the payload's twin
+ * is OPTIONAL and the store's is REQUIRED: normalising that asymmetry HERE,
+ * once, is what let the two call sites spell the same join two different ways —
+ * the exact copy-drift shape DW-552 was about. The result is `null`, never
+ * `undefined`, because every caller reads `!== null` as "the environment owns
+ * this" and `undefined` is not "unset".
+ */
+export function resolveEnvEmbeddingProvider(
+  filtered: string | null,
+  invalid: string | null | undefined,
+): string | null {
+  return filtered ?? invalid ?? null;
+}
+
+/**
  * What the vector legs look like once `patch` lands on `stored`.
  *
  * Module-private: the ONE public expression of this rule is
@@ -2491,17 +2620,13 @@ function mergedVectorInputs(
   // here would wave through a vector switch the route then refuses to honour —
   // and the two legs it waved through belong to the previous vendor.
   const switched = embeddingProviderChanged(stored.embeddingProvider, storedProviderAfter);
-  // The env override, RE-JOINED from the two fields it is served as (DW-552).
-  //
-  // `getVectorSearchSettings` reads `EMBEDDING_PROVIDER` raw, so a value the
-  // filter refuses still wins there and still fails the gate's first leg. This
-  // half carries the same variable split in two — filtered for the select,
-  // invalid beside it — for a surface reason only, so joining them back here is
-  // what makes the two answers the same variable again. Filtered FIRST, so a
-  // supported value is unchanged in every existing situation; the two are
-  // exclusive as the one constructor produces them, so the `??` is a join and
-  // never a precedence question.
-  const envProvider = stored.envEmbeddingProvider ?? stored.envEmbeddingProviderInvalid;
+  // The env override, through the ONE join both feeders share — see
+  // {@link resolveEnvEmbeddingProvider} for why it is a join and why the
+  // filtered field comes first (DW-552/DW-637).
+  const envProvider = resolveEnvEmbeddingProvider(
+    stored.envEmbeddingProvider,
+    stored.envEmbeddingProviderInvalid,
+  );
   const provider = envProvider ?? storedProviderAfter;
   const key = patch.embeddingApiKey;
   const hasKey =
@@ -2971,6 +3096,17 @@ export function draftResearchProviderConfigured(
   draft: SettingsDraft,
   payload: WorkbenchSettingsValues,
 ): boolean {
+  // An EARLY RETURN where the embedding half JOINS instead (DW-637). The two
+  // wire fields are mirrors; their consumers cannot be. `draftVectorInputs`
+  // carries a junk `EMBEDDING_PROVIDER` through
+  // {@link resolveEnvEmbeddingProvider} because `VectorSearchInputs.provider` is
+  // `string | null` and the gate's first leg refuses anything it does not
+  // recognise — the value is representable, and reporting it is what makes the
+  // refusal actionable. Here {@link draftResearchProvider} returns a closed
+  // `ResearchProviderId` and every consumer below branches on it
+  // (`=== "searxng"`, tavily vs serpApi key selection), so a junk string has
+  // nowhere to go; and this function's only output is a boolean, so "refused"
+  // and "unconfigured" are the same answer. `false` IS the join, collapsed.
   if (payload.envResearchProviderInvalid) return false;
   const provider = draftResearchProvider(draft, payload);
   if (provider === "searxng") {
@@ -3061,14 +3197,14 @@ export function draftVectorInputs(
   draft: SettingsDraft,
   payload: WorkbenchSettingsValues,
 ): VectorSearchInputs {
-  // The same re-JOIN the route's `mergedVectorInputs` performs (DW-552): the
-  // filtered field first, then the value the filter refused, so the browser
-  // stops offering a switch on a junk `EMBEDDING_PROVIDER` that both the route
-  // and `getVectorSearchSettings` refuse. OPTIONAL on the payload (it is the
-  // mirror of `envResearchProviderInvalid`), so normalised to `null` here —
-  // `providerOrigin` below is a `!== null` test and `undefined` is not "unset".
-  const envProvider =
-    payload.envEmbeddingProvider ?? payload.envEmbeddingProviderInvalid ?? null;
+  // The SAME join the route's `mergedVectorInputs` performs, as one expression
+  // rather than two spellings of it (DW-552/DW-637) — including the `null`
+  // normalisation this half needs because its `envEmbeddingProviderInvalid` is
+  // optional on the wire.
+  const envProvider = resolveEnvEmbeddingProvider(
+    payload.envEmbeddingProvider,
+    payload.envEmbeddingProviderInvalid,
+  );
   const provider = envProvider ?? draftText(draft.embeddingProvider);
   const typed = secretPatchValue(draft.embeddingApiKey);
   const hasKey =

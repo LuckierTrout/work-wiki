@@ -175,7 +175,16 @@ unsupported value names no vendor to protect, and the stored selection is what
 applies the moment the variable is fixed. The vector switch agrees rather than
 reporting itself satisfied — with a junk variable set, nothing embeds and the
 runtime reads the switch as off, so a chat that would have used vector search
-falls back to keyword retrieval and says so.
+falls back to keyword retrieval and says so. Beside the switch it names the
+variable, because on a deployment whose stored embedding config is complete
+there is nothing else on the page left to fix:
+
+> Vector search needs an embedding provider before it can be turned on. The
+> provider comes from EMBEDDING_PROVIDER, so a provider chosen in the Embedding
+> provider select cannot lift this until that variable is unset or corrected.
+
+`PUT /api/settings` refuses a turn-on with that same sentence as its `400` body,
+so a CLI or a stale tab is told which variable to fix too.
 
 The same unservable value can also arrive from the **store**, because Settings
 saves an embedding provider of its own and the variable is only the first of the

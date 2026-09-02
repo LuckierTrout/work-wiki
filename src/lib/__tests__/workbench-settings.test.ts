@@ -113,16 +113,20 @@ import {
   SETTINGS_VECTOR_BINDING_ENV_NOTE,
   SETTINGS_VECTOR_BINDING_NOTE,
   SETTINGS_VECTOR_ENV_MODEL_NOTE,
+  SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
   canEnableVectorSearch,
   draftCanEnableVectorSearch,
   draftEmbeddingIdentityDirty,
   draftEmbeddingKeyStored,
+  draftResearchProvider,
+  draftResearchProviderConfigured,
   draftVectorInputs,
   embeddingProviderChanged,
   fetchWorkbenchSettings,
   flatMovableVectorLegs,
   flatTextFieldAction,
   isWorkbenchSettingsPayload,
+  resolveEnvEmbeddingProvider,
   saveWorkbenchSettings,
   settingsAnnouncement,
   settingsDirty,
@@ -1410,6 +1414,13 @@ describe("vectorSearchFieldIssue — every refusable control, one rule (DW-277)"
     // wins over the select, so marking it "wrong, fix it" points at a control
     // that cannot fix it — and the note has to name the variable rather than
     // "choose another provider" (DW-281).
+    //
+    // This row is ALSO the guard on how DW-636's note suppression is keyed. The
+    // `binding` leg reaches the PROVIDER control (`VECTOR_LEG_CONTROL`) while
+    // its field is `binding`, so a suppression keyed on the control would delete
+    // this note — the one place the two ways out of an unbound `workers-ai` are
+    // named — along with the provider leg's. It is keyed on `leg.field`, which
+    // is why the note below still arrives.
     expect(
       vectorSearchFieldIssue(
         vectorInputs({ ...workersAiUnbound, providerOrigin: "env" }),
@@ -1494,6 +1505,237 @@ describe("vectorSearchFieldIssue — every refusable control, one rule (DW-277)"
     expect(vectorSearchFieldIssue(filled, "key")).toBeNull();
     expect(vectorSearchFieldIssue(filled, "provider")).toBeNull();
     expect(vectorSearchFieldIssue(filled, "model")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The PROVIDER leg's env note (DW-636)
+// ---------------------------------------------------------------------------
+
+describe("the provider leg names EMBEDDING_PROVIDER when the environment owns it", () => {
+  // `providerOrigin: "env"` over a provider the gate does not recognise can only
+  // mean a JUNK variable: a filtered env provider always passes
+  // `isEmbeddingProvider`, so the only way a refused string reaches this leg is
+  // the join `resolveEnvEmbeddingProvider` performs. Everything else here is a
+  // complete, supported config — which is exactly what made the un-noted
+  // sentence unactionable: "supply what is missing" pointed at an endpoint, a
+  // model and a key that were all already supplied.
+  const junkEnv: VectorLegs = {
+    provider: "deepseek",
+    baseUrl: "https://embed.example",
+    model: "text-embedding-3-small",
+    hasKey: true,
+    providerOrigin: "env",
+  };
+
+  it("APPENDS the note to the refusal and to both switched-on frames", () => {
+    expect(missingCopy(junkEnv)).toBe(
+      `Vector search needs an embedding provider before it can be turned on. ${SETTINGS_VECTOR_PROVIDER_ENV_NOTE}`,
+    );
+    // Appended, never substituted: the leg sentence still leads, so a caller
+    // that reads only the first sentence loses nothing it had before.
+    expect(missingCopy(junkEnv).startsWith("Vector search needs an embedding provider")).toBe(
+      true,
+    );
+    // The same note under both switched-on frames — `withLegNotes` carries it
+    // for every caller, so the frame is the only thing the surface changes.
+    expect(vectorSearchInactiveCopy(vectorInputs(junkEnv))).toBe(
+      `Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing. ${SETTINGS_VECTOR_PROVIDER_ENV_NOTE}`,
+    );
+    // …and on the flat page, where only the ACTION clause differs — the note
+    // rides after it, so the surface's pointer is not what carries the variable.
+    const flat = vectorSearchInactiveCopy(vectorInputs(junkEnv), "flat");
+    expect(flat).toContain(
+      "Vector search is switched on, but it needs an embedding provider before it can run. Supply what is missing, or turn the switch off in ",
+    );
+    expect(flat.endsWith(` ${SETTINGS_VECTOR_PROVIDER_ENV_NOTE}`)).toBe(true);
+  });
+
+  it("names the VARIABLE and the control it overrides, without restating the row", () => {
+    // The one thing that can lift the refusal. Without it the sentence named
+    // every field on the surface except the only one that mattered.
+    expect(SETTINGS_VECTOR_PROVIDER_ENV_NOTE).toContain("EMBEDDING_PROVIDER");
+    // It NAMES the select rather than saying "here": it rides on the CHECKBOX's
+    // sentence, so "here" would point at the checkbox (DW-218's reading, one leg
+    // up).
+    expect(SETTINGS_VECTOR_PROVIDER_ENV_NOTE).toContain("Embedding provider select");
+    // …and it does not restate what the provider row already says — that is the
+    // same division `SETTINGS_VECTOR_BINDING_ENV_NOTE` keeps.
+    expect(SETTINGS_VECTOR_PROVIDER_ENV_NOTE).not.toContain("wins at runtime");
+    // CORRECTING the variable is a way out this note has and the model note does
+    // not: any non-blank `EMBEDDING_MODEL` overrides, while an unsupported
+    // provider is as often a typo as a decision.
+    expect(SETTINGS_VECTOR_PROVIDER_ENV_NOTE).toContain("corrected");
+  });
+
+  it("leaves every STORED-origin sentence byte-identical", () => {
+    // The regression this change must not cause. Same legs, same order, no note
+    // — a variable that is not set is not something an owner can act on, and
+    // saying so is the mistake DW-218 fixed for the model leg.
+    const stored: VectorLegs = { ...junkEnv, providerOrigin: "stored" };
+    expect(missingCopy(stored)).toBe(
+      "Vector search needs an embedding provider before it can be turned on.",
+    );
+    expect(vectorSearchInactiveCopy(vectorInputs(stored))).toBe(
+      "Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing.",
+    );
+    // …and an UNSET provider carries no note: `providerOrigin` is `"stored"`
+    // whenever the join answered `null`, so "no provider at all" and "the
+    // environment owns it" cannot co-occur — the select's standing
+    // `SETTINGS_VECTOR_PROVIDER_COPY` hint is the complaint there.
+    const unset: VectorLegs = { ...junkEnv, provider: null, providerOrigin: "stored" };
+    expect(missingCopy(unset)).toBe(
+      "Vector search needs an embedding provider before it can be turned on.",
+    );
+  });
+
+  it("suppresses the note on the provider ROW, which already names the variable", () => {
+    // The row renders `settingsEnvProviderInvalidCopy` beside this hint — an
+    // env-owned provider leg is ALWAYS a junk variable, so that sentence is
+    // always there — and two sentences naming `EMBEDDING_PROVIDER` in one
+    // description is the same fact twice on one screen.
+    const issue = vectorSearchFieldIssue(vectorInputs(junkEnv), "provider");
+    expect(issue).toEqual({
+      copy: "Vector search needs an embedding provider before it can be turned on.",
+      // DESCRIBED, not marked: the value is not this control's, and the store is
+      // what applies the moment the variable is corrected (DW-398's boundary).
+      invalid: false,
+    });
+    expect(issue?.copy).not.toContain("EMBEDDING_PROVIDER");
+    // …while the CHECKBOX, which has no row of its own to lean on, still carries
+    // it — the note is dropped from one hint, not from the screen.
+    expect(missingCopy(junkEnv)).toContain(SETTINGS_VECTOR_PROVIDER_ENV_NOTE);
+    // The stored-origin row is untouched by the suppression: same copy, and the
+    // mark that says the owner's own value is the wrong one.
+    expect(
+      vectorSearchFieldIssue(
+        vectorInputs({ ...junkEnv, providerOrigin: "stored" }),
+        "provider",
+      ),
+    ).toEqual({
+      copy: "Vector search needs an embedding provider before it can be turned on.",
+      invalid: true,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The ONE join both feeders read the variable through (DW-637)
+// ---------------------------------------------------------------------------
+
+describe("resolveEnvEmbeddingProvider — one expression, two feeders", () => {
+  /**
+   * The four states of `EMBEDDING_PROVIDER` as the WIRE serves them, plus the
+   * pair no constructor mints. `ollama` is the stored selection throughout
+   * because it is self-transporting and complete with only a model — so the
+   * gate's verdict turns on the JOIN alone and on nothing else.
+   */
+  const states: Array<{
+    name: string;
+    filtered: WorkbenchSettingsPayload["envEmbeddingProvider"];
+    invalid: string | null | undefined;
+    joined: string | null;
+    origin: "env" | "stored";
+  }> = [
+    { name: "unset", filtered: null, invalid: null, joined: null, origin: "stored" },
+    // Blank/whitespace never reaches here: `nonEmpty` is the single raw reader in
+    // `config.ts` and both fields arrive `null`, which is this row.
+    { name: "omitted on the wire", filtered: null, invalid: undefined, joined: null, origin: "stored" },
+    { name: "supported", filtered: "google", invalid: null, joined: "google", origin: "env" },
+    { name: "junk", filtered: null, invalid: "deepseek", joined: "deepseek", origin: "env" },
+    // The wire anomaly no constructor produces — the two fields are exclusive by
+    // construction in `config.ts` — but which `WorkbenchSettingsPayload` can
+    // carry. FILTERED FIRST means the PIN wins, matching `SettingsCanvas`'
+    // explicit guard; the other order would refuse a perfectly good
+    // `EMBEDDING_PROVIDER=openai` deployment on a stale invalid field.
+    { name: "both (wire anomaly)", filtered: "openai", invalid: "deepseek", joined: "openai", origin: "env" },
+  ];
+
+  it.each(states)("answers $name identically on both halves", (state) => {
+    expect(resolveEnvEmbeddingProvider(state.filtered, state.invalid)).toBe(state.joined);
+
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+      envEmbeddingProvider: state.filtered,
+      ...(state.invalid === undefined ? {} : { envEmbeddingProviderInvalid: state.invalid }),
+    };
+    const browser = draftVectorInputs(settingsDraftFromPayload(payload), payload);
+    expect(browser.provider).toBe(state.joined ?? "ollama");
+    // Read off the JOINED value, not off the filtered field — or a junk variable
+    // would report the store as the owner and the note above would never fire.
+    expect(browser.providerOrigin).toBe(state.origin);
+
+    // The ROUTE's half reaches the same join through the merge, and its VERDICT
+    // is the pin: with `ollama` stored and complete, the turn-on is accepted
+    // exactly when the join answers `null`, and refused for every value the
+    // environment supplies — `google` for its missing endpoint and key,
+    // `deepseek` at the provider leg itself.
+    const stored = storedState({
+      embeddingProvider: "ollama",
+      embeddingModel: "nomic-embed-text",
+      envEmbeddingProvider: state.filtered,
+      envEmbeddingProviderInvalid: state.invalid ?? null,
+    });
+    expect(validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, stored).ok).toBe(
+      canEnableVectorSearch(browser),
+    );
+    expect(validateWorkbenchSettingsPatch({ vectorSearchEnabled: true }, stored).ok).toBe(
+      state.joined === null,
+    );
+  });
+
+  it("normalises the payload's OPTIONAL half inside the helper", () => {
+    // The asymmetry that made the two call sites spell the join differently in
+    // the first place: the store's field is required, the payload's is optional.
+    // `undefined` must answer `null`, because every caller reads `!== null` as
+    // "the environment owns this" and `undefined` is not "unset".
+    expect(resolveEnvEmbeddingProvider(null, undefined)).toBeNull();
+    expect(resolveEnvEmbeddingProvider(null, null)).toBeNull();
+    expect(Object.hasOwn(emptyPayload(), "envEmbeddingProviderInvalid")).toBe(false);
+  });
+});
+
+describe("the RESEARCH half early-returns where the vector half joins (DW-637)", () => {
+  it("refuses a junk research provider without representing it anywhere", () => {
+    // The other side of the asymmetry the two wire fields' doc comments claim.
+    // `envEmbeddingProviderInvalid` and `envResearchProviderInvalid` really are
+    // mirrors — same shape, same optionality, same reason — but their CONSUMERS
+    // cannot be, and this is the half that has nowhere to join TO.
+    const payload: WorkbenchSettingsPayload = {
+      ...emptyPayload(),
+      // Everything that would otherwise answer `true`: a credential in the store
+      // AND one in the environment, both for the provider the draft resolves to.
+      // So the `false` below is the early return and not an unconfigured page.
+      hasTavilyApiKey: true,
+      envResearchProviders: ["tavily"],
+      envResearchProviderInvalid: "deepresearch",
+    };
+    const draft = settingsDraftFromPayload(payload);
+    expect(draftResearchProviderConfigured(draft, payload)).toBe(false);
+
+    // …and the REPORTED provider is untouched. This is the whole difference:
+    // `resolveEnvEmbeddingProvider` carries a refused `EMBEDDING_PROVIDER` into
+    // `VectorSearchInputs.provider`, where `string | null` can hold it and the
+    // gate's first leg refuses it BY NAME. Here `draftResearchProvider` returns
+    // a closed `ResearchProviderId` whose consumers branch on the value
+    // (`=== "searxng"`, tavily vs serpApi key selection), so "deepresearch" has
+    // no representation to be joined into and the default still stands.
+    expect(draftResearchProvider(draft, payload)).toBe("tavily");
+
+    // The same payload without the junk variable answers `true`, which is what
+    // makes the early return the ONLY thing the assertion above is measuring.
+    const { envResearchProviderInvalid: _junk, ...corrected } = payload;
+    expect(
+      draftResearchProviderConfigured(settingsDraftFromPayload(corrected), corrected),
+    ).toBe(true);
+    // `false` IS the join, collapsed: this predicate's only output is a boolean,
+    // so "the environment named something unusable" and "no credential" are the
+    // same answer — there is no second field for a refused value to ride on.
+    expect(draftResearchProviderConfigured(draft, payload)).toBe(
+      draftResearchProviderConfigured(settingsDraftFromPayload(emptyPayload()), emptyPayload()),
+    );
   });
 });
 
@@ -2679,7 +2921,12 @@ describe("the client and the route read the same vector rule", () => {
     );
     expect(refusal).toEqual({
       ok: false,
-      error: "Vector search needs an embedding provider before it can be turned on.",
+      // The leg sentence AND the note that names the only thing which can lift
+      // it (DW-636): the store here is a complete, supported OpenAI config, so
+      // "supply what is missing" alone pointed at fields that are all supplied.
+      error:
+        "Vector search needs an embedding provider before it can be turned on. " +
+        SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
     });
 
     // …and the RUNTIME, whose answer the other two are being aligned TO.
@@ -2784,8 +3031,14 @@ describe("the client and the route read the same vector rule", () => {
       ),
     ).toEqual({
       ok: false,
+      // Same note under the SWITCHED-ON frame (DW-636) — the frame changes, the
+      // notes do not, which is what `withLegNotes` guarantees for both callers.
+      // It is also what makes the remedy quoted above SAYABLE: "correcting
+      // `EMBEDDING_PROVIDER`" was the true reading of "supply what is missing"
+      // on this deployment, and until now the sentence named no variable at all.
       error:
-        "Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing.",
+        "Vector search is switched on, but it needs an embedding provider before it can run. Turn it off, or supply what is missing. " +
+        SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
     });
 
     // (c) THE SAME MOVE from the flat `/settings` page, which renders no
@@ -2892,7 +3145,7 @@ describe("the client and the route read the same vector rule", () => {
   });
 
   it("says an unsupported EMBEDDING_PROVIDER out loud (DW-508)", () => {
-    // `envEmbeddingProvider()` filters junk to `null`, so without this sentence
+    // `envEmbeddingProviderPair()` filters junk to `null`, so without this sentence
     // the row reads exactly as it does with no variable set while nothing
     // embeds. The rejected value is QUOTED, and the remedy names the
     // environment rather than this box.
@@ -5772,12 +6025,19 @@ describe("the Settings components stay inside the shell", () => {
     }
   });
 
-  it("keeps DEPLOY.md's quoted refusal identical to the constant it quotes (DW-222)", async () => {
-    // `DEPLOY.md` block-quotes SETTINGS_VECTOR_BINDING_ENV_NOTE so an operator
-    // can compare the doc to the screen. Nothing but memory joined the two, which
-    // is how the doc came to quote a sentence the surface had stopped showing.
-    // The quote is hard-wrapped, so it is un-wrapped before comparing: what must
-    // match is the SENTENCE, not the line breaks the markdown happens to use.
+  it("keeps DEPLOY.md's quoted refusals identical to the constants they quote (DW-222)", async () => {
+    // `DEPLOY.md` block-quotes the vector refusals an operator meets on a
+    // misconfigured deployment, so they can compare the doc to the screen.
+    // Nothing but memory joined the two, which is how the doc came to quote a
+    // sentence the surface had stopped showing. The quote is hard-wrapped, so it
+    // is un-wrapped before comparing: what must match is the SENTENCE, not the
+    // line breaks the markdown happens to use.
+    //
+    // BOTH env notes are pinned. The junk-`EMBEDDING_PROVIDER` section quotes
+    // what the vector switch announces on exactly that deployment (DW-636), and
+    // it is quoted for the same reason the binding note is — it is the sentence
+    // that names the variable, and a doc describing that deployment without it
+    // sends the operator to the provider select.
     const doc = await readFile(path.resolve(SRC, "..", "DEPLOY.md"), "utf8");
     const blocks: string[] = [];
     let current: string[] = [];
@@ -5790,9 +6050,15 @@ describe("the Settings components stay inside the shell", () => {
       }
     }
     if (current.length > 0) blocks.push(current.join(" ").replace(/\s+/g, " ").trim());
-    expect(blocks.some((block) => block.includes(SETTINGS_VECTOR_BINDING_ENV_NOTE))).toBe(
-      true,
-    );
+    for (const note of [
+      SETTINGS_VECTOR_BINDING_ENV_NOTE,
+      SETTINGS_VECTOR_PROVIDER_ENV_NOTE,
+    ]) {
+      expect({ note, quoted: blocks.some((block) => block.includes(note)) }).toEqual({
+        note,
+        quoted: true,
+      });
+    }
   });
 
   it("clears a stale refusal as soon as the owner edits anything", async () => {
@@ -6160,7 +6426,7 @@ describe("settingsDraftAfterEmbeddingProvider", () => {
 describe("settingsRefusalPinsEmbeddingProvider (DW-553)", () => {
   it("recognises the sentence for EVERY provider the route can name", () => {
     // The set is closed at both ends — the route mints the sentence only from
-    // `storedBefore.envEmbeddingProvider`, and `envEmbeddingProvider()` filters
+    // `storedBefore.envEmbeddingProvider`, and `envEmbeddingProviderPair()` filters
     // through `isEmbeddingProvider` — so every sentence that can arrive is one
     // of these. A provider added to `EMBEDDING_PROVIDERS` is covered the moment
     // it is added, which is the point of enumerating rather than parsing.

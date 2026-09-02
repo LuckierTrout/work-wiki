@@ -112,7 +112,9 @@ import {
 import { _resetStorage, getStorage } from "../storage";
 import {
   SETTINGS_VECTOR_BINDING_ENV_NOTE,
+  canEnableVectorSearch,
   draftVectorInputs,
+  resolveEnvEmbeddingProvider,
   settingsDraftFromPayload,
   vectorSearchFieldIssue,
   vectorSearchMissingCopy,
@@ -1279,7 +1281,7 @@ describe("the stored embedding credential and endpoint are read", () => {
   });
 
   it("serves a JUNK EMBEDDING_PROVIDER as no PINNED provider, but as a REFUSED one to the rule (DW-398)", async () => {
-    // `envEmbeddingProvider()` filters through `isEmbeddingProvider`, so an
+    // `envEmbeddingProviderPair()` filters through `isEmbeddingProvider`, so an
     // unsupported variable never reaches the browser as a SELECTION — it
     // arrives on that field as `null`. That is the boundary the settings
     // surface's env pin sits on (DW-398): `SettingsCanvas` pins on this field,
@@ -1340,39 +1342,122 @@ describe("the stored embedding credential and endpoint are read", () => {
     expect(pinned.envEmbeddingProvider).toBe("google");
   });
 
-  it("reads the SAME invalid value into the payload and into the route's stored view", async () => {
-    // Two INDEPENDENTLY WRITTEN expressions for one fact (DW-552).
-    // `getWorkbenchSettings` spells it `envProviderRaw !== null && envProvider
-    // === null ? envProviderRaw : null`; `workbenchSettingsStored` spells it
-    // `envProvider === null ? nonEmpty(process.env.EMBEDDING_PROVIDER) : null`.
-    // They are meant to be the same read, and the join in `mergedVectorInputs`
-    // is only equivalent to the browser's if they are — but only a comment said
-    // so, and the two feeders they supply are the two the whole story is about
-    // keeping identical. The BROWSER gets the first; the ROUTE runs the second.
-    const cfg: AppConfig = { embeddingProvider: "openai" };
+  it("reads the SAME variable into both constructors, the join and the runtime", async () => {
+    // ONE fact, four variable states, three readers (DW-552/DW-638).
+    //
+    // The two constructors used to spell the invalid half with two
+    // INDEPENDENTLY WRITTEN expressions — `envProviderRaw !== null &&
+    // envProvider === null ? envProviderRaw : null` in `getWorkbenchSettings`,
+    // `envProvider === null ? nonEmpty(process.env.EMBEDDING_PROVIDER) : null`
+    // in `workbenchSettingsStored` — meant to be the same read and held equal by
+    // this test and by nothing else. Both now call one
+    // `envEmbeddingProviderPair()` over the module's one
+    // `envEmbeddingProviderRaw()`, so the exclusivity the `??` join depends on
+    // is structural rather than pinned; this test is what says the collapse
+    // changed no answer. The BROWSER gets the first constructor, the ROUTE runs
+    // the second.
+    //
+    // And the stronger claim, which is the whole seam: `filtered ?? invalid`
+    // equals the RAW variable in every state. `getVectorSearchSettings` reads it
+    // raw (DW-509) and is the answer the other two are aligned TO, so the join
+    // is only correct while that equality holds — the third reader below checks
+    // it against the running gate rather than against an expectation.
+    //
+    // The flag is STORED ON, so `getVectorSearchSettings().enabled` is the
+    // predicate alone and the verdict half of the criterion has something to
+    // measure: with it off, `enabled` is `false` in all four states and every
+    // state agrees for the wrong reason.
+    const cfg: AppConfig = {
+      vectorSearchEnabled: true,
+      embeddingProvider: "openai",
+      embeddingBaseUrl: "https://o/v1",
+      embeddingModel: "text-embedding-3-small",
+      embeddingApiKey: "sk-o",
+    };
     await store(cfg);
 
-    const states: Array<{ name: string; set: string | undefined; expected: string | null }> = [
-      { name: "unset", set: undefined, expected: null },
+    const states: Array<{
+      name: string;
+      set: string | undefined;
+      /** What the RAW read keeps — and therefore what the join must answer. */
+      raw: string | null;
+      /** What the filter threw away, which is the `invalid` half alone. */
+      expected: string | null;
+    }> = [
+      { name: "unset", set: undefined, raw: null, expected: null },
       // The trim-and-null both sides read the variable through: a whitespace-only
       // variable is "unset" to each, not "set to junk" to one and unset to the other.
-      { name: "whitespace only", set: "   ", expected: null },
-      { name: "junk", set: "deepseek", expected: "deepseek" },
+      { name: "whitespace only", set: "   ", raw: null, expected: null },
+      { name: "junk", set: "deepseek", raw: "deepseek", expected: "deepseek" },
       // A SUPPORTED value lands on the filtered field instead, so the invalid
       // twin is null on both — the exclusivity the `??` join depends on.
-      { name: "supported", set: "google", expected: null },
+      { name: "supported", set: "google", raw: "google", expected: null },
     ];
 
     for (const state of states) {
       if (state.set === undefined) delete process.env.EMBEDDING_PROVIDER;
       else process.env.EMBEDDING_PROVIDER = state.set;
 
-      const fromPayload = getWorkbenchSettings(false).envEmbeddingProviderInvalid;
-      const fromStored = workbenchSettingsStored(cfg, false).envEmbeddingProviderInvalid;
+      const payload = getWorkbenchSettings(false);
+      const stored = workbenchSettingsStored(cfg, false);
+      const fromPayload = payload.envEmbeddingProviderInvalid;
+      const fromStored = stored.envEmbeddingProviderInvalid;
       expect({ state: state.name, fromPayload, fromStored }).toEqual({
         state: state.name,
         fromPayload: state.expected,
         fromStored: state.expected,
+      });
+
+      // The JOIN over each half, against the raw variable. One expression feeds
+      // both feeders now, so this is the pin that the one expression is the
+      // RIGHT one rather than merely the only one.
+      expect({
+        state: state.name,
+        browser: resolveEnvEmbeddingProvider(
+          payload.envEmbeddingProvider,
+          payload.envEmbeddingProviderInvalid,
+        ),
+        route: resolveEnvEmbeddingProvider(
+          stored.envEmbeddingProvider,
+          stored.envEmbeddingProviderInvalid,
+        ),
+      }).toEqual({ state: state.name, browser: state.raw, route: state.raw });
+
+      // …and the PROVIDER all three end up gating on. The runtime reads the
+      // variable raw and the store holds a complete `openai` config, so an unset
+      // or blank variable falls through to it and any other value shadows it —
+      // in the browser exactly as in `getVectorSearchSettings`.
+      const runtime = getVectorSearchSettings();
+      const browser = draftVectorInputs(settingsDraftFromPayload(payload), payload);
+      expect({
+        state: state.name,
+        runtime: runtime.provider,
+        browser: browser.provider,
+        origin: browser.providerOrigin,
+      }).toEqual({
+        state: state.name,
+        runtime: state.raw ?? "openai",
+        browser: state.raw ?? "openai",
+        origin: state.raw === null ? "stored" : "env",
+      });
+
+      // …and the GATE VERDICT, which is the half of the criterion the provider
+      // assertions above cannot reach: two feeders may name the same provider
+      // and still disagree about whether it can be switched on. Pinned as an
+      // EQUALITY between the runtime's intersected flag and the browser's
+      // predicate rather than against a literal per state, so the row says the
+      // two agree rather than restating what each answers.
+      expect({ state: state.name, runtime: runtime.enabled }).toEqual({
+        state: state.name,
+        runtime: canEnableVectorSearch(browser),
+      });
+      // …and the verdict genuinely VARIES across the four states, or the
+      // equality above would hold for a gate that answered a constant. `junk`
+      // is the state that must refuse: it is the only one whose provider the
+      // first leg does not recognise.
+      expect({ state: state.name, enabled: runtime.enabled }).toEqual({
+        state: state.name,
+        enabled: state.name !== "junk",
       });
     }
   });
