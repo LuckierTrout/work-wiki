@@ -673,8 +673,21 @@ describe("per-Wiki artifact revisions", () => {
     expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     const body = (await res.json()) as {
       revisions: { timestamp: number; date: string; file: string; sizeBytes: number; author?: string }[];
+      limit: number;
+      truncated: boolean;
     };
     expect(body.revisions).toHaveLength(2);
+    // The bound travels WITH the listing (DW-541): the panel cannot say what it
+    // is showing the most recent of without the server's own number, and the
+    // number lives in a module the browser bundle must not pull. Two revisions
+    // is nowhere near the cap, so nothing is elided and nothing is claimed.
+    expect(body.limit).toBe(MAX_ARTIFACT_REVISIONS);
+    expect(body.truncated).toBe(false);
+    // …and the ROWS are untouched by any of that — `limit`/`truncated` describe
+    // the listing, so they sit beside `revisions`, never inside one.
+    expect(Object.keys(body.revisions[0]).sort()).toEqual(
+      ["author", "date", "file", "sizeBytes", "timestamp"],
+    );
     expect(body.revisions[0].timestamp).toBeGreaterThan(body.revisions[1].timestamp);
     expect(body.revisions[0].file).toBe("schema.md");
     expect(body.revisions[0].author).toBe(OWNER);
@@ -1147,12 +1160,54 @@ describe("per-Wiki artifact revisions", () => {
     // And the route hands back the same bounded list in the shape it always had.
     const res = await get("path=schema.md");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { revisions: ReadOneRevision[] };
+    const body = (await res.json()) as {
+      revisions: ReadOneRevision[];
+      limit: number;
+      truncated: boolean;
+    };
     expect(body.revisions).toHaveLength(MAX_ARTIFACT_REVISIONS);
     expect(body.revisions[0].timestamp).toBe(newest[0]);
     expect(Object.keys(body.revisions[0]).sort()).toEqual(
       ["author", "date", "file", "sizeBytes", "timestamp"],
     );
+    // AT the bound, so the listing says so (DW-541). It claims nothing about
+    // the ten that were elided — the prune deletes, so no count of what is gone
+    // survives anywhere for the route to report.
+    expect(body.limit).toBe(MAX_ARTIFACT_REVISIONS);
+    expect(body.truncated).toBe(true);
+  });
+
+  it("reports the bound from the STEMS, so an unreadable snapshot cannot hide it", async () => {
+    // The regression this exists for (DW-541): the lister DROPS a stem whose
+    // `stat` throws, so a sixty-deep directory with one unreadable snapshot
+    // answers forty-nine rows. A `truncated` re-derived in the route from
+    // `revisions.length >= MAX` would then say "not truncated" in exactly the
+    // case the flag was added to catch — a capped history reading as a whole one.
+    const wiki = await seed();
+    const backlog = await seedBacklog(wiki, MAX_ARTIFACT_REVISIONS + 10);
+    const newest = backlog.slice(-MAX_ARTIFACT_REVISIONS).reverse();
+    // One of the newest fifty — i.e. inside the bound, so it is a row that
+    // WOULD have been returned rather than one already elided.
+    const doomedStem = newest[10];
+    const storage = getStorage();
+    const realStat = storage.stat.bind(storage);
+    vi.spyOn(storage, "stat").mockImplementation(async (target) => {
+      if (target.endsWith(`/${doomedStem}.md`)) throw new Error("snapshot is gone");
+      return realStat(target);
+    });
+
+    const res = await get("path=schema.md");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      revisions: ReadOneRevision[];
+      limit: number;
+      truncated: boolean;
+    };
+    // Forty-nine rows — one short of the bound — and still truncated.
+    expect(body.revisions).toHaveLength(MAX_ARTIFACT_REVISIONS - 1);
+    expect(body.revisions.map((revision) => revision.timestamp)).not.toContain(doomedStem);
+    expect(body.truncated).toBe(true);
+    expect(body.limit).toBe(MAX_ARTIFACT_REVISIONS);
   });
 
   it("ignores non-canonical stems when pruning as well as when listing", async () => {

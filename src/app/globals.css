@@ -3606,6 +3606,22 @@ body:has(.wb-shell) {
 .wb-shell[data-preview="true"] .wb-canvas-preview-note {
   display: none;
 }
+/* …and the track that sentence was sitting in (DW-180). Hiding a grid CHILD
+   does not release its column: with only the rule above, a docked Preview left
+   the receipt pinned to the 320px track beside an empty `minmax(0, 1fr)`. A
+   SECOND rule rather than a declaration added above, because that one targets
+   the note, which is not the grid container — both keyed on the same
+   `data-preview="true"` ancestor is the point.
+   Unwrapped by any `@media`/`@supports` for the same reason as its sibling:
+   `data-preview="true"` means a `PreviewColumn` is on screen at all three
+   widths, so a wrapper would leave the empty track standing wherever it missed.
+   It beats the `lg:grid-cols-[…]` utility on the same element because this file
+   is `@import "tailwindcss"` only — Tailwind's utilities are layered, this rule
+   is not, and an unlayered declaration wins over any layered one regardless of
+   specificity. */
+.wb-shell[data-preview="true"] .wb-canvas-receipt-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
 
 .wb-sr-only {
   position: absolute;

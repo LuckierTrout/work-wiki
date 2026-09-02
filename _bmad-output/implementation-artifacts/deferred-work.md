@@ -1313,7 +1313,9 @@ source_spec: `spec-dw-33-retire-duplicate-wiki-canvas-controls.md`
 location: src/components/WikiWorkbench.tsx:172 with src/app/globals.css:2696
 severity: low
 reason: The card's wrapper is `grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]` (`WikiWorkbench.tsx:172`). `display: none` removes the second child from layout but not the track it sat in, so at the `lg:` breakpoint with `data-preview="true"` the receipt card stays pinned at 320px and the `1fr` column renders empty — space the sentence used to fill. The intent authorized a visibility change only ("Only its visibility while a Preview is docked changes"), so the diff is spec-compliant; whether the card should reflow to the full canvas width when the Preview docks is a UX call, not a mechanical fix. Adding a `grid-template-columns` override to the DW-39 rule would be cascade-safe (`workbench-split.test.ts:1247` keys on `lastIndexOf`, and this rule sits far ahead of the docked grid variants), so the blocker is the design decision, not the mechanism.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-canvas-reflow-and-revision-cap
+resolution-undo: 358fdc0eb187500bae67cda8a18d4ee078bc352b79ea908756f8f1ba3bfeb602 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-19 Reflow to full width — Extend the DW-39 docked-preview rule with a `grid-template-columns` override so the canvas card takes the full canvas width when a Preview is docked, verifying it sits ahead of the docked grid variants the way `workbench-split.test.ts:1247`'s `lastIndexOf` check expects.
 
 ### DW-181: The `Edit` control stays live over a body a 404 has replaced, so the confirm dialog and then a `PUT` can be reached for a page the route says is not there.
@@ -4152,7 +4154,9 @@ location: src/components/workbench/PreviewColumn.tsx
 source_spec: `spec-dw-215-artifact-revision-retention.md`
 severity: medium
 reason: The backup half carries its truncation all the way out (manifest -> `BackupSummary` -> `/api/system/backups` -> the health desk row). The revision half carries nothing: `GET /api/workbench/artifact/revisions` returns the bounded list with no `limit` or `truncated` sibling, and the History panel (`src/components/workbench/PreviewColumn.tsx`, around the `revisions.map(...)` render) shows a complete-looking list. The same Workbench already has `FILES_TRUNCATED_COPY` and `PREVIEW_TRUNCATED_COPY` for exactly this shape. The spec's Block If froze `ArtifactRevision` and the response shape, but a sibling response field plus a panel note would not violate it.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-canvas-reflow-and-revision-cap
+resolution-undo: 358fdc0eb187500bae67cda8a18d4ee078bc352b79ea908756f8f1ba3bfeb602 2026-09-02 7374617475733a206f70656e
 
 ### DW-542: The backup copy loop reads a file's whole contents before discovering it does not fit under the byte ceiling.
 

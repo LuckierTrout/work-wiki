@@ -814,6 +814,42 @@ export const PREVIEW_HISTORY_EMPTY_COPY =
  */
 export const PREVIEW_HISTORY_FAILED_COPY = "Earlier versions couldn’t be loaded.";
 
+/**
+ * The listing is AT the retention cap, so what is on screen is not the whole
+ * history — the register of `FILES_TRUNCATED_COPY` ("File list truncated at N
+ * entries.") and {@link PREVIEW_TRUNCATED_COPY}: state the cap, state the
+ * consequence.
+ *
+ * The numeral is the CAP, never a count of the rows on screen. Those are not
+ * the same number: the lister drops a snapshot it cannot `stat`, so a capped
+ * listing can render forty-nine rows under a cap of fifty, and a sentence
+ * saying "showing the 50 most recent" would be visibly counting wrong. What is
+ * asserted is the bound the server applied — which is true of the listing
+ * whatever survived it.
+ *
+ * That numeral comes from the WIRE, not from a client constant. The cap lives
+ * in `wiki-artifact-revisions.ts`, which pulls `./storage` behind it — the same
+ * module the summary type above is re-declared to keep out of the browser
+ * bundle — so the server sends its own number and this sentence formats it with
+ * the pinned `en-US` formatter both sibling constants use.
+ *
+ * `limit === null` is a listing that said it was truncated without a number
+ * this client can print. It degrades to the numeral-free sentence rather than
+ * inventing one: the claim that matters ("there were older versions and they
+ * are gone") is true either way, and a typed-in `50` would outlive the cap.
+ *
+ * Neither shape asserts HOW MANY were lost. The prune deletes, so "at the cap"
+ * is the most the server can prove and the most this sentence may say.
+ */
+export function previewHistoryTruncatedCopy(limit: number | null): string {
+  if (limit === null) {
+    return "History is capped at the most recent versions; older ones are not kept.";
+  }
+  return `History is capped at the ${new Intl.NumberFormat("en-US").format(
+    limit,
+  )} most recent versions; older ones are not kept.`;
+}
+
 /** …and the same fallback for reading ONE entry's bytes. */
 export const PREVIEW_HISTORY_VIEW_FAILED_COPY = "That version couldn’t be loaded.";
 
@@ -1598,9 +1634,26 @@ export interface ArtifactRevisionSummary {
   reason?: string;
 }
 
-/** What a listing produced. `revisions` is newest-first, as the route lists it. */
+/**
+ * What a listing produced. `revisions` is newest-first, as the route lists it.
+ *
+ * `truncated` and `limit` are ENVELOPE facts, not row facts — they describe the
+ * listing, so they sit beside `revisions` rather than inside
+ * {@link ArtifactRevisionSummary}, whose field set is byte-for-byte the route's.
+ *
+ * `truncated` is "this listing is AT the retention bound", which is all the
+ * server can prove: the prune deletes, so nothing knows how many were lost.
+ * `limit` is the server's own number, or `null` when the envelope did not carry
+ * a usable one — see {@link previewHistoryTruncatedCopy} for why the sentence
+ * would rather lose its numeral than type one that never arrived.
+ */
 export type ArtifactRevisionsResult =
-  | { status: "ok"; revisions: ArtifactRevisionSummary[] }
+  | {
+      status: "ok";
+      revisions: ArtifactRevisionSummary[];
+      truncated: boolean;
+      limit: number | null;
+    }
   | { status: "error"; message: string };
 
 /** What reading ONE revision produced. */
@@ -1712,10 +1765,27 @@ export async function fetchArtifactRevisions(
     }
     const body = (await response.json().catch(() => null)) as {
       revisions?: unknown;
+      truncated?: unknown;
+      limit?: unknown;
     } | null;
     if (!Array.isArray(body?.revisions)) {
       return { status: "error", message: PREVIEW_HISTORY_FAILED_COPY };
     }
+    // ABSENT truncation fields are an ordinary untruncated listing, never an
+    // error: the envelope check above is the only shape this client demands, and
+    // a proxy or an older deployment that answers a bare `{ revisions }` is
+    // serving a complete history as far as anything here can tell. An
+    // unusable `limit` is the same posture one level down — the flag still
+    // stands, the numeral is simply not claimed.
+    const truncated = body.truncated === true;
+    // `> 0`, not `>= 0`: a cap of ZERO is not a bound this sentence can state —
+    // "capped at the 0 most recent versions" over a list with rows in it is a
+    // numeral contradicting what the owner can see. It degrades to the
+    // numeral-free shape like any other limit this client cannot use.
+    const limit =
+      typeof body.limit === "number" && Number.isSafeInteger(body.limit) && body.limit > 0
+        ? body.limit
+        : null;
     const usable = body.revisions.filter(isRevisionSummary);
     // A NON-EMPTY envelope with nothing left in it is a failure, not an empty
     // history — the same rule the non-envelope branch above follows, and for the
@@ -1727,7 +1797,7 @@ export async function fetchArtifactRevisions(
     if (body.revisions.length > 0 && usable.length === 0) {
       return { status: "error", message: PREVIEW_HISTORY_FAILED_COPY };
     }
-    return { status: "ok", revisions: usable };
+    return { status: "ok", revisions: usable, truncated, limit };
   } catch {
     // Transport vocabulary is never relayed — see `savePreviewBody`.
     return { status: "error", message: PREVIEW_HISTORY_FAILED_COPY };

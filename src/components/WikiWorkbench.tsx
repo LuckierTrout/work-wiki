@@ -40,6 +40,13 @@ import type { WikiRecord } from "@/lib/wikis";
  * `data-preview="true"` (DW-39), because the canvas reaches the shell as
  * `children` and cannot read that state as a prop.
  *
+ * The SAME shell attribute also collapses the receipt's two-track grid to one
+ * (DW-180), off the `wb-canvas-receipt-grid` hook below. Hiding a grid child
+ * does not release its track: with only the `display: none` above, a docked
+ * Preview left the receipt pinned at 320px beside an empty `1fr`. One
+ * attribute, two consequences, and both decided in the stylesheet for the
+ * reason the paragraph above gives.
+ *
  * It takes NO PROPS (DW-174). Everything it renders is read from
  * `WorkbenchData` — the same context the header switcher reads — so a rename
  * or a switch made there reaches this card on the next render rather than only
@@ -523,7 +530,7 @@ export function WikiWorkbench() {
           )}
         </div>
       ) : (
-        <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+        <div className="wb-canvas-receipt-grid mt-4 grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
           <div className="rounded-xl border border-foreground/15 p-4">
             {/* Which Wiki this card describes, and nothing to change it with:
                 the switcher and New Wiki live in the left column header, which

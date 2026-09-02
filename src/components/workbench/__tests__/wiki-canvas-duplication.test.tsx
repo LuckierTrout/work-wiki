@@ -61,6 +61,12 @@ const OTHER: WikiRecord = {
  */
 const PREVIEW_SENTENCE = PREVIEW_UNSELECTED_COPY;
 const PREVIEW_NOTE_SELECTOR = '.wb-shell[data-preview="true"] .wb-canvas-preview-note';
+/**
+ * The receipt grid's own docked rule (DW-180) — the SECOND consequence of the
+ * same attribute. Hiding the note does not release the track it was sitting in,
+ * so a docked Preview left the receipt pinned at 320px beside an empty `1fr`.
+ */
+const RECEIPT_GRID_SELECTOR = '.wb-shell[data-preview="true"] .wb-canvas-receipt-grid';
 
 /** Chat/Search stay mounted behind `hidden`; they are not on-screen Wiki controls. */
 function visibleSelects(root: ParentNode = document): HTMLSelectElement[] {
@@ -70,11 +76,17 @@ function visibleSelects(root: ParentNode = document): HTMLSelectElement[] {
 }
 
 /**
- * The DW-39 rule, sliced out of the REAL stylesheet rather than restated here.
+ * ONE rule, sliced out of the REAL stylesheet rather than restated here.
  *
  * A literal copy would keep passing after the stylesheet's own rule was renamed
- * or deleted — the test would be asserting against itself. Only this one block
- * is injected because jsdom's CSS parser cannot take the whole Tailwind v4 file.
+ * or deleted — the test would be asserting against itself. Only the blocks it
+ * is asked for are injected because jsdom's CSS parser cannot take the whole
+ * Tailwind v4 file.
+ *
+ * Takes the SELECTOR rather than hard-coding DW-39's, because the docked shell
+ * attribute now has two consequences — the note is hidden and the receipt grid
+ * collapses — and each has to be exercised against the bytes that ship, not
+ * against a paraphrase of them.
  *
  * Slicing loses the rule's CASCADE CONTEXT, which is the whole risk: injected
  * bare, a rule wrapped in `@media (min-width: 900px)` would apply at every width
@@ -84,14 +96,14 @@ function visibleSelects(root: ParentNode = document): HTMLSelectElement[] {
  * `throw` rather than `expect`, so the failure names this helper wherever it is
  * called from.
  */
-function previewNoteRule(): string {
+function dockedRule(selector: string): string {
   const css = readFileSync(
     path.resolve(__dirname, "../../../app/globals.css"),
     "utf8",
   );
-  const start = css.indexOf(`${PREVIEW_NOTE_SELECTOR} {`);
+  const start = css.indexOf(`${selector} {`);
   if (start === -1) {
-    throw new Error(`globals.css no longer declares ${PREVIEW_NOTE_SELECTOR}`);
+    throw new Error(`globals.css no longer declares ${selector}`);
   }
   // Comments are stripped BEFORE the braces are counted: `globals.css` explains
   // several rules by quoting them, so a comment holding one unbalanced brace
@@ -103,7 +115,7 @@ function previewNoteRule(): string {
     (before.match(/\{/g) ?? []).length - (before.match(/\}/g) ?? []).length;
   if (depth !== 0) {
     throw new Error(
-      `${PREVIEW_NOTE_SELECTOR} is nested ${depth} block(s) deep (an @media or ` +
+      `${selector} is nested ${depth} block(s) deep (an @media or ` +
         `@supports wrapper), so it no longer applies unconditionally — the ` +
         `Preview and this sentence would both show wherever the wrapper misses.`,
     );
@@ -123,8 +135,16 @@ function previewNoteRule(): string {
       }
     }
   }
-  if (end === -1) throw new Error(`${PREVIEW_NOTE_SELECTOR} block is unterminated`);
+  if (end === -1) throw new Error(`${selector} block is unterminated`);
   return css.slice(start, end + 1);
+}
+
+/** Both consequences of `data-preview="true"`, in the order the file has them. */
+function dockedRules(): string {
+  return [
+    dockedRule(PREVIEW_NOTE_SELECTOR),
+    dockedRule(RECEIPT_GRID_SELECTOR),
+  ].join("\n");
 }
 
 /**
@@ -172,7 +192,7 @@ beforeEach(() => {
   // jsdom loads no stylesheet at all, so the DW-39 rule has to be handed to it
   // explicitly for `getComputedStyle` to have anything to resolve.
   styleEl = document.createElement("style");
-  styleEl.textContent = previewNoteRule();
+  styleEl.textContent = dockedRules();
   document.head.append(styleEl);
 });
 
@@ -678,6 +698,99 @@ describe("exactly one preview surface at a time (DW-39)", () => {
     expect(shell?.getAttribute("data-preview")).toBe("false");
     const note = screen.getByText(PREVIEW_SENTENCE).closest(".wb-canvas-preview-note");
     expect(window.getComputedStyle(note as Element).display).not.toBe("none");
+  });
+
+  it("collapses the receipt grid to one track under the same docked host (DW-180)", () => {
+    // The note going `display: none` does NOT release the column it occupied:
+    // the grid is `320px 1fr`, so a docked Preview left the receipt pinned at
+    // 320px beside an empty track. Read off the wrapper's COMPUTED style, from
+    // the stylesheet's own bytes, because a rule nobody exercises is exactly
+    // how the first half of this defect shipped.
+    render(
+      <WorkbenchDataProvider value={data([CURRENT, OTHER], CURRENT.id)}>
+        <div className="wb-shell" data-preview="true">
+          <WikiWorkbench />
+        </div>
+      </WorkbenchDataProvider>,
+    );
+
+    const grid = document.querySelector(".wb-canvas-receipt-grid");
+    expect(grid).not.toBeNull();
+    // The note is inside THIS grid — the track being released is the one it was
+    // sitting in, not some other element's.
+    expect(grid!.querySelector(".wb-canvas-preview-note")).not.toBeNull();
+    expect(window.getComputedStyle(grid as Element).gridTemplateColumns).toBe(
+      "minmax(0, 1fr)",
+    );
+  });
+
+  it("leaves the receipt grid alone while nothing is docked", () => {
+    render(
+      <WorkbenchDataProvider value={data([CURRENT, OTHER], CURRENT.id)}>
+        <div className="wb-shell" data-preview="false">
+          <WikiWorkbench />
+        </div>
+      </WorkbenchDataProvider>,
+    );
+
+    // The control case: a rule that matched EVERY `.wb-shell` descendant would
+    // satisfy the assertion above and collapse the grid at every width. jsdom
+    // carries no Tailwind, so the two-track utility value is not here to be
+    // read — what is asserted is that the DOCKED override contributed nothing.
+    const grid = document.querySelector(".wb-canvas-receipt-grid");
+    // Guarded like its sibling above: without this a renamed hook fails as an
+    // opaque `TypeError` inside `getComputedStyle` instead of naming what went
+    // missing — and a missing element would satisfy the assertion below.
+    expect(grid).not.toBeNull();
+    expect(window.getComputedStyle(grid as Element).gridTemplateColumns).not.toBe(
+      "minmax(0, 1fr)",
+    );
+  });
+
+  it("keeps the two docked rules adjacent, unwrapped, and ahead of the split handle", () => {
+    // Both keyed on the same attribute is the point, so all three claims in
+    // this name are actually made:
+    //
+    //   UNWRAPPED — `dockedRule` is what checks it, by counting brace depth
+    //   ahead of the selector and throwing on an `@media`/`@supports` wrapper.
+    //   The cases above only ever reach it through `dockedRules()` in
+    //   `beforeEach`, so it is called here directly on the new rule too.
+    expect(dockedRule(RECEIPT_GRID_SELECTOR)).toContain("grid-template-columns");
+
+    const css = readFileSync(
+      path.resolve(__dirname, "../../../app/globals.css"),
+      "utf8",
+    );
+    const note = css.indexOf(`${PREVIEW_NOTE_SELECTOR} {`);
+    const gridRule = css.indexOf(`${RECEIPT_GRID_SELECTOR} {`);
+    expect(note).toBeGreaterThan(-1);
+    //   ADJACENT — the grid rule follows the note rule with only the note's own
+    //   block and one comment between them. Bounded rather than merely ordered,
+    //   because "one attribute, two consequences, next to each other in source"
+    //   is the thing a reader of either rule relies on; drifting a thousand
+    //   characters apart would satisfy a bare `>` and lose exactly that.
+    expect(gridRule).toBeGreaterThan(note);
+    expect(gridRule - note).toBeLessThan(1200);
+    // Nothing but the note's OWN block stands between them — comments stripped
+    // first, because the comment that joins the two rules explains them by
+    // naming `@media` in prose, and matching source text would read that as a
+    // wrapper. One `{` and one `}` is the structural version of the same claim:
+    // no third rule and no block opened between the pair.
+    const between = css.slice(note, gridRule).replace(/\/\*[\s\S]*?\*\//g, "");
+    expect((between.match(/\{/g) ?? []).length).toBe(1);
+    expect((between.match(/\}/g) ?? []).length).toBe(1);
+    //   AHEAD OF THE SPLIT HANDLE — which pins the new rule outside the block
+    //   `workbench-split.test.ts` slices from `.wb-split-handle {`; a rule
+    //   added below it retargets that suite's
+    //   `lastIndexOf("grid-template-columns")`.
+    expect(gridRule).toBeLessThan(css.indexOf(".wb-split-handle {"));
+
+    // …and the component still carries the hook the rule keys on.
+    const component = readFileSync(
+      path.resolve(__dirname, "../../WikiWorkbench.tsx"),
+      "utf8",
+    );
+    expect(component).toContain("wb-canvas-receipt-grid");
   });
 
   it("hides the sentence once a real tree pick docks the Preview", async () => {

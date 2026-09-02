@@ -90,6 +90,7 @@ import {
   previewFileKind,
   previewHistoryRevertConfirmBody,
   previewHistoryTarget,
+  previewHistoryTruncatedCopy,
   previewRefreshAnnouncement,
   previewRequestUrl,
   previewStaleNotice,
@@ -3111,12 +3112,56 @@ describe("previewHistoryRevertConfirmBody (DW-214)", () => {
   });
 });
 
+describe("previewHistoryTruncatedCopy", () => {
+  it("names the server's own cap, formatted with the pinned en-US separator", () => {
+    // Derived, never typed: a client constant would go on claiming 50 after the
+    // retention cap moved, and the cap lives in a module the browser bundle
+    // must not pull. `en-US` is pinned for the same reason its two siblings
+    // pin it — the sentence must not vary by runtime locale.
+    expect(previewHistoryTruncatedCopy(50)).toContain("50");
+    expect(previewHistoryTruncatedCopy(1500)).toContain("1,500");
+    expect(previewHistoryTruncatedCopy(50)).not.toBe(previewHistoryTruncatedCopy(25));
+  });
+
+  it("states the CAP, never a count of the rows on screen", () => {
+    // Not the same number: the lister drops a snapshot it cannot `stat`, so a
+    // capped listing can render 49 rows under a cap of 50. "Showing the 50 most
+    // recent versions" would then be visibly counting wrong above the list it
+    // describes — what is asserted is the bound the server applied.
+    expect(previewHistoryTruncatedCopy(50)).not.toMatch(/showing/i);
+    expect(previewHistoryTruncatedCopy(50)).toMatch(/capped at/i);
+    expect(previewHistoryTruncatedCopy(null)).toMatch(/capped at/i);
+  });
+
+  it("says nothing about HOW MANY were lost, at either shape", () => {
+    // The prune DELETES. "At the cap" is the whole of what the server can
+    // prove, so a count of what is gone is a claim neither end can make.
+    for (const sentence of [previewHistoryTruncatedCopy(50), previewHistoryTruncatedCopy(null)]) {
+      expect(sentence).not.toMatch(/\d+\s+(older|earlier|hidden|more|other)/i);
+      expect(sentence).toMatch(/not kept/i);
+    }
+  });
+
+  it("drops the numeral rather than inventing one when the limit is unusable", () => {
+    // `null` is a listing that said it was bounded without a number this client
+    // could check. The consequence is still true and still worth saying.
+    const sentence = previewHistoryTruncatedCopy(null);
+    expect(sentence).not.toMatch(/\d/);
+    expect(sentence).toMatch(/not kept/i);
+  });
+});
+
 describe("fetchArtifactRevisions", () => {
   it("GETs the listing URL and returns the rows", async () => {
     const { fetchImpl, calls } = stubFetch(() => jsonResponse(200, { revisions: [REVISION] }));
     await expect(
       fetchArtifactRevisions("schema.md", { fetchImpl }),
-    ).resolves.toEqual({ status: "ok", revisions: [REVISION] });
+    ).resolves.toEqual({
+      status: "ok",
+      revisions: [REVISION],
+      truncated: false,
+      limit: null,
+    });
     expect(calls[0].url).toBe("/api/workbench/artifact/revisions?path=schema.md");
     expect(calls[0].init?.method).toBeUndefined();
   });
@@ -3128,6 +3173,8 @@ describe("fetchArtifactRevisions", () => {
     await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
       status: "ok",
       revisions: [],
+      truncated: false,
+      limit: null,
     });
   });
 
@@ -3179,6 +3226,8 @@ describe("fetchArtifactRevisions", () => {
     await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
       status: "ok",
       revisions: [REVISION],
+      truncated: false,
+      limit: null,
     });
   });
 
@@ -3197,6 +3246,8 @@ describe("fetchArtifactRevisions", () => {
       await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
         status: "ok",
         revisions: [REVISION],
+        truncated: false,
+        limit: null,
       });
     }
   });
@@ -3220,6 +3271,8 @@ describe("fetchArtifactRevisions", () => {
       await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
         status: "ok",
         revisions: [REVISION],
+        truncated: false,
+        limit: null,
       });
     }
   });
@@ -3239,7 +3292,67 @@ describe("fetchArtifactRevisions", () => {
     const empty = stubFetch(() => jsonResponse(200, { revisions: [] }));
     await expect(
       fetchArtifactRevisions("schema.md", { fetchImpl: empty.fetchImpl }),
-    ).resolves.toEqual({ status: "ok", revisions: [] });
+    ).resolves.toEqual({ status: "ok", revisions: [], truncated: false, limit: null });
+  });
+
+  it("reads the cap the envelope declares, and says the listing was bounded", async () => {
+    // DW-541: the cap lives in `wiki-artifact-revisions.ts`, which this module
+    // must not import, so the numeral has to arrive on the wire or not at all.
+    const { fetchImpl } = stubFetch(() =>
+      jsonResponse(200, { revisions: [REVISION], truncated: true, limit: 50 }),
+    );
+    await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+      status: "ok",
+      revisions: [REVISION],
+      truncated: true,
+      limit: 50,
+    });
+  });
+
+  it("treats an envelope with NO truncation fields as an ordinary whole listing", async () => {
+    // Not an error and not a shrug: a bare `{ revisions }` — an older
+    // deployment, a proxy that reshaped the body — is a complete history as far
+    // as anything here can tell, and refusing it would take the panel down over
+    // a field that is additive.
+    const { fetchImpl } = stubFetch(() => jsonResponse(200, { revisions: [REVISION] }));
+    await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+      status: "ok",
+      revisions: [REVISION],
+      truncated: false,
+      limit: null,
+    });
+  });
+
+  it("keeps the flag and drops an UNUSABLE limit rather than inventing a number", async () => {
+    // The claim that matters — older versions existed and are gone — is true
+    // without a numeral. A number this client could not check would be printed
+    // to the owner as the cap, which is the one thing it must never guess.
+    // `0` is in here deliberately: a cap of zero is not a bound the sentence
+    // can state — "capped at the 0 most recent versions" over a populated list
+    // is a numeral contradicting what the owner can see.
+    for (const limit of ["many", null, 0, -1, 12.5, Number.NaN, Number.POSITIVE_INFINITY, {}]) {
+      const { fetchImpl } = stubFetch(() =>
+        jsonResponse(200, { revisions: [REVISION], truncated: true, limit }),
+      );
+      await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toEqual({
+        status: "ok",
+        revisions: [REVISION],
+        truncated: true,
+        limit: null,
+      });
+    }
+  });
+
+  it("takes only a literal `true` as truncated — a truthy value is not a claim", async () => {
+    for (const truncated of ["true", 1, {}, "yes"]) {
+      const { fetchImpl } = stubFetch(() =>
+        jsonResponse(200, { revisions: [REVISION], truncated, limit: 50 }),
+      );
+      await expect(fetchArtifactRevisions("schema.md", { fetchImpl })).resolves.toMatchObject({
+        status: "ok",
+        truncated: false,
+      });
+    }
   });
 
   it("passes a caller's signal through to fetch, so a hung read has a deadline", async () => {

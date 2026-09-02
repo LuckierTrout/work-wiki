@@ -343,9 +343,10 @@ export async function saveWikiArtifactRevision(
 }
 
 /**
- * The newest `limit` revisions of `file`, newest first. Empty when the artifact
- * has never been overwritten (or the Wiki is gone) — an absent directory is the
- * normal first-edit state, not an error.
+ * The newest `limit` revisions of `file`, newest first, AND whether that bound
+ * is what ended the list. Empty when the artifact has never been overwritten
+ * (or the Wiki is gone) — an absent directory is the normal first-edit state,
+ * not an error.
  *
  * The bound is applied to the STEMS, before any per-revision I/O, and that
  * placement is the point: slicing the built array instead would still `stat`
@@ -360,13 +361,26 @@ export async function saveWikiArtifactRevision(
  * `limit` defaults to {@link MAX_ARTIFACT_REVISIONS}, the retention cap, so a
  * history written under the cap is returned whole and only a pre-cap backlog is
  * ever elided. Callers pass their own only to see further back.
+ *
+ * `truncated` IS COUNTED FROM THE STEMS, not from the rows this returns, and
+ * that is the whole reason this function exists beside
+ * {@link listWikiArtifactRevisions} (DW-541). A stem whose `stat` throws is
+ * dropped below — so a directory holding sixty snapshots with one unreadable
+ * yields FORTY-NINE rows, and a caller deriving "was this bounded?" from
+ * `revisions.length` would answer no in exactly the case a truncation notice
+ * exists to catch. Counted here, a dropped row cannot flip it.
+ *
+ * AT the bound, not past it (`>=`): the prune keeps exactly
+ * {@link MAX_ARTIFACT_REVISIONS} on disk, so a history that HAS been swept
+ * holds exactly that many stems. A strict `>` would report every pruned
+ * history as whole — the defect inverted.
  */
-export async function listWikiArtifactRevisions(
+export async function listWikiArtifactRevisionsPage(
   owner: string,
   wikiId: string,
   file: WikiArtifactFile,
   limit = MAX_ARTIFACT_REVISIONS,
-): Promise<ArtifactRevision[]> {
+): Promise<{ revisions: ArtifactRevision[]; truncated: boolean }> {
   const storage = getStorage();
   const dir = wikiArtifactRevisionsDir(owner, wikiId, file);
 
@@ -381,12 +395,15 @@ export async function listWikiArtifactRevisions(
         error,
       );
     }
-    return [];
+    return { revisions: [], truncated: false };
   }
 
   // `.meta.json` also ends in `.json`, not `.md`, so the sidecars are skipped
   // here and picked up beside their own `.md` below.
-  const stems = sortedCanonicalStems(entries).slice(0, boundedLimit(limit));
+  const bound = boundedLimit(limit);
+  const canonical = sortedCanonicalStems(entries);
+  const truncated = canonical.length >= bound;
+  const stems = canonical.slice(0, bound);
 
   const built = await Promise.all(
     stems.map(async (timestamp): Promise<ArtifactRevision | null> => {
@@ -425,9 +442,29 @@ export async function listWikiArtifactRevisions(
 
   // Already newest-first: the stems were sorted before the work was bounded,
   // and dropping nulls preserves that order.
-  return built.filter(
-    (revision): revision is ArtifactRevision => revision !== null,
-  );
+  return {
+    revisions: built.filter(
+      (revision): revision is ArtifactRevision => revision !== null,
+    ),
+    truncated,
+  };
+}
+
+/**
+ * The same listing, rows only — the shape every caller but the route wants.
+ *
+ * A thin delegate rather than a second implementation: the signature, the
+ * return type and the bound are unchanged, so nothing that already calls this
+ * had to move when {@link listWikiArtifactRevisionsPage} was split out to
+ * report the bound alongside them.
+ */
+export async function listWikiArtifactRevisions(
+  owner: string,
+  wikiId: string,
+  file: WikiArtifactFile,
+  limit = MAX_ARTIFACT_REVISIONS,
+): Promise<ArtifactRevision[]> {
+  return (await listWikiArtifactRevisionsPage(owner, wikiId, file, limit)).revisions;
 }
 
 /** One revision's content, or null when there is no such revision. */

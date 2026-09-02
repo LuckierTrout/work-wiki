@@ -7,7 +7,8 @@ import { logger } from "@/lib/logger";
 import { isOwnerPrincipal } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import {
-  listWikiArtifactRevisions,
+  MAX_ARTIFACT_REVISIONS,
+  listWikiArtifactRevisionsPage,
   readWikiArtifactRevision,
   readWikiArtifactRevisionMeta,
 } from "@/lib/wiki-artifact-revisions";
@@ -219,7 +220,35 @@ export async function GET(request: Request) {
       });
     }
 
-    return json({ revisions: await listWikiArtifactRevisions(owner, wikiId, file) });
+    // The listing plus what BOUNDS it (DW-541). `MAX_ARTIFACT_REVISIONS` is
+    // both the retention cap and this listing's default bound, so a list that
+    // came back AT it is a list with older versions elided, deleted, or both —
+    // and the panel rendering it would otherwise read as a complete history.
+    //
+    // `truncated` is the LISTER'S, counted from the stems before any
+    // per-revision I/O, never re-derived here from `revisions.length`. The
+    // lister drops a stem whose `stat` throws, so a sixty-deep directory with
+    // one unreadable snapshot hands back forty-nine rows — and a check against
+    // the row count would answer "not truncated" in precisely the case this
+    // flag exists for.
+    //
+    // It claims exactly "this listing is at the bound" and NOTHING about how
+    // many are missing: the prune deletes, so no count of what was lost exists
+    // to report. At-the-bound-with-nothing-older is the one false positive it
+    // can produce, and it is the safe direction — the sentence it drives says
+    // older versions are not kept, which is true of this artifact whether or
+    // not any have been swept yet. The inverse error is not survivable: a
+    // pruned history holds exactly the cap, so anything stricter than `>=`
+    // would report every swept history as whole.
+    //
+    // ENVELOPE SIBLINGS, not row fields: `ArtifactRevision`'s shape is
+    // unchanged, byte for byte, because it is the thing every caller destructures.
+    const page = await listWikiArtifactRevisionsPage(owner, wikiId, file);
+    return json({
+      revisions: page.revisions,
+      limit: MAX_ARTIFACT_REVISIONS,
+      truncated: page.truncated,
+    });
   } catch (error) {
     return fail(error, "listing artifact revisions failed");
   }

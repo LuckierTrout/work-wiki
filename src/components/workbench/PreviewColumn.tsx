@@ -54,6 +54,7 @@ import {
   previewArtifactHistoryCopy,
   previewHistoryRevertConfirmBody,
   previewHistoryTarget,
+  previewHistoryTruncatedCopy,
   previewLightboxJump,
   previewMediaUrl,
   previewRefreshAnnouncement,
@@ -381,7 +382,19 @@ function PreviewPane({
   const [historyOpen, setHistoryOpen] = useState(false);
   // `null` is "never fetched for this row", which is what makes the expand
   // fetch ONCE: a list that came back empty is `[]` and is not re-requested.
-  const [revisions, setRevisions] = useState<ArtifactRevisionSummary[] | null>(null);
+  //
+  // ONE OBJECT, not a list plus a flag beside it (DW-541). `truncated`/`limit`
+  // describe THIS list, and two state variables can be set — or reset — apart:
+  // that is how a truncation sentence comes to sit under a list it no longer
+  // belongs to. Held together, the two existing reset sites clear both at once
+  // and desync is not expressible. `revisions` is derived below so every
+  // existing read of it is unchanged.
+  const [listing, setListing] = useState<{
+    revisions: ArtifactRevisionSummary[];
+    truncated: boolean;
+    limit: number | null;
+  } | null>(null);
+  const revisions = listing?.revisions ?? null;
   const [historyLoading, setHistoryLoading] = useState(false);
   // ONE sentence slot for the panel — a listing that failed, a view that
   // failed, a revert that failed. They cannot overlap: each is the outcome of
@@ -635,7 +648,7 @@ function PreviewPane({
       // panel is closed rather than merely emptied, because "expanded" is the
       // owner's request about one file, not a preference.
       setHistoryOpen(false);
-      setRevisions(null);
+      setListing(null);
       setHistoryLoading(false);
       setHistoryError(null);
       setViewingTimestamp(null);
@@ -1016,8 +1029,15 @@ function PreviewPane({
     // error and not an empty history — simply not this panel's answer any more.
     if (listRequestRef.current !== token) return;
     setHistoryLoading(false);
-    if (result.status === "ok") setRevisions(result.revisions);
-    else setHistoryError(result.message);
+    if (result.status === "ok") {
+      // The whole landed listing — rows AND the bound that shaped them — in one
+      // write, so the note below can never describe a different list.
+      setListing({
+        revisions: result.revisions,
+        truncated: result.truncated,
+        limit: result.limit,
+      });
+    } else setHistoryError(result.message);
   }
 
   /**
@@ -1037,7 +1057,7 @@ function PreviewPane({
     const file = payloadRef.current?.artifact;
     if (!file) return;
     if (historyOpenRef.current) void loadRevisions(file);
-    else setRevisions(null);
+    else setListing(null);
   }
   refreshHistoryRef.current = refreshHistory;
 
@@ -1588,6 +1608,24 @@ function PreviewPane({
               {readOnly && revisions !== null && revisions.length > 0 && (
                 <p id={readOnlyNoteId} className="wb-preview-history-note">
                   {historyCopy.readOnly}
+                </p>
+              )}
+
+              {/* The list below is at the retention cap, so it is not the whole
+                  history (DW-541). ABOVE the list, not under it: this panel is
+                  `max-height: 40vh; overflow-y: auto`, and the note only ever
+                  renders beside a list AT the cap — some fifty rows — so
+                  underneath it would sit past the fold of its own scroll box
+                  every single time, and the owner would have to scroll the
+                  whole capped history to be told it was capped. Not
+                  `role="alert"` either: nothing failed and nothing was refused.
+                  It rides on `listing` — the same object the rows came out of —
+                  so it cannot outlive them. The numeral is the server's; the
+                  sentence is owned in `workbench-preview.ts` like every other
+                  one in here. */}
+              {!historyLoading && listing?.truncated && listing.revisions.length > 0 && (
+                <p className="wb-preview-history-note">
+                  {previewHistoryTruncatedCopy(listing.limit)}
                 </p>
               )}
 

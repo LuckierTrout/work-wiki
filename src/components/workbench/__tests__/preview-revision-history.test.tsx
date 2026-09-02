@@ -24,6 +24,7 @@ import {
   PREVIEW_HISTORY_VIEW_COPY,
   PREVIEW_SAVE_COPY,
   previewArtifactHistoryCopy,
+  previewHistoryTruncatedCopy,
   artifactRevisionDate,
   artifactRevisionLabel,
   artifactRevisionSize,
@@ -496,6 +497,116 @@ describe("expanding lists the revisions, once", () => {
 
     expect(listings()).toBe(2);
     expect(screen.getByText(/replaced by the Reading Scenario Template/)).toBeTruthy();
+  });
+});
+
+describe("a capped listing says so, and only while it is capped (DW-541)", () => {
+  it("shows the note under a listing the server reported as bounded", async () => {
+    // The defect: a list the retention prune has already truncated renders
+    // identically to a complete one, so the owner reads a capped history as the
+    // whole history and stops looking for bytes that are gone.
+    listAnswer = () => ok({ revisions: [NEWER, OLDER], truncated: true, limit: 50 });
+    await renderShell();
+    await dock();
+    await expandHistory();
+
+    const note = screen.getByText(previewHistoryTruncatedCopy(50));
+    expect(note.className).toContain("wb-preview-history-note");
+    // NOT an alert: nothing failed and nothing was refused.
+    expect(note.getAttribute("role")).toBeNull();
+    // ABOVE the list, and asserted rather than assumed: the panel is
+    // `max-height: 40vh; overflow-y: auto` and this note only ever renders
+    // beside a list AT the cap, so underneath it would be past the fold of its
+    // own scroll box every time — the owner would have to scroll the whole
+    // capped history to be told it was capped.
+    const list = document.querySelector(".wb-preview-history-list");
+    expect(list).not.toBeNull();
+    expect(
+      note.compareDocumentPosition(list!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The rows themselves are untouched by the note.
+    expect(rowLabels()).toHaveLength(2);
+  });
+
+  it("uses the SERVER's numeral, not one the panel picked", async () => {
+    listAnswer = () => ok({ revisions: [NEWER], truncated: true, limit: 25 });
+    await renderShell();
+    await dock();
+    await expandHistory();
+
+    expect(screen.getByText(previewHistoryTruncatedCopy(25))).toBeTruthy();
+    expect(screen.queryByText(previewHistoryTruncatedCopy(50))).toBeNull();
+  });
+
+  it("drops the numeral rather than inventing one when the limit is unusable", async () => {
+    listAnswer = () => ok({ revisions: [NEWER], truncated: true, limit: "many" });
+    await renderShell();
+    await dock();
+    await expandHistory();
+
+    expect(screen.getByText(previewHistoryTruncatedCopy(null))).toBeTruthy();
+  });
+
+  it("says nothing on a listing the server reported as WHOLE", async () => {
+    listAnswer = () => ok({ revisions: [NEWER, OLDER], truncated: false, limit: 50 });
+    await renderShell();
+    await dock();
+    await expandHistory();
+
+    expect(rowLabels()).toHaveLength(2);
+    expect(document.body.textContent).not.toMatch(/not kept/i);
+  });
+
+  it("says nothing on an envelope carrying no truncation fields at all", async () => {
+    // A bare `{ revisions }` — an older deployment, a proxy that reshaped the
+    // body — is an ordinary whole listing, never a shrug and never an error.
+    listAnswer = () => ok({ revisions: [NEWER, OLDER] });
+    await renderShell();
+    await dock();
+    await expandHistory();
+
+    expect(rowLabels()).toHaveLength(2);
+    expect(document.body.textContent).not.toMatch(/not kept/i);
+  });
+
+  it("says nothing over an EMPTY history — the empty sentence stands alone", async () => {
+    listAnswer = () => ok({ revisions: [] });
+    await renderShell();
+    await dock();
+    await expandHistory();
+
+    expect(screen.getByText(PREVIEW_HISTORY_EMPTY_COPY)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/not kept/i);
+  });
+
+  it("says nothing when the listing was REFUSED — there is no list to describe", async () => {
+    listAnswer = () => refusal(403, "Only the workspace owner can edit the Schema.");
+    await renderShell();
+    await dock();
+    await expandHistory();
+
+    expect(document.body.textContent).not.toMatch(/not kept/i);
+  });
+
+  it("takes the note away when the owner re-points the panel at an uncapped listing", async () => {
+    // The desync this shape exists to prevent: held beside the rows in its own
+    // state, `truncated` would survive a reset the list did not, and the
+    // sentence would end up describing a list it no longer belongs to.
+    listAnswer = () => ok({ revisions: [NEWER, OLDER], truncated: true, limit: 50 });
+    await renderShell();
+    await dock();
+    await expandHistory();
+    expect(screen.getByText(previewHistoryTruncatedCopy(50))).toBeTruthy();
+
+    // Leave the row and come back — `plan.reset` clears the whole listing.
+    fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+    await act(async () => {});
+    await dock();
+    listAnswer = () => ok({ revisions: [OLDER], truncated: false, limit: 50 });
+    await expandHistory();
+
+    expect(rowLabels()).toHaveLength(1);
+    expect(screen.queryByText(previewHistoryTruncatedCopy(50))).toBeNull();
   });
 });
 

@@ -363,6 +363,12 @@ describe("WikiWorkbench empty state and preview copy", () => {
     // spelled — in `workbench/__tests__/wiki-canvas-duplication.test.tsx`.)
     const workbench = await read("WikiWorkbench.tsx");
     expect(workbench).toContain("wb-canvas-preview-note");
+    // …and the receipt grid's own hook (DW-180). The SAME attribute has a
+    // second consequence: hiding the note does not release the 320px track it
+    // was sitting in, so the grid collapses to one. Pinned here beside its
+    // sibling because a renamed hook orphans the rule silently — the class is
+    // the only thing joining the two files.
+    expect(workbench).toContain("wb-canvas-receipt-grid");
 
     const css = await readFile(
       path.resolve(__dirname, "../../app/globals.css"),
@@ -370,6 +376,9 @@ describe("WikiWorkbench empty state and preview copy", () => {
     );
     expect(css).toContain(
       '.wb-shell[data-preview="true"] .wb-canvas-preview-note {',
+    );
+    expect(css).toContain(
+      '.wb-shell[data-preview="true"] .wb-canvas-receipt-grid {',
     );
   });
 
