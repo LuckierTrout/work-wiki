@@ -108,6 +108,7 @@
 		"NEXT_PUBLIC_OWNER_HANDLE": "christianlee",
 		"NEXT_PUBLIC_CLERK_SIGN_IN_URL": "/sign-in",
 		"NEXT_PUBLIC_CLERK_SIGN_IN_FALLBACK_REDIRECT_URL": "/",
+		"NEXT_PUBLIC_CLERK_SIGN_IN_FORCE_REDIRECT_URL": "/",
 		// Stable Clerk production user id — the fact owner-ness is decided on.
 		// Middleware fails closed when this is missing or does not match, so no
 		// other signed-in account can read the app; and since DW-486 every

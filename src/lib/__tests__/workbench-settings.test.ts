@@ -5458,12 +5458,44 @@ describe("the Settings components stay inside the shell", () => {
     // renamed while it still says only two things.
     expect(canvas).toContain("SETTINGS_SAVING_NOTE_COPY");
     // Each row builder wires its own hint; none of them renders a bare span.
-    // A ratio, so it holds per file — the API + MCP pane carries its own two.
+    // A ratio, so it holds per file — the API + MCP pane carries its own three.
     for (const source of [canvas, apiPane]) {
       const hintSpans = [...source.matchAll(/<span className="wb-set-hint"/g)];
       const identified = [...source.matchAll(/<span className="wb-set-hint" id=/g)];
       expect(identified.length).toBe(hintSpans.length);
     }
+    // …and an id is not a wire (DW-634). The pane MINTED `apiToken-hint` and
+    // then referenced it from nothing, so the env-pinned sentence and the
+    // "copy it now, it is never shown again" sentence — the most consequential
+    // one on the pane — were announced to nobody, while the check above passed
+    // because the span did carry an id. Every `-hint` id the pane mints must
+    // therefore appear a SECOND time, in some control's `aria-describedby`.
+    const minted = [...apiPane.matchAll(/id=\{field\("([\w-]+-hint)"\)\}/g)].map(
+      (match) => match[1],
+    );
+    expect(minted).toEqual([
+      "apiEnabled-hint",
+      "allowUnauthenticated-hint",
+      "apiToken-hint",
+    ]);
+    for (const hint of minted) {
+      // Two or more: the `id={…}` that declares it, plus at least one reference.
+      // The token row's reference is the shared `tokenDescribedBy` value that
+      // Generate, Show and Copy all take, which is why this counts occurrences
+      // rather than insisting on a literal `describedBy(field("…"))` call.
+      const references = [
+        ...apiPane.matchAll(new RegExp(`field\\("${hint}"\\)`, "g")),
+      ];
+      expect(references.length).toBeGreaterThanOrEqual(2);
+    }
+    // The token row's three controls share ONE two-id value — the row label
+    // first, then the row hint. Built once so Generate (through `describedBy`,
+    // which appends the bar's refusal), Show and Copy cannot drift apart.
+    expect(apiPane).toContain(
+      'const tokenDescribedBy = `${field("apiToken-label")} ${field("apiToken-hint")}`;',
+    );
+    expect(apiPane.match(/aria-describedby=\{tokenDescribedBy\}/g)).toHaveLength(2);
+    expect(apiPane).toContain("aria-describedby={describedBy(tokenDescribedBy)}");
     // NO bare `hintId` left. The secret row was the last one, exempted on the
     // reasoning that a read-only deployment renders it `readOnly` rather than
     // `aria-disabled` so it has "no refusal to announce" — which was never true

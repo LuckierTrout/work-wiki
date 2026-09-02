@@ -93,9 +93,30 @@ export function maskToken(token: string): string {
  */
 export const SETTINGS_API_TOKEN_NEW_COPY =
   "Copy this token now — it is stored on save and never shown again.";
+/**
+ * The token row's HINT answers one question: what is in this field?
+ *
+ * These two are siblings and read as a pair — "A token is stored." / "No token
+ * is stored." — which is why the absent one no longer carries the remedies it
+ * used to (DW-635). It was the same string the `wb-set-warn` note renders, so
+ * one screen showed the identical sentence twice and a suite could not tell the
+ * two nodes apart. The remedies moved to the note below, where the consequence
+ * that makes them worth acting on is stated.
+ */
 export const SETTINGS_API_TOKEN_STORED_COPY = "A token is stored.";
-export const SETTINGS_API_TOKEN_ABSENT_COPY =
-  "No token is stored. Generate one, or allow unauthenticated access.";
+export const SETTINGS_API_TOKEN_ABSENT_COPY = "No token is stored.";
+
+/**
+ * The `wb-set-warn` note answers a DIFFERENT question: what happens to callers?
+ *
+ * Rendered only when `draftApiTokenMissing` holds — the door on, the token
+ * required, and none from the environment, the store or a Generate press. It
+ * names the consequence first, because "401" is the symptom the owner is
+ * actually holding when they come looking, and then both ways out. Not an
+ * error and not a block on Save: it is a real, safe state.
+ */
+export const SETTINGS_API_TOKEN_NO_WAY_IN_COPY =
+  "The API is on with no way in: every caller gets 401. Generate a token, or allow unauthenticated access.";
 
 /**
  * `LLM_WIKI_API_TOKEN` is set, so Generate cannot change what callers send.

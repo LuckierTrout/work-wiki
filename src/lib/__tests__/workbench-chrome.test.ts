@@ -678,6 +678,20 @@ describe("the shell owns the viewport at /", () => {
     expect(source).toContain("unavailable: true");
   });
 
+  it("pins post-login to the Workbench, not an old chrome route", async () => {
+    // Clerk's fallback defaults to `/` and wrangler already set
+    // SIGN_IN_FALLBACK_REDIRECT_URL=/ — that still loses whenever Clerk has a
+    // `redirect_url` (dashboard After sign-in URL, or middleware returnBackUrl
+    // to /wiki / /knowledge / /settings). Force is what makes login land on `/`.
+    const signIn = await readFile(
+      path.join(SRC, "app/sign-in/[[...sign-in]]/page.tsx"),
+      "utf8",
+    );
+    expect(signIn).toContain('forceRedirectUrl="/"');
+    const layout = await readFile(path.join(SRC, "app/layout.tsx"), "utf8");
+    expect(layout).toContain('signInForceRedirectUrl="/"');
+  });
+
   it("puts the Wiki surface inside the canvas rather than a centred container", async () => {
     const source = await readFile(path.join(SRC, "components/WikiWorkbench.tsx"), "utf8");
     expect(source).toContain('className="wb-canvas-pad"');

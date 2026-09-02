@@ -85,7 +85,14 @@ function AppProviders({ children }: { children: React.ReactNode }) {
       </SiteChrome>
     </ClientProviders>
   );
-  return e2e ? shell : <ClerkProvider>{shell}</ClerkProvider>;
+  return e2e ? shell : (
+    <ClerkProvider
+      signInFallbackRedirectUrl="/"
+      signInForceRedirectUrl="/"
+    >
+      {shell}
+    </ClerkProvider>
+  );
 }
 
 export default function RootLayout({

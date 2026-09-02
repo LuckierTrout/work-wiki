@@ -30,7 +30,9 @@ export default function SignInPage() {
             Owner access only.
           </p>
         </div>
-        {isE2eIdentityArmed() ? null : <SignIn />}
+        {isE2eIdentityArmed() ? null : (
+          <SignIn fallbackRedirectUrl="/" forceRedirectUrl="/" />
+        )}
       </div>
     </section>
   );

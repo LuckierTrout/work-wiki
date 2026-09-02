@@ -10,6 +10,7 @@ import {
 import {
   SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
   SETTINGS_API_HEALTH_RUNNING_COPY,
+  SETTINGS_API_HEALTH_STARTING_COPY,
   SETTINGS_API_HEALTH_UNREACHABLE_COPY,
 } from "../src/lib/workbench-loopback-health";
 import { E2E_OWNER_HANDLE } from "./env";
@@ -165,9 +166,13 @@ test.describe("private Workbench owner journey", () => {
       page.getByRole("heading", { name: SETTINGS_API_MCP_HEADING, exact: true }),
     ).toBeVisible();
     await expect(page.getByText(SETTINGS_API_MCP_COPY)).toBeVisible();
+    // FOUR sentences, not three (DW-633): `starting` — a listener that has not
+    // bound yet — used to fall through the pane's ternary onto the running
+    // sentence, so this locator never had to know about it. It has its own
+    // sentence now, and a sidecar caught mid-start is a real answer here.
     const health = page.getByRole("status").filter({
       hasText:
-        /sidecar is (not running|running) on 127\.0\.0\.1:19828|Something else owns port 19828/,
+        /sidecar is (not running|running|starting) on 127\.0\.0\.1:19828|Something else owns port 19828/,
     });
     await expect(health).toBeVisible();
     await expect(health).toContainText(
@@ -175,6 +180,7 @@ test.describe("private Workbench owner journey", () => {
         [
           SETTINGS_API_HEALTH_UNREACHABLE_COPY,
           SETTINGS_API_HEALTH_RUNNING_COPY,
+          SETTINGS_API_HEALTH_STARTING_COPY,
           SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
         ]
           .map((sentence) => sentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))

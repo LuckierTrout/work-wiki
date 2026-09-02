@@ -22,6 +22,7 @@ import {
   SETTINGS_API_TOKEN_HIDE_COPY,
   SETTINGS_API_TOKEN_LABEL,
   SETTINGS_API_TOKEN_NEW_COPY,
+  SETTINGS_API_TOKEN_NO_WAY_IN_COPY,
   SETTINGS_API_TOKEN_SHOW_COPY,
   SETTINGS_API_TOKEN_STORED_COPY,
   SETTINGS_API_UNAUTH_LABEL,
@@ -45,10 +46,8 @@ import {
   newLoopbackApiToken,
 } from "@/lib/v1-contract";
 import {
+  loopbackHealthSentence,
   probeLoopbackApiPane,
-  SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
-  SETTINGS_API_HEALTH_RUNNING_COPY,
-  SETTINGS_API_HEALTH_UNREACHABLE_COPY,
   type ClassifiedLoopbackHealth,
 } from "@/lib/workbench-loopback-health";
 import type { SkillSummary } from "@/lib/chat-agent";
@@ -125,6 +124,19 @@ export function SettingsApiMcpPane({
    * credential nobody asked for.
    */
   const [revealToken, setRevealToken] = useState(false);
+  /**
+   * What the three token controls announce: the row LABEL, then the row HINT.
+   *
+   * `Generate`, `Show` and `Copy` are their WHOLE accessible names, so the
+   * label is the only thing that says which token they act on — and the hint is
+   * the sentence that says what is in the field: that `LLM_WIKI_API_TOKEN` is
+   * winning, or that this value is shown once and never again. Until DW-634 the
+   * hint span carried an id no control referenced, so both were announced to
+   * nobody. `aria-describedby` takes a LIST, so the hint is ADDED here rather
+   * than swapped in, and `describedBy` — plain string concatenation on the
+   * canvas — appends the bar's refusal sentence after both.
+   */
+  const tokenDescribedBy = `${field("apiToken-label")} ${field("apiToken-hint")}`;
   const [apiLive, setApiLive] = useState<{
     health: ClassifiedLoopbackHealth;
     skills: SkillSummary[];
@@ -166,11 +178,12 @@ export function SettingsApiMcpPane({
       </p>
       {apiLive ? (
         <p className="wb-set-note" role="status">
-          {apiLive.health === "port_conflict"
-            ? SETTINGS_API_HEALTH_PORT_CONFLICT_COPY
-            : apiLive.health === "unreachable" || apiLive.health === "error"
-              ? SETTINGS_API_HEALTH_UNREACHABLE_COPY
-              : SETTINGS_API_HEALTH_RUNNING_COPY}{" "}
+          {/* One EXHAUSTIVE selector, not a chain of ternaries (DW-633): the
+              chain's final arm answered "running" for anything it had not
+              named, so a `starting` sidecar — a listener that has not bound
+              yet — was described as serving. The switch in the health module
+              cannot compile with a status it has no sentence for. */}
+          {loopbackHealthSentence(apiLive.health)}{" "}
           {apiLive.skills.length === 1
             ? "1 Skill on disk."
             : `${apiLive.skills.length} Skills on disk.`}
@@ -271,7 +284,7 @@ export function SettingsApiMcpPane({
                 type="button"
                 className="wb-set-action"
                 aria-disabled={editRefused || undefined}
-                aria-describedby={describedBy(field("apiToken-label"))}
+                aria-describedby={describedBy(tokenDescribedBy)}
                 onClick={() => {
                   if (editRefused) return;
                   apply((current) =>
@@ -287,7 +300,7 @@ export function SettingsApiMcpPane({
                 <button
                   type="button"
                   className="wb-set-action"
-                  aria-describedby={field("apiToken-label")}
+                  aria-describedby={tokenDescribedBy}
                   aria-pressed={revealToken}
                   onClick={() => setRevealToken((current) => !current)}
                 >
@@ -298,7 +311,7 @@ export function SettingsApiMcpPane({
                 <button
                   type="button"
                   className="wb-set-action"
-                  aria-describedby={field("apiToken-label")}
+                  aria-describedby={tokenDescribedBy}
                   onClick={() => void onCopy(values.loopbackApiToken ?? "")}
                 >
                   {SETTINGS_API_TOKEN_COPY_COPY}
@@ -320,10 +333,17 @@ export function SettingsApiMcpPane({
               so every caller gets 401. Not an error and not a block on
               Save: it is a real, safe state, and saying so is the
               difference between an owner understanding their agent's 401
-              and hunting it. */}
+              and hunting it.
+
+              Its own sentence since DW-635. It used to render the HINT's
+              absent copy verbatim, so the identical string appeared twice
+              on one screen — announced twice to a screen reader, and
+              indistinguishable to any suite reaching for it by text. The
+              hint says what is in the field; this says what happens to
+              callers, which is why the two are safe to show together. */}
           {draftApiTokenMissing(values, stored) && (
             <p className="wb-set-note wb-set-warn" role="status">
-              {SETTINGS_API_TOKEN_ABSENT_COPY}
+              {SETTINGS_API_TOKEN_NO_WAY_IN_COPY}
             </p>
           )}
         </>

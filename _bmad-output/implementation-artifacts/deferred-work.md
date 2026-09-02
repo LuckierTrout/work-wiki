@@ -4945,7 +4945,9 @@ location: src/components/workbench/SettingsApiMcpPane.tsx (the apiLive health te
 source_spec: `spec-dw-445-settings-api-mcp-extract-2.md`
 severity: medium
 reason: `LOOPBACK_STATUSES` in `src/lib/v1-contract.ts` is ["starting","running","port_conflict","error"], and `classifyLoopbackHealth` returns "starting" verbatim. The pane's ternary falls through everything that is not port_conflict/unreachable/error to SETTINGS_API_HEALTH_RUNNING_COPY, so a starting sidecar is described as running. There is no SETTINGS_API_HEALTH_STARTING_COPY to render instead. Pre-existing: moved verbatim out of SettingsCanvas by DW-445, not introduced by it, and outside that refactor's byte-identical mandate.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-settings-api-mcp-pane-copy-a11y
+resolution-undo: 604cf3a3a782e41a24cdbea1692df2ab53db681409d2e8fe316a7c05660863e6 2026-09-01 7374617475733a206f70656e
 
 ### DW-634: The API token row's hint span carries an id that no control references, so the env-pinned and "copy it now" sentences are announced by nothing.
 origin: spec-deferred 36697e62aabe
@@ -4953,7 +4955,9 @@ location: src/components/workbench/SettingsApiMcpPane.tsx (the API token row)
 source_spec: `spec-dw-445-settings-api-mcp-extract-2.md`
 severity: medium
 reason: The span is `id={field("apiToken-hint")}`, but Generate, Show/Hide and Copy all point their `aria-describedby` at `field("apiToken-label")`. The workbench-settings.ts source scan only asserts every `wb-set-hint` span HAS an id, never that a control references it, so this reads as covered while the sentence is unannounced. Pre-existing: moved verbatim by DW-445.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-settings-api-mcp-pane-copy-a11y
+resolution-undo: 604cf3a3a782e41a24cdbea1692df2ab53db681409d2e8fe316a7c05660863e6 2026-09-01 7374617475733a206f70656e
 
 ### DW-635: SETTINGS_API_TOKEN_ABSENT_COPY can render twice on screen at once — as the token row's hint and again as the wb-set-warn status note.
 origin: spec-deferred 38456ba05e5b
@@ -4961,7 +4965,9 @@ location: src/components/workbench/SettingsApiMcpPane.tsx (token hint + missing-
 source_spec: `spec-dw-445-settings-api-mcp-extract-2.md`
 severity: low
 reason: With the door open, unauth off and no token anywhere, the hint's final fallback branch selects SETTINGS_API_TOKEN_ABSENT_COPY and `draftApiTokenMissing` renders the same sentence again as a role="status" note. The new dom suite has to work around the duplicate with `getAllByRole("status").find(...)` rather than `getByText`. One of the two should say something different. Pre-existing: moved verbatim by DW-445.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-settings-api-mcp-pane-copy-a11y
+resolution-undo: 604cf3a3a782e41a24cdbea1692df2ab53db681409d2e8fe316a7c05660863e6 2026-09-01 7374617475733a206f70656e
 
 ### DW-636: The vector rule's `provider` leg carries no note naming `EMBEDDING_PROVIDER`, so an env-owned refusal tells the owner to supply a provider through a select that cannot supply it.
 origin: spec-deferred 130f32473799
@@ -5635,4 +5641,12 @@ location: src/components/EmbeddingSettings.tsx:380
 source_spec: `spec-dw-616-workers-ai-dimension-hint.md`
 severity: low
 reason: `resolveEmbeddingProvider` answers `workers-ai` when the Cloudflare `AI` binding is bound (src/lib/embeddings.ts); that says nothing about `YOPEDIA_VECTORIZE`. `R2Storage` holds `this.vectorize` as `VectorizeIndex | undefined` (src/lib/storage/r2.ts:86,91) and guards every vector operation on it (:404, :430, :454, :467, :477), so the index half of the sentence can be false while the provider half is true. Pre-existing and untouched by DW-616, which narrowed only the provider half. The settings route already resolves binding facts server-side (`getWorkersAiBinding()`, served as `hasWorkersAiBinding`), so the same door could answer this one.
+status: open
+
+### DW-716: The Skill count is appended to the health line for every health, so a sidecar that never answered still renders "0 Skills on disk." as a statement of fact.
+origin: spec-deferred e26f7ee1a820
+location: src/components/workbench/SettingsApiMcpPane.tsx (the apiLive health note's Skill count)
+source_spec: `spec-dw-633-634-635-settings-api-mcp-pane-copy-a11y.md`
+severity: low
+reason: `probeLoopbackApiPane` runs the Skills scan independently of `/health` and swallows its failure into `skills: []`. `SettingsApiMcpPane` then renders `${apiLive.skills.length} Skills on disk.` unconditionally beside whichever health sentence it chose. With nothing serving on 19828 — the ordinary state of a wiki whose sidecar is not started — the pane says "The sidecar is not running on 127.0.0.1:19828. 0 Skills on disk.", asserting something about the machine that the failed scan could not establish: the count is "the scan did not answer", not zero. Same false-claim class as DW-633, which this bundle fixed for the health sentence only. Pre-existing and unchanged by this story; the count rides along with the sentence exactly as before.
 status: open

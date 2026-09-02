@@ -4,6 +4,9 @@ import { SettingsCanvas } from "@/components/workbench/SettingsCanvas";
 import {
   SETTINGS_LOADING_COPY,
   SETTINGS_READ_ONLY_COPY,
+  SETTINGS_ROUTE,
+  SETTINGS_SAVED_COPY,
+  SETTINGS_SAVING_NOTE_COPY,
   type WorkbenchSettingsPayload,
 } from "@/lib/workbench-settings";
 import {
@@ -22,7 +25,9 @@ import {
   SETTINGS_API_TOKEN_ENV_COPY,
   SETTINGS_API_TOKEN_GENERATE_COPY,
   SETTINGS_API_TOKEN_HIDE_COPY,
+  SETTINGS_API_TOKEN_LABEL,
   SETTINGS_API_TOKEN_NEW_COPY,
+  SETTINGS_API_TOKEN_NO_WAY_IN_COPY,
   SETTINGS_API_TOKEN_SHOW_COPY,
   SETTINGS_API_TOKEN_STORED_COPY,
   SETTINGS_API_UNAUTH_LABEL,
@@ -35,6 +40,7 @@ import {
 import {
   SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
   SETTINGS_API_HEALTH_RUNNING_COPY,
+  SETTINGS_API_HEALTH_STARTING_COPY,
   SETTINGS_API_HEALTH_UNREACHABLE_COPY,
 } from "@/lib/workbench-loopback-health";
 import { LOOPBACK_BASE_URL } from "@/lib/v1-contract";
@@ -85,6 +91,15 @@ type Live = {
    * separate, ordered facts instead of a race.
    */
   hold?: boolean;
+  /**
+   * Hold the SAVE (`PUT /api/settings`) open until the test releases it.
+   *
+   * The same trick as `hold` above, one request along: the canvas's standing
+   * refusal (DW-67/DW-626) lasts only as long as the PUT is out, and a mock
+   * that answers on its own settles inside the click's own tick. Gating it is
+   * what makes "refused, and saying so" a state assertions can stand in.
+   */
+  holdSave?: boolean;
 };
 
 /**
@@ -94,16 +109,26 @@ type Live = {
  * started by different effects in the same commit, and the probe's own two calls
  * are sequential only because `loopbackFetch` awaits the door token first.
  *
- * Returns the release for `hold` — a no-op when the case did not ask for one.
+ * Returns the releases for `hold` and `holdSave` — each a no-op when the case
+ * did not ask for one.
  */
-function routeFetch(stored: WorkbenchSettingsPayload, live: Live = {}): () => void {
+function routeFetch(
+  stored: WorkbenchSettingsPayload,
+  live: Live = {},
+): { releaseHealth: () => void; releaseSave: () => void } {
   let release = () => {};
   const gate = live.hold
     ? new Promise<void>((resolve) => {
         release = resolve;
       })
     : Promise.resolve();
-  fetchMock.mockImplementation(async (url: string) => {
+  let releaseSave = () => {};
+  const saveGate = live.holdSave
+    ? new Promise<void>((resolve) => {
+        releaseSave = resolve;
+      })
+    : Promise.resolve();
+  fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     const target = String(url);
     // The door token, cached module-wide by `loopback-client` — cleared per test
     // below, or the second test in this file would run against the first's.
@@ -122,21 +147,26 @@ function routeFetch(stored: WorkbenchSettingsPayload, live: Live = {}): () => vo
         json: async () => ({ skills: live.skills ?? [] }),
       } as Response;
     }
+    // The SAVE, held when the case asked for it — the mount read is a GET and
+    // goes straight through, so one gate cannot stall the other. Keyed on the
+    // ROUTE as well as the verb: a gate that catches every PUT would stall the
+    // first unrelated one some later surface sends through this same mock.
+    if (init?.method === "PUT" && target.includes(SETTINGS_ROUTE)) await saveGate;
     return {
       ok: true,
       status: 200,
       json: async () => ({ workbench: stored }),
     } as unknown as Response;
   });
-  return release;
+  return { releaseHealth: release, releaseSave };
 }
 
 /** Mount the API + MCP category and let the settings read settle. */
 async function mountPane(stored: WorkbenchSettingsPayload, live: Live = {}) {
-  const releaseHealth = routeFetch(stored, live);
+  const { releaseHealth, releaseSave } = routeFetch(stored, live);
   const view = render(<SettingsCanvas category="api-mcp" headingId="wb-set-heading" />);
   await waitFor(() => expect(screen.queryByText(SETTINGS_LOADING_COPY)).toBeNull());
-  return { view, releaseHealth };
+  return { view, releaseHealth, releaseSave };
 }
 
 /**
@@ -238,12 +268,37 @@ describe("the pane probes once and says what it found", () => {
     expect((await healthLine()).textContent).toContain("1 Skill on disk.");
   });
 
+  it("says a STARTING sidecar is coming up, never that it is running (DW-633)", async () => {
+    // `starting` is a listener that has not bound yet, and it used to fall
+    // through the pane's ternary chain onto the running sentence — so the pane
+    // told the owner the door was open at the one moment their first call was
+    // guaranteed a refused connection.
+    await mountPane(payload(), { health: { status: "starting" }, skills: [{ id: "a" }] });
+    const note = await healthLine();
+    expect(note.textContent).toContain(SETTINGS_API_HEALTH_STARTING_COPY);
+    expect(note.textContent).not.toContain(SETTINGS_API_HEALTH_RUNNING_COPY);
+    // The Skill count still rides along: the sentence changed, not the line.
+    expect(note.textContent).toContain("1 Skill on disk.");
+  });
+
   it("names a foreign process on the port rather than calling it this wiki", async () => {
     // A payload with no recognised `status` is SOMETHING ELSE answering on
     // 19828, which is a different fact from "the sidecar is down".
     await mountPane(payload(), { health: { hello: "not the wiki" } });
     expect((await healthLine()).textContent).toContain(
       SETTINGS_API_HEALTH_PORT_CONFLICT_COPY,
+    );
+  });
+
+  it("reads a listener that DIED as unreachable, the same as one that never was", async () => {
+    // `error` and a refused connection are one fact to the owner — nothing is
+    // serving on 19828 — so they deliberately share a sentence. Pinned because
+    // the exhaustive selector now has to name `error` explicitly, and naming it
+    // is exactly where a well-meant "the sidecar reported an error" could
+    // arrive and quietly split a state that was always one.
+    await mountPane(payload(), { health: { status: "error" } });
+    expect((await healthLine()).textContent).toContain(
+      SETTINGS_API_HEALTH_UNREACHABLE_COPY,
     );
   });
 
@@ -309,6 +364,7 @@ describe("the door, shut", () => {
       screen.queryByRole("button", { name: SETTINGS_API_TOKEN_GENERATE_COPY }),
     ).toBeNull();
     expect(screen.queryByText(SETTINGS_API_TOKEN_ABSENT_COPY)).toBeNull();
+    expect(screen.queryByText(SETTINGS_API_TOKEN_NO_WAY_IN_COPY)).toBeNull();
   });
 });
 
@@ -402,10 +458,21 @@ describe("the token", () => {
     fireEvent.click(enableSwitch());
     // The door is now open with no way in, so the pane says so — in a
     // `role="status"` note, and WITHOUT blocking Save.
-    const absent = screen
-      .getAllByRole("status")
-      .find((element) => element.textContent === SETTINGS_API_TOKEN_ABSENT_COPY);
-    expect(absent).toBeDefined();
+    //
+    // Reached by its TEXT rather than by hunting the `role="status"` list for a
+    // node whose content happens to equal the hint's (DW-635). Both sentences
+    // were the same string, so `getByText` threw on the duplicate and the only
+    // way through was a `find` that could not say which of the two it had. Two
+    // sentences, one node each, is what makes a plain query honest here.
+    expect(screen.getAllByText(SETTINGS_API_TOKEN_NO_WAY_IN_COPY)).toHaveLength(1);
+    expect(screen.getAllByText(SETTINGS_API_TOKEN_ABSENT_COPY)).toHaveLength(1);
+    // …and they say DIFFERENT things: the hint describes the FIELD, the note
+    // describes what happens to CALLERS. One string in two places was an
+    // announcement repeated to a screen reader for no added fact.
+    expect(SETTINGS_API_TOKEN_NO_WAY_IN_COPY).not.toBe(SETTINGS_API_TOKEN_ABSENT_COPY);
+    expect(screen.getByText(SETTINGS_API_TOKEN_NO_WAY_IN_COPY).className).toContain(
+      "wb-set-warn",
+    );
     expect(
       (screen.getByRole("button", { name: /^Save/ }) as HTMLButtonElement).disabled,
     ).toBe(false);
@@ -417,7 +484,8 @@ describe("the token", () => {
     const masked = document.querySelector("code.wb-set-static")!.textContent!;
     expect(masked).toMatch(/^•{24}[0-9a-f]{4}$/);
     expect(screen.getByText(SETTINGS_API_TOKEN_NEW_COPY)).toBeTruthy();
-    // …and the absent note is gone, because there is now a way in.
+    // …and both absent sentences are gone, because there is now a way in.
+    expect(screen.queryByText(SETTINGS_API_TOKEN_NO_WAY_IN_COPY)).toBeNull();
     expect(screen.queryByText(SETTINGS_API_TOKEN_ABSENT_COPY)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: SETTINGS_API_TOKEN_SHOW_COPY }));
@@ -431,6 +499,23 @@ describe("the token", () => {
     );
   });
 
+  it("says the field is empty without warning about 401 when the door is open to all", async () => {
+    // Unauthenticated access ON is the other half of DW-635's split. There is
+    // still no token, so the HINT says so — but no caller is going to get a
+    // 401, so the note that says they will must not be here. One sentence,
+    // because only one of the two questions has an answer worth giving.
+    await mountPane(payload(), { health: { status: "running" } });
+    fireEvent.click(unauthSwitch());
+    expect((unauthSwitch() as HTMLInputElement).checked).toBe(true);
+    expect(screen.getAllByText(SETTINGS_API_TOKEN_ABSENT_COPY)).toHaveLength(1);
+    expect(screen.queryByText(SETTINGS_API_TOKEN_NO_WAY_IN_COPY)).toBeNull();
+    // …and it is the HINT that survived, announced by the Generate button
+    // rather than merely printed beside it.
+    expect(
+      announcedFor(screen.getByRole("button", { name: SETTINGS_API_TOKEN_GENERATE_COPY })),
+    ).toContain(SETTINGS_API_TOKEN_ABSENT_COPY);
+  });
+
   it("removes Generate and explains itself when the environment supplies the token", async () => {
     await mountPane(payload({ loopbackTokenSource: "env" }), {
       health: { status: "running" },
@@ -440,6 +525,7 @@ describe("the token", () => {
     ).toBeNull();
     expect(screen.getByText(SETTINGS_API_TOKEN_ENV_COPY)).toBeTruthy();
     // An env token IS a token, so nothing warns about a door with no way in.
+    expect(screen.queryByText(SETTINGS_API_TOKEN_NO_WAY_IN_COPY)).toBeNull();
     expect(screen.queryByText(SETTINGS_API_TOKEN_ABSENT_COPY)).toBeNull();
   });
 
@@ -451,6 +537,7 @@ describe("the token", () => {
       health: { status: "running" },
     });
     expect(screen.getByText(SETTINGS_API_TOKEN_STORED_COPY)).toBeTruthy();
+    expect(screen.queryByText(SETTINGS_API_TOKEN_NO_WAY_IN_COPY)).toBeNull();
     expect(screen.queryByText(SETTINGS_API_TOKEN_ABSENT_COPY)).toBeNull();
     expect(document.querySelector("code.wb-set-static")).toBeNull();
     expect(
@@ -476,6 +563,85 @@ describe("the token", () => {
     expect(snippet).toContain('"yopedia"');
     expect(snippet).toContain('"command": "node"');
     expect(snippet).not.toMatch(/token=/);
+  });
+});
+
+/**
+ * What a screen reader hears from `Generate`, `Show` and `Copy` (DW-634).
+ *
+ * All three have a one-word accessible name, so on their own they announce a
+ * verb and nothing about WHICH token or what state it is in. The row label was
+ * already wired; the HINT — the sentence carrying `LLM_WIKI_API_TOKEN` is set,
+ * or copy this now because it is never shown again — sat in a span with an id
+ * no control referenced, which is the accessibility equivalent of not rendering
+ * it for anyone who cannot see the row.
+ */
+describe("the token controls announce the row", () => {
+  /** The three controls, by the accessible name each one actually has. */
+  function tokenControls(): HTMLElement[] {
+    return [
+      SETTINGS_API_TOKEN_GENERATE_COPY,
+      SETTINGS_API_TOKEN_SHOW_COPY,
+      SETTINGS_API_TOKEN_COPY_COPY,
+    ].map((name) => screen.getByRole("button", { name }));
+  }
+
+  it("reads the label AND the hint from Generate, Show and Copy", async () => {
+    await mountPane(payload(), { health: { status: "running" } });
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_API_TOKEN_GENERATE_COPY }));
+    for (const control of tokenControls()) {
+      const announced = announcedFor(control);
+      // WHICH token — the label is the only thing that says so.
+      expect(announced).toContain(SETTINGS_API_TOKEN_LABEL);
+      // …and what state it is in: shown once, never again. The single most
+      // consequential sentence on this pane, and it was announced to nobody.
+      expect(announced).toContain(SETTINGS_API_TOKEN_NEW_COPY);
+    }
+  });
+
+  it("follows the hint through its branches rather than pinning one sentence", async () => {
+    // Generate is the only control on screen when a token is merely STORED,
+    // and the hint it announces is that branch's sentence, not the mint one.
+    await mountPane(payload({ hasLoopbackApiToken: true }), {
+      health: { status: "running" },
+    });
+    const announced = announcedFor(
+      screen.getByRole("button", { name: SETTINGS_API_TOKEN_GENERATE_COPY }),
+    );
+    expect(announced).toContain(SETTINGS_API_TOKEN_LABEL);
+    expect(announced).toContain(SETTINGS_API_TOKEN_STORED_COPY);
+    expect(announced).not.toContain(SETTINGS_API_TOKEN_NEW_COPY);
+  });
+
+  it("keeps the bar's refusal sentence alongside both while a save is out", async () => {
+    // `aria-describedby` takes a LIST, and `describedBy` is plain concatenation
+    // — so adding the hint must APPEND to the label rather than take the slot
+    // the canvas's refusal sentence lands in. This is the case that would fail
+    // if the hint had been swapped in for the label, or the pair for the note.
+    const { releaseSave } = await mountPane(payload(), {
+      health: { status: "running" },
+      holdSave: true,
+    });
+    // Generate both dirties the draft — so Save is reachable — and puts the
+    // freshly minted token in it, which is the state the hint is about.
+    fireEvent.click(screen.getByRole("button", { name: SETTINGS_API_TOKEN_GENERATE_COPY }));
+    fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
+
+    // In a `finally`, so a failed assertion leaves the PUT settled rather than
+    // a pending promise and a component unmounted mid-save.
+    try {
+      const generate = screen.getByRole("button", {
+        name: SETTINGS_API_TOKEN_GENERATE_COPY,
+      });
+      expect(generate.getAttribute("aria-disabled")).toBe("true");
+      const announced = announcedFor(generate);
+      expect(announced).toContain(SETTINGS_API_TOKEN_LABEL);
+      expect(announced).toContain(SETTINGS_API_TOKEN_NEW_COPY);
+      expect(announced).toContain(SETTINGS_SAVING_NOTE_COPY);
+    } finally {
+      releaseSave();
+    }
+    await waitFor(() => expect(screen.getByText(SETTINGS_SAVED_COPY)).toBeTruthy());
   });
 });
 
