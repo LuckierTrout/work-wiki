@@ -81,8 +81,20 @@ export interface SettingsApiMcpPaneProps {
   stored: WorkbenchSettingsPayload;
   /** The canvas's id builder, so these controls share its `useId` namespace. */
   field: (suffix: string) => string;
-  /** The canvas's `aria-describedby` resolver, which appends the read-only note. */
+  /** The canvas's `aria-describedby` resolver, which appends the bar's note. */
   describedBy: (hintId: string | undefined) => string | undefined;
+  /**
+   * The canvas's STANDING REFUSAL: read-only, or a save in flight (DW-67).
+   *
+   * A prop rather than a predicate of this pane's own, because this pane owns
+   * neither the draft nor the save. Its controls edit the canvas's draft and
+   * ride the canvas's one PUT, so anything typed here during the save window is
+   * dropped exactly as it is on every other category — and the sentence that
+   * says so is the canvas's bar note, which `describedBy` above is already
+   * appending. Re-deriving the condition here would give the pane a second
+   * answer to one question, free to disagree with the sentence it announces.
+   */
+  editRefused: boolean;
   /** The one edit gesture — it is what clears `status` and `saveError`. */
   apply: (rule: (current: SettingsDraft) => SettingsDraft) => void;
   /** Whether the last Copy landed. Shared with Intake's Copy button. */
@@ -96,6 +108,7 @@ export function SettingsApiMcpPane({
   stored,
   field,
   describedBy,
+  editRefused,
   apply,
   copied,
   onCopy,
@@ -170,9 +183,9 @@ export function SettingsApiMcpPane({
             id={field("apiEnabled")}
             type="checkbox"
             checked={values.apiEnabled}
-            aria-disabled={stored.readOnly || undefined}
+            aria-disabled={editRefused || undefined}
             onChange={(event) => {
-              if (stored.readOnly) return;
+              if (editRefused) return;
               // NOT a plain field write. Shutting the door also clears the
               // unauthenticated switch, so a later re-open cannot silently
               // re-open it unauthenticated — the pure rule the node suite
@@ -198,9 +211,9 @@ export function SettingsApiMcpPane({
                 id={field("allowUnauthenticated")}
                 type="checkbox"
                 checked={values.allowUnauthenticated}
-                aria-disabled={stored.readOnly || undefined}
+                aria-disabled={editRefused || undefined}
                 onChange={(event) => {
-                  if (stored.readOnly) return;
+                  if (editRefused) return;
                   apply((current) => ({
                     ...current,
                     allowUnauthenticated: event.target.checked,
@@ -247,15 +260,24 @@ export function SettingsApiMcpPane({
               </code>
             ) : null}
             {stored.loopbackTokenSource !== "env" && !stored.readOnly && (
+              // Refused in place while a save is in flight, never removed
+              // (DW-67): `stored.readOnly` above already keeps the button off a
+              // deployment that can never mint one, and a save is a moment
+              // rather than a state. Minting during the window would put a
+              // token on screen that the re-seed then discards — the pane
+              // promises "shown once", and that once would have been a lie.
+              // `describedBy` is what turns the refusal into a sentence.
               <button
                 type="button"
                 className="wb-set-action"
-                aria-describedby={field("apiToken-label")}
-                onClick={() =>
+                aria-disabled={editRefused || undefined}
+                aria-describedby={describedBy(field("apiToken-label"))}
+                onClick={() => {
+                  if (editRefused) return;
                   apply((current) =>
                     settingsDraftAfterTokenGenerated(current, newLoopbackApiToken()),
-                  )
-                }
+                  );
+                }}
               >
                 {SETTINGS_API_TOKEN_GENERATE_COPY}
               </button>

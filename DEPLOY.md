@@ -396,11 +396,27 @@ description rather than as a note beneath the box:
 The wording is shaped for the row it rides on rather than copied from the flat
 page: the canvas box shows the **stored** model, which is empty whenever
 `EMBEDDING_MODEL` owns the value, so the sentence names "the model that is set"
-instead of pointing at a control. Both surfaces withhold it on the same rule —
-no sentence unless something is actually in effect to name — and both apply it
-regardless of which embedding provider is selected, or whether one is selected at
-all. The canvas re-reads it on save, since a landed `PUT` serves the payload back
-from a cache the write has just re-primed.
+instead of pointing at a control. Both surfaces withhold it when there is nothing
+actually in effect to name, and both apply it regardless of which embedding
+provider is selected, or whether one is selected at all. The canvas re-reads it
+on save, since a landed `PUT` serves the payload back from a cache the write has
+just re-primed.
+
+**The canvas withholds it on one further rule, and the flat page does not.** The
+note states a fact only the **server** can resolve, and on the canvas it sits in
+the Embedding model row's own description beside two sentences read off the
+**unsaved draft** — the `EMBEDDING_MODEL` override note and the vector gate's
+complaint. So the moment an owner edits the model box or moves the provider
+select, the canvas's note goes quiet: it would otherwise go on saying "this
+deployment embeds with …" in the present tense about a value the owner has just
+replaced, beside a complaint that has already moved with the edit. Putting both
+fields back to their stored values brings it straight back, and so does a save,
+which re-seeds it from what the server resolved. The rule does **not** apply
+while `EMBEDDING_MODEL` is set: the variable wins over the box, so the reported
+substitution stays true whatever is typed there, and only a provider move
+withholds the note. The flat page has no equivalent rule — its note rides in
+that page's model-input description too, and it goes on being shown while the box
+is edited, until a save lands.
 
 What changed on the canvas is the state its model row was previously **silent**
 in: with **no embedding provider chosen**, `vectorSearchFieldIssue` returns the

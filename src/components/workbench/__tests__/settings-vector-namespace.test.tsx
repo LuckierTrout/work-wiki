@@ -464,6 +464,105 @@ describe("the MODEL ROW says what this deployment actually embeds with (DW-312)"
     expect(modelInput().getAttribute("aria-describedby")).toBeNull();
   });
 
+  it("goes QUIET the moment the model box moves, and comes back when it is put back (DW-337)", async () => {
+    // The freshness bug. The note is payload-derived — it states what the SERVER
+    // resolved, which the browser cannot compute — while the two sentences
+    // beside it on this row are draft-derived. So an owner correcting the model
+    // read "This deployment embeds with @cf/baai/bge-m3" in the present tense,
+    // about a value they had already replaced, sitting immediately after a
+    // complaint that HAD moved with their edit. Two freshness contracts on one
+    // row, and no way to tell which sentence belonged to which.
+    await mount(
+      payload({
+        embeddingModel: "text-embedding-3-small",
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+      }),
+    );
+    expect(announcedFor(modelInput())).toContain(substituted("@cf/baai/bge-m3"));
+
+    // Another id the gate still complains about, so the row keeps a
+    // draft-derived sentence for the note's absence to be visible against.
+    fireEvent.change(modelInput(), { target: { value: "text-embedding-3-large" } });
+    await waitFor(() => expect(modelInput().value).toBe("text-embedding-3-large"));
+    // Withheld — the server has not seen this id, so nothing here can say what
+    // it would resolve to.
+    expect(announcedFor(modelInput())).not.toContain("Not in effect.");
+    expect(announcedFor(modelInput())).not.toContain("This deployment embeds with");
+    // …while the DRAFT-derived half of the row is untouched: the gate's
+    // complaint about the id now in the box is exactly the sentence that has to
+    // survive, because it is the one the owner is acting on.
+    expect(announcedFor(modelInput())).toContain(UNSUPPORTED_WORKERS_MODEL);
+
+    // Put back, and the note returns without a save — the comparison is against
+    // the draft the payload would seed, so "typed and undone" is clean.
+    fireEvent.change(modelInput(), { target: { value: "text-embedding-3-small" } });
+    await waitFor(() =>
+      expect(announcedFor(modelInput())).toContain(substituted("@cf/baai/bge-m3")),
+    );
+  });
+
+  it("KEEPS the note while EMBEDDING_MODEL owns the model, however the box is edited", async () => {
+    // The limit of the suppression rule, and the reason it has one.
+    // `embeddingModelAnswer` takes the env override in preference to the stored
+    // model, so with the variable set this box is not what resolves — the
+    // substitution the server reported stays true whatever is typed here, and
+    // going quiet would withhold a still-true fact while the owner edits a
+    // control that is not in play. The box is still editable (it writes the
+    // store, which applies once the variable is unset), so the edit is real; it
+    // is only the note's subject that the env has taken over.
+    await mount(
+      payload({
+        embeddingModel: null,
+        envEmbeddingModel: "text-embedding-3-small",
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+      }),
+    );
+    expect(announcedFor(modelInput())).toContain(substituted("@cf/baai/bge-m3"));
+
+    fireEvent.change(modelInput(), { target: { value: "text-embedding-3-large" } });
+    await waitFor(() => expect(modelInput().value).toBe("text-embedding-3-large"));
+    // Still announced, beside the env sentence that explains why this box is not
+    // the one the note is about.
+    expect(announcedFor(modelInput())).toContain(substituted("@cf/baai/bge-m3"));
+    expect(announcedFor(modelInput())).toContain(
+      settingsEnvOverrideCopy("model", "text-embedding-3-small"),
+    );
+  });
+
+  it("goes quiet on the PROVIDER select too, with the env sentence still on the row", async () => {
+    // The other half of the resolver's input. Moving the vendor changes what
+    // "in effect" would mean just as surely as retyping the id does — and this
+    // is the case where the env sentence is on the row as well, so it can be
+    // seen surviving while the note goes.
+    await mount(
+      payload({
+        embeddingModel: null,
+        envEmbeddingModel: "text-embedding-3-small",
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: "@cf/baai/bge-m3",
+      }),
+    );
+    expect(announcedFor(modelInput())).toContain(substituted("@cf/baai/bge-m3"));
+
+    const select = screen.getByLabelText("Embedding provider") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "openai" } });
+    await waitFor(() => expect(select.value).toBe("openai"));
+
+    const announced = announcedFor(modelInput());
+    expect(announced).not.toContain("Not in effect.");
+    // The env sentence is draft-independent and stays put; the gate's complaint
+    // is draft-derived and has moved WITH the selection rather than vanishing.
+    expect(announced).toContain(
+      settingsEnvOverrideCopy("model", "text-embedding-3-small"),
+    );
+    // …and the gate's complaint moved WITH the selection rather than surviving
+    // as the note did: it no longer names the Workers AI catalog, because
+    // Workers AI is no longer what the draft selects.
+    expect(announced).not.toContain(WORKERS_AI_MODEL_PREFIX);
+  });
+
   it("WITHHOLDS the note on a half-wired payload", async () => {
     // Guarded on BOTH fields, exactly as the `/settings` sibling guards the same
     // note: a sentence with a hole where the model name goes is worse than no

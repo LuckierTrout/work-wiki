@@ -474,7 +474,9 @@ location: src/components/workbench/SettingsCanvas.tsx (save)
 source_spec: `spec-1-9-settings-for-models-and-embeddings.md`
 severity: low
 reason: `save` re-seeds the whole draft from the stored values the route answers with, which is what clears `dirty` — but the fields stay editable during the request, so anything typed in that window is replaced without a word. The alternatives (freeze the form while saving, or merge only untouched fields) are both behavioural choices this story's acceptance does not settle.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-settings-save-in-flight-freshness
+resolution-undo: da15ea5de83fe8fdcb5e911d0c2d65e67d416f176617fa044ae72da0891d817d 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-28 Freeze the form while saving — Disable the Settings form's inputs for the duration of the save request so nothing can be typed into the window whose contents would be discarded, with a test pinning that the fields are inert while the PUT is in flight.
 
 ### DW-68: Storing an embedding key through the new surface flips `hasEmbeddingSupport()` on for the existing ingest caller even with vector search switched off.
@@ -2468,7 +2470,9 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 location: src/components/workbench/SettingsCanvas.tsx (modelSubstitution)
 severity: low
 reason: `modelSubstitution` reads `stored.embeddingModelOverridden` / `stored.embeddingModelInEffect`, while the env sentence and `vectorModelIssue` on the same row come from `values`. An owner who corrects the model in the box still reads "Not in effect. This deployment embeds with …" until a PUT lands. This is unavoidable without the server — the rule runs over the env and the store together — and it is documented in code and in DEPLOY.md ("re-reads it on save"), but the same row now mixes two freshness contracts and no test mounts the edit-then-read path. Whether the note should be suppressed while the model or provider field is dirty is a decision the intent does not contain.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-settings-save-in-flight-freshness
+resolution-undo: da15ea5de83fe8fdcb5e911d0c2d65e67d416f176617fa044ae72da0891d817d 2026-09-01 7374617475733a206f70656e
 decision: 2026-08-28 Suppress while dirty — Suppress the payload-derived substitution note while embeddingModel or embeddingProvider is dirty, so the row never describes pre-edit server state beside draft-derived sentences, and add a mounted edit-then-read case.
 
 ### DW-338: SCHEMA.md's Talk pages section still documents all five `/api/wiki/:slug/discuss...` routes as live surfaces.
@@ -4877,7 +4881,9 @@ location: src/components/workbench/SettingsCanvas.tsx (save)
 source_spec: `spec-dw-553-555-settings-save-refusal-recovery.md`
 severity: low
 reason: `SettingsCanvas.save` captures `const current = draftRef.current` before the awaits, and only the Save button is disabled while `saving` — the field-level `aria-disabled` attributes key off `readOnly`/`envPinned`, not `saving`. A landed save then re-seeds the draft from the answered payload, so a keystroke made during the round trip is neither sent nor kept. Pre-existing, but on a surface holding no version the window is now two sequential `REQUEST_TIMEOUT_MS` deadlines rather than one.
-status: open
+status: done 2026-09-01
+resolution: resolved by sweep bundle dw-settings-save-in-flight-freshness
+resolution-undo: da15ea5de83fe8fdcb5e911d0c2d65e67d416f176617fa044ae72da0891d817d 2026-09-01 7374617475733a206f70656e
 
 ### DW-627: `mountWritable` and `patchOf` are now copied verbatim into a second mounted Settings suite, the duplication DW-228 consolidated the rest of that harness to remove.
 origin: spec-deferred d82e8f3af1e3

@@ -67,12 +67,14 @@ import {
   SETTINGS_SAVE_BAR_COPY,
   SETTINGS_SAVE_COPY,
   SETTINGS_SAVING_COPY,
+  SETTINGS_SAVING_NOTE_COPY,
   SETTINGS_TIMEOUT_HINT_COPY,
   SETTINGS_VECTOR_HINT_COPY,
   SETTINGS_VECTOR_PROVIDER_COPY,
   SETTINGS_TIMEOUT_REASON,
   SECRET_UNTOUCHED,
   draftCanEnableVectorSearch,
+  draftEmbeddingIdentityDirty,
   draftEmbeddingKeyStored,
   draftVectorInputs,
   fetchWorkbenchSettings,
@@ -257,158 +259,180 @@ export function SettingsCanvas({
     setSaving(true);
     setSaveError(null);
     setStatus("");
-    // THE RECOVERY READ (DW-555). A clearing verdict — and a versionless 200,
-    // and a load that carried none — leaves this surface holding no version,
-    // and nothing else on it ever puts one back: every later save then goes out
-    // with no `If-Match` and is refused 428, escapable only by a reload that
-    // destroys the draft. So the version, and ONLY the version, is re-read at
-    // the one moment it matters.
+    // WRAPPED so `setSaving(false)` cannot be skipped (DW-67/DW-626).
     //
-    // FALSINESS, NOT `=== undefined`, on BOTH the trigger and the adoption.
-    // The static type says `version?: string`, but `isWorkbenchSettingsPayload`
-    // deliberately accepts `null` and `""` as spellings of absence and
-    // `workbenchSettingsFrom` hands the candidate back verbatim, so all three
-    // reach this ref at runtime. `saveWorkbenchSettings` gates the header on
-    // TRUTHINESS (`options.version ? …`), and this has to gate on the SAME rule
-    // or the two disagree: an `=== undefined` trigger would let a held `null`
-    // walk straight past the recovery into the headerless 428 this exists to
-    // remove, and an `!== undefined` adoption would write that `null` back into
-    // the held payload and switch the recovery off for the life of the tab.
-    // `SkillsCanvas.toggle` tests the same way, for the same reason.
+    // Every path below is straight-line and both request helpers are total —
+    // `fetchWorkbenchSettings` and `saveWorkbenchSettings` catch their own
+    // transport failures and answer a result — so nothing here throws today and
+    // no test can drive this branch. It is a GUARD against what a stuck flag now
+    // costs, not against a bug that exists: before the freeze a leaked `saving`
+    // disabled the Save button, which is recoverable by reloading a surface whose
+    // draft was already saved or already lost. Now it makes the WHOLE form
+    // permanently inert, announcing "a save is in progress" with no error beside
+    // it, escapable only by the reload that destroys every unsaved edit — the
+    // exact hazard `REQUEST_TIMEOUT_MS` above exists to argue about, arriving by
+    // a different door. A helper that grows a throw later must not be able to
+    // strand the surface, and this is what makes that impossible rather than
+    // merely unlikely.
     //
-    // LAZY, NEVER EAGER. A HELD version is the description of the config this
-    // draft was seeded from, which is the whole point of the precondition;
-    // refreshing one behind the owner's back would silently turn every conflict
-    // into a clobber. Only the absent case has nothing left to lose.
-    //
-    // AND THE TRADE IT MAKES, stated rather than left to be discovered: reading
-    // the precondition immediately before the PUT means this retry can no
-    // longer be refused as a conflict, so a third party's edit landing between
-    // the cleared save and the retry is OVERWRITTEN rather than caught. That is
-    // accepted here, and only here, because the version was cleared precisely
-    // because it could no longer detect anything — the choice is not between
-    // conflict detection and none, it is between a save that can happen and a
-    // surface that can never save again without a reload that destroys every
-    // unsaved edit on it. A HELD version still buys the real 412, which is
-    // exactly why this never refreshes one.
-    //
-    // THE DRAFT IS NOT TOUCHED. This is a read for one field, not the re-seed
-    // the surface deliberately does not have — every unsaved edit stays exactly
-    // where the owner left it, and the answered payload's other values are
-    // discarded. Close to `SkillsCanvas.toggle`'s shape, and different in the
-    // two ways that matter: that one re-reads on EVERY write, because the
-    // Settings pane writes the same file underneath it, and REFUSES when the
-    // read yields no version. This one reads only when NONE is held, and never
-    // refuses — swallowing the save would strand a draft the owner can neither
-    // save nor reload away from. It goes out with no `If-Match` at all, exactly
-    // as it does today, and the route answers 428 — the sentence this surface
-    // already shows.
-    let version = payloadRef.current?.version;
-    if (!version) {
-      const seeded = await fetchWorkbenchSettings({
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-      const answered = seeded.status === "ok" ? seeded.payload.version : undefined;
-      if (answered) {
-        version = answered;
-        setPayload((held) => (held ? { ...held, version: answered } : held));
+    // `finally` only: the request sequence, the version handling and the re-seed
+    // are untouched, and no error is swallowed — a throw still propagates to the
+    // `void save()` at the click, exactly as it would have.
+    try {
+      // THE RECOVERY READ (DW-555). A clearing verdict — and a versionless 200,
+      // and a load that carried none — leaves this surface holding no version,
+      // and nothing else on it ever puts one back: every later save then goes out
+      // with no `If-Match` and is refused 428, escapable only by a reload that
+      // destroys the draft. So the version, and ONLY the version, is re-read at
+      // the one moment it matters.
+      //
+      // FALSINESS, NOT `=== undefined`, on BOTH the trigger and the adoption.
+      // The static type says `version?: string`, but `isWorkbenchSettingsPayload`
+      // deliberately accepts `null` and `""` as spellings of absence and
+      // `workbenchSettingsFrom` hands the candidate back verbatim, so all three
+      // reach this ref at runtime. `saveWorkbenchSettings` gates the header on
+      // TRUTHINESS (`options.version ? …`), and this has to gate on the SAME rule
+      // or the two disagree: an `=== undefined` trigger would let a held `null`
+      // walk straight past the recovery into the headerless 428 this exists to
+      // remove, and an `!== undefined` adoption would write that `null` back into
+      // the held payload and switch the recovery off for the life of the tab.
+      // `SkillsCanvas.toggle` tests the same way, for the same reason.
+      //
+      // LAZY, NEVER EAGER. A HELD version is the description of the config this
+      // draft was seeded from, which is the whole point of the precondition;
+      // refreshing one behind the owner's back would silently turn every conflict
+      // into a clobber. Only the absent case has nothing left to lose.
+      //
+      // AND THE TRADE IT MAKES, stated rather than left to be discovered: reading
+      // the precondition immediately before the PUT means this retry can no
+      // longer be refused as a conflict, so a third party's edit landing between
+      // the cleared save and the retry is OVERWRITTEN rather than caught. That is
+      // accepted here, and only here, because the version was cleared precisely
+      // because it could no longer detect anything — the choice is not between
+      // conflict detection and none, it is between a save that can happen and a
+      // surface that can never save again without a reload that destroys every
+      // unsaved edit on it. A HELD version still buys the real 412, which is
+      // exactly why this never refreshes one.
+      //
+      // THE DRAFT IS NOT TOUCHED. This is a read for one field, not the re-seed
+      // the surface deliberately does not have — every unsaved edit stays exactly
+      // where the owner left it, and the answered payload's other values are
+      // discarded. Close to `SkillsCanvas.toggle`'s shape, and different in the
+      // two ways that matter: that one re-reads on EVERY write, because the
+      // Settings pane writes the same file underneath it, and REFUSES when the
+      // read yields no version. This one reads only when NONE is held, and never
+      // refuses — swallowing the save would strand a draft the owner can neither
+      // save nor reload away from. It goes out with no `If-Match` at all, exactly
+      // as it does today, and the route answers 428 — the sentence this surface
+      // already shows.
+      let version = payloadRef.current?.version;
+      if (!version) {
+        const seeded = await fetchWorkbenchSettings({
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        const answered = seeded.status === "ok" ? seeded.payload.version : undefined;
+        if (answered) {
+          version = answered;
+          setPayload((held) => (held ? { ...held, version: answered } : held));
+        }
       }
-    }
-    // The body is built by a pure function the suite executes, so "an untouched
-    // key field is omitted entirely" is a property something can run rather than
-    // a condition typed here.
-    const result = await saveWorkbenchSettings(settingsSaveBody(current), {
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      version,
-    });
-    setSaving(false);
-    if (result.status === "ok") {
-      // Re-seeded from the STORED values the route answered with, not from what
-      // was sent: a trimmed URL or a rejected-then-defaulted field must show
-      // what the kernel actually holds. This is also what clears `dirty`.
-      //
-      // …INCLUDING the version, which the answered payload may now legitimately
-      // omit (DW-199). A save that answered NO version CLEARS it rather than
-      // keeping the old one — the convention `PreviewColumn` already spells for
-      // the same seam. What this surface knows at that point is "the current
-      // version is unknown", and the next save saying so (428, "could not be
-      // checked") is truthful, where the kept one would be a version this very
-      // save definitively superseded: it can only ever be refused, and the 412
-      // it would be refused with states outright that the save was not applied
-      // and puts the change down to somewhere else — when the change is this
-      // owner's own save, one moment earlier. Neither answer can clobber, so
-      // the tie is broken on which refusal tells the owner the truth.
-      setPayload(result.payload);
-      setDraft(settingsDraftFromPayload(result.payload));
-      setStatus(SETTINGS_SAVED_COPY);
-    } else {
-      // Every edit stays on screen — a refused save must never be the thing
-      // that loses it — and the SERVER's sentence is shown, never a transport's.
-      setSaveError(result.message);
-      // THE ENV-PIN RECOVERY (DW-553). The route refuses a MOVE of the
-      // embedding provider under `EMBEDDING_PROVIDER`, and the draft that made
-      // that move has already had its endpoint blanked and its key un-touched
-      // by `settingsDraftAfterEmbeddingProvider` — so a retry would re-send the
-      // identical refused move, forever. Putting the three embedding legs back
-      // to the values this surface is HOLDING makes the very next Save a
-      // request the pin does not refuse, without costing the owner any other
-      // edit on the surface.
-      //
-      // RECOGNISED BY THE SENTENCE, because the route sends no code for it and
-      // adding one would be a wire-contract change. The rule that decides is
-      // pure and lives beside the copy it matches, where the node suite runs it
-      // against every member of the closed set the route can mint from.
-      //
-      // The sentence above and the version handling below are untouched: the
-      // owner still reads the SERVER's words, and an arrived refusal applied
-      // nothing, so the held version is still current.
-      if (settingsRefusalPinsEmbeddingProvider(result.message)) {
-        const held = payloadRef.current;
-        if (held) {
-          setDraft((shown) =>
-            shown ? settingsDraftAfterEmbeddingPinRefusal(shown, held) : shown,
+      // The body is built by a pure function the suite executes, so "an untouched
+      // key field is omitted entirely" is a property something can run rather than
+      // a condition typed here.
+      const result = await saveWorkbenchSettings(settingsSaveBody(current), {
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        version,
+      });
+      if (result.status === "ok") {
+        // Re-seeded from the STORED values the route answered with, not from what
+        // was sent: a trimmed URL or a rejected-then-defaulted field must show
+        // what the kernel actually holds. This is also what clears `dirty`.
+        //
+        // …INCLUDING the version, which the answered payload may now legitimately
+        // omit (DW-199). A save that answered NO version CLEARS it rather than
+        // keeping the old one — the convention `PreviewColumn` already spells for
+        // the same seam. What this surface knows at that point is "the current
+        // version is unknown", and the next save saying so (428, "could not be
+        // checked") is truthful, where the kept one would be a version this very
+        // save definitively superseded: it can only ever be refused, and the 412
+        // it would be refused with states outright that the save was not applied
+        // and puts the change down to somewhere else — when the change is this
+        // owner's own save, one moment earlier. Neither answer can clobber, so
+        // the tie is broken on which refusal tells the owner the truth.
+        setPayload(result.payload);
+        setDraft(settingsDraftFromPayload(result.payload));
+        setStatus(SETTINGS_SAVED_COPY);
+      } else {
+        // Every edit stays on screen — a refused save must never be the thing
+        // that loses it — and the SERVER's sentence is shown, never a transport's.
+        setSaveError(result.message);
+        // THE ENV-PIN RECOVERY (DW-553). The route refuses a MOVE of the
+        // embedding provider under `EMBEDDING_PROVIDER`, and the draft that made
+        // that move has already had its endpoint blanked and its key un-touched
+        // by `settingsDraftAfterEmbeddingProvider` — so a retry would re-send the
+        // identical refused move, forever. Putting the three embedding legs back
+        // to the values this surface is HOLDING makes the very next Save a
+        // request the pin does not refuse, without costing the owner any other
+        // edit on the surface.
+        //
+        // RECOGNISED BY THE SENTENCE, because the route sends no code for it and
+        // adding one would be a wire-contract change. The rule that decides is
+        // pure and lives beside the copy it matches, where the node suite runs it
+        // against every member of the closed set the route can mint from.
+        //
+        // The sentence above and the version handling below are untouched: the
+        // owner still reads the SERVER's words, and an arrived refusal applied
+        // nothing, so the held version is still current.
+        if (settingsRefusalPinsEmbeddingProvider(result.message)) {
+          const held = payloadRef.current;
+          if (held) {
+            setDraft((shown) =>
+              shown ? settingsDraftAfterEmbeddingPinRefusal(shown, held) : shown,
+            );
+          }
+        }
+        if (verdictClearsHeldVersion(result.verdict)) {
+          // TWO different facts, one action (DW-427). `"unconfirmed"`: nobody
+          // answered, so the patch may already be stored (DW-376). `"unreadable"`:
+          // the route answered a 2xx and its body yielded nothing we could read —
+          // which is why the two get DIFFERENT sentences above, one saying the
+          // outcome is unknown and one not claiming that over a status line that
+          // arrived.
+          //
+          // ASKED, not re-derived (DW-558). The rule lives beside
+          // `SettingsSaveVerdict`, written as an exhaustive switch, so a fourth
+          // verdict added later fails to COMPILE until it states its own answer.
+          // Naming the two here would have looked equivalent and was not: a new
+          // verdict would have fallen to the `else` and silently inherited
+          // `"refused"`'s answer — keep the held version — which is the more
+          // dangerous of the two to be wrong about, for the reason set out
+          // below.
+          //
+          // They end at the same action because the held version is the one thing
+          // on this surface that can now be a LIE either way: a save that landed
+          // has moved the stored config past it, and a 2xx from an intermediary is
+          // no proof the route did not run. Clearing it is the same argument the
+          // landed-save branch makes above, arriving from the other side — what
+          // this surface knows is "the current version is unknown", and the next
+          // save saying so (428, "this could not be checked") is truthful either
+          // way. The kept version buys a 412 instead, which declares the save was
+          // not applied and blames a change made somewhere else — a description
+          // of the owner's own save, handed back to them as an outsider's edit,
+          // on the strength of a version this surface has no business trusting.
+          // Neither can clobber; the tie is broken on which refusal tells the
+          // owner the truth.
+          //
+          // The draft and the payload's VALUES are left exactly as they are: this
+          // surface has no re-read that does not throw away every unsaved edit,
+          // and there is nothing to re-seed FROM on either branch — no answer at
+          // all on one, no readable payload on the other.
+          setPayload((current) =>
+            current ? { ...current, version: undefined } : current,
           );
         }
       }
-      if (verdictClearsHeldVersion(result.verdict)) {
-        // TWO different facts, one action (DW-427). `"unconfirmed"`: nobody
-        // answered, so the patch may already be stored (DW-376). `"unreadable"`:
-        // the route answered a 2xx and its body yielded nothing we could read —
-        // which is why the two get DIFFERENT sentences above, one saying the
-        // outcome is unknown and one not claiming that over a status line that
-        // arrived.
-        //
-        // ASKED, not re-derived (DW-558). The rule lives beside
-        // `SettingsSaveVerdict`, written as an exhaustive switch, so a fourth
-        // verdict added later fails to COMPILE until it states its own answer.
-        // Naming the two here would have looked equivalent and was not: a new
-        // verdict would have fallen to the `else` and silently inherited
-        // `"refused"`'s answer — keep the held version — which is the more
-        // dangerous of the two to be wrong about, for the reason set out
-        // below.
-        //
-        // They end at the same action because the held version is the one thing
-        // on this surface that can now be a LIE either way: a save that landed
-        // has moved the stored config past it, and a 2xx from an intermediary is
-        // no proof the route did not run. Clearing it is the same argument the
-        // landed-save branch makes above, arriving from the other side — what
-        // this surface knows is "the current version is unknown", and the next
-        // save saying so (428, "this could not be checked") is truthful either
-        // way. The kept version buys a 412 instead, which declares the save was
-        // not applied and blames a change made somewhere else — a description
-        // of the owner's own save, handed back to them as an outsider's edit,
-        // on the strength of a version this surface has no business trusting.
-        // Neither can clobber; the tie is broken on which refusal tells the
-        // owner the truth.
-        //
-        // The draft and the payload's VALUES are left exactly as they are: this
-        // surface has no re-read that does not throw away every unsaved edit,
-        // and there is nothing to re-seed FROM on either branch — no answer at
-        // all on one, no readable payload on the other.
-        setPayload((current) =>
-          current ? { ...current, version: undefined } : current,
-        );
-      }
+    } finally {
+      setSaving(false);
     }
   }, [saving]);
 
@@ -482,13 +506,36 @@ export function SettingsCanvas({
   // standing sentence is what qualifies unsaved edits, and it is announced on
   // this control too.
   const vectorInactive = vectorSearchInactiveCopy(vectorInputs);
+  // THE STANDING REFUSAL, named once for the whole surface (DW-67/DW-626).
+  //
+  // Two facts, one answer: this deployment refuses writes, or this MOMENT does
+  // because a save is in flight. Every editable control routes BOTH its refusal
+  // attribute and its handler guard through this single term, for the same
+  // reason `vectorRefused` below exists — the attribute that announces a
+  // refusal and the handler that enforces it must not be able to drift, and
+  // `|| saving` sprinkled per control is exactly how they would.
+  //
+  // WHY `saving` AND NOTHING NARROWER. `save` captures `draftRef.current` on
+  // entry and then awaits up to TWO `REQUEST_TIMEOUT_MS` requests — the DW-555
+  // recovery read, then the PUT — after which a landed save re-seeds the whole
+  // draft from the answered payload. A keystroke landing anywhere in that window
+  // is neither sent nor kept. `setSaving(true)` is the first thing `save` does,
+  // before the recovery read, so this covers the whole window by construction;
+  // keying off anything later would leave the read's leg open.
+  //
+  // FREEZE, NOT MERGE. Replaying or diffing the edits typed during the window
+  // would mean deciding whose value wins between the owner and the answered
+  // payload, silently, with nothing on screen to say a decision was made. A form
+  // that will not take the keystroke AND SAYS WHY is the honest shape, which is
+  // what `SETTINGS_SAVING_NOTE_COPY` and `describedBy` supply together.
+  const editRefused = stored.readOnly || saving;
   // The vector switch's WHOLE refusal predicate, named once so the attribute
   // that announces it and the handler that enforces it cannot drift into
   // disagreeing about when the toggle is refused. Turning it OFF is always
   // allowed — an owner must be able to undo a switch whose legs have since
   // gone missing — which is what the `!values.vectorSearchEnabled` term says.
   const vectorRefused =
-    stored.readOnly || (!vectorAllowed && !values.vectorSearchEnabled);
+    editRefused || (!vectorAllowed && !values.vectorSearchEnabled);
   // What this deployment is EMBEDDING with right now (DW-312), which unlike
   // every other term here is read off the PAYLOAD rather than off the draft.
   // It has to be: the substitution is the resolver applying
@@ -501,8 +548,20 @@ export function SettingsCanvas({
   // note on the flat page: a half-wired payload would otherwise render a
   // sentence with a hole where the model name goes, which is worse than no
   // sentence.
+  //
+  // …and WITHHELD while the two fields it describes are dirty (DW-337). This is
+  // where the flat page and this row part company, because only this row puts
+  // the payload-derived note beside two draft-derived sentences: the env
+  // override note and the gate's complaint both move the instant the owner
+  // types, and the note went on saying "This deployment embeds with …" about
+  // pre-edit server state in the present tense. It is not recomputed here —
+  // nothing in the browser can resolve a substitution — it goes quiet until a
+  // landed save re-seeds `stored` and makes it true again. The rule is pure and
+  // lives beside `settingsDirty`, whose comparison shape it mirrors.
   const modelSubstitution =
-    stored.embeddingModelOverridden && stored.embeddingModelInEffect !== null
+    stored.embeddingModelOverridden &&
+    stored.embeddingModelInEffect !== null &&
+    !draftEmbeddingIdentityDirty(values, stored)
       ? settingsModelSubstitutedCopy(stored.embeddingModelInEffect)
       : null;
   // Named only when the SELECTED provider is one the environment already
@@ -518,28 +577,43 @@ export function SettingsCanvas({
     return `${fieldId}-${suffix}`;
   }
 
-  /** The save bar's standing sentence, which on a read-only deployment IS the
-   *  refusal — see `describedBy`. */
-  const readOnlyNoteId = field("bar-note");
+  /**
+   * The save bar's standing sentence — which in TWO of its three states IS the
+   * refusal the controls above point at (see `describedBy`).
+   *
+   * Named for the bar rather than for read-only since DW-67: the same span now
+   * carries "Changes apply after saving", the read-only refusal and the
+   * in-flight refusal, and a control appending it is appending whichever of the
+   * three is true at that moment.
+   */
+  const barNoteId = field("bar-note");
 
   /**
-   * `aria-describedby` for a control this deployment may refuse. The attribute
-   * takes a space-separated LIST, so the save bar's read-only sentence is
+   * `aria-describedby` for a control the surface may refuse. The attribute
+   * takes a space-separated LIST, so the save bar's refusal sentence is
    * APPENDED to the control's own hint rather than replacing it: the hint still
    * says what the field means, and the appended sentence is the only place the
-   * refusal is stated at all. Without it `SETTINGS_READ_ONLY_COPY` sits
-   * unassociated in the save bar and the picker announces as "dimmed" with no
-   * reason — the same gap `aria-disabled` was adopted to close.
+   * refusal is stated at all. Without it the sentence sits unassociated in the
+   * save bar and the picker announces as "dimmed" with no reason — the same gap
+   * `aria-disabled` was adopted to close.
    *
-   * A row with NO hint of its own is answered too (DW-280): the read-only
+   * Keyed off `editRefused`, so it answers for BOTH refusals with one rule
+   * (DW-67/DW-626): a read-only deployment appends `SETTINGS_READ_ONLY_COPY`
+   * and an in-flight save appends `SETTINGS_SAVING_NOTE_COPY`, because the bar
+   * note is the same span either way. Anything narrower would freeze controls
+   * that announce no reason for it, which is precisely the "dimmed, no reason"
+   * state this function exists to prevent.
+   *
+   * A row with NO hint of its own is answered too (DW-280): the refusal
    * sentence is then the WHOLE description rather than an append, which is what
    * lets the hintless text rows — Chat model, Embedding endpoint, the rest —
-   * carry the refusal at all. `undefined` in and a writable deployment gives
-   * `undefined` back, so a control with nothing to say still emits no attribute.
+   * carry the refusal at all. `undefined` in and a writable, idle deployment
+   * gives `undefined` back, so a control with nothing to say still emits no
+   * attribute.
    */
   function describedBy(hintId: string | undefined): string | undefined {
-    if (!stored.readOnly) return hintId;
-    return hintId ? `${hintId} ${readOnlyNoteId}` : readOnlyNoteId;
+    if (!editRefused) return hintId;
+    return hintId ? `${hintId} ${barNoteId}` : barNoteId;
   }
 
   /**
@@ -591,12 +665,17 @@ export function SettingsCanvas({
           className="wb-set-input"
           type="text"
           value={pinned ? envPin : values[key]}
+          // `readOnly` below is what a sighted owner runs into; this guard is
+          // what makes the refusal ENFORCEABLE — a programmatic change event is
+          // not stopped by the attribute, so without it a freeze the screen
+          // shows is a freeze the draft does not have. Both, therefore, on the
+          // same term.
           onChange={(event) => {
-            if (pinned) return;
+            if (editRefused || pinned) return;
             set(key, event.target.value);
           }}
           spellCheck={false}
-          readOnly={stored.readOnly || pinned}
+          readOnly={editRefused || pinned}
           // A range printed beside a box is invisible to a screen reader; the
           // accepted values have to be part of the control's own description —
           // and on a read-only deployment so is the reason the box will not
@@ -610,6 +689,12 @@ export function SettingsCanvas({
           // rides, so the reason is announced; only the "this field is wrong,
           // fix it" mark is withheld, because there is nothing to fix it with.
           // An env pin is the same dead end for the same reason.
+          //
+          // `stored.readOnly` here, NOT `editRefused` (DW-67). A momentary save
+          // does not make a wrong value unfixable — it makes it unfixable for a
+          // second or two — so the mark stays put rather than flickering off and
+          // back on around every save. The two other withholdings are permanent
+          // states of the deployment; this one would be noise.
           aria-invalid={(invalid && !stored.readOnly && !pinned) || undefined}
         />
         {hint && (
@@ -644,9 +729,9 @@ export function SettingsCanvas({
           // nothing is the whole refusal, and React re-applies the controlled
           // value to the DOM by itself — `WikiSwitcherProps.readOnly` owns the
           // full explanation of the convention these three controls share.
-          aria-disabled={stored.readOnly || undefined}
+          aria-disabled={editRefused || undefined}
           onChange={(event) => {
-            if (stored.readOnly) return;
+            if (editRefused) return;
             set(key, event.target.value);
           }}
           // What the empty option MEANS is not in the label; a hint sitting
@@ -697,10 +782,18 @@ export function SettingsCanvas({
           // else, so there is no stored value in this component to render.
           value={removing ? "" : value}
           placeholder={SETTINGS_KEY_PLACEHOLDER}
-          onChange={(event) => set(key, event.target.value)}
+          // Guarded on the same term the attribute below carries, for the
+          // reason `textRow` spells out: `readOnly` is the sighted refusal and
+          // the early return is the enforceable one. `removing` keeps the
+          // attribute alone — it is a state of THIS row that the Remove/Keep
+          // button toggles, not a refusal of the surface.
+          onChange={(event) => {
+            if (editRefused) return;
+            set(key, event.target.value);
+          }}
           autoComplete="off"
           spellCheck={false}
-          readOnly={stored.readOnly || removing}
+          readOnly={editRefused || removing}
           // For a field that shows nothing, the hint IS the state: "a key is
           // stored" is the only thing distinguishing it from an empty one — so
           // the read-only sentence is APPENDED to it here, never substituted for
@@ -725,10 +818,30 @@ export function SettingsCanvas({
         {hasStoredKey && !stored.readOnly && (
           // The third state. A password field that shows nothing cannot tell
           // "leave it alone" from "delete it", so removal is its own decision.
+          //
+          // REFUSED IN PLACE while a save is in flight, not removed (DW-67).
+          // `stored.readOnly` still takes the button off screen outright — a
+          // deployment-wide state where the affordance never applies — but a
+          // save is a moment, and a button that vanishes and returns is a
+          // layout jump and a lost focus target. `aria-disabled` plus a handler
+          // that commits nothing is the convention this surface already uses for
+          // `.wb-set-action`, and `describedBy` is what says why.
           <button
             type="button"
             className="wb-set-action"
-            onClick={() => set(key, removing ? SECRET_UNTOUCHED : null)}
+            aria-disabled={editRefused || undefined}
+            // `undefined` in, NOT `hintId`: this button had no description
+            // before, and it must not acquire the BOX's one — "A key is stored."
+            // is the state of the field beside it, and repeating it here would
+            // make a screen reader read the same sentence twice for one row.
+            // What `describedBy` supplies is the refusal and only the refusal:
+            // `undefined` back while nothing refuses, the bar note while
+            // something does.
+            aria-describedby={describedBy(undefined)}
+            onClick={() => {
+              if (editRefused) return;
+              set(key, removing ? SECRET_UNTOUCHED : null);
+            }}
           >
             {removing ? SETTINGS_KEY_UNDO_COPY : SETTINGS_KEY_REMOVE_COPY}
           </button>
@@ -785,9 +898,9 @@ export function SettingsCanvas({
           // no "inherit" rung here for the same reason: one provider always
           // runs, and the default is a real answer rather than a deferral.
           value={selected}
-          aria-disabled={stored.readOnly || envPinned || undefined}
+          aria-disabled={editRefused || envPinned || undefined}
           onChange={(event) => {
-            if (stored.readOnly || envPinned) return;
+            if (editRefused || envPinned) return;
             set("researchProvider", event.target.value);
           }}
           aria-describedby={describedBy(hintId)}
@@ -953,9 +1066,9 @@ export function SettingsCanvas({
                 // Same convention as `providerRow`, same reason: focusable and
                 // readable on a read-only deployment — and now on an env-pinned
                 // one.
-                aria-disabled={stored.readOnly || envPinned || undefined}
+                aria-disabled={editRefused || envPinned || undefined}
                 onChange={(event) => {
-                  if (stored.readOnly || envPinned) return;
+                  if (editRefused || envPinned) return;
                   // NOT a plain `set` (DW-69/DW-72). Moving this select moves
                   // THREE fields: the endpoint and the key belong to the vendor
                   // being left behind, and the store deletes both on the save
@@ -1175,9 +1288,9 @@ export function SettingsCanvas({
                   id={field("intakeKeepParsed")}
                   type="checkbox"
                   checked={values.intakeKeepParsed}
-                  aria-disabled={stored.readOnly || undefined}
+                  aria-disabled={editRefused || undefined}
                   onChange={(event) => {
-                    if (stored.readOnly) return;
+                    if (editRefused) return;
                     set("intakeKeepParsed", event.target.checked);
                   }}
                   aria-describedby={describedBy(field("intakeKeepParsed-hint"))}
@@ -1200,9 +1313,9 @@ export function SettingsCanvas({
                   id={field("mineruEnabled")}
                   type="checkbox"
                   checked={values.mineruMode !== "off"}
-                  aria-disabled={stored.readOnly || undefined}
+                  aria-disabled={editRefused || undefined}
                   onChange={(event) => {
-                    if (stored.readOnly) return;
+                    if (editRefused) return;
                     // NOT a plain `set`. Which mode a first enablement lands on
                     // is a decision — Local API, the mode that keeps documents
                     // on this machine — and it is the pure rule the node suite
@@ -1231,9 +1344,9 @@ export function SettingsCanvas({
                     id={field("mineruMode")}
                     className="wb-set-select"
                     value={values.mineruMode}
-                    aria-disabled={stored.readOnly || undefined}
+                    aria-disabled={editRefused || undefined}
                     onChange={(event) => {
-                      if (stored.readOnly) return;
+                      if (editRefused) return;
                       set("mineruMode", event.target.value as MinerUMode);
                     }}
                     aria-describedby={describedBy(field("mineruMode-hint"))}
@@ -1349,6 +1462,12 @@ export function SettingsCanvas({
             stored={stored}
             field={field}
             describedBy={describedBy}
+            // The canvas's standing refusal, handed DOWN rather than re-derived
+            // (DW-67/DW-626). The pane owns no draft and no save — its controls
+            // edit this draft and ride this PUT — so a second predicate there
+            // would be a second answer to one question, free to drift from the
+            // sentence `describedBy` is already appending on its behalf.
+            editRefused={editRefused}
             apply={apply}
             copied={copied}
             onCopy={copyToClipboard}
@@ -1389,11 +1508,28 @@ export function SettingsCanvas({
           "unsaved edits do not apply" a promise the surface keeps rather than a
           behaviour the owner has to discover. */}
       <div className="wb-set-bar">
-        {/* Identified so the refused controls above can point at it: on a
-            read-only deployment this sentence is the reason they refuse, and an
-            `aria-disabled` control with no description announces only "dimmed". */}
-        <span className="wb-set-bar-note" id={readOnlyNoteId}>
-          {payload.readOnly ? SETTINGS_READ_ONLY_COPY : SETTINGS_SAVE_BAR_COPY}
+        {/* Identified so the refused controls above can point at it: in two of
+            its three states this sentence is the reason they refuse, and an
+            `aria-disabled` control with no description announces only "dimmed".
+
+            THREE states, in the order they outrank each other (DW-67/DW-626).
+            Read-only first: it is a property of the deployment, it never lifts,
+            and Save is disabled under it so `saving` cannot be true beside it
+            anyway. Then the in-flight sentence, which says why the whole form
+            has just gone inert — without it the freeze is a surface that stops
+            responding for up to two request deadlines with nothing to explain
+            it. Then the standing promise, which is what an idle writable
+            surface has to say. */}
+        <span className="wb-set-bar-note" id={barNoteId}>
+          {/* `stored`, the same object and the same field `editRefused` reads —
+              `stored` IS `payload`, narrowed above. Naming the other one here
+              would let the sentence and the refusal it explains drift, which is
+              the whole thing the named term exists to prevent. */}
+          {stored.readOnly
+            ? SETTINGS_READ_ONLY_COPY
+            : saving
+              ? SETTINGS_SAVING_NOTE_COPY
+              : SETTINGS_SAVE_BAR_COPY}
         </span>
         {saveError && (
           <span role="alert" className="wb-set-error">

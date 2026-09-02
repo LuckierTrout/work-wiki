@@ -115,6 +115,7 @@ import {
   SETTINGS_VECTOR_ENV_MODEL_NOTE,
   canEnableVectorSearch,
   draftCanEnableVectorSearch,
+  draftEmbeddingIdentityDirty,
   draftEmbeddingKeyStored,
   draftVectorInputs,
   embeddingProviderChanged,
@@ -5348,6 +5349,21 @@ describe("the Settings components stay inside the shell", () => {
     expect(canvas).toContain("if (answered) {");
     expect(canvas).not.toContain("version === undefined");
     expect(canvas).not.toContain("answered !== undefined");
+    // `setSaving(false)` cannot be SKIPPED (DW-67/DW-626). Both request helpers
+    // are total — they catch their own transport failures and answer a result —
+    // so nothing in `save` throws today and no test can drive this branch. It is
+    // pinned as source because of what a stuck flag now costs: before the freeze
+    // a leaked `saving` only disabled the Save button, and now it makes the
+    // WHOLE form permanently inert, announcing that a save is in progress with
+    // no error beside it, escapable only by the reload that destroys every
+    // unsaved edit. A helper that grows a throw later must not be able to strand
+    // the surface.
+    expect(canvas).toMatch(/\} finally \{\s*\n\s*setSaving\(false\);\s*\n\s*\}/);
+    // …and exactly one place CALLS it — the semicolon is what keeps the
+    // component's own prose about the guard out of this count — so the
+    // `finally` is the whole answer rather than a second one racing the
+    // straight-line path it replaced.
+    expect(canvas.match(/setSaving\(false\);/g)).toHaveLength(1);
     expect(canvas).toContain("AbortSignal.timeout(REQUEST_TIMEOUT_MS)");
     // The read's deadline carries its own reason, so a blown deadline clears
     // `loading` and shows the failure sentence while an unmount stays silent.
@@ -5395,8 +5411,8 @@ describe("the Settings components stay inside the shell", () => {
     // in the picker means.
     // The text rows route their OWN hint through `describedBy` too (DW-280):
     // the ternary picks whether this row has a hint at all, and `describedBy`
-    // decides what a read-only deployment adds to it — including for the rows
-    // that have no hint, where the read-only sentence becomes the whole
+    // decides what a refusing surface adds to it — including for the rows
+    // that have no hint, where the refusal sentence becomes the whole
     // description rather than being dropped for want of something to append to.
     expect(canvas).toContain(
       'aria-describedby={describedBy(hint ? hintId : undefined)}',
@@ -5405,26 +5421,42 @@ describe("the Settings components stay inside the shell", () => {
       'aria-describedby={describedBy(field("vectorSearchEnabled-hint"))}',
     );
     expect(canvas).toContain('id={field("vectorSearchEnabled-hint")}');
-    // Every control a read-only deployment refuses routes its description
-    // through `describedBy`, which APPENDS the save bar's read-only sentence to
-    // the control's own hint — `aria-describedby` takes a space-separated list,
-    // so the hint is kept rather than replaced. NINE call sites in the canvas:
+    // Every control the surface refuses routes its description through
+    // `describedBy`, which APPENDS the save bar's refusal sentence to the
+    // control's own hint — `aria-describedby` takes a space-separated list, so
+    // the hint is kept rather than replaced. TEN call sites in the canvas:
     // the two provider pickers, the vector switch, `textRow`, `secretRow`
-    // (DW-307), the Deep Research provider picker — whose hint carries both the
-    // env-pinned note and the "this provider has no credential" refusal — and
-    // Epic 7's three: Intake's keep-parsed checkbox, MinerU's enable checkbox
-    // and MinerU's mode select, whose description IS the orange
-    // leave-the-machine warning and so must be announced rather than merely
-    // rendered beside the control.
-    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(9);
-    // Epic 8's two went WITH the pane when it moved out (DW-445): the API
-    // switch, and the unauthenticated-access switch whose description is the
-    // orange "anything on this machine can read the wiki" warning. `describedBy`
-    // is passed down from the canvas, so both still append the same sentence.
+    // (DW-307) and its `Remove` button, the Deep Research provider picker —
+    // whose hint carries both the env-pinned note and the "this provider has no
+    // credential" refusal — and Epic 7's three: Intake's keep-parsed checkbox,
+    // MinerU's enable checkbox and MinerU's mode select, whose description IS
+    // the orange leave-the-machine warning and so must be announced rather than
+    // merely rendered beside the control.
+    //
+    // `describedBy` now answers for TWO refusals, not one (DW-67/DW-626): a
+    // read-only deployment and a save in flight both make the whole form inert,
+    // and both append whichever sentence the bar note is showing. That is what
+    // keeps the freeze from being a surface that silently stops taking
+    // keystrokes for up to two request deadlines — the same "dimmed, with no
+    // reason" gap `aria-disabled` was adopted to close, arriving from time
+    // rather than from configuration. `Remove` joined the list for exactly that
+    // reason: under `readOnly` it is not rendered at all, but during a save it
+    // is on screen and refusing, so it has to say so.
+    expect(canvas.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(10);
+    // Epic 8's THREE: the API switch, the unauthenticated-access switch whose
+    // description is the orange "anything on this machine can read the wiki"
+    // warning, and — since DW-67 — the Generate-token button, which is refused
+    // in place during a save rather than removed. `describedBy` is passed down
+    // from the canvas, so all three append the same sentence.
     const apiPane = await readComponent("SettingsApiMcpPane.tsx");
-    expect(apiPane.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(2);
-    expect(canvas).toContain('const readOnlyNoteId = field("bar-note");');
-    expect(canvas).toContain('<span className="wb-set-bar-note" id={readOnlyNoteId}>');
+    expect(apiPane.match(/aria-describedby=\{describedBy\(/g)).toHaveLength(3);
+    // Named for the BAR, not for read-only: one span, three sentences — the
+    // standing promise, the read-only refusal and the in-flight refusal.
+    expect(canvas).toContain('const barNoteId = field("bar-note");');
+    expect(canvas).toContain('<span className="wb-set-bar-note" id={barNoteId}>');
+    // …and the third sentence is actually wired, rather than the note being
+    // renamed while it still says only two things.
+    expect(canvas).toContain("SETTINGS_SAVING_NOTE_COPY");
     // Each row builder wires its own hint; none of them renders a bare span.
     // A ratio, so it holds per file — the API + MCP pane carries its own two.
     for (const source of [canvas, apiPane]) {
@@ -5455,6 +5487,7 @@ describe("the Settings components stay inside the shell", () => {
     // CONTAINS `disabled={…}`, so a plain substring check would pass on the very
     // attribute it is meant to forbid.
     expect(canvas).not.toMatch(/(?<![-\w])disabled=\{stored\.readOnly/);
+    expect(canvas).not.toMatch(/(?<![-\w])disabled=\{editRefused/);
     expect(canvas).not.toMatch(/(?<![-\w])disabled=\{vectorRefused/);
     // Purpose and Schema use ordinary disabled buttons only when there is no
     // current Wiki, plus Save's existing deliberate exception. Read-only
@@ -5464,46 +5497,92 @@ describe("the Settings components stay inside the shell", () => {
     expect(canvas.match(/disabled=\{!hasWiki\}/g)).toHaveLength(2);
     expect(canvas).toContain("disabled={saving || payload.readOnly || !dirty}");
 
-    // Every control the read-only flag ALONE refuses carries the attribute: the
-    // LLM provider picker, and Epic 7's Intake keep-parsed checkbox, MinerU
-    // enable checkbox and MinerU mode select. Counted rather than enumerated so
-    // a new refusable control cannot be added without this number moving — the
-    // vector switch has its own compound predicate below.
-    expect(canvas.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
-      4,
+    // THE STANDING REFUSAL, named once for the whole surface (DW-67/DW-626):
+    // read-only, OR a save in flight. `save` captures `draftRef.current` before
+    // up to two `REQUEST_TIMEOUT_MS` awaits — the DW-555 recovery read, then the
+    // PUT — and a landed save re-seeds the draft from the answered payload, so a
+    // keystroke landing in that window is neither sent nor kept. The form
+    // therefore goes INERT for the whole window rather than accepting edits it
+    // will drop. Keyed off `saving` and nothing narrower, because
+    // `setSaving(true)` is the first thing `save` does and the recovery read is
+    // inside the window.
+    expect(canvas).toContain("const editRefused = stored.readOnly || saving;");
+    // Every control that refuses on THAT term alone carries the attribute: the
+    // LLM provider picker, `secretRow`'s Remove button, and Epic 7's Intake
+    // keep-parsed checkbox, MinerU enable checkbox and MinerU mode select.
+    // Counted rather than enumerated so a new refusable control cannot be added
+    // without this number moving — the vector switch has its own compound
+    // predicate below. `Remove` is the one that JOINED at DW-67: `readOnly`
+    // takes it off screen outright, but a save is a moment, and a button that
+    // vanishes and returns is a layout jump and a lost focus target.
+    expect(canvas.match(/aria-disabled=\{editRefused \|\| undefined\}/g)).toHaveLength(
+      5,
     );
-    // Epic 8's two left with the pane (DW-445) — the API switch and the
-    // unauthenticated-access switch — and they refuse the same way there, on
-    // the same `stored` the canvas hands down.
+    // …and no control still refuses on the read-only half alone, which would be
+    // a control the freeze silently walks past.
+    expect(canvas).not.toMatch(/aria-disabled=\{stored\.readOnly \|\| undefined\}/);
+    // Epic 8's THREE ride in the pane (DW-445): the API switch, the
+    // unauthenticated-access switch, and the Generate-token button. They refuse
+    // on the canvas's own term, handed down as a PROP rather than re-derived —
+    // the pane owns no draft and no save, so a second predicate there would be a
+    // second answer to one question.
     const apiPane = await readComponent("SettingsApiMcpPane.tsx");
-    expect(apiPane.match(/aria-disabled=\{stored\.readOnly \|\| undefined\}/g)).toHaveLength(
-      2,
+    expect(apiPane.match(/aria-disabled=\{editRefused \|\| undefined\}/g)).toHaveLength(
+      3,
     );
+    expect(apiPane).toContain("editRefused: boolean;");
+    expect(apiPane).not.toMatch(/aria-disabled=\{stored\.readOnly \|\| undefined\}/);
     expect(apiPane).not.toMatch(/(?<![-\w])disabled=\{/);
-    // TWO controls refuse on read-only OR an env pin: the Deep Research
+    expect(canvas).toContain("editRefused={editRefused}");
+    // TWO controls refuse on the standing term OR an env pin: the Deep Research
     // provider select, and the embedding provider select (DW-398). Both are
     // selects whose move is DESTRUCTIVE beyond the field itself — the embedding
     // one blanks the stored endpoint and key — so under a variable that already
     // decides the answer they announce themselves unavailable rather than
     // inviting an edit that can only take something away.
     expect(
-      canvas.match(/aria-disabled=\{stored\.readOnly \|\| envPinned \|\| undefined\}/g),
+      canvas.match(/aria-disabled=\{editRefused \|\| envPinned \|\| undefined\}/g),
     ).toHaveLength(2);
-    expect(canvas.match(/if \(stored\.readOnly \|\| envPinned\) return;/g)).toHaveLength(2);
+    expect(canvas.match(/if \(editRefused \|\| envPinned\) return;/g)).toHaveLength(2);
     expect(canvas).toContain("aria-disabled={vectorRefused || undefined}");
     // …and each with a handler that COMMITS NOTHING when the control is
     // refused. That early return is the whole refusal: React re-applies a
     // controlled value to the DOM after a change event that set no state, so no
-    // control needs putting back by hand. `settings-read-only.test.tsx` is what
-    // observes the result — this only pins that the handler still guards.
+    // control needs putting back by hand. `settings-read-only.test.tsx` and
+    // `settings-save-in-flight.test.tsx` are what observe the result — this only
+    // pins that the handler still guards.
+    //
+    // BOTH the attribute and the guard, on every value-bearing control. The
+    // attribute is what a sighted owner and a screen reader run into; the guard
+    // is what makes the freeze enforceable at all, since neither `readOnly` nor
+    // `aria-disabled` stops a programmatic change event — so a freeze pinned
+    // only by the attribute is a freeze the draft does not have.
     expect(canvas).not.toContain("event.currentTarget");
-    expect(canvas).toContain("if (stored.readOnly) return;");
+    expect(canvas).toContain("if (editRefused) return;");
+    expect(canvas).not.toContain("if (stored.readOnly) return;");
+    expect(apiPane.match(/if \(editRefused\) return;/g)).toHaveLength(3);
+    expect(apiPane).not.toContain("if (stored.readOnly) return;");
+    // The two text builders freeze the BOX as well as the handler — `readOnly`
+    // rather than `disabled`, so the value stays reachable and readable.
+    expect(canvas).toContain("readOnly={editRefused || pinned}");
+    expect(canvas).toContain("readOnly={editRefused || removing}");
+    expect(canvas).toContain("if (editRefused || pinned) return;");
+    // …but `aria-invalid` is NOT withdrawn by the freeze: a momentary request
+    // does not make a wrong value unfixable, and flickering the mark off and
+    // back around every save would be noise. It still keys off the two
+    // PERMANENT dead ends — a read-only deployment and an env pin.
+    expect(canvas).toContain(
+      "aria-invalid={(invalid && !stored.readOnly && !pinned) || undefined}",
+    );
+    expect(canvas).not.toMatch(/aria-invalid=\{[^}]*editRefused/);
     expect(canvas).toContain("if (vectorRefused) return;");
-    // The checkbox refuses on its WHOLE predicate — read-only and
+    // The checkbox refuses on its WHOLE predicate — the standing refusal and
     // provider-unsupported alike — named once so the attribute that announces
-    // the refusal and the handler that enforces it cannot drift apart.
+    // the refusal and the handler that enforces it cannot drift apart. Composed
+    // FROM `editRefused` rather than restating its read-only half, so the freeze
+    // reaches the vector switch by construction.
     expect(canvas).toMatch(
-      /const vectorRefused =\s*\n?\s*stored\.readOnly \|\| \(!vectorAllowed && !values\.vectorSearchEnabled\);/,
+      /const vectorRefused =\s*\n?\s*editRefused \|\| \(!vectorAllowed && !values\.vectorSearchEnabled\);/,
     );
   });
 
@@ -6245,6 +6324,110 @@ describe("draftEmbeddingKeyStored", () => {
   it("never invents a key the store does not hold", () => {
     const none: WorkbenchSettingsPayload = { ...stored, hasEmbeddingApiKey: false };
     expect(draftEmbeddingKeyStored(settingsDraftFromPayload(none), none)).toBe(false);
+  });
+});
+
+describe("draftEmbeddingIdentityDirty (DW-337)", () => {
+  /**
+   * The gate on the SUBSTITUTION NOTE — the one sentence on the embedding model
+   * row that is payload-derived, sitting beside two that are draft-derived.
+   * While the model or the provider holds something the server has not seen, the
+   * note would go on describing pre-edit server state in the present tense
+   * ("Not in effect. This deployment embeds with …"), so it is withheld until a
+   * landed save re-seeds the payload.
+   */
+  const stored: WorkbenchSettingsPayload = {
+    ...emptyPayload(),
+    embeddingProvider: "openai",
+    embeddingModel: "text-embedding-3-small",
+    embeddingBaseUrl: "https://o/v1",
+    embeddingModelOverridden: true,
+    embeddingModelInEffect: "@cf/baai/bge-m3",
+  };
+
+  it("is clean when seeded", () => {
+    expect(draftEmbeddingIdentityDirty(settingsDraftFromPayload(stored), stored)).toBe(
+      false,
+    );
+    // …including over a payload holding NEITHER field, where `null` seeds as
+    // `""`: a blank box over an unset value must not read as an edit.
+    const bare = { ...emptyPayload(), embeddingProvider: null, embeddingModel: null };
+    expect(draftEmbeddingIdentityDirty(settingsDraftFromPayload(bare), bare)).toBe(false);
+  });
+
+  it("is dirty on EITHER field", () => {
+    const seeded = settingsDraftFromPayload(stored);
+    expect(
+      draftEmbeddingIdentityDirty({ ...seeded, embeddingModel: "text-embedding-3-large" }, stored),
+    ).toBe(true);
+    // The provider is the other half of what the resolver's answer is a
+    // function of, and the row's own select is what moves it — an owner
+    // correcting the substitution from THERE gets the same silence.
+    expect(
+      draftEmbeddingIdentityDirty({ ...seeded, embeddingProvider: "google" }, stored),
+    ).toBe(true);
+    // Blanking counts too: an empty box is a different value, not an absence of
+    // one, and it is the state Auto-detect leaves the select in.
+    expect(draftEmbeddingIdentityDirty({ ...seeded, embeddingModel: "" }, stored)).toBe(
+      true,
+    );
+  });
+
+  it("is clean again when the edit is reverted", () => {
+    // The `settingsDirty` shape, and the reason for it: compared against the
+    // draft the PAYLOAD would produce, so "typed a value and undid it" is
+    // correctly clean and the note comes back without a save.
+    const seeded = settingsDraftFromPayload(stored);
+    const edited = { ...seeded, embeddingModel: "text-embedding-3-large" };
+    expect(draftEmbeddingIdentityDirty(edited, stored)).toBe(true);
+    expect(
+      draftEmbeddingIdentityDirty(
+        { ...edited, embeddingModel: "text-embedding-3-small" },
+        stored,
+      ),
+    ).toBe(false);
+  });
+
+  it("ignores the model box entirely when EMBEDDING_MODEL owns the model", () => {
+    // `embeddingModelAnswer` takes `getEmbeddingModelOverride()` in preference
+    // to the stored value, so with the variable set the editable box is not what
+    // resolves — the substitution the server reported stays true whatever is
+    // typed there, and withholding the note would hide a still-true fact while
+    // the owner edits a box that is not in play. The same precedence
+    // `draftVectorInputs` reports as `modelOrigin`.
+    const envOwned: WorkbenchSettingsPayload = {
+      ...stored,
+      envEmbeddingModel: "text-embedding-3-small",
+    };
+    const seeded = settingsDraftFromPayload(envOwned);
+    expect(
+      draftEmbeddingIdentityDirty({ ...seeded, embeddingModel: "anything-at-all" }, envOwned),
+    ).toBe(false);
+    // The PROVIDER leg keeps no such qualifier: an env-owned MODEL says nothing
+    // about which vendor resolves, and this select is not pinned by it.
+    expect(
+      draftEmbeddingIdentityDirty({ ...seeded, embeddingProvider: "google" }, envOwned),
+    ).toBe(true);
+  });
+
+  it("is unmoved by an unrelated edit", () => {
+    // IDENTITY, not the whole row. The endpoint and the key change how the
+    // vendor is reached, not which model resolves, so the server's answer is
+    // still true — and a chat-model edit three categories away must not silence
+    // a sentence about embeddings.
+    const seeded = settingsDraftFromPayload(stored);
+    expect(
+      draftEmbeddingIdentityDirty({ ...seeded, embeddingBaseUrl: "https://p/v1" }, stored),
+    ).toBe(false);
+    expect(draftEmbeddingIdentityDirty({ ...seeded, embeddingApiKey: "sk-x" }, stored)).toBe(
+      false,
+    );
+    expect(draftEmbeddingIdentityDirty({ ...seeded, chatModel: "gpt-4o-mini" }, stored)).toBe(
+      false,
+    );
+    // …and it is a NARROWER question than `settingsDirty`, which those edits do
+    // move. Two predicates, two jobs.
+    expect(settingsDirty({ ...seeded, embeddingBaseUrl: "https://p/v1" }, stored)).toBe(true);
   });
 });
 

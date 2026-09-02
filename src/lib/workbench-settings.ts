@@ -242,6 +242,29 @@ export const SETTINGS_SAVED_COPY = "Settings saved.";
 export const SETTINGS_READ_ONLY_COPY =
   "Settings cannot be changed while this deployment is read-only.";
 
+/**
+ * A save is in progress, so the form is inert (DW-67/DW-626).
+ *
+ * The THIRD state of the save bar's standing sentence, and the same job
+ * {@link SETTINGS_READ_ONLY_COPY} does for a read-only deployment: it is the
+ * only place the refusal is stated at all, and every control the freeze refuses
+ * appends it to its own description. Without it a `readOnly` box and an
+ * `aria-disabled` select announce as "read-only" and "dimmed" with no reason,
+ * for a window that can run to two `REQUEST_TIMEOUT_MS` deadlines.
+ *
+ * WHY the freeze exists rather than a merge: `save` captures `draftRef.current`
+ * BEFORE the DW-555 recovery read and the PUT, and a landed save re-seeds the
+ * whole draft from the answered payload. Anything typed in between is neither
+ * sent nor kept, so the honest surface is one that will not take the keystroke —
+ * and says so — rather than one that accepts it and drops it.
+ *
+ * Shaped like the read-only sentence deliberately: they are read in the same
+ * place, by the same controls, and the owner should not have to learn two
+ * grammars to tell "this deployment refuses writes" from "this moment does".
+ */
+export const SETTINGS_SAVING_NOTE_COPY =
+  "Settings cannot be changed while a save is in progress.";
+
 /** Secret fields: what the owner sees instead of a key, and how to drop one. */
 export const SETTINGS_KEY_STORED_COPY = "A key is stored.";
 export const SETTINGS_KEY_ABSENT_COPY = "No key is stored.";
@@ -2791,6 +2814,66 @@ export function draftEmbeddingKeyStored(
     payload.hasEmbeddingApiKey &&
     !embeddingProviderChanged(payload.embeddingProvider, draftText(draft.embeddingProvider))
   );
+}
+
+/**
+ * Have the two fields the SUBSTITUTION NOTE describes moved since seeding?
+ * (DW-337)
+ *
+ * The note — {@link settingsModelSubstitutedCopy} — is the one thing on the
+ * embedding model row that is payload-derived, and it has to be: the
+ * substitution is the resolver applying `embeddingModelMatchesProvider` over the
+ * env and the store together, which only the server can evaluate. It states what
+ * this deployment is embedding with RIGHT NOW, which is a fact the browser
+ * cannot compute and must not guess.
+ *
+ * That is exactly why it is the one thing on that row that has to YIELD to the
+ * draft. The row's other two sentences — the env override note and the vector
+ * gate's complaint — are draft-derived, so the moment an owner corrects the
+ * model the whole row speaks about what they just typed, EXCEPT the note, which
+ * goes on describing the pre-edit server state in the present tense: "Not in
+ * effect. This deployment embeds with …" about a model the owner has already
+ * replaced. Two freshness contracts on one row, and no way for a reader to tell
+ * which sentence belongs to which. The fix is not to recompute the note in the
+ * browser — that would be inventing a server fact — it is to withhold it while
+ * its subject is something the server has not seen, and let a landed save
+ * re-seed the payload and bring it back.
+ *
+ * IDENTITY, not the whole row: `embeddingModel` and `embeddingProvider` are the
+ * two fields the resolver's answer is a function of. The endpoint and the key
+ * change how the vendor is reached, not which model resolves, so an edit to
+ * either leaves the note as true as it was.
+ *
+ * AND THE MODEL LEG ONLY COUNTS WHEN THE STORE OWNS THE MODEL.
+ * `embeddingModelAnswer` takes `getEmbeddingModelOverride()` in preference to
+ * the stored value, so with `EMBEDDING_MODEL` set the editable box is not what
+ * resolves at all — the substitution the server reported stays exactly true no
+ * matter what is typed there, and withholding the note would hide a still-true
+ * fact from the owner while they edit a box that is not the one in play. This is
+ * the same reading {@link draftVectorInputs} already applies with
+ * `payload.envEmbeddingModel ?? draftText(draft.embeddingModel)` and reports as
+ * `modelOrigin`, so the row's three sentences answer to one precedence rule.
+ *
+ * The PROVIDER leg takes no such qualifier. `EMBEDDING_PROVIDER` pins the select
+ * outright — `aria-disabled` plus a handler that commits nothing — so under an
+ * env-owned provider the draft field cannot move in the first place, and a term
+ * guarding against it would be unreachable rather than merely redundant.
+ *
+ * Compared against `settingsDraftFromPayload(payload)` rather than against the
+ * payload itself — the shape {@link settingsDirty} already uses, and for the
+ * same reason: "typed a value and undid it" is correctly clean, and `null` on
+ * the payload seeds as `""` on the draft, so a blank box over an unset field
+ * must not read as an edit.
+ */
+export function draftEmbeddingIdentityDirty(
+  draft: SettingsDraft,
+  payload: WorkbenchSettingsValues,
+): boolean {
+  const seeded = settingsDraftFromPayload(payload);
+  const modelMoved =
+    payload.envEmbeddingModel === null &&
+    draft.embeddingModel !== seeded.embeddingModel;
+  return modelMoved || draft.embeddingProvider !== seeded.embeddingProvider;
 }
 
 /**
