@@ -1492,7 +1492,9 @@ source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
 location: src/app/globals.css (.wb-split-handle--tree, .wb-split-handle--preview)
 severity: low
 reason: `.wb-split-handle` is `z-index: 2`, `cursor: col-resize`, `touch-action: none` and full height, and both modifiers now start AT their boundary and extend 24px right. `.wb-canvas-pad` and `.wb-preview-body` are both `padding: ... var(--wb-space-4)` = 16px, so the strip covers the whole gutter plus ~8px of real content in each pane: the first characters of a line, and a wikilink sitting at the left margin, are unclickable and unselectable, and on a touchscreen at 1200px+ that band cannot be panned. DW-44's ledger named "eat 12px of the canvas edge" as the known cost of widening and its decision took the trade anyway, so this is authorised rather than accidental - but the decision reasoned about scrollbars, never about what the strip would cover, and 24px offset to one side eats twice what the entry quantified. Choosing between a narrower strip that misses SC 2.5.8, matching left padding on both panes, and a documented exception is the same chrome decision DW-44 was, one boundary further
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-split-handle-hit-and-focus
+resolution-undo: 7891c9e2fdcd52e0c8b34591cc14412aced7486278c43dc6ba5fc7402c95b914 2026-09-02 7374617475733a206f70656e
 decision: 2026-08-19 Widen the content padding to match — Raise .wb-canvas-pad and .wb-preview-body left padding to at least the hit-strip width so the strip covers only gutter, never text, keeping the 24px target that satisfies SC 2.5.8; pin the relationship between the padding and --wb-split-hit so they cannot drift.
 
 ### DW-206: One stored tree scroll offset per tab is shared across the 900px breakpoint, where `.wb-tree-body` is capped at 40vh - so crossing into the narrow layout restores a desktop offset the browser clamps,
@@ -1508,7 +1510,9 @@ source_spec: `spec-dw-44-split-divider-target-and-responsiveness.md`
 location: src/app/globals.css (.wb-split-handle:hover::before, .wb-split-handle:focus-visible::before)
 severity: low
 reason: `globals.css` declares one rule for both states: `.wb-split-handle:hover::before, .wb-split-handle:focus-visible::before { background: var(--wb-border); }`. Two separate problems sit on it. First, SC 1.4.11 wants a focus indicator at 3:1 against adjacent colours, and `--wb-border` is chosen to be a quiet separator colour against exactly the panel surfaces it now has to stand out from - the last pass's `--wb-split-hit--preview::before { left: 1px }` patch made the indicator VISIBLE (WCAG 2.4.7) without touching whether it is visible ENOUGH. Second, the two states are pixel-identical, so a keyboard user cannot tell focus from a stray pointer, and DW-44's widening enlarges the hover region that produces the focus appearance from 9px to 24px. This is pre-existing from Story 1.6 in kind - neither the colour nor the shared rule changed here - but the widened strip is what makes the ambiguity routine. Fixing it means choosing an indicator token (an outline, a second colour, a wider rule) agai
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-split-handle-hit-and-focus
+resolution-undo: 7891c9e2fdcd52e0c8b34591cc14412aced7486278c43dc6ba5fc7402c95b914 2026-09-02 7374617475733a206f70656e
 
 ### DW-208: TreePanel's persist effect cancels a pending requestAnimationFrame write in its cleanup without flushing it, so a scroll in the last frame before a tab switch, a collapse, or now a breakpoint crossing
 
@@ -5677,4 +5681,12 @@ location: src/components/*.tsx (16 files), src/lib/chat-session-transport.ts, sr
 source_spec: `spec-dw-620-624-settings-read-and-write-confirmation.md`
 severity: low
 reason: A repo-wide grep for the literal `response.json().catch(() => ({}))` finds it in `SystemHealthDesk.tsx`, `LocalSyncPanel.tsx`, `ActionInbox.tsx`, `SourceMonitorDesk.tsx`, `NamesTermsSettings.tsx`, `IntegrationDesk.tsx`, `MonitorDigestPanel.tsx`, `ReviewDesk.tsx`, `AgentWorkspaceDesk.tsx`, `BulkDocumentImport.tsx`, `ArticleActions.tsx`, `VaultExplorer.tsx`, `KnowledgeStudio.tsx`, `ChatWorkspace.tsx`, `KnowledgeAtlas.tsx`, `RecentIngests.tsx`, `chat-session-transport.ts` and `chat.ts` — none of which imports `workbench-request`. On each, a 2xx whose body read dies mid-stream resolves an empty object, so the destructure that follows reports a landed write as a failure (or a shapeless success), exactly the defect DW-624 names. The fix is `send`'s now-shipped gate: `if (response.ok && unconfirmedCause(cause)) throw cause;` plus a `writeFailure` at the catch. Not a call site of anything this bundle changed — these are independent copies of the helper.
+status: open
+
+### DW-718: `WorkspacePreview` renders a second `.wb-preview` column whose `<header className="wb-preview-header">` matches no rule anywhere in globals.css, so that column's title and path have zero padding and n
+origin: spec-deferred 8f5d4c2edc3f
+location: src/components/workbench/WorkspacePreview.tsx:84
+source_spec: `spec-dw-205-207-split-handle-hit-and-focus.md`
+severity: low
+reason: `WorkspacePreview.tsx:77` renders its own `<aside className="wb-preview">` for Agent-workspace picks, and its header at `:84` carries the class `wb-preview-header` — one letter off `wb-preview-head`, and `grep -n "wb-preview-header" src/app/globals.css` returns nothing. The class is dead: no padding, no `border-bottom`, no flex row, so the `<h2>` and the path sit flush at the column's x=0 while `PreviewColumn`'s equivalent header is a padded, bordered strip. That is pre-existing and independent of this change, but DW-205 widens the mismatch inside that one column from 16px to 24px, because `.wb-preview-body` there IS matched by the clearance rule and the header still is not. The fix is a component change (render `wb-preview-head`, or declare the missing rule), which moves that column's header geometry — outside a stylesheet-only bundle.
 status: open

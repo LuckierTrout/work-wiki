@@ -99,6 +99,78 @@ function tokenBlock(css: string): string {
   return css.slice(start, start + css.slice(start).indexOf("\n}"));
 }
 
+/** One top-level rule's declaration block, from its selector to its closing brace. */
+function ruleBody(css: string, selector: string): string {
+  const start = css.indexOf(`${selector} {`);
+  expect({ selector, declared: start > -1 }).toEqual({ selector, declared: true });
+  return css.slice(start, css.indexOf("}", start));
+}
+
+/**
+ * Every TOP-LEVEL `.wb-preview*` rule whose `padding` shorthand puts
+ * `var(--wb-space-4)` on the horizontal axis — which is exactly the set of
+ * direct children sitting on the Preview column's leading edge, the edge the
+ * divider's grab strip covers (DW-205).
+ *
+ * DERIVED, never listed. A hardcoded list asserts that the list the diff wrote
+ * matches the list the diff wrote, which is how `.wb-preview-media` and
+ * `.wb-preview-history` — a zoom button, native player bars, a focusable panel
+ * and the `Revert` buttons — were missed on the first pass. Read off the
+ * stylesheet, a ninth child added later fails this file instead.
+ *
+ * Column 0 only: the responsive blocks restate four of these indented, and those
+ * are the narrow-viewport tightening rather than the column's own geometry.
+ */
+function previewEdgeSelectors(css: string): string[] {
+  const found: string[] = [];
+  const rules = /^(\.wb-preview[a-z0-9-]*) \{\n([\s\S]*?)\n\}$/gm;
+  for (let match = rules.exec(css); match; match = rules.exec(css)) {
+    const shorthand = /^ {2}padding: ([^;]+);$/m.exec(match[2]);
+    if (!shorthand) continue;
+    const parts = shorthand[1].split(/\s+/);
+    // CSS shorthand: one value is every side; two and three put the horizontal
+    // axis second; four puts `right` second and `left` fourth.
+    const horizontal =
+      parts.length === 1
+        ? [parts[0]]
+        : parts.length === 4
+          ? [parts[1], parts[3]]
+          : [parts[1]];
+    if (horizontal.includes("var(--wb-space-4)")) found.push(match[1]);
+  }
+  return found.sort();
+}
+
+/** The selectors named inside the one `.wb-preview > :where(…)` clearance rule. */
+function previewClearanceList(css: string): string[] {
+  const start = css.indexOf(".wb-preview > :where(");
+  expect(start).toBeGreaterThan(-1);
+  const open = css.indexOf("(", start);
+  const listed = css.slice(open, css.indexOf(")", open)).match(/\.wb-preview[a-z0-9-]*/g);
+  return (listed ?? []).sort();
+}
+
+/** WCAG 2.x relative luminance of an `#rrggbb` literal. */
+function relativeLuminance(hex: string): number {
+  const [r, g, b] = [1, 3, 5]
+    .map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** WCAG 2.x contrast ratio between two `#rrggbb` literals. */
+function contrastRatio(a: string, b: string): number {
+  const [light, dark] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+/** One `#rrggbb` token value read out of the `.wb-shell` block. */
+function hexToken(tokens: string, name: string): string {
+  const value = new RegExp(`${name}: (#[0-9a-f]{6});`).exec(tokens)?.[1];
+  expect({ name, value }).toEqual({ name, value: expect.stringMatching(/^#[0-9a-f]{6}$/) });
+  return value as string;
+}
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -1686,6 +1758,223 @@ describe("globals.css positions the divider from the grid's own properties", () 
     // here — a literal in this file would be a third copy of the number.
     expect(tokens).toMatch(/^\s*--wb-split-hit: \d+px;$/m);
     expect(tokens).toContain("position: relative;");
+  });
+
+  it("derives the pane clearance from the strip width instead of retyping it", async () => {
+    // DW-205. The strip is `z-index: 2` and `touch-action: none`, so whatever it
+    // covers stops answering a click, a selection or a touch-pan. The padding
+    // that keeps content out from under it and the strip's own width are ONE
+    // measurement; a second literal is a copy free to drift, and the drift is
+    // silent — the pane still renders, its first characters simply go dead.
+    const css = await globals();
+    const tokens = tokenBlock(css);
+    expect(tokens).toContain(
+      "--wb-split-clear: max(var(--wb-space-4), var(--wb-split-hit));",
+    );
+    // The `max()` form is declared exactly once, in that block. The only other
+    // declaration in the file is the narrow-viewport release below, and NEITHER
+    // spells a length: both resolve through other tokens. That is the property
+    // this case exists to hold, not the text of the value — retyping `24px` in
+    // either would be the copy the token block's comment refuses to make. The
+    // digits inside `--wb-space-4` are part of a token NAME, so the check is for
+    // a px literal rather than for any numeral at all.
+    expect(css.match(/--wb-split-clear: max\(/g) ?? []).toHaveLength(1);
+    const declarations = css.match(/--wb-split-clear:[^;]*;/g) ?? [];
+    expect(declarations).toHaveLength(2);
+    for (const declaration of declarations) {
+      expect({ declaration, literal: /\d+(px|rem|em|%)/.test(declaration) }).toEqual({
+        declaration,
+        literal: false,
+      });
+    }
+    // …and RESOLVED, so the derivation is checked as arithmetic rather than as a
+    // string. The operands are read out of the declaration and looked up in the
+    // token block, and the resulting clearance is checked against the strip width
+    // the TypeScript side holds — an independent number, so swapping an operand
+    // for a narrower token fails here.
+    const operands = /--wb-split-clear: max\((.*)\);/.exec(tokens)?.[1] ?? "";
+    const values = (operands.match(/var\((--wb-[a-z0-9-]+)\)/g) ?? []).map((reference) => {
+      const name = reference.slice(4, -1);
+      return Number(new RegExp(`${name}: (\\d+)px;`).exec(tokens)?.[1]);
+    });
+    const hit = Number(/--wb-split-hit: (\d+)px;/.exec(tokens)?.[1]);
+    const gutter = Number(/--wb-space-4: (\d+)px;/.exec(tokens)?.[1]);
+    expect(hit).toBe(SPLIT_HIT_WIDTH);
+    expect([...values].sort((a, b) => a - b)).toEqual([gutter, hit].sort((a, b) => a - b));
+    // `>=`, not `===`: raising the shell's gutter ABOVE the strip width is the
+    // legitimate case `max()` was written for, and must not fail this.
+    expect(Math.max(...values)).toBeGreaterThanOrEqual(SPLIT_HIT_WIDTH);
+  });
+
+  it("clears the leading edge of every pane a grab strip covers", async () => {
+    // Both strips start AT their boundary and extend RIGHT of it (DW-44), so the
+    // edges they cover are the canvas's and the docked Preview's — the tree
+    // column's is not one, and neither are the two scrollbars DW-44 offset them
+    // off.
+    const css = await globals();
+    const canvas = ruleBody(css, ".wb-canvas-pad");
+    expect(canvas).toContain("padding-left: var(--wb-split-clear);");
+    // The shorthand has to BE there, and come first: `indexOf` answers -1 for an
+    // absent one, which sorts before every real index and would pass this on a
+    // rule that had lost its padding altogether.
+    expect(canvas).toContain("padding:");
+    expect(canvas.indexOf("padding:")).toBeLessThan(canvas.indexOf("padding-left:"));
+
+    // The Preview column states its clearance ONCE, over the children that own
+    // its leading edge — and the list is DERIVED from the stylesheet rather than
+    // restated here. A restated list asserts that the list the diff wrote matches
+    // the list the diff wrote, which is exactly how `.wb-preview-media` and
+    // `.wb-preview-history` were missed: a zoom button, native player bars, a
+    // focusable panel and the `Revert` buttons, all still under the strip.
+    const edge = previewEdgeSelectors(css);
+    expect(edge.length).toBeGreaterThanOrEqual(8);
+    expect(previewClearanceList(css)).toEqual(edge);
+    // Sliced from the selector to the block's own closing brace: the selector
+    // spans lines, so `ruleBody`'s single-line form does not reach it.
+    const clearStart = css.indexOf(".wb-preview > :where(");
+    expect(clearStart).toBeGreaterThan(-1);
+    expect(css.slice(clearStart, css.indexOf("\n}", clearStart))).toContain(
+      "padding-left: var(--wb-split-clear);",
+    );
+
+    // The CHILD combinator is load-bearing: `.wb-preview-note` is ALSO rendered
+    // nested inside `.wb-preview-media`, as the player's failure caption. A
+    // class-only match would indent that caption by the gutter PLUS the
+    // clearance and step it right of the element it captions.
+    expect(css).toContain(".wb-preview > :where(");
+    // `:where()` is load-bearing too: it scores zero, so this rule stays at one
+    // class, ties with the eight it overrides and wins on source order — which
+    // is what leaves the narrow-viewport tightening free to win in ITS turn.
+    // `:is()` scores two classes and would silently outrank both.
+    expect(css).not.toContain(".wb-preview > :is(");
+    // Source order is the whole mechanism, so it is asserted: after every rule
+    // it overrides.
+    for (const selector of edge) {
+      const own = ruleBody(css, selector);
+      expect({ selector, ordered: css.indexOf(`${selector} {`) < css.indexOf(".wb-preview > :where(") })
+        .toEqual({ selector, ordered: true });
+      // …and none of them carries a scattered copy. Six of them did before the
+      // consolidation, and the class-only match is what double-indented the
+      // nested caption.
+      expect({ selector, scattered: own.includes("--wb-split-clear") })
+        .toEqual({ selector, scattered: false });
+    }
+
+    // The tree column is on the other side of its divider, so nothing covers its
+    // leading edge and nothing here may pad it.
+    expect(ruleBody(css, ".wb-tree-body")).not.toContain("--wb-split-clear");
+  });
+
+  it("releases the clearance in the same block that hides the handles", async () => {
+    // Nothing overlays a pane edge once the handles are gone, and declaring the
+    // release beside the hide is what keeps the two in step: a future edit that
+    // revived the handles at this width without noticing this line would put
+    // content back under a strip.
+    const css = await globals();
+    const start = css.lastIndexOf("@media (max-width: 1199px)");
+    const next = css.indexOf("@media", start + "@media (max-width: 1199px)".length);
+    const block = css.slice(start, next === -1 ? undefined : next);
+    expect(block).toMatch(/\.wb-split-handle \{\s*display: none;/);
+    expect(block).toMatch(/\.wb-shell \{\s*--wb-split-clear: var\(--wb-space-4\);/);
+    // Indented, so the `^\.wb-shell \{$` uniqueness pin above still reads one
+    // token block — that assertion is what the whole file's token story rests on.
+    expect(css.match(/^\.wb-shell \{$/gm) ?? []).toHaveLength(1);
+    // The 900–1199px `--wb-space-2` overrides for the four Preview panes still
+    // win: same specificity, later in source order. Both halves of that are
+    // asserted — the column's clearance rule sits above this block, and the
+    // release sits above the overrides inside it.
+    expect(css.indexOf(".wb-preview > :where(")).toBeLessThan(start);
+    expect(block.indexOf("--wb-split-clear: var(--wb-space-4);")).toBeLessThan(
+      block.indexOf("padding-left: var(--wb-space-2);"),
+    );
+  });
+
+  it("makes a focused divider look unlike a hovered one (DW-207)", async () => {
+    // They shared one rule until DW-207, painting an identical 1px
+    // `var(--wb-border)` hairline: a keyboard user could not tell focus from a
+    // stray pointer. Width AND colour both change here.
+    const css = await globals();
+    const hoverStart = css.indexOf(".wb-split-handle:hover::before {");
+    expect(hoverStart).toBeGreaterThan(-1);
+    // The hover selector is its OWN rule now — a shared selector list would let
+    // one edit move both states together again.
+    expect(css.slice(hoverStart, css.indexOf("{", hoverStart))).not.toContain(
+      "focus-visible",
+    );
+    const hover = css.slice(hoverStart, css.indexOf("}", hoverStart));
+    expect(hover).toContain("background: var(--wb-border);");
+    expect(hover).not.toContain("width:");
+
+    const focusStart = css.indexOf(".wb-split-handle:focus-visible::before {");
+    expect(focusStart).toBeGreaterThan(-1);
+    const focus = css.slice(focusStart, css.indexOf("}", focusStart));
+    expect(focus).toContain("background: var(--wb-foreground);");
+    // Both selectors score one class and two pseudos, so a divider that is BOTH
+    // focused and hovered shows the focus indicator for one reason only: focus
+    // is declared second. Reordering them restores the DW-207 ambiguity for the
+    // pointer-plus-keyboard case with every other assertion here still green.
+    expect(hoverStart).toBeLessThan(focusStart);
+    // Parsed against the base rule's own width rather than retyped: the point is
+    // that focus is WIDER than the resting hairline, whatever that hairline is.
+    const beforeStart = css.indexOf(".wb-split-handle::before {");
+    const base = Number(
+      /width: (\d+)px;/.exec(css.slice(beforeStart, css.indexOf("}", beforeStart)))?.[1],
+    );
+    const focused = Number(/width: (\d+)px;/.exec(focus)?.[1]);
+    expect(base).toBeGreaterThan(0);
+    expect(focused).toBeGreaterThan(base);
+  });
+
+  it("keeps the focus indicator above 3:1 and the hover token below it", async () => {
+    // SC 1.4.11's threshold, computed rather than asserted in prose. The comment
+    // beside the rule quotes ratios; a comment cannot notice a retoning, and the
+    // whole DW-207 argument is a claim about three specific colours. All three
+    // are READ from the token block — retyping them here would be the same
+    // unfalsifiable restatement in a different file.
+    const tokens = tokenBlock(await globals());
+    const foreground = hexToken(tokens, "--wb-foreground");
+    const surface = hexToken(tokens, "--wb-surface");
+    const border = hexToken(tokens, "--wb-border");
+    // The indicator against BOTH colours adjacent to it: the pane surface it is
+    // drawn on, and the border tone it sits beside.
+    expect(contrastRatio(foreground, surface)).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio(foreground, border)).toBeGreaterThanOrEqual(3);
+    // …and the reason focus cannot simply reuse the hover token at a greater
+    // width: `--wb-border` is SPECIFIED as the quiet separator tone against that
+    // same surface, so it fails the threshold at any width. If this ever passes,
+    // `--wb-border` has been retoned and the shell's separators are no longer
+    // quiet — which is a different bug, in the other direction.
+    expect(contrastRatio(border, surface)).toBeLessThan(3);
+  });
+
+  it("replaces the shell-wide ring on the handle and keeps a forced-colours channel", async () => {
+    // `SplitHandle` renders `tabIndex={0}`, so the shell's generic
+    // `:where(…, [tabindex]):focus-visible` outline reaches it and boxes the
+    // whole INVISIBLE 24px strip — a rectangle whose right edge lands a strip's
+    // width inside a pane that owns none of it. `:where()` scores zero, so the
+    // two selectors tie and source order is the mechanism, the same idiom
+    // `.wb-preview-history-panel:focus-visible` already uses.
+    const css = await globals();
+    const shellRing = css.indexOf(
+      ".wb-shell :where(a, button, input, select, textarea, [tabindex]):focus-visible {",
+    );
+    expect(shellRing).toBeGreaterThan(-1);
+    const suppress = css.indexOf(".wb-split-handle:focus-visible {");
+    expect(suppress).toBeGreaterThan(shellRing);
+    expect(css.slice(suppress, css.indexOf("}", suppress))).toContain("outline: none;");
+    // Forced-colours modes discard the author BACKGROUND the `::before`
+    // indicator is painted with, so without this the separator would have no
+    // focus state at all there now that the generic ring is off. Declared after
+    // the suppression, so it is the last word. Sliced to the block's OWN closing
+    // brace — a fixed window stops covering it the moment a comment is added
+    // inside, and then asserts nothing while still passing.
+    const forced = css.indexOf("@media (forced-colors: active)", suppress);
+    expect(forced).toBeGreaterThan(suppress);
+    const end = css.indexOf("\n}", forced);
+    expect(end).toBeGreaterThan(forced);
+    expect(css.slice(forced, end)).toMatch(
+      /\.wb-split-handle:focus-visible \{\s*outline: 2px solid CanvasText;/,
+    );
   });
 
   it("reads --wb-tree and --wb-preview for the handle positions", async () => {

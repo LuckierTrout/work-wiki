@@ -2386,6 +2386,20 @@ textarea.studio-input { resize: vertical; }
      does not rescue 9px here, since the tree rows beside the divider are
      adjacent targets. */
   --wb-split-hit: 24px;
+  /* DW-205: the leading-edge clearance every pane a grab strip overlays pads
+     by. DERIVED from `--wb-split-hit` rather than retyped, because the strip and
+     the padding that keeps content out from under it are one measurement: a
+     second `24px` literal here is a copy free to drift, and the drift is
+     invisible — the pane still renders, its first characters simply stop
+     answering a click, a text selection or a touch-pan under a `z-index: 2`,
+     `touch-action: none` handle. `max()` against the shell's ordinary gutter is
+     what stops the derivation from ever NARROWING a pane edge: the clearance
+     tracks the strip upward and never falls below `--wb-space-4`. Released back
+     to that gutter in the LAST narrow-viewport block, beside the rule that hides
+     the handles — once nothing overlays the edge there is nothing to clear. The
+     query is named there and not here on purpose: the suites count the blocks
+     matching each breakpoint string, and a third match in prose retargets them. */
+  --wb-split-clear: max(var(--wb-space-4), var(--wb-split-hit));
 
   /* Type — DESIGN.md `typography.ui` / `ui-strong` / `title` / `mono`. */
   --wb-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -2683,8 +2697,13 @@ body:has(.wb-shell) {
   overflow: auto;
   background: var(--wb-surface);
 }
+/* The leading edge is the one side that is not an ordinary gutter: the tree
+   divider's 24px grab strip starts on this pane's boundary and extends right
+   across it (DW-44), so the canvas pads by the clearance token instead and the
+   strip covers gutter only (DW-205). */
 .wb-canvas-pad {
   padding: var(--wb-space-4);
+  padding-left: var(--wb-split-clear);
 }
 /* The Wiki subtree stays MOUNTED in every mode (DW-26) and goes off screen
    behind `hidden` instead, so that an open Create Wiki dialog keeps the name
@@ -4777,6 +4796,50 @@ body:has(.wb-shell) {
   outline-offset: -2px;
 }
 
+/* ---- The column's leading edge (DW-205) -------------------------------- */
+/* The Preview divider's 24px grab strip starts ON this column's boundary and
+   extends right across it (DW-44), and it is `z-index: 2` with
+   `touch-action: none` — so whatever it covers stops answering a click, a text
+   selection or a touch-pan. Every DIRECT child that touches the leading edge
+   therefore pads by the clearance token instead of the ordinary gutter: the
+   header, the frontmatter strip, the stale strip, the body, the media block,
+   the editor, the note and the History panel. All eight, not just the ones
+   holding an interactive target — they share one column margin, and padding
+   some would step the left edge in and out down the column. Two of them hold
+   controls that would otherwise sit under the strip outright: the media block's
+   zoom button and native player bars, and History's toggle, focusable panel and
+   `Revert` buttons.
+
+   Stated ONCE, here, rather than as eight `padding-left` lines: the eight rules
+   are spread across five subsections above, and a ninth child added later is far
+   likelier to be noticed against one list than against a habit.
+
+   Both halves of the selector are load-bearing.
+
+   The CHILD combinator, because `.wb-preview-note` is also rendered NESTED
+   inside `.wb-preview-media` as the player's failure caption. A class-only match
+   would indent that caption by the gutter plus the clearance and step it right
+   of the element it captions; `>` leaves it at its own 16px.
+
+   `:where()`, because it scores ZERO — this rule stays at one class, ties with
+   the eight it overrides, and wins on source order alone (it is declared after
+   all of them). That tie is also what leaves the narrow-viewport
+   `padding-left: var(--wb-space-2)` tightening below free to win in its turn.
+   `:is()` would score two classes and silently outrank it, restoring 24px of
+   padding to a 200px column. */
+.wb-preview > :where(
+    .wb-preview-head,
+    .wb-preview-fm,
+    .wb-preview-stale,
+    .wb-preview-body,
+    .wb-preview-media,
+    .wb-preview-editor,
+    .wb-preview-note,
+    .wb-preview-history
+  ) {
+  padding-left: var(--wb-split-clear);
+}
+
 /* ===========================================================================
    Settings inside the shell (Story 1.9).
 
@@ -5114,9 +5177,52 @@ body:has(.wb-shell) {
   width: 1px;
   background: transparent;
 }
-.wb-split-handle:hover::before,
-.wb-split-handle:focus-visible::before {
+/* Hover keeps the quiet hairline: the pointer is already on the strip, so the
+   line only has to confirm what the `col-resize` cursor has said. */
+.wb-split-handle:hover::before {
   background: var(--wb-border);
+}
+/* Focus does NOT (DW-207). The two states shared one rule until here, so a
+   keyboard user could not tell focus from a stray pointer, and `--wb-border` is
+   specified as the QUIET separator tone against exactly the two surfaces a focus
+   indicator has to stand out from — `--wb-surface` `#ffffff` on one side and its
+   own `#e5e5e5` on the other — so no width of it clears SC 1.4.11's 3:1.
+   `--wb-foreground` (`#171717`) reads about 17.9:1 and 14.2:1 against that pair.
+   Width and colour BOTH change, so the two states are not interchangeable at a
+   glance. Drawn on the divider line itself rather than as a box, because the
+   shell-wide ring below outlines the whole invisible 24px strip — a rectangle
+   whose right edge lands 25px inside a pane that owns none of it. */
+.wb-split-handle:focus-visible::before {
+  width: 3px;
+  background: var(--wb-foreground);
+}
+/* Suppressed for THIS control only, after the shell-wide
+   `:where(…, [tabindex]):focus-visible` ring above — `:where()` scores zero, so
+   the two selectors tie and source order decides, the same idiom
+   `.wb-preview-history-panel:focus-visible` already uses. */
+.wb-split-handle:focus-visible {
+  outline: none;
+}
+/* Forced-colours modes discard the author background the indicator above is
+   painted with, which would leave the separator with no focus state at all now
+   that the generic ring is off. An outline survives; `CanvasText` is the same
+   system colour `.wb-rail-item--active` falls back to. Declared AFTER the
+   suppression so it is the last word, and `-2px` keeps the 2px rule inside the
+   strip's own box rather than a pane's.
+
+   That box is the very shape the suppression above rejects: a rectangle around
+   the whole invisible 24px strip rather than a rule on the divider line. It is
+   accepted HERE and only here, because the trade is different. In normal mode
+   the choice is between two visible indicators and the line is the honest one;
+   in forced colours the `::before` background is precisely what the mode throws
+   away, so the outline is not a blunter option — it is the only channel left.
+   A visible indicator in a clumsy shape beats an elegant one that is not
+   there. */
+@media (forced-colors: active) {
+  .wb-split-handle:focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: -2px;
+  }
 }
 /* Both strips start AT their boundary and extend RIGHT of it (DW-44), which is
    off the scrollbar in both cases and so collapses to one rule. `.wb-tree-body`
@@ -5189,6 +5295,17 @@ body:has(.wb-shell) {
      be a second copy of this rule, free to drift from it. */
   .wb-split-handle {
     display: none;
+  }
+  /* …and with them goes the reason the pane edges were cleared (DW-205). No
+     strip overlays anything from here down, so the clearance falls back to the
+     shell's ordinary gutter. Declared in THIS block, beside the rule that hides
+     the handles, so the release and the hide can only ever move together — a
+     future edit that revives the handles at this width without noticing this
+     line would leave content back under a strip. The `--wb-space-2` overrides
+     below still win for the four panes that take them: same specificity, later
+     in source order. */
+  .wb-shell {
+    --wb-split-clear: var(--wb-space-4);
   }
   .wb-shell[data-preview="true"] {
     grid-template-columns:
