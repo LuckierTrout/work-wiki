@@ -1391,6 +1391,22 @@ describe("extractWithReadability", () => {
 // fetchUrlContent (mocked fetch)
 // ---------------------------------------------------------------------------
 
+/**
+ * The BYTES a headerless response is now sniffed on (DW-441).
+ *
+ * `fetchUrlContent` used to guard with `if (mimeType && ...)`, so a response
+ * that declared no `Content-Type` skipped the allowlist entirely. It now reads
+ * the leading bytes and puts the sniffed answer through the caller's own door,
+ * which means a headerless fixture has to carry bytes as well as text. Derived
+ * from the same string, so the two can never disagree.
+ */
+function bytesOf(text: string): () => Promise<ArrayBuffer> {
+  return async () => {
+    const bytes = new TextEncoder().encode(text);
+    return bytes.buffer.slice(0, bytes.byteLength) as ArrayBuffer;
+  };
+}
+
 describe("fetchUrlContent", () => {
   const sampleHtml = `
     <!DOCTYPE html>
@@ -1421,6 +1437,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(sampleHtml),
+      arrayBuffer: bytesOf(sampleHtml),
     });
 
     try {
@@ -1443,6 +1460,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve("<html><body><p>Some content</p></body></html>"),
+      arrayBuffer: bytesOf("<html><body><p>Some content</p></body></html>"),
     });
 
     try {
@@ -1474,7 +1492,10 @@ describe("fetchUrlContent", () => {
     const originalFetch = global.fetch;
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      headers: mockHeaders({ "content-length": "10000000" }),
+      // DECLARED type: this case is about the Content-Length guard, and the
+      // headerless door (DW-441) reads the body to sniff it before that guard
+      // could ever fire.
+      headers: mockHeaders({ "content-type": "text/html", "content-length": "10000000" }),
       text: () => Promise.resolve("<p>should not be read</p>"),
     });
 
@@ -1494,6 +1515,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(), // no content-length
       text: () => Promise.resolve(hugeBody),
+      arrayBuffer: bytesOf(hugeBody),
     });
 
     try {
@@ -1514,6 +1536,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(html),
+      arrayBuffer: bytesOf(html),
     });
 
     try {
@@ -1531,6 +1554,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve("<html><body><p>Hello</p></body></html>"),
+      arrayBuffer: bytesOf("<html><body><p>Hello</p></body></html>"),
     });
 
     try {
@@ -1566,6 +1590,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(articleHtml),
+      arrayBuffer: bytesOf(articleHtml),
     });
 
     try {
@@ -1589,6 +1614,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(minimalHtml),
+      arrayBuffer: bytesOf(minimalHtml),
     });
 
     try {
@@ -1622,6 +1648,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(),
       text: () => Promise.resolve(html),
+      arrayBuffer: bytesOf(html),
     });
 
     try {
@@ -1725,6 +1752,7 @@ describe("fetchUrlContent", () => {
       ok: true,
       headers: mockHeaders(), // no content-type
       text: () => Promise.resolve(sampleHtml),
+      arrayBuffer: bytesOf(sampleHtml),
     });
 
     try {
@@ -1778,6 +1806,7 @@ describe("ingestUrl", () => {
       ok: true,
       headers: { get: () => null },
       text: () => Promise.resolve(sampleHtml),
+      arrayBuffer: bytesOf(sampleHtml),
     });
 
     try {
@@ -3673,6 +3702,7 @@ describe("fetchUrlContent — redirect handling", () => {
       status: 200,
       headers: mockHeaders(),
       text: () => Promise.resolve("<html><body><p>Hello</p></body></html>"),
+      arrayBuffer: bytesOf("<html><body><p>Hello</p></body></html>"),
       body: null,
     });
 
@@ -3793,6 +3823,7 @@ describe("fetchUrlContent — redirect handling", () => {
       status: 301,
       headers: mockHeaders(), // no location
       text: () => Promise.resolve(""),
+      arrayBuffer: bytesOf(""),
       body: null,
     });
 
@@ -3825,7 +3856,9 @@ describe("fetchUrlContent — redirect handling", () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      headers: mockHeaders(),
+      // DECLARED type: the headerless door buffers the body to sniff it
+      // (DW-441), so only a declared type still reaches the incremental reader.
+      headers: mockHeaders({ "content-type": "text/html" }),
       body: { getReader: () => mockReader },
     });
 

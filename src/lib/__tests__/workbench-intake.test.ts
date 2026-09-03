@@ -26,7 +26,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 
 import { ALLOWED_CONTENT_TYPES } from "../fetch";
-import { MAX_DOCUMENT_SIZE } from "../constants";
+import { INTAKE_ANSWER_BUDGET_MS, MAX_DOCUMENT_SIZE } from "../constants";
 import { READ_ONLY_REFUSAL } from "../read-only";
 import {
   INTAKE_ACCEPT_ATTR,
@@ -1028,6 +1028,35 @@ describe("POST /api/workbench/intake — the in-app URL", () => {
     // Provenance rides along, so the compiled page can cite where it came from.
     const task = mockedEnqueue.mock.calls[0][1] as { sourceUrl?: string };
     expect(task.sourceUrl).toBe("https://example.com/posts/why-wikis.html");
+  });
+
+  it("hands the inline compile the REMAINDER of the answer budget, not a fresh one", async () => {
+    // DW-700, and the assertion the source scan in `workbench-request.test.ts`
+    // cannot make: that scan still passes if `answerBy` is captured inside
+    // `storeAndQueue` instead of at route entry -- which hands the inline
+    // compile a FULL 17 s AFTER `fetchUrlContent` may already have spent 15 s,
+    // against a 20 s client deadline. That is the original defect, with every
+    // other assertion green. So the fetch is STALLED for a measurable interval
+    // and the budget is read off the call: a remainder shrinks by what the work
+    // before it spent, a fresh fixed margin does not.
+    const STALL_MS = 60;
+    mockedFetchUrl.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, STALL_MS));
+      return { title: "Slow Page", content: "# Slow Page\n\nClip." };
+    });
+
+    await post(urlRequest({ url: "https://example.com/slow" }));
+
+    const options = mockedEnqueue.mock.calls[0][3];
+    // Still positive: the route did not answer with a budget already spent.
+    expect(options?.inlineBudgetMs).toBeGreaterThan(0);
+    expect(options?.inlineBudgetMs).toBeLessThan(INTAKE_ANSWER_BUDGET_MS);
+    // THE PIN: the stall was actually subtracted. `toBeLessThan` alone passes
+    // at 16_999, which a budget captured one line above the call site would
+    // also produce.
+    expect(options?.inlineBudgetMs).toBeLessThanOrEqual(
+      INTAKE_ANSWER_BUDGET_MS - STALL_MS,
+    );
   });
 
   it("refuses an empty or non-http URL before fetching anything", async () => {

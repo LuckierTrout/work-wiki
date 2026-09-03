@@ -3293,7 +3293,9 @@ archived: 2026-08-29
 origin: migrated from legacy ledger ("Deferred from: code review of spec-2-1-upload-drag-drop-and-url-intake.md (2026-08-22)"), 2026-08-26
 location: src/lib/fetch.ts:232
 reason: The guard reads `if (mimeType && !allowed.includes(...))`, so a response with no Content-Type passes unchecked regardless of what it actually contains. Deferred as pre-existing empty-header behaviour: this story only narrowed the allowlist that is passed in, and tightening the empty case changes behaviour for every existing caller of the shared fetch path.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-fetch-door-guards-and-deadline
+resolution-undo: 125c9688c8c7a03b3b2c417d80bce0b33bceb3bb65c8a8aa626e731a93c6e285 2026-09-03 7374617475733a206f70656e
 decision: 2026-08-28 Sniff, then refuse — When Content-Type is absent, sniff the body's leading bytes against the allowlist and refuse only what does not match, so well-behaved headerless servers still work; apply to both doors and pin with fixtures.
 decision: 2026-08-26 Sniff, then refuse — When Content-Type is absent, sniff the body's leading bytes against the allowlist and refuse only what does not match, so well-behaved headerless servers still work; apply to both doors and pin with fixtures.
 
@@ -5700,7 +5702,9 @@ location: src/lib/fetch.ts:175 / src/app/api/workbench/intake/route.ts:640
 source_spec: `spec-dw-439-workbench-request-deadline-ordering.md`
 severity: medium
 reason: The ordering shipped here guarantees only that the server's FETCH deadline fires before the client's. Two paths outlast any fixed margin: 1. `fetchFollowingRedirects` (src/lib/fetch.ts:163-201) arms `AbortSignal.timeout(FETCH_TIMEOUT_MS)` INSIDE the `for (let hop = 0; hop <= MAX_REDIRECTS; hop++)` loop at :175, with `MAX_REDIRECTS = 5` (:169) -- five redirects, so up to six fetches with a full 15 s each, up to 90 s server-side. 2. `src/app/api/workbench/intake/route.ts:640` ends in `enqueueOrInline(jobId, task, () => ingest(title, text, options))`. Where `enqueueTask` returns false (src/lib/ingest-async.ts:52-58, the off-Workers deployment), the FULL `ingest()` -- LLM map/reduce, retries, embeddings, image downloads -- runs inside the request the client deadline wraps, and `storeAndQueue` has already stored the Source before that call. In both, the client aborts first, `unconfirmedCause` (src/lib/workbench-request.ts) classifies the `TimeoutError` as unconfirmed, and the owner is told
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-fetch-door-guards-and-deadline
+resolution-undo: 125c9688c8c7a03b3b2c417d80bce0b33bceb3bb65c8a8aa626e731a93c6e285 2026-09-03 7374617475733a206f70656e
 
 ### DW-701: A tenant path occupied by a DIRECTORY is now recorded as an ordinary archive collision instead of failing loudly.
 origin: spec-deferred 725e18a278b9
@@ -6076,4 +6080,12 @@ location: src/lib/portable-archive.ts:246
 source_spec: `spec-dw-572-701-content-addressed-write-doors.md`
 severity: low
 reason: `parseArchive` stats `tenants/<t>/<entry.path>`. When an ancestor segment is a regular file (e.g. `tenants/alice/raw/atlas` is a file and the entry is `raw/atlas/source.bin`), `fs.stat` raises `ENOTDIR`, `isEnoent` answers false, and the `catch` rethrows it unchanged. That is the same class DW-701 addresses — a path no write this import can ever land at — but it surfaces as `ENOTDIR: not a directory, stat '/abs/host/path/...'` rather than an archive-relative message, and `src/app/api/archive/import/route.ts:21` maps it to a 500 whose JSON body carries that host path. Pre-existing: the same rethrow predates the `readAsset` -> `stat` swap, and no test pins it.
+status: open
+
+### DW-746: The Workbench Activity retry and embed-rebuild doors still run a full inline `ingest()` under the same client deadline this story bounded at the intake door.
+origin: spec-deferred 25d085c76c7e
+location: src/app/api/workbench/activity/route.ts:123 / :184
+source_spec: `spec-dw-441-700-fetch-door-guards-and-deadline.md`
+severity: low
+reason: DW-700's shape at a door the bundle did not name. `src/app/api/workbench/activity/route.ts:123` (embed rebuild) and `:184` (ingest retry) both call `enqueueOrInline(...)` with no `inlineBudgetMs`, so where `enqueueTask` returns false the FULL `ingest()` -- LLM map/reduce, retries, embeddings, image downloads -- runs inside the request. `src/components/workbench/ActivityDock.tsx:143` and `:193` reach that route through `send(ACTIVITY_ROUTE, ...)`, which arms the same `REQUEST_TIMEOUT_MS` deadline. The client aborts first, `unconfirmedCause` classifies the `TimeoutError` as unconfirmed, and the owner is told the outcome is unknown about work that is still running. Pre-existing and not caused by this change: the opt-in budget added here leaves every other `enqueueOrInline` caller byte-for-byte as it was. Out of scope because the bundle's intent names only `src/app/api/workbench/intake/route.ts:640`. Now named in the `inlineBudgetMs` docblock rather than denied by it.
 status: open

@@ -20,6 +20,7 @@ import { dispatchMeetingTodoExtract } from "@/lib/todo-dispatch";
 import { hasIngestAnalysis } from "@/lib/ingest-analysis";
 import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "@/lib/review-queue";
 import { enqueueOrInline } from "@/lib/ingest-async";
+import { logger } from "@/lib/logger";
 
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedUpdate = vi.mocked(updateIngestJob);
@@ -222,5 +223,108 @@ describe("enqueueOrInline", () => {
       status: "done",
       slug: "topic",
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // The inline answer budget (DW-700)
+  // -------------------------------------------------------------------------
+  //
+  // Off-Workers the FULL `ingest()` used to run inside the request, after the
+  // Source was already stored and with nothing bounding it. The client's
+  // `REQUEST_TIMEOUT_MS` fired first and the owner was told "the outcome is
+  // unknown" about a Source that had landed. The budget is opt-in: omitting it
+  // must leave every other caller exactly as it was, which every case above
+  // (all of which omit it) is what pins.
+
+  it("a budgeted inline run that finishes in time behaves exactly as today", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    const res = await enqueueOrInline(
+      "j-in-budget",
+      { ...task, jobId: "j-in-budget" },
+      async () => ({ primarySlug: "page-a" }),
+      { inlineBudgetMs: 30_000 },
+    );
+    expect(await res.json()).toEqual({
+      queued: true,
+      jobId: "j-in-budget",
+      slug: "page-a",
+    });
+    expect(mockedUpdate).toHaveBeenCalledWith("j-in-budget", {
+      status: "done",
+      slug: "page-a",
+    });
+  });
+
+  it("an inline run still going at the deadline answers {queued,jobId} and keeps marking the job", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    let finish!: (value: { primarySlug: string }) => void;
+    const inline = vi.fn(
+      () => new Promise<{ primarySlug: string }>((resolve) => { finish = resolve; }),
+    );
+
+    const res = await enqueueOrInline("j-late", { ...task, jobId: "j-late" }, inline, {
+      inlineBudgetMs: 0,
+    });
+
+    // The honest body: the Source is stored, the job exists, work is in flight
+    // — and this is the shape `workbench-intake-client.ts` already polls.
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ queued: true, jobId: "j-late" });
+    // Nothing terminal has been written yet; the run is genuinely still going.
+    expect(mockedUpdate).not.toHaveBeenCalled();
+
+    // ABANDONED, NOT CANCELLED: the continuation still reaches the job record.
+    finish({ primarySlug: "page-late" });
+    await vi.waitFor(() =>
+      expect(mockedUpdate).toHaveBeenCalledWith("j-late", {
+        status: "done",
+        slug: "page-late",
+      }),
+    );
+  });
+
+  it("catches and logs a rejection from an abandoned run rather than leaving it unhandled", async () => {
+    mockedEnqueue.mockResolvedValue(false);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      let fail!: (err: unknown) => void;
+      const inline = vi.fn(
+        () => new Promise<{ primarySlug: string }>((_, reject) => { fail = reject; }),
+      );
+
+      const res = await enqueueOrInline(
+        "j-late-throw",
+        { ...task, jobId: "j-late-throw" },
+        inline,
+        { inlineBudgetMs: 0 },
+      );
+      expect(await res.json()).toEqual({ queued: true, jobId: "j-late-throw" });
+
+      fail(new Error("synthesis failed late"));
+
+      // The abandoned run still marks the job failed...
+      await vi.waitFor(() =>
+        expect(mockedUpdate).toHaveBeenCalledWith(
+          "j-late-throw",
+          expect.objectContaining({
+            status: "failed",
+            error: expect.stringContaining("synthesis failed late"),
+          }),
+        ),
+      );
+      // ...and its rethrow is owned, not left to surface as a crash.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        "ingest",
+        expect.stringContaining("j-late-throw"),
+        expect.any(Error),
+      );
+    } finally {
+      process.off("unhandledRejection", unhandled);
+      warn.mockRestore();
+    }
   });
 });

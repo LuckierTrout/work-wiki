@@ -29,7 +29,7 @@ import {
   unconfirmedWriteMessage,
   writeFailure,
 } from "../workbench-request";
-import { FETCH_TIMEOUT_MS } from "../constants";
+import { FETCH_TIMEOUT_MS, INTAKE_ANSWER_BUDGET_MS } from "../constants";
 import { CONFIG_UNREADABLE_COPY } from "../config";
 
 const SRC = path.resolve(__dirname, "../..");
@@ -342,6 +342,37 @@ describe("send", () => {
     expect(start).toBeGreaterThanOrEqual(0);
     const body = fetcher.slice(start, fetcher.indexOf("\n}\n", start));
     expect(body).toContain("AbortSignal.timeout(FETCH_TIMEOUT_MS)");
+  });
+
+  it("keeps the three-rung budget ladder ordered with room at each rung", () => {
+    // DW-700. DW-439 ordered TWO values, and that was not enough: nothing
+    // between them bounded the route's own work, so an off-Workers inline
+    // `ingest()` ran past this deadline with the Source already stored. The
+    // middle rung is the route's answer budget, and the ladder only means
+    // anything if each rung leaves the next one room to answer -- adjacent
+    // rungs set equal must fail here, which strict `>` is what gives.
+    expect(FETCH_TIMEOUT_MS).toBeLessThan(INTAKE_ANSWER_BUDGET_MS);
+    expect(INTAKE_ANSWER_BUDGET_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+    // Strictly-less alone passes at 15_001, which buys nothing: each gap has to
+    // leave the rung above it time to compose and send an answer.
+    expect(INTAKE_ANSWER_BUDGET_MS - FETCH_TIMEOUT_MS).toBeGreaterThanOrEqual(1_000);
+    expect(REQUEST_TIMEOUT_MS - INTAKE_ANSWER_BUDGET_MS).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it("hands the intake route's inline compile the REMAINING budget", async () => {
+    // The ladder above is inert if the route stops passing the budget down: a
+    // deleted option leaves an unbounded inline `ingest()` behind every other
+    // assertion here, still green. Nothing else in the suite observes the
+    // wiring, so it is scanned.
+    const route = await readFile(
+      path.join(SRC, "app/api/workbench/intake/route.ts"),
+      "utf8",
+    );
+    expect(route).toContain("INTAKE_ANSWER_BUDGET_MS");
+    expect(route).toContain("inlineBudgetMs");
+    // A REMAINDER measured from request entry, not a fixed margin -- the whole
+    // point DW-700 makes about bounding total work.
+    expect(route).toMatch(/answerBy\s*-\s*Date\.now\(\)/);
   });
 });
 

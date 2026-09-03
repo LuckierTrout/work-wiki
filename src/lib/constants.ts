@@ -34,14 +34,52 @@ export const MAX_CONTENT_LENGTH = 100_000;
  * exactly one thing: this fetch's deadline fires first, so a slow URL comes
  * back as the route's own 400 rather than as a client abort reported to the
  * owner as "the outcome is unknown" while the route completes and stores the
- * Source. It does NOT bound the route's total work -- `fetchFollowingRedirects`
- * in `src/lib/fetch.ts` arms this timeout per hop for five redirects, so up to
- * six fetches and up to 90 s, past any fixed client margin.
+ * Source.
  *
- * Raising this value without raising that one re-opens DW-439. The pin that
- * catches it lives in `src/lib/__tests__/workbench-request.test.ts`.
+ * TOTAL, NOT PER HOP (DW-700). `fetchFollowingRedirects` in `src/lib/fetch.ts`
+ * used to arm this timeout inside its hop loop, so five redirects bought six
+ * fresh 15 s clocks -- up to 90 s, past any fixed client margin, which is the
+ * whole reason the ordering above could not be trusted. ONE signal is now
+ * created before the loop and passed to every hop, so this value bounds the
+ * whole redirect chain AND the body read that follows it.
+ *
+ * It still does not bound the route's TOTAL work: the store, the job record and
+ * an off-Workers inline `ingest()` all run after the fetch. That remainder is
+ * what {@link INTAKE_ANSWER_BUDGET_MS} bounds.
+ *
+ * Raising this value without raising the two above it re-opens DW-439/DW-700.
+ * The pin that catches it lives in
+ * `src/lib/__tests__/workbench-request.test.ts`.
  */
 export const FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * The budget `POST /api/workbench/intake` allots itself (17 seconds), measured
+ * from route entry.
+ *
+ * A BUDGET, NOT A WHOLE-REQUEST DEADLINE. It is consulted at exactly ONE point
+ * — the `enqueueOrInline` call — where whatever is LEFT of it becomes the
+ * inline compile's `inlineBudgetMs`. Everything before that point
+ * (`request.formData()`, `fetchUrlContent`, `sourceSha256`, the raw-source
+ * write, `createIngestJob`, `stageText`) still runs with no deadline of its own;
+ * what those steps spend is exactly what the inline run does not get. Only the
+ * inline compile is actually bounded here, and only because it is the step that
+ * was unbounded and long.
+ *
+ * THE MIDDLE RUNG of `FETCH_TIMEOUT_MS < INTAKE_ANSWER_BUDGET_MS <
+ * REQUEST_TIMEOUT_MS` (DW-700). The fetch gets 15 s of it; when the remainder
+ * elapses the route answers `{ queued: true, jobId, path }` -- the shape the
+ * client already polls -- instead of leaving the client to abort and report a
+ * stored Source as an unknown outcome.
+ *
+ * A FIXED margin cannot do this job, which is DW-700's point: the budget has to
+ * be a remainder measured from request entry, because the work before the
+ * inline run is what consumed it.
+ *
+ * The ladder is executed in `src/lib/__tests__/workbench-request.test.ts`, and
+ * that the remainder really is one in `src/lib/__tests__/workbench-intake.test.ts`.
+ */
+export const INTAKE_ANSWER_BUDGET_MS = 17_000;
 
 /**
  * Maximum characters sent to the LLM in a single chunk during ingest.

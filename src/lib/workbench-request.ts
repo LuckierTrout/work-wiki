@@ -39,12 +39,22 @@
  * {@link writeFailure} can only report as "the outcome is unknown" while the
  * route runs on and stores the Source.
  *
- * It does NOT bound the route's total work, and two paths outlast any fixed
- * margin. `fetchFollowingRedirects` (`src/lib/fetch.ts`) arms `FETCH_TIMEOUT_MS`
- * per hop for five redirects -- up to six fetches, up to 90 s. And where
- * `enqueueTask` returns false (`src/lib/ingest-async.ts`), the full `ingest()`
- * runs INLINE inside this request, after the store. Both still abort
- * client-side and still read as unconfirmed.
+ * The two paths that used to outlast any fixed margin are closed (DW-700).
+ * `fetchFollowingRedirects` (`src/lib/fetch.ts`) armed `FETCH_TIMEOUT_MS` per
+ * hop for five redirects -- up to six fetches, up to 90 s; it now arms ONE
+ * signal before the hop loop, so that constant bounds the whole chain. And
+ * where `enqueueTask` returns false (`src/lib/ingest-async.ts`), the full
+ * `ingest()` ran INLINE inside this request after the store with nothing
+ * bounding it; the intake route now hands that run the REMAINDER of
+ * `INTAKE_ANSWER_BUDGET_MS` and answers `{ queued: true, jobId, path }` when it
+ * elapses. So the ordering is a three-rung ladder --
+ * `FETCH_TIMEOUT_MS` < `INTAKE_ANSWER_BUDGET_MS` < this -- and every rung
+ * leaves the next one room to answer.
+ *
+ * The middle rung bounds ONE step, not the whole route: the store, the digest
+ * and the job record still run undeadlined, and what they spend is simply
+ * subtracted from the inline run's share. It is the long unbounded step that is
+ * covered, not every step.
  *
  * Blast radius: this constant also arms `sendForm` and every other workbench
  * write -- create/rename/delete/switch, settings save, upload -- so 20 s makes

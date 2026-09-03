@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal, getServicePrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
-import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
+import { INTAKE_ANSWER_BUDGET_MS, MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { extension } from "@/lib/document-formats";
 import { contentHash } from "@/lib/embeddings";
 import { getErrorMessage, isClientInputError } from "@/lib/errors";
@@ -103,10 +103,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: READ_ONLY_REFUSAL.ingest }, { status: 403 });
     }
 
+    // THE REQUEST'S OWN DEADLINE (DW-700), captured before any work so what is
+    // handed to the inline ingest below is the REMAINDER — what the fetch, the
+    // store and the job record left over — rather than a fixed margin that
+    // cannot bound total work. See `INTAKE_ANSWER_BUDGET_MS`.
+    const answerBy = Date.now() + INTAKE_ANSWER_BUDGET_MS;
+
     const contentType = request.headers.get("content-type") || "";
     return contentType.includes("multipart/form-data")
-      ? await intakeFile(request, principal.handle)
-      : await intakeUrl(request, principal.handle);
+      ? await intakeFile(request, principal.handle, answerBy)
+      : await intakeUrl(request, principal.handle, answerBy);
   } catch (error) {
     if (isReadOnlyError(error)) {
       return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
@@ -133,6 +139,7 @@ export async function POST(request: NextRequest) {
 async function intakeFile(
   request: NextRequest,
   owner: string,
+  answerBy: number,
 ): Promise<NextResponse> {
   const form = await request.formData();
   const file = form.get("file");
@@ -244,6 +251,7 @@ async function intakeFile(
     text,
     title,
     sourceType: "text",
+    answerBy,
     ...(relativePath ? { relativePath } : {}),
     ...(origin ? { origin } : {}),
   });
@@ -320,6 +328,7 @@ async function storeMedia(input: {
 async function intakeUrl(
   request: NextRequest,
   owner: string,
+  answerBy: number,
 ): Promise<NextResponse> {
   // `?? {}` as well as the catch: a body of the four characters `null` is VALID
   // JSON, so `request.json()` resolves with `null` and never reaches the catch —
@@ -353,6 +362,7 @@ async function intakeUrl(
       title: (firstLine || url).slice(0, 200),
       sourceType: "url",
       sourceUrl: url,
+      answerBy,
     });
   }
 
@@ -384,6 +394,7 @@ async function intakeUrl(
     title: fetched.title,
     sourceType: "url",
     sourceUrl: url,
+    answerBy,
   });
 }
 
@@ -471,6 +482,8 @@ async function storeAndQueue(input: {
   sourceUrl?: string;
   relativePath?: string;
   origin?: "plaud";
+  /** Wall-clock ms after which this request must answer — see `POST`. */
+  answerBy: number;
 }): Promise<NextResponse> {
   const { owner, slug, text, title, sourceType, sourceUrl, relativePath, origin } = input;
 
@@ -637,7 +650,14 @@ async function storeAndQueue(input: {
             },
           };
 
-    response = await enqueueOrInline(jobId, task, () => ingest(title, text, options));
+    // The inline compile (queue absent) gets whatever is LEFT of the request's
+    // answer budget — the fetch and the store already spent part of it. Past
+    // that point the route answers `{ queued: true, jobId, path }` and the run
+    // goes on marking the job, rather than letting the client's deadline fire
+    // on a Source that landed.
+    response = await enqueueOrInline(jobId, task, () => ingest(title, text, options), {
+      inlineBudgetMs: Math.max(0, input.answerBy - Date.now()),
+    });
   } catch (error) {
     const message = getErrorMessage(error);
     logger.error("intake", `stored "${path}" but could not queue Ingest`, error);
