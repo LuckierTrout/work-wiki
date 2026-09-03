@@ -11,13 +11,15 @@
  * is, and the Knowledge tab goes through it. A file listing that walked `wiki/`
  * raw would put the FILENAME of every page that filter excludes — agent-scoped
  * pages, another owner's private page in the legacy flat tree — into the same
- * column. So the caller passes the slug set that survived the filter, and under
- * the wiki root the listing admits a SUBSET of what the read gate would serve —
- * a non-`.md` leaf, and anything below the root, never appears, and where
- * several spellings of one `.md` name collide on a single slug only the elected
- * one lists (see {@link wikiLeafFilter}). A strict subset in that last respect,
- * deliberately: the listing narrows, the gate's reach does not. The set is a
- * required argument, not an option: omitting it must not be spellable.
+ * column. So the caller passes the slug set that survived the filter, and the
+ * `wiki/` half of what the listing admits is now EXACTLY what the read gate
+ * serves. Three rules, and the gate applies all three: `wikiLeafName` for depth
+ * (a direct child of the root, DW-204), `readableWikiLeaf` for "a `.md` whose
+ * slug survived the filter" (DW-41), and — since DW-489 —
+ * {@link electWikiLeafNames} over the SAME depth-1 entries, so where several
+ * spellings of one `.md` name collide on a single slug the defeated ones neither
+ * list nor read (see {@link wikiLeafFilter}). The set is a required argument,
+ * not an option: omitting it must not be spellable.
  *
  * `raw/` NEEDS THE SAME GATE, from the other direction (DW-32). Every `raw/`
  * path is slug-derived — `raw/sources/<slug>/<sha>.md`, `raw/sources/<slug>.md`,
@@ -58,6 +60,7 @@ import {
   tenantWikiRelPath,
   wikiRelPath,
 } from "./wiki";
+import { electWikiLeafNames, wikiLeafSlug } from "./wiki-file-names";
 import { wikiDirPath } from "./wiki-paths";
 import { WIKI_ARTIFACT_FILES } from "./wiki-scenarios";
 import { readWikiArtifact } from "./wikis";
@@ -71,6 +74,13 @@ import {
 // truncation sentence is derived from the node limit. Re-exported here so
 // server callers keep a single import.
 export { WORKBENCH_FILE_LIMIT, WORKBENCH_FILE_MAX_DEPTH };
+
+// The read gate's name→slug half, which moved to the pure leaf module
+// `wiki-file-names.ts` so `wiki.ts` could share the election with this module
+// (DW-489/490). Re-exported from here because it was exported from here first:
+// the preview route and both test files import it by this path and none of them
+// needed to change.
+export { wikiLeafSlug };
 
 export interface WorkbenchFileListing {
   /** Tree-root-relative paths; a trailing `/` marks a directory. */
@@ -91,8 +101,9 @@ export interface WorkbenchFileListing {
  *     and `buildKnowledgeTree` kept. Under the wiki root a leaf lists only if it
  *     is a direct child this set makes readable, so a non-`.md` leaf and
  *     anything deeper never appear — and not every such leaf lists either, since
- *     one name per slug is elected when spellings collide. A SUBSET of what the
- *     gate serves, never a superset: see READ GATE and {@link wikiLeafFilter}.
+ *     one name per slug is elected when spellings collide. Never a SUPERSET of
+ *     what the gate serves, and since DW-489 not a strict subset either: the
+ *     gate applies all three rules. See READ GATE and {@link wikiLeafFilter}.
  *   - `hiddenSlugs` — the slugs the index named that the Knowledge tab does not
  *     show. Under the `raw/` root a path (leaf OR directory) whose spelled slug
  *     is in this set neither lists nor reads: see {@link rawPathAllowed}.
@@ -388,6 +399,13 @@ const UNRESOLVED_RAW_PREFIX = "tenants/_unresolved/raw";
  * falling back on it would answer a transient error by widening what the tab
  * shows to the shared transitional tree. The silo stays selected and renders
  * as the empty branch the I/O matrix asks for.
+ *
+ * `failed` IS REPORTED FOR THE WIKI ROOT TOO, on both returns that can carry an
+ * unreadable listing — the silo-failed early return and the flat fallback.
+ * `entries: []` alone cannot tell "this root holds nothing" from "we could not
+ * find out", and since DW-489 {@link resolveWorkbenchFile} DECIDES on those
+ * entries: without the flag a transient LIST blip would elect nothing and 404
+ * every readable page in the root.
  */
 async function resolveRoot(
   kind: "wiki" | "raw",
@@ -405,11 +423,12 @@ async function resolveRoot(
 
   if (siloPrefix) {
     const silo = await listSafely(siloPrefix);
-    if (silo.failed) return { prefix: siloPrefix, entries: [] };
+    if (silo.failed) return { prefix: siloPrefix, entries: [], failed: true };
     const entries = visible(silo.entries);
     if (entries.length > 0) return { prefix: siloPrefix, entries };
   }
-  return { prefix: flatPrefix, entries: visible((await listSafely(flatPrefix)).entries) };
+  const flat = await listSafely(flatPrefix);
+  return { prefix: flatPrefix, entries: visible(flat.entries), failed: flat.failed };
 }
 
 /** Breadth-first walk of one root, appending display paths into `out`. */
@@ -472,6 +491,17 @@ async function walkRoot(
 }
 
 /**
+ * The FILE names among a root's depth-1 entries — the election's input, spelled
+ * once because {@link wikiLeafFilter} and {@link resolveWorkbenchFile} must feed
+ * {@link electWikiLeafNames} exactly the same candidates from exactly the same
+ * listing (DW-489). Directories are dropped: a directory named `cased.md` is not
+ * a page and must not be able to defeat the file that is.
+ */
+function wikiLeafNamesIn(entries: readonly Listing[]): string[] {
+  return entries.filter((entry) => !entry.isDirectory).map((entry) => entry.name);
+}
+
+/**
  * May `wiki/<name>` be LISTED?
  *
  * A filename is a disclosure — that is this filter's reason, and it is not the
@@ -487,8 +517,12 @@ async function walkRoot(
  * of "a direct child of the wiki root" that the gate itself now calls, and
  * {@link readableWikiLeaf} for the name — which also drops the generated
  * `index.md`, correctly, since it has no slug and is not the owner's writing.
- * A subset rather than an equality only because of the elected-winner rule below,
- * which narrows the listing without narrowing the read.
+ * Since DW-489 it is an EQUALITY, not a strict subset: the gate applies
+ * {@link wikiLeafName} (depth), {@link readableWikiLeaf} (the `.md`-and-slug
+ * test, which is `wikiLeafSlug` plus the slug set — the extension is NOT
+ * `wikiLeafName`'s business, `wikiLeafName("wiki/notes.txt")` is `"notes.txt"`)
+ * and the elected-winner rule below, all three. Derived from the gate, and now
+ * coextensive with it under this root.
  *
  * Directories are never leaf-filtered, so `wiki/query-history/` itself still
  * lists: a directory is a disclosure, not a previewable row (`selectionExists`
@@ -504,20 +538,12 @@ async function walkRoot(
  * exactly one name per slug is ELECTED from `rootEntries` and only that name may
  * list.
  *
- * The election, which must be TOTAL rather than conditional: the literal
- * `<slug>.md` wins whenever the root holds one, because that is the name a save
- * lands on; otherwise the lexicographically first name carrying the slug wins.
- * An earlier draft dropped a variant only when a literal `<slug>.md` sat beside
- * it, which left `cased.MD` + `cased.Md` — no canonical at all — listing twice
- * under one slug, the same defect in a worse form. The tiebreak is a total order
- * on the names so the winner does not depend on listing order and the tab cannot
- * reorder itself between renders.
- *
- * A lone variant still lists, which is the reason the rule elects rather than
- * demands. A store's case sensitivity is not knowable from a name: on a
- * case-INSENSITIVE store `cased.MD` IS the Page — the listing returns whatever
- * casing was written — so an unconditional "only exactly `<slug>.md` may list"
- * would hide a real page the Knowledge tab edits.
+ * The election itself is {@link electWikiLeafNames}, in the pure leaf module
+ * `wiki-file-names.ts` — NOT restated here, because {@link resolveWorkbenchFile}
+ * and `wiki.ts`'s page key now decide from the same function (DW-489/490) and
+ * three copies of a total order is how they would drift apart again. That
+ * docblock carries the rule and the reasons: canonical-else-lexicographic-first,
+ * total rather than conditional, and a lone variant winning its own slug.
  *
  * `rootEntries` are the depth-1 entries {@link resolveRoot} already returned and
  * {@link walkRoot} is already seeded with, so the decision costs no `stat()` and
@@ -532,31 +558,20 @@ async function walkRoot(
  * Dropping a defeated name is a GATE decision, not a truncation: the emit loop's
  * `continue` leaves `budget.truncated` alone, the same as every other leaf this
  * filter refuses. The admissible set therefore stays a SUBSET of what
- * {@link resolveWorkbenchFile} will serve, which is the DW-41 invariant; the read
- * gate's own reach is deliberately unchanged, so `wiki/cased.MD` still hands back
- * its bytes when asked for directly.
+ * {@link resolveWorkbenchFile} will serve, which is the DW-41 invariant — and
+ * since DW-489 the `wiki/` half of it is an EQUALITY on this respect: the gate
+ * elects over the same entries, so `wiki/cased.MD` no longer hands back its
+ * bytes when the listing elected `wiki/cased.md` against it.
  */
 function wikiLeafFilter(
   readableSlugs: ReadonlySet<string>,
   rootEntries: readonly Listing[],
 ): LeafFilter {
-  // One winner per slug. Built from `wikiLeafSlug` over the root's own names —
+  // One winner per slug, from the shared election over the root's own names —
   // NOT from a second expression of the read gate: `readableWikiLeaf` stays the
   // one boolean that answers "may these bytes be read" (DW-41), and is applied
   // to the name below exactly as before.
-  const winners = new Map<string, string>();
-  for (const entry of rootEntries) {
-    if (entry.isDirectory) continue;
-    const slug = wikiLeafSlug(entry.name);
-    if (slug === null) continue;
-    const canonical = `${slug}.md`;
-    const standing = winners.get(slug);
-    if (standing === canonical) continue;
-    if (entry.name === canonical || standing === undefined || entry.name < standing) {
-      winners.set(slug, entry.name);
-    }
-  }
-  const listable = new Set(winners.values());
+  const listable = new Set(electWikiLeafNames(wikiLeafNamesIn(rootEntries)).values());
   return (displayPath) => {
     const name = wikiLeafName(displayPath);
     return name !== null && readableWikiLeaf(name, readableSlugs) && listable.has(name);
@@ -860,11 +875,27 @@ export async function listRawSourceFilePaths(
  *
  * {@link wikiLeafFilter} — the LISTING filter — now DERIVES its admissible set
  * from this predicate (DW-41), so the Files tab can no longer show a `wiki/`
- * row this gate would refuse. Derives, not equals: the listing narrows further
- * still, showing only the canonical `<slug>.md` when a variant-cased sibling
- * shadows it (DW-202/203). That narrowing is the listing's alone — this gate's
- * reach is unchanged, and `wiki/cased.MD` asked for directly still serves its
- * bytes, because on a case-INSENSITIVE store that name IS the Page.
+ * row this gate would refuse. Derives, and — under this root, since DW-489 —
+ * now EQUALS: the three rules the listing applies are the three
+ * {@link resolveWorkbenchFile} applies, so "listed" and "readable" are one
+ * answer rather than two that happen to agree.
+ *
+ * THE ELECTED-WINNER RULE WAS THE LAST GAP (DW-489). The listing showed only
+ * the elected spelling of a slug while this gate served
+ * every spelling, so a deep link or a selection restored from `workbench-state`
+ * could preview `wiki/cased.MD` — with slug `cased` and `editable: true` — while
+ * a save landed on `wiki/cased.md`, one object previewed and another written.
+ * {@link resolveWorkbenchFile} now applies {@link electWikiLeafNames} to the
+ * depth-1 entries {@link resolveRoot} already returned, so a defeated spelling
+ * answers the same indistinguishable `null` every other refusal answers. The
+ * case-INSENSITIVE store is untouched by that: there `listFiles` returns ONE
+ * name for the Page, whatever casing was written, so that name wins its own slug
+ * and keeps listing and reading.
+ *
+ * Note the DIRECTION of this predicate's own reach: it decides a NAME, not an
+ * object, and it stays deliberately case-insensitive on the extension. The
+ * election is what picks among the names it admits, and it lives in
+ * `wiki-file-names.ts` rather than here because `wiki.ts` shares it (DW-490).
  *
  * The two are still two functions, and still must be: their REASONS differ.
  * The listing's is that a FILENAME is a disclosure;
@@ -874,20 +905,13 @@ export async function listRawSourceFilePaths(
  * the listing (a Files tab that showed sizes, say, or a per-Wiki partition per
  * DW-17) would silently widen the read too. Derive, do not merge.
  *
- * The name→slug half is {@link wikiLeafSlug}, exported because the preview route
- * has to answer the same question to decide whether a `wiki/` file selection is
- * the editable Page reached from the other tab. Two expressions of one rule is
- * exactly how `wiki/alpha.MD` was once gated in and then served with no slug.
+ * The name→slug half is {@link wikiLeafSlug}, which now lives in the pure leaf
+ * module `wiki-file-names.ts` and is RE-EXPORTED from here (see the re-export
+ * near the top). It is exported because the preview route has to answer the same
+ * question to decide whether a `wiki/` file selection is the editable Page
+ * reached from the other tab. Two expressions of one rule is exactly how
+ * `wiki/alpha.MD` was once gated in and then served with no slug.
  */
-export function wikiLeafSlug(name: string): string | null {
-  // Case-INSENSITIVE on the extension, exact on the slug: a filesystem need not
-  // be case-sensitive, so `alpha.MD` is the same file as `alpha.md`, while the
-  // slug itself is what the gate is about and is matched as written.
-  if (!name.toLowerCase().endsWith(".md")) return null;
-  const slug = name.slice(0, -".md".length);
-  return slug.length > 0 ? slug : null;
-}
-
 function readableWikiLeaf(name: string, readableSlugs: ReadonlySet<string>): boolean {
   const slug = wikiLeafSlug(name);
   return slug !== null && readableSlugs.has(slug);
@@ -956,6 +980,9 @@ type ResolvedWorkbenchFile =
  *     reason that function documents. {@link wikiLeafName} is why the listing is
  *     depth-bounded too: one function, called by both, rather than this branch's
  *     old `rest.length !== 1` and a matching `depth === 1` over there (DW-204).
+ *     It then passes {@link electWikiLeafNames} over the root's own depth-1
+ *     entries, which is the third shared rule (DW-489) and the only one that
+ *     cannot be decided before the root is resolved — see below.
  *   - `raw/…` and `wiki/…` both resolve their root through {@link resolveRoot},
  *     so each root has exactly one definition — including that a FAILED silo
  *     listing keeps the silo selected instead of widening to the flat tree,
@@ -963,7 +990,9 @@ type ResolvedWorkbenchFile =
  *
  * Every rejection is the same `null`. Callers answer one indistinguishable 404
  * for all of them, so "gated out" and "absent" must not be tellable apart from
- * here either.
+ * here either — including the newest refusal, a `wiki/` spelling the listing
+ * elected against, which withholds only paths the listing never emitted and so
+ * cannot be an existence oracle for anything.
  */
 async function resolveWorkbenchFile(
   owner: string,
@@ -987,9 +1016,17 @@ async function resolveWorkbenchFile(
   // root is readable only when it is a DIRECT child (`wikiLeafName`, the one
   // spelling of that rule — DW-204) that is a `.md` whose slug survived
   // `listReadableWikiPages`.
+  //
+  // HOISTED because the election below needs this exact value. Re-deriving the
+  // leaf down there (as `rest[0]`, say) would be a SECOND expression of "which
+  // segment is the leaf" in the one module whose history is two expressions of
+  // one rule drifting until `wiki/alpha.MD` was gated in and then served with
+  // no slug. Non-null exactly when this is a gated-in wiki leaf, which is also
+  // what tells the election below that it has something to decide.
+  let wikiLeaf: string | null = null;
   if (root === "wiki") {
-    const leaf = wikiLeafName(displayPath);
-    if (leaf === null || !readableWikiLeaf(leaf, options.readableSlugs)) return null;
+    wikiLeaf = wikiLeafName(displayPath);
+    if (wikiLeaf === null || !readableWikiLeaf(wikiLeaf, options.readableSlugs)) return null;
   }
 
   // The `raw/` half of the gate (DW-32), and the SAME predicate the listing
@@ -1009,8 +1046,41 @@ async function resolveWorkbenchFile(
     logger.error("workbench-files", "could not resolve the owner's silo", error);
   }
   const flat = root === "wiki" ? wikiRelPath("") : rawRelPath("");
-  const { prefix } = await resolveRoot(root, silo, flat);
+  const { prefix, entries, failed } = await resolveRoot(root, silo, flat);
   if (root === "raw" && (prefix === UNRESOLVED_RAW_PREFIX || !silo)) return null;
+
+  // ONE ROW PER SLUG, AT THE GATE TOO (DW-489). The listing elects one spelling
+  // of a slug from the root's depth-1 entries; serving a defeated spelling here
+  // is what let a deep link preview `wiki/cased.MD` and save `wiki/cased.md`.
+  //
+  // Decided from the entries `resolveRoot` ALREADY returned — the same value
+  // `listWorkbenchFilePaths` hands `wikiLeafFilter`, reduced to a set of elected
+  // names by the SAME expression that filter uses — so the two answers are
+  // identical BY CONSTRUCTION rather than by agreement, and at no `stat()`, no
+  // second listing and no extra storage call. It has to sit here rather than
+  // beside the gate above for exactly that reason: the entries do not exist
+  // until the root is resolved.
+  //
+  // AN UNREADABLE LISTING FAILS OPEN, and this is the one place in this module
+  // where that is the safe direction. A rejected `listFiles` yields `entries:
+  // []`, which would elect nothing and turn a transient R2 LIST blip into a 404
+  // on EVERY page in the root — perfectly readable by key, and readable again a
+  // second later. That is `listSafely`'s "degrade this branch, not the page"
+  // pointed at the page, and the same failure `readWikiPage`'s strict mode
+  // exists to prevent: absence reported for a blip is what authorizes a
+  // destructive fix. Failing open discloses NOTHING, because this election is
+  // not the security gate — `readableWikiLeaf` above is (DW-41), and it has
+  // already run. All the election does is pick among spellings of a slug the
+  // caller may already read, so an indeterminate candidate set can only serve a
+  // sibling casing of a permitted page, never a page the gate would withhold.
+  //
+  // On a case-INSENSITIVE store this changes nothing: `listFiles` returns ONE
+  // name for the Page, so that name wins its own slug and still reads.
+  if (wikiLeaf !== null && !failed) {
+    const listable = new Set(electWikiLeafNames(wikiLeafNamesIn(entries)).values());
+    if (!listable.has(wikiLeaf)) return null;
+  }
+
   return { kind: "key", key: `${prefix}/${rest.join("/")}` };
 }
 

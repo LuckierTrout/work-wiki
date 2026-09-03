@@ -5,6 +5,7 @@ import path from "path";
 import {
   readWikiPage,
   writeWikiPage,
+  writeWikiPageIfContentMatches,
   listWikiPages,
   updateIndex,
   saveRawSource,
@@ -2392,5 +2393,285 @@ describe("writeWikiPage with tenant parameter", () => {
     const flatEntries = await storage.listFiles("wiki/.revisions/silo-rev");
     const flatMdFiles = flatEntries.filter((e: { name: string }) => e.name.endsWith(".md"));
     expect(flatMdFiles.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case-variant page keys (DW-490)
+//
+// The elected object is the object: a save lands on whatever spelling of
+// `<slug>.md` actually holds the slug, not on the canonical name. Both halves
+// are pinned against a SIMULATED store because the dev host's volume is
+// case-INSENSITIVE — two spellings fold onto one file there, so the collision
+// this describe is about cannot be staged on disk at all, and a suite that only
+// ran on a case-sensitive CI box would pass for the wrong reason on the machine
+// the code is written on.
+// ---------------------------------------------------------------------------
+describe("case-variant page keys", () => {
+  /**
+   * A store that answers ONLY the exact key it was given.
+   *
+   * That is the whole difference between the two store kinds: a case-SENSITIVE
+   * store holding `wiki/cased.MD` answers `readFile("wiki/cased.md")` with
+   * ENOENT, while a case-INSENSITIVE one resolves the same object. Modelling it
+   * as an exact-key map makes the sensitive store the DEFAULT here and lets the
+   * insensitive one be spelled by simply seeding the canonical name — which is
+   * what "the recovery probe is unreachable there" means concretely.
+   *
+   * Every whole-file door the page key touches is served from the same map, so
+   * a revision snapshot and a CAS see the same objects the read did. `getIndex`
+   * is deliberately NOT stubbed: `getPageIndex` reads `derived-indexes/pages.json`
+   * through `readFile` first, so seeding that key in the map is how a test routes
+   * a slug to a tenant silo.
+   */
+  function simulateStore(initial: Record<string, string>) {
+    const objects = new Map(Object.entries(initial));
+    const enoent = (key: string): Error =>
+      Object.assign(new Error(`ENOENT: no such file, open '${key}'`), { code: "ENOENT" });
+    // Content-derived so a rewrite changes it, which is all `writeFileIfMatch`
+    // needs to tell a won CAS from a lost one.
+    const etagOf = (content: string): string => `etag:${content.length}:${content}`;
+
+    return import("../storage").then(({ getStorage }) => {
+      const storage = getStorage();
+      const readFile = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (key: string) => {
+          const hit = objects.get(key);
+          if (hit === undefined) throw enoent(key);
+          return hit;
+        });
+      vi.spyOn(storage, "readFileWithEtag").mockImplementation(async (key: string) => {
+        const hit = objects.get(key);
+        if (hit === undefined) throw enoent(key);
+        return { content: hit, etag: etagOf(hit) };
+      });
+      vi.spyOn(storage, "fileExists").mockImplementation(async (key: string) => objects.has(key));
+      vi.spyOn(storage, "writeFile").mockImplementation(async (key: string, content: string) => {
+        objects.set(key, content);
+      });
+      vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+        async (key: string, content: string, etag: string) => {
+          const hit = objects.get(key);
+          if (hit === undefined || etagOf(hit) !== etag) return false;
+          objects.set(key, content);
+          return true;
+        },
+      );
+      return { objects, readFile };
+    });
+  }
+
+  /** The bytes of the single revision snapshot taken for `slug`, if any. */
+  function revisionBodies(objects: Map<string, string>, prefix: string): string[] {
+    return [...objects.entries()]
+      .filter(([key]) => key.startsWith(prefix) && key.endsWith(".md"))
+      .map(([, content]) => content);
+  }
+
+  it("targets the lone variant a case-SENSITIVE store actually holds", async () => {
+    // The defect DW-490 names: the bytes came from `wiki/cased.MD` (the Files
+    // tab lists it, and since DW-489 serves only it), so writing `wiki/cased.md`
+    // would create a SECOND object for one slug and orphan the one the reader
+    // was shown.
+    const { objects } = await simulateStore({ "wiki/cased.MD": "# Cased\n\nvariant.\n" });
+
+    await writeWikiPage("cased", "# Cased\n\nupdated.\n", "yoyo", "edit");
+
+    expect(objects.get("wiki/cased.MD")).toBe("# Cased\n\nupdated.\n");
+    expect(objects.has("wiki/cased.md")).toBe(false);
+    // ...and the revision is snapshotted from the RECOVERED bytes, so history
+    // records what was actually replaced rather than treating this as a first
+    // write with nothing to preserve.
+    expect(revisionBodies(objects, "wiki/.revisions/cased/")).toEqual(["# Cased\n\nvariant.\n"]);
+  });
+
+  it("targets the canonical name when it exists, and probes nothing", async () => {
+    // The case-INSENSITIVE store's shape, and a case-sensitive collision alike:
+    // the canonical spelling resolves an object, so the recovery branch is never
+    // entered and this path makes exactly the storage calls it made before.
+    const { objects, readFile } = await simulateStore({
+      "wiki/cased.md": "# Cased\n\ncanonical.\n",
+      "wiki/cased.MD": "# Cased\n\nvariant.\n",
+    });
+
+    await writeWikiPage("cased", "# Cased\n\nupdated.\n");
+
+    expect(objects.get("wiki/cased.md")).toBe("# Cased\n\nupdated.\n");
+    // The defeated sibling is untouched: this fix retargets a write, it does not
+    // reconcile a collision.
+    expect(objects.get("wiki/cased.MD")).toBe("# Cased\n\nvariant.\n");
+    expect(readFile.mock.calls.map(([key]) => key)).toEqual(["wiki/cased.md"]);
+  });
+
+  it("still creates `<slug>.md` for a genuinely absent page", async () => {
+    // Three bounded probes that all miss are still a miss. The default target is
+    // unchanged, so a first write is byte-for-byte what it always was.
+    const { objects } = await simulateStore({});
+
+    await writeWikiPage("fresh", "# Fresh\n");
+
+    expect(objects.get("wiki/fresh.md")).toBe("# Fresh\n");
+    // No revision: nothing was replaced.
+    expect(revisionBodies(objects, "wiki/.revisions/fresh/")).toEqual([]);
+  });
+
+  it("compares and CASes against the variant, not the canonical name", async () => {
+    const { objects } = await simulateStore({ "wiki/cased.MD": "# Cased\n\nvariant.\n" });
+
+    await expect(
+      writeWikiPageIfContentMatches(
+        "cased",
+        "# Cased\n\npublished.\n",
+        "# Cased\n\nvariant.\n",
+        "yoyo",
+        "publish",
+      ),
+    ).resolves.toBe(true);
+
+    expect(objects.get("wiki/cased.MD")).toBe("# Cased\n\npublished.\n");
+    expect(objects.has("wiki/cased.md")).toBe(false);
+  });
+
+  it("still refuses a CAS whose expected bytes do not match the variant", async () => {
+    // Retargeting the comparison must not weaken it: the precondition is still
+    // the bytes, on whichever object carries the slug.
+    const { objects } = await simulateStore({ "wiki/cased.MD": "# Cased\n\nvariant.\n" });
+
+    await expect(
+      writeWikiPageIfContentMatches("cased", "# Cased\n\nlost.\n", "# Cased\n\nstale.\n"),
+    ).resolves.toBe(false);
+
+    expect(objects.get("wiki/cased.MD")).toBe("# Cased\n\nvariant.\n");
+  });
+
+  it("readWikiPage recovers the variant and reports the object it read", async () => {
+    // Without this the save door 404s on a page the Files tab shows as editable:
+    // `readWikiPage` only ever read `${slug}.md`.
+    await simulateStore({ "wiki/cased.MD": "# Cased\n\nbody.\n" });
+
+    const page = await readWikiPage("cased");
+
+    expect(page).not.toBeNull();
+    expect(page!.content).toBe("# Cased\n\nbody.\n");
+    expect(page!.title).toBe("Cased");
+    // `path` names the object ACTUALLY read — a recovered variant is an ordinary
+    // hit, not a special case the caller has to know about.
+    expect(page!.path).toBe(path.join(tmpDir, "wiki", "cased.MD"));
+  });
+
+  it("elects the canonical spelling when several variants are present", async () => {
+    // Same total order as the listing and the read gate, because it is the same
+    // function: canonical wins, and the recovery probe cannot pick a different
+    // object than the Files tab elected.
+    const { objects } = await simulateStore({
+      "wiki/cased.MD": "upper\n",
+      "wiki/cased.Md": "mixed\n",
+      "wiki/cased.mD": "lower-upper\n",
+    });
+
+    // No canonical among them, so the lexicographically first name wins.
+    const page = await readWikiPage("cased");
+    expect(page!.content).toBe("upper\n");
+    expect(page!.path).toBe(path.join(tmpDir, "wiki", "cased.MD"));
+
+    await writeWikiPage("cased", "rewritten\n");
+    expect(objects.get("wiki/cased.MD")).toBe("rewritten\n");
+    expect(objects.get("wiki/cased.Md")).toBe("mixed\n");
+    expect(objects.get("wiki/cased.mD")).toBe("lower-upper\n");
+    expect(objects.has("wiki/cased.md")).toBe(false);
+  });
+
+  it("recovers a variant inside the tenant silo the index routes to", async () => {
+    // The recovery walks the SAME roots the read already tried, in the same
+    // order — each attempted silo first, then the flat root — so it can never
+    // prefer an object an ordinary read would have passed over.
+    const { objects } = await simulateStore({
+      "derived-indexes/pages.json": JSON.stringify({
+        cased: { slug: "cased", title: "Cased", summary: "s", owner: "alice" },
+      }),
+      "tenants/alice/wiki/cased.MD": "# Cased\n\nsilo variant.\n",
+    });
+
+    const page = await readWikiPage("cased");
+    expect(page!.content).toBe("# Cased\n\nsilo variant.\n");
+    expect(page!.path).toBe(path.join(tmpDir, "tenants", "alice", "wiki", "cased.MD"));
+
+    await writeWikiPage("cased", "# Cased\n\nsilo updated.\n", undefined, undefined, "alice");
+    expect(objects.get("tenants/alice/wiki/cased.MD")).toBe("# Cased\n\nsilo updated.\n");
+    expect(objects.has("tenants/alice/wiki/cased.md")).toBe(false);
+    expect(objects.has("wiki/cased.md")).toBe(false);
+  });
+
+  it("rethrows a non-ENOENT variant failure under strict, and answers null without it", async () => {
+    // `strict`'s whole reason, carried into the probe: a transient blip
+    // flattened into `null` is reported as a deleted Page, and that can
+    // authorize a destructive fix.
+    const { readFile } = await simulateStore({});
+    const fault = new Error("variant store unavailable");
+    readFile.mockImplementation(async (key: string) => {
+      if (key === "wiki/cased.MD") throw fault;
+      throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+    });
+
+    await expect(readWikiPage("cased", { strict: true, fresh: true })).rejects.toThrow(
+      "variant store unavailable",
+    );
+    await expect(readWikiPage("cased", { fresh: true })).resolves.toBeNull();
+  });
+
+  it("FAILS the write on an indeterminate probe instead of orphaning the object", async () => {
+    // The failure mode a non-strict probe would hide, and it is worse than the
+    // dropped edit the CAS door refuses: a swallowed fault falls through to the
+    // canonical `<slug>.md` and CREATES the second object DW-490 exists to
+    // prevent — the real bytes orphaned, their revision skipped, and nothing but
+    // a log line to say so. `readWikiPage`'s strict rationale exactly: absence
+    // inferred from a blip is what authorizes a destructive fix.
+    const { objects, readFile } = await simulateStore({});
+    readFile.mockImplementation(async (key: string) => {
+      if (key === "wiki/cased.MD") throw new Error("variant store unavailable");
+      throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+    });
+
+    await expect(writeWikiPage("cased", "# Cased\n\nnew.\n")).rejects.toThrow(
+      "variant store unavailable",
+    );
+    expect(objects.has("wiki/cased.md")).toBe(false);
+    expect([...objects.keys()]).toEqual([]);
+  });
+
+  it("FAILS the CAS on an indeterminate probe rather than reporting a lost race", async () => {
+    // `false` from this door means "someone else won" and the caller drops the
+    // edit. A storage blip must not be spelled that way.
+    const { objects, readFile } = await simulateStore({});
+    readFile.mockImplementation(async (key: string) => {
+      if (key === "wiki/cased.MD") throw new Error("variant store unavailable");
+      throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+    });
+
+    await expect(
+      writeWikiPageIfContentMatches("cased", "# Cased\n\nnext.\n", "# Cased\n\nbefore.\n"),
+    ).rejects.toThrow("variant store unavailable");
+    expect([...objects.keys()]).toEqual([]);
+  });
+
+  it("gives a recovered FLAT variant the same silo re-route a canonical flat hit gets", async () => {
+    // The rule a path-comparison guard silently skipped: an unseeded index
+    // cannot name the silo up front, so the flat compatibility copy is used as a
+    // ROUTING HINT and the matching silo bytes win — which is what stops a stale
+    // public copy from restoring old content after an index outage. A recovered
+    // variant is an ORDINARY flat hit, so it gets that treatment too; otherwise
+    // the recovery would win against something an ordinary read would have
+    // passed over.
+    await simulateStore({
+      "wiki/cased.MD": "---\nowner: alice\n---\n\n# Cased\n\nstale public copy.\n",
+      "tenants/alice/wiki/cased.md": "---\nowner: alice\n---\n\n# Cased\n\nsilo truth.\n",
+    });
+
+    const page = await readWikiPage("cased");
+
+    expect(page!.content).toContain("silo truth.");
+    expect(page!.content).not.toContain("stale public copy.");
+    expect(page!.path).toBe(path.join(tmpDir, "tenants", "alice", "wiki", "cased.md"));
   });
 });

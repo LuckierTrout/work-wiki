@@ -1087,23 +1087,105 @@ describe("listWorkbenchFilePaths", () => {
       "wiki/cased.MD",
     ]);
     expect(truncated).toBe(false);
-    // Both still READ: the election narrows the listing, never the gate.
+    // The WINNER reads; the defeated sibling does not (DW-489). The gate elects
+    // over the same depth-1 entries the listing did, so "listed" and "readable"
+    // are one answer here rather than two that happen to agree.
     expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("cased"))).not.toBeNull();
-    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.Md", gate("cased"))).not.toBeNull();
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.Md", gate("cased"))).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, "wiki/cased.Md", gate("cased"))).toBe(false);
   });
 
-  it("still READS the defeated sibling it refuses to list", async () => {
-    // The fix is at the LISTING and nowhere else: `readWorkbenchFile` and
-    // `workbenchFileExists` keep their reach, because on a case-INSENSITIVE
-    // store `cased.MD` IS the Page and the preview route must still serve it.
-    // Narrowing the read here would make the collision fix a regression for
-    // every store the collision cannot even happen on.
+  it("REFUSES the defeated sibling it refuses to list", async () => {
+    // DW-489, the half DW-202/203 deliberately left open. While the gate served
+    // every spelling, a deep link — or a selection restored from
+    // `workbench-state` — previewed `wiki/cased.MD` with slug `cased` and
+    // `editable: true`, and the save landed on `wiki/cased.md`: one object
+    // previewed, another written. The refusal is the same indistinguishable
+    // `null` every other refusal is, and the only path it withholds is a path
+    // the listing never emitted.
     await seedCasedCollision();
 
     const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("cased"));
     expect(paths).not.toContain("wiki/cased.MD");
-    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("cased"))).not.toBeNull();
-    expect(await workbenchFileExists(OWNER, null, "wiki/cased.MD", gate("cased"))).toBe(true);
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("cased"))).toBeNull();
+    expect(await readWorkbenchFileBytes(OWNER, null, "wiki/cased.MD", gate("cased"))).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, "wiki/cased.MD", gate("cased"))).toBe(false);
+    // ...and the elected row is unaffected, so this is a NARROWING and not an
+    // outage: the object the save lands on still serves its bytes.
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.md", gate("cased"))).not.toBeNull();
+  });
+
+  it("refuses a spelling the listing never emitted, even the canonical one", async () => {
+    // The lone-variant shape, asked for by the wrong name. Only `cased.MD` is
+    // in the root, so IT is the elected row (see the lone-variant listing case
+    // above, which must stay green): `wiki/cased.md` is a path the tab never
+    // showed, and on a case-INSENSITIVE host it is the one spelling that would
+    // otherwise still resolve the object — `readFile` folds the casing. The
+    // gate answers from the LISTING, not from the store's folding rules, so
+    // both host kinds answer the same `null`.
+    await fs.writeFile(path.join(tmpDir, "wiki", "cased.MD"), "x", "utf-8");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("cased"));
+    expect(paths).toContain("wiki/cased.MD");
+    expect(paths).not.toContain("wiki/cased.md");
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.md", gate("cased"))).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, "wiki/cased.md", gate("cased"))).toBe(false);
+  });
+
+  it("elects inside the TENANT SILO, not just the flat root", async () => {
+    // The silo is the production-normal root — `resolveRoot` prefers it and only
+    // falls back to the shared flat tree when it lists empty — so an election
+    // wired to the flat prefix alone would be untested where it actually runs.
+    // Same staging trick as `alsoListInWikiRoot`, pointed at the silo prefix.
+    const siloPrefix = tenantWikiRelPath(tenantForOwner(OWNER), "");
+    await writeSilo("wiki", "cased.md");
+    const storage = getStorage();
+    const real = storage.listFiles.bind(storage);
+    vi.spyOn(storage, "listFiles").mockImplementation(async (prefix: string) => {
+      const entries = await real(prefix);
+      if (prefix !== siloPrefix) return entries;
+      return entries.some((e) => e.name === "cased.MD")
+        ? entries
+        : [...entries, { name: "cased.MD", isDirectory: false }];
+    });
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, gate("cased"));
+    expect(paths.filter((p) => p.toLowerCase().startsWith("wiki/cased"))).toEqual([
+      "wiki/cased.md",
+    ]);
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.md", gate("cased"))).not.toBeNull();
+    expect(await readWorkbenchFile(OWNER, null, "wiki/cased.MD", gate("cased"))).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, "wiki/cased.MD", gate("cased"))).toBe(false);
+  });
+
+  it("FAILS OPEN when the root listing is indeterminate", async () => {
+    // The election decides from a LISTING, and a rejected `listFiles` yields no
+    // entries — indistinguishable, without the `failed` flag, from a genuinely
+    // empty root. Electing over that would refuse every page in the root, so one
+    // transient R2 LIST blip would 404 every Files-tab preview and every
+    // `/api/v1/.../files/content` read of a page that is perfectly readable by
+    // key. `listSafely` degrades the BRANCH, not the page.
+    //
+    // Failing open discloses nothing: the election is not the security gate —
+    // `readableWikiLeaf` is (DW-41), and it has already run by this point. All
+    // the election picks is WHICH SPELLING of an already-readable slug wins.
+    await fs.writeFile(path.join(tmpDir, "wiki", "alpha.md"), "bytes", "utf-8");
+    const flatWiki = wikiRelPath("");
+    const storage = getStorage();
+    const real = storage.listFiles.bind(storage);
+    vi.spyOn(storage, "listFiles").mockImplementation(async (prefix: string) => {
+      if (prefix === flatWiki) throw new Error("LIST unavailable");
+      return real(prefix);
+    });
+
+    // `readFile` is untouched, so the bytes are right there behind the key.
+    expect(await readWorkbenchFile(OWNER, null, "wiki/alpha.md", gate("alpha"))).toEqual({
+      content: "bytes",
+    });
+    expect(await workbenchFileExists(OWNER, null, "wiki/alpha.md", gate("alpha"))).toBe(true);
+    // ...and the gate that IS about disclosure still refuses an unreadable slug,
+    // failed listing or not.
+    expect(await readWorkbenchFile(OWNER, null, "wiki/alpha.md", gate("other"))).toBeNull();
   });
 
   it("lists neither name of a collision whose slug is not readable", async () => {

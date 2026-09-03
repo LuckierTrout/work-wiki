@@ -280,6 +280,18 @@ async function handle(request: Request) {
   // case-sensitive) with no slug, so a page the Knowledge tab edits was
   // read-only from the Files tab. One function each is what stops them drifting
   // again.
+  //
+  // AND THE SLUG NOW NAMES THE OBJECT THESE BYTES CAME FROM (DW-489). It did
+  // not always: several spellings of one `.md` name carry ONE slug on a
+  // case-SENSITIVE store, the Files tab lists only the elected one, and the read
+  // gate used to serve every one of them — so a deep link or a selection
+  // restored from `workbench-state` could preview `wiki/cased.MD` here, with
+  // slug `cased` and `editable: true`, while the save landed on a different
+  // object. The refusal is upstream, in `resolveWorkbenchFile`: a non-elected
+  // spelling never reaches this line, because `readWorkbenchFile` /
+  // `workbenchFileExists` above already answered the same 404 they answer for a
+  // path that does not exist. NOTHING HERE ENFORCES THAT — do not re-widen the
+  // gate on the assumption that this derivation would catch it.
   const wikiLeaf = wikiLeafName(displayPath);
   const slug = wikiLeaf === null ? undefined : (wikiLeafSlug(wikiLeaf) ?? undefined);
 

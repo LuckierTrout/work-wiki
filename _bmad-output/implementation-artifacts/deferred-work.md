@@ -3727,7 +3727,9 @@ source_spec: `spec-dw-202-203-204-workbench-file-path-invariants.md`
 location: src/app/api/workbench/preview/route.ts (slug derivation); src/lib/workbench-files.ts (resolveWorkbenchFile)
 severity: medium
 reason: DW-202/203 was fixed at the listing on the authority of the recorded 2026-08-19 decision ("list only the canonical `<slug>.md` row and drop the variant-cased sibling from the Files tab"), and the ledger itself records the defect as "pre-existing at the read and edit layers". So the harm is narrowed but not closed: `readWorkbenchFile`/`workbenchFileExists` still serve `wiki/cased.MD`, and `src/app/api/workbench/preview/route.ts` still hands it slug `cased` with `editable: true`. A deep link, a restored selection from `workbench-state`, or any API caller that names the display path directly reproduces the original defect — preview `cased.MD`, save `cased.md`. Deliberately not closed here: the route's page/file disambiguation is what DW-41's intent put out of bounds, and reverting the slug for an odd-cased name would re-break the case-INSENSITIVE store, where that name IS the Page and a case-sensitive test there once made it read-only from the Files tab. Closing it properly needs a rule t
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-case-variant-file-election
+resolution-undo: 3f66b2f76858108684d8faa716744803eec6d82813c511fa74a7ac95d9683b0e 2026-09-03 7374617475733a206f70656e
 decision: 2026-08-28 Extend the election to the read layer — Give resolveWorkbenchFile, readWorkbenchFile, workbenchFileExists and the preview route's slug derivation the same elected-winner rule the listing uses, so a directly-named case variant answers exactly as the listing does on both store kinds, and pin the case-insensitive-store behaviour that a naive revert would break.
 
 ### DW-490: The row that CREATES a collision is still editable: a lone `wiki/cased.MD` on a case-sensitive store lists, is handed slug `cased`, and the first save from it writes `wiki/cased.md` — orphaning the pr
@@ -3736,7 +3738,9 @@ source_spec: `spec-dw-202-203-204-workbench-file-path-invariants.md`
 location: src/lib/wiki.ts (writeWikiPage / writeWikiPageIfContentMatches); src/app/api/workbench/preview/route.ts
 severity: medium
 reason: The elected-winner rule keys on the candidate names present AT LISTING TIME, which is what lets a lone variant keep listing (it must: on a case-INSENSITIVE store that name is the only real Page). But the wiki write path targets `<slug>.md` unconditionally (`writeWikiPage`/`writeWikiPageIfContentMatches`, `src/lib/wiki.ts`), so on a case-sensitive store the first save from that row creates a SECOND object. From then on the collision exists, the election correctly drops the `.MD` row, and its bytes are orphaned with no surface that mentions them. So the decision's mechanism ("drop the sibling") is implemented while its stated purpose ("every visible row reads and writes the same object") holds only after a collision already exists — never for the row that creates one. Same root cause as the entry above: the fix has to reach the save half, which the recorded decision scoped out.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-case-variant-file-election
+resolution-undo: 3f66b2f76858108684d8faa716744803eec6d82813c511fa74a7ac95d9683b0e 2026-09-03 7374617475733a206f70656e
 decision: 2026-08-28 Write to the object that was read — Make the wiki write path target the object the row was read from rather than an unconditional <slug>.md, so a save from a lone case-variant row rewrites that object instead of creating a second one, and pin the behaviour on both a case-sensitive and a case-insensitive store.
 
 ### DW-491: `raw/assets/<slug>/<file>` is silo-mirrored and still spells a hidden page's slug, so DW-32's disclosure survives in the assets subtree.
@@ -6000,4 +6004,20 @@ location: src/lib/ingest.ts:1351
 source_spec: `spec-dw-702-710-merge-fold-quality-and-candidate-fallback.md`
 severity: low
 reason: `reconcilePage`'s `"new"` path (the default) still returns the model's text verbatim, so a reconcile answering exactly "DISPUTED: no\n" or a bare heading becomes `wikiContent` at src/lib/ingest.ts:2408 and replaces the existing page's prose with that literal string. This is the identical shape DW-702 names, minus the hard delete: `spec-c3-merge-empty-reconcile-guard.md` and this spec both forbid changing the ingest door, and the new test at `src/lib/__tests__/ingest.test.ts` now PINS the verbatim return, so the residue is deliberate and enforced rather than merely unnoticed. Less severe than the merge door because `writeWikiPage` snapshots a revision first (src/lib/wiki.ts:596), so the prose is recoverable; the published page is still wrong until someone notices. Deciding whether the ingest door should degrade to `newBody` on a no-prose fold is a behaviour change to a door two specs have now declared out of scope, so it wants its own decision.
+status: open
+
+### DW-740: `createWikiPage` still creates `<slug>.md` unconditionally, so on a case-SENSITIVE store its "create only if absent" guard can miss a page already stored under a variant casing of the extension and cr
+origin: spec-deferred d6a2dd77173b
+location: src/lib/wiki.ts
+source_spec: `spec-dw-489-490-case-variant-read-and-write-election.md`
+severity: low
+reason: `src/lib/wiki.ts:createWikiPage` builds `${slug}.md` and calls `writeFileIfAbsent` on it; unlike `writeWikiPage` and `writeWikiPageIfContentMatches` it was left untouched here on purpose (a Never clause of this spec). The reason is that the two decisions differ: a save is retargeting bytes onto the object the reader was shown, while "create if absent" is a CREATE-CONFLICT question — whether `cased.MD` counts as the page `cased` already existing — and answering it by probing three variants changes when a create is REFUSED, not merely where it lands. THE REACH IS WIDER THAN "a caller that skips the conflict read". The route- and MCP-level guards (`src/app/api/wiki/route.ts`, `src/mcp.ts`) do read through `readWikiPage` and so now see a recovered variant, but `src/lib/lifecycle.ts`'s `createOnly` branch (`:527-531`) carries its OWN precondition — `storageFileExists(wikiRelPath(`${slug}.md`))`, canonical only — and then calls `createWikiPage` twice (`:536` for the silo, `:541` for the flat
+status: open
+
+### DW-741: The delete and existence doors still address a Page as `<slug>.md` only, so a Page whose bytes this change deliberately parks on a case variant survives a "successful" hard delete and reads as absent
+origin: spec-deferred b89aba842dc9
+location: src/lib/lifecycle.ts (delete branch); src/lib/wiki.ts (wikiPageExists)
+source_spec: `spec-dw-489-490-case-variant-read-and-write-election.md`
+severity: medium
+reason: This spec retargeted the three doors its decision named — `readWikiPage` recovery, `writeWikiPage` and `writeWikiPageIfContentMatches` — so a variant-held Page is now a live, listed, readable, WRITABLE state rather than an anomaly `readWikiPage` refused to serve at all. Two sibling doors did not move with it, and each is a wrong answer the owner can hit: (1) DELETE. `src/lib/lifecycle.ts`'s delete branch unlinks exactly `tenantWikiRelPath(deleteTenant, `${slug}.md`)` and `wikiRelPath(`${slug}.md`)`, swallowing ENOENT on both. On a case-SENSITIVE store holding only `wiki/cased.MD`, the pre-delete read NOW succeeds (it did not before this change), both unlinks miss, the op reports success — and the next `readWikiPage("cased")` recovers the variant and serves the full body. A hard delete that reports success and removes nothing is worse than the pre-change state, where the Page was simply unreadable through `readWikiPage`. (2) EXISTENCE. `wikiPageExists` (`src/lib/wiki.ts`) probes `tenant
 status: open

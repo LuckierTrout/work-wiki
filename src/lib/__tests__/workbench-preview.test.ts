@@ -121,7 +121,8 @@ import {
   formatIfMatch,
   scopedContentVersion,
 } from "../write-precondition";
-import { readWorkbenchFile, wikiLeafName } from "../workbench-files";
+import { readWorkbenchFile, wikiLeafName, wikiLeafSlug } from "../workbench-files";
+import { electWikiLeafNames, wikiPageNames } from "../wiki-file-names";
 import { wikiArtifactPath, wikiRegistryPath } from "../wikis";
 import {
   beginPageCache,
@@ -1227,6 +1228,73 @@ describe("wikiLeafName (DW-204)", () => {
   });
 });
 
+describe("electWikiLeafNames / wikiPageNames (DW-489/490)", () => {
+  // The election used to be a loop inside `wikiLeafFilter`, exercised only
+  // through the Files tab listing. It is now load-bearing for THREE callers
+  // across two modules — the listing filter, the read gate in
+  // `resolveWorkbenchFile`, and the wiki page key in `wiki.ts` (read recovery
+  // and write target alike) — so it gets a binding of its own. A change to the
+  // rule has to fail HERE, not in whichever of the three a suite happens to
+  // reach first.
+
+  it("prefers the canonical `<slug>.md` whenever it is among the candidates", () => {
+    // Canonical-else-lexicographic-first. Note the canonical spelling is
+    // lexicographically LAST of the four (`.MD` < `.Md` < `.mD` < `.md`), so a
+    // rule that simply sorted would pick the wrong one — which is exactly why
+    // the preference is explicit.
+    expect(electWikiLeafNames(["cased.MD", "cased.md", "cased.Md"]).get("cased")).toBe("cased.md");
+    expect(electWikiLeafNames(["cased.md"]).get("cased")).toBe("cased.md");
+  });
+
+  it("falls back to the lexicographically first name when no canonical exists", () => {
+    // The shape a "drop it only when a literal `<slug>.md` sits beside it" rule
+    // gets wrong: two variants, no canonical, both carrying the slug `cased`.
+    // The election is TOTAL, so exactly one survives either way.
+    expect(electWikiLeafNames(["cased.Md", "cased.MD"]).get("cased")).toBe("cased.MD");
+    // A LONE variant wins its own slug — the case-INSENSITIVE store's shape,
+    // where `cased.MD` simply IS the Page and demanding the canonical name
+    // would hide it.
+    expect(electWikiLeafNames(["cased.MD"]).get("cased")).toBe("cased.MD");
+  });
+
+  it("does not depend on the order the names arrive in", () => {
+    // A total order on the names, so the Files tab cannot reorder itself
+    // between renders and the read gate cannot disagree with the write target
+    // because storage returned the same names in a different sequence.
+    const names = ["cased.Md", "cased.MD", "cased.md"];
+    for (const permutation of [names, [...names].reverse(), [names[1], names[2], names[0]]]) {
+      expect(electWikiLeafNames(permutation).get("cased")).toBe("cased.md");
+    }
+    const noCanonical = ["cased.mD", "cased.Md", "cased.MD"];
+    for (const permutation of [noCanonical, [...noCanonical].reverse()]) {
+      expect(electWikiLeafNames(permutation).get("cased")).toBe("cased.MD");
+    }
+  });
+
+  it("elects per slug, and a name carrying no slug contributes nothing", () => {
+    const winners = electWikiLeafNames(["a.MD", "a.md", "b.Md", "notes.txt", ".md", "b"]);
+    expect(Object.fromEntries(winners)).toEqual({ a: "a.md", b: "b.Md" });
+    // The slug is matched AS WRITTEN — only the extension is case-insensitive —
+    // so `Cased` and `cased` are two slugs, not one.
+    const cased = electWikiLeafNames(["Cased.md", "cased.md"]);
+    expect(cased.get("Cased")).toBe("Cased.md");
+    expect(cased.get("cased")).toBe("cased.md");
+  });
+
+  it("names exactly the four spellings that can carry a slug, canonical first", () => {
+    // What makes the write path's probe O(1) rather than a directory listing:
+    // `wikiLeafSlug` lowercases the whole name and tests a `.md` suffix taking
+    // the slug as written, so these four are the entire candidate set.
+    const names = wikiPageNames("cased");
+    expect(names).toHaveLength(4);
+    expect(names[0]).toBe("cased.md");
+    expect([...names].sort()).toEqual(["cased.MD", "cased.Md", "cased.mD", "cased.md"]);
+    // Every one of them round-trips back to the slug it was built from, which
+    // is the property the election relies on.
+    expect(names.map((name) => wikiLeafSlug(name))).toEqual(["cased", "cased", "cased", "cased"]);
+  });
+});
+
 describe("readWorkbenchFile", () => {
   const OWNER = "yuanhao";
   const WIKI_ID = "11111111-2222-4333-8444-555555555555";
@@ -1991,6 +2059,56 @@ describe("GET /api/workbench/preview", () => {
     await writeIndex();
     const payload = await (await get("kind=file&path=wiki%2Fcased.MD")).json();
     expect(payload).toMatchObject({ slug: "cased", format: "markdown", editable: true });
+  });
+
+  it("answers 404 for a spelling the listing elected against", async () => {
+    // DW-489 AT THE DOOR, which is where the intent states the defect: while the
+    // read gate served every spelling of a slug, this route handed the defeated
+    // one slug `dupe` and `editable: true` — so a deep link, or a selection
+    // restored from `workbench-state`, previewed one object and saved another.
+    // The mirror of the lone-variant case above: there the variant IS the Page
+    // and must be served; here it lost an election and must be a plain 404.
+    await fs.writeFile(
+      path.join(root, "wiki", "dupe.md"),
+      "---\ntitle: dupe\ntype: concept\n---\n\n# Dupe\n\ncanonical bytes\n",
+      "utf-8",
+    );
+    listed.add("dupe");
+    await writeIndex();
+
+    // Stage the collision the host cannot: macOS's default volume folds the two
+    // spellings onto one file, so only the LISTING is stubbed — `readFile` still
+    // reaches the real object, which is what makes the 404 below meaningful.
+    const storage = (await import("../storage")).getStorage();
+    const real = storage.listFiles.bind(storage);
+    const flatWiki = (await import("../wiki")).wikiRelPath("");
+    const spy = vi.spyOn(storage, "listFiles").mockImplementation(async (prefix: string) => {
+      const entries = await real(prefix);
+      if (prefix !== flatWiki) return entries;
+      return entries.some((e) => e.name === "dupe.MD")
+        ? entries
+        : [...entries, { name: "dupe.MD", isDirectory: false }];
+    });
+
+    try {
+      // The elected spelling is served, carries the slug, and is editable.
+      const elected = await get("kind=file&path=wiki%2Fdupe.md");
+      expect(elected.status).toBe(200);
+      await expect(elected.json()).resolves.toMatchObject({
+        slug: "dupe",
+        format: "markdown",
+        editable: true,
+      });
+
+      // The defeated one is the route's ORDINARY 404 — indistinguishable from a
+      // path that does not exist, and emphatically not a payload the column
+      // would offer a save button on.
+      const defeated = await get("kind=file&path=wiki%2Fdupe.MD");
+      expect(defeated.status).toBe(404);
+      await expect(defeated.json()).resolves.not.toMatchObject({ editable: true });
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("distinguishes an empty file from an unreadable one", async () => {

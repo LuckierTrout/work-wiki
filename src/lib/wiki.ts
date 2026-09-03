@@ -14,6 +14,7 @@ import { getTenantWikiDir, getTenantRawDir } from "./paths";
 import { DEFAULT_TENANT, ownerToTenant } from "./links";
 import { parseSources, dedupeSourcesForDisplay } from "./sources";
 import { getPageIndex } from "./page-index";
+import { electWikiLeafNames, wikiPageNames } from "./wiki-file-names";
 
 // ---------------------------------------------------------------------------
 // Configurable base directories — delegated to the config layer
@@ -403,6 +404,73 @@ export interface ReadWikiPageOptions {
 }
 
 /**
+ * WHICH STORED OBJECT CARRIES THIS SLUG, when the canonical `<slug>.md` does
+ * not (DW-490)?
+ *
+ * On a case-SENSITIVE store `cased.md`, `cased.MD`, `cased.Md` and `cased.mD`
+ * are four objects carrying the ONE slug `cased` — the Files tab already elects
+ * one of them per slug and, since DW-489, serves only that one. But the page key
+ * here was the canonical name unconditionally, so a save whose bytes came from a
+ * lone `wiki/cased.MD` would have created a SECOND object and orphaned the
+ * first; today it cannot even get that far, because this module only ever reads
+ * `${slug}.md` and the save door 404s on a page the Files tab shows as editable.
+ *
+ * So: probe the three NON-canonical spellings, in parallel, and elect among
+ * whatever answered — the SAME {@link electWikiLeafNames} the listing and the
+ * read gate use, so all three name the same object. `null` when none of them is
+ * there, which is the ordinary "no such page" answer.
+ *
+ * ONLY EVER ON THE ENOENT BRANCH. Every caller runs this after the canonical
+ * spelling already answered ENOENT, which is what makes it free on a
+ * case-INSENSITIVE store: there `readFile("cased.md")` resolves the object
+ * whatever it is called, so the canonical read HITS and this never runs. The
+ * behaviour difference between the two store kinds therefore lives entirely in
+ * branches the case-insensitive store cannot reach.
+ *
+ * BOUNDED AND O(1) — three reads, never a listing. {@link wikiPageNames} is
+ * exactly the candidate set because `wikiLeafSlug` lowercases the whole name and
+ * tests a `.md` suffix, taking the slug as written.
+ *
+ * `strict` carries {@link ReadWikiPageOptions.strict}'s meaning verbatim: a
+ * non-ENOENT failure is rethrown rather than flattened into "absent", because a
+ * transient blip reported as a missing Page is what authorizes a destructive
+ * fix. Non-strict logs and treats the spelling as absent, exactly as the
+ * canonical read does.
+ */
+async function readStoredPageVariant(
+  slug: string,
+  tenant: string | null,
+  strict: boolean,
+): Promise<{ key: string; content: string } | null> {
+  const storage = getStorage();
+  const keyFor = (name: string): string =>
+    tenant !== null ? tenantWikiRelPath(tenant, name) : wikiRelPath(name);
+
+  // `slice(1)` drops the canonical spelling: the caller already read it and got
+  // ENOENT, so re-reading it here would be a wasted round trip on every miss.
+  const candidates = wikiPageNames(slug).slice(1);
+  const found = await Promise.all(
+    candidates.map(async (name) => {
+      try {
+        return { name, content: await storage.readFile(keyFor(name)) };
+      } catch (error) {
+        if (isEnoent(error)) return null;
+        if (strict) throw error;
+        logger.warn("wiki", `variant read failed for "${keyFor(name)}":`, error);
+        return null;
+      }
+    }),
+  );
+
+  const hits = found.filter((hit): hit is { name: string; content: string } => hit !== null);
+  if (hits.length === 0) return null;
+  const elected = electWikiLeafNames(hits.map((hit) => hit.name)).get(slug);
+  const winner = hits.find((hit) => hit.name === elected);
+  if (!winner) return null;
+  return { key: keyFor(winner.name), content: winner.content };
+}
+
+/**
  * Read a wiki page by slug. Returns `null` when the file doesn't exist or the
  * slug is invalid.
  *
@@ -441,6 +509,16 @@ export async function readWikiPage(
   let content: string | null = null;
   let actualPath: string = flatPath;
   let authoritativeReadFailed = false;
+  // Did the bytes come from the SHARED FLAT root? Tracked explicitly rather
+  // than inferred from `actualPath === flatPath`, because since DW-490 a flat
+  // hit is not always the canonical name: a recovered `<slug>.MD` sets
+  // `actualPath` to a key that compares unequal to `flatPath` and would have
+  // silently skipped the frontmatter-inferred silo re-route below — the one
+  // rule that keeps a stale public copy from winning over silo bytes after an
+  // index outage. A variant is an ORDINARY flat hit and gets the same
+  // treatment; that is what makes the recovery lose to everything an ordinary
+  // read would have preferred.
+  let fromFlatRoot = false;
 
   // Silo-primary: try tenant path first. We use ONLY the caller's resolved
   // owner and the O(1) page-index lookup — NOT tenantForSlug() — because its
@@ -483,6 +561,7 @@ export async function readWikiPage(
     try {
       content = await storage.readFile(wikiRelPath(`${slug}.md`));
       actualPath = flatPath;
+      fromFlatRoot = true;
     } catch (err) {
       if (!isEnoent(err)) {
         if (strict) throw err;
@@ -497,6 +576,32 @@ export async function readWikiPage(
         await readSilo(tenantForOwner(options.owner));
         if (authoritativeReadFailed) return null;
       }
+      // A TOTAL MISS ON THE CANONICAL SPELLING IS NOT YET A MISSING PAGE
+      // (DW-490). On a case-SENSITIVE store the object carrying this slug may
+      // be spelled `<slug>.MD`, and the Files tab both lists it and (since
+      // DW-489) serves it — so refusing it here is what 404s the save door on a
+      // row the tab shows as editable. Probe the same roots that were already
+      // tried, in the same order: each attempted silo first, then the flat
+      // root, so a recovered variant loses to nothing an ordinary read would
+      // have preferred. A hit is an ORDINARY hit whose `path` names the object
+      // actually read.
+      for (const attempted of attemptedTenants) {
+        const recovered = await readStoredPageVariant(slug, attempted, strict);
+        if (recovered !== null) {
+          content = recovered.content;
+          actualPath = path.join(getDataDir(), recovered.key);
+          break;
+        }
+      }
+      if (content === null) {
+        const recovered = await readStoredPageVariant(slug, null, strict);
+        if (recovered !== null) {
+          content = recovered.content;
+          actualPath = path.join(getDataDir(), recovered.key);
+          fromFlatRoot = true;
+        }
+      }
+
       if (content === null) {
         // A fresh read leaves the cache as it found it — see
         // `ReadWikiPageOptions.fresh`. Poisoning a scan's open cache with a
@@ -515,7 +620,7 @@ export async function readWikiPage(
     // keeps a stale flat copy from restoring old public content after an index
     // outage while preserving the migration fallback for truly flat-only
     // Pages.
-    if (actualPath === flatPath) {
+    if (fromFlatRoot) {
       let inferredTenant: string | null = null;
       try {
         const { data } = parseFrontmatter(content);
@@ -587,7 +692,9 @@ export async function writeWikiPage(
   tenant?: string,
 ): Promise<void> {
   validateSlug(slug);
-  const storagePath = tenant
+  // `let`, not `const`: on the ENOENT branch below the target is RE-ELECTED
+  // onto the object that actually carries this slug (DW-490).
+  let storagePath = tenant
     ? tenantWikiRelPath(tenant, `${slug}.md`)
     : wikiRelPath(`${slug}.md`);
   const storage = getStorage();
@@ -602,6 +709,30 @@ export async function writeWikiPage(
     // File doesn't exist yet — first write, no revision needed.
     if (!isEnoent(err)) {
       logger.warn("wiki", `unexpected error reading existing page "${slug}" before revision:`, err);
+    } else {
+      // ...OR the object carrying this slug is spelled some other casing of
+      // `.md`, which only a case-SENSITIVE store can be holding (DW-490). Then
+      // this is NOT a first write: retarget the bytes onto the object the
+      // reader was shown and snapshot ITS content as the revision, rather than
+      // creating a second object for one slug and orphaning the first. Only
+      // ever reached once the canonical spelling proved absent, so a
+      // case-INSENSITIVE store makes exactly the calls it made before and lands
+      // on exactly the key it landed on before. `saveRevision` stays keyed by
+      // slug; only the key the bytes land on changes.
+      //
+      // STRICT, so an INDETERMINATE probe fails the write. Swallowing a
+      // non-ENOENT fault here would fall through to the canonical
+      // `<slug>.md` and create exactly the second object DW-490 exists to
+      // prevent — orphaning the real bytes and skipping their revision, with
+      // nothing but a log line to say so. That is strictly worse than the
+      // dropped edit `writeWikiPageIfContentMatches` refuses for the same
+      // reason, and it is `readWikiPage`'s strict rationale exactly: absence
+      // inferred from a blip is what authorizes a destructive fix.
+      const recovered = await readStoredPageVariant(slug, tenant ?? null, true);
+      if (recovered !== null) {
+        storagePath = recovered.key;
+        await saveRevision(slug, recovered.content, author, reason, tenant);
+      }
     }
   }
 
@@ -648,7 +779,9 @@ export async function writeWikiPageIfContentMatches(
   tenant?: string,
 ): Promise<boolean> {
   validateSlug(slug);
-  const storagePath = tenant
+  // `let` for the same reason {@link writeWikiPage}'s is: the ENOENT branch
+  // re-elects the target onto the object carrying this slug (DW-490).
+  let storagePath = tenant
     ? tenantWikiRelPath(tenant, `${slug}.md`)
     : wikiRelPath(`${slug}.md`);
   const storage = getStorage();
@@ -656,8 +789,22 @@ export async function writeWikiPageIfContentMatches(
   try {
     current = await storage.readFileWithEtag(storagePath);
   } catch (error) {
-    if (isEnoent(error)) return false;
-    throw error;
+    if (!isEnoent(error)) throw error;
+    // The canonical spelling is absent, which on a case-SENSITIVE store does
+    // not mean the page is: retarget the etag read, the comparison AND the CAS
+    // onto the elected object, so this compares against the same bytes the
+    // caller was shown and rewrites the same object. `strict` is true because
+    // this is a write precondition — a transient blip flattened into `false`
+    // here reads as "someone else won the race" and silently drops the edit.
+    const recovered = await readStoredPageVariant(slug, tenant ?? null, true);
+    if (recovered === null) return false;
+    storagePath = recovered.key;
+    try {
+      current = await storage.readFileWithEtag(storagePath);
+    } catch (retry) {
+      if (isEnoent(retry)) return false;
+      throw retry;
+    }
   }
   if (current.content !== expectedContent) return false;
 

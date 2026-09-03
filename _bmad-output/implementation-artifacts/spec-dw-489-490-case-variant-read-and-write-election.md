@@ -2,7 +2,7 @@
 title: 'DW-489/490: the elected wiki object is what the read gate serves and what a save writes'
 type: 'bugfix'
 created: '2026-08-28'
-status: 'in-review'
+status: 'done'
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -39,7 +39,41 @@ deferred:
     location: >-
       src/lib/wiki.ts
     severity: low
-baseline_revision: '144767a4fc2899698ae33bd65f34662aa46eb7c2'
+  - summary: >-
+      The delete and existence doors still address a Page as `<slug>.md` only,
+      so a Page whose bytes this change deliberately parks on a case variant
+      survives a "successful" hard delete and reads as absent to
+      `wikiPageExists`.
+    evidence: |-
+      This spec retargeted the three doors its decision named — `readWikiPage`
+      recovery, `writeWikiPage` and `writeWikiPageIfContentMatches` — so a
+      variant-held Page is now a live, listed, readable, WRITABLE state rather
+      than an anomaly `readWikiPage` refused to serve at all. Two sibling doors
+      did not move with it, and each is a wrong answer the owner can hit:
+      (1) DELETE. `src/lib/lifecycle.ts`'s delete branch unlinks exactly
+      `tenantWikiRelPath(deleteTenant, `${slug}.md`)` and
+      `wikiRelPath(`${slug}.md`)`, swallowing ENOENT on both. On a
+      case-SENSITIVE store holding only `wiki/cased.MD`, the pre-delete read
+      NOW succeeds (it did not before this change), both unlinks miss, the op
+      reports success — and the next `readWikiPage("cased")` recovers the
+      variant and serves the full body. A hard delete that reports success and
+      removes nothing is worse than the pre-change state, where the Page was
+      simply unreadable through `readWikiPage`.
+      (2) EXISTENCE. `wikiPageExists` (`src/lib/wiki.ts`) probes
+      `tenantWikiRelPath(tenant, `${slug}.md`)` then `wikiRelPath(`${slug}.md`)`
+      and answers `false` on ENOENT, so it now DISAGREES with `readWikiPage`
+      about the same slug. `src/app/api/ingest/status/[jobId]/route.ts` reads
+      that as `gone` and answers 404, dropping a completed ingest from the
+      Recent-ingests strip on a Page that reads fine.
+      Both were left alone deliberately: like the `createWikiPage` entry above,
+      each is a DECISION rather than a relocation — which spellings a delete is
+      entitled to sweep, and whether an existence probe may cost three extra
+      reads on every miss — and neither is named by the recorded 2026-08-28
+      decisions this spec implements.
+    location: >-
+      src/lib/lifecycle.ts (delete branch); src/lib/wiki.ts (wikiPageExists)
+    severity: medium
+baseline_revision: 'c39e6267b4429f7e929793b3b5fcf28aedcb8762'
 ---
 
 <intent-contract>
@@ -91,23 +125,25 @@ baseline_revision: '144767a4fc2899698ae33bd65f34662aa46eb7c2'
 
 ## Code Map
 
-- `src/lib/workbench-files.ts:539-563` -- `wikiLeafFilter`, holding the election inline today (`winners` map, canonical-else-lexicographic-first). The loop body is what moves to the shared helper; the docblock at `:476-538` states the rule and MUST be updated where it says the read gate's reach is unchanged.
-- `src/lib/workbench-files.ts:965-1013` -- `resolveWorkbenchFile`. `const { prefix } = await resolveRoot(root, silo, flat)` at `:1010` DISCARDS `entries` — the election's input is already in hand there. The wiki gate at `:987-990` runs before the root is resolved; the election test has to sit after `:1010`.
-- `src/lib/workbench-files.ts:876-891` -- `wikiLeafSlug` (exported) and `readableWikiLeaf`. `wikiLeafSlug` moves to the new leaf module and is re-exported here; `readableWikiLeaf` stays put.
-- `src/lib/workbench-files.ts:152-160` -- `wikiLeafName`, the DW-204 predicate. Unchanged; stays in this module (only `resolveWorkbenchFile` and the preview route need it, and neither is `wiki.ts`).
-- `src/lib/workbench-files.ts:688-697` -- `listWorkbenchFilePaths`' hoisted `wikiRoot`, the shape `resolveWorkbenchFile` now mirrors.
-- `src/app/api/workbench/preview/route.ts:265-275` -- the editable-Page slug derivation. No code change: after this, a non-elected spelling is refused by `readWorkbenchFile`/`workbenchFileExists` above it and never reaches here. The comment must record that.
-- `src/lib/wiki.ts:416-540` -- `readWikiPage`. `flatPath`/`readSilo` build `${slug}.md`; `attemptedTenants` records which silos were tried; the total miss returns at `:497-503` after the negative-cache write. Recovery hooks in there, before that return.
-- `src/lib/wiki.ts:578-609` -- `writeWikiPage`. Already reads `storagePath` for the revision snapshot and has an ENOENT catch at `:592-598`; that catch is where the target is re-elected.
-- `src/lib/wiki.ts:638-666` -- `writeWikiPageIfContentMatches`. `readFileWithEtag(storagePath)` at `:650` returns `false` on ENOENT at `:653`; that branch re-elects before giving up.
-- `src/lib/wiki.ts:621-630` -- `createWikiPage`. READ-ONLY: named in the deferral, not changed.
-- `src/lib/wiki.ts:42-44`, `:tenantWikiRelPath` -- the two key builders the resolution must use so silo and flat stay one spelling each.
-- `src/lib/storage/types.ts:187,193` -- `listFiles(prefix)` and `fileExists(path)`; `readFile` throws ENOENT-shaped errors that `isEnoent` classifies (`src/lib/errors.ts`).
-- `src/lib/__tests__/workbench-tree.test.ts:1009-1021` -- `alsoListInWikiRoot`, the `listFiles` spy that stages a case-sensitive multi-object root on a case-insensitive host. Reuse it.
-- `src/lib/__tests__/workbench-tree.test.ts:1074-1094` -- "elects one row per slug even when NO canonical exists" asserts BOTH variants still read. `src/lib/__tests__/workbench-tree.test.ts:1096-1110` -- "still READS the defeated sibling it refuses to list". Both encode the reach DW-489 retires and MUST be rewritten (assertions AND their comments).
+- `src/lib/workbench-files.ts:538-563` -- `wikiLeafFilter`, holding the election inline today (`winners` map at `:546-556`, canonical-else-lexicographic-first; `listable` at `:557`). The loop body is what moves to the shared helper; the docblock at `:473-537` states the rule and MUST be updated where it says the read gate's reach is deliberately unchanged (`:534-537`).
+- `src/lib/workbench-files.ts:968-1015` -- `resolveWorkbenchFile`. `const { prefix } = await resolveRoot(root, silo, flat)` at `:1012` DISCARDS `entries` — the election's input is already in hand there. The wiki gate at `:989-992` runs before the root is resolved; the election test has to sit after `:1012`.
+- `src/lib/workbench-files.ts:392-412` -- `resolveRoot`, which already returns `{ prefix, entries }` (silo-first for `wiki`, falling back to the flat prefix only when the silo listing is empty). Its `entries` are what the listing elects over, so electing over the same value is what makes the two answers identical by construction.
+- `src/lib/workbench-files.ts:855-894` -- the READ GATE docblock plus `wikiLeafSlug` (exported, `:882-889`) and `readableWikiLeaf` (`:891-894`). `wikiLeafSlug` moves to the new leaf module and is re-exported here; `readableWikiLeaf` stays put. The docblock at `:861-867` asserts the gate's reach is wider than the listing's and MUST be updated.
+- `src/lib/workbench-files.ts:155-160` -- `wikiLeafName`, the DW-204 predicate. Unchanged; stays in this module (only `resolveWorkbenchFile` and the preview route need it, and neither is `wiki.ts`).
+- `src/lib/workbench-files.ts:50-68` -- the import block. It already imports `./wiki`, which is why the shared election cannot live in either module and needs a leaf both can import.
+- `src/lib/workbench-files.ts:693` -- `listWorkbenchFilePaths`' hoisted `wikiRoot = await resolveRoot("wiki", siloWiki, wikiRelPath(""))`, the shape `resolveWorkbenchFile` now mirrors.
+- `src/app/api/workbench/preview/route.ts:271-284` -- the editable-Page slug derivation (`wikiLeafName` then `wikiLeafSlug`). No code change: after this, a non-elected spelling is refused by `readWorkbenchFile`/`workbenchFileExists` above it (`:250-269`) and never reaches here. The comment must record that.
+- `src/lib/wiki.ts:420-540` -- `readWikiPage`. `flatPath` at `:433` and `readSilo`'s `siloPath` at `:451` build `${slug}.md`; `attemptedTenants` (`:448`) records which silos were tried; the total miss returns at `:497-503` after the negative-cache write. Recovery hooks in there, before that return.
+- `src/lib/wiki.ts:582-613` -- `writeWikiPage`. Already reads `storagePath` for the revision snapshot (`:596-597`) and has an ENOENT-tolerant catch at `:598-603`; that catch is where the target is re-elected.
+- `src/lib/wiki.ts:642-670` -- `writeWikiPageIfContentMatches`. `readFileWithEtag(storagePath)` at `:654` returns `false` on ENOENT at `:657`; that branch re-elects before giving up.
+- `src/lib/wiki.ts:623-633` -- `createWikiPage`. READ-ONLY: named in the deferral, not changed.
+- `src/lib/wiki.ts:42-44` (`wikiRelPath`) and `:144` (`tenantWikiRelPath`) -- the two key builders the resolution must use so silo and flat stay one spelling each.
+- `src/lib/storage/types.ts` -- `listFiles(prefix)` and `fileExists(path)`; `readFile` throws ENOENT-shaped errors that `isEnoent` classifies (`src/lib/errors.ts`).
+- `src/lib/__tests__/workbench-tree.test.ts:1008-1020` -- `alsoListInWikiRoot`, the `listFiles` spy that stages a case-sensitive multi-object root on a case-insensitive host (it stubs ONLY the flat wiki prefix's listing; `readFile` still hits the real file). Reuse it.
+- `src/lib/__tests__/workbench-tree.test.ts:1074-1093` -- "elects one row per slug even when NO canonical exists" asserts BOTH variants still read. `src/lib/__tests__/workbench-tree.test.ts:1095-1108` -- "still READS the defeated sibling it refuses to list". Both encode the reach DW-489 retires and MUST be rewritten (assertions AND their comments).
 - `src/lib/__tests__/workbench-tree.test.ts:969-980` -- the lone-`cased.MD` test. MUST stay green unmodified: it is the case-INSENSITIVE store's shape and the thing a naive revert breaks.
-- `src/lib/__tests__/workbench-preview.test.ts` -- holds the `wikiLeafName` unit binding and the read-gate/preview `.MD` coverage; grep `cased`/`alpha.MD` there for cases that assert the old reach.
-- `src/lib/__tests__/wiki.test.ts:1-45, 2226-2400` -- tmp-dir + env harness and the existing silo-primary / tenant-write describes; the write-side cases hang off the same harness with storage spies.
+- `src/lib/__tests__/workbench-preview.test.ts:1193-1227` -- the `wikiLeafName` unit describe, where the `electWikiLeafNames`/`wikiPageNames` bindings belong. `:1352-1359` and `:1984-1993` read and preview a LONE `alpha.MD` / `cased.MD`; both stay green because a lone variant wins its own slug.
+- `src/lib/__tests__/wiki.test.ts:1-72` -- tmp-dir + `WIKI_DIR`/`RAW_DIR`/`DATA_DIR` env harness with `_resetStorage()`. `:2226-2333` (`silo-primary reads`) and `:2342-2396` (`writeWikiPage with tenant parameter`) are the describes the new write-side cases sit beside, and `:2320-2332` shows the `vi.spyOn(storage, "readFile")` pattern for simulating a store that answers only exact keys.
 
 ## Tasks & Acceptance
 
@@ -129,7 +165,25 @@ baseline_revision: '144767a4fc2899698ae33bd65f34662aa46eb7c2'
 
 ## Spec Change Log
 
+- **2026-09-03 — resumed from an unimplemented spec.** This file was committed on 2026-08-28 (in `002843ce`, a sweep for an unrelated DW id) carrying `status: in-review`, but no implementation ever landed: `src/lib/wiki-file-names.ts` does not exist and `electWikiLeafNames` / `wikiPageNames` / `readStoredPageVariant` appear nowhere in `src/`. The status was therefore phantom. Re-dispatched from the `case-variant-file-election` bundle (DW-489, DW-490), the `<intent-contract>` was PRESERVED VERBATIM — it was written from the same recorded 2026-08-28 decisions this bundle carries — and only the Code Map anchors and `baseline_revision` were refreshed against the current tree. KEEP: the intent contract, the deferral recorded for `createWikiPage`, and the "elect over the entries `resolveRoot` already returned" approach, which is what makes the read gate's answer identical to the listing's by construction rather than by agreement.
+
 ## Review Triage Log
+
+### 2026-09-03 — Review pass
+- intent_gap: 0
+- bad_spec: 0
+- patch: 7: (high 0, medium 4, low 3)
+- defer: 1: (high 0, medium 1, low 0)
+- reject: 12: (high 0, medium 0, low 12)
+- addressed_findings:
+  - `[medium]` `[patch]` A FAILED root listing turned every `wiki/` read into a 404: the new gate elected over `resolveRoot`'s `entries`, which are `[]` on an unreadable listing, so a transient LIST blip refused every readable page at `readWorkbenchFile` / `readWorkbenchFileBytes` / `workbenchFileExists`. `resolveRoot` now propagates `failed` on both wiki returns and the gate skips the election when the candidate set is indeterminate — safe because the election is not the security gate (`readableWikiLeaf` is, DW-41) and only picks among spellings of an already-readable slug. Pinned with a rejecting `listFiles` over an intact `readFile`.
+  - `[medium]` `[patch]` `writeWikiPage`'s variant probe was non-strict, so a non-ENOENT fault fell through to the canonical name and silently created the SECOND object DW-490 exists to prevent — orphaning the bytes and skipping the revision. Now `strict: true`, matching the CAS door; both write doors' fault paths are pinned.
+  - `[medium]` `[patch]` A recovered FLAT variant skipped the frontmatter-inferred silo re-route, because that block is guarded by `actualPath === flatPath` and a variant path never equals it — so a stale public flat copy could win over silo bytes, the exact harm that guard exists for. Replaced with an explicit `fromFlatRoot` flag; the comment that claimed the recovery already lost to everything an ordinary read prefers is now true.
+  - `[medium]` `[patch]` The headline DW-489 symptom was pinned only at the library surface while the intent states it at the door. Added a `GET /api/workbench/preview` case asserting a defeated spelling answers the ordinary 404 rather than a payload carrying the slug and `editable: true`.
+  - `[low]` `[patch]` The new gate block re-derived the leaf as `rest[0]` and carried a dead `slug === null` branch — a second expression of one rule in the module whose docblocks warn that exactly that is how `wiki/alpha.MD` was gated in and then served with no slug. Hoisted and reused the already-computed leaf; the election now tests the same elected-names membership `wikiLeafFilter` tests.
+  - `[low]` `[patch]` Three docblocks claimed the listing stays narrower than the gate "in the two respects `wikiLeafName` covers — a non-`.md` leaf and anything below the root". Both halves were wrong (`wikiLeafName` decides depth only; the non-`.md` refusal is `wikiLeafSlug` via `readableWikiLeaf`; and the gate applies all three), so the `wiki/` half is now an EQUALITY. Corrected in the module header, `wikiLeafFilter`, the READ GATE docblock and `WorkbenchFileOptions`.
+  - `[low]` `[patch]` Every DW-489 gate test drove the flat root while the tenant silo is the production-normal path. Added a silo-root election case.
+
 
 ## Design Notes
 
@@ -166,3 +220,35 @@ Refusing a spelling the listing elected against NARROWS the read gate, which DW-
 - `pnpm vitest run` -- expected: no regressions against the baseline suite
 - `npx tsc --noEmit` -- expected: no new type errors
 - `pnpm lint` -- expected: no new errors
+
+## Auto Run Result
+
+Status: done
+
+**Implemented change.** DW-202/203's elected-winner rule stopped at the LISTING; it now reaches the read gate and the wiki page key as well, so the elected object is the object everywhere. The election has ONE spelling, in a new pure leaf module both `wiki.ts` and `workbench-files.ts` import (neither could host it — `workbench-files.ts` imports `wiki.ts`). DW-489: `resolveWorkbenchFile` elects over the same depth-1 entries `resolveRoot` already returned and discarded, so the gate's answer is identical to the listing's by construction at no extra storage call — a directly named `wiki/cased.MD` the listing elected against now answers the same indistinguishable `null` every other refusal answers. DW-490: on the ENOENT branch each write door already had, the target is re-elected onto the object carrying the slug, so a save from a lone case-variant row rewrites that object instead of creating a second one and orphaning it; `readWikiPage` recovers the same object, which it previously could not read at all.
+
+**Files changed.**
+- `src/lib/wiki-file-names.ts` -- NEW pure leaf, zero imports: `wikiLeafSlug` (moved verbatim), `wikiPageNames`, `electWikiLeafNames` — the one spelling of the election, shared by three callers across two modules.
+- `src/lib/workbench-files.ts` -- re-exports `wikiLeafSlug` so no importer moved; `wikiLeafFilter` derives its set from the shared election instead of restating it; `resolveWorkbenchFile` applies the election to the wiki root; `resolveRoot` now propagates `failed` so an indeterminate listing does not elect; four docblocks corrected where they asserted the gate's reach is wider than the listing's.
+- `src/lib/wiki.ts` -- internal `readStoredPageVariant` (three bounded probes, ENOENT-as-absent, strict-rethrows) wired into `readWikiPage`'s total-miss branch, `writeWikiPage`'s ENOENT catch and `writeWikiPageIfContentMatches`' ENOENT branch; the flat-root silo re-route now keys on an explicit flag so a recovered variant gets it too.
+- `src/app/api/workbench/preview/route.ts` -- comment only: the refusal is upstream, and nothing at the slug derivation enforces it.
+- `src/lib/__tests__/wiki.test.ts` -- `case-variant page keys`: a `simulateStore` harness spying the storage singleton so only exact keys answer (a simulated case-SENSITIVE store), covering both write doors, read recovery, the silo root, the flat/silo preference and both fault paths.
+- `src/lib/__tests__/workbench-tree.test.ts` -- the two tests encoding the retired wider reach rewritten; new cases for an unlisted spelling, the silo-root election, and an indeterminate listing.
+- `src/lib/__tests__/workbench-preview.test.ts` -- unit bindings for `electWikiLeafNames` / `wikiPageNames`, and a door-level case pinning that a defeated spelling 404s at `GET /api/workbench/preview`.
+
+**Review findings.** 7 patches applied (medium 4, low 3; no high). 1 deferred: the delete and existence doors still address `<slug>.md` only, so a variant-held Page survives a "successful" hard delete and reads as absent to `wikiPageExists` — recorded in frontmatter `deferred` alongside the pre-existing `createWikiPage` create-conflict entry. 12 rejected: sibling canonical-only call sites in other modules (pre-existing blast radius, not caused here), spec-directed test placement, the `queries/` depth-2 probe shape (it mirrors the canonical key the same slug already uses), a probe/CAS race the etag still closes, and several descriptive intent-alignment observations.
+
+**Follow-up review recommendation:** false. Patched findings by severity — high 0, medium 4, low 3. The score counts only `high` patched findings; there were none.
+
+**Verification.**
+- `npx tsc --noEmit` -- clean.
+- `npx vitest run src/lib/__tests__/workbench-tree.test.ts src/lib/__tests__/workbench-preview.test.ts src/lib/__tests__/wiki.test.ts` -- 487 passed.
+- `npx vitest run` -- 372 files, 9243 passed, 1 skipped, 0 failed (baseline before this work: 9237 passing).
+- `pnpm lint` -- no errors (only the pre-existing `jsx-ast-utils` `TSNonNullExpression` warnings).
+- Matrix audit: every I/O row has a covering test that ran and passed, including the unmodified lone-variant listing test at `src/lib/__tests__/workbench-tree.test.ts:969-980`, which is the case-INSENSITIVE store's shape and the pin a naive revert breaks.
+
+**Residual risks.**
+- The read gate now depends on the root LISTING succeeding. A failed listing no longer refuses everything (patched), but a listing that succeeds while lagging behind a just-written object will refuse that object until the prefix catches up — the same window the Files tab itself has, which is the equality this change is for rather than a defect it introduced.
+- A genuinely absent page costs three extra reads per attempted root on the ENOENT branch (negative caching, first writes). Unreachable on a case-insensitive store, where the canonical spelling resolves the object and no probe runs.
+- On a case-INSENSITIVE store, asking the gate for `wiki/cased.md` when the listing elected `wiki/cased.MD` now answers `null` where the filesystem's folding would once have resolved it. That is the matrix's "Unlisted spelling is refused" row — intended, and the one narrowing beyond the collision case.
+- Both deferrals share one root cause: doors other than the three this decision named still spell a Page `<slug>.md`. Each is a decision (create-conflict, delete sweep, existence probe cost) rather than a relocation, which is why they were recorded rather than taken here.
