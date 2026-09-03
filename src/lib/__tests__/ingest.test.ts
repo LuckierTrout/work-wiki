@@ -2586,6 +2586,70 @@ describe("ingest — concept resolver (adjudicated merge)", () => {
     expect(await listWikiPages()).toHaveLength(1);
   });
 
+  // DW-710. `getVectorSearchSettings().enabled` reports true on a store with
+  // `embeddingProvider: "workers-ai"` + `vectorSearchEnabled: true` running OFF
+  // Workers (the `hasWorkersAiBinding: null` hole, DW-225): the provider never
+  // resolves, `searchByVector` answers `[]`, and returning that empty list
+  // forked EVERY ingest instead of merging — silently. Zero hits means the
+  // vector leg had nothing to say, so it falls through to BM25.
+  it("falls through to BM25 when the switch is ON but the vector leg returns nothing (DW-710)", async () => {
+    vectorSearch(true);
+    mockedSearchByVector.mockResolvedValue([]);
+    mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+      if (system.includes("decide whether")) {
+        return user.includes("widget-protocol") ? "widget-protocol" : "none";
+      }
+      return user.toLowerCase().includes("specification")
+        ? "CONCEPT: Widget Protocol\nALIASES: none\n\n# Widget Protocol\n\n## Summary\n\nThe widget protocol specification."
+        : "CONCEPT: Widget Spec\nALIASES: none\n\n# Widget Spec\n\n## Summary\n\nThe widget protocol, explained.";
+    });
+
+    await ingest("First", "First note on the widget protocol specification details.");
+    expect((await listWikiPages()).map((p) => p.slug)).toContain("widget-protocol");
+
+    // Zero the history AFTER the seeding ingest, so the assertion below is
+    // about the ingest under test and not satisfied by the first one's call.
+    mockedSearchByVector.mockClear();
+
+    const result = await ingest("Second", "Second note, widget protocol explained anew.");
+
+    // The SECOND ingest consulted the vector leg (the switch is on) — this is
+    // not the DW-68 path — it just had nothing to offer. Exactly once: the
+    // merge-candidate lookup, no retry loop hiding behind a truthy assertion.
+    expect(mockedSearchByVector).toHaveBeenCalledTimes(1);
+    // …and the merge still happened, through the BM25 corpus-stats branch.
+    expect(result.primarySlug).toBe("widget-protocol");
+    expect(await listWikiPages()).toHaveLength(1);
+  });
+
+  // The other half of the DW-710 predicate: `hits.length === 0`, NOT "no hits
+  // above the floor". A leg that returned hits which all scored below
+  // CONCEPT_ADJUDICATE_FLOOR is a WORKING leg answering "nothing is near" —
+  // a real answer, not one to second-guess with a lexical pass.
+  it("does NOT fall through to BM25 when the vector leg answers below the floor (DW-710)", async () => {
+    vectorSearch(true);
+    // Lexically these two WOULD merge under BM25 (they share "widget
+    // protocol"), so a fall-through here would be visible as one page.
+    mockedSearchByVector.mockResolvedValue([{ slug: "widget-protocol", score: 0.2 }]);
+    mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+      if (system.includes("decide whether")) {
+        return user.includes("widget-protocol") ? "widget-protocol" : "none";
+      }
+      return user.toLowerCase().includes("specification")
+        ? "CONCEPT: Widget Protocol\nALIASES: none\n\n# Widget Protocol\n\n## Summary\n\nThe widget protocol specification."
+        : "CONCEPT: Widget Spec\nALIASES: none\n\n# Widget Spec\n\n## Summary\n\nThe widget protocol, explained.";
+    });
+
+    await ingest("First", "First note on the widget protocol specification details.");
+    const result = await ingest("Second", "Second note, widget protocol explained anew.");
+
+    expect(result.primarySlug).toBe("widget-spec");
+    expect((await listWikiPages()).map((p) => p.slug).sort()).toEqual([
+      "widget-protocol",
+      "widget-spec",
+    ]);
+  });
+
   it("does NOT retrieve by vector on a STORED KEY with the switch off (DW-68)", async () => {
     // The headline case. `hasEmbeddingSupport()` is genuinely TRUE here — a real
     // provider key is present, so the real predicate (not mocked in this file)
@@ -2799,6 +2863,94 @@ describe("ingest — reconcile on merge", () => {
         emptyFallback: "throw",
       }),
     ).rejects.toThrow(/empty body/);
+
+    // DW-702: shapes that SURVIVE stripping but carry no prose. `DISPUTED: no`
+    // is matched by neither parser (`parseDisputedMarker` takes `yes|true`
+    // only), so it comes back verbatim as the body; a bare heading is a real
+    // string too. Both used to pass as a genuine fold and overwrite the merge
+    // survivor. Under `"throw"` they must throw; under the ingest door's
+    // default they must still be returned VERBATIM, byte-for-byte as today.
+    for (const noProse of [
+      "DISPUTED: no\n",
+      "# Agent Harness\n",
+      "DISPUTED: no\n\n# Agent Harness\n\n---\n",
+      // `parseConceptMarker` only strips `CONCEPT:`/`ALIASES:`/`TAGS:` when
+      // `CONCEPT:` LEADS, so a `DISPUTED: no` first line strands all three.
+      "DISPUTED: no\nCONCEPT: Agent Harness\nALIASES: none\nTAGS: none\n",
+      // A BOM and leading whitespace, in EITHER order, must both be normalized
+      // away before the marker test — otherwise the line reads as prose and
+      // overwrites the survivor, the unsafe direction.
+      " ﻿DISPUTED: no\n",
+      "﻿ DISPUTED: no\n",
+    ]) {
+      mockedCallLLM.mockResolvedValue(noProse);
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+          emptyFallback: "throw",
+        }),
+      ).rejects.toThrow(/empty body/);
+      // The ingest door is untouched: no throw, no fallback, the text as-is.
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+      ).resolves.toEqual({ body: noProse, disputed: false });
+    }
+
+    // …and the widening does NOT swallow a real fold: a heading plus one line
+    // of prose folds normally under `"throw"`, and a `DISPUTED: yes` verdict
+    // over prose still parses to `disputed: true` with the prose intact.
+    mockedCallLLM.mockResolvedValue("# Agent Harness\n\nThe folded article.");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).resolves.toEqual({ body: "# Agent Harness\n\nThe folded article.", disputed: false });
+
+    mockedCallLLM.mockResolvedValue("DISPUTED: yes\n\n# X\n\nProse.");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).resolves.toEqual({ body: "# X\n\nProse.", disputed: true });
+
+    // Prose that is NOT a paragraph is still prose — a list item, a table row,
+    // a blockquote, a fenced-code delimiter each keep the fold alive. So does
+    // an INDENTED code line, even one whose text would read as scaffolding
+    // unindented: `    # step one` is a shell comment inside a code block, not
+    // a heading, and `    DISPUTED: no` is sample output, not a verdict.
+    for (const prose of [
+      "# X\n\n- one\n",
+      "# X\n\n| a | b |\n",
+      "# X\n\n> quoted\n",
+      "# X\n\n```\n",
+      "# X\n\n    # step one\n",
+      "# X\n\n\t# step one\n",
+      "# X\n\n    DISPUTED: no\n",
+      "# X\n\n    ---\n",
+    ]) {
+      mockedCallLLM.mockResolvedValue(prose);
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+          emptyFallback: "throw",
+        }),
+      ).resolves.toEqual({ body: prose, disputed: false });
+    }
+
+    // THE VERDICT GOES WITH THE BODY. A `DISPUTED: yes` over a bare heading
+    // used to return `{ body: "# X\n", disputed: true }` and escalate the
+    // survivor's flag (which feeds `computeConfidence`). It now throws, so the
+    // merge door appends bodies and the survivor keeps the verdict its own
+    // frontmatter already held — the same rule the marker-only case has always
+    // followed: a fold that produced nothing produces no verdict either.
+    mockedCallLLM.mockResolvedValue("DISPUTED: yes\n\n# X\n");
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+        emptyFallback: "throw",
+      }),
+    ).rejects.toThrow(/empty body/);
+    // The ingest door still reads that verdict — its predicate is untouched.
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+    ).resolves.toEqual({ body: "# X\n", disputed: true });
   });
 
   it("degrades to the new body (ingest still succeeds) when reconcile throws", async () => {

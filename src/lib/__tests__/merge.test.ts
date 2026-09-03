@@ -947,12 +947,20 @@ describe("mergePages", () => {
   // At the merge door `newBody` is the ABSORBED page's body, so the ingest-door
   // "fall back to the new body" rule would overwrite the survivor with the
   // absorbed page's prose and then hard-delete the absorbed page. A fold that
-  // yields no body must degrade to the lossless append instead. Both shapes are
-  // covered: an empty response, and a response that is nothing but a marker the
-  // parsers strip (which reduces to the same empty body).
+  // yields no body must degrade to the lossless append instead. Four shapes are
+  // covered: an empty response; a response that is nothing but a marker the
+  // parsers strip (which reduces to the same empty body); and the two DW-702
+  // shapes that survive stripping yet carry no prose — `DISPUTED: no`, which
+  // `parseDisputedMarker` matches only `yes|true` and so returns VERBATIM as
+  // the body, and a bare heading. Those two used to pass as a real fold: they
+  // were written over the survivor, landed in `MergeOperationReceipt`
+  // .mergedContent for Retry to replay, and the absorbed page was then
+  // hard-deleted with its revisions.
   for (const [label, foldResponse] of [
     ["comes back empty", "   \n  "],
     ["is nothing but a DISPUTED marker", "DISPUTED: yes\n"],
+    ["is nothing but an unrecognised DISPUTED marker (DW-702)", "DISPUTED: no\n"],
+    ["is nothing but a heading (DW-702)", "# Agent Harness\n"],
   ] as const) {
     it(`keeps the survivor's prose (appends both bodies) when the fold ${label}`, async () => {
       await seedPage("agent-harness", {

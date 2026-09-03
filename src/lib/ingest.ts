@@ -1047,9 +1047,26 @@ async function findMergeCandidates(
   // "the switch is honoured everywhere".
   if (getVectorSearchSettings().enabled) {
     const hits = await searchByVector(query, MAX_MERGE_CANDIDATES + 3);
-    return hits
-      .filter((h) => h.score >= CONCEPT_ADJUDICATE_FLOOR)
-      .map((h) => h.slug);
+    // A PREFERENCE, NOT AN EXCLUSIVE (DW-710). `searchByVector` answers `[]`
+    // for every way the vector leg can have nothing to SAY: no query embedding
+    // (the unresolvable-provider case — `vectorSearchEnabled: true` with
+    // `embeddingProvider: "workers-ai"` off Workers reports `enabled: true`
+    // from a switch that cannot actually run, the `hasWorkersAiBinding: null`
+    // hole), a query throw, a whole-window model-drift drop, and an
+    // un-backfilled store. Returning that `[]` forked every ingest silently.
+    // So: zero hits → fall through to the BM25 branch below, which is what
+    // this function's own docblock already promises "before the vector store
+    // is backfilled".
+    //
+    // Deliberately `hits.length === 0`, NOT "no hits above the floor". A leg
+    // that returned topK hits which all scored under
+    // {@link CONCEPT_ADJUDICATE_FLOOR} is a WORKING leg saying "nothing is
+    // near" — a real answer, and not one to second-guess with a lexical pass.
+    if (hits.length > 0) {
+      return hits
+        .filter((h) => h.score >= CONCEPT_ADJUDICATE_FLOOR)
+        .map((h) => h.slug);
+    }
   }
   const entries = await listWikiPages();
   if (entries.length === 0) return [];
@@ -1204,6 +1221,58 @@ export function parseDisputedMarker(raw: string): {
 }
 
 /**
+ * Did this fold leave any PROSE behind? (DW-702) — not "is this valid
+ * Markdown", just "is there anything here worth writing over a page".
+ *
+ * A line INDENTED four or more columns (a tab counts as four) is a Markdown
+ * code line, so it is prose whatever it says — the scaffolding tests below are
+ * never applied to it. `    # step one` is a shell comment inside a code block,
+ * not a heading.
+ *
+ * Every other line is scaffolding, and dropped, if it is:
+ *  - blank;
+ *  - a `DISPUTED:` / `CONCEPT:` / `ALIASES:` / `TAGS:` header line. Tested at
+ *    ANY position, not just the head of the body: the parsers consume only a
+ *    LEADING run, so residue can sit anywhere. {@link parseDisputedMarker}
+ *    matches only `yes|true`, so a `DISPUTED: no` line is returned verbatim IN
+ *    the body; and {@link parseConceptMarker} only strips `CONCEPT:` (and then
+ *    `ALIASES:`/`TAGS:`) when `CONCEPT:` LEADS, so a stray first line strands
+ *    all three. All four spellings have to be tolerated here — without
+ *    changing either parser. (Position-independence is deliberate: these four
+ *    words followed by a colon at the very start of an unindented line are not
+ *    a shape real prose takes, and the cost of matching one is only an
+ *    unfolded survivor.)
+ *  - an ATX heading (`# …`);
+ *  - a horizontal rule or setext underline (`---`, `***`, `===`).
+ *
+ * ANYTHING else is prose: a sentence, a list item, a table row, a blockquote,
+ * a fenced-code delimiter or an indented code line. This is used ONLY under
+ * `emptyFallback: "throw"` (the merge door), where the bias is safe in exactly
+ * one direction: the degrade is the lossless `into.body + "\n\n" + from.body`
+ * append, so a false "no prose" costs an unfolded survivor while a false
+ * "prose" costs the survivor's prose outright.
+ */
+function foldCarriesProse(body: string): boolean {
+  for (const raw of body.split(/\r?\n/)) {
+    // A BOM can arrive before OR after the leading whitespace, so normalize
+    // both away in ONE pass rather than ordering two strips (`\s` already
+    // covers U+FEFF; naming it keeps that from looking accidental).
+    const line = raw.replace(/^[\s﻿]+/, "").replace(/[\s﻿]+$/, "");
+    if (line === "") continue;
+    // Indent measured on the BOM-free line so a leading BOM can't shift the
+    // column count. 4+ columns → code line → prose, tests below skipped.
+    const indent = raw.replace(/﻿/g, "").match(/^[ \t]*/)![0];
+    if (indent.replace(/\t/g, "    ").length >= 4) return true;
+    if (/^(?:DISPUTED|CONCEPT|ALIASES|TAGS):/i.test(line)) continue;
+    if (/^#{1,6}(?:\s|$)/.test(line)) continue;
+    // `---`, `***`, `___`, `- - -` (rules) and `===` / `---` (setext).
+    if (/^(?:[-*_=][ \t]*){3,}$/.test(line)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * Reconcile an existing page body with a newly ingested article on the same
  * concept via a single LLM call (the accumulate-and-reconcile step). Returns
  * the merged body and whether the new source contradicts the existing page
@@ -1229,10 +1298,26 @@ export function parseDisputedMarker(raw: string): {
  *    replayed verbatim by any Retry. Throwing hands the caller its own
  *    reconcile-failed path (append both bodies) instead, which loses nothing.
  *
- * Under `"throw"` an empty fold is a response whose body is empty or
- * whitespace-only, before or after the markers above are stripped. A fold that
- * returns non-empty text carrying no actual prose (a bare heading, an
- * unrecognised `DISPUTED: no` line) is NOT caught here.
+ * Under `"throw"` an empty fold is any response that CARRIES NO PROSE — see
+ * {@link foldCarriesProse}. That covers the empty/whitespace response and, once
+ * the markers above are stripped, a residue of nothing but scaffolding: a
+ * leftover `DISPUTED:` / `CONCEPT:` / `ALIASES:` / `TAGS:` header line the
+ * parsers did not consume (notably `DISPUTED: no`, which
+ * {@link parseDisputedMarker} deliberately leaves in the body), a bare heading,
+ * or a horizontal rule. Under `"new"` the predicate is still the narrow
+ * `trim() === ""` — the ingest door returns such text verbatim as the body,
+ * exactly as it always has, because `newBody` there is the fresh synthesis and
+ * changing that door is out of scope.
+ *
+ * THE VERDICT GOES WITH THE BODY. Throwing discards any `DISPUTED: yes` the
+ * fold emitted, so `"DISPUTED: yes\n\n# X\n"` — a verdict over a bare heading —
+ * no longer escalates the survivor's `disputed` flag (which also feeds
+ * {@link computeConfidence}); the caller appends bodies and the survivor keeps
+ * whatever verdict its own frontmatter already held. That is the rule the
+ * marker-only case has always followed — a fold that produced nothing produces
+ * no verdict either — and it is the only coherent one: `disputed` asserts that
+ * THIS body reconciles contradictory sources, and there is no such body here.
+ * A verdict is trusted only when it arrives with the prose it is about.
  */
 export async function reconcilePage(
   existingBody: string,
@@ -1266,12 +1351,12 @@ export async function reconcilePage(
   const { disputed, body: afterDisputed } = parseDisputedMarker(out);
   // Guard against the model echoing the synthesis headers into the merged body.
   const { body } = parseConceptMarker(afterDisputed);
-  // A marker-only response reduces to the same empty fold as an empty response.
-  // Only `"throw"` re-checks. `"new"` deliberately keeps today's exact
-  // behaviour — it returns the (empty) parsed body rather than falling back —
-  // because changing the ingest door is out of this change's scope.
-  if (emptyFallback === "throw" && body.trim() === "") {
-    throw new Error("reconcile returned an empty body");
+  // A fold that left no prose reduces to the same empty fold as an empty
+  // response (DW-702). Only `"throw"` re-checks. `"new"` deliberately keeps
+  // today's exact behaviour — it returns the parsed body as-is rather than
+  // falling back — because changing the ingest door is out of scope.
+  if (emptyFallback === "throw" && !foldCarriesProse(body)) {
+    throw new Error("reconcile returned an empty body (the fold carried no prose)");
   }
   return { body, disputed };
 }

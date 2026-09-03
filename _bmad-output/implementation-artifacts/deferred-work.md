@@ -5696,7 +5696,9 @@ location: src/lib/merge.ts:530
 source_spec: `spec-c3-merge-empty-reconcile-guard.md`
 severity: medium
 reason: The new `emptyFallback: "throw"` guard only fires when the parsed body trims to empty. Two shapes slip past it and produce the same destruction this bundle set out to stop: `parseDisputedMarker` only matches `(yes|true)`, so a response of exactly "DISPUTED: no\n" is returned verbatim as the merged body (verified against the regex at src/lib/ingest.ts:1183); and a heading-only fold such as "# Agent Harness\n" is likewise non-empty. Either becomes `mergedBody`, is written over the survivor, lands in `MergeOperationReceipt.mergedContent` (replayed verbatim by Retry), and the absorbed page is hard-deleted with its revisions. Pre-existing — not introduced by this change, and outside this bundle's intent, which names only the empty-response fallback.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-merge-candidate-and-fold-quality
+resolution-undo: f3854e9d9961147b3bf3667ab6c448f96e0c6e0474fded509adac00d3458a761 2026-09-03 7374617475733a206f70656e
 
 ### DW-703: A `PATCH` whose `fetch` REJECTS after the body `PUT` landed still shows a bare transport message, so the exact harm DW-428 exists to prevent is live on that one branch.
 origin: spec-deferred 8ec100877273
@@ -5762,7 +5764,9 @@ location: src/lib/ingest.ts:1048
 source_spec: `spec-dw-68-70-embedding-config-plumbing.md`
 severity: low
 reason: `getVectorSearchSettings()` always passes `hasWorkersAiBinding: null` (config.ts:1653, DW-225), and `vectorSearchMissingLegs` applies the binding leg only on an explicit `false` (workbench-settings.ts:1588). So a store holding `embeddingProvider: "workers-ai"`, a supported `@cf/` model and `vectorSearchEnabled: true`, running OFF Workers, reports `enabled: true` while `resolveEmbeddingProvider` returns `null`. `searchByVector` then returns `[]` (embeddings.ts:1106) and `findMergeCandidates` returns that empty list without reaching `buildCorpusStats`/`bm25Score`. Before DW-68 the gate was `hasEmbeddingSupport()`, which is `false` there, so the BM25 branch ran and merge de-duplication worked. Consequence on such a deployment: every ingest forks a new page instead of merging, silently. Root cause is the pre-existing `hasWorkersAiBinding: null` hole rather than this change, and the three candidate fixes (fall through on empty results, conjoin `hasEmbeddingSupport()`, or close the binding h
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-merge-candidate-and-fold-quality
+resolution-undo: f3854e9d9961147b3bf3667ab6c448f96e0c6e0474fded509adac00d3458a761 2026-09-03 7374617475733a206f70656e
 
 ### DW-711: The Chat send path gates on two different answers — `ChatCanvas` on the WORKLOAD model's `configured`, `chat.ts` on `hasLLMKey()`'s PRIMARY answer — so a `chatProvider`-only store passes the first and throws at the second.
 origin: escalation resolution of spec-dw-618-619-621-single-snapshot-model-client.md via /bmad-loop-resolve, 2026-09-01
@@ -5988,4 +5992,12 @@ location: src/lib/ingest.ts:425
 source_spec: `spec-dw-698-693-ingest-read-and-asset-keying.md`
 severity: medium
 reason: `ingestImage` mints `assets/<slugify(title)>/…` before `ingest()` uniquifies, so when the realm guard forks (Alice's private `photo`, Bob's page `photo-2`) Bob's image is still stored under `assets/photo/`. `src/app/api/assets/[...path]/route.ts:69-76` reads `segments[0]` as the page slug and gates on THAT page: Bob's own image 404s for Bob and for every reader of his public page, while Alice — who owns neither the page nor the image — can fetch it. The mirror case (first page public, forked page private) serves a private page's image ungated. `syncSiloForPage` (`src/lib/silo.ts:281-295`) likewise mirrors Bob's bytes into Alice's tenant silo and never into his own. Pre-existing — the directory was always the pre-uniquified slug — and unchanged in kind by DW-693's digest keying, which the intent sanctioned as an alternative to keying off the final page slug. Keying off the final page slug (a post-ingest re-key plus body rewrite, or deferring the store) is the fix that would close it. `s
+status: open
+
+### DW-739: The same no-prose fold overwrites an existing page's whole body at the INGEST door, where the widened predicate deliberately does not run.
+origin: spec-deferred a1c1635f9eac
+location: src/lib/ingest.ts:1351
+source_spec: `spec-dw-702-710-merge-fold-quality-and-candidate-fallback.md`
+severity: low
+reason: `reconcilePage`'s `"new"` path (the default) still returns the model's text verbatim, so a reconcile answering exactly "DISPUTED: no\n" or a bare heading becomes `wikiContent` at src/lib/ingest.ts:2408 and replaces the existing page's prose with that literal string. This is the identical shape DW-702 names, minus the hard delete: `spec-c3-merge-empty-reconcile-guard.md` and this spec both forbid changing the ingest door, and the new test at `src/lib/__tests__/ingest.test.ts` now PINS the verbatim return, so the residue is deliberate and enforced rather than merely unnoticed. Less severe than the merge door because `writeWikiPage` snapshots a revision first (src/lib/wiki.ts:596), so the prose is recoverable; the published page is still wrong until someone notices. Deciding whether the ingest door should degrade to `newBody` on a no-prose fold is a behaviour change to a door two specs have now declared out of scope, so it wants its own decision.
 status: open
