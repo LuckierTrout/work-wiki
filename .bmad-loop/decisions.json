@@ -421,5 +421,14 @@
     "key": "1",
     "label": "Add an unknown-outcome sentence",
     "resolution": ""
+  },
+  "DW-704": {
+    "answered_at": "2026-09-03",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give the DELETE preflight and the DW-270 read gate the same disk-fallback probe the listing walk uses, explicitly superseding spec-dw-393's delete-path constraint and recording that supersession. Pin that a row the same route just listed can be selected and cleared.",
+    "key": "1",
+    "label": "Make orphan rows deletable",
+    "resolution": ""
   }
 }
