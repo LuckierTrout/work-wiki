@@ -4466,7 +4466,9 @@ location: src/lib/raw.ts:348
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: low
 reason: The walk's second root is `raw/`, whose child directory `sources` passes `validateSlug`, so the flat files inside it are read as that directory's snapshots. `RAW_ID_RE` is `/^[a-f0-9]+$/` with no length bound, so `raw/sources/cafe.md` yields `{slug: "sources", rawId: "cafe"}`. Pre-existing — `wiki-retrieve.ts` already builds a duplicate retrieval document from it; this change surfaces it as a bogus CLI row too.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-raw-source-listing-truth
+resolution-undo: f99b310f2cc5ab45d1ccbee3db1918ad226ba87c2e57c326cc95546e15f8846f 2026-09-03 7374617475733a206f70656e
 
 ### DW-569: Binary Sources are still absent from every listing, so a PDF-only workspace keeps reporting zero Sources.
 origin: spec-deferred 943ed05871fa
@@ -4474,7 +4476,9 @@ location: src/lib/raw.ts:369
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: medium
 reason: `listRawSourceSnapshots` skips any child not ending in `.md`, and `listRawSources` is non-recursive, so bytes stored by `saveRawSourceBytes` at `raw/sources/<slug>/<id>.<ext>` appear in neither. The DW-437 decision named `listRawSourceSnapshots` as the listing to move the callers onto, so closing this needs a separate decision about what the listing's unit is.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-raw-source-listing-truth
+resolution-undo: f99b310f2cc5ab45d1ccbee3db1918ad226ba87c2e57c326cc95546e15f8846f 2026-09-03 7374617475733a206f70656e
 decision: 2026-08-29 One row per stored artefact — Make `listRawSourceSnapshots` recurse and return one row per stored artefact regardless of extension, carrying the media type so callers that only want markdown can filter explicitly. Audit every caller the DW-437 decision moved onto it and state which ones filter. Pin that a PDF-only workspace reports a non-zero Source count and that markdown-only callers are unchanged.
 decision: 2026-08-29 One row per stored artefact — Make `listRawSourceSnapshots` recurse and return one row per stored artefact regardless of extension, carrying the media type so callers that only want markdown can filter explicitly. Audit every caller the DW-437 decision moved onto it and state which ones filter. Pin that a PDF-only workspace reports a non-zero Source count and that markdown-only callers are unchanged.
 
@@ -4484,7 +4488,9 @@ location: src/lib/raw.ts:199
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: low
 reason: `stored` is initialised to `content` and only replaced on a successful `readFile`; the surrounding comment says copying a re-offered body "would show Files a Source the flat key does not hold". Pre-existing — the branch predates this change and no test pins it.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-raw-source-listing-truth
+resolution-undo: f99b310f2cc5ab45d1ccbee3db1918ad226ba87c2e57c326cc95546e15f8846f 2026-09-03 7374617475733a206f70656e
 
 ### DW-571: `checkIncompleteCoverage` compares only the first readable snapshot, and a page that also has a flat blob never has its snapshots compared at all.
 origin: spec-deferred ec2d5d5cf4b9
@@ -6050,4 +6056,12 @@ location: src/lib/silo.ts:311
 source_spec: `spec-dw-609-707-silo-mirror-lifecycle.md`
 severity: low
 reason: `removeSiloForPage(slug, tenant, { preserveRawSources: true })` (src/lib/silo.ts:311-347, reached from src/lib/merge.ts:676,741) leaves `tenants/<t>/raw/sources/<from>.md`, `tenants/<t>/raw/<from>.md` and both hashed trees in place at the ABSORBED slug's address, with no silo wiki md anchoring them. `listWorkbenchFilePaths` resolves `raw/` silo-primary (src/lib/workbench-files.ts:707-712) and `rawPathAllowed`'s refusal set covers hidden pages, not deleted ones, so those bytes keep listing. Slugs are reusable: recreating a page at `<from>` makes another page's provenance show up as the new page's Sources, and under a cross-owner merge (`bypassOwnerCheck`, src/mcp.ts:489) the survivor's owner cannot read the bytes at all because DW-40 resolves `raw/` strictly inside the owner's silo. Preserving in place is the recorded decision for this bundle, which records that "nothing reaps them"; the slug-reuse and cross-tenant consequences are not named anywhere, and no test covers the listing surf
+status: open
+
+### DW-744: The shared `isRawSnapshotName` predicate accepts a depth-1 folder-import file whose stem is all hex at ANY extension, so `raw/sources/papers/2024.pdf` is listed as `{slug: "papers", rawId: "2024", ext
+origin: spec-deferred 88ab9f4cdf76
+location: src/lib/raw.ts:446
+source_spec: `spec-dw-568-569-570-raw-source-listing-truth.md`
+severity: low
+reason: DW-568's fix moved the listing onto `isRawSnapshotName`, whose bound was `.md`-only when the listing had its own inline test. Any all-digit stem is valid hex, so a folder import containing `docs/2024.pdf` now yields a row. `readRawSourceById("docs", "2024")` builds `docs/2024.md` and throws, and `listRawSourceRows` adds the slug to `slugsWithSnapshots` — so if a page `docs` also has a flat `raw/sources/docs.md`, its real row is suppressed by an import file. Retrieval and `incomplete-coverage` are unaffected (both filter `ext !== "md"`); only `list --raw` / `Raw sources:` can show it. The `.md` half of this collision is pre-existing and deliberately documented ("accepted, and bounded — a single colliding FILE"); this change widened it to every extension the writers accept. Bounding the stem to the writers' digest length would close both halves.
 status: open

@@ -499,7 +499,7 @@ describe("CLI command execution", () => {
     const { listRawSources, listRawSourceSnapshots } = await import("../raw");
     vi.mocked(listRawSources).mockResolvedValueOnce([]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
     ]);
 
     const { runList } = await import("../../cli");
@@ -514,7 +514,7 @@ describe("CLI command execution", () => {
       { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
     ]);
 
     const { runList } = await import("../../cli");
@@ -536,13 +536,71 @@ describe("CLI command execution", () => {
       { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
     expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["alpha\tabc123.md"]);
+  });
+
+  it("runList(true) keeps the flat row when the only snapshot is BINARY", async () => {
+    // The flat row is suppressed because `ingest()` writes the flat blob and
+    // the `.md` snapshot from the SAME text. A `.png` dropped on the same slug
+    // is a different Source, so suppressing on it would delete a real prose
+    // Source from the listing and the count to make room for an image.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "png",
+        mediaType: "image/png",
+        path: "raw/sources/alpha/abc123.png",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual([
+      "alpha\talpha.md",
+      "alpha\tabc123.png",
+    ]);
+  });
+
+  it("runStatus() counts a flat Source and a binary snapshot on one slug as 2", async () => {
+    // The count half of the case above: two Sources really are stored, and the
+    // suppression must not swallow one of them.
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([
+      { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
+    ]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "alpha",
+        rawId: "abc123",
+        ext: "png",
+        mediaType: "image/png",
+        path: "raw/sources/alpha/abc123.png",
+      },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(logSpy.mock.calls.map((c) => c[0]).join("\n")).toContain(
+      "Raw sources:\t2",
+    );
   });
 
   it("runList(true) prints one row per snapshot for a multi-source page", async () => {
@@ -554,9 +612,9 @@ describe("CLI command execution", () => {
       { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "aaa111", path: "raw/sources/alpha/aaa111.md" },
-      { slug: "alpha", rawId: "bbb222", path: "raw/sources/alpha/bbb222.md" },
-      { slug: "alpha", rawId: "ccc333", path: "raw/sources/alpha/ccc333.md" },
+      { slug: "alpha", rawId: "aaa111", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/aaa111.md" },
+      { slug: "alpha", rawId: "bbb222", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/bbb222.md" },
+      { slug: "alpha", rawId: "ccc333", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/ccc333.md" },
     ]);
 
     const { runList } = await import("../../cli");
@@ -569,6 +627,112 @@ describe("CLI command execution", () => {
     ]);
   });
 
+  it("runList(true) prints a stored PDF that no Markdown sits beside (DW-569)", async () => {
+    // The CLI is the caller that does NOT filter by extension: `list --raw`
+    // describes what is STORED, and before the listing carried binaries a
+    // PDF-only workspace printed nothing at all.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc123",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc123.pdf",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc123.pdf"]);
+  });
+
+  it("runList(true) prints ONE row for a PDF and the Markdown extracted from it", async () => {
+    // `saveRawSourceBytes` stores the extract at `<slug>/<rawId>.md` beside the
+    // bytes under the SAME `rawId` — one arrival, two artefacts. Printing both
+    // would show one Source twice and double the `status` count. The original
+    // wins the row; the extract is derived from it.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/paper/abc123.md",
+      },
+      {
+        slug: "paper",
+        rawId: "abc123",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc123.pdf",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc123.pdf"]);
+  });
+
+  it("runList(true) prefers the original however the two artefacts are ordered", async () => {
+    // The walk's order is the provider's, so the preference cannot depend on
+    // which of the pair the listing happened to reach first.
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc123",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc123.pdf",
+      },
+      {
+        slug: "paper",
+        rawId: "abc123",
+        ext: "md",
+        mediaType: "text/markdown",
+        path: "raw/sources/paper/abc123.md",
+      },
+    ]);
+
+    const { runList } = await import("../../cli");
+    await runList(true);
+
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc123.pdf"]);
+  });
+
+  it("runStatus() counts a PDF-only workspace as 1, not 0 (DW-569)", async () => {
+    const { listWikiPages } = await import("../wiki");
+    const { listRawSources, listRawSourceSnapshots } = await import("../raw");
+    const { getEffectiveSettings } = await import("../config");
+
+    vi.mocked(listWikiPages).mockResolvedValueOnce([]);
+    vi.mocked(listRawSources).mockResolvedValueOnce([]);
+    vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
+      {
+        slug: "paper",
+        rawId: "abc123",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/paper/abc123.pdf",
+      },
+    ]);
+    vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
+
+    const { runStatus } = await import("../../cli");
+    await runStatus();
+
+    expect(logSpy.mock.calls.map((c) => c[0]).join("\n")).toContain(
+      "Raw sources:\t1",
+    );
+  });
+
   it("runList(true) still prints snapshots when the flat listing throws", async () => {
     // Each listing gets its own try/catch, as `wiki-retrieve.ts` does: one
     // failing root must not blank the other — and the operator is TOLD, because
@@ -576,7 +740,7 @@ describe("CLI command execution", () => {
     const { listRawSources, listRawSourceSnapshots } = await import("../raw");
     vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
     ]);
 
     const { runList } = await import("../../cli");
@@ -666,8 +830,8 @@ describe("CLI command execution", () => {
       { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
-      { slug: "beta", rawId: "def456", path: "raw/sources/beta/def456.md" },
+      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
+      { slug: "beta", rawId: "def456", ext: "md", mediaType: "text/markdown", path: "raw/sources/beta/def456.md" },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
 
@@ -689,7 +853,7 @@ describe("CLI command execution", () => {
     vi.mocked(listWikiPages).mockResolvedValueOnce([]);
     vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
 

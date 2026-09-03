@@ -43,13 +43,16 @@ import {
   INTAKE_PLAUD_LABEL,
   INTAKE_TOO_DEEP_COPY,
   INTAKE_IN_FLIGHT_COPY,
+  INTAKE_MEDIA_EXTENSIONS,
   INTAKE_MIME_TYPES,
   INTAKE_EXTRACT_UNAVAILABLE_COPY,
   INTAKE_READ_ONLY_COPY,
   INTAKE_URL_REQUIRED_COPY,
   classifyIntakeFile,
+  intakeContentType,
   intakeDragHasFiles,
   intakeFileTitle,
+  intakeMediaContentType,
   intakeSourceSlug,
   intakeStoredCopy,
   intakeUnsupportedCopy,
@@ -194,6 +197,73 @@ describe("the intake allowlist", () => {
     }
     // …and HTML survives it, or the whole in-app URL field is pointless.
     expect(INTAKE_ALLOWED_CONTENT_TYPES).toContain("text/html");
+  });
+});
+
+describe("what a stored arrival is served as", () => {
+  // `intakeContentType` is the whole-door answer `raw.ts` asks for every row of
+  // `listRawSourceSnapshots` (DW-569). It exists so the listing can report a
+  // real media type without minting a third MIME inventory beside the two
+  // tables in this module.
+
+  it("answers the canonical type for every kind of arrival", () => {
+    expect(intakeContentType("notes.md")).toBe("text/markdown");
+    expect(intakeContentType("notes.markdown")).toBe("text/markdown");
+    expect(intakeContentType("notes.txt")).toBe("text/plain");
+    expect(intakeContentType("page.html")).toBe("text/html");
+    expect(intakeContentType("paper.pdf")).toBe("application/pdf");
+    expect(intakeContentType("sheet.xlsx")).toBe(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(intakeContentType("photo.JPG")).toBe("image/jpeg");
+    expect(intakeContentType("clip.mp4")).toBe("video/mp4");
+  });
+
+  it("falls back to octet-stream rather than guessing", () => {
+    // A wrong label is a mis-decode; the default is a download. Same reasoning
+    // and same value as the media resolver's own fallback.
+    expect(intakeContentType("thing.bin")).toBe("application/octet-stream");
+    expect(intakeContentType("README")).toBe("application/octet-stream");
+    expect(intakeContentType(".env")).toBe("application/octet-stream");
+  });
+
+  it("does not answer with an inherited Object.prototype member (DW-365)", () => {
+    // A bare `TABLE[ext]` answers every prototype member with an inherited
+    // FUNCTION, and `??` does not rescue it — the value is neither `null` nor
+    // `undefined`. `intakeMediaContentType` can index bare because its caller
+    // checks `INTAKE_MEDIA_EXTENSIONS` first; this resolver is the whole-door
+    // answer for an arbitrary stored filename and has no such pre-check, so a
+    // Source stored as `<hex>.constructor` would be served a `Content-Type` of
+    // a function's source text.
+    for (const hazard of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(intakeContentType(`file.${hazard}`), hazard).toBe(
+        "application/octet-stream",
+      );
+    }
+  });
+
+  it("gives every extension the door accepts a real type", () => {
+    // The parity that keeps the new table from silently falling behind
+    // `INTAKE_EXTENSIONS`: a format added to the door without a content type
+    // here would store fine and then serve as an anonymous download.
+    for (const ext of Object.keys(INTAKE_EXTENSIONS)) {
+      expect(intakeContentType(`file.${ext}`), ext).not.toBe(
+        "application/octet-stream",
+      );
+    }
+  });
+
+  it("does not widen the MEDIA door's own answers", () => {
+    // `intakeMediaContentType` has a caller contract — membership in
+    // `INTAKE_MEDIA_EXTENSIONS` is checked before it is asked — so it must keep
+    // refusing everything else, and the two must agree wherever it does answer.
+    expect(intakeMediaContentType("paper.pdf")).toBe("application/octet-stream");
+    expect(intakeMediaContentType("notes.md")).toBe("application/octet-stream");
+    for (const ext of Object.keys(INTAKE_MEDIA_EXTENSIONS)) {
+      expect(intakeContentType(`file.${ext}`), ext).toBe(
+        intakeMediaContentType(`file.${ext}`),
+      );
+    }
   });
 });
 

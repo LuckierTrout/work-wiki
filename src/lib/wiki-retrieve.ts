@@ -273,6 +273,14 @@ export async function loadRetrieveDocuments(
   try {
     const snapshots = await listRawSourceSnapshots();
     for (const snapshot of snapshots) {
+      // THIS CALLER FILTERS. `readRawSourceById` builds `<slug>/<rawId>.md`
+      // and so opens Markdown only, while the listing now describes every
+      // stored artefact including binaries (DW-569). A `.pdf` row here would
+      // throw into the warn below on EVERY retrieval and still contribute no
+      // text to rank; the Markdown the sidecar extracted from that PDF sits
+      // beside it under the same `rawId` and is the row that carries its
+      // prose.
+      if (snapshot.ext !== "md") continue;
       try {
         const loaded = await readRawSourceById(snapshot.slug, snapshot.rawId);
         sources.push({

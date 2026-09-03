@@ -201,7 +201,7 @@ export async function syncSiloForPage(
   //
   // Neither address covers Workbench Intake's per-slug HASHED tree
   // `raw/sources/<slug>/<rawId>.<ext>`, mirrored below (DW-435) — nor the
-  // legacy hashed root `raw/<slug>/<rawId>.md`, which DW-435 left unmirrored
+  // legacy hashed root `raw/<slug>/<rawId>.<ext>`, which DW-435 left unmirrored
   // and DW-610 now covers too. That root is a REAL source location:
   // `readRawSourceById` falls back to it and `listRawSourceSnapshots`
   // enumerates it, so a workspace whose arrivals predate the move had them
@@ -233,13 +233,13 @@ export async function syncSiloForPage(
   // the modern spelling.
   //
   // SKIPPED for a slug naming a structural root under `raw/` — `raw/sources/`,
-  // `raw/assets/`, `raw/parsed/`, `raw/uploads/` hold other pages' and other
-  // owners' content, and the path alone cannot tell a real page slugged
-  // `assets` from the root itself. When it cannot, WITHHOLD: read the name as a
-  // root and mirror nothing, rather than pull a shared tree into one page's
-  // silo. `rawPathSlug` withholds under the same principle and the opposite
-  // direction — see `RAW_STRUCTURAL_DIRS` for why the two are not one rule. The
-  // page's MODERN tree (`raw/sources/assets/…`) is unaffected.
+  // `raw/assets/`, `raw/parsed/`, `raw/uploads/`, `raw/originals/` hold other
+  // pages' and other owners' content, and the path alone cannot tell a real
+  // page slugged `assets` from the root itself. When it cannot, WITHHOLD: read
+  // the name as a root and mirror nothing, rather than pull a shared tree into
+  // one page's silo. `rawPathSlug` withholds under the same principle and the
+  // opposite direction — see `RAW_STRUCTURAL_DIRS` for why the two are not one
+  // rule. The page's MODERN tree (`raw/sources/assets/…`) is unaffected.
   if (!RAW_STRUCTURAL_DIRS.has(slug)) {
     n += await mirrorHashedTree(
       rawRelPath(slug),

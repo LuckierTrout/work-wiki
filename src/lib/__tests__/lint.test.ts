@@ -41,6 +41,7 @@ import {
 } from "../lint";
 import {
   saveRawSource,
+  saveRawSourceBytes,
   saveRawSourceFor,
   listRawSourceSnapshots,
 } from "../raw";
@@ -1387,6 +1388,62 @@ describe("checkIncompleteCoverage", () => {
     // The comparison saw the SNAPSHOT bytes, not an empty/flat stand-in.
     expect(mockedCallLLM).toHaveBeenCalledTimes(1);
     expect(mockedCallLLM.mock.calls[0][1]).toContain("91% of runs converged");
+  });
+
+  it("makes a page whose only raw is BINARY no candidate at all (DW-569)", async () => {
+    // The snapshot listing describes stored bytes too now, but neither use in
+    // this check can do anything with one: `readRawSourceById` opens Markdown
+    // only, so a `.pdf` id is a fallback that always throws, and a page whose
+    // only Source is a PDF has no raw PROSE to compare the page against.
+    // Unfiltered it would be a candidate whose raw read fails on every run.
+    mockedHasLLMKey.mockResolvedValue(true);
+
+    await writeWikiPage(
+      "binary-only",
+      "# Binary Only\n\nA short overview with none of the detail.",
+    );
+    await updateIndex([
+      { slug: "binary-only", title: "Binary Only", summary: "PDF arrival" },
+    ]);
+    await saveRawSourceBytes(
+      "binary-only",
+      "beef02",
+      "pdf",
+      new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer as ArrayBuffer,
+    );
+
+    // "No issue" is NOT the discriminating assertion: unfiltered, the page
+    // becomes a candidate, `readRawSourceById` throws on the `.pdf` id, and the
+    // empty `rawParts` short-circuits to the same empty result. The observable
+    // difference is the listed-but-unreadable WARNING that candidacy produces
+    // on every single run — the noise the filter exists to prevent.
+    // The premise, pinned: the artefact really is listed, so what follows is
+    // about the FILTER and not about a fixture that never landed.
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "binary-only",
+        rawId: "beef02",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/binary-only/beef02.pdf",
+      },
+    ]);
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    let issues: Awaited<ReturnType<typeof checkIncompleteCoverage>>;
+    let warnings: string;
+    try {
+      issues = await checkIncompleteCoverage(["binary-only"]);
+    } finally {
+      // Read BEFORE the restore: `mockRestore()` clears the record.
+      warnings = warn.mock.calls.map((c) => String(c[1])).join("\n");
+      warn.mockRestore();
+    }
+
+    expect(warnings).not.toContain("binary-only/beef02");
+    expect(issues).toHaveLength(0);
+    // And nothing reached the model either.
+    expect(mockedCallLLM).not.toHaveBeenCalled();
   });
 
   it("still checks a hashed-only page when the FLAT listing fails (DW-437)", async () => {

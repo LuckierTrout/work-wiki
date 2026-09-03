@@ -313,6 +313,8 @@ describe("per-source raw snapshots", () => {
       {
         slug: "flat-one",
         rawId: "cafe01",
+        ext: "md",
+        mediaType: "text/markdown",
         path: "raw/sources/flat-one/cafe01.md",
       },
     ]);
@@ -397,6 +399,206 @@ describe("per-source raw snapshots", () => {
     expect((await readRawSourceById("race", "abc123")).content).toBe(
       winnerContent,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listRawSourceSnapshots — the listing has to describe what is actually on
+// disk, in both directions (DW-568 bogus rows, DW-569 missing binaries).
+// ---------------------------------------------------------------------------
+
+describe("listRawSourceSnapshots", () => {
+  const HEX = "c4ffee01";
+
+  /** Put a file at `raw/<rel>` without going through a writer. */
+  async function writeRaw(rel: string, content = "bytes"): Promise<void> {
+    const abs = path.join(tmpDir, "raw", rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, content, "utf-8");
+  }
+
+  it("answers [] when neither root exists", async () => {
+    // `listPrefix` swallows ENOENT so a fresh workspace is empty rather than a
+    // thrown listing; `lint.test.ts` pins that a NON-ENOENT failure still
+    // propagates.
+    expect(await listRawSourceSnapshots()).toEqual([]);
+  });
+
+  it("does not read a flat Source as a snapshot of a page called `sources` (DW-568)", async () => {
+    // The legacy walk's second root is plain `raw/`, whose child `sources` is a
+    // structural ROOT and passes `validateSlug` all the same. Every flat
+    // `raw/sources/<hex>.md` was therefore read as a snapshot of a page named
+    // `sources` — a row `readRawSourceById` cannot open, which retrieval and
+    // `list --raw` then reported as a duplicate Source.
+    await ensureDirectories();
+    await saveRawSource("cafe", "flat blob");
+
+    expect(await listRawSourceSnapshots()).toEqual([]);
+    expect((await listRawSources()).map((s) => s.slug)).toEqual(["cafe"]);
+  });
+
+  it("emits no row from any structural root under raw/", async () => {
+    // The same withholding for every name in `RAW_STRUCTURAL_DIRS`, in both the
+    // real nested layouts and the flat shape DW-568 was about. `originals` is
+    // the one whose second segment is a TENANT rather than a slug.
+    await writeRaw(`assets/some-page/${HEX}.png`);
+    await writeRaw(`parsed/some-page/${HEX}.md`);
+    await writeRaw(`uploads/job-1/${HEX}.md`);
+    await writeRaw(`originals/tenant-a/some-page/${HEX}.md`);
+    await writeRaw(`sources/${HEX}.md`);
+    await writeRaw(`assets/${HEX}.png`);
+    await writeRaw(`parsed/${HEX}.md`);
+    await writeRaw(`uploads/${HEX}.md`);
+    await writeRaw(`originals/${HEX}.md`);
+
+    expect(await listRawSourceSnapshots()).toEqual([]);
+  });
+
+  it("reads a structural NAME as a page slug one level down, and only there", async () => {
+    // The skip is LEGACY-ROOT-ONLY, and the asymmetry is the whole point: under
+    // `raw/` a child called `assets` is the asset ROOT, but one level down
+    // `raw/sources/assets/` is the snapshot tree of a page genuinely slugged
+    // `assets` — a slug `silo.test.ts` already exercises. Skipping the name in
+    // both roots would leave such a page with no Intake Source at all: none in
+    // retrieval, none in coverage candidacy, none in `list --raw`.
+    await saveRawSourceFor("assets", HEX, "a page really slugged assets");
+    await writeRaw(`assets/${HEX}.md`, "the asset root, not a page");
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "assets",
+        rawId: HEX,
+        ext: "md",
+        mediaType: "text/markdown",
+        path: `raw/sources/assets/${HEX}.md`,
+      },
+    ]);
+  });
+
+  it("lists stored BYTES that no Markdown sits beside (DW-569)", async () => {
+    // The listing's old `.md`-only filter dropped every binary arrival, so a
+    // workspace whose only Source is a PDF reported `Raw sources: 0`.
+    await saveRawSourceBytes(
+      "paper",
+      HEX,
+      "pdf",
+      new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer as ArrayBuffer,
+    );
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "paper",
+        rawId: HEX,
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: `raw/sources/paper/${HEX}.pdf`,
+      },
+    ]);
+  });
+
+  it("lists a PDF and its extracted Markdown as TWO rows under one rawId", async () => {
+    // `saveRawSourceBytes` puts the extract at `<slug>/<rawId>.md` beside the
+    // bytes deliberately, "without a separate identity to keep in sync". Both
+    // are stored artefacts, so the dedup key carries the extension — keyed on
+    // `<slug>/<rawId>` alone the walk reported whichever it reached first.
+    await saveRawSourceBytes(
+      "paper",
+      HEX,
+      "pdf",
+      new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer as ArrayBuffer,
+    );
+    await saveRawSourceFor("paper", HEX, "extracted prose");
+
+    const rows = await listRawSourceSnapshots();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.slug === "paper" && r.rawId === HEX)).toBe(true);
+    expect([...rows].map((r) => r.ext).sort()).toEqual(["md", "pdf"]);
+    expect([...rows].map((r) => r.mediaType).sort()).toEqual([
+      "application/pdf",
+      "text/markdown",
+    ]);
+  });
+
+  it("still lists a legacy raw/<slug>/<hex>.md snapshot at its own path", async () => {
+    // The pre-move layout keeps answering: `readRawSourceById` falls back to it
+    // and `silo.ts` mirrors it, so dropping this root would strand those
+    // Sources rather than fix DW-568.
+    await writeRaw(`legacy-page/${HEX}.md`, "legacy snapshot");
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "legacy-page",
+        rawId: HEX,
+        ext: "md",
+        mediaType: "text/markdown",
+        path: `raw/legacy-page/${HEX}.md`,
+      },
+    ]);
+  });
+
+  it("reports one row for an artefact present under BOTH roots", async () => {
+    // Same rule as `listRawSources`: the modern root wins, because that is the
+    // one the readers resolve to first.
+    await saveRawSourceFor("both", HEX, "modern");
+    await writeRaw(`both/${HEX}.md`, "legacy");
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "both",
+        rawId: HEX,
+        ext: "md",
+        mediaType: "text/markdown",
+        path: `raw/sources/both/${HEX}.md`,
+      },
+    ]);
+  });
+
+  it("emits no row for a folder-import file", async () => {
+    // Nested (the walk stops at depth 1) AND not hex, either of which is
+    // disqualifying. `readRawSourceById` cannot address a relative path, so a
+    // row here would be exactly the unreadable row DW-568 is about.
+    await ensureDirectories();
+    await saveRawSourceTree("papers/energy/note.md", "import");
+
+    expect(await listRawSourceSnapshots()).toEqual([]);
+  });
+
+  it("emits the depth-1 collision the shared predicate deliberately accepts", async () => {
+    // The counterpart to the case above, and the reason the exclusion must not
+    // be described as structural: an import file that happens to sit at the TOP
+    // of its root with a hex stem is byte-for-byte a snapshot filename, and the
+    // widened predicate takes it at any extension. Recorded so that narrowing
+    // the id rule is a visible diff here rather than a silent behavior change.
+    // Bounded, and that is the point: one addressable FILE at the path the row
+    // reports, never a directory or a nested tree.
+    await ensureDirectories();
+    await saveRawSourceTree("papers/2024.pdf", "an import file, not a snapshot");
+    await saveRawSourceTree("papers/energy/note.md", "a normal import file");
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "papers",
+        rawId: "2024",
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: "raw/sources/papers/2024.pdf",
+      },
+    ]);
+  });
+
+  it("falls back to octet-stream for an extension the door does not know", async () => {
+    // A wrong label is a mis-decode; the default is a download.
+    await writeRaw(`sources/s/${HEX}.bin`);
+
+    expect(await listRawSourceSnapshots()).toEqual([
+      {
+        slug: "s",
+        rawId: HEX,
+        ext: "bin",
+        mediaType: "application/octet-stream",
+        path: `raw/sources/s/${HEX}.bin`,
+      },
+    ]);
   });
 });
 
@@ -675,6 +877,64 @@ describe("intake writes (owner option)", () => {
       "first arrival",
     );
   });
+
+  it("abandons the repair when the stored bytes cannot be re-read (DW-570)", async () => {
+    // The occupied branch may mirror the STORED bytes or nothing. It used to
+    // fall back to the REQUEST body when the re-read threw — the one text the
+    // branch above forbids, and (the silo door being create-only) the
+    // PERMANENT answer Files would then give for this Source. A silo still
+    // missing the Source is visibly empty rather than confidently wrong, and
+    // the next arrival on this key repairs it for real.
+    //
+    // Bumps are COUNTED at the provider, not read off the counter: `DATA_DIR`
+    // is a temp root shared by the whole run.
+    await saveRawSourceFor("unreadable", "ab12cd", "first arrival");
+    const storage = getStorage();
+    const realReadFile = storage.readFile.bind(storage);
+    const bumps = vi.spyOn(storage, "incrementIndex");
+    const reads = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (rel: string) =>
+        rel.endsWith("unreadable/ab12cd.md")
+          ? Promise.reject(new Error("stored bytes unreadable"))
+          : realReadFile(rel),
+      );
+
+    let dataVersionBumps: number;
+    let attemptedReread: boolean;
+    try {
+      // The arrival still SUCCEEDS — the mirror is fail-soft and the flat bytes
+      // are intact.
+      await saveRawSourceFor("unreadable", "ab12cd", "mutant", {
+        owner: OWNER,
+      });
+    } finally {
+      // Both read BEFORE the restores: `mockRestore()` clears the record.
+      dataVersionBumps = bumps.mock.calls.filter(
+        ([key]) => key === "data-version",
+      ).length;
+      attemptedReread = reads.mock.calls.some(([rel]) =>
+        rel.endsWith("unreadable/ab12cd.md"),
+      );
+      reads.mockRestore();
+      bumps.mockRestore();
+    }
+
+    // THE PREMISE, pinned first. The silo assertion below is a NEGATIVE one
+    // against a `DATA_DIR` this suite does not scope per test, so it would read
+    // as meaningful even if the second write had taken the CREATED path and
+    // never entered the repair branch at all. Only the occupied branch re-reads
+    // the flat key, so this says the branch under test actually ran.
+    expect(attemptedReread).toBe(true);
+    await expect(fs.stat(siloAbs("unreadable/ab12cd.md"))).rejects.toThrow();
+    expect(dataVersionBumps).toBe(0);
+    expect(
+      await fs.readFile(
+        path.join(tmpDir, "raw", "sources", "unreadable", "ab12cd.md"),
+        "utf-8",
+      ),
+    ).toBe("first arrival");
+  });
 });
 
 describe("isRawSnapshotName", () => {
@@ -686,9 +946,11 @@ describe("isRawSnapshotName", () => {
   const hex = "c4".repeat(32);
 
   it("accepts a hashed snapshot at any extension saveRawSourceBytes writes", () => {
-    // `.md` is what `listRawSourceSnapshots` enumerates; the binary extensions
-    // are the arrivals `saveRawSourceBytes` publishes into the same namespace,
-    // which the mirror must carry byte-exactly.
+    // `.md` is what `saveRawSourceFor` writes; the binary extensions are the
+    // arrivals `saveRawSourceBytes` publishes into the same namespace, which
+    // the mirror must carry byte-exactly and `listRawSourceSnapshots` must
+    // report (DW-569). Since that listing now classifies with THIS predicate,
+    // a case removed here silently removes a row there too.
     expect(isRawSnapshotName(`${hex}.md`)).toBe(true);
     expect(isRawSnapshotName(`${hex}.pdf`)).toBe(true);
   });

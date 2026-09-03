@@ -236,6 +236,75 @@ export function intakeMediaContentType(name: string): string {
   return MEDIA_CONTENT_TYPES[ext] ?? "application/octet-stream";
 }
 
+/**
+ * The NON-media half of the same answer: what a text or document Source is
+ * served back as.
+ *
+ * Split from {@link MEDIA_CONTENT_TYPES} rather than merged into it because
+ * that table has a caller contract — {@link intakeMediaContentType} answers
+ * only for extensions {@link INTAKE_MEDIA_EXTENSIONS} admits, and the media
+ * door checks membership before asking. Widening it in place would start
+ * answering `application/pdf` on a door that must refuse PDFs.
+ *
+ * The spellings are lifted from {@link INTAKE_MIME_TYPES} — the door's own
+ * statement of what each format is called on the wire — but they cannot be
+ * DERIVED from it: that map is many-to-one (`text/markdown` and
+ * `text/x-markdown` both mean `md`), so inverting it would have to pick a
+ * winner arbitrarily. The pairs below are the canonical direction of that same
+ * table, and `workbench-intake.test.ts` pins that every key of
+ * {@link INTAKE_EXTENSIONS} resolves to something, so an extension added to
+ * the door without a type here fails a test rather than silently downloading.
+ */
+const SOURCE_CONTENT_TYPES: Record<string, string> = {
+  md: "text/markdown",
+  markdown: "text/markdown",
+  mdown: "text/markdown",
+  txt: "text/plain",
+  text: "text/plain",
+  html: "text/html",
+  htm: "text/html",
+  pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xls: "application/vnd.ms-excel",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  epub: "application/epub+zip",
+  mobi: "application/x-mobipocket-ebook",
+};
+
+/**
+ * What `Content-Type` ANY stored arrival is served as, media or not.
+ *
+ * The whole-door answer {@link intakeMediaContentType} deliberately is not:
+ * `listRawSourceSnapshots` describes every stored artefact under
+ * `raw/sources/<slug>/`, binaries and Markdown alike (DW-569), and needs a
+ * real type for each without minting a third MIME inventory in `raw.ts`.
+ *
+ * Media is consulted FIRST so the extensions both tables could claim keep the
+ * answer the media door already gives (there is no overlap today; the order
+ * makes that fact a rule rather than a coincidence). Anything neither table
+ * knows is `application/octet-stream` — a download rather than a mis-decode,
+ * the same fallback and the same reasoning as the media resolver.
+ *
+ * Both lookups go through {@link ownLookup} (DW-365). {@link
+ * intakeMediaContentType} can index bare because its caller has already checked
+ * membership in {@link INTAKE_MEDIA_EXTENSIONS}; this one is the whole-door
+ * answer for an ARBITRARY stored filename with no such pre-check, so
+ * `thing.constructor` would otherwise be served a `Content-Type` of
+ * `function Object() { … }` — an inherited value that `??` does not rescue,
+ * because it is neither `null` nor `undefined`.
+ */
+export function intakeContentType(name: string): string {
+  const dot = name.lastIndexOf(".");
+  const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+  return (
+    ownLookup(MEDIA_CONTENT_TYPES, ext) ??
+    ownLookup(SOURCE_CONTENT_TYPES, ext) ??
+    "application/octet-stream"
+  );
+}
+
 /** Is this arrival stored as a UTF-8 string rather than as bytes? */
 export function isIntakeTextFormat(
   format: IntakeFormat,

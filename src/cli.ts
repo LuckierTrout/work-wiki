@@ -581,8 +581,9 @@ export async function runLint(fix: boolean): Promise<void> {
 
 /**
  * Every Source row the CLI shows: the flat `raw/sources/<id>.md` listing and
- * the hashed `raw/sources/<slug>/<id>.md` snapshots, with the flat row DROPPED
- * for any slug that has snapshots.
+ * the hashed `raw/sources/<slug>/<id>.<ext>` snapshots, with the flat row
+ * DROPPED for any slug that has snapshots, and the snapshot rows of ONE
+ * arrival collapsed to one.
  *
  * `listRawSources` is non-recursive BY CONTRACT — that is the browse contract
  * its docblock states, and the Workbench Sources surface built on it does not
@@ -599,6 +600,11 @@ export async function runLint(fix: boolean): Promise<void> {
  * of that page and the flat blob is the legacy single-blob view of the same
  * bytes, so the snapshots win: a page with three distinct sources still counts
  * three, and a slug with no snapshot at all keeps its flat row.
+ *
+ * Only a MARKDOWN snapshot suppresses it, though. That whole argument is about
+ * the pair `ingest()` writes from one text; a BINARY snapshot on the same slug
+ * is a different Source, and dropping the flat blob for it would hide real
+ * prose behind an unrelated image (DW-569).
  *
  * Each listing gets its OWN try/catch: one root failing must not blank the
  * other, which is the whole reason the union is worth more than either half.
@@ -617,14 +623,43 @@ async function listRawSourceRows(): Promise<
   } catch (error) {
     console.error(`Warning: could not list raw sources: ${String(error)}`);
   }
+  // One entry per ARRIVAL, keyed `<slug>/<rawId>`: see the dedupe note below.
+  const byArrival = new Map<string, { slug: string; filename: string }>();
   try {
+    // THIS CALLER DOES NOT FILTER by `ext` — it is the one that must not.
+    // `list --raw` and `Raw sources:` describe what is STORED, so a workspace
+    // whose only Source is a PDF has to show it and count it (DW-569); the
+    // reading callers (retrieval, `incomplete-coverage`) drop binaries because
+    // they need prose, and this one has no such excuse.
+    //
+    // It DOES collapse the rows of one arrival. A binary Source and the
+    // Markdown the sidecar extracted from it are stored under the same
+    // `rawId` on purpose, so listing both would print one Source twice and
+    // roughly double the count — the same double-count the flat/hashed union
+    // above exists to prevent, one level down. The non-Markdown artefact wins
+    // the row because it is the immutable original the owner actually handed
+    // over; the extract is derived from it.
     for (const snapshot of await listRawSourceSnapshots()) {
-      slugsWithSnapshots.add(snapshot.slug);
-      hashed.push({ slug: snapshot.slug, filename: `${snapshot.rawId}.md` });
+      // ONLY a MARKDOWN snapshot suppresses the slug's flat row. The
+      // suppression's whole warrant is that the two rows are one page's bytes
+      // twice, and that is a claim about `ingest()`: it writes the flat blob
+      // and the per-source `.md` snapshot from the SAME text, one call apart.
+      // A binary snapshot is a different Source entirely — an image or a PDF
+      // dropped onto a slug that also has a flat prose blob — so suppressing on
+      // it would delete a real prose Source from the listing and the count to
+      // make room for a file it has nothing to do with.
+      if (snapshot.ext === "md") slugsWithSnapshots.add(snapshot.slug);
+      const key = `${snapshot.slug}/${snapshot.rawId}`;
+      if (byArrival.has(key) && snapshot.ext === "md") continue;
+      byArrival.set(key, {
+        slug: snapshot.slug,
+        filename: `${snapshot.rawId}.${snapshot.ext}`,
+      });
     }
   } catch (error) {
     console.error(`Warning: could not list raw snapshots: ${String(error)}`);
   }
+  hashed.push(...byArrival.values());
   return [
     ...flat.filter((row) => !slugsWithSnapshots.has(row.slug)),
     ...hashed,

@@ -1029,6 +1029,15 @@ export async function checkIncompleteCoverage(
   const snapshotIdsBySlug = new Map<string, string[]>();
   try {
     for (const snapshot of await listRawSourceSnapshots()) {
+      // THIS CALLER FILTERS, for both uses below. The listing now describes
+      // binary artefacts too (DW-569), and neither use can do anything with
+      // one: `readRawSourceById` opens Markdown only, so a `.pdf` id in
+      // `snapshotIdsBySlug` is a fallback that always throws, and a page whose
+      // only Source is a PDF has no raw PROSE for this check to compare the
+      // page against. The Markdown extracted from that PDF, when there is any,
+      // is a separate row under the same `rawId` and does make the page a
+      // candidate.
+      if (snapshot.ext !== "md") continue;
       rawSlugsOnDisk.add(snapshot.slug);
       const ids = snapshotIdsBySlug.get(snapshot.slug);
       if (ids) ids.push(snapshot.rawId);

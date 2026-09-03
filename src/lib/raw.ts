@@ -10,6 +10,12 @@ import { getStorage } from "./storage";
 import { bumpDataVersion } from "./data-version";
 import { isEnoent } from "./errors";
 import { logger } from "./logger";
+// The door's OWN inventory of what each extension is served as. Imported
+// rather than restated so a stored artefact's `mediaType` cannot disagree with
+// what the Preview and asset doors actually send. Cycle-free: `workbench-intake`
+// pulls only `document-formats`, `slugify` and `workbench-tree`, none of which
+// reach back here.
+import { intakeContentType } from "./workbench-intake";
 
 // ---------------------------------------------------------------------------
 // Raw source storage
@@ -87,16 +93,30 @@ export const RAW_ASSETS_DIR = "assets";
  * real page named `parsed`/`assets` something, and each buys the answer that
  * cannot leak or destroy somebody else's data.
  *
+ * {@link listRawSourceSnapshots} takes the SAME withholding under the legacy
+ * root, for the same reason in a third shape: reading `sources` as a slug there
+ * turned every flat `raw/sources/<hex>.md` into a snapshot of a page called
+ * `sources` (DW-568). This set must therefore be EVERY structural root, not
+ * merely the ones the silo happened to care about — one missing name is one
+ * root that still mints unreadable rows.
+ *
  * `uploads` is `ingest-staging.ts`'s root (`raw/uploads/<jobId>/<file>`) and
  * the literal lives there; it is restated here because this set is about what
  * a *slug-shaped* segment may not be, and staging blobs are as foreign to a
  * page's silo as anything else under `raw/`.
+ *
+ * `originals` is `document-sources.ts`'s root
+ * (`raw/originals/<tenant>/<slug>/<file>`, written through `rawRelPath`) and
+ * the literal lives there, restated here for the same reason — and it is the
+ * one whose second segment is not even a slug but a TENANT, so reading it as a
+ * page would name a page after somebody's tenant id.
  */
 export const RAW_STRUCTURAL_DIRS: ReadonlySet<string> = new Set([
   RAW_SOURCES_DIR,
   RAW_ASSETS_DIR,
   RAW_PARSED_DIR,
   "uploads",
+  "originals",
 ]);
 
 /** Storage-relative path for something under `raw/sources/`. */
@@ -249,11 +269,22 @@ async function storeRawSource(
     // Mirror the STORED bytes, not the request body. A tree key can be
     // re-offered with different text (FR-40 path identity); copying the new
     // body into the silo would show Files a Source the flat key does not hold.
-    let stored = content;
+    //
+    // So a failed re-read ABANDONS the repair rather than falling back to
+    // `content` (DW-570). Falling back would mirror exactly the bytes the
+    // paragraph above forbids, and — because the silo door is create-only —
+    // that wrong text would be the permanent answer Files gives for this
+    // Source, with nothing to correct it later. A silo that is still missing
+    // the Source is the strictly better failure: it is visibly empty rather
+    // than confidently wrong, the flat bytes are intact, and the next arrival
+    // on this key repairs it for real. No mirror means no `dataVersion` bump
+    // either — nothing changed for a watcher to see.
+    let stored: string;
     try {
       stored = await getStorage().readFile(rel);
     } catch (err) {
       logger.warn("raw", `could not re-read "${rel}" for silo repair`, err);
+      return false;
     }
     const repaired = await mirrorSourceToSilo(rest, stored, options?.owner);
     if (repaired) await bumpDataVersion();
@@ -429,19 +460,29 @@ const RAW_EXT_RE = /^[a-z0-9]{1,8}$/;
  * content-addressed filename is the only thing in the path that tells them
  * apart.
  *
- * This is the silo mirror ADOPTING an identity it does not own, one-way:
- * {@link listRawSourceSnapshots} still classifies with its own inline
- * `<hex>.md` test and does NOT call this. Exporting the predicate puts the
- * mirror's copy of that rule in the same file as the writers and the listing,
- * where a change to any of them is visible in one diff — but the two are kept
- * in step BY HAND, and nothing here fails if they drift. They already differ
- * deliberately in one respect: the listing enumerates `.md` only, while the
- * mirror must also carry the binary arrivals {@link saveRawSourceBytes}
- * publishes into the same namespace, so this accepts any extension that writer
- * accepts.
+ * This is the ONE rule, shared: the silo mirror (`silo.ts`), the delete arm
+ * that unmirrors, and {@link listRawSourceSnapshots} all classify with this
+ * function, and it accepts every extension {@link saveRawSourceBytes} accepts.
+ * They used to be two hand-synced tests, and the divergence was not
+ * theoretical — the listing's own `<hex>.md` copy is why a stored PDF appeared
+ * in no listing at all and a PDF-only workspace reported zero Sources
+ * (DW-569). Keeping one predicate means the mirror cannot carry an artefact
+ * the listing denies exists, and a change to what a snapshot filename IS
+ * lands in every consumer at once.
  *
  * By name alone an import file called `beef.md` is a snapshot; accepted, and
- * bounded — a single colliding FILE, never a directory or a tree.
+ * bounded — a single colliding FILE at depth 1, never a directory or a tree.
+ *
+ * The BOUND IS WIDER than it was while the listing read `.md` only: this
+ * predicate takes every extension the writers accept, so `beef.pdf` at the top
+ * of an import root collides too, and a collision now shows up as a row in
+ * {@link listRawSourceSnapshots} as well as a file in the colliding page's
+ * silo. Still one file per collision, still addressable at the path the row
+ * reports, and still the price of letting the content-addressed filename be
+ * the only thing in the path that tells the two writers apart. Narrowing the
+ * rule — a length floor on the id, say — would trade this for snapshots the
+ * mirror drops and the listing denies, so it stays a recorded collision rather
+ * than a silent one (`raw.test.ts` pins it).
  */
 export function isRawSnapshotName(name: string): boolean {
   const dot = name.lastIndexOf(".");
@@ -454,12 +495,53 @@ export function isRawSnapshotName(name: string): boolean {
 export interface RawSourceSnapshot {
   slug: string;
   rawId: string;
-  /** Workbench path, e.g. `raw/sources/<slug>/<rawId>.md`. */
+  /** Lowercase, no dot: `md` for a Markdown snapshot, `pdf`/`png`/… for bytes. */
+  ext: string;
+  /** What the repo's own doors serve these bytes as; octet-stream when unknown. */
+  mediaType: string;
+  /** Workbench path, e.g. `raw/sources/<slug>/<rawId>.<ext>`. */
   path: string;
 }
 
 /**
- * Recursive walk of hashed `raw/sources/<slug>/<hex>.md` snapshots.
+ * One row per STORED artefact in the hashed trees:
+ * `raw/sources/<slug>/<hex>.<ext>`, plus the legacy `raw/<slug>/<hex>.<ext>`
+ * that predates the move under `raw/sources/`.
+ *
+ * ONE ROW IS ONE FILE, not one arrival. A binary Source and the Markdown the
+ * sidecar extracted from it share a `rawId` — {@link saveRawSourceBytes} says
+ * so deliberately, "without a separate identity to keep in sync" — so `ext` is
+ * part of a row's identity and part of the dedup key. Keying on
+ * `<slug>/<rawId>` alone reported whichever of the two the walk reached first
+ * and silently dropped the other.
+ *
+ * DEPTH 1 ONLY, and the filename must be `<hex>.<ext>`
+ * ({@link isRawSnapshotName}), because `rawId` is what a caller reads a row
+ * back BY: {@link readRawSourceById} builds `<slug>/<rawId>.md` and cannot
+ * address anything else. That is what keeps folder-import Sources
+ * ({@link saveRawSourceTree}) out in the shape they actually take: identified
+ * by relative path (FR-40), nested (`raw/sources/papers/energy/note.md`), and
+ * named the way people name files rather than as a hash. A deeper walk would
+ * mint rows pointing at paths no reader can open, which is DW-568 in a new
+ * place.
+ *
+ * It is NOT an exclusion by construction, and should not be read as one: an
+ * import file that happens to sit at depth 1 with a hex stem —
+ * `raw/sources/papers/2024.pdf` — is byte-for-byte a snapshot filename and IS
+ * emitted, as `{slug: "papers", rawId: "2024", ext: "pdf"}`. That collision is
+ * {@link isRawSnapshotName}'s, taken deliberately and bounded there; what
+ * matters here is that such a row still names ONE real file at the path it
+ * reports, which is the property the unopenable rows lacked.
+ *
+ * `silo.ts`'s `mirrorHashedTree` walks this same tree the same way.
+ *
+ * Under the LEGACY root the {@link RAW_STRUCTURAL_DIRS} names are skipped:
+ * `sources`, `assets`, `parsed`, `uploads` and `originals` are roots there, not
+ * page slugs, and reading `sources` as a slug is exactly what turned every flat
+ * `raw/sources/<hex>.md` into a bogus snapshot of a page called `sources`
+ * (DW-568). The skip is legacy-root-only — one level down, inside
+ * `raw/sources/`, a directory named `assets` really IS a page slug and its
+ * `raw/sources/assets/<hex>.md` really is that page's snapshot tree.
  *
  * {@link listRawSources} stays non-recursive — that is the browse contract,
  * and the Workbench Sources surface built on it is unchanged: snapshots never
@@ -467,12 +549,23 @@ export interface RawSourceSnapshot {
  * unions this listing in itself: Chat/Search retrieval (`wiki-retrieve.ts`),
  * the CLI's `list --raw` / `status`, and the `incomplete-coverage` lint check
  * (DW-437). A caller that unions must also decide what to do about the slug
- * `ingest()` writes BOTH ways — see `listRawSourceRows` in `src/cli.ts`.
+ * `ingest()` writes BOTH ways — see `listRawSourceRows` in `src/cli.ts` — and,
+ * since this listing carries binaries, whether it can READ a row at all: each
+ * call site says which it does and why.
  */
 export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
-  const roots: Array<{ prefix: string; pathPrefix: string }> = [
-    { prefix: rawSourceRelPath(""), pathPrefix: `raw/${RAW_SOURCES_DIR}` },
-    { prefix: rawRelPath(""), pathPrefix: "raw" },
+  const roots: Array<{
+    prefix: string;
+    pathPrefix: string;
+    /** Are this root's children ambiguous between page slug and structure? */
+    skipStructural: boolean;
+  }> = [
+    {
+      prefix: rawSourceRelPath(""),
+      pathPrefix: `raw/${RAW_SOURCES_DIR}`,
+      skipStructural: false,
+    },
+    { prefix: rawRelPath(""), pathPrefix: "raw", skipStructural: true },
   ];
   const snapshots: RawSourceSnapshot[] = [];
   const seen = new Set<string>();
@@ -480,6 +573,7 @@ export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
     const entries = await listPrefix(root.prefix);
     for (const entry of entries) {
       if (!entry.isDirectory || entry.name.startsWith(".")) continue;
+      if (root.skipStructural && RAW_STRUCTURAL_DIRS.has(entry.name)) continue;
       try {
         validateSlug(entry.name);
       } catch {
@@ -487,15 +581,20 @@ export async function listRawSourceSnapshots(): Promise<RawSourceSnapshot[]> {
       }
       const children = await listPrefix(`${root.prefix}/${entry.name}`);
       for (const child of children) {
-        if (child.isDirectory || !child.name.endsWith(".md")) continue;
-        const rawId = child.name.slice(0, -3);
-        if (!RAW_ID_RE.test(rawId)) continue;
-        const key = `${entry.name}/${rawId}`;
+        if (child.isDirectory || !isRawSnapshotName(child.name)) continue;
+        const dot = child.name.lastIndexOf(".");
+        const rawId = child.name.slice(0, dot);
+        const ext = child.name.slice(dot + 1);
+        // The extension is part of the key: a PDF and its extracted Markdown
+        // are two stored artefacts sharing one `rawId`.
+        const key = `${entry.name}/${rawId}.${ext}`;
         if (seen.has(key)) continue;
         seen.add(key);
         snapshots.push({
           slug: entry.name,
           rawId,
+          ext,
+          mediaType: intakeContentType(child.name),
           path: `${root.pathPrefix}/${entry.name}/${child.name}`,
         });
       }
