@@ -443,6 +443,12 @@ describe("PATCH and DELETE /api/research/[id]", () => {
   it.each([
     ["400s", new ClientInputError("Research question is required"), 400],
     ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
+    // DW-684. An exhausted registry CAS is transient contention — the run door
+    // has answered 503 for this class since DW-651 while this sibling said 500,
+    // so the same moment got two verdicts from the one store.
+    ["503s", new ResearchProjectBusyError("Research projects were busy; retry the request."), 503],
+    // The control for the row above: by TYPE, never by the sentence.
+    ["500s untyped", new Error("Research projects were busy; retry the request."), 500],
   ])("%s a store fault on PATCH", async (_label, fault, status) => {
     mockedEdit.mockRejectedValue(fault);
 
@@ -571,6 +577,10 @@ describe("PATCH and DELETE /api/research/[id]", () => {
   it.each([
     ["400s", new ClientInputError("Research question is required"), 400],
     ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
+    // DW-684, mirroring the PATCH table above: `retireResearchProject` routes
+    // through the same CAS, so it must give the same retryable answer.
+    ["503s", new ResearchProjectBusyError("Research projects were busy; retry the request."), 503],
+    ["500s untyped", new Error("Research projects were busy; retry the request."), 500],
   ])("%s a store fault on DELETE", async (_label, fault, status) => {
     mockedDelete.mockRejectedValue(fault);
 
@@ -591,6 +601,37 @@ describe("PATCH and DELETE /api/research/[id]", () => {
 
     expect(response.status).toBe(200);
     expect(mockedDelete).toHaveBeenCalledWith("alice", "p1");
+  });
+
+  /**
+   * ONE STORE, ONE VERDICT (DW-684) — the parity stated in a single assertion
+   * rather than as three per-door literals that could drift apart one at a
+   * time. Both verbs reach the SAME exhausted compare-and-swap inside
+   * `applyResearchProjectMutation`, and `POST /api/research/[id]/run` has
+   * answered 503 for it since DW-651; these two said 500, so the identical
+   * moment of contention got two different answers depending on which verb
+   * the owner happened to use. The sibling of the names-terms three-verb
+   * control in `names-terms-routes.test.ts`.
+   */
+  it("503s a contended registry write at BOTH verbs, matching the run door", async () => {
+    const sentence = "Research projects were busy; retry the request.";
+    // One-shot rejections. The suite's `beforeEach` calls `vi.clearAllMocks()`,
+    // which clears CALL RECORDS but not implementations, so a sticky
+    // `mockRejectedValue` here would keep throwing in every later case; `Once`
+    // is also what lets it win over the resolved values the tests above left
+    // on these same two mocks.
+    mockedEdit.mockRejectedValueOnce(new ResearchProjectBusyError(sentence));
+    mockedDelete.mockRejectedValueOnce(new ResearchProjectBusyError(sentence));
+
+    const patched = await PATCH(patchRequest({ title: "New" }), { params });
+    const deleted = await DELETE(new Request("http://localhost/api/research/p1", {
+      method: "DELETE",
+    }), { params });
+
+    expect([patched.status, deleted.status]).toEqual([503, 503]);
+    // The store's own sentence rides on both, verbatim.
+    expect(await patched.json()).toEqual({ error: sentence });
+    expect(await deleted.json()).toEqual({ error: sentence });
   });
 });
 

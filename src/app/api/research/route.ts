@@ -7,6 +7,7 @@ import {
   createResearchProject,
   filterResearchProjects,
   listResearchProjects,
+  ResearchProjectBusyError,
 } from "@/lib/research-projects";
 import { listWikis } from "@/lib/wikis";
 import {
@@ -152,8 +153,20 @@ export async function POST(request: Request) {
     // matching /required|invalid/i, which mislabelled storage faults like
     // "EINVAL: invalid argument, open …" as the caller's bad input — inviting a
     // client to fix and resubmit a body that was never the problem.
+    //
+    // DW-684 adds the third rung. `createResearchProject` reaches the same
+    // exhausted compare-and-swap the run door does, and a `ResearchProjectBusyError`
+    // is transient contention whose own sentence says "retry the request." — as
+    // a 500 that read as a permanent server fault, while
+    // `POST /api/research/[id]/run` and `POST /api/research/repair` already
+    // answered 503 for the identical class. Ordered after the 400 and before
+    // the 500 fallthrough, the `run/route.ts` ladder.
     const message = getErrorMessage(error);
-    const status = isClientInputError(error) ? 400 : 500;
+    const status = isClientInputError(error)
+      ? 400
+      : error instanceof ResearchProjectBusyError
+        ? 503
+        : 500;
     return NextResponse.json({ error: message }, { status });
   }
 }

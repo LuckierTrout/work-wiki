@@ -13,9 +13,12 @@ import {
   listNamesTerms,
   NamesTermConflictError,
   type NamesTermEntry,
+  type NamesTermInput,
+  parseNamesTermInput,
   renderNamesTermsGuidance,
   updateNamesTerm,
 } from "../names-terms";
+import { ClientInputError } from "../errors";
 import { _resetLocks } from "../lock";
 import { _resetStorage, getStorage } from "../storage";
 import { tenantForOwner } from "../wiki";
@@ -64,6 +67,71 @@ describe("owner names and terms dictionary", () => {
       kind: "acronym",
       canonical: "CVX",
     })).rejects.toBeInstanceOf(NamesTermConflictError);
+  });
+
+  /**
+   * DW-641. The doors' 400 is now a TYPE check, so this is its source of truth:
+   * if `cleanInput` went back to a bare `Error`, `POST`/`PUT /api/names-terms`
+   * would answer 500 for a blank name instead of 400 and this row is what says
+   * so. The messages are asserted alongside the class because the response body
+   * carries the store's own sentence verbatim.
+   */
+  it.each([
+    [
+      "a kind that is not one of the five",
+      { kind: "spaceship", canonical: "Christian Lee" } as unknown as NamesTermInput,
+      "Invalid names and terms type",
+    ],
+    [
+      "a canonical that is blank once trimmed",
+      { kind: "person", canonical: "   " } as NamesTermInput,
+      "Preferred name or term is required",
+    ],
+    [
+      "an email that is not an address",
+      { kind: "person", canonical: "Christian Lee", email: "chris at work" } as NamesTermInput,
+      "Enter a valid email address",
+    ],
+  ])("refuses %s as the caller's input, not a server fault", async (_label, input, message) => {
+    await expect(createNamesTerm("alice", input)).rejects.toBeInstanceOf(ClientInputError);
+    await expect(createNamesTerm("alice", input)).rejects.toThrow(message);
+    // Nothing was written for a refused entry.
+    expect(await listNamesTerms("alice")).toEqual([]);
+  });
+
+  it("throws the same class from the parse door, so a route sees one type", async () => {
+    // `parseNamesTermInput` runs BEFORE the store on both writing routes; both
+    // halves of the request path must agree about whose fault a bad body is.
+    expect(() => parseNamesTermInput({ kind: "spaceship", canonical: "x" }))
+      .toThrow(ClientInputError);
+    expect(() => parseNamesTermInput({ kind: "person", canonical: "" }))
+      .toThrow(ClientInputError);
+    expect(() => parseNamesTermInput({ kind: "person", canonical: "x", aliases: "Chris" }))
+      .toThrow(ClientInputError);
+    expect(() => parseNamesTermInput({ kind: "person", canonical: "x", role: 7 }))
+      .toThrow(ClientInputError);
+  });
+
+  it("refuses the 500-entry cap as the caller's input too", async () => {
+    // The eighth retyped site, and the only one that needs a full dictionary to
+    // reach. A cap is the owner's own state, not a broken store, so it must not
+    // arrive at `POST /api/names-terms` as the 500 an untyped throw would buy.
+    const relative = `tenants/${tenantForOwner("alice")}/names-terms.json`;
+    const full: NamesTermEntry[] = Array.from({ length: 500 }, (_value, index) => ({
+      id: `entry-${index}`,
+      kind: "project",
+      canonical: `Project ${index}`,
+      aliases: [],
+      createdAt: "2026-08-05T00:00:00.000Z",
+      updatedAt: "2026-08-05T00:00:00.000Z",
+    }));
+    await fs.mkdir(path.dirname(path.join(tmpDir, relative)), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, relative), JSON.stringify(full));
+
+    await expect(createNamesTerm("alice", {
+      kind: "person",
+      canonical: "Christian Lee",
+    })).rejects.toBeInstanceOf(ClientInputError);
   });
 
   it("supports updates and deletion", async () => {

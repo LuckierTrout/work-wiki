@@ -1,4 +1,4 @@
-import { isEnoent } from "./errors";
+import { ClientInputError, isEnoent } from "./errors";
 import { withFileLock } from "./lock";
 import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
@@ -52,20 +52,33 @@ const MAX_PROMPT_ENTRIES = 120;
 const MAX_PROMPT_CHARS = 14_000;
 const KIND_SET = new Set<string>(NAMES_TERM_KINDS);
 
+/**
+ * Validate a request body into a {@link NamesTermInput}.
+ *
+ * Refusals are `ClientInputError` (DW-641), not a bare `Error`: the two writing
+ * doors used to end their catch at `NamesTermConflictError ? 409 : 400`, so an
+ * EACCES, a full disk or a lock timeout inside `createNamesTerm` /
+ * `updateNamesTerm` was reported as the owner's bad input while the sibling
+ * `DELETE` answered 500 for the same class. A door can only default to 500 —
+ * one verdict from the one store — once the store TYPES what is actually the
+ * caller's fault. The same idiom as `research-projects.ts`; the messages are
+ * unchanged. See {@link cleanInput} and `createNamesTerm`'s entry cap for the
+ * other sites that carry it.
+ */
 export function parseNamesTermInput(body: Record<string, unknown>): NamesTermInput {
-  if (!KIND_SET.has(String(body.kind))) throw new Error("Invalid names and terms type");
+  if (!KIND_SET.has(String(body.kind))) throw new ClientInputError("Invalid names and terms type");
   if (typeof body.canonical !== "string" || !body.canonical.trim()) {
-    throw new Error("Preferred name or term is required");
+    throw new ClientInputError("Preferred name or term is required");
   }
   if (
     body.aliases !== undefined &&
     (!Array.isArray(body.aliases) || body.aliases.some((value) => typeof value !== "string"))
   ) {
-    throw new Error("Aliases must be a list of text values");
+    throw new ClientInputError("Aliases must be a list of text values");
   }
   for (const field of ["description", "email", "role", "organization", "guidance"] as const) {
     if (body[field] !== undefined && typeof body[field] !== "string") {
-      throw new Error(`${field} must be text`);
+      throw new ClientInputError(`${field} must be text`);
     }
   }
   return {
@@ -119,13 +132,17 @@ function cleanAliases(values: readonly string[] | undefined, canonical: string):
   return aliases;
 }
 
+// Refusals here are `ClientInputError` for the reason {@link parseNamesTermInput}
+// documents: they are the caller's fault by construction, and they reach a door
+// through `createNamesTerm`/`updateNamesTerm`, whose other failures are the
+// storage layer's and must stay 500.
 function cleanInput(input: NamesTermInput): Omit<NamesTermEntry, "id" | "createdAt" | "updatedAt"> {
-  if (!KIND_SET.has(input.kind)) throw new Error("Invalid names and terms type");
+  if (!KIND_SET.has(input.kind)) throw new ClientInputError("Invalid names and terms type");
   const canonical = cleanText(input.canonical, 160);
-  if (!canonical) throw new Error("Preferred name or term is required");
+  if (!canonical) throw new ClientInputError("Preferred name or term is required");
   const email = cleanText(input.email, 254);
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new Error("Enter a valid email address");
+    throw new ClientInputError("Enter a valid email address");
   }
   return {
     kind: input.kind,
@@ -334,7 +351,7 @@ export async function createNamesTerm(
   return withFileLock(lockKey(owner), async () => {
     const entries = await readEntries(owner);
     if (entries.length >= MAX_ENTRIES) {
-      throw new Error(`Names & Terms is limited to ${MAX_ENTRIES} entries`);
+      throw new ClientInputError(`Names & Terms is limited to ${MAX_ENTRIES} entries`);
     }
     const cleaned = cleanInput(input);
     assertNoConflicts(entries, cleaned);

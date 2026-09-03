@@ -92,15 +92,24 @@ export class ResearchProjectConflictError extends Error {
  * already said `retry` while the run door reported them 500, which is exactly
  * the mismatch this class closes.
  *
- * ONE DOOR READS IT SO FAR: `POST /api/research/[id]/run`, which answers 503 —
- * a retry signal rather than a permanent server fault. The THREE SIBLINGS that
- * reach the very same exhausted ladder through {@link createResearchProject},
+ * FOUR DOORS ANSWER 503 (DW-684). `POST /api/research/[id]/run` and
+ * `POST /api/research/repair` answered it first (DW-651); the three siblings
+ * that reach the very same exhausted ladder through {@link createResearchProject},
  * {@link editResearchProject} and {@link deleteResearchProject} —
- * `POST /api/research`, `PATCH` and `DELETE /api/research/[id]` — still answer
- * 500 for it, deliberately and only because DW-651 named the run door alone.
- * Throwing this class does not change their status; adding the branch to them
- * is recorded as separate work. Do not read "this class means 503" as true of
- * every research route yet.
+ * `POST /api/research`, `PATCH` and `DELETE /api/research/[id]` — now answer
+ * 503 too. They used to answer 500, deliberately and only because DW-651 named
+ * the run door alone, which left one store giving two verdicts about one
+ * moment of contention.
+ *
+ * ONE DOOR STILL ANSWERS 500, and knowing which one is the point of saying it:
+ * `PATCH /api/v1/projects/[wikiId]/reviews/[reviewId]` with
+ * `action: "deep_research"` — the Review-accept handler named in
+ * {@link createResearchProject} — calls this store and ends its catch
+ * `isClientInputError(error) ? 400 : 500`, so contention arrives at an agent as
+ * a permanent server fault. Not an oversight in that route: DW-684's intent
+ * enumerated the three `/api/research` siblings, and that door was outside it.
+ * So do NOT read "this class means 503" as true everywhere yet — read it as
+ * true of the four doors above, with the v1 door the open exception.
  *
  * 503 RATHER THAN 409 because nothing here is inspectable. A 409 tells the
  * caller their request conflicts with a state they can go look at and resolve;

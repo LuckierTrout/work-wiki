@@ -27,7 +27,11 @@ vi.mock("@/lib/research-runtime", () => ({
 import { GET, POST } from "@/app/api/research/route";
 import { getPrincipal } from "@/lib/auth";
 import { ClientInputError } from "@/lib/errors";
-import { createResearchProject, listResearchProjects } from "@/lib/research-projects";
+import {
+  createResearchProject,
+  listResearchProjects,
+  ResearchProjectBusyError,
+} from "@/lib/research-projects";
 import { reconcileResearchProjects } from "@/lib/research-runtime";
 import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 import { listWikis } from "@/lib/wikis";
@@ -187,6 +191,37 @@ describe("POST /api/research failure classification", () => {
     expect(await response.json()).toEqual({
       error: "EINVAL: invalid argument, open '/data/research-projects.json'",
     });
+  });
+
+  /**
+   * DW-684. `createResearchProject` reaches the same exhausted compare-and-swap
+   * `POST /api/research/[id]/run` does, and that door has answered 503 for it
+   * since DW-651 while this one said 500 — one store, two verdicts about one
+   * moment of contention. The class's own sentence tells the caller to retry, so
+   * a 500 (permanent server fault) was the wrong word for it.
+   */
+  it("503s a contended registry write so the caller knows to retry", async () => {
+    mockedCreate.mockRejectedValue(
+      new ResearchProjectBusyError("Research projects were busy; retry the request."),
+    );
+
+    const response = await POST(request(BODY));
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "Research projects were busy; retry the request.",
+    });
+  });
+
+  it("500s an untyped error carrying that same sentence", async () => {
+    // The control: classification is by TYPE, so the words buy nothing. An
+    // `instanceof` that had been replaced by a message match would pass the row
+    // above and fail this one.
+    mockedCreate.mockRejectedValue(
+      new Error("Research projects were busy; retry the request."),
+    );
+
+    expect((await POST(request(BODY))).status).toBe(500);
   });
 
   it("201s a create that lands", async () => {

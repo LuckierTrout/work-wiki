@@ -5117,7 +5117,9 @@ location: src/app/api/names-terms/route.ts:57
 source_spec: `spec-dw-316-319-526-read-only-lifecycle-route-status.md`
 severity: low
 reason: Both catches end `{ status: error instanceof NamesTermConflictError ? 409 : 400 }`, so an EACCES, a full disk or a lock timeout inside `createNamesTerm` / `updateNamesTerm` is reported as the caller's bad input, the exact reasoning DW-319 used against `PUT /api/workspace-profile`. Sibling `DELETE /api/names-terms/[id]` already answers 500 for the same class, so the one store states two verdicts about itself. Pre-existing and untouched by this pass, which only prepended the 403 branch; no DW entry names it.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-door-fault-status-parity
+resolution-undo: 55cea626308cacfd74b08a598aed97d3a6cc2fad5ca81b56dcfd92ab69786367 2026-09-02 7374617475733a206f70656e
 
 ### DW-642: The door-coverage registry still omits every gated store writer outside the wiki-lifecycle family, so a future route importing one untreated stays invisible to the scan.
 origin: spec-deferred e64fee3b9328
@@ -5521,7 +5523,9 @@ location: src/app/api/research/route.ts:156
 source_spec: `spec-dw-651-665-research-run-typed-errors.md`
 severity: low
 reason: `applyResearchProjectMutation` is the shared mutation primitive, and its exhausted-CAS refusal is now `ResearchProjectBusyError` (`src/lib/research-projects.ts`). `POST /api/research` (`src/app/api/research/route.ts:156`), `PATCH` and `DELETE /api/research/[id]` (`src/app/api/research/[id]/route.ts:99`, `:132`) all still classify with `error instanceof ClientInputError ? 400 : 500`, so the identical transient contention — whose own sentence says "retry the request." — is a retryable 503 at one door and a permanent server fault at three. DW-651 names only `POST /api/research/[id]/run`, so the siblings were out of this bundle's scope; the split is now recorded in `ResearchProjectBusyError`'s docblock but nothing pins it as intended.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-door-fault-status-parity
+resolution-undo: 55cea626308cacfd74b08a598aed97d3a6cc2fad5ca81b56dcfd92ab69786367 2026-09-02 7374617475733a206f70656e
 
 ### DW-686: The related-pages render path calls `relatedByVector` unconditionally, ignoring the `vectorSearchEnabled` setting that gates `searchByVector`, so vector-backed related pages keep running on a deployment that turned vector search off.
 origin: migrated from legacy ledger (flat-append deferral bullet, code review of spec-dw-406-related-by-vector-drift-parity.md), 2026-08-31
@@ -5902,4 +5906,12 @@ location: src/lib/tasks.ts:454
 source_spec: `spec-dw-645-649-read-only-comment-truth.md`
 severity: low
 reason: `src/lib/tasks.ts:452-454` (`parseTask` JSDoc) reads "reject malformed messages as poison (4xx -> DLQ) rather than retrying them forever"; `src/lib/tasks.ts:326-328` says a poison task "went to the DLQ"; `src/lib/__tests__/prose-inventory-parity.test.ts:347` restates "poison -> DLQ" inside a passing test's rationale. `workers/task-consumer/index.ts:114-125` acks and RETURNS for the poison set, so the message is discarded on the spot. `yopedia-tasks-dlq` is reached only through the transient/retry branch after `max_retries: 3` (`workers/task-consumer/wrangler.jsonc`). This is a different claim from DW-645 (which statuses are poison, now corrected): it is where a poison message ends up. The operational cost is an operator searching the DLQ for a malformed ingest that was never parked there. DW-645's own pass added the correct rule at `src/app/api/tasks/run/route.ts:144-145` ("discarded on the spot and never reaches the DLQ"), so the fix has an in-repo anchor to cite.
+status: open
+
+### DW-732: PATCH /api/v1/projects/[wikiId]/reviews/[reviewId] with action "deep_research" still answers 500 for the contended-store fault this bundle made a 503 at the three /api/research siblings.
+origin: spec-deferred 58962a9085b1
+location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:167
+source_spec: `spec-dw-641-684-door-fault-status-parity.md`
+severity: low
+reason: That handler calls `createResearchProject` (`src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:141`) — the same function whose exhausted CAS in `applyResearchProjectMutation` throws `ResearchProjectBusyError` — and its catch is still the pre-DW-684 ladder `isClientInputError(error) ? 400 : 500` at `:167`, whose own comment cites "the `src/app/api/research/route.ts` idiom", the ladder this pass changed out from under it. `createResearchProject`'s docblock already names it as the second caller ("the Review-accept handler"). So an API agent is told a permanent server fault for a registry write that provably never landed and would succeed on an immediate retry, while the in-product door for the same store tells it to retry. Out of scope here: DW-684's intent enumerates `POST /api/research`, `PATCH` and `DELETE /api/research/[id]` only. Its suite would not surface it either — `epic8-v1-routes.test.ts:598` has a `ClientInputError` row and an EINVAL row and no `ResearchProjectBusyE
 status: open

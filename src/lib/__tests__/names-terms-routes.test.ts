@@ -14,10 +14,12 @@ import {
   createNamesTerm,
   deleteNamesTerm,
   listNamesTerms,
+  NamesTermConflictError,
   updateNamesTerm,
 } from "@/lib/names-terms";
 import { GET, POST } from "@/app/api/names-terms/route";
 import { DELETE, PUT } from "@/app/api/names-terms/[id]/route";
+import { ClientInputError } from "@/lib/errors";
 import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 
 const mockedPrincipal = vi.mocked(getPrincipal);
@@ -221,5 +223,137 @@ describe("Names & Terms writers when the flag flips mid-request", () => {
     expect(
       (await DELETE(new Request("http://localhost"), context())).status,
     ).toBe(500);
+  });
+});
+
+/**
+ * ONE STORE, ONE VERDICT ABOUT ONE FAULT (DW-641).
+ *
+ * POST and PUT used to end their catch at `NamesTermConflictError ? 409 : 400`,
+ * so an EACCES, a full disk or a lock timeout inside `createNamesTerm` /
+ * `updateNamesTerm` was reported as the owner's bad input — a body they would
+ * retype forever — while the sibling `DELETE /api/names-terms/[id]` answered
+ * 500 for that same class. The store now throws `ClientInputError` for what is
+ * genuinely the caller's fault, so the two doors classify by TYPE and default
+ * to the DELETE's 500. Every row below is a class, never a message.
+ */
+describe("Names & Terms writers classify a failure by type", () => {
+  const context = () => ({ params: Promise.resolve({ id: "entry-1" }) });
+  const INPUT = { kind: "person", canonical: "Christian Lee", aliases: [] };
+
+  it.each([
+    ["a storage fault is 500, not the caller's input", new Error("EACCES: permission denied, open '/data/names-terms.json'"), 500],
+    ["a typed input fault is 400", new ClientInputError("Enter a valid email address"), 400],
+    ["a name clash is 409", new NamesTermConflictError("That name is already recorded."), 409],
+    ["a mid-request refusal is 403", new ReadOnlyError(READ_ONLY_REFUSAL.namesTerms), 403],
+  ])("POST: %s", async (_label, fault, status) => {
+    mockedCreate.mockRejectedValueOnce(fault);
+    const response = await POST(request("POST", INPUT));
+    expect(response.status).toBe(status);
+    // The store's own sentence rides on every one of them, verbatim.
+    expect(await response.json()).toEqual({ error: fault.message });
+  });
+
+  it.each([
+    ["a storage fault is 500, not the caller's input", new Error("EACCES: permission denied, open '/data/names-terms.json'"), 500],
+    ["a typed input fault is 400", new ClientInputError("Enter a valid email address"), 400],
+    ["a name clash is 409", new NamesTermConflictError("That name is already recorded."), 409],
+    ["a mid-request refusal is 403", new ReadOnlyError(READ_ONLY_REFUSAL.namesTerms), 403],
+  ])("PUT: %s", async (_label, fault, status) => {
+    mockedUpdate.mockRejectedValueOnce(fault);
+    const response = await PUT(request("PUT", INPUT), context());
+    expect(response.status).toBe(status);
+    expect(await response.json()).toEqual({ error: fault.message });
+  });
+
+  it("500s a storage fault at all three verbs — the mapping no longer splits", async () => {
+    // The whole point of DW-641: the SAME class at the SAME store gets the same
+    // verdict whichever verb reached it. DELETE was already right; it is here as
+    // the control the other two now match.
+    const fault = () => new Error("EACCES: permission denied, open '/data/names-terms.json'");
+    mockedCreate.mockRejectedValueOnce(fault());
+    mockedUpdate.mockRejectedValueOnce(fault());
+    mockedDelete.mockRejectedValueOnce(fault());
+    expect((await POST(request("POST", INPUT))).status).toBe(500);
+    expect((await PUT(request("PUT", INPUT), context())).status).toBe(500);
+    expect((await DELETE(new Request("http://localhost"), context())).status).toBe(500);
+  });
+
+  it("500s an untyped error whose message merely reads like a refusal", async () => {
+    // Type-only classification: no regex over the sentence was added, so words
+    // that look like the caller's fault do not buy a 400.
+    mockedCreate.mockRejectedValueOnce(new Error("Preferred name or term is required"));
+    expect((await POST(request("POST", INPUT))).status).toBe(500);
+    mockedUpdate.mockRejectedValueOnce(new Error("Preferred name or term is required"));
+    expect((await PUT(request("PUT", INPUT), context())).status).toBe(500);
+  });
+
+  /**
+   * The 400 the doors must NOT lose. A body that is not JSON, or is `null` or an
+   * array, used to reach `parseNamesTermInput` and leave through the catch's
+   * blanket 400 — right by accident. With a 500 default that accident becomes a
+   * server fault for a request the server read perfectly well, so both doors now
+   * guard the body explicitly.
+   */
+  it.each([
+    ["a body that is not JSON", "{ not json", "Request body must be JSON."],
+    ["a null body", "null", "Request body must be a JSON object."],
+    ["an array body", "[]", "Request body must be a JSON object."],
+  ])("400s %s at both writing doors", async (_label, body, error) => {
+    const raw = (method: string) =>
+      new Request("http://localhost/api/names-terms", {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+
+    const posted = await POST(raw("POST"));
+    expect(posted.status).toBe(400);
+    expect(await posted.json()).toEqual({ error });
+
+    const put = await PUT(raw("PUT"), context());
+    expect(put.status).toBe(400);
+    expect(await put.json()).toEqual({ error });
+
+    // Refused before the store was ever asked to write.
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  /**
+   * THE 400 THAT DOES NOT PASS THROUGH THE MOCK. Every row above injects a
+   * `ClientInputError` at the mocked writer, which pins the CATCH but takes the
+   * real `parseNamesTermInput` on faith — this suite's `@/lib/names-terms` mock
+   * spreads the original, so the parse is LIVE at both doors. Here the body is
+   * well-formed JSON that the real parse refuses: it throws BEFORE the store is
+   * reached, and the door must still say 400 rather than fall to its new 500
+   * default. Without this, the end-to-end 400 held only by transitivity across
+   * two files.
+   */
+  it.each([
+    ["a kind that is not one of the five", { kind: "spaceship", canonical: "Christian Lee" }, "Invalid names and terms type"],
+    ["a canonical that is missing", { kind: "person" }, "Preferred name or term is required"],
+    ["aliases that are not a list", { kind: "person", canonical: "Christian Lee", aliases: "Chris" }, "Aliases must be a list of text values"],
+    ["a non-text field", { kind: "person", canonical: "Christian Lee", role: 7 }, "role must be text"],
+  ])("400s %s at both writing doors, without asking the store", async (_label, body, error) => {
+    const posted = await POST(request("POST", body));
+    expect(posted.status).toBe(400);
+    expect(await posted.json()).toEqual({ error });
+
+    const put = await PUT(request("PUT", body), context());
+    expect(put.status).toBe(400);
+    expect(await put.json()).toEqual({ error });
+
+    // The parse answered, not the writer — so this 400 is the real one the
+    // owner gets, not a mocked stand-in for it.
+    expect(mockedCreate).not.toHaveBeenCalled();
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
+  it("still 404s a PUT for an id that is not there", async () => {
+    // The control for the ladder above: a `null`-returning writer is not a
+    // thrown fault, so none of the new branches may swallow its 404.
+    mockedUpdate.mockResolvedValueOnce(null);
+    expect((await PUT(request("PUT", INPUT), context())).status).toBe(404);
   });
 });

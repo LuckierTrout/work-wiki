@@ -3,7 +3,11 @@ import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
 import { getErrorMessage, isClientInputError } from "@/lib/errors";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
-import { editResearchProject, getResearchProject } from "@/lib/research-projects";
+import {
+  editResearchProject,
+  getResearchProject,
+  ResearchProjectBusyError,
+} from "@/lib/research-projects";
 import { retireResearchProject } from "@/lib/research-runtime";
 
 interface RouteContext { params: Promise<{ id: string }> }
@@ -96,7 +100,16 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     // a stored row the patch does not overwrite — and a 500 tells the client to
     // retry a request that will never succeed. Everything else stays a server
     // fault, message unchanged.
-    const status = isClientInputError(error) ? 400 : 500;
+    //
+    // DW-684. A `ResearchProjectBusyError` is the third rung: an exhausted
+    // registry CAS, transient by construction and telling the caller to retry,
+    // which as a 500 read as a permanent fault at this door while the run and
+    // repair doors already answered 503 for the same class.
+    const status = isClientInputError(error)
+      ? 400
+      : error instanceof ResearchProjectBusyError
+        ? 503
+        : 500;
     return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }
 }
@@ -128,8 +141,13 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
       return NextResponse.json({ error: getErrorMessage(error) }, { status: 403 });
     }
     // Same classification as PATCH above: a store-side input refusal is the
-    // caller's fault at every door, and a storage fault is still a 500.
-    const status = isClientInputError(error) ? 400 : 500;
+    // caller's fault at every door, contended registry writes are a retryable
+    // 503 (DW-684), and a storage fault is still a 500.
+    const status = isClientInputError(error)
+      ? 400
+      : error instanceof ResearchProjectBusyError
+        ? 503
+        : 500;
     return NextResponse.json({ error: getErrorMessage(error) }, { status });
   }
 }
