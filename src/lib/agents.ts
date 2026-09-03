@@ -789,9 +789,17 @@ export async function updateAgent(
         };
 
       // If the page already exists, preserve `created` and merge contributors.
-      const existingPage = await readWikiPageWithFrontmatter(page.slug).catch(
-        () => null,
-      );
+      // FRESH+STRICT (DW-495). `existingPage.content` is the merge base for
+      // the write below, and `null` here selects `createOnly` over a page that
+      // may be stored. The old `.catch(() => null)` tail had to go with the
+      // conversion: it would have swallowed the strict rethrow straight back
+      // into the same `null`, making the option a no-op. Removing it also
+      // stops an unparseable frontmatter block from reading as "no page here,
+      // create one". Handler: `src/app/api/agents/[id]/route.ts` → 500.
+      const existingPage = await readWikiPageWithFrontmatter(page.slug, {
+        fresh: true,
+        strict: true,
+      });
       if (existingPage) {
         if (existingPage.frontmatter.created) {
           frontmatter.created = existingPage.frontmatter.created;
@@ -931,9 +939,16 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
 
     // If the page already exists, preserve its `created` timestamp and
     // merge contributors.
-    const existing = await readWikiPageWithFrontmatter(section.slug).catch(
-      () => null,
-    );
+    // FRESH+STRICT (DW-495). `existing.content` is the merge base for the seed
+    // write below, and `null` here selects `createOnly` over a stored identity
+    // page. The old `.catch(() => null)` tail could not stay: it would have
+    // swallowed the strict rethrow back into the same `null` the option exists
+    // to prevent, and it also read an unparseable frontmatter block as "no
+    // page here". Handler: `src/app/api/agents/seed/route.ts` → 500.
+    const existing = await readWikiPageWithFrontmatter(section.slug, {
+      fresh: true,
+      strict: true,
+    });
     if (existing) {
       if (existing.frontmatter.created) {
         frontmatter.created = existing.frontmatter.created;

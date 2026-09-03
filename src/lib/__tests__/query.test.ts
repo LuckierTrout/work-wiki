@@ -3,11 +3,12 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { searchIndex, buildContext, query, saveAnswerToWiki, buildCorpusStats, bm25Score, extractCitedSlugs, reciprocalRankFusion, buildQuerySystemPrompt, TABLE_FORMAT_INSTRUCTION, HTML_FORMAT_INSTRUCTION, extractBestSnippet, selectPagesForQuery } from "../query";
-import { writeWikiPage, updateIndex, ensureDirectories, readWikiPage, readWikiPageWithFrontmatter, listWikiPages } from "../wiki";
+import { beginPageCache, writeWikiPage, updateIndex, ensureDirectories, readWikiPage, readWikiPageWithFrontmatter, listWikiPages } from "../wiki";
 import { serializeFrontmatter } from "../frontmatter";
 import { serializeSources, buildSourceEntry } from "../sources";
 import { registerAgent } from "../agents";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
+import { rebuildPageIndex } from "../page-index";
 import type { AgentProfile } from "../types";
 import type { IndexEntry } from "../types";
 
@@ -1857,5 +1858,107 @@ describe("query — scoped search with registered agent", () => {
     const result = await query("anything", "prose", "agent:partial-agent");
     // Should work with whatever pages exist — the existing-page should show up
     expect(result.answer).toContain("existing-page");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE page is not an ABSENT one — saveAnswerToWiki's merge base
+// (DW-495)
+// ---------------------------------------------------------------------------
+
+describe("saveAnswerToWiki — unreadable ≠ absent (DW-495)", () => {
+  it("rejects with the STORAGE error rather than re-creating a stored page", async () => {
+    await ensureDirectories();
+
+    // The page the merge-base read protects has to actually BE stored, or the
+    // row asserts nothing about the fork it pins.
+    await saveAnswerToWiki(
+      "Merge Base Blip",
+      "The first answer, which is the stored one.",
+    );
+    const slug = "merge-base-blip";
+    const before = (await readWikiPageWithFrontmatter(slug))!.content;
+
+    // With the page index seeded, the merge-base read is the FIRST read of
+    // `<slug>.md` this call makes — so a ONE-SHOT blip hits it and nothing
+    // else. That is deliberate: a spy that failed EVERY read of the file would
+    // also break the `createOnly` re-check inside the write, and the call would
+    // reject whether or not this read rethrows — a green row that pins nothing.
+    // Failing only the merge-base read leaves the old behaviour rejecting with
+    // the lifecycle's CONFLICT sentence instead.
+    await rebuildPageIndex();
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    let blipped = false;
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!blipped && filePath.endsWith(`${slug}.md`)) {
+          blipped = true;
+          // A non-ENOENT failure: the file is there, the provider is not.
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    let caught: unknown;
+    try {
+      await saveAnswerToWiki("Merge Base Blip", "A second answer that must not land.");
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    // And the stored bytes are untouched, byte for byte.
+    expect((await readWikiPageWithFrontmatter(slug))!.content).toBe(before);
+  });
+
+  it("takes its merge base from storage while a stale page cache is open", async () => {
+    // FRESH is the half `strict` cannot pin: strip `fresh: true` from the
+    // source read and the blip row above still passes, because a `pageCache`
+    // hit is answered before `storage.readFile` is ever reached. `pageCache` is
+    // module-global and ref-counted around bulk scans — and `query.ts` runs one
+    // — so a superseded entry can be open when a save arrives, and
+    // `existing.content` is the `expectedContent` this write is checked against.
+    await ensureDirectories();
+    await saveAnswerToWiki("Fresh Merge Base", "The first answer.");
+    const slug = "fresh-merge-base";
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage(slug))!;
+      expect(cached.content).toContain("The first answer.");
+
+      // The stored page moves on underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about.
+      const stored = cached.content.replace(
+        "The first answer.",
+        "An edit the scan never saw.",
+      );
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old bytes.
+      expect((await readWikiPage(slug))!.content).toBe(cached.content);
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. The merge base is the
+      // STORED file, so the write precondition matches and the save lands. Off
+      // the cached entry `expectedContent` describes bytes that are no longer
+      // stored, and the save is refused as a conflict against a write nobody
+      // made.
+      await saveAnswerToWiki("Fresh Merge Base", "The second answer.");
+    } finally {
+      cleanup();
+    }
+
+    // Read after the cache is closed, so this is the stored file.
+    const after = (await readWikiPageWithFrontmatter(slug))!.content;
+    expect(after).toContain("The second answer.");
   });
 });

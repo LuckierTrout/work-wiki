@@ -91,7 +91,16 @@ async function appendSourceFigures(
   owner: string,
   records: StoredDocumentSource[],
 ): Promise<void> {
-  const page = await readWikiPageWithFrontmatter(slug);
+  // FRESH+STRICT (DW-495). `page.content` is the merge base for the write at
+  // the bottom of this function. Without `strict` a non-ENOENT storage blip
+  // flattens to `null` and is reported through the throw below as
+  // `page "<slug>" was not found` — the wrong story about a page that is
+  // stored and only momentarily unreadable. Strict rethrows the storage
+  // failure instead, and it propagates out through `preserveDocumentSources`.
+  const page = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!page) throw new Error(`Cannot attach document figures: page "${slug}" was not found.`);
 
   const entries: string[] = [];

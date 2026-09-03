@@ -25,8 +25,32 @@ export async function GET(req: Request, { params }: RouteParams) {
   try {
     const { slug } = await params;
 
-    // Check the page exists first.
-    const page = await readWikiPage(slug);
+    // Check the page exists first. FRESH+STRICT (DW-497). This is the read a
+    // human actually hits, and the 404 below is the only thing it can say —
+    // so both halves are here to make that 404 mean exactly one thing:
+    // nothing is stored at this slug.
+    //
+    // FRESH. Not the sibling `POST`'s reason — that read seeds a merge base
+    // and this one seeds nothing. `pageCache` caches NEGATIVE entries too
+    // (`src/lib/wiki.ts` does `pageCache.set(slug, null)` on a true global
+    // miss), and the cache is module-global and ref-counted around bulk scans,
+    // so a scan that looked this slug up BEFORE the page existed can still be
+    // holding that `null` open when this request arrives. It would manufacture
+    // the very `page not found` this conversion exists to remove — a reader
+    // told their page has no history because an unrelated scan is mid-flight.
+    //
+    // STRICT. Without it a non-ENOENT storage blip flattens to `null` and the
+    // 404 tells the reader `page not found` about history that is still there.
+    // Strict rethrows to the catch at the bottom, which answers 500 for
+    // anything but `invalid slug`.
+    //
+    // AND STRICT REACHES FURTHER THAN THE PAGE FILE, deliberately: it forwards
+    // into `getPageIndex({ strict })`, so an unreadable or unparseable
+    // `derived-indexes/pages.json` now 500s this surface instead of degrading
+    // to the scan fallback. That is the trade taken on purpose — an index
+    // fault is a fault, and a 404 must not stand in for one. (The sibling
+    // `POST` at the bottom of this file has said the same since DW-379.)
+    const page = await readWikiPage(slug, { fresh: true, strict: true });
     if (!page) {
       return NextResponse.json(
         { error: `page not found: ${slug}` },

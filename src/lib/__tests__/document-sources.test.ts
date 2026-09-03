@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -87,5 +87,68 @@ describe("document source preservation", () => {
     }]);
     const updated = await readWikiPageWithFrontmatter("source");
     expect(updated?.body.match(/Architecture diagram/g)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE page is not an ABSENT one (DW-495)
+// ---------------------------------------------------------------------------
+
+/**
+ * `appendSourceFigures` reads the page to get the figure-append merge base and
+ * already throws on `null` — but under the sentence
+ * `Cannot attach document figures: page "<slug>" was not found.` Without
+ * `strict` a non-ENOENT storage failure came back as that same `null`, so a
+ * page that is stored and only momentarily unreadable was reported to the
+ * caller as missing. Strict rethrows the storage failure instead.
+ */
+describe("preserveDocumentSources — unreadable ≠ absent (DW-495)", () => {
+  it("rejects with the STORAGE error, not `was not found`, when the page read blips", async () => {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    // A non-ENOENT failure on `source.md`: the file is there (the global
+    // `beforeEach` wrote it), the provider is not.
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith("source.md")) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    let caught: unknown;
+    try {
+      await preserveDocumentSources("source", "Alice", [{
+        bytes: new Uint8Array([80, 75, 3, 4]).buffer,
+        filename: "Quarterly Plan.docx",
+        extracted: {
+          format: "docx",
+          title: "Quarterly Plan",
+          text: "Plan",
+          metadata: {},
+          assets: [{
+            filename: "diagram.png",
+            mediaType: "image/png",
+            bytes: new Uint8Array([137, 80, 78, 71]).buffer,
+            alt: "Architecture diagram",
+            context: "Paragraph 2",
+          }],
+        },
+      }]);
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("storage unavailable");
+    expect(message).not.toContain("was not found");
+
+    // Nothing was appended to the stored page.
+    const page = await readWikiPageWithFrontmatter("source");
+    expect(page?.body).not.toContain("## Source figures");
   });
 });

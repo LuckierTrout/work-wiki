@@ -2422,3 +2422,242 @@ describe("unreadable ≠ absent — DELETE ACL and the create guard (DW-496)", (
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// The last two doors where an UNREADABLE page still posed as an ABSENT one
+// (DW-497 revisions GET, DW-691 the delete path's SECOND read)
+// ---------------------------------------------------------------------------
+
+/**
+ * DW-496 hardened the delete ACL read and the create guards. Two reads behind
+ * the same doors were still optionless:
+ *
+ *   - `GET /api/wiki/[slug]/revisions` — the read surface a human actually
+ *     hits. Its existence check answered `page not found: <slug>` for a page
+ *     whose history is still stored, while its own sibling `POST` had been
+ *     fresh+strict since DW-379.
+ *   - `deleteWikiPage`'s title read — the SECOND read on the REST delete path,
+ *     running after the now-strict ACL read. Its `page not found: <slug>`
+ *     throw is mapped straight to a 404 by the route, so a blip there still
+ *     told the caller their page was gone through the hardened door.
+ *
+ * As above, what is pinned is the CLASSIFICATION: a store fault is ≥ 500 and
+ * never `page not found`, a genuine absence is still a 404, and neither case
+ * writes anything.
+ */
+describe("unreadable ≠ absent — revisions GET and the delete path's second read (DW-497, DW-691)", () => {
+  /** A private page the mocked principal ("test-user") owns and may delete. */
+  async function seed(slug: string): Promise<void> {
+    const today = new Date().toISOString().slice(0, 10);
+    const frontmatter: Frontmatter = {
+      created: today,
+      confidence: 0.5,
+      authors: ["test-user"],
+      owner: "test-user",
+      visibility: "private",
+      contributors: [],
+      expiry: "2099-01-01",
+      sources: [],
+    };
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(frontmatter, `# ${slug}\n\nStored bytes.`),
+      summary: "a test page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  async function revisions(slug: string) {
+    const { GET } = await import("@/app/api/wiki/[slug]/revisions/route");
+    return GET(
+      new Request(`http://localhost/api/wiki/${slug}/revisions`),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  async function del(slug: string) {
+    const { DELETE } = await import("@/app/api/wiki/[slug]/route");
+    return DELETE(
+      new Request(`http://localhost/api/wiki/${slug}`, { method: "DELETE" }),
+      { params: Promise.resolve({ slug }) },
+    );
+  }
+
+  /** A non-ENOENT failure on every read of `<slug>.md`. */
+  function blipOn(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    return vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith(`${slug}.md`)) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+  }
+
+  /**
+   * Serve the route's ACL read in full, then fail every later read of
+   * `<slug>.md`.
+   *
+   * DW-691's REST row needs a blip the FIRST read survives and the SECOND —
+   * `deleteWikiPage`'s title read — does not, because the whole point is that
+   * the second read still reported a stored page as gone through the door
+   * DW-378 hardened. Nothing between the two touches `<slug>.md` (the page
+   * index lives at its own path), so the only thing to get right is where one
+   * logical read ends.
+   *
+   * ONE `readWikiPage` OF AN OWNED PAGE IS TWO STORAGE READS: the flat
+   * compatibility copy, then the owner's silo (`wiki.ts:513-530` prefers the
+   * silo bytes once the flat copy names an owner). Arming on a plain count of
+   * served reads would therefore fail the ACL read's own second half and 500
+   * whether or not `deleteWikiPage` is strict. Arming on the first SERVED SILO
+   * read is exactly the end of the first logical read. ENOENT still propagates
+   * unchanged, because served reads are delegated to the real storage.
+   */
+  function blipAfterFirstServedRead(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const state = { armed: false };
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!filePath.endsWith(`${slug}.md`)) return originalRead(filePath);
+        if (state.armed) throw new Error("storage unavailable");
+        const content = await originalRead(filePath);
+        if (filePath.includes("tenants/")) state.armed = true;
+        return content;
+      });
+    return { spy, state };
+  }
+
+  // -- GET /api/wiki/[slug]/revisions (DW-497) -------------------------------
+
+  it("revisions GET answers 5xx — NOT `page not found` — when the existence read blips", async () => {
+    await seed("rev-blip");
+
+    const readSpy = blipOn("rev-blip");
+    try {
+      const response = await revisions("rev-blip");
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      // The whole point: the reader must not be told their history is gone.
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it("revisions GET still answers 404 for a slug with no stored file", async () => {
+    // ENOENT stays `null` under strict, so a genuine absence is unchanged.
+    const response = await revisions("rev-never-existed");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: rev-never-existed",
+    });
+  });
+
+  it("revisions GET still answers 200 with a revisions array for a stored page", async () => {
+    await seed("rev-ok");
+    const response = await revisions("rev-ok");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { revisions: unknown[] };
+    expect(Array.isArray(body.revisions)).toBe(true);
+  });
+
+  // -- DELETE, blip on the SECOND read (DW-691) ------------------------------
+
+  it("DELETE answers 5xx — NOT `page not found` — when only the SECOND read blips", async () => {
+    // The route's ACL read (DW-378) is served for real; `deleteWikiPage`'s own
+    // title read is the one that fails. Before DW-691 that read's
+    // `page not found: <slug>` throw was mapped to a 404 by the route, so the
+    // hardened door still reported a stored page as gone.
+    await seed("del2-blip");
+
+    const { spy: readSpy, state } = blipAfterFirstServedRead("del2-blip");
+    try {
+      const response = await del("del2-blip");
+      // Was a 404 before DW-691: `deleteWikiPage`'s `page not found: <slug>`
+      // throw is what the route's catch maps to one.
+      expect(response.status).toBeGreaterThanOrEqual(500);
+      const body = (await response.json()) as { error: string };
+      expect(body.error).not.toContain("page not found");
+      expect(body.error).toContain("storage unavailable");
+    } finally {
+      readSpy.mockRestore();
+    }
+    // The ACL read really was served — otherwise the row would be pinning the
+    // FIRST read's strictness (DW-378) all over again.
+    expect(state.armed).toBe(true);
+
+    // Nothing was deleted — the blip authorized nothing.
+    expect(await readWikiPage("del2-blip")).not.toBeNull();
+  });
+
+  it("DELETE still answers 404 for a slug with no stored file", async () => {
+    // The companion row for the second read too: ENOENT there is still a plain
+    // absence, and the ACL read above it answers first anyway.
+    const response = await del("del2-never-existed");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "page not found: del2-never-existed",
+    });
+  });
+
+  // -- The existence answer comes from STORAGE, not a cached miss (DW-195) ---
+
+  it("revisions GET answers from storage while a stale NEGATIVE cache entry is open", async () => {
+    // FRESH is the half `strict` cannot pin — strip `fresh: true` from the
+    // source read and every blip row above still passes, because a `pageCache`
+    // hit is answered before `storage.readFile` is ever reached.
+    //
+    // And for a read that only answers "does this exist", the dangerous
+    // direction is the NEGATIVE entry: `src/lib/wiki.ts` does
+    // `pageCache.set(slug, null)` on a true global miss, and the cache is
+    // module-global and ref-counted around bulk scans. So a scan that looked
+    // this slug up BEFORE the page existed manufactures the exact
+    // `page not found` this conversion exists to remove.
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan looks the slug up before it exists and caches the
+      // miss.
+      expect(await readWikiPage("rev-cached")).toBeNull();
+
+      // The page appears underneath it. Written DIRECTLY to the flat path,
+      // bypassing `writeWikiPage` — which invalidates — because a stale entry
+      // is exactly what this row is about.
+      const today = new Date().toISOString().slice(0, 10);
+      const storedBytes = serializeFrontmatter(
+        {
+          created: today,
+          confidence: 0.5,
+          authors: ["test-user"],
+          owner: "test-user",
+          visibility: "public",
+          contributors: [],
+          expiry: "2099-01-01",
+          sources: [],
+        } as Frontmatter,
+        "# rev-cached\n\nStored, while a scan still remembers the miss.",
+      );
+      const flatPath = path.join(process.env.WIKI_DIR!, "rev-cached.md");
+      await fs.writeFile(flatPath, storedBytes, "utf-8");
+      // The cache is genuinely stale: a cached read still answers "no page".
+      expect(await readWikiPage("rev-cached")).toBeNull();
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ: the existence check
+      // sees the stored page and the reader gets their history. Off the cached
+      // `null` this is a 404 about a page that is right there.
+      const response = await revisions("rev-cached");
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { revisions: unknown[] };
+      expect(Array.isArray(body.revisions)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+});

@@ -504,7 +504,17 @@ export async function saveAnswerToWiki(
     frontmatterData,
     pageContent,
   );
-  const existing = await readWikiPageWithFrontmatter(slug);
+  // FRESH+STRICT (DW-495). `existing.content` is the merge base handed to the
+  // write below. Without `fresh` it can be a superseded `pageCache` entry an
+  // open bulk scan is holding; without `strict` a non-ENOENT storage blip reads
+  // back as `null`, and this call site's `null` silently selects `createOnly`
+  // over a page that IS stored — the answer is then either rejected as a
+  // conflict or written against bytes that are gone. Strict rethrows to the
+  // caller's route catch, which answers 500.
+  const existing = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+  });
 
   // Hand off to the unified write pipeline. For markdown we pass the original
   // answer `content` as the cross-ref source so the related-pages prompt sees

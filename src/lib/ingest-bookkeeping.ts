@@ -50,7 +50,15 @@ export async function regenerateOverview(owner: string): Promise<void> {
     },
     lines.join("\n") + "\n",
   );
-  const existing = await readWikiPageWithFrontmatter("overview");
+  // FRESH+STRICT (DW-495). `existing.content` is the merge base for the
+  // overview rewrite below. Without `strict` a non-ENOENT storage blip reads
+  // back as `null` and the write takes the `createOnly` branch over a stored
+  // overview — either rejected as a conflict or clobbering the page whose
+  // `created` date this read exists to preserve.
+  const existing = await readWikiPageWithFrontmatter("overview", {
+    fresh: true,
+    strict: true,
+  });
   const created =
     typeof existing?.frontmatter.created === "string"
       ? existing.frontmatter.created
@@ -217,7 +225,16 @@ async function findExistingSourceSummary(
   const pages = await listWikiPages();
   for (const entry of pages) {
     if (BOOKKEEPING.has(entry.slug)) continue;
-    const page = await readWikiPageWithFrontmatter(entry.slug);
+    // FRESH+STRICT (DW-495). What this scan returns becomes `existing`, whose
+    // `content` is the `expectedContent` merge base in `ensureSourceSummary`.
+    // Without `strict` a non-ENOENT storage blip on one page reads back as
+    // `null`, the `continue` below skips it, and an already-stored summary for
+    // this source goes unfound — so the caller mints a DUPLICATE summary page
+    // at a fresh slug instead of updating the one that exists.
+    const page = await readWikiPageWithFrontmatter(entry.slug, {
+      fresh: true,
+      strict: true,
+    });
     if (!page || page.frontmatter.type !== "summary") continue;
     const sources = parseSources(
       typeof page.frontmatter.sources === "string" ||

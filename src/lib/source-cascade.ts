@@ -226,7 +226,15 @@ export async function cascadeDeleteSource(input: {
   }
 
   for (const slug of [...others]) {
-    const page = await readWikiPageWithFrontmatter(slug);
+    // FRESH+STRICT (DW-495). `page.content` becomes the `expectedContent`
+    // merge base for the rewrite below. Without `strict` a non-ENOENT storage
+    // blip reads back as `null`, and the `continue` below then quietly drops
+    // this slug from `others` as if it had no page — the cascade reports
+    // success while the dead source reference stays in the stored file.
+    const page = await readWikiPageWithFrontmatter(slug, {
+      fresh: true,
+      strict: true,
+    });
     if (!page) {
       others = others.filter((item) => item !== slug);
       continue;

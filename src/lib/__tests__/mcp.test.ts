@@ -5301,3 +5301,137 @@ describe("MCP write ACL", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// handleDeletePage: an UNREADABLE page is not an ABSENT one (DW-691)
+// ---------------------------------------------------------------------------
+
+/**
+ * The MCP mirror of the REST delete ACL DW-496 hardened. Its own comment
+ * claimed parity with that surface while the read underneath it was still
+ * optionless, so a non-ENOENT storage failure came back as `null` and was
+ * reported as `page not found: <slug>` for a page that is stored.
+ *
+ * Classification is what is pinned: a store fault rejects with the storage
+ * failure and never with the absence sentence, a genuine absence still says
+ * `page not found`, and neither deletes anything.
+ */
+describe("handleDeletePage — unreadable ≠ absent (DW-691)", () => {
+  async function seed(
+    slug: string,
+    fm: Record<string, unknown> = {},
+  ): Promise<void> {
+    const { writeWikiPageWithSideEffects, serializeFrontmatter } = await import(
+      "../wiki"
+    );
+    await writeWikiPageWithSideEffects({
+      slug,
+      title: slug,
+      content: serializeFrontmatter(
+        {
+          title: slug,
+          created: "2026-01-01",
+          confidence: 0.5,
+          expiry: "2099-01-01",
+          authors: ["system"],
+          contributors: [],
+          ...fm,
+        },
+        `# ${slug}\n\nStored bytes.`,
+      ),
+      summary: "test",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+  }
+
+  it("rejects with the STORAGE error — not `page not found` — when the ACL read blips", async () => {
+    await seed("mcp-del-blip");
+    const before = (await readWikiPageWithFrontmatter("mcp-del-blip"))!.content;
+
+    // A non-ENOENT failure on `<slug>.md`: the file is there, the provider is
+    // not. Every other path (the page index included) is served for real.
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const readSpy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith("mcp-del-blip.md")) {
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+
+    let caught: unknown;
+    try {
+      await handleDeletePage({ slug: "mcp-del-blip", author: "system" });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toContain("storage unavailable");
+    expect(message).not.toContain("page not found");
+
+    // And the stored page is untouched, byte for byte.
+    expect((await readWikiPageWithFrontmatter("mcp-del-blip"))!.content).toBe(
+      before,
+    );
+  });
+
+  it("still rejects `page not found` for a slug with no stored file", async () => {
+    // ENOENT stays `null` under strict, so a genuine absence is unchanged.
+    await expect(
+      handleDeletePage({ slug: "mcp-del-absent", author: "system" }),
+    ).rejects.toThrow("page not found: mcp-del-absent");
+  });
+
+  it("decides the delete ACL against storage while a stale page cache is open", async () => {
+    // FRESH is the half `strict` cannot pin, and it needs its own row: strip
+    // `fresh: true` from the source read and every blip row above still passes,
+    // because a `pageCache` hit is answered before `storage.readFile` is ever
+    // reached. `pageCache` is module-global and ref-counted around bulk scans,
+    // so one can be holding a superseded entry open when this call arrives —
+    // and this handler decides a DELETE from the frontmatter the read returns.
+    const { beginPageCache, readWikiPage } = await import("../wiki");
+    await seed("mcp-del-cached", { owner: "bob", visibility: "private" });
+
+    const cleanup = beginPageCache();
+    try {
+      // A concurrent scan populates the cache.
+      const cached = (await readWikiPage("mcp-del-cached"))!;
+      expect(cached.content).toContain("owner: bob");
+
+      // The page changes hands underneath it. Written DIRECTLY, bypassing
+      // `writeWikiPage` — which invalidates — because a stale entry is exactly
+      // what this row is about.
+      const stored = cached.content.replace("owner: bob", "owner: carol");
+      expect(stored).not.toBe(cached.content);
+      await fs.writeFile(cached.path, stored, "utf-8");
+      // The cache is genuinely stale: a cached read still serves the old owner.
+      expect((await readWikiPage("mcp-del-cached"))!.content).toBe(
+        cached.content,
+      );
+
+      // THE ASSERTION THAT FAILS WITHOUT THE FRESH READ. The ACL sees the
+      // STORED frontmatter — a private page owned by carol — and cloaks it as
+      // not-found. Off the cached entry it reads `owner: bob`, authorizes, and
+      // deletes a page that now belongs to another principal.
+      await expect(
+        handleDeletePage({
+          slug: "mcp-del-cached",
+          author: "bob",
+          principal: { id: "user_bob", handle: "bob" },
+        }),
+      ).rejects.toThrow("page not found: mcp-del-cached");
+
+      // Nothing was deleted: the later bytes are intact, byte for byte.
+      expect(await fs.readFile(cached.path, "utf-8")).toBe(stored);
+    } finally {
+      cleanup();
+    }
+  });
+});

@@ -1168,7 +1168,14 @@ export async function deleteWikiPage(
   validateSlug(slug);
 
   // Capture the title BEFORE unlinking so the log entry is human-readable.
-  const page = await readWikiPage(slug);
+  //
+  // FRESH+STRICT (DW-691). The throw below is mapped by
+  // `src/app/api/wiki/[slug]/route.ts` — `message.startsWith("page not found")`
+  // → 404 — so without `strict` a non-ENOENT storage blip on THIS read tells
+  // the caller their page is gone, through the very door DW-378 hardened one
+  // read earlier. The locked sibling `deleteWikiPageWhileLocked` below is
+  // already fresh+strict; this is the parity gap.
+  const page = await readWikiPage(slug, { fresh: true, strict: true });
   if (!page) {
     throw new Error(`page not found: ${slug}`);
   }

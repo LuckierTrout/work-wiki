@@ -447,7 +447,14 @@ export async function handleDeletePage(args: {
     args.principal !== undefined
       ? args.principal
       : { id: STDIO_SERVICE_PRINCIPAL_ID, handle: args.author ?? "system" };
-  const existing = await readWikiPageWithFrontmatter(args.slug);
+  // FRESH+STRICT (DW-691) — what makes the parity claim above true. This
+  // frontmatter authorizes a delete, and without `strict` a non-ENOENT storage
+  // blip flattens to `null` and is reported as `page not found` for a page
+  // that is stored. Strict rethrows the storage failure to the MCP caller.
+  const existing = await readWikiPageWithFrontmatter(args.slug, {
+    fresh: true,
+    strict: true,
+  });
   if (!existing) {
     throw new Error(`page not found: ${args.slug}`);
   }

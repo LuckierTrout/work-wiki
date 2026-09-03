@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -1421,3 +1421,115 @@ describe("addAgentLearningPage", () => {
     ).resolves.toBeUndefined();
   });
 })
+
+// ---------------------------------------------------------------------------
+// An UNREADABLE agent page is not an ABSENT one (DW-495)
+// ---------------------------------------------------------------------------
+
+/**
+ * Both agent-page writers read the existing page to preserve `created`, merge
+ * contributors, and supply the `expectedContent` merge base — and both used to
+ * end that read in `.catch(() => null)`. `null` there selects `createOnly`, so
+ * a non-ENOENT storage failure was read as "no page here, create one" over a
+ * page that IS stored (and an unparseable frontmatter block was read the same
+ * way).
+ *
+ * `{ fresh: true, strict: true }` alone would have changed nothing while the
+ * tail stood: the rethrow landed straight back in the same `null`. These two
+ * rows are what pins the tail's removal — they fail the moment it comes back.
+ */
+describe("unreadable ≠ absent — the agent-page merge-base reads (DW-495)", () => {
+  /**
+   * A ONE-SHOT non-ENOENT failure on `<slug>.md`: the file is there, the
+   * provider is not, for exactly one read.
+   *
+   * One-shot deliberately. The merge-base read is the FIRST read of the file
+   * each writer makes, and a spy that failed EVERY read would also break the
+   * `createOnly` re-check inside the write below — so the call would reject
+   * whether or not this read rethrows, and the row would pin nothing. Failing
+   * only the merge-base read leaves the old behaviour rejecting with the
+   * lifecycle's CONFLICT sentence instead of the storage failure.
+   */
+  function blipOnce(slug: string) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const state = { blipped: false };
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (!state.blipped && filePath.endsWith(`${slug}.md`)) {
+          state.blipped = true;
+          throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+    return { spy, state };
+  }
+
+  it("seedAgent rejects with the STORAGE error instead of seeding over a stored page", async () => {
+    const stored = "---\ntitle: Identity\ncreated: 2020-01-01\n---\n# Identity\n\nOld content.";
+    await writeTestWikiPage("blip-identity", stored);
+
+    const { spy: readSpy, state } = blipOnce("blip-identity");
+    let caught: unknown;
+    try {
+      await seedAgent({
+        id: "blipagent",
+        name: "Blip Agent",
+        description: "An agent whose identity page is momentarily unreadable",
+        sections: [
+          {
+            type: "identity",
+            slug: "blip-identity",
+            title: "Blip Identity",
+            content: "Fresh identity text.",
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(state.blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    // The `createOnly` branch was never taken: the stored bytes are untouched.
+    expect(await fs.readFile(path.join(tmpDir, "wiki", "blip-identity.md"), "utf-8")).toBe(stored);
+  });
+
+  it("updateAgent's addPages arm rejects with the STORAGE error instead of recreating a stored page", async () => {
+    await registerAgent(
+      makeProfile({ id: "yoyo", name: "Yoyo", identityPages: ["blip-add"] }),
+    );
+    const stored = "---\ntitle: Add\ncreated: 2020-01-01\n---\n# Add\n\nOld content.";
+    await writeTestWikiPage("blip-add", stored);
+
+    const { spy: readSpy, state } = blipOnce("blip-add");
+    let caught: unknown;
+    try {
+      await updateAgent("yoyo", {
+        addPages: [
+          {
+            slug: "blip-add",
+            title: "Add Updated",
+            type: "identity",
+            content: "Updated content.",
+          },
+        ],
+      });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(state.blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    expect(await fs.readFile(path.join(tmpDir, "wiki", "blip-add.md"), "utf-8")).toBe(stored);
+  });
+});

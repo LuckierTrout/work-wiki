@@ -3780,7 +3780,9 @@ source_spec: `spec-dw-378-379-merge-base-freshness.md`
 location: src/mcp.ts:282
 severity: medium
 reason: Each site reads a page and hands those bytes back as `expectedContent`: src/mcp.ts:282 -> :349 (handleUpdatePage, whose comment at :286 says it "mirrors the REST surface at PUT /api/wiki/[slug]"), src/mcp.ts:1371 -> :1408, src/cli.ts:431 -> :468, src/lib/query.ts:507 -> :521, src/lib/ingest.ts:1432 -> :1484, src/lib/document-sources.ts:93 -> :126, src/lib/source-cascade.ts:229 -> :263, src/lib/agents.ts:792 -> :832 and :934 -> :977, src/lib/ingest-bookkeeping.ts:53 -> :76 and :186 -> :207. DW-379's location field named only patch-metadata.ts, merge.ts and lint-fix.ts, so these are out of this bundle's scope on the intent's own authority -- but they are the same hazard, and handleUpdatePage still answers "Page not found" (src/mcp.ts:284) for an unreadable page, which is DW-378 on the surface that claims parity with the fixed route.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-strict-merge-base-sweep
+resolution-undo: e8a2283706b9dc11d8d1fa887133c755d62ae90ca3440755c2847c170ff1d1cf 2026-09-03 7374617475733a206f70656e
 
 ### DW-496: Write-authorizing reads that are not merge bases -- the DELETE route's ACL read and the two create-conflict guards -- still swallow a storage blip as "absent" and read through pageCache.
 origin: spec-deferred e8080be9a31e
@@ -3797,7 +3799,9 @@ source_spec: `spec-dw-378-379-merge-base-freshness.md`
 location: src/app/api/wiki/[slug]/revisions/route.ts:29
 severity: low
 reason: src/app/api/wiki/[slug]/revisions/route.ts:29 reads without strict and turns the resulting null into a 404. DW-378's location field names only src/lib/wiki.ts:409 and the page write, and the read serves a response body rather than backing a write, so it is out of this bundle's scope -- but the harm DW-378 describes (an answer that makes a human stop retrying and start recovering) applies to a reader at least as much as a writer.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-strict-merge-base-sweep
+resolution-undo: e8a2283706b9dc11d8d1fa887133c755d62ae90ca3440755c2847c170ff1d1cf 2026-09-03 7374617475733a206f70656e
 
 ### DW-498: `listNamesTerms` returns entries that are frozen at runtime while the exported `NamesTermEntry` type and the `Promise<NamesTermEntry[]>` return type still advertise them as mutable, so a would-be muta
 origin: spec-deferred fe0bcfad64a2
@@ -5592,7 +5596,9 @@ location: src/lib/lifecycle.ts:1179 and src/mcp.ts:434
 source_spec: `spec-dw-496-wiki-door-unreadable-contract.md`
 severity: low
 reason: `src/lib/lifecycle.ts:1179` runs `const page = await readWikiPage(slug)` with no options and throws `page not found: ${slug}` on the resulting `null`. That call happens AFTER the route's now-strict ACL read, and the route's catch keeps `page not found` -> 404, so a non-ENOENT blip landing on this second read still answers the caller "your page is gone" through the very door this bundle fixed. `src/mcp.ts:434` is the same shape on the agent-facing surface -- `readWikiPageWithFrontmatter(args.slug)` with no options, throwing `page not found: ${args.slug}` at :435-437 -- under a comment at :427 that claims it "mirrors the REST surface at DELETE /api/wiki/[slug]", a parity claim this change makes false. Neither site is named by DW-495 (merge-base reads), DW-496 (the three sites this bundle converted) or DW-497 (the revisions GET), so neither is covered by an open entry. Both are pre-existing and outside this bundle's enumerated scope; raised by three independent review layers.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-strict-merge-base-sweep
+resolution-undo: e8a2283706b9dc11d8d1fa887133c755d62ae90ca3440755c2847c170ff1d1cf 2026-09-03 7374617475733a206f70656e
 
 ### DW-692: Multipart transport inflates the forwarded body by one character per newline, so a body the Worker considers within the cap can still trip `/api/email/ingest`'s `> MAX_EMAIL_CONTENT_CHARS` gate — trun
 origin: spec-deferred c6b8dc0c71a5
@@ -5962,4 +5968,12 @@ location: src/app/api/workbench/artifact/route.ts:112-116
 source_spec: `spec-dw-688-689-owner-facing-error-recovery.md`
 severity: low
 reason: DW-689 scoped itself to `src/lib/wikis.ts:982` — the pre-overwrite READ — and that throw is now an `ArtifactUnreadableError` the route answers with `ARTIFACT_UNREADABLE_COPY`. The route's fallthrough is unchanged, so a storage fault raised by `putWikiArtifact` (or by `getWikiRegistry` inside the same `try`) still reaches `json({ error: getErrorMessage(error) }, 500)` and `savePreviewBody` renders it verbatim. `src/lib/__tests__/wiki-schema-edit.test.ts` ("answers a failed storage write with 500, and moves nothing") asserts only that the body's `error` is a string, and the suite's own stderr shows the raw message travelling that path. So the owner can still meet `EACCES: permission denied, open '/…'` in the save banner, by the other half of the same door.
+status: open
+
+### DW-737: `cascadeDeleteSource`'s enumeration read decides which pages enter the cascade at all, and a storage blip there drops a page silently while the raw source bytes are still deleted.
+origin: spec-deferred 9072d1b0a96b
+location: src/lib/source-cascade.ts:193
+source_spec: `spec-dw-495-497-691-strict-merge-base-sweep.md`
+severity: medium
+reason: `src/lib/source-cascade.ts:193` runs `readWikiPageWithFrontmatter(entry.slug)` with no options inside the loop that builds `summaries` and `others`. A non-ENOENT blip flattens to `null`, `if (!page) continue` skips the page, and the result is PERSISTED into the resume marker written at `:203` — after which `if (resumed)` skips enumeration entirely, so a retry inherits the omission. The cascade then reaches `deleteRawSourceBytes` at `:281` and removes the raw bytes anyway, returning success with the skipped page still carrying a `sources:` entry that points at bytes that no longer exist. This is verbatim the harm that justifies the conversion 40 lines below it at `:229`, which this bundle did convert. The new row in `src/lib/__tests__/strict-merge-base-reads.test.ts` deliberately arms AROUND this read to reach the converted one, so the gap is now documented in a test rather than closed. Out of scope on the intent's own authority: the bundle intent and DW-495's location list name `source
 status: open
