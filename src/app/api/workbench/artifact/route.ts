@@ -7,7 +7,12 @@ import { logger } from "@/lib/logger";
 import { isOwnerPrincipal } from "@/lib/owner";
 import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema-source";
 import { artifactDisplayName, isEditableArtifactFile } from "@/lib/wiki-scenarios";
-import { getWikiRegistry, writeWikiArtifact } from "@/lib/wikis";
+import {
+  ARTIFACT_UNREADABLE_COPY,
+  getWikiRegistry,
+  isArtifactUnreadableError,
+  writeWikiArtifact,
+} from "@/lib/wikis";
 import { PREVIEW_MAX_CHARS } from "@/lib/workbench-preview";
 import {
   IF_MATCH_HEADER,
@@ -79,6 +84,31 @@ export async function PUT(request: Request) {
     // `WRITE_CONFLICT_COPY`, carried from the one module that owns it.
     if (isWriteConflictError(error)) {
       return json({ error: getErrorMessage(error) }, WRITE_CONFLICT_STATUS);
+    }
+    // THE STORAGE READ FAULT (DW-689), between the conflict and the
+    // fallthrough. `writeWikiArtifact`'s pre-overwrite read is not fail-soft
+    // for a precondition-bearing caller, and what it used to rethrow was the
+    // raw storage error — so the owner's save banner, which relays this body
+    // verbatim, showed them `EACCES: permission denied, open '/srv/data/…'`:
+    // an errno, a server filesystem path, and nothing to do about either.
+    //
+    // STILL 500. This IS a server fault and the status was never wrong; only
+    // the sentence was. The status stays where the fallthrough would have put
+    // it, so nothing downstream reclassifies.
+    //
+    // THE CONSTANT, NOT `getErrorMessage(error)`. The two agree today —
+    // `ArtifactUnreadableError` defaults to exactly this copy — and that is
+    // precisely why the message is not read off the error: a future throw site
+    // that passes a diagnostic message for the log would otherwise walk it
+    // straight back onto the owner's screen. The errno is not lost: it is the
+    // error's `cause`, and it is logged here.
+    if (isArtifactUnreadableError(error)) {
+      logger.error(
+        "workbench-artifact",
+        "artifact write refused: the stored bytes could not be read",
+        error,
+      );
+      return json({ error: ARTIFACT_UNREADABLE_COPY }, 500);
     }
     // A `ClientInputError` is the caller's input — `wikis.ts` throws it for an
     // unparseable owner or Wiki id — and everything else is ours. Without this

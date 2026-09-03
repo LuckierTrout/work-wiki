@@ -9,16 +9,21 @@ import { describe, expect, it } from "vitest";
 import {
   RESEARCH_ACTIVE_STATUSES,
   RESEARCH_POLL_MS,
+  RESEARCH_REPAIRED_COPY,
+  RESEARCH_REPAIR_LABEL,
+  RESEARCH_REPAIR_NOTE_COPY,
+  RESEARCH_REPAIR_PATH,
   parseResearchQueries,
   researchIsPolling,
   researchOffersCancel,
   researchOffersRun,
+  researchRegistryRepairable,
   researchSourceUrlNote,
   researchSourceUrlTotal,
   researchStatusLabel,
   researchTaskLine,
 } from "../research-panel";
-import { URL_MAX_CHARS } from "../research-projects";
+import { REPAIR_HINT, URL_MAX_CHARS } from "../research-projects";
 import type { ResearchProject, ResearchProjectStatus } from "../research-projects";
 
 const project = (extra: Partial<ResearchProject>): ResearchProject => ({
@@ -293,5 +298,84 @@ describe("research panel vocabulary", () => {
     expect(parseResearchQueries("\n\n   \n")).toEqual([]);
     expect(parseResearchQueries("one\n  two  \none\n")).toEqual(["one", "two"]);
     expect(parseResearchQueries("a\t\tb")).toEqual(["a b"]);
+  });
+});
+
+/**
+ * The way out of a wedged registry (DW-688).
+ *
+ * A tenant whose `research-projects.json` `parseRegistry` refuses meets a 500
+ * on every research door, and each refusal ends by naming
+ * `POST /api/research/repair`. Both surfaces rendered that sentence verbatim
+ * while nothing in the product performed the POST. These are the strings and
+ * the one predicate that turn the instruction into a control, asserted here
+ * without mounting because they are shared by two surfaces that must offer the
+ * same thing.
+ */
+describe("the repair control's vocabulary", () => {
+  // The three sentences `parseRegistry` throws, composed the way the store
+  // composes them: a leading diagnosis plus the exported suffix. The leading
+  // halves are pinned verbatim by `research-projects.test.ts`; what is pinned
+  // HERE is that the predicate recognises all three through the one marker
+  // they share.
+  const REFUSALS = [
+    `Research projects file is unreadable.${REPAIR_HINT}`,
+    `Research projects file is not a list.${REPAIR_HINT}`,
+    `Research project entry 3 is invalid.${REPAIR_HINT}`,
+  ];
+
+  it("offers the control for every registry refusal, and for nothing else", () => {
+    for (const message of REFUSALS) {
+      expect(researchRegistryRepairable(message), message).toBe(true);
+    }
+    // An unrelated research failure must NOT put a quarantine-the-registry
+    // button in front of the owner: repairing throws the projects away, and
+    // there is nothing here to throw away.
+    for (const message of [
+      "Sign in required.",
+      "Research projects were busy; retry the request.",
+      "No research provider is configured.",
+      "Request failed (504)",
+      "Research projects file is unreadable.",
+      "",
+    ]) {
+      expect(researchRegistryRepairable(message), message).toBe(false);
+    }
+    // The banner state can be absent, and a predicate that read `.includes` off
+    // it would throw inside a render.
+    expect(researchRegistryRepairable(null)).toBe(false);
+    expect(researchRegistryRepairable(undefined)).toBe(false);
+  });
+
+  it("derives the marker from the store rather than retyping it", () => {
+    // The load-bearing property: a reworded hint moves the predicate with it
+    // instead of silently withdrawing the control the sentence promises.
+    expect(researchRegistryRepairable(`Anything at all.${REPAIR_HINT}`)).toBe(true);
+    expect(REPAIR_HINT).toContain(RESEARCH_REPAIR_PATH);
+  });
+
+  it("posts where the store's own sentence points", () => {
+    expect(RESEARCH_REPAIR_PATH).toBe("/api/research/repair");
+  });
+
+  it("keeps the API out of the owner's copy", () => {
+    // The store's sentence directly above the note already names the route and
+    // the verb. The note and the success line are the halves that have to read
+    // as a consequence, not as an instruction — and the repaired sentence is
+    // the one an owner sees when nothing is wrong any more.
+    for (const copy of [RESEARCH_REPAIR_NOTE_COPY, RESEARCH_REPAIRED_COPY, RESEARCH_REPAIR_LABEL]) {
+      expect(copy, copy).not.toContain("/api/");
+      expect(copy, copy).not.toMatch(/\b(GET|POST|PUT|DELETE|PATCH)\b/);
+      expect(copy, copy).not.toMatch(/\b\d{3}\b/);
+    }
+  });
+
+  it("is honest that the projects do not come back", () => {
+    // `repairResearchRegistry` restarts EMPTY and quarantines the bytes to a
+    // sibling no door reads back. A note that promised a recovery would sell an
+    // operation this one does not perform.
+    expect(RESEARCH_REPAIR_NOTE_COPY).toMatch(/will not come back/);
+    expect(RESEARCH_REPAIRED_COPY).toMatch(/set aside/);
+    expect(RESEARCH_REPAIRED_COPY).toMatch(/empty one/);
   });
 });

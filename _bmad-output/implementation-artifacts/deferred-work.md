@@ -5565,14 +5565,18 @@ location: src/components/KnowledgeStudio.tsx (research error banner), src/lib/re
 source_spec: `spec-dw-477-655-research-registry-repair-and-urls.md`
 severity: medium
 reason: `REPAIR_HINT` now ends every `parseRegistry` refusal, and the Studio's research fetch surfaces the server's `error` sentence verbatim in its banner (`KnowledgeStudio.tsx`), so a non-technical owner meets "Research projects file is unreadable. Repair it with POST /api/research/repair, then retry." with nothing to press. Grepping `src` for `research/repair` finds only the route file and its test — no client fetch, no button, and the Workbench's `ResearchCanvas` shows the same sentence with the same absence. The recorded DW-477 decision names a route and a 500 body that names it, and both shipped; the ledger entry's own title says "no IN-PRODUCT repair path", and that half is still open. A Repair control on the research desk's error banner would close it.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-owner-facing-error-recovery
+resolution-undo: a4820839fd04990c90d76b6dbaf7c3d6c4224f637df6e712c782b253ef59d36f 2026-09-03 7374617475733a206f70656e
 
 ### DW-689: `PUT /api/workbench/artifact` relays a raw storage errno — message and filesystem path — into the owner's save banner as a 500 body.
 origin: resolve-deferred dw3-wiki-door-unreadable-contract
 location: src/lib/wikis.ts:982, src/app/api/workbench/artifact/route.ts:86-90
 severity: low
 reason: `writeWikiArtifact`'s pre-overwrite read is fail-soft except for a precondition-bearing caller, where `if (expectedVersion !== undefined) throw error` (src/lib/wikis.ts:982) rethrows the storage error UNWRAPPED — deliberately, so a blip is never reported as somebody else's save. The route catch then classifies only `isReadOnlyError`, `isWriteConflictError` and `ClientInputError`, so it falls through to `json({ error: getErrorMessage(error) }, 500)` at :86-90 and `savePreviewBody` renders that string verbatim. The owner meets an errno sentence naming a server path (`EACCES: permission denied, open '/…'`) where every neighbouring door gives them a sentence. 500 is the right STATUS for a storage fault; the message is the defect. The fix wants a typed unreadable error at the `wikis.ts` boundary plus a classifying branch and an owner-worded constant in the route — a different mechanism from the `strict:` read option that closed the DW-378 family, which is why it was cut from the `wiki-door-unreadable-contract` bundle rather than folded into it. Noted in that bundle's Intent since 2026-08-22 but backed by no entry until now.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-owner-facing-error-recovery
+resolution-undo: a4820839fd04990c90d76b6dbaf7c3d6c4224f637df6e712c782b253ef59d36f 2026-09-03 7374617475733a206f70656e
 
 ### DW-690: The email-ingest route dedups recorded attachment names BEFORE sanitizing them, so any part whose recorded name and forwarded file name differ only after scrubbing inflates `attachmentNames` and repor
 origin: spec-deferred d9ac1e51bdec
@@ -5950,4 +5954,12 @@ location: src/lib/wikis.ts (scenarioNamedByWikiArtifacts / reconcileWikiScenario
 source_spec: `spec-dw-676-708-wiki-create-and-template-failure-truth.md`
 severity: low
 reason: `applyScenarioTemplate`'s failure tail carries `rollbackIncomplete` (DW-210) alongside `registryLanded` (DW-484): a restore that could not put every file back leaves one artifact on the new template and one on the old. `scenarioNamedByWikiArtifacts` answers null the moment its two witnesses disagree, and `reconcileWikiScenarioDrift` is deliberately SILENT when it does not fire — so that state is now detected by nobody, repaired by nobody and logged by nobody, while the switcher still carries whichever label the registry write left. The unanimity rule is correct as written (there is no unambiguous answer to re-derive from two contradicting files, and both artifacts are owner-editable so a guess would overwrite the wrong one), which is exactly why closing this needs its own decision — probably a distinct signal rather than a repair.
+status: open
+
+### DW-736: `PUT /api/workbench/artifact` still relays a raw storage errno into the owner's save banner when the WRITE half of the save fails, not the read half this bundle typed.
+origin: spec-deferred 0235d2b3e654
+location: src/app/api/workbench/artifact/route.ts:112-116
+source_spec: `spec-dw-688-689-owner-facing-error-recovery.md`
+severity: low
+reason: DW-689 scoped itself to `src/lib/wikis.ts:982` — the pre-overwrite READ — and that throw is now an `ArtifactUnreadableError` the route answers with `ARTIFACT_UNREADABLE_COPY`. The route's fallthrough is unchanged, so a storage fault raised by `putWikiArtifact` (or by `getWikiRegistry` inside the same `try`) still reaches `json({ error: getErrorMessage(error) }, 500)` and `savePreviewBody` renders it verbatim. `src/lib/__tests__/wiki-schema-edit.test.ts` ("answers a failed storage write with 500, and moves nothing") asserts only that the body's `error` is a string, and the suite's own stderr shows the raw message travelling that path. So the owner can still meet `EACCES: permission denied, open '/…'` in the save banner, by the other half of the same door.
 status: open

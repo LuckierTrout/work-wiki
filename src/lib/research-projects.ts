@@ -18,8 +18,17 @@ const CAS_ATTEMPTS = 8;
  * its existing leading diagnosis verbatim: the element index and the parser's
  * byte offset are still the first thing read, and the `toThrow(substring)`
  * rows that pin those sentences are unaffected.
+ *
+ * EXPORTED because it is also the MARKER the clients recognise (DW-688). Both
+ * surfaces that render a research failure — the Studio's feedback banner and
+ * the Workbench's `ResearchCanvas` — are handed only `{ error }` by
+ * `GET /api/research`, with no type to switch on, so
+ * `researchRegistryRepairable` in `research-panel.ts` derives its predicate
+ * from THIS constant rather than retyping the sentence. One owner for the
+ * marker: a reworded hint moves the predicate with it instead of silently
+ * withdrawing the **Repair** control the sentence promises.
  */
-const REPAIR_HINT = " Repair it with POST /api/research/repair, then retry.";
+export const REPAIR_HINT = " Repair it with POST /api/research/repair, then retry.";
 
 /**
  * The three research-project faults a route has to tell apart from a server

@@ -1,4 +1,4 @@
-import { URL_MAX_CHARS } from "./research-projects";
+import { REPAIR_HINT, URL_MAX_CHARS } from "./research-projects";
 import type { ResearchProject, ResearchProjectStatus } from "./research-projects";
 
 /**
@@ -319,3 +319,63 @@ export const RESEARCH_MUTATE_READ_ONLY_COPY =
 /** See {@link RESEARCH_CREATE_READ_ONLY_COPY} — Collect, which is an INGEST. */
 export const RESEARCH_COLLECT_READ_ONLY_COPY =
   "Sources cannot be ingested while this deployment is read-only.";
+
+/**
+ * The door a wedged registry's own sentence points at (DW-688).
+ *
+ * Typed ONCE, here, because both surfaces that offer **Repair** — the Studio's
+ * feedback banner and the Workbench's `ResearchCanvas` — must post the same
+ * place. `REPAIR_HINT` names this route inside the store's message, but that
+ * sentence is prose the owner reads, not a URL a client can parse.
+ */
+export const RESEARCH_REPAIR_PATH = "/api/research/repair";
+
+/**
+ * Whether a research failure is the one the owner can fix from here (DW-688).
+ *
+ * A tenant whose `research-projects.json` `parseRegistry` refuses meets a 500
+ * on EVERY research door — the reads, the create, and the DELETEs that could
+ * have shrunk the file — and until now the only thing the product did about it
+ * was render the store's sentence verbatim, which names a route no control
+ * anywhere performs. This predicate is what turns that sentence into a button.
+ *
+ * A SUBSTRING TEST ON THE STORE'S OWN EXPORTED CONSTANT, not a regex over the
+ * message and not a flag at the door. `GET /api/research` hands the client
+ * `{ error }` and nothing else — there is no type to switch on across the wire
+ * — and the three refusals differ in their leading diagnosis while sharing only
+ * {@link REPAIR_HINT}. Deriving from the constant is also what keeps a reworded
+ * hint from silently WITHDRAWING the control: the predicate moves with the
+ * sentence because it is the same string.
+ *
+ * Deliberately narrow. A research read can fail for a dozen reasons that
+ * repairing would not touch — a 401, a provider misconfiguration, a dropped
+ * connection — and offering to quarantine the tenant's registry in front of any
+ * of them would be an invitation to throw away a working file.
+ */
+export function researchRegistryRepairable(message: string | null | undefined): boolean {
+  return typeof message === "string" && message.includes(REPAIR_HINT);
+}
+
+/** The control's label, shared so both surfaces read identically. */
+export const RESEARCH_REPAIR_LABEL = "Repair";
+
+/**
+ * What pressing **Repair** does, said before it is pressed.
+ *
+ * HONEST ABOUT THE LOSS. `repairResearchRegistry` restarts the registry EMPTY
+ * and quarantines the unreadable bytes to a sibling no door reads back, so the
+ * projects do not come back — a note that said only "fixes the file" would sell
+ * a recovery this operation does not perform.
+ *
+ * NO ROUTE PATH AND NO HTTP VERB. The store's sentence directly above this note
+ * already names both; repeating them here would put the product's API in front
+ * of an owner twice for one decision, and this is the half that has to be read
+ * as a consequence rather than as an instruction.
+ */
+export const RESEARCH_REPAIR_NOTE_COPY =
+  "Repairing sets the unreadable file aside and starts an empty one. " +
+  "Your existing research projects will not come back.";
+
+/** What the banner says once the bytes have been set aside. */
+export const RESEARCH_REPAIRED_COPY =
+  "The unreadable research projects file was set aside and an empty one started.";

@@ -25,7 +25,12 @@ import {
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
   RESEARCH_POLL_MS,
+  RESEARCH_REPAIRED_COPY,
+  RESEARCH_REPAIR_LABEL,
+  RESEARCH_REPAIR_NOTE_COPY,
+  RESEARCH_REPAIR_PATH,
 } from "@/lib/research-panel";
+import { REPAIR_HINT } from "@/lib/research-projects";
 import { workbenchMode } from "@/lib/workbench-modes";
 
 /** A stored project, with only the fields the panel reads. */
@@ -41,6 +46,21 @@ const project = (extra: Record<string, unknown>) => ({
   updatedAt: "2026-08-24T00:00:00.000Z",
   ...extra,
 });
+
+/**
+ * The sentences a control NAMES, read off its `aria-describedby` in order —
+ * never guessed at from what happens to be on screen.
+ */
+function describedBy(control: HTMLElement): string[] {
+  return (control.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .map((id) => {
+      const node = document.getElementById(id);
+      expect(node, id).not.toBeNull();
+      return node!.textContent ?? "";
+    });
+}
 
 beforeEach(() => {
   send.mockReset();
@@ -636,5 +656,192 @@ describe("Research Panel — read-only", () => {
     expect(document.getElementById(noteId!)?.textContent)
       .toBe(RESEARCH_MUTATE_READ_ONLY_COPY);
     expect((screen.getByLabelText("Topic") as HTMLInputElement).readOnly).toBe(true);
+  });
+});
+
+/**
+ * The way out of a wedged registry, from the canvas (DW-688).
+ *
+ * A `research-projects.json` `parseRegistry` refuses 500s every research door
+ * for its tenant, and the sentence this panel renders verbatim ends by naming
+ * `POST /api/research/repair` — a route no control in the product performed.
+ * The owner read an instruction addressed to somebody with a terminal.
+ */
+describe("Research Panel — a wedged registry", () => {
+  /** What `GET /api/research` answers for a registry that will not parse. */
+  const WEDGED = `Research projects file is unreadable.${REPAIR_HINT}`;
+
+  it("offers Repair beside the store's sentence, posts once, and re-reads", async () => {
+    // Keyed on the URL rather than queued with `mockResolvedValueOnce`: the
+    // panel POLLS while `error` is set, so a positional queue would be consumed
+    // by a tick rather than by the interaction under test.
+    let repaired = false;
+    send.mockImplementation(async (url: string) => {
+      if (url === RESEARCH_REPAIR_PATH) {
+        repaired = true;
+        return { repaired: true, quarantinedPath: "x.corrupt-1" };
+      }
+      if (!repaired) throw new Error(WEDGED);
+      return { projects: [] };
+    });
+
+    render(<ResearchCanvas wikiId="current" />);
+
+    const repair = await screen.findByRole("button", { name: RESEARCH_REPAIR_LABEL });
+    // The store's own sentence stays on screen — the control is an ADDITION to
+    // the diagnosis, not a replacement for it.
+    expect(screen.getByText(WEDGED)).toBeTruthy();
+    // And the note is honest about what pressing it costs — PROGRAMMATICALLY,
+    // not merely on screen. A warning that only sighted users receive is not a
+    // warning on the one control here that cannot be undone.
+    expect(describedBy(repair)).toEqual([RESEARCH_REPAIR_NOTE_COPY]);
+
+    fireEvent.click(repair);
+
+    await waitFor(() => {
+      const posts = send.mock.calls.filter(([url]) => url === RESEARCH_REPAIR_PATH);
+      expect(posts).toHaveLength(1);
+      expect((posts[0][1] as RequestInit).method).toBe("POST");
+    });
+    // The repair's whole visible effect is on the list: the refusal clears and
+    // the empty board the quarantine produced is what is left.
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: RESEARCH_REPAIR_LABEL })).toBeNull();
+    });
+    expect(screen.queryByText(WEDGED)).toBeNull();
+    expect(screen.getByText(workbenchMode("research").emptyState ?? "")).toBeTruthy();
+  });
+
+  it("relays the door's own refusal and claims no repair", async () => {
+    // 409 "nothing to repair" is the one that matters: a mis-aimed repair must
+    // not read as a success, and the client cannot tell 409 from 503 or 403.
+    const NOTHING_TO_REPAIR =
+      "The research projects file reads fine; there is nothing to repair.";
+    send.mockImplementation(async (url: string) => {
+      if (url === RESEARCH_REPAIR_PATH) throw new Error(NOTHING_TO_REPAIR);
+      throw new Error(WEDGED);
+    });
+
+    render(<ResearchCanvas wikiId="current" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: RESEARCH_REPAIR_LABEL }));
+
+    expect(await screen.findByText(NOTHING_TO_REPAIR)).toBeTruthy();
+  });
+
+  it("offers nothing for a research failure the repair would not fix", async () => {
+    // Repairing throws the tenant's projects away. Offering it in front of a
+    // timeout or a provider misconfiguration would be an invitation to do that
+    // for no reason.
+    send.mockRejectedValue(new Error("Request failed (504)"));
+
+    render(<ResearchCanvas wikiId="current" />);
+
+    expect(await screen.findByText("Request failed (504)")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: RESEARCH_REPAIR_LABEL })).toBeNull();
+    expect(screen.queryByText(RESEARCH_REPAIR_NOTE_COPY)).toBeNull();
+  });
+
+  it("sends ONE repair for a double press, and confirms the one that landed", async () => {
+    // The repair is DESTRUCTIVE and not idempotent: the second POST meets a
+    // registry the first already made parseable, and the door answers 409 "the
+    // research projects file reads fine; there is nothing to repair." That
+    // sentence carries no `REPAIR_HINT`, so a repair that SUCCEEDED would end
+    // with a refusal on screen and the control gone.
+    let repaired = false;
+    let release: (() => void) | null = null;
+    const inFlight = new Promise<void>((resolve) => { release = resolve; });
+    send.mockImplementation(async (url: string) => {
+      if (url === RESEARCH_REPAIR_PATH) {
+        if (repaired) throw new Error("nothing to repair");
+        await inFlight;
+        repaired = true;
+        return { repaired: true, quarantinedPath: "x.corrupt-1" };
+      }
+      if (!repaired) throw new Error(WEDGED);
+      return { projects: [] };
+    });
+
+    render(<ResearchCanvas wikiId="current" />);
+    const repair = await screen.findByRole(
+      "button",
+      { name: RESEARCH_REPAIR_LABEL },
+    ) as HTMLButtonElement;
+
+    fireEvent.click(repair);
+    // A REAL `disabled` while in flight, with the label saying why — the same
+    // shape the Studio's copy of this control has.
+    await waitFor(() => expect(repair.disabled).toBe(true));
+    expect(repair.textContent).toBe("Repairing…");
+    fireEvent.click(repair);
+    release!();
+
+    await waitFor(() => expect(screen.getByText(RESEARCH_REPAIRED_COPY)).toBeTruthy());
+    expect(send.mock.calls.filter(([url]) => url === RESEARCH_REPAIR_PATH)).toHaveLength(1);
+  });
+
+  it("says a landed repair happened, and takes the notice down on the next read", async () => {
+    // The canvas has no feedback banner, so without a statement of its own a
+    // successful repair showed as NOTHING: the refusal vanished and an empty
+    // board appeared, with no account of the fact that the owner's whole
+    // registry had just been quarantined.
+    let repaired = false;
+    send.mockImplementation(async (url: string) => {
+      if (url === RESEARCH_REPAIR_PATH) {
+        repaired = true;
+        return { repaired: true, quarantinedPath: "x.corrupt-1" };
+      }
+      if (!repaired) throw new Error(WEDGED);
+      return { projects: [] };
+    });
+
+    const view = render(<ResearchCanvas wikiId="current" active />);
+    fireEvent.click(await screen.findByRole("button", { name: RESEARCH_REPAIR_LABEL }));
+
+    expect(await screen.findByText(RESEARCH_REPAIRED_COPY)).toBeTruthy();
+    // The notice sits over the board the quarantine PRODUCED, not the one it
+    // replaced.
+    expect(screen.getByText(workbenchMode("research").emptyState ?? "")).toBeTruthy();
+
+    // A later read for any other reason has moved on from it — the notice is
+    // about that one transition, not a standing state.
+    view.rerender(<ResearchCanvas wikiId="current" active filledId="p1" />);
+    await waitFor(() => expect(screen.queryByText(RESEARCH_REPAIRED_COPY)).toBeNull());
+  });
+
+  it("renders Repair on a read-only deployment, describes the refusal, and sends nothing", async () => {
+    // The DW-644 shape. `readOnly` arrives here as a PROP from `ModeCanvas`,
+    // independent of the GET that just failed, so unlike the Studio's copy of
+    // this control it is trustworthy enough to disable on.
+    send.mockRejectedValue(new Error(WEDGED));
+
+    render(<ResearchCanvas wikiId="current" readOnly />);
+
+    const repair = await screen.findByRole(
+      "button",
+      { name: RESEARCH_REPAIR_LABEL },
+    ) as HTMLButtonElement;
+    // RENDERED, NOT HIDDEN, and focusable.
+    expect(repair.disabled).toBe(false);
+    expect(repair.getAttribute("aria-disabled")).toBe("true");
+    // BOTH descriptions, in order. The read-only sentence is an ADDITION to the
+    // repair warning, never a replacement: the projects still do not come back,
+    // and withdrawing that warning exactly where the control is least
+    // explicable would be the worse of the two omissions. The list-level note
+    // also has to RENDER here even though a wedged registry means there are no
+    // rows at all — an `aria-describedby` that resolves to nothing describes
+    // nothing.
+    expect(describedBy(repair)).toEqual([
+      RESEARCH_REPAIR_NOTE_COPY,
+      RESEARCH_MUTATE_READ_ONLY_COPY,
+    ]);
+
+    const before = send.mock.calls.length;
+    fireEvent.click(repair);
+    await act(async () => { await Promise.resolve(); });
+
+    // THE HANDLER is what refuses: no request left the browser.
+    expect(send.mock.calls.filter(([url]) => url === RESEARCH_REPAIR_PATH)).toHaveLength(0);
+    expect(send.mock.calls.length).toBe(before);
   });
 });

@@ -59,7 +59,7 @@
  */
 
 import { bumpDataVersion } from "./data-version";
-import { ClientInputError, isEnoent } from "./errors";
+import { ClientInputError, isClientInputError, isEnoent } from "./errors";
 import { logger } from "./logger";
 import { getOwnerHandle } from "./owner";
 import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
@@ -872,6 +872,74 @@ async function bumpRefreshSignal(after: string): Promise<void> {
 }
 
 /**
+ * What a save ANSWERS when the bytes it was about to replace could not be read
+ * (DW-689).
+ *
+ * ONE sentence, owned here beside the read that produces the condition, never
+ * typed at a route or a render site — the {@link
+ * import("./config").CONFIG_UNREADABLE_COPY} shape, and deliberately its
+ * register too, because the owner's situation is identical: a draft is on
+ * screen, reloading destroys it, and copying it out first is the only thing
+ * that saves it.
+ *
+ * IT IS NOT THE WRITE-CONFLICT WORDING. Nothing is known to have changed and
+ * nothing was refused for being stale; storage simply would not open the file.
+ * "Someone else edited this" would send the owner looking for an edit that
+ * never happened.
+ *
+ * WHAT IT REPLACES is the reason it exists: the raw storage error used to be
+ * rethrown from the pre-overwrite read and rendered verbatim in the save
+ * banner, so an owner met `EACCES: permission denied, open
+ * '/srv/data/tenants/…/schema.md'` — an errno, a server filesystem path, and no
+ * action. The errno is not lost; it rides as the thrown error's `cause` and
+ * reaches the server log.
+ */
+export const ARTIFACT_UNREADABLE_COPY =
+  "The stored version of this file could not be read, so nothing was saved. " +
+  "This is usually temporary — copy anything you have unsaved, then reload and try again.";
+
+/**
+ * The pre-overwrite read failed for a precondition-bearing save (DW-689).
+ *
+ * A TYPE rather than a message, so `PUT /api/workbench/artifact` classifies by
+ * `instanceof`-equivalent and never by string-matching a sentence that reads
+ * like the caller's own mistake — the {@link
+ * import("./errors").ClientInputError} idiom. Its default message IS
+ * {@link ARTIFACT_UNREADABLE_COPY}, and the storage error is preserved as
+ * `cause` so the log keeps the errno the owner must not be shown.
+ *
+ * Extends `Error` directly and subclasses nothing, so an existing ladder that
+ * ends in a bare 500 keeps returning 500 for it.
+ */
+export class ArtifactUnreadableError extends Error {
+  constructor(message: string = ARTIFACT_UNREADABLE_COPY, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ArtifactUnreadableError";
+  }
+}
+
+/**
+ * Whether a caught value is a failed pre-overwrite artifact read.
+ *
+ * Matches on `name`, not `instanceof`, for the reason {@link
+ * import("./errors").isClientInputError} documents: an error thrown by a SECOND
+ * copy of this module — vitest's two projects, a bundler splitting server and
+ * edge chunks — fails `instanceof` against the copy the route imported, and the
+ * owner-worded 500 would silently become an errno-leaking one in production
+ * only, where no test can see it.
+ *
+ * `instanceof Error` is proven BEFORE `name` is read: this runs in a route's
+ * catch block, where the caught value is arbitrary and a property read on it
+ * can itself throw.
+ *
+ * Narrows to `Error`, not to `ArtifactUnreadableError`: under a duplicated
+ * graph the value genuinely is not an instance of the imported class.
+ */
+export function isArtifactUnreadableError(err: unknown): err is Error {
+  return err instanceof Error && err.name === "ArtifactUnreadableError";
+}
+
+/**
  * Overwrite one seeded artifact — the write half of Story 1.8's Schema editing.
  *
  * WHY THIS IS NOT `writeWikiPageWithSideEffects`. The epic's one-write-path rule
@@ -925,9 +993,10 @@ async function bumpRefreshSignal(after: string): Promise<void> {
  * `expectedVersion` is a {@link scopedContentVersion} over `wikiId` and the
  * stored bytes, and it is OPTIONAL: a caller that supplies none writes exactly
  * as this function did before. When one IS supplied, the pre-write read stops
- * being fail-soft — a read that throws refuses the save with its own error
- * rather than being read as "absent", because "absent" would be answered as a
- * conflict and a storage blip is not one. A mismatch (or a genuinely missing
+ * being fail-soft — a read that throws refuses the save as an
+ * {@link ArtifactUnreadableError} (DW-689) rather than being read as "absent",
+ * because "absent" would be answered as a conflict and a storage blip is not
+ * one. A mismatch (or a genuinely missing
  * file, which matches no version) throws {@link WriteConflictError}, so nothing
  * is written: no snapshot, no bytes, no log line, no `dataVersion` bump.
  *
@@ -999,11 +1068,31 @@ export async function writeWikiArtifact(
     // below is conditional: a storage blip must never be reported to the owner
     // as somebody else's save. The SNAPSHOT stays fail-soft unconditionally;
     // only the read changes, and only for a precondition-bearing caller.
+    //
+    // AND IT IS WRAPPED, NOT RETHROWN (DW-689). The route relays the thrown
+    // message into the owner's save banner, so a bare rethrow put a raw storage
+    // errno and a server filesystem path on screen — `EACCES: permission
+    // denied, open '/srv/data/…'` — where the owner needed a sentence they
+    // could act on. {@link ArtifactUnreadableError} carries the owner's wording
+    // and keeps the original as `cause`, so nothing diagnostic is lost: the
+    // route logs it, and only the route's log sees the errno. The FAIL-SOFT
+    // branch below is untouched — a caller with no `expectedVersion` still
+    // warns and continues.
     let existing: string | null = null;
     try {
       existing = await readWikiArtifact(owner, wikiId, file);
     } catch (error) {
-      if (expectedVersion !== undefined) throw error;
+      if (expectedVersion !== undefined) {
+        // A CALLER-INPUT FAULT PASSES THROUGH UNCHANGED. `readWikiArtifact`
+        // builds its storage key inside its own `try`, so an unparseable owner
+        // or Wiki id surfaces here as a `ClientInputError` rather than as a
+        // storage failure — and wrapping THAT would tell the caller their own
+        // malformed request was our disk, turning the route's 400 into a 500
+        // saying "this is usually temporary" about a request that will fail
+        // identically forever. The wrap is for the STORE's failures only.
+        if (isClientInputError(error)) throw error;
+        throw new ArtifactUnreadableError(ARTIFACT_UNREADABLE_COPY, { cause: error });
+      }
       logger.warn(
         "wikis",
         `reading "${file}" before overwriting it failed — the save proceeds, but the replaced bytes are not in this wiki's history`,

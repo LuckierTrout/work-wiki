@@ -10,6 +10,11 @@ import {
   RESEARCH_COLLECT_READ_ONLY_COPY,
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
+  RESEARCH_REPAIRED_COPY,
+  RESEARCH_REPAIR_LABEL,
+  RESEARCH_REPAIR_NOTE_COPY,
+  RESEARCH_REPAIR_PATH,
+  researchRegistryRepairable,
   researchSourceUrlNote,
   researchSourceUrlTotal,
 } from "@/lib/research-panel";
@@ -229,6 +234,28 @@ export function KnowledgeStudio() {
    * invented on the client would be the worse failure.
    */
   const [readOnly, setReadOnly] = useState(false);
+  /**
+   * The registry is KNOWN WEDGED — `parseRegistry` refused the last research
+   * read this desk made (DW-688).
+   *
+   * ITS OWN FACT, not a re-reading of whatever sentence is in the banner right
+   * now. The banner is a single shared slot: any refusal the **Repair** door
+   * itself answers overwrites the registry sentence, and a 503 ("Research
+   * projects were busy; retry the request.") carries no `REPAIR_HINT` — so a
+   * control offered off the current message alone DISAPPEARED the moment the
+   * owner was told to retry, and this desk does not poll, so only a manual
+   * **Refresh** would bring it back. That is DW-688's own defect one layer
+   * down: an instruction to retry with nothing behind it.
+   *
+   * SET FROM THE RESEARCH READ'S OWN OUTCOME, in the same place and by the same
+   * discipline as `readOnly` above: a read that succeeded proves the registry
+   * parses, a read that refused with the store's marker proves it does not, and
+   * a read that failed any OTHER way says nothing about the file and leaves the
+   * fact alone.
+   */
+  const [registryWedged, setRegistryWedged] = useState(false);
+  /** The **Repair** note's id — see `repairResearchRegistry` below. */
+  const repairNoteId = useId();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -253,6 +280,9 @@ export function KnowledgeStudio() {
         setProjects(data.projects);
         setResearchProviders(data.availableProviders ?? []);
         setReadOnly(data.readOnly === true);
+        // The door answered with projects, so the file parses. Whatever this
+        // desk believed about a wedged registry is now provably false.
+        setRegistryWedged(false);
         return null;
       },
       // A research read that FAILED tells us nothing about the deployment
@@ -260,7 +290,18 @@ export function KnowledgeStudio() {
       // `false` — a refusal withdrawn on a network error would be the same
       // defect by another route. The error is carried out to be reported with
       // whatever else went wrong.
-      (error: unknown) => error,
+      (error: unknown) => {
+        // …with ONE exception, and it is a fact this failure DOES carry: a
+        // refusal ending in the store's own marker is proof the registry does
+        // not parse. Any other failure — a 401, a timeout, a provider fault —
+        // says nothing about the file, so the fact is left as it was rather
+        // than cleared: withdrawing the way out on a network blip is the same
+        // defect as never offering it.
+        if (researchRegistryRepairable(error instanceof Error ? error.message : null)) {
+          setRegistryWedged(true);
+        }
+        return error;
+      },
     );
     try {
       const [vaultData, agentData, jobData, proposalData, insightData, skillData, compilationData] = await Promise.all([
@@ -290,6 +331,63 @@ export function KnowledgeStudio() {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  /**
+   * The way OUT of a wedged registry, from the desk that reports it (DW-688).
+   *
+   * `parseRegistry` refuses every research door for a tenant whose
+   * `research-projects.json` is unreadable, and each refusal ends by naming
+   * `POST /api/research/repair`. Until now nothing in the product performed
+   * that POST: the owner read an instruction addressed to somebody holding a
+   * terminal. This is the control that sentence promises, offered exactly when
+   * the sentence carries the store's own marker.
+   *
+   * NO READ-ONLY MIRROR HERE, and that is deliberate rather than an omission.
+   * This desk adopts `readOnly` only from a `GET /api/research` that SUCCEEDED
+   * — the failure branch leaves the flag exactly as it was, on purpose — and
+   * this control exists only when that GET FAILED. The flag is therefore stale
+   * by construction at this call site, and an `aria-disabled` derived from it
+   * would be a guess in both directions. The door's own 403 sentence
+   * (`READ_ONLY_REFUSAL.researchMutate`) lands in this same banner, which is
+   * the honest answer. `ResearchCanvas` takes `readOnly` as a trustworthy prop
+   * from `ModeCanvas` and so does get the full DW-644 treatment.
+   *
+   * THE SERVER'S SENTENCE WINS ON EVERY REFUSAL — 409 "nothing to repair", 503
+   * busy, 403 read-only, 500 fault — because the client cannot tell those apart
+   * and must not claim a success it did not get.
+   */
+  const [repairing, setRepairing] = useState(false);
+  const repairResearchRegistry = useCallback(async () => {
+    setRepairing(true);
+    try {
+      await requestJson(RESEARCH_REPAIR_PATH, { method: "POST" });
+      // RE-READ BEFORE THE VERDICT. The desk is holding the projects from
+      // before the repair — which is to say, none — and the banner is about to
+      // claim the file was replaced, so the list it sits above has to be the
+      // list that replaced it.
+      await refresh();
+      // …AND ONE KIND OF RE-READ FAILURE WINS. `refresh` writes ANY of its
+      // eight reads' failures into the shared banner, but only one of them
+      // CONTRADICTS this claim: the registry still refusing to parse. That
+      // sentence has to stand — the repair did not take, and painting over it
+      // would also hide the fact from the owner. Every other failure is about
+      // some other door and leaves the repair's own outcome untouched, so
+      // suppressing on those would mean an irreversible quarantine happened and
+      // nothing on screen ever said so, which is DW-688's complaint exactly.
+      setFeedback((current) =>
+        current && !current.ok && researchRegistryRepairable(current.message)
+          ? current
+          : { ok: true, message: RESEARCH_REPAIRED_COPY },
+      );
+    } catch (error) {
+      setFeedback({
+        ok: false,
+        message: error instanceof Error ? error.message : "Couldn’t repair the research projects file.",
+      });
+    } finally {
+      setRepairing(false);
+    }
   }, [refresh]);
 
   const pipeline = useMemo(() => ({
@@ -345,6 +443,42 @@ export function KnowledgeStudio() {
         {feedback ? (
           <div className={feedback.ok ? "studio-feedback success" : "studio-feedback error"} role="status">
             {feedback.message}
+            {/* THE CONTROL THE SENTENCE PROMISES (DW-688). Offered while the
+                registry is KNOWN WEDGED — a fact set from the research read's
+                own outcome — OR while the sentence on screen still carries the
+                store's own `REPAIR_HINT`, read through
+                `researchRegistryRepairable` rather than matched here so a
+                reworded hint moves the control with it.
+
+                TWO CONDITIONS, NOT ONE. The message alone withdrew the control
+                the moment the repair door answered anything of its own: a 503
+                says "retry the request" and carries no marker, so the retry it
+                asks for had nothing to press. The remembered fact keeps the way
+                out on screen until a read proves the file parses again. The
+                message alone still counts because a registry can wedge between
+                two reads and the sentence is the first thing to know it.
+
+                Inside the banner rather than beside it, because the instruction
+                and the button have to be read as one thing. See
+                `repairResearchRegistry` for why no read-only mirror is derived
+                here. */}
+            {!feedback.ok
+              && (registryWedged || researchRegistryRepairable(feedback.message)) ? (
+              <div className="studio-feedback-action">
+                <button
+                  type="button"
+                  className="btn ghost"
+                  aria-describedby={repairNoteId}
+                  disabled={repairing}
+                  onClick={() => void repairResearchRegistry()}
+                >
+                  {repairing ? "Repairing…" : RESEARCH_REPAIR_LABEL}
+                </button>
+                <p id={repairNoteId} className="studio-feedback-note">
+                  {RESEARCH_REPAIR_NOTE_COPY}
+                </p>
+              </div>
+            ) : null}
           </div>
         ) : null}
 

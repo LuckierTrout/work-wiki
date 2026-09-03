@@ -34,6 +34,8 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 import { readDataVersion } from "../data-version";
+import { ClientInputError, StoreFaultError, isClientInputError } from "../errors";
+import { logger } from "../logger";
 import { _resetLocks } from "../lock";
 import { loadPageConventions } from "../schema";
 import {
@@ -55,9 +57,12 @@ import {
 } from "../wiki-scenarios";
 import { listWikiArtifactRevisions } from "../wiki-artifact-revisions";
 import {
+  ARTIFACT_UNREADABLE_COPY,
+  ArtifactUnreadableError,
   createWiki,
   getWikiRegistry,
   setCurrentWiki,
+  isArtifactUnreadableError,
   readWikiArtifact,
   wikiArtifactPath,
   writeWikiArtifact,
@@ -864,6 +869,12 @@ describe("editing the Schema", () => {
     // revision snapshot and opposite answers to the guard. Collapsing them
     // would tell the owner somebody else saved when in fact storage hiccuped —
     // and would send them to reload a page that is fine.
+    //
+    // WHAT THE OWNER IS TOLD CHANGED AT DW-689, and the status did not. This
+    // used to answer the raw storage message — the errno and the server's own
+    // filesystem path, relayed verbatim into the save banner. It is now the
+    // one owner-worded sentence, and the diagnosis rides as the thrown error's
+    // `cause` into the log.
     const wiki = await seed();
     const before = await readDataVersion();
     const seeded = await readSchema(wiki);
@@ -872,21 +883,93 @@ describe("editing the Schema", () => {
     const storage = getStorage();
     const artifact = wikiArtifactPath(OWNER, wiki.id, "schema.md");
     const real = storage.readFile.bind(storage);
+    // ERRNO-SHAPED, because that is the failure this actually happens for: a
+    // permission bit, a full disk, an unmounted volume. The message carries the
+    // absolute path storage would put in it.
+    const fault = Object.assign(
+      new Error(`EACCES: permission denied, open '/srv/data/${artifact}'`),
+      { code: "EACCES", path: `/srv/data/${artifact}`, errno: -13, syscall: "open" },
+    );
     vi.spyOn(storage, "readFile").mockImplementation(async (key: string) => {
-      if (key === artifact) throw new Error("the disk went away");
+      if (key === artifact) throw fault;
       return real(key);
     });
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => undefined);
 
     const response = await put("?path=schema.md", { content: EDITED }, version);
 
     expect(response.status).toBe(500);
-    expect(await response.json()).toEqual({ error: "the disk went away" });
+    const body = (await response.json()) as { error: string };
+    expect(body).toEqual({ error: ARTIFACT_UNREADABLE_COPY });
+    // The properties the sentence is FOR, asserted against the body rather than
+    // against the constant: no errno, no syscall, no server path, no stack.
+    expect(body.error).not.toMatch(/EACCES|errno|syscall/i);
+    expect(body.error).not.toContain("/srv/data");
+    expect(body.error).not.toContain(artifact);
+
+    // …and the diagnosis is not lost. The route logs the thrown error, and the
+    // storage error is still reachable through its `cause` — the only place the
+    // errno survives.
+    expect(logged).toHaveBeenCalledTimes(1);
+    const thrown = logged.mock.calls[0]?.[2];
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("ArtifactUnreadableError");
+    expect((thrown as Error).message).toBe(ARTIFACT_UNREADABLE_COPY);
+    expect((thrown as { cause?: unknown }).cause).toBe(fault);
 
     vi.restoreAllMocks();
     // Nothing was written: not the bytes, not the log, not the counter.
     expect(await readSchema(wiki)).toBe(seeded);
     expect(await readDataVersion()).toBe(before);
     expect(await readLog()).toBeNull();
+  });
+
+  it("lets a CALLER-INPUT fault through the wrap, so a 400 does not become a 500", async () => {
+    // `readWikiArtifact` builds its storage key inside its own `try`, so an
+    // unparseable Wiki id surfaces from the SAME read the DW-689 wrap guards —
+    // and wrapping it would tell the caller their own malformed request was our
+    // disk, answering 500 "this is usually temporary" about a request that will
+    // fail identically forever. The wrap is for the STORE's failures only.
+    await seed();
+
+    let caught: unknown;
+    try {
+      await writeWikiArtifact(OWNER, "../not a wiki id", "schema.md", EDITED, {
+        expectedVersion: scopedContentVersion("w", EDITED),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(isClientInputError(caught)).toBe(true);
+    expect(isArtifactUnreadableError(caught)).toBe(false);
+    // …which is what keeps the route's ladder answering 400 rather than the
+    // new 500 branch.
+    expect((caught as Error).message).not.toBe(ARTIFACT_UNREADABLE_COPY);
+  });
+
+  it("keeps the write fail-soft for a caller that supplies NO precondition", async () => {
+    // The DW-689 throw is scoped to a precondition-bearing caller, exactly as
+    // the DW-193 rethrow it replaces was. `POST /api/workbench/artifact/revisions`
+    // passes no `expectedVersion`, so a read fault there must still warn and
+    // let the save land — losing the owner's new bytes to protect a history
+    // entry is the trade this function has always refused.
+    const wiki = await seed();
+    const storage = getStorage();
+    const artifact = wikiArtifactPath(OWNER, wiki.id, "schema.md");
+    const real = storage.readFile.bind(storage);
+    vi.spyOn(storage, "readFile").mockImplementation(async (key: string) => {
+      if (key === artifact) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return real(key);
+    });
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+
+    await expect(
+      writeWikiArtifact(OWNER, wiki.id, "schema.md", EDITED),
+    ).resolves.toBeUndefined();
+
+    vi.restoreAllMocks();
+    expect(await readSchema(wiki)).toBe(EDITED);
   });
 
   it("does not offer the Schema for editing on a read-only deployment", async () => {
@@ -1336,5 +1419,69 @@ describe("the two routes", () => {
     ]) {
       expect(await readRoute(file)).not.toContain("/wikis/");
     }
+  });
+});
+
+/**
+ * DW-689. `isArtifactUnreadableError` is what stands between the owner-worded
+ * 500 and the errno-leaking one, and `instanceof` is the one mechanism that
+ * cannot survive a duplicated module graph — vitest's two projects, a bundler
+ * splitting server and edge chunks. Swap the implementation to an identity
+ * check against the imported class and every OTHER assertion in this file stays
+ * green: each of them throws through the module instance the route imported.
+ * Only the foreign-realm row below fails, and only it stands between the
+ * sentence and a production-only leak.
+ *
+ * The same four properties `errors.test.ts` pins for `isClientInputError`, in
+ * the same idiom, because this predicate is a copy of that one.
+ */
+describe("isArtifactUnreadableError classifies structurally, not by identity", () => {
+  it("accepts an ArtifactUnreadableError from this module", () => {
+    expect(isArtifactUnreadableError(new ArtifactUnreadableError())).toBe(true);
+    // Its default message IS the owner's sentence, which is what lets the route
+    // log the error and answer the constant without the two disagreeing.
+    expect(new ArtifactUnreadableError().message).toBe(ARTIFACT_UNREADABLE_COPY);
+  });
+
+  it("accepts one from a DIFFERENT copy of this module", () => {
+    const foreign = Object.assign(new Error("EACCES: permission denied"), {
+      name: "ArtifactUnreadableError",
+    });
+    expect(foreign).not.toBeInstanceOf(ArtifactUnreadableError);
+    expect(isArtifactUnreadableError(foreign)).toBe(true);
+  });
+
+  it("returns false for the neighbours in the route's ladder", () => {
+    // A caller-input fault must still reach the 400 branch, and a bare store
+    // fault must still fall through to the generic 500 — neither may be
+    // reported as "the stored version could not be read".
+    expect(isArtifactUnreadableError(new ClientInputError("Invalid wiki id."))).toBe(false);
+    expect(isArtifactUnreadableError(new StoreFaultError("boom"))).toBe(false);
+    expect(isArtifactUnreadableError(new Error("disk is gone"))).toBe(false);
+  });
+
+  it("returns false for non-Error values, without throwing on a property read", () => {
+    expect(isArtifactUnreadableError(null)).toBe(false);
+    expect(isArtifactUnreadableError(undefined)).toBe(false);
+    expect(isArtifactUnreadableError("ArtifactUnreadableError")).toBe(false);
+    // A bare object wearing the name is NOT an Error: `instanceof Error` is
+    // proven first, so the classifier never reads `name` off a hostile value.
+    expect(isArtifactUnreadableError({ name: "ArtifactUnreadableError" })).toBe(false);
+    expect(
+      isArtifactUnreadableError({
+        get name() {
+          throw new Error("property getter exploded");
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves the storage error as `cause`, which is the only place the errno survives", () => {
+    const fault = Object.assign(new Error("EACCES: permission denied, open '/srv/data/x'"), {
+      code: "EACCES",
+    });
+    const wrapped = new ArtifactUnreadableError(ARTIFACT_UNREADABLE_COPY, { cause: fault });
+    expect(wrapped.cause).toBe(fault);
+    expect(wrapped.message).not.toContain("EACCES");
   });
 });

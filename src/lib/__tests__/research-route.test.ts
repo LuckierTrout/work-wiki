@@ -26,12 +26,14 @@ vi.mock("@/lib/research-runtime", () => ({
 
 import { GET, POST } from "@/app/api/research/route";
 import { getPrincipal } from "@/lib/auth";
-import { ClientInputError } from "@/lib/errors";
+import { ClientInputError, StoreFaultError } from "@/lib/errors";
 import {
   createResearchProject,
   listResearchProjects,
+  REPAIR_HINT,
   ResearchProjectBusyError,
 } from "@/lib/research-projects";
+import { researchRegistryRepairable } from "@/lib/research-panel";
 import { reconcileResearchProjects } from "@/lib/research-runtime";
 import { READ_ONLY_REFUSAL, ReadOnlyError } from "@/lib/read-only";
 import { listWikis } from "@/lib/wikis";
@@ -402,6 +404,36 @@ describe("POST /api/research failure classification", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "That Wiki is not in this workspace." });
     expect(mockedCreate).not.toHaveBeenCalled();
+  });
+
+  it("relays the store's repair hint to the client, verbatim (DW-688)", async () => {
+    // THE ONE RELAY THE **Repair** CONTROL DEPENDS ON. `parseRegistry` refuses
+    // a wedged registry with a sentence ending in `REPAIR_HINT`, this catch is
+    // the only thing in production that puts that sentence in front of a
+    // browser, and `researchRegistryRepairable` — which decides whether either
+    // surface offers the control at all — reads nothing else.
+    //
+    // Nothing pinned it. Replace `getErrorMessage(error)` below with a fixed
+    // sentence — the exact move DW-689 makes to the artifact door in this same
+    // change, for good reasons there — and the store test, the predicate test
+    // and both mounted client suites stay green while the way out of a wedged
+    // registry silently stops rendering everywhere.
+    //
+    // The sentence is COMPOSED from the exported constant rather than retyped,
+    // so a reworded hint moves this row with it instead of leaving it green
+    // against copy that no longer exists.
+    const wedged = `Research projects file is unreadable.${REPAIR_HINT}`;
+    mockedList.mockRejectedValueOnce(new StoreFaultError(wedged));
+
+    const response = await GET(new Request("http://localhost/api/research"));
+
+    expect(response.status).toBe(500);
+    const body = await response.json() as { error: string };
+    expect(body.error).toBe(wedged);
+    expect(body.error).toContain(REPAIR_HINT);
+    // …and the client predicate, run over the body the client actually
+    // receives, still says the control is offered. This is the end of the wire.
+    expect(researchRegistryRepairable(body.error)).toBe(true);
   });
 
   it("records a known Wiki on the create", async () => {

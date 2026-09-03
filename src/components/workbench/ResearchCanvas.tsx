@@ -9,9 +9,14 @@ import {
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
   RESEARCH_POLL_MS,
+  RESEARCH_REPAIRED_COPY,
+  RESEARCH_REPAIR_LABEL,
+  RESEARCH_REPAIR_NOTE_COPY,
+  RESEARCH_REPAIR_PATH,
   researchIsPolling,
   researchOffersCancel,
   researchOffersRun,
+  researchRegistryRepairable,
   researchStatusLabel,
   researchTaskLine,
   researchWikiId,
@@ -79,10 +84,25 @@ export function ResearchCanvas({
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [openThinking, setOpenThinking] = useState<Record<string, boolean>>({});
+  /** A repair is in flight. See `repair()` — NOT the same fact as `readOnly`. */
+  const [repairing, setRepairing] = useState(false);
+  /**
+   * A repair LANDED, and this panel has not been re-read for another reason
+   * since.
+   *
+   * The canvas has no feedback banner of its own — `error` is the only thing it
+   * says — so a successful repair otherwise showed as nothing at all: the
+   * refusal vanished and an empty board appeared, with no statement that the
+   * owner's whole registry had just been quarantined. That is the one operation
+   * on this surface that cannot be undone, and it is the one that said least.
+   */
+  const [repaired, setRepaired] = useState(false);
   // ONE id for the WHOLE list, minted here rather than inside the `.map()`
   // below: a `useId()` per card would mint a duplicate note per row, and
   // `aria-describedby` would resolve to whichever node the browser found first.
   const mutateNoteId = useId();
+  /** The **Repair** note's id — see the control's `aria-describedby`. */
+  const repairNoteId = useId();
   const loadSeq = useRef(0);
   const startSeq = useRef(0);
   const wikiScope = useRef(wikiId);
@@ -95,6 +115,10 @@ export function ResearchCanvas({
     setError(null);
     setStartError(null);
     setStarting(false);
+    // A repair belongs to the wiki it was made from; carrying the notice across
+    // a rail move would claim it about a registry nobody touched.
+    setRepairing(false);
+    setRepaired(false);
   }, [wikiId]);
 
   const load = useCallback(async () => {
@@ -108,9 +132,16 @@ export function ResearchCanvas({
       if (seq !== loadSeq.current) return;
       setProjects(body.projects ?? []);
       setError(null);
+      // The repair notice is about THIS read's predecessor. Any later read —
+      // a poll tick, a start, the rail handing over a project — has moved on
+      // from it, so it is cleared here and set again by `repair()` only after
+      // the read it makes itself. `repair()` awaits that read, so this runs
+      // before the notice goes up rather than after.
+      setRepaired(false);
     } catch (cause) {
       if (seq !== loadSeq.current) return;
       setError(cause instanceof Error ? cause.message : "Couldn’t load Deep Research.");
+      setRepaired(false);
     }
   }, [wikiId]);
 
@@ -212,6 +243,63 @@ export function ResearchCanvas({
     }
   }
 
+  /**
+   * The way OUT of a wedged registry, from the canvas that reports it (DW-688).
+   *
+   * `parseRegistry` refuses every research door for the tenant and each refusal
+   * ends by naming `POST /api/research/repair` — an instruction with nothing in
+   * the product behind it until this. Offered only when the failure carries the
+   * store's own marker, so an unrelated read failure never puts a
+   * quarantine-the-registry button in front of the owner.
+   *
+   * READ-ONLY REFUSES HERE, unlike the Studio's copy of this control. This
+   * canvas takes `readOnly` as a PROP from `ModeCanvas`, independent of the
+   * `GET /api/research` that just failed, so the flag is trustworthy and the
+   * DW-644 shape applies in full: the button renders rather than vanishing, it
+   * is `aria-disabled`, it points at the list-level `researchMutate` note, and
+   * THIS handler is what refuses. The Studio's flag is adopted only from a GET
+   * that succeeded and is stale by construction wherever this control exists,
+   * which is why it derives no `aria-disabled` at all.
+   *
+   * ONE AT A TIME, and this guard is not cosmetic. The repair is DESTRUCTIVE
+   * and it is not idempotent: the second POST of a double-click meets a
+   * registry the first one already made parseable, and the door answers 409
+   * "the research projects file reads fine; there is nothing to repair." That
+   * sentence carries no `REPAIR_HINT`, so a repair that SUCCEEDED would end
+   * with a refusal on screen and the control gone. `repairing` is its own state
+   * and drives a real `disabled` — deliberately NOT folded into the
+   * `aria-disabled` the read-only refusal uses, because "busy for a moment" and
+   * "this deployment will never allow it" are different facts and a screen
+   * reader must not hear them as one.
+   */
+  async function repair() {
+    if (readOnly || repairing) return;
+    const originWikiId = wikiScope.current;
+    setRepairing(true);
+    try {
+      await send(RESEARCH_REPAIR_PATH, { method: "POST" });
+      // The repair's whole visible effect is on the list: re-reading is what
+      // turns the refusal into the empty board the quarantine produced. `load`
+      // clears `error`, and with it this control.
+      if (wikiScope.current === originWikiId) {
+        await load();
+        // AFTER the read, so the notice sits over the board the quarantine
+        // produced rather than over the one it replaced — and `load` clears the
+        // flag first, so a later read takes the notice back down.
+        if (wikiScope.current === originWikiId) setRepaired(true);
+      }
+    } catch (cause) {
+      if (wikiScope.current === originWikiId) {
+        // The SERVER's sentence for every refusal — 409 nothing to repair, 503
+        // busy, 403 read-only, 500 fault. The client cannot tell them apart and
+        // must not claim a repair it did not get.
+        setError(writeFailure(cause, "repair the research projects file").message);
+      }
+    } finally {
+      if (wikiScope.current === originWikiId) setRepairing(false);
+    }
+  }
+
   async function runExisting(id: string) {
     if (readOnly) return;
     const originWikiId = wikiScope.current;
@@ -235,9 +323,49 @@ export function ResearchCanvas({
     return 0;
   });
 
+  // Whether the failure on screen is the one the owner can fix from here. Read
+  // once so the control and the read-only note it points at cannot disagree.
+  const repairable = error !== null && researchRegistryRepairable(error);
+
   return (
     <div className="wb-research">
       {error && <p className="wb-todos-error">{error}</p>}
+      {/* THE STATEMENT A DESTRUCTIVE OPERATION OWES. This canvas has no
+          feedback banner, so without this a landed repair showed as nothing —
+          the refusal simply vanished. `role="status"` rather than `alert`:
+          nothing failed, and the owner asked for this. */}
+      {repaired ? (
+        <p className="wb-research-repaired" role="status">{RESEARCH_REPAIRED_COPY}</p>
+      ) : null}
+      {repairable ? (
+        <div className="wb-research-repair">
+          {/* RENDERED, NOT HIDDEN, under `readOnly` (DW-644): the owner meets a
+              control and the door's own sentence rather than an absence with no
+              reason. `repair()` is what refuses.
+
+              TWO DESCRIPTIONS, NOT ONE. The repair note says what pressing this
+              costs — the projects do not come back — and that is true on every
+              deployment, so it is named ALWAYS. The read-only sentence is an
+              ADDITION to it, not a replacement: pointing only at the mutate
+              note under `readOnly` would withdraw the warning exactly where the
+              control is least explicable, and pointing at neither on a writable
+              deployment left a screen reader with a bare "Repair". */}
+          <button
+            type="button"
+            className="wb-set-action"
+            aria-disabled={readOnly || undefined}
+            aria-describedby={readOnly ? `${repairNoteId} ${mutateNoteId}` : repairNoteId}
+            // A REAL `disabled`, and only for the in-flight moment — see
+            // `repair()`. The read-only refusal stays `aria-disabled`, because
+            // that control must remain focusable to announce its reason.
+            disabled={repairing}
+            onClick={() => void repair()}
+          >
+            {repairing ? "Repairing…" : RESEARCH_REPAIR_LABEL}
+          </button>
+          <p id={repairNoteId} className="wb-todos-meta">{RESEARCH_REPAIR_NOTE_COPY}</p>
+        </div>
+      ) : null}
 
       <div className="wb-research-start">
         <label className="wb-set-label" htmlFor="wb-research-topic">
@@ -322,9 +450,18 @@ export function ResearchCanvas({
           control the owner was never offered would announce the refusal of an
           operation that is not on screen, and `aria-describedby` would resolve
           to nothing. Not `role="alert"` — nothing failed; it is the
-          deployment's standing state. */}
+          deployment's standing state.
+
+          WIDENED FOR **Repair** (DW-688). That control meets
+          `POST /api/research/repair`, which answers this same
+          `researchMutate` sentence — repairing IS "change my research" — and it
+          points here through `aria-describedby`. When the registry is wedged
+          there are no rows at all, so the row predicates below are false and
+          the note would not have rendered: the description would have resolved
+          to nothing, which describes nothing. */}
       {readOnly
-        && shown.some((project) => researchOffersCancel(project) || researchOffersRun(project)) ? (
+        && (repairable
+          || shown.some((project) => researchOffersCancel(project) || researchOffersRun(project))) ? (
         <p id={mutateNoteId} className="wb-todos-meta">
           {RESEARCH_MUTATE_READ_ONLY_COPY}
         </p>
