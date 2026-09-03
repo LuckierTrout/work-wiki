@@ -439,5 +439,14 @@
     "key": "1",
     "label": "Re-point the citations at DW-706",
     "resolution": ""
+  },
+  "DW-711": {
+    "answered_at": "2026-09-03",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Pass workload through getConfiguredModel and getModel at the production call sites Epics 2 and 3 left unwired, so chatProvider and ingestProvider actually select the model a call uses, and make both the UI gate and the runtime gate read that one resolved answer. Resolve DW-621 the same way. Pin that a chatProvider-only store passes both gates and reaches the provider it names.",
+    "key": "1",
+    "label": "Route by workload at the call sites",
+    "resolution": ""
   }
 }
