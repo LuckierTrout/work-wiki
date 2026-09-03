@@ -5459,7 +5459,9 @@ location: src/lib/wikis.ts (applyScenarioTemplate failure tail) / src/app/api/wi
 source_spec: `spec-dw-381-484-scenario-template-failure-truth.md`
 severity: low
 reason: `registryNamesScenario` is documented "DETECTS, DOES NOT RECONCILE", which is what the intent asked for, but the state it detects is left standing: `POST /api/wikis/[id]/template` still answers a bare 500 with the original error, `WikiWorkbench.applyTemplate`'s catch calls `router.refresh()` only on an `unconfirmed` failure, and the switcher row silently re-labels itself with the new scenario once the 10s `DATA_VERSION_POLL_MS` watcher picks the bump up. So the owner is told the re-template failed while the surface goes on to say it succeeded. The module already has `sweepOrphanWikiDirectories` as precedent for a maintenance-scan repair; no owner exists for this one.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-wiki-create-and-template-failure-truth
+resolution-undo: 93e7441d5b4648d5269eb89c6196d2f266087bdf94e5bcfe8489e6c96d4e03fd 2026-09-03 7374617475733a206f70656e
 decision: 2026-08-31 Repair it in the maintenance scan — Give the divergence a reconciler in the maintenance scan, following the `sweepOrphanWikiDirectories` precedent: detect a registry entry whose scenario disagrees with the artifacts on disk and re-derive one from the other, reporting what it repaired. Leave the failure response as it is once the scan closes the window, and pin the repair.
 
 ### DW-677: The backup copy loop still materialises every file that DOES fit, in full, and holds it through `sha256`, so one large-but-fitting object can exhaust the Workers isolate long before the 2 GiB total ce
@@ -5728,7 +5730,9 @@ location: src/app/api/wikis/route.ts (POST); src/lib/wikis.ts createWiki failure
 source_spec: `spec-dw-674-675-wikis-sweep-compensation-guards.md`
 severity: low
 reason: DW-675's fix makes `createWiki` keep the new wiki's directory when the read-back positively finds the record, and bump `dataVersion` — but the original storage error is still re-thrown unwrapped, so the route answers 500. The owner is told the create failed while the switcher, the workbench heading and every artifact read now resolve against the new wiki, and a retry mints a second one against `MAX_WIKIS`. This is the create-route sibling of the shape DW-676 already records for `POST /api/wikis/[id]/template` after DW-484; neither the bundle intent nor either ledger entry names the route surface, both stop at the bytes.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-wiki-create-and-template-failure-truth
+resolution-undo: 93e7441d5b4648d5269eb89c6196d2f266087bdf94e5bcfe8489e6c96d4e03fd 2026-09-03 7374617475733a206f70656e
 
 ### DW-709: Workspace guidance is still resolved from the raw handle at every prompt site outside the merge and ingest doors, so an agent-owned page's action and structured-knowledge extraction still reads the ag
 origin: spec-deferred 7ba7fdd655e1
@@ -5938,4 +5942,12 @@ location: src/lib/research-runtime.ts:741
 source_spec: `spec-dw-680-681-research-readonly-write-leaks.md`
 severity: low
 reason: DW-680/DW-681 closed the two paths their ledger entries name, but the same two shapes remain at sites this bundle did not name. `reconcileResearchProjects`' `completion.phase === "done"` branch calls the ungated `releaseResearchSlotAndConfirmGone` and `releaseExpiredResearchSlot` (src/lib/research-runtime.ts:733-740) and then `deleteResearchOutbox` (:741), and `drainResearchOutbox`'s own done-phase (src/lib/research-completion.ts:934) and `deleteRequested` (:971) branches call the same ungated helper — `clearResearchStaging` plus a raw `deleteFile`, so the staged bodies go with the outbox. The new reconcile case in `research-runtime.test.ts` drives that whole sweep under `YOPEDIA_READONLY=1` and proves the loop runs, but seeds only orphans, so nothing asserts what the done-phase branch does. Same reachability caveat DW-681 carries: `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses, so this is a direct-library-caller and mid-sweep-flip exposure ra
+status: open
+
+### DW-735: The partially-rolled-back re-template — the divergence flavour where `purpose.md` and `schema.md` name DIFFERENT Scenario Templates — is skipped by the new reconciler and reported by nothing.
+origin: spec-deferred 53117c53a8d6
+location: src/lib/wikis.ts (scenarioNamedByWikiArtifacts / reconcileWikiScenarioDrift)
+source_spec: `spec-dw-676-708-wiki-create-and-template-failure-truth.md`
+severity: low
+reason: `applyScenarioTemplate`'s failure tail carries `rollbackIncomplete` (DW-210) alongside `registryLanded` (DW-484): a restore that could not put every file back leaves one artifact on the new template and one on the old. `scenarioNamedByWikiArtifacts` answers null the moment its two witnesses disagree, and `reconcileWikiScenarioDrift` is deliberately SILENT when it does not fire — so that state is now detected by nobody, repaired by nobody and logged by nobody, while the switcher still carries whichever label the registry write left. The unanimity rule is correct as written (there is no unambiguous answer to re-derive from two contradicting files, and both artifacts are owner-editable so a guess would overwrite the wrong one), which is exactly why closing this needs its own decision — probably a distinct signal rather than a repair.
 status: open

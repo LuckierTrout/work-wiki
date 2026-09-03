@@ -75,6 +75,7 @@ import {
   isCreatableScenario,
   renderPurposeMarkdown,
   renderSchemaMarkdown,
+  scenarioNamedByArtifact,
   scenarioTemplate,
   type CreatableScenario,
   type EditableArtifactFile,
@@ -1182,6 +1183,15 @@ export async function getCurrentWiki(owner: string): Promise<WikiRecord | null> 
  * read-back that could not answer keeps the bytes without claiming anything
  * changed, because "do not destroy under uncertainty" and "assert a change" are
  * different claims and only the first is safe to make without evidence.
+ *
+ * THAT ONE FAILURE ALSO RESOLVES RATHER THAN THROWS (DW-676). A read-back that
+ * FOUND the record has proved the create landed: the registry names the Wiki,
+ * `currentId` points at it and its three artifacts are on disk, which is exactly
+ * what a successful create leaves behind. Answering the caller with the storage
+ * error made `POST /api/wikis` serve a 500 over a Wiki the whole app then
+ * resolved against — and sent the owner into a retry that minted a second one
+ * against {@link MAX_WIKIS}. The fault goes to the log; the record goes to the
+ * caller. The other two failure arms are unchanged and still re-throw unwrapped.
  */
 export async function createWiki(
   owner: string,
@@ -1257,12 +1267,16 @@ export async function createWiki(
       if (readBack === "absent") await discardCreatedWikiDirectory(owner, wiki.id);
       // The failure leaves as a VALUE, not a throw, so the tail below can bump
       // outside `wikis:<tenant>`. NOT RECONCILED on the way out: no repair
-      // write, no removal of the entry, and never a failed create reported as a
-      // success.
+      // write and no removal of the entry — the locked body leaves the disk
+      // exactly as the read-back found it, and the tail only decides what to
+      // TELL the caller about a state it has already read.
+      // The WHOLE record, not just its id: on the one arm where the read-back
+      // POSITIVELY found it, the tail answers WITH it, and the record the
+      // caller gets back has to be the one the registry actually stores.
       return {
         kind: "failed",
         error,
-        wikiId: wiki.id,
+        wiki,
         registryLanded: readBack === "named",
       };
     }
@@ -1279,8 +1293,29 @@ export async function createWiki(
     // registry names a new Wiki and `currentId` points at it.
     if (outcome.registryLanded) {
       await bumpRefreshSignal(
-        `a registry write that landed under the failed create of wiki "${outcome.wikiId}"`,
+        `a registry write that landed under the failed create of wiki "${outcome.wiki.id}"`,
       );
+      // …AND THE CREATE ANSWERS SUCCESS (DW-676). The read-back did not merely
+      // fail to rule the record out — it FOUND it: `wikis.json` names this Wiki,
+      // `currentId` points at it, all three artifacts are on disk and the
+      // refresh signal has moved. Every read the app makes next resolves against
+      // it. Reporting that as a failure made `POST /api/wikis` answer 500 over a
+      // Wiki that exists, so the switcher, the workbench heading and every
+      // artifact read showed a Wiki the owner was told was not created — and the
+      // owner's retry minted a SECOND one against `MAX_WIKIS`.
+      //
+      // The storage fault is not lost, it is RELOCATED: it goes to the operator
+      // log, where a fault on a write whose bytes landed belongs, rather than to
+      // the owner, who cannot act on it and would act wrongly if they tried.
+      //
+      // ONLY THIS ARM. `absent` proved the registry never moved and `unknown`
+      // proved nothing at all; both still re-throw below, unwrapped.
+      logger.warn(
+        "wikis",
+        `the storage fault under the create of wiki "${outcome.wiki.id}" is logged rather than served — its registry write landed, so the create answers with the stored record`,
+        outcome.error,
+      );
+      return outcome.wiki;
     }
     // The original diagnosis, unwrapped and unreplaced: compensation reports
     // what it did in the log, never in the error the caller receives.
@@ -1288,7 +1323,7 @@ export async function createWiki(
   }
 
   // Only reached when the locked body committed — the failure branch above
-  // re-throws, so a discarded create never moves the signal.
+  // either re-throws or returns, so a discarded create never moves the signal.
   await bumpRefreshSignal(`creating wiki "${outcome.wiki.id}"`);
   return outcome.wiki;
 }
@@ -1465,7 +1500,7 @@ async function registryNamesWiki(
     if (!registry.wikis.some((item) => item.id === wikiId)) return "absent";
     logger.warn(
       "wikis",
-      `the registry names wiki "${wikiId}" after a create that reported failure — its directory is kept rather than discarded, so the stored record still has its artifacts`,
+      `the registry names wiki "${wikiId}" after a create that reported failure — its directory is kept rather than discarded, so the stored record still has its artifacts, and the create is reported as SUCCEEDED because this read observed the stored record`,
     );
     return "named";
   } catch (error) {
@@ -1485,9 +1520,11 @@ async function registryNamesWiki(
  * shape exists so `bumpRefreshSignal` can sit OUTSIDE `wikis:<tenant>` (it takes
  * `DATA_VERSION_LOCK`, and `withFileLock` is not reentrant), which means the
  * failure fact has to leave the locked callback as a VALUE rather than as a
- * throw. `failed` re-throws `error` unwrapped, having first bumped IF AND ONLY
- * IF `registryLanded` — set from a read-back that POSITIVELY found the record,
- * never from one that merely failed to rule it out.
+ * throw. `failed` re-throws `error` unwrapped UNLESS `registryLanded` — set from
+ * a read-back that POSITIVELY found the record, never from one that merely
+ * failed to rule it out — in which case it bumps and RESOLVES WITH `wiki`
+ * instead (DW-676), which is why the arm carries the whole record and not just
+ * an id.
  *
  * WHAT `registryLanded` PROVES, EXACTLY: that `wikis.json` NOW names this call's
  * id, which for a freshly minted id means the write this call issued is the one
@@ -1503,12 +1540,19 @@ async function registryNamesWiki(
  * byte-identical to the one it already has. Keeping bytes and asserting a change
  * are different claims, and only the first is safe to make without evidence.
  *
+ * NOR DOES IT COVER EITHER OF THEM ON THE WAY OUT (DW-676). `registryLanded`
+ * now decides not only the bump but WHETHER THE CALL THROWS AT ALL, so the
+ * asymmetry above matters twice over: `absent` and `unknown` still re-throw
+ * `error` unwrapped, because neither observed the stored registry gain a Wiki
+ * and a create that answers success has to have one. Only the arm that read the
+ * record back resolves, and it resolves with that same record.
+ *
  * There is no `unknown` arm on the OUTCOME: unlike a re-template, a create has
  * no id to miss.
  */
 type CreateWikiOutcome =
   | { kind: "created"; wiki: WikiRecord }
-  | { kind: "failed"; error: unknown; wikiId: string; registryLanded: boolean };
+  | { kind: "failed"; error: unknown; wiki: WikiRecord; registryLanded: boolean };
 
 /**
  * What {@link applyScenarioTemplate}'s locked body hands back to its tail.
@@ -2648,6 +2692,187 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
   return withWikiLock(owner, async () =>
     sweepOrphans(owner, await readRegistry(owner), { scheduled: true }),
   );
+}
+
+/**
+ * The Scenario Template a Wiki's OWN ARTIFACTS name, or null when they name
+ * none — the read half of {@link reconcileWikiScenarioDrift}'s evidence.
+ *
+ * UNANIMITY OR NOTHING. Every artifact that IS present and DOES carry a
+ * readable label has to give the same answer; the first disagreement returns
+ * null and the Wiki is left alone. One witness is enough — a canonicalized
+ * `purpose.md` carries no template line at all
+ * ({@link import("./workspace-purpose").renderCanonicalPurposeMarkdown} emits
+ * none), so insisting on two would make the reconciler blind to exactly the
+ * Wikis an owner has already tidied.
+ *
+ * A MISSING FILE IS NOT A DISAGREEMENT, and neither is an unrecognised one:
+ * {@link readWikiArtifact} answers null for ENOENT, and
+ * {@link scenarioNamedByArtifact} answers null for bytes that name no template
+ * or name two. All three are "this file has nothing to say", which is a normal
+ * state for an owner-editable artifact, not a contradiction of the file that
+ * does.
+ *
+ * READ ERRORS OTHER THAN ENOENT THROW OUT OF HERE, deliberately: the caller
+ * catches per Wiki and skips it. Treating an unreadable `schema.md` as "no
+ * witness" would let `purpose.md` alone authorise a repair while the file that
+ * could have contradicted it was never read — and a one-sided witness is the
+ * one thing the unanimity rule exists to refuse.
+ *
+ * READ THROUGH THE AUTHORITY BOUNDARY ({@link readEffectiveWikiArtifact}), NOT
+ * THROUGH THE RAW BYTES, and the difference is only visible on an UNMARKED
+ * record — one whose `artifactAuthority` migration has not committed. There the
+ * `purpose.md` the app SERVES is {@link renderCanonicalPurposeMarkdown}
+ * projected from the legacy profile, and the stored file is a leftover nothing
+ * reads. Deciding a permanent relabel from those leftover bytes would be bad on
+ * its own; it is worse in context, because `POST /api/tasks/scan` runs
+ * `backfillWorkspaceProfiles()` — and so `canonicalizeWikiPurpose` — AFTER this
+ * pass in the SAME request, so the very bytes the witness came from are about
+ * to be overwritten by the projection.
+ *
+ * WHAT THAT BUYS, STATED PLAINLY: an unmarked Wiki with usable legacy guidance
+ * contributes NO `purpose.md` witness at all, because the canonical projection
+ * emits no template line. `schema.md` is never projected, so on such a Wiki it
+ * either decides alone or nothing does — which is the same one-witness rule
+ * every canonicalized Wiki already lives under, reached by a second route.
+ *
+ * The record is threaded in rather than looked up so the effective read takes no
+ * second `readRegistry`: the caller is holding the registry it was parsed from.
+ */
+async function scenarioNamedByWikiArtifacts(
+  owner: string,
+  wiki: WikiRecord,
+): Promise<CreatableScenario | null> {
+  let witness: CreatableScenario | null = null;
+  for (const file of WIKI_ARTIFACT_FILES) {
+    const content = await readEffectiveWikiArtifact(owner, wiki.id, file, wiki);
+    if (content === null) continue;
+    const named = scenarioNamedByArtifact(file, content);
+    if (named === null) continue;
+    if (witness !== null && witness !== named) return null;
+    witness = named;
+  }
+  return witness;
+}
+
+/**
+ * Repair registry `scenario` labels that this tenant's artifacts contradict.
+ * Returns how many records were rewritten (DW-676).
+ *
+ * THE DIVERGENCE THIS OWNS. {@link registryNamesScenario} DETECTS it and says
+ * so: when a re-template's `wikis.json` write lands and its artifact writes are
+ * then rolled back, the registry names the NEW Scenario Template while
+ * `purpose.md` and `schema.md` still describe the OLD one. Nothing reconciled
+ * that, so the Wiki switcher silently re-labelled itself on the next
+ * `DATA_VERSION_POLL_MS` poll and stayed wrong for the life of the Wiki. This is
+ * that helper's missing owner, not its replacement — the detection still runs
+ * inline where it can name the failure, and this runs on the scan where it can
+ * fix it.
+ *
+ * THE REGISTRY FOLLOWS THE ARTIFACTS, NEVER THE REVERSE, and the direction is
+ * the whole safety argument. Both artifacts are in
+ * {@link EDITABLE_ARTIFACT_FILES}, so re-seeding them from a registry label
+ * would overwrite bytes an owner may have authored by hand; rewriting one
+ * `scenario` string destroys nothing that cannot be re-derived. It is also the
+ * direction that is CORRECT under both known histories: after a rolled-back
+ * re-template the artifacts are the state the owner was told they were left in,
+ * and after DW-210's incomplete rollback they are what actually executes —
+ * `schema.md` is the file `loadPageConventions()` feeds to every ingest, chat
+ * and lint prompt, so a label that matches the bytes is true either way. Being
+ * unable to destroy work is what makes it safe to run unattended on a timer.
+ *
+ * SILENT WHEN IT DOES NOT FIRE. "No witness" and "the witnesses disagree" are
+ * ordinary states of an owner-editable file — a hand-edited `purpose.md` reaches
+ * one of them permanently — so warning on them would put a recurring line in the
+ * operator log of a perfectly healthy deployment on every tick, which is the
+ * failure the sweep's warn-once machinery exists to undo. Only a REPAIR speaks.
+ *
+ * SCOPE, and what it deliberately leaves alone: the workspace profile's own
+ * `scenario` field. Profile-versus-artifact drift is a recorded design decision
+ * (see {@link setCurrentWiki}'s docblock) with an owner of its own, and folding
+ * it in here would make one pass answer two different questions. Not one
+ * artifact byte is written by this function.
+ *
+ * BOUNDED PER PASS by {@link rotatingSweepWindow} over the registry's ids, the
+ * same bound {@link sweepOrphans} takes over directory names — at most
+ * {@link ORPHAN_SWEEP_CANDIDATE_CAP} Wikis are read per pass, rotating once per
+ * UTC day, so a tenant at {@link MAX_WIKIS} is fully examined within
+ * `ceil(n / cap)` days rather than paying 200 artifact reads under
+ * `wikis:<tenant>` every tick.
+ *
+ * ONE WRITE AND ONE BUMP. `wikis.json` is rewritten at most once per pass
+ * however many records were repaired, and the bump is outside the lock
+ * ({@link bumpRefreshSignal} takes `DATA_VERSION_LOCK` and `withFileLock` is not
+ * reentrant). It bumps AT ALL because the switcher's label is precisely what
+ * moved: another open tab would otherwise keep rendering the old Scenario
+ * Template name until its owner reloaded.
+ */
+export async function reconcileWikiScenarioDrift(owner: string): Promise<number> {
+  // Deployment read-only (DW-676), BEFORE the lock — its own sentence, since
+  // this repairs a label rather than reclaiming a directory. Like the sweep it
+  // is reached from `POST /api/tasks/scan`, which refuses whole first, so the
+  // gate here is what a DIRECT library caller meets; placing it before the lock
+  // keeps a refusal from queueing behind every in-flight operation for a tenant
+  // it was never going to write to.
+  assertWritable(READ_ONLY_REFUSAL.wikiScenarioReconcile);
+  const repairs = await withWikiLock(owner, async () => {
+    const registry = await readRegistry(owner);
+    const repaired: {
+      id: string;
+      from: CreatableScenario;
+      to: CreatableScenario;
+    }[] = [];
+    for (const id of rotatingSweepWindow(
+      registry.wikis.map((wiki) => wiki.id),
+      Date.now(),
+    )) {
+      const wiki = registry.wikis.find((item) => item.id === id);
+      // `rotatingSweepWindow` is pure over the ids it was handed, so this
+      // cannot miss today; the guard is what keeps the loop honest if the
+      // window is ever fed from a second source.
+      if (!wiki) continue;
+      let named: CreatableScenario | null;
+      try {
+        named = await scenarioNamedByWikiArtifacts(owner, wiki);
+      } catch {
+        // Silently, and per Wiki: one unreadable artifact must not abandon the
+        // rest of the window, and it is not evidence of drift — it is evidence
+        // of nothing at all. The next pass reads it again.
+        continue;
+      }
+      // The two ordinary answers, both no-ops: nothing to go on, or the
+      // artifacts already agree with the label.
+      if (named === null || named === wiki.scenario) continue;
+      repaired.push({ id, from: wiki.scenario, to: named });
+      // The ONLY mutation this function makes anywhere. `updatedAt` is left
+      // alone on purpose: nothing about the Wiki changed, the record is being
+      // corrected to describe what it always was.
+      wiki.scenario = named;
+    }
+    // At most once, and only when something actually moved — an untouched
+    // registry must not be rewritten, or every scan tick would churn
+    // `wikis.json` for a healthy tenant.
+    if (repaired.length > 0) await writeRegistry(owner, registry);
+    return repaired;
+  });
+
+  for (const repair of repairs) {
+    // WARN, with both labels: the switcher was showing the wrong one, and an
+    // operator reading this needs to know which way the repair went to tell it
+    // from a template the owner applied on purpose.
+    logger.warn(
+      "wikis",
+      `the registry named the ${SCENARIO_LABELS[repair.from]} Scenario Template for wiki "${repair.id}" while its artifacts name ${SCENARIO_LABELS[repair.to]} — relabelled the record to ${SCENARIO_LABELS[repair.to]}, leaving every artifact byte untouched`,
+    );
+  }
+  if (repairs.length > 0) {
+    await bumpRefreshSignal(
+      `reconciling the Scenario Template label of ${repairs.length} wiki record${
+        repairs.length === 1 ? "" : "s"
+      }`,
+    );
+  }
+  return repairs.length;
 }
 
 /**

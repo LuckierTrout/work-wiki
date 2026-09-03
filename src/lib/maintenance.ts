@@ -376,6 +376,51 @@ export async function sweepOrphanWikiDirs(): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Wiki scenario-drift reconcile — make the registry label match the artifacts
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `reconcileWikiScenarioDrift` for the maintenance
+ * scan (DW-676). Returns how many registry records were relabelled to match
+ * their own `purpose.md`/`schema.md` — 0 on error, and 0 when no owner handle
+ * is configured, since a deployment with no owner has no tenant to reconcile.
+ *
+ * WHAT IT CLOSES: a re-template whose `wikis.json` write landed and whose
+ * artifact writes were then rolled back leaves the registry naming one Scenario
+ * Template and the artifacts describing another. `registryNamesScenario`
+ * detects that divergence inline and reconciles nothing, so the Wiki switcher
+ * re-labels itself on the next poll and stays wrong. This scan is that repair's
+ * only trigger of any kind: a deployment that never scans never reconciles.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * {@link sweepOrphanWikiDirs}: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this writes
+ * `wikis.json`. It sits beside the other byte-touching steps as its own export
+ * the route calls.
+ *
+ * `await import("./wikis")` keeps the module graph loose, matching the sweep
+ * above: `wikis.ts` pulls in the whole scenario-template and workspace-profile
+ * subtree, and nothing else in this module needs it.
+ *
+ * SCOPE is the single configured owner's tenant, exactly as the sweep's is, and
+ * the same residual applies verbatim — see the SCOPE docblock on
+ * {@link sweepOrphanWikiDirs} for the door stack that makes it safe and for the
+ * pre-gate tenants it does not reach. The cost of missing one is strictly
+ * smaller here: a stale label, not an unreclaimed directory.
+ */
+export async function reconcileWikiScenarios(): Promise<number> {
+  try {
+    const owner = getOwnerHandle();
+    if (!owner) return 0;
+    const { reconcileWikiScenarioDrift } = await import("./wikis");
+    return await reconcileWikiScenarioDrift(owner);
+  } catch (err) {
+    logger.error("maintenance", "wiki scenario-drift reconcile failed:", err);
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Workspace Purpose backfill — relocate the retired tenant-global profile
 // ---------------------------------------------------------------------------
 

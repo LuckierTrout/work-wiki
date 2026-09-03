@@ -15,11 +15,18 @@ import { DATA_VERSION_KEY, readDataVersion } from "../data-version";
 import { ClientInputError } from "../errors";
 import { _resetLocks, withFileLock } from "../lock";
 import { logger } from "../logger";
+import { readEnginePageConventions } from "../schema-source";
 import { _resetStorage, getStorage } from "../storage";
+import {
+  renderPurposeMarkdown,
+  renderSchemaMarkdown,
+  scenarioTemplate,
+} from "../wiki-scenarios";
 import { tenantForOwner } from "../wiki";
 import { wikiDirPath, wikiLockKey } from "../wiki-paths";
 import { buildWorkspaceGuidance } from "../workspace-guidance";
 import { getWorkspaceProfile } from "../workspace-profile";
+import { renderCanonicalPurposeMarkdown } from "../workspace-purpose";
 import { WORKSPACE_SCENARIO_TEMPLATES } from "../workspace-profile-schema";
 import {
   MAX_WIKIS,
@@ -36,7 +43,9 @@ import {
   parseCreateWikiInput,
   parseRenameWikiInput,
   parseScenarioInput,
+  readEffectiveWikiArtifact,
   readWikiArtifact,
+  reconcileWikiScenarioDrift,
   renameWiki,
   setCurrentWiki,
   sweepOrphanWikiDirectories,
@@ -2982,7 +2991,7 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
     return minted[0];
   }
 
-  it("keeps the new wiki when the registry write landed before reporting failure (DW-675)", async () => {
+  it("reports the create as SUCCEEDED when the registry write landed before reporting failure (DW-675, DW-676)", async () => {
     // THE COMPENSATION'S UNVERIFIED BELIEF. The discard is a RECURSIVE delete of
     // the whole new directory, justified by "no registry entry names it" — which
     // was never read. `writeFile` is specified atomic about the FILE, not about
@@ -2997,13 +3006,17 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
 
     const spy = landRegistryWriteThenThrow();
     let warned: unknown[][] = [];
+    let created: WikiRecord | undefined;
     try {
       warned = await warnsDuring(async () => {
-        // The ORIGINAL diagnosis, unwrapped: the read-back neither replaces nor
-        // wraps what actually broke.
-        await expect(
-          createWiki(OWNER, { name: "Doomed", scenario: "reading" }),
-        ).rejects.toThrow(FAULT);
+        // THE FAULT IS NOT SERVED (DW-676). The read-back FOUND the record, so
+        // the create has already proved it landed: `wikis.json` names the wiki,
+        // `currentId` points at it, and all three artifacts are on disk. That is
+        // a successful create, and answering it with the storage error made
+        // `POST /api/wikis` 500 over a wiki the whole app then resolved against
+        // — sending the owner into a retry that mints a SECOND one against
+        // MAX_WIKIS.
+        created = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
       });
     } finally {
       spy.mockRestore();
@@ -3012,6 +3025,12 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
     // The registry really does name it, and `currentId` really does point at it
     // — read from the store, not inferred from the mock having been called.
     const minted = await mintedWikiId(existing.id);
+    // …and it is THAT record the caller was handed, not a fresh object that
+    // merely looks like one: the id has to be the one the registry stores, or
+    // every read the caller makes next resolves against a different wiki.
+    expect(created?.id).toBe(minted);
+    expect(created?.name).toBe("Doomed");
+    expect(created?.scenario).toBe("reading");
     expect((await getWikiRegistry(OWNER)).currentId).toBe(minted);
     // …so its directory and ALL THREE seeded artifacts are still on disk.
     expect(await wikisRootEntries()).toEqual([existing.id, minted].sort());
@@ -3028,6 +3047,20 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
           String(message).includes("after a create that reported failure"),
       ),
     ).toHaveLength(1);
+    // …and the STORAGE FAULT is logged rather than served — relocated, not lost.
+    // The owner cannot act on it and would act wrongly if they tried; an
+    // operator can.
+    const relocated = warned.filter(
+      ([scope, message]) =>
+        scope === "wikis" &&
+        String(message).includes(`the storage fault under the create of wiki "${minted}"`) &&
+        String(message).includes("logged rather than served"),
+    );
+    expect(relocated).toHaveLength(1);
+    // The original diagnosis itself rides along, unwrapped: a warn that named
+    // the id but dropped the cause would leave the operator with no fault to
+    // chase.
+    expect(String((relocated[0][2] as Error)?.message)).toContain(FAULT);
     // …and the compensation stayed silent — no "half-created" line, because the
     // destructive branch was never entered.
     expect(warned.filter(([, message]) => String(message).includes("half-created"))).toEqual(
@@ -4035,5 +4068,549 @@ describe("a half-finished create or re-template leaves no wreckage (DW-20, DW-14
     ).toBe(true);
     // The registry never moved, so the wiki is still on its old template.
     expect((await getCurrentWiki(OWNER))?.scenario).toBe("business");
+  });
+});
+
+/**
+ * DW-676 — the registry/artifact scenario divergence finally gets an owner.
+ *
+ * `registryNamesScenario` DETECTS the state a failed re-template leaves when its
+ * `wikis.json` write lands and its artifact writes are rolled back: the registry
+ * names the NEW Scenario Template while `purpose.md` and `schema.md` still
+ * describe the OLD one. Nothing reconciled it, so the Wiki switcher silently
+ * re-labelled itself on the next poll and stayed wrong for the life of the Wiki.
+ *
+ * Every row here asserts BYTES — which registry field moved, whether
+ * `wikis.json` was rewritten at all, whether an artifact changed — because the
+ * repair's whole licence is that it can only ever rewrite one string, and a
+ * count alone would be satisfied by a pass that had re-seeded the files.
+ */
+describe("reconcileWikiScenarioDrift — registry labels follow the artifacts (DW-676)", () => {
+  /** The stored registry bytes, so "not rewritten" can mean bytes and not a parse. */
+  function registryBytes(): Promise<string> {
+    return fs.readFile(abs(...wikiRegistryPath(OWNER).split("/")), "utf8");
+  }
+
+  function artifactPath(wikiId: string, file: "purpose.md" | "schema.md"): string {
+    return abs(...wikiArtifactPath(OWNER, wikiId, file).split("/"));
+  }
+
+  /**
+   * Overwrite one artifact with a HAND-WRITTEN copy of the anchor the renderer
+   * emits — `Scenario Template: <Label> — ` on a `purpose.md` line,
+   * `# Schema — <Label>` as a whole `schema.md` line.
+   *
+   * WHAT THIS PINS IS PARSER DRIFT, IN ONE DIRECTION ONLY: a witness derivation
+   * that stopped reading these anchors fails the rows below. It CANNOT see the
+   * other direction — a reword of `renderPurposeMarkdown` or
+   * `renderSchemaMarkdown` would leave every fixture here matching a string the
+   * app no longer writes, so the derivation would answer null for every real
+   * wiki forever while this suite stayed green and the reconciler, which is
+   * deliberately silent when it does not fire, said nothing. The round-trip row
+   * below is what covers that direction, by writing the renderers' actual
+   * output.
+   */
+  async function nameScenarioIn(
+    wikiId: string,
+    file: "purpose.md" | "schema.md",
+    label: string,
+  ): Promise<void> {
+    const body =
+      file === "purpose.md"
+        ? `# Doomed\n\nScenario Template: ${label} — a description.\n\n## Purpose\n\nBody.\n`
+        : `# Schema — ${label}\n\nSeeded from the ${label} Scenario Template.\n\n## Page conventions\n\nBody.\n`;
+    await fs.writeFile(artifactPath(wikiId, file), body, "utf8");
+  }
+
+  async function warnsDuring(run: () => Promise<void>): Promise<unknown[][]> {
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      await run();
+      return warn.mock.calls.map((call) => [...call]);
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  /** How many times `wikis.json` was written while `run` ran. */
+  async function registryWritesDuring(run: () => Promise<void>): Promise<number> {
+    const storage = getStorage();
+    const write = storage.writeFile.bind(storage);
+    let writes = 0;
+    const spy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (target: string, content: string) => {
+        if (target.endsWith("wikis.json")) writes += 1;
+        return write(target, content);
+      });
+    try {
+      await run();
+      return writes;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  async function storedScenario(wikiId: string): Promise<string | undefined> {
+    return (await getWikiRegistry(OWNER)).wikis.find((item) => item.id === wikiId)
+      ?.scenario;
+  }
+
+  it("leaves a healthy tenant completely alone", async () => {
+    // Two wikis on two different templates, both seeded by the real create — so
+    // the artifacts say exactly what the renderer emits and the registry agrees.
+    const first = await createWiki(OWNER, { name: "Reading list", scenario: "reading" });
+    const second = await createWiki(OWNER, { name: "Q3", scenario: "business" });
+    const bytesBefore = await registryBytes();
+    const versionBefore = await readDataVersion();
+
+    let repaired = 0;
+    let warned: unknown[][] = [];
+    const writes = await registryWritesDuring(async () => {
+      warned = await warnsDuring(async () => {
+        repaired = await reconcileWikiScenarioDrift(OWNER);
+      });
+    });
+
+    expect(repaired).toBe(0);
+    // NOT REWRITTEN AT ALL, which the count alone does not say: a pass that
+    // re-serialised an unchanged registry would churn `wikis.json` on every scan
+    // tick for the life of a perfectly healthy deployment.
+    expect(writes).toBe(0);
+    expect(await registryBytes()).toBe(bytesBefore);
+    // …and no bump, so no open tab is told to refetch a registry that did not
+    // move.
+    expect(await readDataVersion()).toBe(versionBefore);
+    expect(warned.filter(([, message]) => String(message).includes("Scenario Template"))).toEqual(
+      [],
+    );
+    expect(await storedScenario(first.id)).toBe("reading");
+    expect(await storedScenario(second.id)).toBe("business");
+  });
+
+  it("relabels the record when BOTH artifacts name a different template", async () => {
+    // THE DW-676 STATE, planted exactly as a rolled-back re-template leaves it:
+    // the registry moved to the new template and the restored artifacts describe
+    // the old one.
+    const wiki = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
+    const control = await createWiki(OWNER, { name: "Healthy", scenario: "business" });
+    await nameScenarioIn(wiki.id, "purpose.md", "Business");
+    await nameScenarioIn(wiki.id, "schema.md", "Business");
+    const artifactsBefore = await Promise.all([
+      fs.readFile(artifactPath(wiki.id, "purpose.md"), "utf8"),
+      fs.readFile(artifactPath(wiki.id, "schema.md"), "utf8"),
+    ]);
+    const profileBefore = (await getWorkspaceProfile(OWNER, wiki.id)).scenario;
+    const recordBefore = (await getWikiRegistry(OWNER)).wikis.find(
+      (item) => item.id === wiki.id,
+    );
+    const currentBefore = (await getWikiRegistry(OWNER)).currentId;
+    const versionBefore = await readDataVersion();
+
+    let repaired = 0;
+    let warned: unknown[][] = [];
+    const writes = await registryWritesDuring(async () => {
+      warned = await warnsDuring(async () => {
+        repaired = await reconcileWikiScenarioDrift(OWNER);
+      });
+    });
+
+    expect(repaired).toBe(1);
+    expect(await storedScenario(wiki.id)).toBe("business");
+    // ONE FIELD, and the rest of the record left exactly as it was — which the
+    // code makes an explicit decision (`updatedAt` in particular is deliberately
+    // NOT touched: nothing about the wiki changed, the record is being corrected
+    // to describe what it always was). Nor does `currentId` move: a relabel is
+    // not a switch, and moving it would change which `schema.md` every ingest,
+    // chat and lint prompt runs on.
+    const recordAfter = (await getWikiRegistry(OWNER)).wikis.find(
+      (item) => item.id === wiki.id,
+    );
+    expect({ ...recordAfter, scenario: recordBefore?.scenario }).toEqual(recordBefore);
+    expect((await getWikiRegistry(OWNER)).currentId).toBe(currentBefore);
+    // ONE registry write for the whole pass, and ONE bump — the switcher's label
+    // is what moved, so another open tab has to be told, but exactly once.
+    expect(writes).toBe(1);
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+    // NOT ONE ARTIFACT BYTE. The direction of the repair is the entire safety
+    // argument: both files are owner-editable, so a reconciler that re-seeded
+    // them from the registry label would destroy hand-authored work.
+    expect(await Promise.all([
+      fs.readFile(artifactPath(wiki.id, "purpose.md"), "utf8"),
+      fs.readFile(artifactPath(wiki.id, "schema.md"), "utf8"),
+    ])).toEqual(artifactsBefore);
+    // …and the workspace profile is out of scope: profile-versus-artifact drift
+    // is a separately recorded design decision with an owner of its own.
+    expect((await getWorkspaceProfile(OWNER, wiki.id)).scenario).toBe(profileBefore);
+    // The warn names the id and BOTH labels — an operator reading it has to be
+    // able to tell a repair from a template the owner applied on purpose.
+    const repairWarns = warned.filter(
+      ([scope, message]) =>
+        scope === "wikis" &&
+        String(message).includes(`wiki "${wiki.id}"`) &&
+        String(message).includes("Reading") &&
+        String(message).includes("Business"),
+    );
+    expect(repairWarns).toHaveLength(1);
+    // The healthy wiki beside it is the blast-radius control.
+    expect(await storedScenario(control.id)).toBe("business");
+  });
+
+  it("derives its witnesses from the RENDERERS' own output, not from a fixture", async () => {
+    // THE OTHER DIRECTION OF ANCHOR DRIFT, and the only row that can see it.
+    // Every other fixture in this suite hand-writes `Scenario Template: <Label>
+    // — ` and `# Schema — <Label>`, so a reword of `renderPurposeMarkdown` or
+    // `renderSchemaMarkdown` would leave the derivation reading a string the app
+    // stopped writing: null for every wiki, forever, with this file green and
+    // the reconciler — which says nothing when it does not fire — silently dead.
+    // Here the bytes come from the renderers themselves, so the round trip
+    // render → derive is what is asserted.
+    const wiki = await createWiki(OWNER, { name: "Round trip", scenario: "reading" });
+    const template = scenarioTemplate("business");
+    await fs.writeFile(
+      artifactPath(wiki.id, "purpose.md"),
+      renderPurposeMarkdown("Round trip", template),
+      "utf8",
+    );
+    await fs.writeFile(
+      artifactPath(wiki.id, "schema.md"),
+      // The engine conventions the seeder composes in, read the same way it
+      // reads them — a `schema.md` missing them is not the file the app writes.
+      renderSchemaMarkdown(template, await readEnginePageConventions()),
+      "utf8",
+    );
+    const versionBefore = await readDataVersion();
+
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(await storedScenario(wiki.id)).toBe("business");
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+  });
+
+  it("consults the SERVED purpose.md, not stored bytes the app never reads", async () => {
+    // AN UNMARKED RECORD IS THE ONE PLACE THE TWO DIFFER. Until the
+    // `artifactAuthority` migration commits, what the app serves for
+    // `purpose.md` is `renderCanonicalPurposeMarkdown` projected from the legacy
+    // profile, and the stored file is a leftover nothing reads. Worse, `POST
+    // /api/tasks/scan` runs `backfillWorkspaceProfiles()` AFTER this pass in the
+    // same request — so a witness taken from those bytes would decide a
+    // permanent relabel from a file the very same request is about to overwrite.
+    const wiki = await createWiki(OWNER, { name: "Legacy", scenario: "reading" });
+    const registryFile = abs(...wikiRegistryPath(OWNER).split("/"));
+    const parsed = JSON.parse(await fs.readFile(registryFile, "utf8")) as {
+      wikis: Record<string, unknown>[];
+    };
+    for (const item of parsed.wikis) delete item.artifactAuthority;
+    await fs.writeFile(registryFile, JSON.stringify(parsed), "utf8");
+    // The stored bytes name Business; `schema.md` is gone, so those bytes are
+    // the only thing that COULD be a witness.
+    await nameScenarioIn(wiki.id, "purpose.md", "Business");
+    await fs.rm(artifactPath(wiki.id, "schema.md"));
+
+    // THE PREMISE, asserted rather than assumed: the two reads really do
+    // disagree here, or this row would pass against a pass that read either one.
+    expect(await readWikiArtifact(OWNER, wiki.id, "purpose.md")).toContain(
+      "Scenario Template: Business — ",
+    );
+    expect(await readEffectiveWikiArtifact(OWNER, wiki.id, "purpose.md")).not.toContain(
+      "Scenario Template:",
+    );
+
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    expect(await storedScenario(wiki.id)).toBe("reading");
+
+    // …AND THE CONTROL: remove the legacy evidence and the projection stops
+    // applying, so the same stored bytes become the served ones and the same
+    // drift repairs. Nothing else about the wiki changed, so the projection is
+    // provably what suppressed the repair above.
+    await fs.rm(
+      abs("tenants", TENANT, "wikis", wiki.id, "workspace-profile.json"),
+    );
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(await storedScenario(wiki.id)).toBe("business");
+  });
+
+  it("reads a CRLF schema.md, which an owner edit stores verbatim", async () => {
+    // `schema.md` is in `EDITABLE_ARTIFACT_FILES` and `writeWikiArtifact` stores
+    // the submitted bytes as they arrive, so a save from a Windows editor or a
+    // paste through a form that normalises line endings really does land CRLF
+    // here. The heading anchor is an EXACT line comparison, so without the `\r`
+    // strip such a file would silently stop being a witness.
+    const wiki = await createWiki(OWNER, { name: "CRLF", scenario: "reading" });
+    // `purpose.md` removed so `schema.md` is the sole witness — otherwise the
+    // seeded Reading line would contradict it and the wiki would be skipped for
+    // a reason that has nothing to do with line endings.
+    await fs.rm(artifactPath(wiki.id, "purpose.md"));
+    await fs.writeFile(
+      artifactPath(wiki.id, "schema.md"),
+      "# Schema — Business\r\n\r\n## Page conventions\r\n\r\nBody.\r\n",
+      "utf8",
+    );
+
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(await storedScenario(wiki.id)).toBe("business");
+  });
+
+  it("skips a wiki whose two artifacts disagree, silently", async () => {
+    // AN OWNER-EDITED ARTIFACT IS A NORMAL STATE, not an anomaly. `purpose.md`
+    // and `schema.md` are both in `EDITABLE_ARTIFACT_FILES`, so a hand-edit that
+    // leaves the two naming different templates is something this pass will meet
+    // on every tick for the life of the wiki — repairing on it would pick a
+    // winner nobody chose, and warning on it would put a permanent recurring
+    // line in the operator log of a healthy deployment.
+    const wiki = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
+    // NEITHER label is the stored one, deliberately. If one of them were, a
+    // reconciler that simply took the LAST witness it read would answer "no
+    // change" here for the wrong reason and this row would pass vacuously —
+    // what is being pinned is that a contradiction is refused, not that one
+    // particular file happens to agree with the registry.
+    await nameScenarioIn(wiki.id, "purpose.md", "Business");
+    await nameScenarioIn(wiki.id, "schema.md", "Research");
+    const bytesBefore = await registryBytes();
+    const versionBefore = await readDataVersion();
+
+    let repaired = 0;
+    let warned: unknown[][] = [];
+    const writes = await registryWritesDuring(async () => {
+      warned = await warnsDuring(async () => {
+        repaired = await reconcileWikiScenarioDrift(OWNER);
+      });
+    });
+
+    expect(repaired).toBe(0);
+    expect(writes).toBe(0);
+    expect(await registryBytes()).toBe(bytesBefore);
+    expect(await readDataVersion()).toBe(versionBefore);
+    expect(warned).toEqual([]);
+  });
+
+  it("repairs on ONE witness when the other artifact names nothing", async () => {
+    // A canonicalized `purpose.md` carries NO template line at all —
+    // `renderCanonicalPurposeMarkdown` emits none — so insisting on two
+    // witnesses would make the pass blind to exactly the wikis an owner has
+    // already tidied. "Nothing to say" is not a contradiction of the file that
+    // does have something to say.
+    const wiki = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
+    await fs.writeFile(
+      artifactPath(wiki.id, "purpose.md"),
+      renderCanonicalPurposeMarkdown("Doomed", await getWorkspaceProfile(OWNER, wiki.id)),
+      "utf8",
+    );
+    // The premise, asserted rather than assumed: if the canonical render ever
+    // grows a template line this row stops testing the one-witness case.
+    expect(await fs.readFile(artifactPath(wiki.id, "purpose.md"), "utf8")).not.toContain(
+      "Scenario Template:",
+    );
+    await nameScenarioIn(wiki.id, "schema.md", "Business");
+    const versionBefore = await readDataVersion();
+
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(await storedScenario(wiki.id)).toBe("business");
+    expect(await readDataVersion()).toBe(versionBefore + 1);
+  });
+
+  it("treats a missing or unreadable artifact as no evidence at all", async () => {
+    const missing = await createWiki(OWNER, { name: "Gone", scenario: "reading" });
+    await fs.rm(artifactPath(missing.id, "purpose.md"));
+    await fs.rm(artifactPath(missing.id, "schema.md"));
+    const bytesBefore = await registryBytes();
+    const versionBefore = await readDataVersion();
+
+    // A MISSING FILE IS NOT EVIDENCE. `readWikiArtifact` answers null for
+    // ENOENT, and null is "this file has nothing to say" — not "the registry is
+    // wrong". Repairing on it would relabel a wiki from no evidence whatsoever.
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    expect(await registryBytes()).toBe(bytesBefore);
+    expect(await readDataVersion()).toBe(versionBefore);
+
+    // AND UNREADABLE IS THE SAME ANSWER, one step further out — but the pass
+    // must not ABORT on it: the throw is caught per wiki, so the rest of the
+    // window is still examined.
+    const others = [
+      await createWiki(OWNER, { name: "A", scenario: "reading" }),
+      await createWiki(OWNER, { name: "B", scenario: "reading" }),
+    ];
+    for (const wiki of others) {
+      await nameScenarioIn(wiki.id, "purpose.md", "Research");
+      await nameScenarioIn(wiki.id, "schema.md", "Research");
+    }
+    await nameScenarioIn(missing.id, "purpose.md", "Business");
+    await nameScenarioIn(missing.id, "schema.md", "Business");
+    // THE BLOCKED WIKI IS THE ONE THE PASS REACHES FIRST. `rotatingSweepWindow`
+    // sorts by code unit, so the smallest id leads the window — which is what
+    // makes "the rest of the window is still examined" a claim this row can
+    // actually fail on. Picked from the store rather than assumed, since the ids
+    // are minted UUIDs.
+    const blocked = [missing.id, ...others.map((wiki) => wiki.id)].sort((a, b) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    )[0];
+    const stillDrifted = [missing.id, ...others.map((wiki) => wiki.id)].filter(
+      (id) => id !== blocked,
+    );
+    const storage = getStorage();
+    const read = storage.readFile.bind(storage);
+    const spy = vi.spyOn(storage, "readFile").mockImplementation(async (target: string) => {
+      if (target.includes(blocked)) throw new Error("the artifact store is unavailable");
+      return read(target);
+    });
+    try {
+      expect(await reconcileWikiScenarioDrift(OWNER)).toBe(stillDrifted.length);
+    } finally {
+      spy.mockRestore();
+    }
+    // The unreadable one is untouched; every wiki behind it in the window was
+    // still examined and repaired.
+    expect(await storedScenario(blocked)).toBe("reading");
+    for (const id of stillDrifted) {
+      expect(await storedScenario(id)).not.toBe("reading");
+    }
+  });
+
+  it("reads only the renderer's own anchors, and refuses an ambiguous file", async () => {
+    // A PROSE MENTION IS NOT A DECLARATION. The witness is derived from the
+    // exact line `renderPurposeMarkdown` emits — `Scenario Template: <Label> — `
+    // — because both artifacts are owner-editable and an owner writing about a
+    // template in a paragraph has not relabelled their wiki. A fuzzy match here
+    // would relabel a record from a sentence.
+    const prose = await createWiki(OWNER, { name: "Notes", scenario: "reading" });
+    await fs.writeFile(
+      artifactPath(prose.id, "purpose.md"),
+      "# Notes\n\nThis wiki replaced our Business workspace last quarter.\n",
+      "utf8",
+    );
+    await fs.rm(artifactPath(prose.id, "schema.md"));
+
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    expect(await storedScenario(prose.id)).toBe("reading");
+
+    // AND ONE FILE NAMING TWO TEMPLATES IS NO WITNESS EITHER — an owner
+    // mid-edit, a half-applied paste. The repair's whole licence to write is
+    // that the bytes are unambiguous, so a file that answers two ways answers
+    // none. Picking the first would relabel from a coin toss.
+    await fs.writeFile(
+      artifactPath(prose.id, "purpose.md"),
+      [
+        "# Notes",
+        "",
+        "Scenario Template: Business — a description.",
+        "",
+        "Scenario Template: Research — a description.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    expect(await storedScenario(prose.id)).toBe("reading");
+
+    // …and the same file with ONE of them removed does repair, so neither
+    // assertion above is passing against a witness derivation that simply never
+    // fires.
+    await fs.writeFile(
+      artifactPath(prose.id, "purpose.md"),
+      "# Notes\n\nScenario Template: Business — a description.\n",
+      "utf8",
+    );
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(await storedScenario(prose.id)).toBe("business");
+
+    // THE SCHEMA ANCHOR IS A WHOLE LINE, not a mention anywhere in the file. A
+    // rendered `schema.md` is long and full of prose, and matching loosely turns
+    // a file that declares one template in its heading into two witnesses that
+    // contradict each other — so the wiki is skipped for a divergence that is
+    // not there, which is a silent failure to repair rather than a loud one.
+    const schemaOnly = await createWiki(OWNER, {
+      name: "Schema only",
+      scenario: "reading",
+    });
+    await fs.rm(artifactPath(schemaOnly.id, "purpose.md"));
+    await fs.writeFile(
+      artifactPath(schemaOnly.id, "schema.md"),
+      "# Schema — Business\n\nMigrated from our Research notes.\n\n## Page conventions\n\nBody.\n",
+      "utf8",
+    );
+
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(await storedScenario(schemaOnly.id)).toBe("business");
+  });
+
+  it("bounds each pass by the sweep window and covers every wiki across UTC days", async () => {
+    // ONE MORE WIKI THAN THE CAP, so the rotation is actually exercised: a pass
+    // that walked the whole registry would repair all 26 on day one and this row
+    // would pass for the wrong reason, which the day-one assertion below rules
+    // out. `MAX_WIKIS` is 100, so 26 is a state a tenant can really reach.
+    //
+    // PLANTED rather than driven through `createWiki`, which every other row in
+    // this suite uses: 26 real creates cost four writes, two lock acquisitions
+    // and a `dataVersion` bump apiece, and none of that is what this row
+    // asserts — it made the row the slowest in the file and flaky against the
+    // 5s default timeout under a full parallel run. What the pass actually
+    // reads is `wikis.json` and two artifacts per wiki, and those are exactly
+    // the bytes written here, through the same `nameScenarioIn` helper and the
+    // same `wikiRegistryPath` the rest of the suite addresses through.
+    const total = ORPHAN_SWEEP_CANDIDATE_CAP + 1;
+    const stamp = new Date().toISOString();
+    const planted = Array.from({ length: total }, (_, index) => ({
+      id: crypto.randomUUID(),
+      name: `Wiki ${index}`,
+      scenario: "reading" as const,
+      createdAt: stamp,
+      updatedAt: stamp,
+    }));
+    const ids = planted.map((wiki) => wiki.id);
+    for (const wiki of planted) {
+      await fs.mkdir(path.dirname(artifactPath(wiki.id, "purpose.md")), {
+        recursive: true,
+      });
+      await nameScenarioIn(wiki.id, "purpose.md", "Business");
+      await nameScenarioIn(wiki.id, "schema.md", "Business");
+    }
+    const registryFile = abs(...wikiRegistryPath(OWNER).split("/"));
+    await fs.mkdir(path.dirname(registryFile), { recursive: true });
+    await fs.writeFile(
+      registryFile,
+      JSON.stringify({ version: 1, wikis: planted, currentId: ids[0] }),
+      "utf8",
+    );
+
+    // The window is `(day * cap) % n`, so two CONSECUTIVE UTC days is
+    // `ceil(26 / 25)` — the bound the acceptance criterion states.
+    const day = 20_000;
+    const now = vi.spyOn(Date, "now");
+    const versionBefore = await readDataVersion();
+    let repaired = 0;
+    let first = 0;
+    let firstWrites = 0;
+    let versionAfterFirst = 0;
+    try {
+      now.mockReturnValue(day * ORPHAN_SWEEP_ROTATION_MS);
+      firstWrites = await registryWritesDuring(async () => {
+        first = await reconcileWikiScenarioDrift(OWNER);
+      });
+      // Read between the two passes: the second one bumps as well, so a reading
+      // taken after both would say +2 and prove nothing about either.
+      versionAfterFirst = await readDataVersion();
+      // Exactly the cap, never the whole registry: the pass runs under
+      // `wikis:<tenant>` and reads two artifacts per wiki, so an unbounded walk
+      // would hold the tenant lock for 200 reads on a full tenant.
+      expect(first).toBe(ORPHAN_SWEEP_CANDIDATE_CAP);
+      now.mockReturnValue((day + 1) * ORPHAN_SWEEP_ROTATION_MS);
+      repaired = first + (await reconcileWikiScenarioDrift(OWNER));
+    } finally {
+      now.mockRestore();
+    }
+
+    // ONE WRITE AND ONE BUMP FOR TWENTY-FIVE REPAIRS — the reconciler's central
+    // cost argument, which the single-repair row can only ever pin at n=1. A
+    // pass that wrote per record would rewrite `wikis.json` 25 times under the
+    // tenant lock and tell every open tab to refetch 25 times. It is also the
+    // one row that reaches the bump message's plural branch.
+    expect(firstWrites).toBe(1);
+    expect(versionAfterFirst).toBe(versionBefore + 1);
+
+    expect(repaired).toBe(total);
+    const registry = await getWikiRegistry(OWNER);
+    expect(registry.wikis.map((item) => item.scenario)).toEqual(
+      ids.map(() => "business"),
+    );
   });
 });

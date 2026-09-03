@@ -234,3 +234,70 @@ export function renderSchemaMarkdown(
     "",
   ].join("\n");
 }
+
+/**
+ * Which Scenario Template do an artifact's OWN BYTES name — or null when they
+ * name none, or more than one (DW-676)?
+ *
+ * The inverse of {@link renderPurposeMarkdown} and {@link renderSchemaMarkdown},
+ * and it lives beside them so the anchor and the literal that emits it move
+ * together. `reconcileWikiScenarioDrift` in `wikis.ts` is its only caller: after
+ * a re-template whose registry write landed and whose artifact writes were
+ * rolled back, `wikis.json` names the new template while `purpose.md` and
+ * `schema.md` still describe the old one, and the artifacts are the half that
+ * tells the truth — so the label they carry has to be READABLE back out.
+ *
+ * PURE, AND IT HAS TO STAY PURE. This module is client-safe (no storage, no
+ * `node:` imports) because the Create Wiki dialog imports it; deriving the
+ * witness from a path or a read here would drag the storage provider into the
+ * browser chunk. The caller does the reading and hands the bytes in.
+ *
+ * ANCHORED ON THE RENDERER'S OWN LITERALS, not on a fuzzy match:
+ * `Scenario Template: <Label> — ` opens the third line of a rendered
+ * `purpose.md`, and `# Schema — <Label>` IS the first line of a rendered
+ * `schema.md`. Only the five {@link CREATABLE_SCENARIOS} are candidates —
+ * `custom` is not a template a Wiki can be seeded from, so a registry entry can
+ * never name it and a witness for it would be a repair towards an impossible
+ * state.
+ *
+ * NOT PINNED TO A LINE NUMBER, because both files are owner-editable
+ * (`EDITABLE_ARTIFACT_FILES`): an owner who added a paragraph above the heading
+ * has not destroyed the witness, and a scan that insisted on line three would
+ * read that as "no witness" on every tick for the life of the Wiki.
+ *
+ * MORE THAN ONE DISTINCT LABEL IS NO WITNESS. A file naming two templates is a
+ * file nothing can derive an unambiguous answer from — an owner mid-edit, a
+ * half-applied paste — and the reconciler's whole licence to write is that the
+ * bytes are unambiguous. Two lines naming the SAME label still answer it: that
+ * is one label, said twice.
+ */
+export function scenarioNamedByArtifact(
+  file: WikiArtifactFile,
+  content: string,
+): CreatableScenario | null {
+  const named = new Set<CreatableScenario>();
+  for (const raw of content.split("\n")) {
+    // `\r` so a CRLF-normalised copy of an artifact still matches the
+    // `schema.md` anchor, which is an EXACT line comparison rather than a prefix.
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    for (const scenario of CREATABLE_SCENARIOS) {
+      const label = SCENARIO_LABELS[scenario];
+      // EXHAUSTIVE OVER `WIKI_ARTIFACT_FILES` BY DEFAULTING TO NO ANCHOR, not
+      // by letting the last arm mop up. A third seeded artifact added to that
+      // list would otherwise silently inherit `schema.md`'s heading anchor and
+      // start voting in a repair nobody decided it should vote in; answering
+      // null makes adding one a decision rather than an inheritance.
+      const anchored =
+        file === "purpose.md"
+          ? // The trailing ` — ` is part of the anchor: without it
+            // `Scenario Template: Business` would also match a sentence that
+            // merely mentions the template rather than declaring it.
+            line.startsWith(`Scenario Template: ${label} — `)
+          : file === "schema.md"
+            ? line === `# Schema — ${label}`
+            : false;
+      if (anchored) named.add(scenario);
+    }
+  }
+  return named.size === 1 ? [...named][0] : null;
+}

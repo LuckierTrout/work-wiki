@@ -14,12 +14,13 @@ import {
   scanForMaintenance,
   rebuildDerivedIndexes,
   sweepOrphanWikiDirs,
+  reconcileWikiScenarios,
   backfillWorkspaceProfiles,
   reapStrandedScratchFiles,
 } from "../maintenance";
 import { listCommonsPages } from "../commons";
 import { _resetStorage, getStorage } from "../storage";
-import { wikisRootPath } from "../wiki-paths";
+import { wikiArtifactPath, wikisRootPath } from "../wiki-paths";
 import { ORPHAN_SWEEP_GRACE_MS } from "../wikis";
 import { STRANDED_SCRATCH_GRACE_MS } from "../storage/filesystem";
 import { READ_ONLY_REFUSAL } from "../read-only";
@@ -502,6 +503,71 @@ describe("sweepOrphanWikiDirs — the scheduled orphan-directory GC (DW-147)", (
     expect(residual).toMatch(/ACCEPTED, not fixed/i);
     // …and the widen-trigger the note already names, which now covers both.
     expect(scope.slice(widen)).toContain("readActiveWikiSchema");
+  });
+});
+
+describe("reconcileWikiScenarios — the scheduled scenario-drift repair (DW-676)", () => {
+  const OWNER = "alice";
+
+  /**
+   * Overwrite a Wiki's two artifacts so they name `label`, leaving the registry
+   * saying whatever it said — the divergence a re-template leaves behind when
+   * its `wikis.json` write lands and its artifact writes are rolled back.
+   *
+   * Addressed through `wikiArtifactPath`, the same helper the reconciler reads
+   * through, so a change to the tenancy layout can never leave the plant
+   * somewhere the repair never looks while these rows keep passing vacuously.
+   */
+  async function plantDrift(wikiId: string, label: string): Promise<void> {
+    const write = async (file: "purpose.md" | "schema.md", body: string) => {
+      await fs.writeFile(
+        path.join(tmpDir, ...wikiArtifactPath(OWNER, wikiId, file).split("/")),
+        body,
+        "utf8",
+      );
+    };
+    await write("purpose.md", `# Ops\n\nScenario Template: ${label} — a description.\n`);
+    await write("schema.md", `# Schema — ${label}\n\n## Page conventions\n\nBody.\n`);
+  }
+
+  it("reconciles the configured owner's tenant and returns the count", async () => {
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki, getWikiRegistry } = await import("../wikis");
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "reading" });
+    await plantDrift(wiki.id, "Business");
+
+    expect(await reconcileWikiScenarios()).toBe(1);
+
+    const stored = (await getWikiRegistry(OWNER)).wikis.find((w) => w.id === wiki.id);
+    expect(stored?.scenario).toBe("business");
+  });
+
+  it("is a no-op when no owner handle is configured", async () => {
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    const { createWiki, getWikiRegistry } = await import("../wikis");
+    const wiki = await createWiki(OWNER, { name: "Ops", scenario: "reading" });
+    await plantDrift(wiki.id, "Business");
+
+    // Single-owner deployment: with nobody configured there is no tenant to
+    // resolve, so the scan must not guess one and start rewriting labels.
+    expect(await reconcileWikiScenarios()).toBe(0);
+    expect(
+      (await getWikiRegistry(OWNER)).wikis.find((w) => w.id === wiki.id)?.scenario,
+    ).toBe("reading");
+  });
+
+  it("returns 0 instead of throwing when the reconcile fails", async () => {
+    // Fail-soft like `sweepOrphanWikiDirs`: this runs inside the maintenance
+    // scan, and a storage hiccup here must not 500 a scan that did everything
+    // else.
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = OWNER;
+    const { createWiki } = await import("../wikis");
+    await createWiki(OWNER, { name: "Ops", scenario: "reading" });
+    vi.spyOn(getStorage(), "readFile").mockRejectedValue(
+      new Error("reading the registry failed"),
+    );
+
+    await expect(reconcileWikiScenarios()).resolves.toBe(0);
   });
 });
 

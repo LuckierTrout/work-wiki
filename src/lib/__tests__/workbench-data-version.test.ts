@@ -1221,15 +1221,19 @@ describe("the bump lives at the exact write-owner tails", () => {
       /try \{\s*await bumpDataVersion\(\);\s*\} catch \(error\) \{[\s\S]{0,160}logger\.warn\(\s*"wikis"/,
     );
 
-    // NINE calls: one apiece for five writers, two for `applyScenarioTemplate`,
+    // TEN calls: one apiece for six writers, two for `applyScenarioTemplate`,
     // whose failure path bumps as well when the rollback could not put every
     // file back (DW-210) or the registry write landed before reporting failure
     // (DW-484), and two for `createWiki`, whose failure path bumps on that same
     // landed-then-threw registry write (DW-675) — the one create failure under
-    // which the tenant's stored registry really did move. Counted over the whole
-    // module first, so a call from a body this loop does not name cannot hide
-    // inside the per-body totals.
-    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(9);
+    // which the tenant's stored registry really did move, and now the one it
+    // answers with the stored record rather than the fault (DW-676). The sixth
+    // single-site writer is `reconcileWikiScenarioDrift`, the scheduled repair
+    // that relabels a registry entry its own artifacts contradict: the
+    // switcher's label is exactly what moved, so another open tab has to be
+    // told. Counted over the whole module first, so a call from a body this loop
+    // does not name cannot hide inside the per-body totals.
+    expect(source.match(/await bumpRefreshSignal\(/g) ?? []).toHaveLength(10);
 
     let counted = 0;
     for (const [name, calls] of [
@@ -1240,6 +1244,12 @@ describe("the bump lives at the exact write-owner tails", () => {
       ["deleteWiki", 1],
       ["canonicalizeWikiPurpose", 1],
       ["setCurrentWiki", 1],
+      // DW-676's reconciler. It writes `wikis.json` at most once per pass and
+      // bumps at most once, and the bump is what makes the repair visible: the
+      // Wiki switcher renders the registry's `scenario` label, so a tab that is
+      // already open keeps showing the label the artifacts contradict until the
+      // counter moves.
+      ["reconcileWikiScenarioDrift", 1],
     ] as const) {
       const body = topLevelFunctionBody(raw, `export async function ${name}(`);
       const sites = body.match(/await bumpRefreshSignal\(/g) ?? [];
@@ -1283,13 +1293,13 @@ describe("the bump lives at the exact write-owner tails", () => {
         from = bump + 1;
       }
     }
-    // The nine counted over the module are accounted for by seven
+    // The ten counted over the module are accounted for by eight
     // DISJOINT bodies, so no other function in the module has one — including
     // `seedWikiArtifacts`, which is the whole reason the tails live at the
     // callers: it always runs while `wikis:<tenant>` is held. Asserted directly
     // as well, because that is the refactor this guard exists to catch and a
     // count mismatch names no function.
-    expect(counted).toBe(9);
+    expect(counted).toBe(10);
     const seeder = topLevelFunctionBody(raw, "async function seedWikiArtifacts(");
     expect(seeder).not.toContain("bumpDataVersion");
     expect(seeder).not.toContain("bumpRefreshSignal");

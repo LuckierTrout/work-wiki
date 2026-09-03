@@ -28,8 +28,10 @@ import {
   getWikiRegistry,
   readWikiArtifact,
   renameWiki,
+  reconcileWikiScenarioDrift,
   setCurrentWiki,
   sweepOrphanWikiDirectories,
+  wikiArtifactPath,
   writeWikiArtifact,
 } from "../wikis";
 import {
@@ -112,6 +114,27 @@ async function snapshot(): Promise<Record<string, string>> {
   }
   await walk(tmpDir, "");
   return out;
+}
+
+/**
+ * Overwrite a Wiki's two artifacts so they name `label` — the registry/artifact
+ * divergence a re-template leaves when its `wikis.json` write lands and its
+ * artifact writes are rolled back (DW-676).
+ *
+ * Written through `wikiArtifactPath` rather than a hand-joined path, so a
+ * change to the tenancy layout moves the plant with the reader instead of
+ * leaving it somewhere the reconciler never looks.
+ */
+async function plantScenarioDrift(wikiId: string, label: string): Promise<void> {
+  const write = async (file: "purpose.md" | "schema.md", body: string) => {
+    const target = path.join(tmpDir, ...wikiArtifactPath(OWNER, wikiId, file).split("/"));
+    await fs.writeFile(target, body, "utf8");
+  };
+  await write(
+    "purpose.md",
+    `# Field notes\n\nScenario Template: ${label} — a description.\n`,
+  );
+  await write("schema.md", `# Schema — ${label}\n\n## Page conventions\n\nBody.\n`);
 }
 
 const SEEDED_BODY = "Original content.";
@@ -479,7 +502,38 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
     expect(await snapshot()).toEqual(before);
   });
 
-  it("all seven are unchanged on a writable deployment — the control case", async () => {
+  it("reconcileWikiScenarioDrift — a diverged registry label is left unrepaired", async () => {
+    // REAL DRIFT, planted the way a rolled-back re-template leaves it: the
+    // registry says Reading while both artifacts describe Business. Without it
+    // the case would pass against a reconciler that simply had nothing to do.
+    const wiki = await createWiki(OWNER, { name: "Field notes", scenario: "reading" });
+    await plantScenarioDrift(wiki.id, "Business");
+    const before = await snapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => reconcileWikiScenarioDrift(OWNER),
+      READ_ONLY_REFUSAL.wikiScenarioReconcile,
+    );
+
+    // Not one byte, which is the half `rejects.toThrow` cannot claim: the
+    // repair is a `wikis.json` write, so a gate that fired after it would look
+    // identical from the error alone.
+    expect(await snapshot()).toEqual(before);
+    expect(
+      (await getWikiRegistry(OWNER)).wikis.find((item) => item.id === wiki.id)?.scenario,
+    ).toBe("reading");
+
+    // …and the drift really was repairable, so the refusal above is the gate
+    // rather than a reconciler that could not have fired anyway.
+    delete process.env.YOPEDIA_READONLY;
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(
+      (await getWikiRegistry(OWNER)).wikis.find((item) => item.id === wiki.id)?.scenario,
+    ).toBe("business");
+  });
+
+  it("all eight are unchanged on a writable deployment — the control case", async () => {
     // `YOPEDIA_READONLY` is UNSET. Without this, every "unchanged" assertion
     // above would also pass against a lifecycle writer that simply stopped
     // working.
@@ -508,8 +562,8 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
     });
     expect(saved.purpose).toBe("Owner-authored.");
 
-    // …and the three DW-314 additions, which the cases above only ever observe
-    // REFUSING. Without this every "unchanged" assertion there would also pass
+    // …and the DW-314 additions plus DW-676's reconciler, which the cases above
+    // only ever observe REFUSING. Without this every "unchanged" assertion there would also pass
     // against a writer that simply stopped working.
     const second = await createWiki(OWNER, { name: "Second", scenario: "business" });
     expect((await setCurrentWiki(OWNER, second.id))?.id).toBe(second.id);
@@ -519,6 +573,16 @@ describe("the wiki lifecycle writers refuse on a read-only deployment", () => {
     // The delete already swept, so the standalone sweep has nothing left —
     // which is the answer it should give, not a throw.
     expect(await sweepOrphanWikiDirectories(OWNER)).toBe(0);
+    // …and the eighth: `second`'s artifacts still name its own template, so the
+    // reconciler's answer here is 0 BECAUSE THERE IS NO DRIFT rather than
+    // because it refused — the state its refusal row above reaches from the
+    // other side.
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    await plantScenarioDrift(second.id, "Research");
+    expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    expect(
+      (await getWikiRegistry(OWNER)).wikis.find((w) => w.id === second.id)?.scenario,
+    ).toBe("research");
   });
 });
 
@@ -706,6 +770,12 @@ describe("the read-only gate precedes the wiki lock", () => {
       ["wikis", "deleteWiki"],
       ["wikis", "setCurrentWiki"],
       ["wikis", "sweepOrphanWikiDirectories"],
+      // DW-676's reconciler, and the ordering matters for the same reason the
+      // backfill's does: its caller is a SCAN, which catches the refusal and
+      // answers 0 — so a gate inside the lock would have the scan queue behind
+      // every in-flight operation for the tenant before deciding it was never
+      // going to write.
+      ["wikis", "reconcileWikiScenarioDrift"],
       ["workspace-profile", "saveWorkspaceProfile"],
       // The DW-137 backfill: the one gated writer whose caller is a SCAN rather
       // than an owner, so it catches the refusal and answers 0 instead of

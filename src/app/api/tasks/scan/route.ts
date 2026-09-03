@@ -7,6 +7,7 @@ import {
   rebuildDerivedIndexes,
   purgeStaleJobs,
   sweepOrphanWikiDirs,
+  reconcileWikiScenarios,
   backfillWorkspaceProfiles,
   reapStrandedScratchFiles,
   DEFAULT_MAINTENANCE_CAP,
@@ -37,10 +38,11 @@ import { getOwnerHandle } from "@/lib/owner";
  * runs and logs/returns what it WOULD enqueue, but enqueues nothing — and that
  * is all `dry: true` in the response means. It does NOT mean the request
  * changed nothing: the index rebuild, the ingest-job GC, the orphan
- * wiki-directory sweep, the stranded-scratch reap and the Workspace Purpose
- * backfill are self-healing upkeep and one-time migration rather than
- * unattended content edits, so they run regardless, as do the scheduled-agent,
- * source-monitor, digest, outbox and backup blocks.
+ * wiki-directory sweep, the stranded-scratch reap, the wiki scenario-drift
+ * reconcile and the Workspace Purpose backfill are self-healing upkeep and
+ * one-time migration rather than unattended content edits, so they run
+ * regardless, as do the scheduled-agent, source-monitor, digest, outbox and
+ * backup blocks.
  *
  * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH: it suppresses every one of those
  * side-effecting blocks as well as the enqueue, which is what makes it safe to
@@ -53,7 +55,12 @@ import { getOwnerHandle } from "@/lib/owner";
  * scheduled trigger), `scratchFilesReaped` (`.tmp-<uuid>.tmp` files a dead
  * process stranded in the data directory, invisible to every listing and
  * reclaimed by nothing else — DW-292, and this route is that reaper's only
- * trigger) and `workspaceProfilesBackfilled` (Wikis handed a copy of
+ * trigger), `wikiScenariosReconciled` (registry entries whose `scenario` label
+ * disagreed with their own `purpose.md`/`schema.md` and were relabelled to
+ * match the artifacts — the divergence a re-template leaves when its
+ * `wikis.json` write lands and its artifact writes are rolled back, DW-676, and
+ * this route is that repair's only trigger of any kind) and
+ * `workspaceProfilesBackfilled` (Wikis handed a copy of
  * the retired tenant-global Workspace Purpose before it is deleted, DW-137 —
  * this route is that migration's only trigger of any kind, and the count is 0
  * on every scan of a tenant that has nothing left to relocate).
@@ -221,6 +228,19 @@ export async function POST(req: Request) {
       scratchFilesReaped = await reapStrandedScratchFiles();
     }
 
+    // Relabel registry entries whose `scenario` disagrees with their own
+    // purpose.md/schema.md (DW-676) — the divergence a re-template leaves when
+    // its `wikis.json` write lands and its artifact writes are rolled back.
+    // Gated exactly like the sweep above and for the same reasons: it writes
+    // bytes, so `?dry=1` suppresses it, while `AUTONOMOUS_MAINTENANCE` — which
+    // gates unattended EDITS of page content — does not. This is the repair's
+    // only trigger of any kind, so a deployment that never scans keeps a
+    // switcher label its artifacts contradict.
+    let wikiScenariosReconciled = 0;
+    if (!forceDry) {
+      wikiScenariosReconciled = await reconcileWikiScenarios();
+    }
+
     // Relocate the retired tenant-global Workspace Purpose onto the Wikis that
     // have none of their own, then delete it (DW-137). Gated exactly like the
     // sweep above and for the same reasons: it writes bytes, so `?dry=1`
@@ -234,7 +254,7 @@ export async function POST(req: Request) {
 
     logger.info(
       "maintenance",
-      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} scratchFilesReaped=${scratchFilesReaped} workspaceProfilesBackfilled=${workspaceProfilesBackfilled}`,
+      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} wikiScenariosReconciled=${wikiScenariosReconciled} scratchFilesReaped=${scratchFilesReaped} workspaceProfilesBackfilled=${workspaceProfilesBackfilled}`,
     );
 
     return NextResponse.json({
@@ -258,6 +278,7 @@ export async function POST(req: Request) {
       backupDue,
       backupEnqueued,
       orphanWikiDirsRemoved,
+      wikiScenariosReconciled,
       scratchFilesReaped,
       workspaceProfilesBackfilled,
       // The candidate list — for dry-run inspection of what it would do.

@@ -78,6 +78,10 @@ const LIB = path.resolve(__dirname, "..");
  *     only through `workspace-profile-backfill.ts` and from there the same
  *     fail-soft dynamic import in `maintenance.ts` — the identical situation to
  *     `sweepOrphanWikiDirectories`, and out for the identical reason.
+ *   - `wikis.ts`'s `reconcileWikiScenarioDrift` (DW-676), the scheduled repair
+ *     of a registry `scenario` label its own artifacts contradict. Gated in its
+ *     own right and reached only from `maintenance.ts`'s fail-soft dynamic
+ *     import, exactly like the two above, so it is out for the identical reason.
  *
  * This list is the file's ONE hand-written roll of writers, and both cases
  * below read FROM it: the staleness case re-derives which of these writers each

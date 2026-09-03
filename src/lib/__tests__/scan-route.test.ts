@@ -6,6 +6,7 @@ vi.mock("@/lib/maintenance", () => ({
   rebuildDerivedIndexes: vi.fn(),
   purgeStaleJobs: vi.fn(),
   sweepOrphanWikiDirs: vi.fn(),
+  reconcileWikiScenarios: vi.fn(),
   backfillWorkspaceProfiles: vi.fn(),
   reapStrandedScratchFiles: vi.fn(),
   DEFAULT_MAINTENANCE_CAP: 10,
@@ -25,6 +26,7 @@ import {
   rebuildDerivedIndexes,
   purgeStaleJobs,
   sweepOrphanWikiDirs,
+  reconcileWikiScenarios,
   backfillWorkspaceProfiles,
   reapStrandedScratchFiles,
 } from "@/lib/maintenance";
@@ -43,6 +45,7 @@ const mockedScan = vi.mocked(scanForMaintenance);
 const mockedRebuild = vi.mocked(rebuildDerivedIndexes);
 const mockedPurge = vi.mocked(purgeStaleJobs);
 const mockedSweepOrphanWikiDirs = vi.mocked(sweepOrphanWikiDirs);
+const mockedReconcileWikiScenarios = vi.mocked(reconcileWikiScenarios);
 const mockedBackfillProfiles = vi.mocked(backfillWorkspaceProfiles);
 const mockedReapScratch = vi.mocked(reapStrandedScratchFiles);
 const mockedEnqueue = vi.mocked(enqueueTask);
@@ -83,6 +86,7 @@ beforeEach(() => {
   mockedRebuild.mockResolvedValue({});
   mockedPurge.mockResolvedValue(0);
   mockedSweepOrphanWikiDirs.mockResolvedValue(0);
+  mockedReconcileWikiScenarios.mockResolvedValue(0);
   mockedBackfillProfiles.mockResolvedValue(0);
   mockedReapScratch.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
@@ -273,6 +277,48 @@ describe("POST /api/tasks/scan", () => {
 
     expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
     expect(body.orphanWikiDirsRemoved).toBe(0);
+  });
+
+  it("reconciles wiki scenario drift on a normal scan and reports the count", async () => {
+    // DW-676's repair, and this scan is its ONLY trigger of any kind: the
+    // divergence is written by a re-template that reported failure, and nothing
+    // on the request path revisits it. It rewrites `wikis.json` rather than
+    // editing pages, so — like the sweep beside it — it runs with
+    // AUTONOMOUS_MAINTENANCE off; otherwise a deployment on the default flag
+    // would keep a switcher label its own artifacts contradict, forever.
+    mockedReconcileWikiScenarios.mockResolvedValue(2);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedReconcileWikiScenarios).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: false, dry: true, wikiScenariosReconciled: 2 });
+  });
+
+  it("reconciles wiki scenario drift in the enabled production configuration", async () => {
+    // The row the cron actually runs: AUTONOMOUS_MAINTENANCE=on, no ?dry. The
+    // two cases either side of this one both hold the reconciler's gate in its
+    // non-production position, so without this nothing pins the configuration
+    // the feature exists for.
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedReconcileWikiScenarios.mockResolvedValue(3);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedReconcileWikiScenarios).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: true, dry: false, wikiScenariosReconciled: 3 });
+  });
+
+  it("?dry=1 suppresses the wiki scenario-drift reconcile", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedReconcileWikiScenarios.mockResolvedValue(2);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedReconcileWikiScenarios).not.toHaveBeenCalled();
+    expect(body.wikiScenariosReconciled).toBe(0);
   });
 
   it("backfills workspace profiles on a normal scan and reports the count", async () => {

@@ -109,6 +109,12 @@
  * no route in front of it, exactly as the sweep's does. The parity suite pins
  * both as mirroring nothing.
  *
+ * {@link READ_ONLY_REFUSAL.wikiScenarioReconcile} (DW-676) is the THIRD, and
+ * the first of the three that writes rather than deletes:
+ * `reconcileWikiScenarioDrift` in `wikis.ts` rewrites the `scenario` field of a
+ * registry entry whose artifacts name a different template. Same scan, same
+ * absent route literal, same direct-library-caller backstop.
+ *
  * "THE FOUR KERNEL WRITERS" IS DW-188'S STARTING SET, NOT THE WHOLE LIST. The
  * wiki-lifecycle writers above joined them, and DW-385 added three more stores
  * that had carried HTTP gates only — {@link import("./research-projects").createResearchProject}
@@ -301,6 +307,21 @@ export const READ_ONLY_REFUSAL = {
    */
   wikiDirectorySweep:
     "Orphaned wiki directories cannot be reclaimed while this deployment is read-only.",
+  /**
+   * `reconcileWikiScenarioDrift` — the scheduled repair of a registry entry
+   * whose `scenario` label disagrees with what that Wiki's own `purpose.md` and
+   * `schema.md` say (DW-676), reached only from `POST /api/tasks/scan`.
+   *
+   * Its own sentence rather than {@link wikiDirectorySweep}'s, and the third
+   * key with no route literal to mirror. It reclaims nothing and deletes
+   * nothing: it rewrites ONE field of `wikis.json` so the switcher stops
+   * labelling a Wiki with a template its artifacts do not describe. An owner
+   * reading "Orphaned wiki directories cannot be reclaimed…" beside it would go
+   * looking for a delete nobody asked for — the same confusion that gave the
+   * sweep its own sentence in the first place.
+   */
+  wikiScenarioReconcile:
+    "Diverged wiki scenario labels cannot be reconciled while this deployment is read-only.",
   /**
    * The two unlocked byte putters under `tenants/<t>/wikis/<id>/` —
    * `putWikiArtifact` in `wikis.ts` and `putWorkspaceProfile` in

@@ -375,6 +375,31 @@ describe("client refusal copy mirrors the server's", () => {
     }
   });
 
+  it("the scenario-drift reconcile's sentence mirrors no route either, and is about labels", async () => {
+    // DW-676's key is the THIRD with nothing to mirror, and the first of the
+    // three that WRITES rather than deletes: `reconcileWikiScenarios` in
+    // `maintenance.ts` is reached only from `POST /api/tasks/scan`, which has
+    // already answered its OWN refusal before the reconcile is called. It exists
+    // for the direct library caller — a CLI command, an ops script — arriving
+    // with no route in front of it, exactly as the other two do.
+    const scan = await routeSource("tasks/scan/route.ts");
+    expect(scan).toContain("error: READ_ONLY_REFUSAL.maintenanceScan");
+    expect(scan).not.toContain("READ_ONLY_REFUSAL.wikiScenarioReconcile");
+    expect(scan).not.toContain(servedAs(READ_ONLY_REFUSAL.wikiScenarioReconcile));
+    // And it is about a LABEL, not about reclaiming directories — the two
+    // scan-only wiki passes run in the same block, so one sentence borrowed for
+    // both is exactly how a re-point would go unnoticed. An owner reading
+    // "Orphaned wiki directories cannot be reclaimed…" for a relabel would go
+    // looking for a delete nobody asked for.
+    expect(READ_ONLY_REFUSAL.wikiScenarioReconcile).not.toBe(
+      READ_ONLY_REFUSAL.wikiDirectorySweep,
+    );
+    expect(READ_ONLY_REFUSAL.wikiScenarioReconcile).toContain("scenario labels");
+    expect(READ_ONLY_REFUSAL.wikiScenarioReconcile.toLowerCase()).not.toContain(
+      "directories",
+    );
+  });
+
   it("the newly gated doors serve their own constant, not a literal", async () => {
     // DW-294/DW-300/DW-314 — five route files, four sentences (the two
     // Names & Terms handlers share one). These had NO refusal at all, so unlike
