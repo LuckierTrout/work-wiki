@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../../workers/task-consumer/index";
+// The worker imports nothing from `src/lib`, so the refusal sentence is pulled
+// from its owner here rather than retyped — which also ties this fixture to the
+// body `DEPLOY.md` publishes and `tasks-route.test.ts` asserts.
+import { READ_ONLY_REFUSAL } from "../read-only";
 
 function message(attempts = 1) {
   return {
@@ -93,6 +97,59 @@ describe("task consumer email receipts", () => {
     expect(entry.retry).toHaveBeenCalledOnce();
     expect(bindings.EMAIL.send).toHaveBeenCalledWith(expect.objectContaining({
       subject: "Could not import: Quarterly notes",
+    }));
+  });
+  /**
+   * DW-647. `DEPLOY.md` publishes "queued work is replayable, not lost" for a
+   * read-only deployment, and the whole claim rests on 403 NOT being in the
+   * consumer's poison set (`400`, `404`, `422` → ack and drop). Nothing drove a
+   * 403 through here, so appending `|| res.status === 403` to that condition
+   * stayed green while inverting the documented outcome: every queued message
+   * would be silently discarded instead of retried.
+   *
+   * Read the CODE, not the prose, if the two disagree: the route's own status
+   * contract (`src/app/api/tasks/run/route.ts`) and `scan-route.test.ts` still
+   * say in prose that 4xx acks and drops, which stopped being true of 403 the
+   * moment the read-only gate landed. Correcting those comments is DW-645,
+   * tracked separately; this case pins what the consumer actually does.
+   */
+  it("retries a read-only 403 rather than acking it away", async () => {
+    const entry = message();
+    const bindings = env(
+      Response.json({ error: READ_ONLY_REFUSAL.queuedWork }, { status: 403 }),
+    );
+    await worker.queue({ queue: "yopedia-tasks", messages: [entry] }, bindings);
+    expect(entry.retry).toHaveBeenCalledOnce();
+    // Both halves: an ack here is the message dropped, which is exactly the
+    // outcome the doc promises does not happen.
+    expect(entry.ack).not.toHaveBeenCalled();
+    // …and nothing is mailed yet. The failure receipt is guarded by
+    // `attempts >= MAX_DELIVERY_ATTEMPTS`; moving it out of that guard would
+    // send the submitter FOUR failure receipts per queued message and satisfy
+    // the `attempts = 4` case below on its own, so the silence of attempts 1-3
+    // is pinned here rather than assumed.
+    expect(bindings.EMAIL.send).not.toHaveBeenCalled();
+  });
+
+  it("still retries a read-only 403 on the last delivery attempt, mailing the failure receipt", async () => {
+    // Parking is the QUEUE's job, not the consumer's: at `attempts = 4` the
+    // consumer still retries and Cloudflare routes the message to the DLQ, so
+    // the work survives the read-only window. The receipt goes out on that same
+    // attempt — the noise `DEPLOY.md` warns about, pinned so it is a known cost
+    // rather than a surprise.
+    const entry = message(4);
+    const bindings = env(
+      Response.json({ error: READ_ONLY_REFUSAL.queuedWork }, { status: 403 }),
+    );
+    await worker.queue({ queue: "yopedia-tasks", messages: [entry] }, bindings);
+    expect(entry.retry).toHaveBeenCalledOnce();
+    expect(entry.ack).not.toHaveBeenCalled();
+    expect(bindings.EMAIL.send).toHaveBeenCalledWith(expect.objectContaining({
+      subject: "Could not import: Quarterly notes",
+      // The submitter is told the REAL reason, not a generic failure: the
+      // consumer snips the 403 body into the receipt's `detail`, so a paused
+      // deployment reads as a paused deployment.
+      text: expect.stringContaining(READ_ONLY_REFUSAL.queuedWork),
     }));
   });
 });

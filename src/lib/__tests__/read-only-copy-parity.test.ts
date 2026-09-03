@@ -14,6 +14,10 @@
  * sentence it mirrors — CHARACTER-IDENTICAL where the door answers its own
  * refusal, and explicitly recorded where it deliberately does not.
  *
+ * It is also where `DEPLOY.md`'s INLINE refusal quotes are held to the same
+ * constants — the doc is a third copy of these sentences, published to operators
+ * as alerting text, and it drifts exactly the way a client mirror does.
+ *
  * Node project (no mount): these are two string constants, and importing the
  * component modules for their exported copy needs no DOM.
  */
@@ -384,6 +388,10 @@ describe("client refusal copy mirrors the server's", () => {
       ["names-terms/[id]/route.ts", "namesTerms"],
       ["email/settings/route.ts", "emailSettings"],
       ["tasks/scan/route.ts", "maintenanceScan"],
+      // DW-646 — the scan's sibling. `tasks-route.test.ts` pins this door's body
+      // by VALUE, which a retyped literal in the handler would satisfy; only the
+      // by-NAME row here catches that.
+      ["tasks/run/route.ts", "queuedWork"],
       ["todos/route.ts", "todos"],
       ["todos/[id]/route.ts", "todos"],
       ["sources/meeting/route.ts", "sourceMeeting"],
@@ -593,6 +601,48 @@ describe("client refusal copy mirrors the server's", () => {
     // …and the route no longer spells the old literal anywhere.
     const route = await routeSource("settings/rebuild-embeddings/route.ts");
     expect(route).not.toContain("Rebuilding embeddings is disabled in read-only mode.");
+  });
+
+  it("keeps DEPLOY.md's INLINE refusal quotes identical to the constants (DW-648)", async () => {
+    // `DEPLOY.md` publishes the two task-door refusals as an operator ALERTING
+    // contract — the scan's sentence and the run's are deliberately different so
+    // a rule matching one never fires on the other — and it quotes them in the
+    // JSON-body form an alert rule would be copied from, not as bare prose. The
+    // repo already pins DEPLOY.md twice (`workbench-settings.test.ts` DW-222 and
+    // `embedding-substitution-copy-parity.test.tsx`), but both harvest only
+    // lines beginning with `>`, and these two quotes sit inline in a paragraph
+    // where neither sweep can see them. So a reword of either constant reached
+    // production with the doc still publishing the retired sentence.
+    //
+    // WHITESPACE-NORMALIZED before matching, for the reason both sibling pins
+    // un-wrap their block quotes: the hard wrap is a human convention, not part
+    // of the sentence. Today each quote happens to fit on one line (`:584` is 80
+    // characters, `:605` is 79), so a reword one character longer — correctly
+    // propagated into the doc by an author who re-wraps — would split the quote
+    // and be reported as drift while the doc was right.
+    const doc = (await readFile(path.resolve(__dirname, "../../../DEPLOY.md"), "utf8"))
+      .replace(/\s+/g, " ");
+    // The needle is BUILT from the constant, never retyped: what is pinned is
+    // that the doc and the code say the same thing, not that either says a
+    // particular thing.
+    const jsonQuote = (sentence: string) => `{"error": "${sentence.replace(/\s+/g, " ")}"}`;
+    for (const key of ["maintenanceScan", "queuedWork"] as const) {
+      // Compared as an object so a failure names WHICH key drifted rather than
+      // reporting `false !== true`.
+      expect({ key, quoted: doc.includes(jsonQuote(READ_ONLY_REFUSAL[key])) })
+        .toEqual({ key, quoted: true });
+    }
+    // …and the blind spot itself, not just the two keys known today. Any
+    // sentence the doc quotes AT ALL must be quoted in the JSON-body form an
+    // alert rule is copied from — a future paragraph that drops a third sentence
+    // into prose is then pinned by default rather than unpinned all over again.
+    // A no-op right now: these two are the only ones DEPLOY.md mentions.
+    for (const [key, sentence] of Object.entries(READ_ONLY_REFUSAL)) {
+      const flat = sentence.replace(/\s+/g, " ");
+      if (!doc.includes(flat)) continue;
+      expect({ key, quotedAsJson: doc.includes(jsonQuote(sentence)) })
+        .toEqual({ key, quotedAsJson: true });
+    }
   });
 
   it("every server sentence names read-only and reads as a sentence", () => {

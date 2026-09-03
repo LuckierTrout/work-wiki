@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getServicePrincipal: vi.fn() }));
 vi.mock("@/lib/ingest", () => {
@@ -142,6 +142,7 @@ import {
 import { deliverMonitorDigest } from "@/lib/monitor-digests";
 import { runResearchProject } from "@/lib/research-runtime";
 import { StoreFaultError } from "@/lib/errors";
+import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
 const mockedGetService = vi.mocked(getServicePrincipal);
 const mockedEnqueueTask = vi.mocked(enqueueTask);
@@ -196,8 +197,13 @@ async function run(body: unknown, headers?: Record<string, string>) {
   );
 }
 
+let savedReadOnly: string | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
+  savedReadOnly = process.env.YOPEDIA_READONLY;
+  // Cleared rather than inherited: a value exported in a developer's shell
+  // would otherwise turn every case below into a 403.
+  delete process.env.YOPEDIA_READONLY;
   mockedVector.mockReturnValue({
     enabled: true,
     provider: null,
@@ -231,6 +237,11 @@ beforeEach(() => {
   mockedExtractTodos.mockResolvedValue([]);
   // Default: authenticated as the service principal.
   mockedGetService.mockReturnValue({ id: "service:yopedia", handle: "yopedia" });
+});
+
+afterEach(() => {
+  if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+  else process.env.YOPEDIA_READONLY = savedReadOnly;
 });
 
 describe("POST /api/tasks/run", () => {
@@ -1297,5 +1308,118 @@ describe("POST /api/tasks/run", () => {
       status: "failed",
       error: "Vector search is off.",
     });
+  });
+});
+
+/**
+ * DW-646. The read-only door on this route (`route.ts`, after the 401 and ahead
+ * of `req.json()`) is published in `DEPLOY.md` as an operator alerting contract:
+ * the status is 403 and the body is `READ_ONLY_REFUSAL.queuedWork`, a sentence
+ * deliberately DIFFERENT from the scan's so an alert rule matching one never
+ * fires on the other. Nothing referenced either half. The one door-coverage scan
+ * that reaches this file matches `isReadOnlyError(` too, which the handler's
+ * catch already spells — so deleting the early gate outright left the suite
+ * green while the route answered 500 (or worse, ran the work).
+ *
+ * Modelled on `scan-route.test.ts`'s "on a read-only deployment" describe.
+ *
+ * One prose conflict to know about before reading this as the bug: the route's
+ * own status contract (`route.ts`, above the gate) and `scan-route.test.ts`
+ * still say 4xx means the consumer ACKS AND DROPS, which stopped being true of
+ * 403 when the gate landed — `task-consumer.test.ts` pins the retry. Correcting
+ * those two comments is DW-645, tracked separately and deliberately not touched
+ * here.
+ */
+describe("POST /api/tasks/run on a read-only deployment", () => {
+  beforeEach(() => {
+    process.env.YOPEDIA_READONLY = "1";
+  });
+
+  it("403s with the queued-work sentence, running no task at all", async () => {
+    const res = await run({
+      kind: "ingest",
+      owner: "alice",
+      url: "https://example.com/a",
+    });
+
+    expect(res.status).toBe(403);
+    // The exact body, not just the status: `DEPLOY.md` quotes this sentence for
+    // operators to match on, and a 403 carrying the scan's sentence (or a bare
+    // "Forbidden") would break every rule written against the doc.
+    expect(await res.json()).toEqual({ error: READ_ONLY_REFUSAL.queuedWork });
+    // …and no handler ran. The gate's whole point is that the fetch and the two
+    // LLM calls happen BEFORE any page write, so a refusal arriving later would
+    // still have burned them.
+    expect(mockedIngest).not.toHaveBeenCalled();
+    expect(mockedIngestUrl).not.toHaveBeenCalled();
+    expect(mockedIngestPdf).not.toHaveBeenCalled();
+    expect(mockedIngestImage).not.toHaveBeenCalled();
+    expect(mockedIngestDocument).not.toHaveBeenCalled();
+    expect(mockedReingest).not.toHaveBeenCalled();
+    expect(mockedFixLint).not.toHaveBeenCalled();
+    expect(mockedRebuild).not.toHaveBeenCalled();
+    expect(mockedEnqueueTask).not.toHaveBeenCalled();
+    // Nor did the tracked job get marked `failed` for a refusal the deployment
+    // stated for free — which is what the un-gated route's catch would have done.
+    expect(mockedUpdateJob).not.toHaveBeenCalled();
+  });
+
+  it("refuses BOTH maintain arms with the same sentence", async () => {
+    // The other task family through the same door. Both arms are driven because
+    // each reaches a different writer and only one of them is the expensive one
+    // the route's gate comment names: `op: "fix"` reaches `fixLintIssue`, a
+    // whole page rewrite, and `op: "staleness"` reaches `reingest`. Asserting
+    // `mockedFixLint` against a staleness body would be an assertion that cannot
+    // fail with OR without the gate, which is the drift this suite exists to stop.
+    //
+    // `broken-link` carries a `targetSlug` because `parseTask` rejects it
+    // without one — a body that parses to null would 400 past the writer and
+    // make `not.toHaveBeenCalled()` vacuous once the gate is removed.
+    const fix = await run({
+      kind: "maintain",
+      op: "fix",
+      slug: "p",
+      lintType: "broken-link",
+      targetSlug: "dead-link",
+    });
+
+    expect(fix.status).toBe(403);
+    expect(await fix.json()).toEqual({ error: READ_ONLY_REFUSAL.queuedWork });
+    expect(mockedFixLint).not.toHaveBeenCalled();
+
+    const staleness = await run({ kind: "maintain", op: "staleness", slug: "p" });
+
+    expect(staleness.status).toBe(403);
+    expect(await staleness.json()).toEqual({ error: READ_ONLY_REFUSAL.queuedWork });
+    expect(mockedReingest).not.toHaveBeenCalled();
+  });
+
+  it("still 401s without the service token, so the gate stays behind auth", async () => {
+    // Order matters at the wire: an unauthenticated caller must not be able to
+    // read the deployment's read-only state off the status code.
+    mockedGetService.mockReturnValue(null);
+
+    const res = await run({ kind: "maintain", op: "staleness", slug: "p" });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
+  });
+
+  it("refuses ahead of the body parse — an unparseable body still gets the 403", async () => {
+    // The gate sits before `req.json()`, so garbage on the wire is answered with
+    // the refusal rather than "invalid JSON body". Pinning this is what keeps
+    // the gate from drifting down past the parse, where a 400 would tell the
+    // consumer to ACK AND DROP the message instead of retrying it.
+    const { POST } = await import("@/app/api/tasks/run/route");
+    const res = await POST(
+      new Request("http://localhost/api/tasks/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{ not json",
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: READ_ONLY_REFUSAL.queuedWork });
   });
 });

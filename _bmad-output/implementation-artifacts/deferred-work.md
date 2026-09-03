@@ -5157,7 +5157,9 @@ location: src/lib/__tests__/tasks-route.test.ts
 source_spec: `spec-dw-268-388-read-only-operator-docs.md`
 severity: low
 reason: `READ_ONLY_REFUSAL.queuedWork` has exactly two references repo-wide — its definition at `src/lib/read-only.ts:255` and the route at `src/app/api/tasks/run/route.ts:176` — and no test reference. `src/lib/__tests__/tasks-route.test.ts` never sets `YOPEDIA_READONLY`. `read-only-copy-parity.test.ts:376-397` lists `tasks/scan` but not `tasks/run`. `read-only-door-coverage.test.ts:225-249` is a source regex matching `isReadOnly()` OR `isReadOnlyError(`, and the route's catch already uses the latter, so removing the early gate keeps it green. The scan's identical claims are pinned twice; this door's are pinned zero times, and DEPLOY.md now publishes both its status and its sentence as an operator alerting contract.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-read-only-queue-door-pins
+resolution-undo: 87db21e3fc1d4f1a373fcbb0cde12f1e1100e4f0265997879449e9dc97888c0f 2026-09-02 7374617475733a206f70656e
 
 ### DW-647: `task-consumer.test.ts` never drives a 403, leaving the poison-set boundary that DEPLOY.md's "replayable, not lost" rests on unpinned.
 origin: spec-deferred f2819b49faf0
@@ -5165,7 +5167,9 @@ location: src/lib/__tests__/task-consumer.test.ts
 source_spec: `spec-dw-268-388-read-only-operator-docs.md`
 severity: low
 reason: The suite asserts only 200, 422 -> ack and 503 -> retry. Both are satisfied by many poison sets, including one containing 403. Appending `|| res.status === 403` to `workers/task-consumer/index.ts:114` keeps every case green and silently inverts the documented outcome to the one that discards queued ingests.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-read-only-queue-door-pins
+resolution-undo: 87db21e3fc1d4f1a373fcbb0cde12f1e1100e4f0265997879449e9dc97888c0f 2026-09-02 7374617475733a206f70656e
 
 ### DW-648: DEPLOY.md quotes two `READ_ONLY_REFUSAL` sentences verbatim with no parity pin, though the repo established that idiom twice for this same file.
 origin: spec-deferred ab31cf5b052b
@@ -5173,7 +5177,9 @@ location: src/lib/__tests__/read-only-copy-parity.test.ts
 source_spec: `spec-dw-268-388-read-only-operator-docs.md`
 severity: low
 reason: `src/lib/__tests__/workbench-settings.test.ts:5599` ("keeps DEPLOY.md's quoted refusal identical to the constant it quotes (DW-222)") and `src/components/__tests__/embedding-substitution-copy-parity.test.tsx:191` both read DEPLOY.md off disk and compare against the shipped copy. Neither can reach the new section: both harvest only lines beginning with `>`, and the new quotes are inline JSON in prose. Rewording either constant leaves every suite green and DEPLOY.md quoting a body no deployment returns — exactly the drift those two pins exist to stop, and the section's alerting advice depends on the bodies being exact.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-read-only-queue-door-pins
+resolution-undo: 87db21e3fc1d4f1a373fcbb0cde12f1e1100e4f0265997879449e9dc97888c0f 2026-09-02 7374617475733a206f70656e
 
 ### DW-649: `agents/[id]/route.ts`'s comment states unconditionally that `updateAgent` writes through the kernel before persisting, which is true only when the request adds pages.
 origin: spec-deferred 3c1f46522c38
@@ -5872,4 +5878,12 @@ location: src/lib/__tests__/research-runtime.test.ts
 source_spec: `spec-dw-500-501-722-test-suite-determinism.md`
 severity: low
 reason: Observed on the FINISHED tree of this story, in both halves of two concurrent `npx vitest run --project node` runs: run A failed "logs a read-only skip, not data damage, when a delete is refused" and "still names a DAMAGED project when the fault is not a refusal"; run B failed the same two. ~5.1s against the 5s default timeout — a duration failure, not an assertion. The file is NOT touched by this story (absent from `git diff --name-only`), so its behaviour is identical to the 2c00cfaede05a95c326bf1c59447f9e305b0b958 baseline; it passes in a normal single run and in `pnpm test` (369 files green). Same class as DW-722 — the repo's own CI command is not reliably green independent of any change — but a different file that this bundle's intent did not name.
+status: open
+
+### DW-730: "Queued work is replayable, not lost" rests on the consumer's queue CONFIG, and no test reads that config at all.
+origin: spec-deferred 8fdbff417df2
+location: workers/task-consumer/wrangler.jsonc:27
+source_spec: `spec-dw-646-647-648-read-only-queue-door-pins.md`
+severity: low
+reason: `workers/task-consumer/wrangler.jsonc` declares the `yopedia-tasks` consumer's `dead_letter_queue: "yopedia-tasks-dlq"` and `max_retries: 3`, which paired with `MAX_DELIVERY_ATTEMPTS = 4` (`workers/task-consumer/index.ts:56`) is what turns "the consumer retried" into "the message survived". Repo-wide, the only tests that open either wrangler file are `src/lib/__tests__/e2e-identity.test.ts:147-157`, which asserts only `not.toMatch(/YOPEDIA_E2E\b/)`, and `brand-copy.test.ts:952,1000`, which are frozen spelling-list entries that never read the file. DW-647's new pins build `bindings` by hand and never touch the config. Deleting the `dead_letter_queue` line leaves the whole suite green while a read-only deployment DISCARDS every queued message once retries are exhausted — the exact inversion those pins exist to prevent. Bumping `max_retries` to 5 likewise stays green while `attempts = 4` stops being the final delivery, staling DEPLOY.md's "up to four delivery attempts". Only the code->con
 status: open
