@@ -395,6 +395,15 @@
     "label": "Exempt teardown from the guard",
     "resolution": ""
   },
+  "DW-697": {
+    "answered_at": "2026-09-03",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Derive the sender-facing aggregate figure from what MAX_RAW_EMAIL_BYTES can actually carry under base64 and quoted-printable and quote that number instead, updating README.md's arithmetic and the DW-360 selection tests so they exercise a reachable budget.",
+    "key": "1",
+    "label": "Clamp the quoted budget",
+    "resolution": ""
+  },
   "DW-70": {
     "answered_at": "2026-08-28",
     "bundle_name": "",

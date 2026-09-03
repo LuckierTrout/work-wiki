@@ -5662,6 +5662,7 @@ source_spec: `spec-dw-449-email-raw-message-ceiling.md`
 severity: low
 reason: `MAX_EMAIL_AGGREGATE_DOCUMENT_MB` is quoted in the over-budget acknowledgement (`workers/email-ingest/index.ts`, "the 20 MB total attachment budget"), but 20 MiB of decoded payload is ~27.4 MiB of base64 and ~62 MiB of quoted-printable — both above the 25 MiB inbound ceiling this bundle just recorded. It is reachable only from a client sending unencoded (`7bit`/`8bit`) parts, which is not a shape any mainstream client emits for the PDF/DOCX/XLSX formats the Worker advertises. `README.md` records the arithmetic honestly, but the sender-facing sentence still names a budget no real message can spend, and the DW-360 selection loop it guards is correspondingly unreachable in the field — the suite now has to build synthetic `7bit` PDF fixtures to exercise it at all. Out of scope here: the recorded decision named only `MAX_RAW_EMAIL_BYTES`, and lowering the budget moves constants this spec's Block If holds back.
 status: open
+decision: 2026-09-03 Clamp the quoted budget — Derive the sender-facing aggregate figure from what MAX_RAW_EMAIL_BYTES can actually carry under base64 and quoted-printable and quote that number instead, updating README.md's arithmetic and the DW-360 selection tests so they exercise a reachable budget.
 
 ### DW-698: The realm-fork guard at src/lib/ingest.ts:1952 reads through `pageCache` and flattens a non-ENOENT storage failure to `null`, so a provider blip skips the fork and lets a non-owner's ingest overwrite
 origin: spec-deferred fdc2ba92f626
