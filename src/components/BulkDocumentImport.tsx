@@ -22,6 +22,11 @@ import {
 import { MAX_DOCUMENT_SIZE } from "@/lib/constants";
 import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { rememberRecentJob } from "@/lib/recent-ingests";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 const MAX_POLL_ATTEMPTS = 100;
 
@@ -31,6 +36,18 @@ type ImportStatus =
   | "queued"
   | "processing"
   | "done"
+  /**
+   * The upload's outcome is UNKNOWN (DW-717): nothing came back, and the bytes
+   * may already be stored with an ingest job queued for them.
+   *
+   * A seventh state rather than a flag on `failed`, because `failed` is what
+   * feeds the one-click **Retry failed** control — and re-uploading a document
+   * that may already be in the pipeline is precisely what this row's sentence
+   * tells the owner not to do. It is settled (the progress bar counts it) and
+   * it offers no retry of its own; the ingest history below is where the owner
+   * finds out which way it went.
+   */
+  | "unknown"
   | "failed";
 
 interface ImportItem {
@@ -67,12 +84,17 @@ function statusLabel(status: ImportStatus): string {
       return "synthesizing";
     case "done":
       return "complete";
+    case "unknown":
+      return "outcome unknown";
     case "failed":
       return "needs attention";
   }
 }
 
 function statusColor(status: ImportStatus): string {
+  // NOT `--rust`: nothing failed here, and colouring it as a failure would say
+  // in the palette what the sentence beside it refuses to say in words.
+  if (status === "unknown") return "var(--ink-2)";
   if (status === "failed") return "var(--rust)";
   if (status === "done") return "var(--accent)";
   if (status === "uploading" || status === "queued" || status === "processing") {
@@ -99,12 +121,17 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
   }, []);
 
   const readyItems = items.filter((item) => item.status === "ready");
+  // `failed` ONLY, which is what keeps an unknown-outcome row out of the
+  // one-click **Retry failed** below (DW-717).
   const failedItems = items.filter((item) => item.status === "failed");
+  const unknownCount = items.filter((item) => item.status === "unknown").length;
   const doneCount = items.filter((item) => item.status === "done").length;
   const activeCount = items.filter((item) =>
     item.status === "uploading" || item.status === "queued" || item.status === "processing"
   ).length;
-  const settledCount = doneCount + failedItems.length;
+  // An unknown outcome is SETTLED — nothing more is coming — so it counts here,
+  // or the progress bar stalls short and `Import another set` never appears.
+  const settledCount = doneCount + failedItems.length + unknownCount;
   const progress = items.length > 0 ? Math.round((settledCount / items.length) * 100) : 0;
   latestItemsRef.current = items;
   const pollingSignature = items
@@ -189,9 +216,16 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
         method: "POST",
         body: form,
       });
-      const data = (await response.json().catch(() => ({}))) as JobResponse;
+      const data = await readJsonBody<JobResponse>(response);
       if (!response.ok) {
-        throw new Error(data.error || `Upload failed (${response.status}).`);
+        // `RequestFailedError` and not a bare `Error` (DW-717): the message is
+        // unchanged, but the status rides it, which is the only way
+        // `writeFailure` below can tell a gateway that gave up (502/504 — the
+        // write may have landed) from a route that refused.
+        throw new RequestFailedError(
+          data.error || `Upload failed (${response.status}).`,
+          response.status,
+        );
       }
       if (!data.queued || !data.jobId) {
         throw new Error("The server did not return an ingest job.");
@@ -200,9 +234,20 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
       rememberRecentJob(data.jobId);
       updateItem(item.id, { status: "queued", jobId: data.jobId });
     } catch (error) {
+      // NOTHING CAME BACK (DW-717): the bytes may have been stored and an
+      // ingest job queued for them, so "Upload failed." would invite a second
+      // upload of the same document. The row carries the honest sentence
+      // instead; the ingest history below is where the owner sees which.
+      //
+      // And it must not claim `failed` either. That status is what the one-click
+      // **Retry failed** collects, so an unknown row landing in it would be
+      // re-uploaded alongside the genuinely failed ones — re-ingesting a
+      // document that may already be in the pipeline, which is exactly what the
+      // sentence tells the owner not to do. Hence the `unknown` status.
+      const { message, unconfirmed } = writeFailure(error, "upload this document");
       updateItem(item.id, {
-        status: "failed",
-        error: error instanceof Error ? error.message : "Upload failed.",
+        status: unconfirmed ? "unknown" : "failed",
+        error: message,
       });
     }
   }
@@ -235,7 +280,7 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
         pollingItems.map(async (item) => {
           try {
             const response = await fetch(`/api/ingest/status/${item.jobId}`);
-            const data = (await response.json().catch(() => ({}))) as JobResponse;
+            const data = await readJsonBody<JobResponse>(response);
             if (!response.ok) {
               return {
                 id: item.id,
@@ -476,7 +521,13 @@ export function BulkDocumentImport({ vaultId }: BulkDocumentImportProps) {
           </div>
           <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
             {items.map((item, index) => {
-              const mutable = canEditManifest && (item.status === "ready" || item.status === "failed");
+              // `unknown` is removable too: the row is settled, and the owner
+              // who has checked the ingest history needs a way to clear it.
+              const mutable =
+                canEditManifest &&
+                (item.status === "ready" ||
+                  item.status === "failed" ||
+                  item.status === "unknown");
               return (
                 <li
                   key={item.id}

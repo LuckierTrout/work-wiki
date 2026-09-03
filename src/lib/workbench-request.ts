@@ -93,6 +93,44 @@ export class RequestFailedError extends Error {
   }
 }
 
+/**
+ * THE body read. One owner for the ok-plus-{@link unconfirmedCause} gate.
+ *
+ * The gate itself is the DW-556/DW-624 rule, unchanged:
+ *
+ *   - on a 2xx, a body read that DIES MID-STREAM — an abort, a fired deadline,
+ *     a `TypeError` off a dropped socket — is the missing confirmation itself.
+ *     `{}` here is what turned a landed create/rename/delete into the caller's
+ *     destructure reading it as a failure. The cause is RETHROWN so the
+ *     caller's {@link writeFailure} answers `unconfirmed: true`.
+ *   - on a 2xx that merely fails to PARSE (a `SyntaxError`), the answer
+ *     ARRIVED and was shapeless: `{}`, and the caller's own shape guard says
+ *     what it always said.
+ *   - on a NON-2xx the status line already IS the verdict: whatever happened to
+ *     the refusal body, an answer arrived and said no. `{}`, and the caller's
+ *     status branch fires unchanged.
+ *
+ * WHY IT IS EXPORTED (DW-717). Eighteen components and libs had hand-rolled
+ * their own bare-`{}` fallback beside their own `fetch`, and a gate with
+ * eighteen copies is not a gate — it is the defect. They cannot simply call
+ * {@link send}, because `send` is THREE promises and they want only this one:
+ * it also arms {@link REQUEST_TIMEOUT_MS} and forces a JSON content type, while
+ * several of those calls are long-running or carry their own signal and
+ * `Authorization` (`callHermes` at 90 s, the chat answer, research/graphify/
+ * monitor runs), so routing them through `send` would convert succeeding
+ * requests into aborts. Each site keeps its OWN fetch — its own deadline, its
+ * own headers, its own signal — and adopts this reader alone.
+ *
+ * `send` and `sendForm` are re-expressed through it, which is what keeps the
+ * copy count at one.
+ */
+export async function readJsonBody<T>(response: Response): Promise<T> {
+  return (await response.json().catch((cause: unknown) => {
+    if (response.ok && unconfirmedCause(cause)) throw cause;
+    return {};
+  })) as T;
+}
+
 export async function send<T>(url: string, init: RequestInit): Promise<T> {
   // `init` FIRST: both of the fields below are invariants of this helper, and
   // spreading the caller over them would let a future call silently drop the
@@ -102,22 +140,9 @@ export async function send<T>(url: string, init: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init.headers },
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  // The DW-556 guard, GATED ON `response.ok` because this one parse serves both
-  // branches (DW-624).
-  //
-  // On a 2xx a body read that DIES MID-STREAM — an abort, a fired deadline, a
-  // `TypeError` off a dropped socket — is the missing confirmation itself, and
-  // `{}` here is what turned a landed create/rename/delete into the caller's
-  // destructure reading it as a failure. It is rethrown so the caller's
-  // {@link writeFailure} answers `unconfirmed: true`.
-  //
-  // On a NON-2xx the status line already IS the verdict: whatever happened to
-  // the refusal body, an answer arrived and said no. So that branch keeps `{}`
-  // and the {@link RequestFailedError} below, carrying the status.
-  const body = (await response.json().catch((cause: unknown) => {
-    if (response.ok && unconfirmedCause(cause)) throw cause;
-    return {};
-  })) as T & { error?: string };
+  // The DW-556/DW-624 guard, which lives in {@link readJsonBody} — see there
+  // for why the 2xx and non-2xx branches part ways.
+  const body = await readJsonBody<T & { error?: string }>(response);
   if (!response.ok) {
     throw new RequestFailedError(
       body.error || `Request failed (${response.status})`,
@@ -149,12 +174,9 @@ export async function sendForm<T>(url: string, body: FormData): Promise<T> {
     body,
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  // `send`'s guard verbatim, for the same reason and with the same gate — see
-  // the note there for why the non-ok branch keeps `{}`.
-  const parsed = (await response.json().catch((cause: unknown) => {
-    if (response.ok && unconfirmedCause(cause)) throw cause;
-    return {};
-  })) as T & { error?: string };
+  // `send`'s guard, and now literally the same function — see
+  // {@link readJsonBody} for why the non-ok branch keeps `{}`.
+  const parsed = await readJsonBody<T & { error?: string }>(response);
   if (!response.ok) {
     throw new RequestFailedError(
       parsed.error || `Request failed (${response.status})`,

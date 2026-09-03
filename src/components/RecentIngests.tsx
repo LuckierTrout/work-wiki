@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import Link from "next/link";
 import { forgetRecentJobs, getRecentJobIds } from "@/lib/recent-ingests";
 import { useSlugTenants } from "@/hooks/useSlugTenants";
 import { hostOf } from "@/lib/share-target";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 /** A still-running (or failed) job submitted from THIS browser (live status). */
 interface InFlight {
@@ -113,6 +118,34 @@ export function RecentIngests() {
    * string is one collision away from describing somebody else's node.
    */
   const readOnlyNoteId = useId();
+
+  /**
+   * The durable ledger, refetched — this list's re-list (DW-717).
+   *
+   * The polling `tick` below owns the same read, but it lives inside an effect
+   * with its own cancellation and cannot be called from a handler. A bulk
+   * delete whose answer never came back may have removed rows, and the one
+   * thing this surface must not do is go on showing them beside a claim that
+   * nothing happened.
+   *
+   * Its own failure is swallowed on purpose: the caller's sentence already
+   * sends the owner to look at the screen, and a second message about the
+   * refetch would displace it with something they cannot act on.
+   */
+  const relistHistory = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ingest/history?limit=20");
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        entries?: LedgerEntry[];
+        readOnly?: boolean;
+      };
+      setHistory(Array.isArray(data.entries) ? data.entries : []);
+      setReadOnly(data.readOnly === true);
+    } catch {
+      // Nothing to add — see above.
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -301,7 +334,7 @@ export function RecentIngests() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ingestIds, jobIds }),
       });
-      const data = (await response.json().catch(() => ({}))) as {
+      const data = await readJsonBody<{
         error?: string;
         deletedIngestIds?: string[];
         deletedJobIds?: string[];
@@ -314,9 +347,16 @@ export function RecentIngests() {
         // resolves such a collision to `ingest` every time; `kind` says which
         // row the refusal actually belongs to.
         failed?: { id: string; kind?: "ingest" | "job"; error: string }[];
-      };
+      }>(response);
       if (!response.ok) {
-        throw new Error(data.error || `Delete failed (${response.status})`);
+        // `RequestFailedError` and not a bare `Error` (DW-717): the message is
+        // unchanged, but the status rides it, which is the only way
+        // `writeFailure` below can tell a gateway that gave up (502/504 — the
+        // write may have landed) from a route that refused.
+        throw new RequestFailedError(
+          data.error || `Delete failed (${response.status})`,
+          response.status,
+        );
       }
 
       const deletedIngestIds = new Set(data.deletedIngestIds ?? []);
@@ -389,7 +429,17 @@ export function RecentIngests() {
         setDeleteNotice(`${cleared.join(" · ")}. Raw sources were retained.`);
       }
     } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : "Couldn’t delete the selected ingests.");
+      // NOTHING CAME BACK (DW-717): the batch may have deleted every selected
+      // ingest and its wiki pages, which is irreversible — so the owner is told
+      // the outcome is unknown and sent to the list, never that the delete
+      // failed. `relistHistory` does not touch `deleteError`, so the sentence
+      // set here stands over the refetched rows.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "delete the selected ingests",
+      );
+      setDeleteError(message);
+      if (unconfirmed) await relistHistory();
     } finally {
       setDeleting(false);
     }

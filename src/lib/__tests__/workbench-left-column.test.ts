@@ -407,8 +407,22 @@ describe("WikiSwitcher", () => {
     // flag private to this component left the card's create fully live over a
     // create nobody could account for. The spelling is what stops the guard
     // being narrowed back to a local flag.
-    expect(switcher.match(/if \(busy \|\| latched\) return;/g) ?? []).toHaveLength(3);
+    //
+    // `create` now spells the CARD's guard, not this pair's (DW-721): a create
+    // that SUCCEEDED on either surface also shuts this one, sentence-lessly,
+    // for the length of `router.refresh()` — so the three-way line is `rename`
+    // and `remove` only, and `create` carries `awaitingCreate` alongside.
+    // Rename and delete deliberately do NOT: nothing about a landed create
+    // makes either of them unsafe, and dimming them would be a claim this
+    // change does not make.
+    expect(
+      switcher.match(/if \(busy \|\| awaitingCreate \|\| latched\) return;/g) ?? [],
+    ).toHaveLength(1);
+    expect(switcher.match(/if \(busy \|\| latched\) return;/g) ?? []).toHaveLength(2);
     expect(switcher.match(/if \(busy\) return;/g) ?? []).toHaveLength(0);
+    // The reachable half of that pair, the card's spelling exactly: this
+    // dialog's `Create` goes dead on either half of the shared latch.
+    expect(switcher).toContain("confirmDisabled={awaitingCreate || latched}");
 
     // The FOURTH write — and the one guard here that is NOT unreachable, so it
     // is pinned for a different reason than the three above (DW-409).
@@ -471,9 +485,12 @@ describe("WikiSwitcher", () => {
     // BOTH carry the shared latch. `create`'s dialog stays OPEN when an outcome
     // is unknown, with `busy` already back to false and the confirm plus its
     // Enter path both live over a POST that may have seeded a wiki; it also
-    // carries the local `awaitingCreate`, which is the SUCCESS half — the empty
-    // state behind the closed dialog still offers `Create Wiki` for the length
-    // of the refresh.
+    // carries `awaitingCreate`, which is the SUCCESS half — the empty state
+    // behind the closed dialog still offers `Create Wiki` for the length of the
+    // refresh. Since DW-721 that half is SHARED too, not local: the header
+    // switcher opens the same `POST /api/wikis`, so a create that LANDED here
+    // has to shut its create as well. It stays out of the latch's `message`
+    // because nothing failed and there is no sentence to show.
     //
     // `applyTemplate` used to carry `busy` alone, argued from idempotence per
     // scenario. That holds for the Schema, which History keeps, and not for
@@ -526,11 +543,21 @@ describe("WikiSwitcher", () => {
     // on the other surface as well — which is the whole reason they are shared.
     expect(card.match(/raiseLatch\(message\)/g) ?? []).toHaveLength(2);
     expect(card.match(/raisedLatchRef\.current = true/g) ?? []).toHaveLength(2);
-    // …and the card's LOCAL success latch, which stays out of the shared state:
-    // it shuts one control, on this card only, and carries no sentence to
-    // explain a dimming anywhere else. Same pairing rule, its own ref.
-    expect(card.match(/setAwaitingCreate\(true\)/g) ?? []).toHaveLength(1);
+    // …and the SUCCESS half, which since DW-721 is shared too — both surfaces
+    // open the same `POST /api/wikis`, so a create that LANDED on one of them
+    // has to shut the other's create for the length of the refresh. It stays
+    // out of `message` because nothing failed and there is no sentence to show,
+    // which is why it is counted separately here rather than folded into the
+    // raises above.
+    //
+    // The pairing rule is the same and so is its failure mode: `markCreate`
+    // without its ref line leaves the release effect returning early forever,
+    // and the create door stuck shut on BOTH surfaces with nothing on screen to
+    // explain it. So it is counted per surface, one raise each.
+    expect(card.match(/markCreate\(\)/g) ?? []).toHaveLength(1);
     expect(card.match(/awaitingCreateRef\.current = true/g) ?? []).toHaveLength(1);
+    expect(switcher.match(/markCreate\(\)/g) ?? []).toHaveLength(1);
+    expect(switcher.match(/awaitingCreateRef\.current = true/g) ?? []).toHaveLength(1);
   });
 
   it("keeps the latch provider nested around the workbench children (DW-516)", async () => {

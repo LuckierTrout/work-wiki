@@ -16,6 +16,7 @@ import type { ChatCitation } from "./chat-contract";
 import type { ChatOutput, ChatToolCall } from "./chat";
 import { loopbackFetch } from "./loopback-client";
 import { SIDECAR_SSE_EVENTS, sidecarChatUrl, type SidecarSseEvent } from "./sidecar";
+import { readJsonBody, unconfirmedCause } from "./workbench-request";
 
 /** The `done` frame, as the sidecar sends it. `pending` holds an open question. */
 export interface SidecarDoneFrame {
@@ -170,7 +171,20 @@ export async function runSidecarTurn({
   if (!response.ok || !response.body) {
     // NO STREAM IS READ on a refusal: the body is the door's reason, not an
     // answer, and the owner is owed the reason rather than a generic failure.
-    const failed = (await response.json().catch(() => ({}))) as { error?: string };
+    //
+    // The read is GUARDED because this branch also takes an `ok` response with
+    // no body (DW-717): the gate rethrows the raw cause on a 2xx whose body
+    // read dies, and letting it escape here would surface `Failed to fetch` or
+    // `signal timed out` to a caller whose whole contract is this module's own
+    // sentence. Nothing was written by the sidecar in that case — no turn ran —
+    // so the fallback is the honest answer, and no unknown-outcome vocabulary
+    // belongs on a door that never opened.
+    let failed: { error?: string } = {};
+    try {
+      failed = await readJsonBody<{ error?: string }>(response);
+    } catch (cause) {
+      if (!unconfirmedCause(cause)) throw cause;
+    }
     throw new Error(failed.error || SIDECAR_TURN_FAILED_COPY);
   }
   return consumeSidecarStream(response.body, handlers);

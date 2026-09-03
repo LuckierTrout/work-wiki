@@ -22,6 +22,7 @@ import {
   REQUEST_TIMEOUT_MS,
   RequestFailedError,
   UNCONFIRMED_STATUSES,
+  readJsonBody,
   refusedWriteFailure,
   send,
   sendForm,
@@ -308,6 +309,71 @@ describe("send", () => {
     await expect(sendForm("/api/upload", new FormData())).rejects.toMatchObject({
       message: "Request failed (413)",
       status: 413,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The gate called DIRECTLY, by the eighteen sites that own their fetch
+  // (DW-717)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The four cases above prove the gate through `send` and `sendForm`. These
+   * prove the SAME gate through the exported reader, because that is how the
+   * other sites reach it: they keep their own deadline, headers and signal and
+   * adopt `readJsonBody` alone, so nothing above observes what they get.
+   */
+  it("rethrows every unconfirmed cause when a 2xx body read dies", async () => {
+    const causes = [
+      Object.assign(new Error("signal timed out"), { name: "TimeoutError" }),
+      Object.assign(new Error("aborted"), { name: "AbortError" }),
+      new TypeError("Failed to fetch"),
+    ];
+    for (const cause of causes) {
+      const response = {
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw cause;
+        },
+      } as unknown as Response;
+      await expect(readJsonBody(response)).rejects.toBe(cause);
+      // …and each one is what the caller's verdict helper is looking for.
+      expect(writeFailure(cause, "delete the page").unconfirmed).toBe(true);
+    }
+  });
+
+  it("resolves `{}` for a 2xx body that merely fails to PARSE", async () => {
+    // The answer arrived and was shapeless. The caller's existing shape guard
+    // reports it, exactly as it did before the gate had an owner.
+    const response = {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    } as unknown as Response;
+    await expect(readJsonBody(response)).resolves.toEqual({});
+  });
+
+  it("resolves `{}` when a NON-2xx body read dies, leaving the status the verdict", async () => {
+    // Every adopting site throws its own `Request failed (n)` / `{ error }` off
+    // this `{}`, so widening the gate past `response.ok` would turn a stated
+    // refusal into an unknown outcome at all eighteen of them at once.
+    const response = {
+      ok: false,
+      status: 500,
+      json: async () => {
+        throw new TypeError("Load failed");
+      },
+    } as unknown as Response;
+    await expect(readJsonBody(response)).resolves.toEqual({});
+  });
+
+  it("returns the parsed body untouched when the read succeeds", async () => {
+    await expect(readJsonBody(answer({ ok: true, id: "w1" }))).resolves.toEqual({
+      ok: true,
+      id: "w1",
     });
   });
 

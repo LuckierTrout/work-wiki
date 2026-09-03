@@ -24,6 +24,12 @@ import {
   type ExplorerFilter,
   type ExplorerSort,
 } from "@/lib/vault-explorer-view";
+import {
+  RequestFailedError,
+  readJsonBody,
+  unconfirmedCause,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 const MarkdownRenderer = dynamic(() =>
   import("@/components/MarkdownRenderer").then(
@@ -264,10 +270,10 @@ export function VaultExplorer({
       { signal: controller.signal },
     )
       .then(async (response) => {
-        const payload = (await response.json().catch(() => ({}))) as {
+        const payload = await readJsonBody<{
           page?: PreviewPage;
           error?: string;
-        };
+        }>(response);
         if (!response.ok || !payload.page) {
           throw new Error(payload.error ?? `Preview failed (${response.status})`);
         }
@@ -279,12 +285,69 @@ export function VaultExplorer({
         setPreview({
           status: "error",
           slug: selectedSlug,
-          message: error instanceof Error ? error.message : "Preview unavailable.",
+          // THIS PANEL'S OWN SENTENCE for a cause that carries none of its own
+          // (DW-717). The gate now rethrows the raw cause when a 2xx body read
+          // dies, so relaying `.message` unconditionally would print
+          // `Failed to fetch` / `Load failed` / `signal timed out` into the
+          // panel — the transport vocabulary every docblock in
+          // `workbench-request` refuses, and which used to be impossible here
+          // because the parse resolved `{}` and the throw below rendered
+          // `Preview failed (200)`.
+          //
+          // This is a READ, so it does not pass through `writeFailure`: nothing
+          // was written, there is nothing to reconcile, and the unknown-outcome
+          // sentence would be a claim about a write that never happened. The
+          // fallback is the honest answer — the preview is unavailable, and
+          // reopening the page is the owner's move either way.
+          message: unconfirmedCause(error)
+            ? "Preview unavailable."
+            : error instanceof Error
+              ? error.message
+              : "Preview unavailable.",
         });
       });
 
     return () => controller.abort();
   }, [selectedSlug, vault.id]);
+
+  /**
+   * The vault's page list, refetched from the server (DW-717).
+   *
+   * `router.refresh()` cannot do this job here, which is what the unconfirmed
+   * branch below used to assume. `entries` is `useState(initialEntries)` with
+   * no prop sync and no `key` on the mount in `src/app/vault/[id]/page.tsx`, so
+   * a new server render replaces nothing: the success path only reconciles
+   * because it also calls `setEntries` by hand. A sentence telling the owner to
+   * check the screen, over a screen guaranteed not to move, is worse than no
+   * sentence.
+   *
+   * So the list is asked for directly. `GET /api/vaults/[id]/pages` is the same
+   * read the page performs on the server, owner-gated the same way.
+   *
+   * Its own failure is swallowed: the caller's sentence already says the
+   * outcome is unknown, and a second message about the refetch would replace it
+   * with something the owner cannot act on.
+   */
+  async function relistEntries() {
+    try {
+      const response = await fetch(
+        `/api/vaults/${encodeURIComponent(vault.id)}/pages`,
+      );
+      if (!response.ok) return;
+      const payload = await readJsonBody<{ pages?: VaultExplorerEntry[] }>(response);
+      if (!payload.pages) return;
+      setEntries(payload.pages);
+      // The selection may name a page the server no longer lists, and every
+      // control in the detail pane aims at it.
+      setSelectedSlug((current) =>
+        current && payload.pages!.some((entry) => entry.slug === current)
+          ? current
+          : (payload.pages!.find((entry) => !entry.missing)?.slug ?? null),
+      );
+    } catch {
+      // Nothing to add — see above.
+    }
+  }
 
   async function removeSelected() {
     if (!selectedEntry || removing) return;
@@ -296,10 +359,15 @@ export function VaultExplorer({
         body: JSON.stringify({ slug: selectedEntry.slug }),
       });
       if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as {
-          error?: string;
-        };
-        throw new Error(payload.error ?? `Remove failed (${response.status})`);
+        const payload = await readJsonBody<{ error?: string }>(response);
+        // `RequestFailedError` and not a bare `Error` (DW-717): the message is
+        // unchanged, but the status rides it, which is the only way
+        // `writeFailure` below can tell a gateway that gave up (502/504 — the
+        // write may have landed) from a route that refused.
+        throw new RequestFailedError(
+          payload.error ?? `Remove failed (${response.status})`,
+          response.status,
+        );
       }
       const remaining = entries.filter((entry) => entry.slug !== selectedEntry.slug);
       setEntries(remaining);
@@ -307,11 +375,16 @@ export function VaultExplorer({
       setSelectedSlug(remaining.find((entry) => !entry.missing)?.slug ?? null);
       router.refresh();
     } catch (error) {
-      setPreview({
-        status: "error",
-        slug: selectedEntry.slug,
-        message: error instanceof Error ? error.message : "Could not remove this page.",
-      });
+      // NOTHING CAME BACK (DW-717): the page may already be out of the vault
+      // while this list still shows it. `relistEntries` is the reconciliation —
+      // NOT `router.refresh()`, which cannot move `entries` at all here (see
+      // there) — so the sentence sends the owner to a screen that has actually
+      // been refetched. `setPreview` runs after it, because the re-list clears
+      // the preview through `selectedSlug` and would otherwise take the
+      // sentence with it.
+      const { message, unconfirmed } = writeFailure(error, "remove this page");
+      if (unconfirmed) await relistEntries();
+      setPreview({ status: "error", slug: selectedEntry.slug, message });
     } finally {
       setRemoving(false);
     }

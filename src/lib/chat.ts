@@ -37,6 +37,7 @@ import {
   type ChatCitation,
   type ChatExportRecord,
 } from "./chat-contract";
+import { readJsonBody } from "./workbench-request";
 
 export type ChatRole = "user" | "assistant";
 export type ChatBackend = "native" | "hermes";
@@ -748,9 +749,9 @@ async function callHermes(
     }),
     signal: AbortSignal.timeout(90_000),
   });
-  const body = (await response.json().catch(() => ({}))) as HermesCompletion & {
-    error?: { message?: string } | string;
-  };
+  const body = await readJsonBody<
+    HermesCompletion & { error?: { message?: string } | string }
+  >(response);
   if (!response.ok) {
     const detail =
       typeof body.error === "string" ? body.error : body.error?.message;

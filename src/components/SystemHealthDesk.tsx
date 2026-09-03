@@ -6,11 +6,26 @@ import { Alert } from "@/components/Alert";
 import { backupTruncationLabel, type BackupSummary } from "@/lib/backups";
 import type { RetrievalEvalCase, RetrievalEvalRun } from "@/lib/retrieval-evals";
 import type { SystemHealthSnapshot } from "@/lib/system-health";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -87,7 +102,15 @@ export function SystemHealthDesk() {
         setNotice("Backup and isolated restore verification are queued. The receipt will appear here when processing finishes.");
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not create the backup.");
+      // NOTHING CAME BACK (DW-717). A fired deadline, a dropped connection or a
+      // gateway that gave up all mean one thing: the request left and no
+      // verdict came back, so the backup may have been taken in full. Refetch
+      // BEFORE the sentence is set — `load` clears `error` on its way in, so
+      // setting it first would have the very reconciliation it asks for wipe
+      // it — and never tell the owner the write failed.
+      const { message, unconfirmed } = writeFailure(reason, "create the backup");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -105,7 +128,10 @@ export function SystemHealthDesk() {
         : "Restore verification failed. Review the receipt below.");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not verify the backup.");
+      // See `createBackup` for why the refetch runs before the sentence.
+      const { message, unconfirmed } = writeFailure(reason, "verify the backup");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -136,7 +162,12 @@ export function SystemHealthDesk() {
       setRequiredPhrases("");
       setNotice("Retrieval check saved. Run the suite when you are ready to spend a model call per case.");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not save the evaluation case.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "save the evaluation case",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -156,7 +187,14 @@ export function SystemHealthDesk() {
       setNotice("Retrieval evaluation complete. Results are stored as an auditable run.");
       await load();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not run the evaluation suite.");
+      // A run STORES an auditable record, so an unknown outcome is a run that
+      // may already be in the list.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "run the evaluation suite",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }
@@ -169,7 +207,12 @@ export function SystemHealthDesk() {
       await request<{ deleted: boolean }>(`/api/system/evaluations/${id}`, { method: "DELETE" });
       setCases((current) => current.filter((item) => item.id !== id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not remove the evaluation case.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "remove the evaluation case",
+      );
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setBusy(null);
     }

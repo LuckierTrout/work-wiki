@@ -93,6 +93,9 @@ export function WikiWorkbench() {
     message: latchMessage,
     raise: raiseLatch,
     release: releaseLatch,
+    awaitingCreate,
+    markCreate,
+    clearCreate,
   } = useWikiWriteLatch();
   /**
    * Ids for the two standing refusal sentences below (DW-189, DW-282).
@@ -128,11 +131,14 @@ export function WikiWorkbench() {
    * screen for the length of `router.refresh()`. Pressing it there seeds a
    * SECOND wiki and makes it active, moving every prompt onto its template.
    *
-   * This half stays LOCAL and out of the shared latch deliberately: it shuts
-   * ONE control, the one whose empty state this card alone is rendering stale,
-   * and it carries no sentence — nothing failed, so there is nothing to explain
-   * to a control on the other surface. The UNCONFIRMED half is the opposite on
-   * both counts and now lives in {@link useWikiWriteLatch} above.
+   * SHARED since DW-721, and still SENTENCE-LESS. It used to be local on the
+   * argument that it shuts one control and has nothing to say for itself; the
+   * second half of that is why it is not folded into the latch's `message`, but
+   * the first half was simply wrong. The header `WikiSwitcher` opens the SAME
+   * `POST /api/wikis`, so a create this card landed left the header's `Create`
+   * fully live for the length of the refresh — one click there seeds the
+   * duplicate wiki, exactly as an unconfirmed one did before DW-516. It is read
+   * off {@link useWikiWriteLatch} above and raised with `markCreate`.
    *
    * Both halves ride `confirmDisabled` and the opener's `disabled`, and NEVER
    * `busy`: `busy` also kills Cancel, Esc and the outside-click dismiss, and
@@ -142,7 +148,6 @@ export function WikiWorkbench() {
    * The door stays shut until a new server render lands (the effect below),
    * which is the only thing that can say what is actually there.
    */
-  const [awaitingCreate, setAwaitingCreate] = useState(false);
   /**
    * `awaitingCreate` mirrored where the release effect can READ it without
    * DEPENDING on it (DW-429).
@@ -155,8 +160,11 @@ export function WikiWorkbench() {
    * fire on the very commit that RAISES the latch and drop it again before the
    * request it is guarding has any answer. A ref changes no identity and
    * triggers no effect, so it carries the fact across without arming anything —
-   * which is exactly why every `setAwaitingCreate` below sets it on the
-   * adjacent line.
+   * which is exactly why every `markCreate` below sets it on the adjacent line.
+   *
+   * It stays a per-surface ref even though the flag itself is now shared
+   * (DW-721): the effect must clear only what THIS card raised, for the same
+   * reason `raisedLatchRef` exists below.
    */
   const awaitingCreateRef = useRef(false);
   /**
@@ -278,12 +286,12 @@ export function WikiWorkbench() {
     if (!awaitingCreateRef.current && !raisedLatch) return;
     awaitingCreateRef.current = false;
     raisedLatchRef.current = false;
-    setAwaitingCreate(false);
+    clearCreate();
     if (!raisedLatch) return;
     releaseLatch();
     setCreateError(null);
     setTemplateError(null);
-  }, [wikis, currentWikiId, releaseLatch]);
+  }, [wikis, currentWikiId, releaseLatch, clearCreate]);
 
   // React flushes every effect TEARDOWN before any effect body, so this lands
   // after `useDialogA11y` has restored focus to the `Create Wiki` button — the
@@ -328,7 +336,7 @@ export function WikiWorkbench() {
       // into local state would be a second one. The empty state stays on screen
       // for the length of the refresh — stale but real, and with its one action
       // shut so the owner cannot seed a second wiki into that window.
-      setAwaitingCreate(true);
+      markCreate();
       awaitingCreateRef.current = true;
       // Claimed BEFORE the close, consumed by the effect that runs once the
       // dialog has finished restoring focus to the doomed opener.

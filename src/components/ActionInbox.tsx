@@ -10,6 +10,11 @@ import type {
   ActionItemPriority,
   ActionItemStatus,
 } from "@/lib/action-items";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 const TABS: Array<{ value: ActionItemStatus | "all"; label: string }> = [
   { value: "inbox", label: "Proposed" },
@@ -52,8 +57,18 @@ const editControlStyle: CSSProperties = {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -102,7 +117,14 @@ export function ActionInbox() {
       setItems((current) => current.map((item) => item.id === id ? data.item : item));
       return true;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Task could not be updated.");
+      // NOTHING CAME BACK (DW-717), so the PATCH may have landed in full and
+      // the row on screen is the stale one. `load` clears `error` on its way
+      // in, so the refetch runs BEFORE the sentence is set rather than wiping
+      // it — and the owner is told the outcome is unknown, never that the
+      // update failed.
+      const { message, unconfirmed } = writeFailure(reason, "update the task");
+      if (unconfirmed) await load();
+      setError(message);
       return false;
     }
   }
@@ -142,7 +164,13 @@ export function ActionInbox() {
       });
       setRememberNotice(`Saved as a ${rememberKind}. Add aliases anytime in Settings.`);
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : "Couldn’t remember this owner.";
+      // No refetch here, and nothing to refetch: this surface renders no part
+      // of Names & Terms, so an unknown outcome has no stale render of its own
+      // to correct. What it does get is the honest sentence rather than
+      // "Couldn’t remember this owner." for a write that may have landed. The
+      // already-known branch still reads the ROUTE's message, which
+      // `writeFailure` relays unchanged on a stated refusal.
+      const { message } = writeFailure(reason, "remember this owner");
       setRememberNotice(
         /already assigned/i.test(message)
           ? "This owner is already recognized in Names & Terms."
@@ -185,7 +213,11 @@ export function ActionInbox() {
       setNewTitle("");
       setTab("inbox");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Task could not be added.");
+      // The POST may have created the task; the list on screen would not show
+      // it. See `update` for why the refetch precedes the sentence.
+      const { message, unconfirmed } = writeFailure(reason, "add the task");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setAdding(false);
     }
@@ -197,7 +229,11 @@ export function ActionInbox() {
       await request(`/api/action-items/${id}`, { method: "DELETE" });
       setItems((current) => current.filter((item) => item.id !== id));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Task could not be deleted.");
+      // The DELETE may have landed, leaving a row on screen that is gone from
+      // the store — pressing Delete on it again is not the owner's next move.
+      const { message, unconfirmed } = writeFailure(reason, "delete the task");
+      if (unconfirmed) await load();
+      setError(message);
     }
   }
 

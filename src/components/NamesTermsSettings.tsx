@@ -6,6 +6,11 @@ import type {
   NamesTermInput,
   NamesTermKind,
 } from "@/lib/names-terms";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 const KIND_LABELS: Record<NamesTermKind, string> = {
   person: "Person",
@@ -63,8 +68,18 @@ export interface NamesTermsSettingsProps {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -198,10 +213,16 @@ export function NamesTermsSettings({
       });
       resetForm();
     } catch (error) {
-      setFeedback({
-        ok: false,
-        message: error instanceof Error ? error.message : "Couldn’t save this entry.",
-      });
+      // NOTHING CAME BACK (DW-717), so the entry may be stored and the list on
+      // screen is the stale one. The refetch runs FIRST and the sentence LAST:
+      // `load` does not clear `feedback` on its way in, but its CATCH writes to
+      // that same slot — and the likeliest reason a write went unconfirmed is a
+      // connection that is still down, so the refetch usually rejects too. Set
+      // the other way round, the owner reads `Failed to fetch` in place of the
+      // one sentence that tells them the truth about their entry.
+      const { message, unconfirmed } = writeFailure(error, "save this entry");
+      if (unconfirmed) await load();
+      setFeedback({ ok: false, message });
     } finally {
       setSaving(false);
     }
@@ -220,10 +241,11 @@ export function NamesTermsSettings({
       if (editingId === entry.id) resetForm();
       setFeedback({ ok: true, message: `Removed “${entry.canonical}”.` });
     } catch (error) {
-      setFeedback({
-        ok: false,
-        message: error instanceof Error ? error.message : "Couldn’t remove this entry.",
-      });
+      // Refetch first, sentence last — see `save` for why the order is what
+      // keeps the honest sentence on screen.
+      const { message, unconfirmed } = writeFailure(error, "remove this entry");
+      if (unconfirmed) await load();
+      setFeedback({ ok: false, message });
     }
   }
 

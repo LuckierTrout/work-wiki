@@ -9,6 +9,11 @@ import type {
   KnowledgeRecord,
   StructuredKnowledgeGraph,
 } from "@/lib/structured-knowledge";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 type View = "all" | "decision" | "project" | "person" | "timeline";
 
@@ -32,8 +37,18 @@ const KIND_LABEL: Record<KnowledgeKind, string> = {
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -127,7 +142,13 @@ export function KnowledgeAtlas() {
       );
       setConfirmWholeWiki(false);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not queue the wiki.");
+      // NOTHING CAME BACK (DW-717): the job may already be queued and running,
+      // and telling the owner it failed invites a second queue of the whole
+      // wiki. The refetch runs FIRST because `load` clears `error` on its way
+      // in, so a sentence set before it would not survive to be read.
+      const { message, unconfirmed } = writeFailure(reason, "queue the wiki");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setQueueingWiki(false);
     }
@@ -152,7 +173,9 @@ export function KnowledgeAtlas() {
         data.warning || `${data.enqueued} page${data.enqueued === 1 ? " is" : "s are"} queued again.`,
       );
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not retry Graphify.");
+      const { message, unconfirmed } = writeFailure(reason, "retry Graphify");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setQueueingWiki(false);
     }
@@ -172,7 +195,11 @@ export function KnowledgeAtlas() {
       setGraph(data.graph);
       setExtractSlug("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not extract this page.");
+      // The extraction may have written records into the graph this view is
+      // rendering, so the atlas is refetched rather than left one page short.
+      const { message, unconfirmed } = writeFailure(reason, "extract this page");
+      if (unconfirmed) await load();
+      setError(message);
     } finally {
       setExtracting(false);
     }

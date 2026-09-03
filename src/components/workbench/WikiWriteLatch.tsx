@@ -28,13 +28,31 @@ import {
  * `writeFailure` composed for the write actually in doubt. No copy constant
  * lives here: the message is always the one the failing call site was handed.
  *
- * WHAT IS NOT ADMITTED HERE. The card's SUCCESS-path latch (`awaitingCreate`)
- * stays local. A create that succeeded shuts one control — the empty state's
- * `Create Wiki`, stale behind `WIKI_EMPTY_COPY` for the length of the refresh —
- * and it carries no sentence at all, so sharing it would dim controls on the
- * other surface with nothing to say for them. `busy` stays local for the same
- * reason in reverse: it is one request's in-flight window, not an unanswered
- * question about the registry.
+ * THE SECOND DIMENSION: A CREATE THAT SUCCEEDED (DW-721). It used to be argued
+ * here that the card's success-path latch stayed local because it carries no
+ * sentence, and that sharing it would dim a control on the other surface with
+ * nothing to say for it. The first half of that is still true and is why this
+ * half is SENTENCE-LESS rather than folded into {@link WikiWriteLatch.message};
+ * the conclusion drawn from it was wrong. Both surfaces open the same
+ * `POST /api/wikis` and nothing enforces unique wiki names, so a create that
+ * SUCCEEDED on one of them left the other's create fully live for the length of
+ * `router.refresh()` — the very defect the paragraph above describes, arriving
+ * through the success path instead of the unconfirmed one. One click there
+ * seeded the duplicate wiki and moved every prompt onto its template.
+ *
+ * So the two halves are shared and stay APART, because they answer different
+ * questions. {@link WikiWriteLatch.message} means "a write's outcome is
+ * unknown, here is the sentence"; {@link WikiWriteLatch.awaitingCreate} means
+ * "a create landed and the screen has not caught up". Folding the second into
+ * the first would either invent copy for a control that has nothing to report,
+ * or dim the picker and the rename confirm for a write that PROVABLY SUCCEEDED.
+ * Kept sentence-less, it preserves what the card's local flag already did — dim
+ * one control silently — and merely extends it across the seam. It shuts CREATE
+ * controls only: rename, delete and switch are untouched by it.
+ *
+ * `busy` stays local, for the reason the success half is not: it is one
+ * request's in-flight window on one surface, not a fact about the registry that
+ * the other surface's controls need.
  *
  * AND NO RELEASE EFFECT LIVES HERE. Each surface already owns a ref-gated one
  * keyed on `[wikis, currentWikiId]`, and that ref gate is the whole mechanism
@@ -56,6 +74,19 @@ export interface WikiWriteLatch {
   raise: (message: string) => void;
   /** Drop it. Idempotent, and stable — see the docblock. */
   release: () => void;
+  /**
+   * A create SUCCEEDED and its server render has not arrived (DW-721).
+   *
+   * SENTENCE-LESS on purpose — nothing failed, so there is nothing to explain —
+   * and narrower than {@link latched}: it shuts CREATE controls on both
+   * surfaces and nothing else. Never `aria-disabled` and never an alert; the
+   * control simply goes dead until the render lands.
+   */
+  awaitingCreate: boolean;
+  /** Mark a create as landed. Idempotent, and stable — see {@link release}. */
+  markCreate: () => void;
+  /** Clear it once a server render has arrived. Idempotent and stable. */
+  clearCreate: () => void;
 }
 
 /**
@@ -71,15 +102,30 @@ const WikiWriteLatchContext = createContext<WikiWriteLatch | null>(null);
 /** The one piece of state, in the shape both the provider and the fallback use. */
 function useLatchState(): WikiWriteLatch {
   const [message, setMessage] = useState<string | null>(null);
+  // TWO pieces of state, not one derived flag: a succeeded create and an
+  // unconfirmed write are independently true, and the release effects clear
+  // them on different conditions.
+  const [awaitingCreate, setAwaitingCreate] = useState(false);
   // Stable across renders, because each surface's release effect takes
-  // `release` as a DEPENDENCY: `latched` and `message` are not stable, and
-  // either in that list would fire the effect on the commit that raises the
-  // latch and drop it before the write it guards has any answer.
+  // `release` — and now `clearCreate` — as a DEPENDENCY: `latched`, `message`
+  // and `awaitingCreate` are not stable, and any of them in that list would
+  // fire the effect on the commit that raises the latch and drop it before the
+  // write it guards has any answer.
   const raise = useCallback((next: string) => setMessage(next), []);
   const release = useCallback(() => setMessage(null), []);
+  const markCreate = useCallback(() => setAwaitingCreate(true), []);
+  const clearCreate = useCallback(() => setAwaitingCreate(false), []);
   return useMemo(
-    () => ({ latched: message !== null, message, raise, release }),
-    [message, raise, release],
+    () => ({
+      latched: message !== null,
+      message,
+      raise,
+      release,
+      awaitingCreate,
+      markCreate,
+      clearCreate,
+    }),
+    [message, raise, release, awaitingCreate, markCreate, clearCreate],
   );
 }
 

@@ -11,6 +11,11 @@ import type {
   MemoryProposalReview,
   MemoryProposalStatus,
 } from "@/lib/memory-proposals";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 const TABS: Array<{ value: MemoryProposalStatus | "all"; label: string }> = [
   { value: "pending", label: "Awaiting review" },
@@ -21,8 +26,18 @@ const TABS: Array<{ value: MemoryProposalStatus | "all"; label: string }> = [
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -187,6 +202,11 @@ export function ReviewDesk() {
     setActing(action);
     setError(null);
     setNotice(null);
+    // THE WRITE'S OWN `try`, and nothing else's (DW-717). The two READS below
+    // used to sit inside it, so a re-read that 502'd or timed out reported a
+    // decision that had PROVABLY LANDED — the PATCH returned 2xx — as an
+    // outcome nobody could account for. A verdict about a write has to be
+    // scoped to the write.
     try {
       await request<{ proposal: MemoryChangeProposal }>(
         `/api/review/proposals/${selectedId}`,
@@ -196,19 +216,43 @@ export function ReviewDesk() {
           body: JSON.stringify({ action, decisionNote: decisionNote.trim() || undefined }),
         },
       );
-      setDecisionNote("");
+    } catch (reason) {
+      // NOTHING CAME BACK: the accept may have rewritten the source page
+      // already, so "the decision could not be saved" is the one thing this
+      // surface must not say. `loadProposals` clears `error` on its way in, so
+      // the reconciliation runs BEFORE the sentence is set.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        `${action} the proposal`,
+      );
+      if (unconfirmed) await loadProposals();
+      setError(message);
+      setActing(null);
+      return;
+    }
+
+    // Past this line the decision LANDED, so it is reported as landed BEFORE
+    // anything else is attempted. What follows only catches the screen up with
+    // it: a read that fails there is reported as a read failure — `notice` is
+    // not cleared by `loadProposals` — and never as doubt about the write.
+    setDecisionNote("");
+    setNotice(
+      action === "accept"
+        ? "Changes accepted. work-wiki will graphify the updated page in the background."
+        : "Proposal rejected. The source page was not changed.",
+    );
+    try {
       await loadProposals();
       const refreshed = await request<{ review: MemoryProposalReview }>(
         `/api/review/proposals/${selectedId}`,
       );
       setReview(refreshed.review);
-      setNotice(
-        action === "accept"
-          ? "Changes accepted. work-wiki will graphify the updated page in the background."
-          : "Proposal rejected. The source page was not changed.",
-      );
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The decision could not be saved.");
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Could not reload the proposal.",
+      );
     } finally {
       setActing(null);
     }
@@ -235,7 +279,14 @@ export function ReviewDesk() {
       setEditing(false);
       await loadProposals();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The revised draft could not be saved.");
+      // The revision may be stored, in which case the editor is holding a draft
+      // the list no longer agrees with. See `decide` for the ordering.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "save the revised draft",
+      );
+      if (unconfirmed) await loadProposals();
+      setError(message);
     } finally {
       setActing(null);
     }

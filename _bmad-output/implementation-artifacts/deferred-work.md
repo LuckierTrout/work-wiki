@@ -5854,7 +5854,9 @@ location: src/components/*.tsx (16 files), src/lib/chat-session-transport.ts, sr
 source_spec: `spec-dw-620-624-settings-read-and-write-confirmation.md`
 severity: low
 reason: A repo-wide grep for the literal `response.json().catch(() => ({}))` finds it in `SystemHealthDesk.tsx`, `LocalSyncPanel.tsx`, `ActionInbox.tsx`, `SourceMonitorDesk.tsx`, `NamesTermsSettings.tsx`, `IntegrationDesk.tsx`, `MonitorDigestPanel.tsx`, `ReviewDesk.tsx`, `AgentWorkspaceDesk.tsx`, `BulkDocumentImport.tsx`, `ArticleActions.tsx`, `VaultExplorer.tsx`, `KnowledgeStudio.tsx`, `ChatWorkspace.tsx`, `KnowledgeAtlas.tsx`, `RecentIngests.tsx`, `chat-session-transport.ts` and `chat.ts` — none of which imports `workbench-request`. On each, a 2xx whose body read dies mid-stream resolves an empty object, so the destructure that follows reports a landed write as a failure (or a shapeless success), exactly the defect DW-624 names. The fix is `send`'s now-shipped gate: `if (response.ok && unconfirmedCause(cause)) throw cause;` plus a `writeFailure` at the catch. Not a call site of anything this bundle changed — these are independent copies of the helper.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-unconfirmed-write-helper-adoption
+resolution-undo: 52eaa46db9ad6bd8a3a5bc9b2ea0e78c7374d2ce48dc6f6f98fba2e71d8d827f 2026-09-03 7374617475733a206f70656e
 
 ### DW-718: `WorkspacePreview` renders a second `.wb-preview` column whose `<header className="wb-preview-header">` matches no rule anywhere in globals.css, so that column's title and path have zero padding and n
 origin: spec-deferred 8f5d4c2edc3f
@@ -5886,7 +5888,9 @@ location: src/components/WikiWorkbench.tsx (create, success branch) and src/comp
 source_spec: `spec-dw-515-516-517-unconfirmed-write-latch-shared.md`
 severity: low
 reason: Pre-existing and unchanged by DW-515/516/517, which share the UNCONFIRMED half only. `WikiWorkbench.create`'s success path raises the component-local `awaitingCreate` (read by that card's opener and confirm alone); `WikiSwitcher.create`'s success path raises nothing at all. Both surfaces stay mounted together and both POST `/api/wikis`, and nothing enforces unique wiki names. Demonstrated by mounting both under one `WorkbenchDataProvider`, letting the card's create resolve 2xx, and pressing the header's `Create`: a second `POST /api/wikis` is issued while every existing suite stays green. The consequence is the one the shared latch was built for — a duplicate wiki made active, moving every prompt onto its template.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-unconfirmed-write-helper-adoption
+resolution-undo: 52eaa46db9ad6bd8a3a5bc9b2ea0e78c7374d2ce48dc6f6f98fba2e71d8d827f 2026-09-03 7374617475733a206f70656e
 
 ### DW-722: `storage-fs.test.ts`'s `reapStrandedScratchFiles` cases fail under full `node`-project load, so `pnpm test` — the repo's own CI command — is not reliably green independent of any change.
 origin: spec-deferred 0cd1c133cb89
@@ -6088,4 +6092,12 @@ location: src/app/api/workbench/activity/route.ts:123 / :184
 source_spec: `spec-dw-441-700-fetch-door-guards-and-deadline.md`
 severity: low
 reason: DW-700's shape at a door the bundle did not name. `src/app/api/workbench/activity/route.ts:123` (embed rebuild) and `:184` (ingest retry) both call `enqueueOrInline(...)` with no `inlineBudgetMs`, so where `enqueueTask` returns false the FULL `ingest()` -- LLM map/reduce, retries, embeddings, image downloads -- runs inside the request. `src/components/workbench/ActivityDock.tsx:143` and `:193` reach that route through `send(ACTIVITY_ROUTE, ...)`, which arms the same `REQUEST_TIMEOUT_MS` deadline. The client aborts first, `unconfirmedCause` classifies the `TimeoutError` as unconfirmed, and the owner is told the outcome is unknown about work that is still running. Pre-existing and not caused by this change: the opt-in budget added here leaves every other `enqueueOrInline` caller byte-for-byte as it was. Out of scope because the bundle's intent names only `src/app/api/workbench/intake/route.ts:640`. Now named in the `inlineBudgetMs` docblock rather than denied by it.
+status: open
+
+### DW-747: `NamesTermsSettings.save` has no 2xx shape guard, so a save whose body fails to parse pushes `undefined` into `entries` and the row map throws, blanking the whole section.
+origin: spec-deferred 73a6857e1e9f
+location: src/components/NamesTermsSettings.tsx (save, success branch)
+source_spec: `spec-dw-717-721-unconfirmed-write-helper-adoption.md`
+severity: low
+reason: `readJsonBody` resolves `{}` for a 2xx that merely fails to PARSE — the answer arrived and was shapeless — and every other adopting site has its own guard for that (`if (!wiki?.id) throw …` on the wiki surfaces, `if (!data.queued || !data.jobId)` in `BulkDocumentImport`). `save` has none: it pushes `data.entry` straight into `entries`, so `undefined` reaches the row map and `Cannot read properties of undefined (reading 'canonical')` takes the section down. Found while drafting a "2xx that merely fails to parse" case for that surface; the case was dropped because the crash is pre-existing and outside this spec's scope.
 status: open

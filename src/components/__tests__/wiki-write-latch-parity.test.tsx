@@ -442,3 +442,115 @@ describe("a shared release clears only the surface that raised it", () => {
     expect(screen.getByText("That wiki no longer exists.")).toBeTruthy();
   });
 });
+
+describe("one create-succeeded latch across both wiki surfaces (DW-721)", () => {
+  /**
+   * The SENTENCE-LESS half. Everything above concerns a write whose outcome
+   * nobody knows; these rows concern one that plainly SUCCEEDED — and left the
+   * other surface's create fully live for the length of `router.refresh()`.
+   *
+   * Both surfaces POST `/api/wikis`, nothing enforces unique wiki names, and
+   * neither is optimistic: the empty state and the header both go on rendering
+   * a registry that does not yet contain the wiki that was just made. One click
+   * on the other surface seeds the duplicate the latch exists to prevent and
+   * moves every prompt onto its template.
+   *
+   * Neither single-surface suite can see this: the card's flag was local, and
+   * the switcher's success path raised nothing at all.
+   */
+  it("shuts the HEADER's create when the CARD's create SUCCEEDS", async () => {
+    const view = mount([], null);
+
+    fireEvent.click(button("Create Wiki"));
+    fireEvent.click(button("Create"));
+    // The card is not optimistic: the dialog closes and the refresh is fired,
+    // and until it lands the empty state is still on screen.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(creates()).toHaveLength(1);
+
+    // The header's opener still OPENS — refusing to open would leave a control
+    // that does nothing and says nothing — and its `Create` is dead.
+    fireEvent.click(button("New Wiki"));
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+    expect(button("Create").disabled).toBe(true);
+    // MUTE. Nothing failed, so there is no sentence and no announcement: the
+    // control simply goes dead until the render lands.
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // The spy is the assertion, not the attribute.
+    fireEvent.click(button("Create"));
+    expect(creates()).toHaveLength(1);
+
+    // One server render releases both, whichever surface's effect runs first.
+    view.rerender(tree([WIKI], WIKI.id));
+    await waitFor(() => expect(button("Create").disabled).toBe(false));
+  });
+
+  it("shuts the CARD's create when the HEADER's create SUCCEEDS", async () => {
+    const view = mount([], null);
+
+    fireEvent.click(button("New Wiki"));
+    fireEvent.click(button("Create"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(creates()).toHaveLength(1);
+
+    // The card's empty-state opener. `disabled`, like the unconfirmed half —
+    // this lifts on its own when the render lands — but with NO description:
+    // the sentence in the unconfirmed case explains a write in doubt, and there
+    // is nothing here to explain.
+    const opener = button("Create Wiki");
+    expect(opener.disabled).toBe(true);
+    expect(opener.hasAttribute("aria-disabled")).toBe(false);
+    expect(opener.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // It opens nothing and writes nothing while it is down.
+    fireEvent.click(opener);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(creates()).toHaveLength(1);
+
+    view.rerender(tree([WIKI], WIKI.id));
+    // The empty state is gone on the arriving render, so the card's opener is
+    // too — the header's is the one both halves have to give back.
+    fireEvent.click(button("New Wiki"));
+    await waitFor(() => expect(button("Create").disabled).toBe(false));
+  });
+
+  it("leaves rename, delete and the picker alone under a pending create", async () => {
+    // The NARROWNESS is the point, and it is why this half is a second
+    // dimension rather than a second `raise`. A create that provably SUCCEEDED
+    // says nothing about a rename or a delete, and dimming the picker would
+    // take the owner's only view of which wiki is active out of the tab order
+    // over a write that worked.
+    const view = mount([WIKI, OTHER], WIKI.id);
+
+    fireEvent.click(button("New Wiki"));
+    fireEvent.click(button("Create"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+
+    // The picker: live, and NOT `aria-disabled` — the unconfirmed half sets
+    // that attribute, this one must not.
+    const select = screen.getByLabelText("Active wiki");
+    expect(select.getAttribute("aria-disabled")).toBeNull();
+
+    // Rename's confirm stays live.
+    fireEvent.click(button("Rename Wiki"));
+    expect(button("Rename").disabled).toBe(false);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // …and so does Delete's, which names an irreversible action.
+    fireEvent.click(button("Delete Wiki"));
+    expect(button("Delete").disabled).toBe(false);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // Still nothing announced anywhere.
+    expect(screen.queryByRole("alert")).toBeNull();
+    view.rerender(tree([WIKI, OTHER], WIKI.id));
+  });
+});

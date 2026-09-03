@@ -199,6 +199,9 @@ export function WikiSwitcher({
     message: latchMessage,
     raise: raiseLatch,
     release: releaseLatch,
+    awaitingCreate,
+    markCreate,
+    clearCreate,
   } = useWikiWriteLatch();
   /**
    * "THIS switcher raised the standing latch", mirrored where the release
@@ -216,6 +219,20 @@ export function WikiSwitcher({
    * below sets it on the adjacent line.
    */
   const raisedLatchRef = useRef(false);
+  /**
+   * "THIS switcher marked a create as landed" (DW-721) — `raisedLatchRef`'s
+   * twin, for the SENTENCE-LESS half of the shared latch.
+   *
+   * A create that SUCCEEDS here closes this dialog and fires `router.refresh()`,
+   * and for the length of that refresh the canvas card's empty state still
+   * offers `Create Wiki` over a registry that already has the new wiki in it.
+   * Nothing enforces unique names, so one click there seeds a duplicate and
+   * moves every prompt onto its template — the DW-516 defect arriving through
+   * the success path. `markCreate` shuts BOTH creates; this ref is what lets
+   * the release effect below clear only what this surface raised, and it is set
+   * on the line adjacent to every `markCreate` for the reason above.
+   */
+  const awaitingCreateRef = useRef(false);
 
   // The optimism ends the moment the server's answer arrives. Without this the
   // stale `pendingId` outranks `currentWikiId` forever, so any later change to
@@ -276,14 +293,24 @@ export function WikiSwitcher({
    * the card's effect running on the same render is a no-op.
    */
   useEffect(() => {
-    if (!raisedLatchRef.current) return;
+    const raisedLatch = raisedLatchRef.current;
+    // The create-succeeded half releases on the SAME arriving render and is
+    // read from its own ref, because it can be up while the latch is not — a
+    // create that succeeded raises no sentence (DW-721).
+    if (!awaitingCreateRef.current && !raisedLatch) return;
+    awaitingCreateRef.current = false;
     raisedLatchRef.current = false;
+    clearCreate();
+    // Only a RAISED LATCH clears this surface's sentences. A succeeded create
+    // never wrote one, so a return here would be dropping errors nothing in
+    // this commit answered.
+    if (!raisedLatch) return;
     releaseLatch();
     setCreateError(null);
     setRenameError(null);
     setDeleteError(null);
     setError(null);
-  }, [wikis, currentWikiId, releaseLatch]);
+  }, [wikis, currentWikiId, releaseLatch, clearCreate]);
 
   async function switchWiki(id: string) {
     // `switching` is the in-flight half; the shared latch is the half that
@@ -371,7 +398,11 @@ export function WikiSwitcher({
     // button being dead is what the owner sees; this is what makes a second
     // entry impossible — `CreateWikiDialog.submit` also carries Enter, and a
     // handler that only the pointer path guards is a handler with a hole.
-    if (busy || latched) return;
+    //
+    // `awaitingCreate` rides ALONGSIDE, and it is the DW-721 half: a create the
+    // CANVAS CARD landed shuts this one too, because both post to the same
+    // route and the registry it wrote is not on screen yet.
+    if (busy || awaitingCreate || latched) return;
     setBusy(true);
     setCreateError(null);
     try {
@@ -385,6 +416,12 @@ export function WikiSwitcher({
       // seeding the select with its id would leave the control on a value that
       // matches no option. It shows the previous Wiki — stale but real — for
       // the length of the refresh.
+      // The wiki EXISTS now, and the card's empty state does not know it yet:
+      // for the length of this refresh its `Create Wiki` would POST a second
+      // one into a registry that enforces no unique names. Sentence-less, and
+      // shared, for the reasons `WikiWriteLatch` states (DW-721).
+      markCreate();
+      awaitingCreateRef.current = true;
       setCreateOpen(false);
       setError(null);
       router.refresh();
@@ -778,7 +815,9 @@ export function WikiSwitcher({
         open={createOpen}
         busy={busy}
         // Cancel and Esc stay live behind it — see the shared latch above.
-        confirmDisabled={latched}
+        // `awaitingCreate` is the sentence-less half (DW-721): a create either
+        // surface landed shuts this confirm with no new copy beside it.
+        confirmDisabled={awaitingCreate || latched}
         // Falls back to the SWITCHER's sentence while the latch is up, because
         // the latch is shared and this dialog may be dead over a write from the
         // OTHER SURFACE entirely (DW-409, DW-516). The switcher's own `<p role="alert">` sits behind this

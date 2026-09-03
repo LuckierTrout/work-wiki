@@ -24,6 +24,11 @@ import type { ResearchProject } from "@/lib/research-projects";
 import type { ResearchProvider } from "@/lib/research-providers";
 import type { PortableArchiveInspection } from "@/lib/portable-archive";
 import type { SourceContribution } from "@/lib/knowledge-compilation";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 type StudioSection =
   | "setup"
@@ -174,8 +179,18 @@ export const RESEARCH_COLLECT_EMPTY_COPY =
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -381,10 +396,15 @@ export function KnowledgeStudio() {
           : { ok: true, message: RESEARCH_REPAIRED_COPY },
       );
     } catch (error) {
-      setFeedback({
-        ok: false,
-        message: error instanceof Error ? error.message : "Couldn’t repair the research projects file.",
-      });
+      // NOTHING CAME BACK (DW-717): the quarantine-and-replace may have run in
+      // full, so this desk must not claim the repair failed. The re-read runs
+      // FIRST because `refresh` clears `feedback` on a successful read.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "repair the research projects file",
+      );
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setRepairing(false);
     }
@@ -483,7 +503,7 @@ export function KnowledgeStudio() {
         ) : null}
 
         {section === "setup" ? (
-          <SetupPanel vaults={vaults} setVaults={setVaults} setFeedback={setFeedback} />
+          <SetupPanel vaults={vaults} setVaults={setVaults} setFeedback={setFeedback} refresh={refresh} />
         ) : null}
         {section === "compile" ? (
           <CompilePanel jobs={jobs} proposals={proposals} contributions={contributions} onEvidence={setEvidence} />
@@ -500,6 +520,7 @@ export function KnowledgeStudio() {
               setSection("research");
             }}
             setFeedback={setFeedback}
+            refresh={refresh}
             readOnly={readOnly}
           />
         ) : null}
@@ -510,6 +531,7 @@ export function KnowledgeStudio() {
             setProjects={setProjects}
             onEvidence={setEvidence}
             setFeedback={setFeedback}
+            refresh={refresh}
             readOnly={readOnly}
           />
         ) : null}
@@ -521,9 +543,10 @@ export function KnowledgeStudio() {
             setSkills={setSkills}
             onEvidence={setEvidence}
             setFeedback={setFeedback}
+            refresh={refresh}
           />
         ) : null}
-        {section === "portability" ? <PortabilityPanel setFeedback={setFeedback} /> : null}
+        {section === "portability" ? <PortabilityPanel setFeedback={setFeedback} refresh={refresh} /> : null}
         {section === "connections" ? <ConnectionsPanel vaults={vaults} /> : null}
       </section>
 
@@ -572,10 +595,20 @@ function SetupPanel({
   vaults,
   setVaults,
   setFeedback,
+  refresh,
 }: {
   vaults: Vault[];
   setVaults: React.Dispatch<React.SetStateAction<Vault[]>>;
   setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
+  /**
+   * The studio's own refetch, for an unknown write outcome (DW-717).
+   *
+   * A write whose answer never came back may have landed in full, so the panel
+   * cannot go on rendering the list it holds. `refresh` clears `feedback` on a
+   * successful read, which is why every catch below awaits it BEFORE setting
+   * its sentence.
+   */
+  refresh: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
@@ -593,7 +626,12 @@ function SetupPanel({
       setName("");
       setFeedback({ ok: true, message: `Vault “${data.vault.name}” is ready.` });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t create the vault." });
+      // NOTHING CAME BACK (DW-717), so the vault may exist and this list would
+      // not be showing it. `refresh` clears `feedback` on a successful read, so
+      // the sentence is set after it rather than wiped by it.
+      const { message, unconfirmed } = writeFailure(error, "create the vault");
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setSaving(false);
     }
@@ -770,12 +808,22 @@ function InsightsPanel({
   onEvidence,
   onProject,
   setFeedback,
+  refresh,
   readOnly = false,
 }: {
   insights: GraphInsight[];
   onEvidence: (value: Evidence) => void;
   onProject: (project: ResearchProject) => void;
   setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
+  /**
+   * The studio's own refetch, for an unknown write outcome (DW-717).
+   *
+   * A write whose answer never came back may have landed in full, so the panel
+   * cannot go on rendering the list it holds. `refresh` clears `feedback` on a
+   * successful read, which is why every catch below awaits it BEFORE setting
+   * its sentence.
+   */
+  refresh: () => Promise<void>;
   /** `YOPEDIA_READONLY=1`, from `GET /api/research` — see the module note. */
   readOnly?: boolean;
 }) {
@@ -808,7 +856,14 @@ function InsightsPanel({
       setFeedback({ ok: true, message: "Research brief created from this graph signal." });
       onProject(data.project);
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t create the research brief." });
+      // The brief may have been stored; `onProject` never ran, so the research
+      // section would not have it. See `createVault` for the ordering.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "create the research brief",
+      );
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setCreating(null);
     }
@@ -876,6 +931,7 @@ function ResearchPanel({
   setProjects,
   onEvidence,
   setFeedback,
+  refresh,
   readOnly = false,
 }: {
   projects: ResearchProject[];
@@ -883,6 +939,15 @@ function ResearchPanel({
   setProjects: React.Dispatch<React.SetStateAction<ResearchProject[]>>;
   onEvidence: (value: Evidence) => void;
   setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
+  /**
+   * The studio's own refetch, for an unknown write outcome (DW-717).
+   *
+   * A write whose answer never came back may have landed in full, so the panel
+   * cannot go on rendering the list it holds. `refresh` clears `feedback` on a
+   * successful read, which is why every catch below awaits it BEFORE setting
+   * its sentence.
+   */
+  refresh: () => Promise<void>;
   /** `YOPEDIA_READONLY=1`, from `GET /api/research` — see the module note. */
   readOnly?: boolean;
 }) {
@@ -940,7 +1005,12 @@ function ResearchPanel({
       setTitle(""); setQuestion(""); setQueries("");
       setFeedback({ ok: true, message: "Research brief saved." });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t create the research brief." });
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "create the research brief",
+      );
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -964,7 +1034,14 @@ function ResearchPanel({
       });
       setFeedback({ ok: true, message: `${project.sourceUrls.length} research source${project.sourceUrls.length === 1 ? " is" : "s are"} entering the ingest pipeline.` });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t collect the research sources." });
+      // The batch may already be in the ingest pipeline, and a second Collect
+      // would enter the same URLs again.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "collect the research sources",
+      );
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -982,7 +1059,14 @@ function ResearchPanel({
       setProjects((current) => current.map((item) => item.id === project.id ? data.project : item));
       setFeedback({ ok: true, message: data.project.status === "complete" ? "Research draft is ready in Review." : "Automated research started." });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t start automated research." });
+      // The run may already be underway, so the project's status on screen is
+      // the stale one and a second Run would spend the provider twice.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "start automated research",
+      );
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -1000,7 +1084,9 @@ function ResearchPanel({
       setProjects((current) => current.map((item) => item.id === project.id ? data.project : item));
       setFeedback({ ok: true, message: "Research cancellation requested." });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t cancel research." });
+      const { message, unconfirmed } = writeFailure(error, "cancel the research");
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -1018,7 +1104,13 @@ function ResearchPanel({
       setProjects((current) => current.filter((item) => item.id !== project.id));
       setFeedback({ ok: true, message: "Research brief deleted. Its source documents were left untouched." });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t delete the research brief." });
+      // The brief may be gone from the registry while the row is still here.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        "delete the research brief",
+      );
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -1157,12 +1249,22 @@ function SkillsPanel({
   setSkills,
   onEvidence,
   setFeedback,
+  refresh,
 }: {
   skills: AgentSkill[];
   agents: Agent[];
   setSkills: React.Dispatch<React.SetStateAction<AgentSkill[]>>;
   onEvidence: (value: Evidence) => void;
   setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
+  /**
+   * The studio's own refetch, for an unknown write outcome (DW-717).
+   *
+   * A write whose answer never came back may have landed in full, so the panel
+   * cannot go on rendering the list it holds. `refresh` clears `feedback` on a
+   * successful read, which is why every catch below awaits it BEFORE setting
+   * its sentence.
+   */
+  refresh: () => Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -1183,7 +1285,11 @@ function SkillsPanel({
       setName(""); setDescription(""); setInstructions(""); setAgentIds([]);
       setFeedback({ ok: true, message: "Skill saved and assigned. It will be applied on the selected agents’ next runs." });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t create the skill." });
+      // The skill may be saved and already assigned; the form still holds the
+      // draft, and a second Save would create it twice.
+      const { message, unconfirmed } = writeFailure(error, "create the skill");
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -1200,7 +1306,9 @@ function SkillsPanel({
       setSkills((current) => current.map((item) => item.id === skill.id ? data.skill : item));
       setFeedback({ ok: true, message: `Skill “${data.skill.name}” updated.` });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t update the skill." });
+      const { message, unconfirmed } = writeFailure(error, "update the skill");
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -1214,7 +1322,9 @@ function SkillsPanel({
       setSkills((current) => current.filter((item) => item.id !== skill.id));
       setFeedback({ ok: true, message: "Skill deleted." });
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : "Couldn’t delete the skill." });
+      const { message, unconfirmed } = writeFailure(error, "delete the skill");
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }
@@ -1245,7 +1355,21 @@ function SkillsPanel({
   );
 }
 
-function PortabilityPanel({ setFeedback }: { setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>> }) {
+function PortabilityPanel({
+  setFeedback,
+  refresh,
+}: {
+  setFeedback: React.Dispatch<React.SetStateAction<{ ok: boolean; message: string } | null>>;
+  /**
+   * The studio's own refetch, for an unknown write outcome (DW-717).
+   *
+   * A write whose answer never came back may have landed in full, so the panel
+   * cannot go on rendering the list it holds. `refresh` clears `feedback` on a
+   * successful read, which is why every catch below awaits it BEFORE setting
+   * its sentence.
+   */
+  refresh: () => Promise<void>;
+}) {
   const [archive, setArchive] = useState<File | null>(null);
   const [inspection, setInspection] = useState<PortableArchiveInspection | null>(null);
   const [collision, setCollision] = useState<"skip" | "overwrite">("skip");
@@ -1268,7 +1392,16 @@ function PortabilityPanel({ setFeedback }: { setFeedback: React.Dispatch<React.S
         setFeedback({ ok: true, message: `Restored ${data.result.imported} files; skipped ${data.result.skipped}. Derived indexes were rebuilt.` });
       }
     } catch (error) {
-      setFeedback({ ok: false, message: error instanceof Error ? error.message : `Archive ${action} failed.` });
+      // An `import` whose answer never came back may have WRITTEN FILES, so
+      // "failed" is the one thing this panel must not say about it. A `preview`
+      // writes nothing, but the sentence is composed the same way at both — the
+      // action phrase is what tells them apart.
+      const { message, unconfirmed } = writeFailure(
+        error,
+        action === "import" ? "restore the archive" : "inspect the archive",
+      );
+      if (unconfirmed) await refresh();
+      setFeedback({ ok: false, message });
     } finally {
       setBusy(null);
     }

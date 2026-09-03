@@ -8,6 +8,11 @@ import { useViewerHandle } from "@/lib/viewer-handle";
 import { ReingestButton } from "@/components/ReingestButton";
 import { DeletePageButton } from "@/components/DeletePageButton";
 import { SaveToVaultButton } from "@/components/SaveToVaultButton";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 interface ArticleActionsProps {
   slug: string;
@@ -162,14 +167,27 @@ export function ArticleActions({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ slug }),
       });
-      const body = (await response.json().catch(() => ({}))) as { error?: string };
+      const body = await readJsonBody<{ error?: string }>(response);
       if (!response.ok) {
-        throw new Error(body.error || `Graphify failed (${response.status}).`);
+        // `RequestFailedError` and not a bare `Error` (DW-717): the message is
+        // unchanged, but the status rides it, which is the only way
+        // `writeFailure` below can tell a gateway that gave up (502/504 — the
+        // write may have landed) from a route that refused.
+        throw new RequestFailedError(
+          body.error || `Graphify failed (${response.status}).`,
+          response.status,
+        );
       }
       setGraphifyState("done");
     } catch (error) {
+      // NOTHING CAME BACK (DW-717): the extraction may have run and written
+      // records into the atlas, so a flat "Graphify failed." would send the
+      // owner to press it a second time over work that is already done. There
+      // is nothing on THIS page derived from the graph to refetch — the atlas
+      // is a route of its own — so the honest sentence is the whole remedy,
+      // and the button comes back so the owner can retry after looking.
       setGraphifyState("failed");
-      setGraphifyError(error instanceof Error ? error.message : "Graphify failed.");
+      setGraphifyError(writeFailure(error, "graphify this page").message);
     }
   }
 

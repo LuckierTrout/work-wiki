@@ -11,6 +11,11 @@ import type {
   ChatMessage,
   ChatRetrievalMode,
 } from "@/lib/chat";
+import {
+  RequestFailedError,
+  readJsonBody,
+  writeFailure,
+} from "@/lib/workbench-request";
 
 interface ScopeOption {
   value: string;
@@ -18,8 +23,18 @@ interface ScopeOption {
 }
 
 async function json<T>(response: Response): Promise<T> {
-  const body = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  const body = await readJsonBody<T & { error?: string }>(response);
+  // `RequestFailedError`, never a bare `Error` (DW-717): the MESSAGE is
+  // byte-identical, but the status rides the error. `writeFailure` cannot tell
+  // a gateway that gave up (502/504 — the write may have landed) from a route
+  // that refused by reading `Request failed (504)`, so a bare throw here made
+  // every catch below report a hand-off as a KNOWN failure.
+  if (!response.ok) {
+    throw new RequestFailedError(
+      body.error || `Request failed (${response.status})`,
+      response.status,
+    );
+  }
   return body;
 }
 
@@ -85,6 +100,44 @@ export function ChatWorkspace() {
     }
   }
 
+  /**
+   * The thread list, refetched — this surface's re-list (DW-717).
+   *
+   * `removeConversation` has no single record to reopen: on an unknown outcome
+   * the thread may be gone, and the sidebar is the only thing that can say. The
+   * initial load lives in an effect that also owns `loading` and the scope
+   * options, so this asks the one route the sidebar is rendered from.
+   *
+   * IT ALSO DROPS AN `active` THE SERVER NO LONGER NAMES. Refetching the
+   * sidebar alone would leave the transcript pane rendering a thread the DELETE
+   * may have removed — and every control on it (scope, evidence mode, context
+   * size, the next question) aims its PATCH at that id, so the owner would go
+   * on writing to a conversation that is gone. Every other unconfirmed branch
+   * in this file reconciles the OPEN record; this is that, for the one write
+   * whose record may not exist any more.
+   *
+   * Its own failure is swallowed deliberately: the sentence the caller is about
+   * to set already sends the owner to the screen, and a second message about
+   * the refetch would displace it with something they cannot act on. `active`
+   * is then left exactly as it was rather than cleared on a guess — a list that
+   * never answered says nothing about whether the thread survived.
+   */
+  async function relistConversations() {
+    try {
+      const data = await json<{ conversations: ChatConversation[] }>(
+        await fetch("/api/chat/conversations"),
+      );
+      setConversations(data.conversations);
+      setActive((current) =>
+        current && data.conversations.some((item) => item.id === current.id)
+          ? current
+          : null,
+      );
+    } catch {
+      // Nothing to add — see above.
+    }
+  }
+
   async function changeScope(value: string) {
     setScope(value);
     if (!active) return;
@@ -103,7 +156,13 @@ export function ChatWorkspace() {
           : item,
       ));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Scope could not be changed.");
+      // NOTHING CAME BACK (DW-717): the PATCH may have been applied, so the
+      // select on screen and the stored scope can disagree. Reopening the
+      // conversation is this surface's refetch and it clears `error` on its way
+      // in, so the sentence is set AFTER it rather than wiped by it.
+      const { message, unconfirmed } = writeFailure(reason, "change the scope");
+      if (unconfirmed) await openConversation(active.id);
+      setError(message);
     }
   }
 
@@ -126,7 +185,15 @@ export function ChatWorkspace() {
       ));
     } catch (reason) {
       setRetrievalMode(active.retrievalMode ?? "wiki");
-      setError(reason instanceof Error ? reason.message : "Evidence mode could not be changed.");
+      // The local revert above is a GUESS on an unknown outcome, so the refetch
+      // replaces it with what the server actually holds. See `changeScope` for
+      // why the sentence follows the refetch.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "change the evidence mode",
+      );
+      if (unconfirmed) await openConversation(active.id);
+      setError(message);
     }
   }
 
@@ -149,7 +216,12 @@ export function ChatWorkspace() {
       ));
     } catch (reason) {
       setContextBudget(active.contextBudget ?? "standard");
-      setError(reason instanceof Error ? reason.message : "Context size could not be changed.");
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "change the context size",
+      );
+      if (unconfirmed) await openConversation(active.id);
+      setError(message);
     }
   }
 
@@ -160,7 +232,14 @@ export function ChatWorkspace() {
       setConversations((current) => current.filter((item) => item.id !== active.id));
       setActive(null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Conversation could not be deleted.");
+      // The DELETE may have landed, leaving a thread in the sidebar that is
+      // gone from the store. The re-list is what says which.
+      const { message, unconfirmed } = writeFailure(
+        reason,
+        "delete the conversation",
+      );
+      if (unconfirmed) await relistConversations();
+      setError(message);
     }
   }
 
@@ -183,7 +262,11 @@ export function ChatWorkspace() {
       // rather than rendering "Saved as undefined".
       setSavedMessage(result.slug ? { slug: result.slug, url: result.url } : null);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Answer could not be saved.");
+      // No refetch, and nothing here to refetch: the page this writes lives in
+      // the wiki, which this surface does not render. What the owner gets is
+      // the honest sentence — the answer may well be saved — instead of a flat
+      // claim that it was not.
+      setError(writeFailure(reason, "save the answer").message);
     }
   }
 

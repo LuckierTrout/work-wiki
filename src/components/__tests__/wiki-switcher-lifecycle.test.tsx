@@ -1002,6 +1002,81 @@ describe("an unconfirmed write latches the confirm until a server render (DW-375
  * which commits no state and lets React re-apply the controlled value. That is
  * the mechanism `WikiSwitcherProps.readOnly` documents in full.
  */
+describe("a create that SUCCEEDED latches the confirm too (DW-721)", () => {
+  /**
+   * The SENTENCE-LESS half of the shared latch, on a switcher mounted BARE.
+   *
+   * `useWikiWriteLatch` degrades to LOCAL state when there is no provider above
+   * it, which is exactly how this suite renders the component — and that
+   * fallback has to behave identically, or the one deployment shape nobody
+   * mounts in the shell is the one shape where a create door stays open.
+   * `wiki-write-latch-parity.test.tsx` covers the shared path with both
+   * surfaces under one provider; this covers the degradation.
+   *
+   * A create that SUCCEEDS closes this dialog and fires `router.refresh()`, and
+   * until that render lands the registry it wrote is not on screen anywhere.
+   * Nothing enforces unique wiki names, so a second `Create` in that window
+   * seeds a duplicate wiki and moves every prompt onto its template — the
+   * DW-516 defect arriving through the success path instead of the unconfirmed
+   * one.
+   */
+  it("shuts the confirm on a create that landed, with nothing announced", async () => {
+    const view = mount();
+
+    fireEvent.click(button("New Wiki"));
+    fireEvent.click(button("Create"));
+
+    // Not optimistic: the dialog closes and the refresh goes out.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    const creates = () =>
+      fetchMock.mock.calls.filter(([url]) => url === "/api/wikis");
+    expect(creates()).toHaveLength(1);
+
+    // The opener still OPENS — a control that does nothing and says nothing is
+    // worse than a dead confirm — and the confirm is dead.
+    fireEvent.click(button("New Wiki"));
+    expect(screen.getByRole("dialog", { name: "Create Wiki" })).toBeTruthy();
+    expect(button("Create").disabled).toBe(true);
+    // MUTE, which is the whole reason this half is a second dimension and not a
+    // second `raise`: nothing failed, so there is no sentence and no alert.
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // Asserted on the SPY, not the attribute: `disabled` is the affordance and
+    // the handler's early return is the refusal.
+    fireEvent.click(button("Create"));
+    expect(creates()).toHaveLength(1);
+
+    // Rename and Delete are untouched — a create that provably succeeded says
+    // nothing about either, and dimming them would be a claim this half does
+    // not make.
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    fireEvent.click(button("Rename Wiki"));
+    fireEvent.change(screen.getByLabelText("Wiki name"), {
+      target: { value: "Q4 plan" },
+    });
+    expect(button("Rename").disabled).toBe(false);
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    // …and the picker keeps its place: `aria-disabled` is the unconfirmed
+    // half's marker, and this half must never set it.
+    expect(
+      screen.getByLabelText("Active wiki").getAttribute("aria-disabled"),
+    ).toBeNull();
+
+    // The arriving server render gives the confirm back. Deliberately the SAME
+    // two wikis: a refresh that says nothing changed must still reopen the
+    // door, or it is dead for the session with nothing to revive it.
+    view.rerender(
+      <WikiSwitcher wikis={[CURRENT, OTHER]} currentWikiId={CURRENT.id} />,
+    );
+    fireEvent.click(button("New Wiki"));
+    await waitFor(() => expect(button("Create").disabled).toBe(false));
+  });
+});
+
 describe("an unconfirmed switch holds the picker too (DW-409)", () => {
   const abort = () =>
     Object.assign(new Error("signal timed out"), { name: "TimeoutError" });
