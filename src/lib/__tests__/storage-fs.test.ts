@@ -203,6 +203,15 @@ describe("FilesystemStorageProvider", () => {
     it("throws on non-existent file", async () => {
       await expect(provider.stat("nope.txt")).rejects.toThrow();
     });
+
+    // DW-701: the archive collision probe reads this flag to tell an ordinary
+    // collision from a tenant path blocked by a directory. `stat` SUCCEEDS on a
+    // directory, so without the flag the two are indistinguishable.
+    it("reports isDirectory false for a file and true for a directory", async () => {
+      await provider.writeFile("dir-probe/a.md", "a");
+      expect((await provider.stat("dir-probe/a.md")).isDirectory).toBe(false);
+      expect((await provider.stat("dir-probe")).isDirectory).toBe(true);
+    });
   });
 
   describe("deleteDirectory", () => {

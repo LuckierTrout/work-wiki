@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
   isUrl,
   fetchUrlContent,
@@ -675,7 +675,7 @@ describe("fetchUrlContent", () => {
 // ---------------------------------------------------------------------------
 
 import { downloadImages } from "../fetch";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import fs from "fs/promises";
 import path from "path";
 import os from "os";
@@ -904,5 +904,112 @@ describe("downloadImages", () => {
     const result = await downloadImages(md, "test-page", rawDir);
 
     expect(result).toBe(md);
+  });
+
+  /**
+   * THE EXCLUSION, pinned (DW-572). Every other binary writer in this repo now
+   * publishes through the create-only door; this one must NOT, and nothing else
+   * in the suite notices if it does. The key is `assets/<slug>/<url-derived
+   * name>` — URL-derived, never content-addressed — so a later fetch of the
+   * same page has to refresh a changed remote image AT THE NAME the rewritten
+   * markdown still points at. Under `writeAssetIfAbsent` the second write is a
+   * silent no-op (`downloadImages` swallows per-image failures too), stranding
+   * the stale bytes behind a link that claims to be current.
+   */
+  it("REFRESHES a changed remote image at the same URL-derived name", async () => {
+    const rawDir = await setup();
+    const original = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const changed = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xde, 0xad, 0xbe, 0xef]);
+    const md = "![Photo](https://example.com/photo.png)";
+    const filePath = path.join(rawDir, "assets", "test-page", "photo.png");
+
+    const mockFetch = vi.spyOn(globalThis, "fetch");
+    mockFetch.mockResolvedValueOnce(
+      new Response(original, { status: 200, headers: { "content-type": "image/png" } }),
+    );
+    const first = await downloadImages(md, "test-page", rawDir);
+    expect(first).toContain("assets/test-page/photo.png");
+    expect(new Uint8Array(await fs.readFile(filePath))).toEqual(original);
+
+    // Same page, same URL, DIFFERENT bytes at the far end.
+    mockFetch.mockResolvedValueOnce(
+      new Response(changed, { status: 200, headers: { "content-type": "image/png" } }),
+    );
+    const second = await downloadImages(md, "test-page", rawDir);
+
+    // The markdown still points at the same name…
+    expect(second).toContain("assets/test-page/photo.png");
+    // …and the bytes behind that name were REPLACED, not stranded.
+    expect(new Uint8Array(await fs.readFile(filePath))).toEqual(changed);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// storeImageBytes — the content-addressed key uses the CREATE-ONLY door
+// ---------------------------------------------------------------------------
+
+import { storeImageBytes } from "../fetch";
+import { rawRelPath } from "../wiki";
+
+/**
+ * The key is `assets/<slug>/<digest>-<name>`, so an occupied key already holds
+ * these exact bytes. Through `writeAsset` the second upload still rewrote them
+ * (FR-2's "stored bytes are never mutated" was enforced only on the `raw.ts`
+ * arrival path); through `writeAssetIfAbsent` it cannot. The sentinel is
+ * DIFFERENT bytes at the digest-derived key — impossible in real traffic, and
+ * the only way to see whether the second publication wrote at all.
+ */
+describe("storeImageBytes — create-only publication (DW-572)", () => {
+  let tmpDir: string;
+  let origDataDir: string | undefined;
+  let origRawDir: string | undefined;
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "store-image-bytes-"));
+    origDataDir = process.env.DATA_DIR;
+    origRawDir = process.env.RAW_DIR;
+    process.env.DATA_DIR = tmpDir;
+    process.env.RAW_DIR = tmpDir;
+    _resetStorage();
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (origDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = origDataDir;
+    if (origRawDir === undefined) delete process.env.RAW_DIR;
+    else process.env.RAW_DIR = origRawDir;
+    _resetStorage();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("leaves an occupied key untouched and returns the same path", async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer;
+    const first = await storeImageBytes(bytes, "test-page", "photo.png");
+
+    const sentinel = new Uint8Array([1, 2, 3, 4, 5]);
+    await getStorage().writeAsset(rawRelPath(first.localPath), sentinel.buffer);
+
+    const second = await storeImageBytes(bytes, "test-page", "photo.png");
+
+    // Occupied is a SUCCESS: same path, same filename, no error.
+    expect(second.localPath).toBe(first.localPath);
+    expect(second.filename).toBe(first.filename);
+    // …and the stored bytes were not rewritten.
+    expect(new Uint8Array(await getStorage().readAsset(rawRelPath(first.localPath))))
+      .toEqual(sentinel);
+  });
+
+  it("propagates a create-only failure instead of falling back to an overwrite", async () => {
+    const storage = getStorage();
+    const writeAsset = vi.spyOn(storage, "writeAsset");
+    vi.spyOn(storage, "writeAssetIfAbsent").mockRejectedValue(
+      new Error("storage unavailable"),
+    );
+
+    await expect(
+      storeImageBytes(new Uint8Array([1, 2, 3]).buffer, "test-page", "photo.png"),
+    ).rejects.toThrow("storage unavailable");
+    expect(writeAsset).not.toHaveBeenCalled();
   });
 });

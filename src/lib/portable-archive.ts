@@ -235,13 +235,23 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
       // manifest entry, for every inspection and every import. `stat` is the
       // metadata call, and it raises the SAME ENOENT the branching below reads.
       //
-      // ONE BEHAVIOUR CHANGE, deliberate: `stat` SUCCEEDS on a directory where
-      // `readAsset` raised EISDIR and fell through to the rethrow. So a tenant
-      // path occupied by a DIRECTORY is now a plain collision — skipped under
-      // `collision: "skip"`, and under `"overwrite"` the write fails on its own
-      // terms — rather than failing the whole inspection loudly. Quieter, and
-      // consistent with what the probe is actually asking.
-      await getStorage().stat(`tenants/${tenant(owner)}/${entry.path}`);
+      // But "occupied" is two different answers, and only one of them is a
+      // collision. `readAsset` raised EISDIR on a DIRECTORY and fell through to
+      // the rethrow below, failing the whole archive loudly; `stat` SUCCEEDS
+      // there, so a tenant path blocked by a directory would be filed as an
+      // ordinary collision — silently skipped under `collision: "skip"` — and
+      // the entry would simply never import (DW-701). `FileInfo.isDirectory`
+      // keeps the loud failure without the second round trip DW-679 removed:
+      // no write this import can make will ever land at that path, so refusing
+      // the archive is the only honest answer.
+      const info = await getStorage().stat(`tenants/${tenant(owner)}/${entry.path}`);
+      if (info.isDirectory) {
+        // Leaves through the catch below, which rethrows anything that is not
+        // ENOENT — a plain Error carries no errno, so it propagates unchanged.
+        throw new Error(
+          `Archive path is blocked by an existing directory: ${entry.path}`,
+        );
+      }
       collisions.push(entry.path);
     } catch (error) {
       if (isEnoent(error)) newFiles.push(entry.path);

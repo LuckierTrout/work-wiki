@@ -416,6 +416,14 @@ describe("R2StorageProvider", () => {
     it("throws R2NotFoundError for missing files", async () => {
       await expect(provider.stat("nope.txt")).rejects.toThrow(R2NotFoundError);
     });
+
+    // The keyspace is flat: `head` only answers for a real object, so there is
+    // no directory to report. Pinned so the cross-provider contract (DW-701) is
+    // explicit on BOTH sides rather than accidental on this one.
+    it("reports isDirectory false — the keyspace admits no other answer", async () => {
+      await provider.writeFile("dir-probe/a.md", "a");
+      expect((await provider.stat("dir-probe/a.md")).isDirectory).toBe(false);
+    });
   });
 
   describe("deleteDirectory", () => {

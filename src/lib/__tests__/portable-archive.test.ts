@@ -304,7 +304,7 @@ describe("portable owner archive", () => {
     const originalStat = storage.stat.bind(storage);
     vi.spyOn(storage, "stat").mockImplementation(async (target) => (
       target === "tenants/alice/wiki/atlas.md"
-        ? { size: 600 * 1024 * 1024, lastModified: new Date() }
+        ? { size: 600 * 1024 * 1024, lastModified: new Date(), isDirectory: false }
         : originalStat(target)
     ));
     // The proof: the read that used to materialise this object now never
@@ -332,7 +332,7 @@ describe("portable owner archive", () => {
     // through — `stat` gates, it never accounts.
     vi.spyOn(storage, "stat").mockImplementation(async (target) => (
       target === "tenants/alice/wiki/atlas.md"
-        ? { size: 0, lastModified: new Date() }
+        ? { size: 0, lastModified: new Date(), isDirectory: false }
         : originalStat(target)
     ));
     vi.spyOn(storage, "readAsset").mockImplementation(async (target) => (
@@ -376,6 +376,70 @@ describe("portable owner archive", () => {
     expect(probed).toContain("tenants/alice/.obsidian/app.json");
     // …and nothing in the inspection pulled an existing object's bytes.
     expect(readAsset).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // DW-701 — a tenant path blocked by a DIRECTORY is not an ordinary collision
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The `readAsset` → `stat` swap (DW-679) changed what a directory answers:
+   * `readAsset` raised EISDIR and failed the archive, `stat` succeeds. Without
+   * the `isDirectory` check the entry became a plain collision — silently
+   * SKIPPED under `collision: "skip"` — so an entry that can never be written
+   * looked imported-and-fine. It has to fail loudly, and name the path.
+   */
+  it("rejects an archive whose tenant path is occupied by a DIRECTORY", async () => {
+    const page = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nPrivate knowledge.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
+    await getStorage().writeAsset("tenants/alice/raw/atlas/source.bin", new Uint8Array([1, 2, 3]).buffer);
+    const archive = await buildPortableArchive("alice");
+
+    // While it is still a FILE, it is an ordinary collision.
+    expect((await inspectPortableArchive("alice", buffer(archive.bytes))).collisions)
+      .toContain("raw/atlas/source.bin");
+
+    // Swap the file for a directory at the same path.
+    const blocked = path.join(tmpDir, "tenants", "alice", "raw", "atlas", "source.bin");
+    await fs.rm(blocked);
+    await fs.mkdir(blocked, { recursive: true });
+
+    // A sentinel the archive does NOT contain, at a path the archive DOES
+    // carry: asserting `page` survives would prove nothing, since `page` is
+    // what the archive holds anyway. It keeps alice's frontmatter on purpose —
+    // a bare body has no `owner`, which trips the import's ownership pre-check
+    // and would abort the import for an unrelated reason, masking exactly the
+    // regression this case exists to catch.
+    const sentinel = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nEdited after the archive was built.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", sentinel);
+
+    // `withBatchedWrites` (portable-archive.ts:336) is the ONLY write scope the
+    // import opens. Spying it is what actually pins "refused BEFORE any write":
+    // the sentinel alone is not discriminating, because without the directory
+    // rule the import still dies — later — when `batch.writeAsset` hits the
+    // directory, which can leave the sentinel intact by accident of ordering.
+    const storage = getStorage();
+    const batched = vi.spyOn(storage, "withBatchedWrites");
+
+    // Inspection fails, naming the path…
+    await expect(inspectPortableArchive("alice", buffer(archive.bytes)))
+      .rejects.toThrow(/raw\/atlas\/source\.bin/);
+    // …and so does the import, under BOTH collision policies.
+    await expect(importPortableArchive("alice", buffer(archive.bytes), "skip"))
+      .rejects.toThrow(/raw\/atlas\/source\.bin/);
+    await expect(importPortableArchive("alice", buffer(archive.bytes), "overwrite"))
+      .rejects.toThrow(/raw\/atlas\/source\.bin/);
+
+    // The refusal happened in the probe: no write scope was ever opened, so
+    // even the entry that WOULD have imported cleanly was never touched.
+    expect(batched).not.toHaveBeenCalled();
+    expect(await getStorage().readFile("tenants/alice/wiki/atlas.md")).toBe(sentinel);
   });
 
   it("rejects an oversized manifest before allocating its expanded payload", async () => {

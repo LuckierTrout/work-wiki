@@ -636,10 +636,16 @@ export async function storeImageAsset(
  * the key has to be embedded in the body it hands to `ingest()`, and `ingest()`
  * is what uniquifies the slug (forking off another owner's private page). So
  * two uploads sharing a title and a sanitized filename would otherwise address
- * ONE key, and the door below is `writeAsset` — an overwrite — so the second
- * upload would silently replace the first page's image. Folding a digest of the
- * bytes into the filename makes that impossible: different bytes can never
- * share a key, identical bytes harmlessly share one.
+ * ONE key, and the second upload would silently replace the first page's image.
+ * Folding a digest of the bytes into the filename makes that impossible:
+ * different bytes can never share a key, identical bytes harmlessly share one.
+ *
+ * The door below is `writeAssetIfAbsent` — CREATE-ONLY (DW-572). The digest
+ * made an overwrite harmless; the door makes it impossible, which is what FR-2
+ * ("stored bytes are never mutated") actually asks for. An occupied key is a
+ * plain success: it holds these exact bytes already, so the same
+ * `{ localPath, filename }` is returned as on creation. A provider failure
+ * throws and fails the upload rather than falling back to an overwrite.
  *
  * The digest goes in the FILENAME, never the directory. `/api/assets/[...path]`
  * reads the first segment as the page slug to gate private-page assets; a
@@ -660,6 +666,8 @@ export async function storeImageBytes(
   const digest = (await bytesSha256(bytes)).slice(0, IMAGE_DIGEST_PREFIX_LEN);
   const filename = `${digest}-${sanitizeImageFilename(suggestedName)}`;
   const localPath = `assets/${slug}/${filename}`;
-  await getStorage().writeAsset(rawRelPath(localPath), bytes);
+  // Boolean discarded deliberately (not a dropped error): `false` means the
+  // content-addressed key was already occupied by these same bytes.
+  await getStorage().writeAssetIfAbsent(rawRelPath(localPath), bytes);
   return { localPath, filename };
 }

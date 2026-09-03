@@ -4508,7 +4508,9 @@ location: src/lib/document-sources.ts:156
 source_spec: `spec-dw-437-438-raw-source-listing-and-store-safety.md`
 severity: medium
 reason: `document-sources.ts` writes `raw/originals/<tenant>/<slug>/<digest>-<file>` and extracted assets, and `fetch.ts` writes page images, all through `writeAsset`. `writeAssetIfAbsent` now exists on the provider interface, so migrating them is cheap — but it is outside DW-438, whose location is `src/lib/raw.ts:116`.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-content-addressed-write-doors
+resolution-undo: bd9e5350fffa8b8fbb858d1075d40e3ef51b9eed575ace81e4b9cfa7b2ff0103 2026-09-03 7374617475733a206f70656e
 
 ### DW-573: Both create-only filesystem writes depend on `fs.link`, which some filesystems do not support.
 origin: spec-deferred a988edfb1e14
@@ -5706,7 +5708,9 @@ location: src/lib/portable-archive.ts:225
 source_spec: `spec-dw-293-679-bulk-read-and-write-cost.md`
 severity: low
 reason: `parseArchive`'s collision probe changed from `readAsset` to `stat` (DW-679's read-avoidance). `fs.readFile` on a directory raised `EISDIR`, which the `else` branch rethrew; `fs.stat` succeeds, so the entry lands in `collisions` and, under `collision: "skip"`, is silently skipped rather than rejecting the import. Closing it needs a way to ask the provider whether a path is a directory — `FileInfo` carries only `size` and `lastModified`, and widening `StorageProvider` is outside this bundle's intent. Reachable only when a tenant holds files under `tenants/<t>/<archive entry path>/...`, which `walk()` would have archived as children rather than as that path.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-content-addressed-write-doors
+resolution-undo: bd9e5350fffa8b8fbb858d1075d40e3ef51b9eed575ace81e4b9cfa7b2ff0103 2026-09-03 7374617475733a206f70656e
 
 ### DW-702: A merge fold that returns non-empty text carrying no prose still overwrites the survivor's body and then hard-deletes the absorbed page.
 origin: spec-deferred 8401ccfd4da9
@@ -6064,4 +6068,12 @@ location: src/lib/raw.ts:446
 source_spec: `spec-dw-568-569-570-raw-source-listing-truth.md`
 severity: low
 reason: DW-568's fix moved the listing onto `isRawSnapshotName`, whose bound was `.md`-only when the listing had its own inline test. Any all-digit stem is valid hex, so a folder import containing `docs/2024.pdf` now yields a row. `readRawSourceById("docs", "2024")` builds `docs/2024.md` and throws, and `listRawSourceRows` adds the slug to `slugsWithSnapshots` — so if a page `docs` also has a flat `raw/sources/docs.md`, its real row is suppressed by an import file. Retrieval and `incomplete-coverage` are unaffected (both filter `ext !== "md"`); only `list --raw` / `Raw sources:` can show it. The `.md` half of this collision is pre-existing and deliberately documented ("accepted, and bounded — a single colliding FILE"); this change widened it to every extension the writers accept. Bounding the stem to the writers' digest length would close both halves.
+status: open
+
+### DW-745: A tenant path whose ANCESTOR segment is a file makes the archive collision probe rethrow a raw `ENOTDIR`, leaking the server's absolute filesystem path into the API error body.
+origin: spec-deferred 65685a401880
+location: src/lib/portable-archive.ts:246
+source_spec: `spec-dw-572-701-content-addressed-write-doors.md`
+severity: low
+reason: `parseArchive` stats `tenants/<t>/<entry.path>`. When an ancestor segment is a regular file (e.g. `tenants/alice/raw/atlas` is a file and the entry is `raw/atlas/source.bin`), `fs.stat` raises `ENOTDIR`, `isEnoent` answers false, and the `catch` rethrows it unchanged. That is the same class DW-701 addresses — a path no write this import can ever land at — but it surfaces as `ENOTDIR: not a directory, stat '/abs/host/path/...'` rather than an archive-relative message, and `src/app/api/archive/import/route.ts:21` maps it to a 500 whose JSON body carries that host path. Pre-existing: the same rethrow predates the `readAsset` -> `stat` swap, and no test pins it.
 status: open

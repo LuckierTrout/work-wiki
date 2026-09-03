@@ -170,6 +170,9 @@ export class R2StorageProvider implements StorageProvider {
     return {
       size: head.size,
       lastModified: head.uploaded,
+      // The keyspace is flat and `head` only answers for a real object, so
+      // there is no directory here to report.
+      isDirectory: false,
     };
   }
 

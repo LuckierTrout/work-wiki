@@ -530,6 +530,8 @@ export class FilesystemStorageProvider implements StorageProvider {
     return {
       size: st.size,
       lastModified: st.mtime,
+      // Already in the `Stats` this call fetched — no extra syscall.
+      isDirectory: st.isDirectory(),
     };
   }
 

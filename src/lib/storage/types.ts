@@ -6,8 +6,18 @@
  * categories:
  *
  *  1. Text files   — readFile, writeFile, deleteFile, listFiles, appendFile
- *  2. Assets       — writeAsset, writeAssetIfAbsent, readAsset (binary data
- *                    like downloaded images and immutable Source bytes)
+ *  2. Assets       — writeAsset (overwrite), writeAssetIfAbsent (create-only),
+ *                    readAsset (binary data). The rule covers ARRIVALS only —
+ *                    the door bytes FIRST land through: Source bytes and the
+ *                    content-addressed keys use writeAssetIfAbsent, while a key
+ *                    whose bytes are meant to be refreshed in place (fetch.ts
+ *                    `downloadImages`) uses writeAsset. RE-PUBLICATION of
+ *                    already-frozen bytes is deliberately not covered and uses
+ *                    writeAsset throughout — silo.ts `copyAsset` mirroring into
+ *                    `tenants/<t>/raw/…`, portable-archive.ts import and
+ *                    backups.ts restore writing through `batch.writeAsset`.
+ *                    BatchWriter exposes no create-only door at all, so a
+ *                    batched caller has no other choice.
  *  3. Concurrency  — readFileWithEtag, writeFileIfMatch (optimistic locking),
  *                    writeFileIfAbsent / writeAssetIfAbsent (create-only)
  *  4. Indexes      — getIndex, putIndex, incrementIndex (derived JSON blobs: config, history, counters)
@@ -56,7 +66,10 @@
  *   all it needs is the size — `createOwnerBackup` gates its 2 GiB ceiling on
  *   one HEAD per file rather than materialising the file that does not fit. A
  *   provider that reported some other number would make that backup stop at a
- *   file that fit, or copy one it should have stopped at.
+ *   file that fit, or copy one it should have stopped at. The same call also
+ *   answers `isDirectory`, which is what lets the archive collision probe tell
+ *   an occupied FILE from a tenant path blocked by a DIRECTORY without a second
+ *   round trip (DW-701).
  *
  * - `withBatchedWrites` is the ONE door that trades any of the above away, and
  *   it trades only durability. Every write made through the batch writer is
@@ -104,6 +117,23 @@ export interface FileInfo {
   size: number;
   /** Last modified time (ISO string or Date) */
   lastModified: Date;
+  /**
+   * Whether the path names a DIRECTORY rather than an object whose bytes
+   * `readAsset` could hand back.
+   *
+   * REQUIRED, not optional, so a new provider cannot silently omit it: the
+   * archive collision probe (`parseArchive`) makes exactly one `stat` per
+   * manifest entry and reads this flag to tell "occupied by a file, record a
+   * collision" from "occupied by a directory, fail the import loudly"
+   * (DW-701). A provider that left it undefined would re-open that regression,
+   * because a directory would read as falsy and be filed as an ordinary
+   * collision.
+   *
+   * A provider whose keyspace is FLAT — R2 — reports `false` unconditionally:
+   * `head` only ever answers for a real object, so there is no directory for it
+   * to report.
+   */
+  isDirectory: boolean;
 }
 
 /** A file's content paired with an opaque version tag for optimistic concurrency. */
@@ -323,11 +353,18 @@ export interface StorageProvider {
   appendFile(path: string, content: string): Promise<void>;
 
   /**
-   * Get file metadata (size, last modified time).
+   * Get file metadata (size, last modified time, directory-ness).
    *
    * `size` MUST agree with `readAsset` on the same path, byte for byte, so a
    * caller that only needs the size can ask here instead of reading the whole
    * object. See the header docblock; `createOwnerBackup` depends on it.
+   *
+   * `isDirectory` is part of the contract, not a convenience: this is the only
+   * call the archive collision probe makes per manifest entry, so a provider
+   * that cannot distinguish a directory from an object here leaves the probe
+   * unable to tell an ordinary collision from a tenant path blocked by a
+   * directory (DW-701). A flat-keyspace provider answers `false` — see
+   * {@link FileInfo.isDirectory}.
    *
    * @param path — relative path
    * @returns FileInfo
@@ -393,9 +430,28 @@ export interface StorageProvider {
    * win, and an occupied key is left byte-for-byte as it is.
    *
    * `writeAsset` would round-trip through the provider's overwrite door; this
-   * is the door immutable binary arrivals (`raw/sources/<slug>/<id>.<ext>`,
-   * FR-2) go through, where a check-then-write pair leaves a window in which
-   * the later write mutates bytes that are supposed to be frozen.
+   * is the door EVERY immutable binary arrival goes through (FR-2), where a
+   * check-then-write pair leaves a window in which the later write mutates
+   * bytes that are supposed to be frozen. Two kinds of key qualify:
+   *
+   *  - The Source keyspace, `raw/sources/<slug>/<id>.<ext>` — an occupied key
+   *    means the id was already claimed, and the stored bytes stay.
+   *  - BYTE-ADDRESSED keys, where a digest OF THE STORED BYTES is folded into
+   *    the key itself — `originals/<tenant>/<slug>/<digest>-<file>`
+   *    (document-sources.ts) and `assets/<slug>/<digest>-<name>` (fetch.ts
+   *    `storeImageBytes`). There an occupied key means the object already holds
+   *    these exact bytes, so `false` is a plain no-op success (DW-572).
+   *  - `assets/<slug>/source-<digest>-<n>-<name>` (document-sources.ts) is
+   *    SOURCE-addressed, not byte-addressed: the digest is of the source
+   *    document and `<n>` is the extraction index, so an occupied key means the
+   *    same source re-extracted BY THE SAME EXTRACTOR. Its no-op-success
+   *    premise holds only while extraction output is stable for a given input —
+   *    see that call site for the stale-figure cost this accepts.
+   *
+   * A key that is NOT addressed by its content does not belong here:
+   * `downloadImages` writes `assets/<slug>/<url-derived name>` and MUST
+   * overwrite, because a later fetch of the same page has to refresh a changed
+   * remote image at the name the rewritten markdown still points at.
    *
    * Returns `true` for the creator and `false` when the path exists. A
    * provider that cannot complete the call THROWS rather than degrading to an
