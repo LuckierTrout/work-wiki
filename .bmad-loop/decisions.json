@@ -430,5 +430,14 @@
     "key": "1",
     "label": "Make orphan rows deletable",
     "resolution": ""
+  },
+  "DW-706": {
+    "answered_at": "2026-09-03",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Change the nine code and test citations to name DW-706, whose entry records the email inbound-ceiling provenance, and note in this entry's resolution that the decision was originally misfiled onto DW-457. No new ledger id is minted and no product behaviour changes.",
+    "key": "1",
+    "label": "Re-point the citations at DW-706",
+    "resolution": ""
   }
 }

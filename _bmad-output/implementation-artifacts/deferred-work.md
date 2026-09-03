@@ -5743,6 +5743,7 @@ source_spec: `spec-dw-457-email-inbound-ceiling-provenance.md`
 severity: low
 reason: `_bmad-output/implementation-artifacts/deferred-work.md:3386` reads "### DW-457: `missing-concept-page` is effectively unreachable over both MCP transports", status done 2026-08-29, and `src/mcp.ts` already cites DW-457 for that. The email-ceiling decision reached this work only through a `decision:` line misfiled onto that archived entry -- a misfiling `spec-dw-395-455-456-457-mcp-rest-door-parity.md:214` already flagged as "worth correcting in the ledger". A maintainer grepping DW-457 after this change now gets two unrelated defects and no way to tell which citation belongs to which. Fixing it means correcting the ledger, which this run was forbidden to touch.
 status: open
+decision: 2026-09-03 Re-point the citations at DW-706 — Change the nine code and test citations to name DW-706, whose entry records the email inbound-ceiling provenance, and note in this entry's resolution that the decision was originally misfiled onto DW-457. No new ledger id is minted and no product behaviour changes.
 
 ### DW-707: The Sources-pane rescan lists `raw/sources/**` only, so a legacy-address silo mirror is visible in the Files tab but never in Sources.
 origin: spec-deferred 05bb5603ea70
