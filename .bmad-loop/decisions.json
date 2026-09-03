@@ -386,6 +386,15 @@
     "label": "Gate the ingest caller, leave the predicate alone",
     "resolution": ""
   },
+  "DW-682": {
+    "answered_at": "2026-09-03",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Skip the pre-claim shape guard when the row is cancelRequested or cancelled (or move the guard below the claim CAS), so the cancel-finalize teardown that deletes the completion outright can still run. Pin that a cancelRequested row carrying a wrong-shaped completion finalizes to cancelled with the completion and outbox removed.",
+    "key": "1",
+    "label": "Exempt teardown from the guard",
+    "resolution": ""
+  },
   "DW-70": {
     "answered_at": "2026-08-28",
     "bundle_name": "",
