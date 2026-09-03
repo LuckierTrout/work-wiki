@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { selectionFromContentPath, type TreeSelection } from "@/lib/workbench-tree";
@@ -37,6 +37,26 @@ function tabLabel(tab: TodoTab): string {
   return "Done";
 }
 
+/**
+ * Why every Todos write control refuses on a read-only deployment (DW-643).
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.todos`, character-identical to it and
+ * pinned by `read-only-copy-parity.test.ts`. Exported because it is the sentence
+ * the refused controls POINT AT through `aria-describedby`.
+ *
+ * ONE sentence for the whole canvas, because there is one behind it. Approve /
+ * Reject and the extract Retry meet `POST /api/todos`; Edit, Set/Clear due,
+ * Mark done and Reopen meet `PATCH /api/todos/[id]`; Delete meets
+ * `DELETE /api/todos/[id]`. All three doors serve `READ_ONLY_REFUSAL.todos` —
+ * one store reached by three verbs — so unlike Review, which stands in front of
+ * two different doors and therefore states two sentences, this surface has
+ * exactly one refusal to announce.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const TODOS_READ_ONLY_COPY =
+  "Todos cannot be changed while this deployment is read-only.";
+
 export function TodosCanvas({
   wikiId: _wikiId,
   readOnly = false,
@@ -57,6 +77,23 @@ export function TodosCanvas({
   const [editTitle, setEditTitle] = useState("");
   const [editDue, setEditDue] = useState("");
   const loadSeq = useRef(0);
+  /**
+   * ONE note for the whole surface.
+   *
+   * Every refused control here meets a door that answers the SAME
+   * `READ_ONLY_REFUSAL.todos` sentence, so one id serves all of them — unlike
+   * `ReviewCanvas`, which mints one id per DOOR because two doors stand behind
+   * its three controls. Rendered once after the list rather than inside the
+   * `.map()`: per card it would mint a duplicate id per row, `aria-describedby`
+   * would resolve to whichever node the browser found first, and a screen reader
+   * would repeat the deployment's standing state once per todo.
+   *
+   * GUARDED on there being a refused control on screen (the DW-386 rule): a
+   * sentence for an operation the owner was never offered announces the refusal
+   * of something that is not there. Not `role="alert"` — nothing failed; it is
+   * the deployment's standing state.
+   */
+  const todosNoteId = useId();
 
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
@@ -213,7 +250,9 @@ export function TodosCanvas({
             <button
               type="button"
               className="wb-todos-btn wb-todos-btn--primary"
-              disabled={readOnly || busy || bulkIds.length === 0}
+              disabled={!readOnly && (busy || bulkIds.length === 0)}
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? todosNoteId : undefined}
               onClick={() => void decide(bulkIds, "approve")}
             >
               Approve
@@ -221,7 +260,9 @@ export function TodosCanvas({
             <button
               type="button"
               className="wb-todos-btn wb-todos-btn--reject"
-              disabled={readOnly || busy || bulkIds.length === 0}
+              disabled={!readOnly && (busy || bulkIds.length === 0)}
+              aria-disabled={readOnly || undefined}
+              aria-describedby={readOnly ? todosNoteId : undefined}
               onClick={() => void decide(bulkIds, "reject")}
             >
               Reject
@@ -263,7 +304,9 @@ export function TodosCanvas({
           <button
             type="button"
             className="wb-todos-btn"
-            disabled={readOnly || busy}
+            disabled={!readOnly && busy}
+            aria-disabled={readOnly || undefined}
+            aria-describedby={readOnly ? todosNoteId : undefined}
             onClick={() => void retryExtract()}
           >
             Retry
@@ -279,6 +322,15 @@ export function TodosCanvas({
             <li key={item.id} className="wb-todos-card">
               {tab === "candidates" && (
                 <label className="wb-todos-check">
+                  {/* A FIELD, not an action, so it keeps plain `disabled`. The
+                      DW-531 shape trades `disabled` for `aria-disabled` so a
+                      standing refusal stays in the tab order and can be
+                      announced with a reason — an argument about a control whose
+                      CLICK is refused. It does not transfer to an input:
+                      `aria-disabled` on a box that still ticks states something
+                      false, and guarding its `onChange` makes one that silently
+                      swallows the tick. The write buttons beside it carry the
+                      sentence, so nothing is left unannounced. */}
                   <input
                     type="checkbox"
                     checked={selected.has(item.id)}
@@ -299,6 +351,15 @@ export function TodosCanvas({
                     });
                   }}
                 >
+                  {/* Both edit fields keep plain `disabled` for the checkbox's
+                      reason, and for that reason only: they HOLD input rather
+                      than act, so `aria-disabled` on either would state
+                      something false while the field still accepted typing.
+                      NOT because the form is out of reach — the Edit button
+                      refuses to OPEN it under `readOnly`, but nothing closes an
+                      already-open form when the flag flips, so a form opened
+                      while writable is still on screen afterwards. Save, which
+                      acts, carries the standing refusal instead. */}
                   <label className="wb-todos-field">
                     Title
                     <input
@@ -316,7 +377,13 @@ export function TodosCanvas({
                       disabled={readOnly}
                     />
                   </label>
-                  <button type="submit" className="wb-todos-btn wb-todos-btn--primary" disabled={readOnly || busy}>
+                  <button
+                    type="submit"
+                    className="wb-todos-btn wb-todos-btn--primary"
+                    disabled={!readOnly && busy}
+                    aria-disabled={readOnly || undefined}
+                    aria-describedby={readOnly ? todosNoteId : undefined}
+                  >
                     Save
                   </button>
                   <button
@@ -347,13 +414,21 @@ export function TodosCanvas({
                       {todoMeetingPath(item)}
                     </button>
                   </p>
+                  {/* `busy` is TRANSIENT and keeps `disabled`, but it YIELDS to
+                      the standing refusal (the DW-191/DW-299/DW-531 shape): a
+                      request that never settles would otherwise leave `busy`
+                      true forever and take the controls carrying the sentence
+                      out of the tab order. `aria-disabled` is the standing
+                      state; the handlers are what refuse. */}
                   <div className="wb-todos-actions">
                     {tab === "candidates" && (
                       <>
                         <button
                           type="button"
                           className="wb-todos-btn wb-todos-btn--primary"
-                          disabled={readOnly || busy}
+                          disabled={!readOnly && busy}
+                          aria-disabled={readOnly || undefined}
+                          aria-describedby={readOnly ? todosNoteId : undefined}
                           onClick={() => void decide([item.id], "approve")}
                         >
                           Approve
@@ -361,7 +436,9 @@ export function TodosCanvas({
                         <button
                           type="button"
                           className="wb-todos-btn wb-todos-btn--reject"
-                          disabled={readOnly || busy}
+                          disabled={!readOnly && busy}
+                          aria-disabled={readOnly || undefined}
+                          aria-describedby={readOnly ? todosNoteId : undefined}
                           onClick={() => void decide([item.id], "reject")}
                         >
                           Reject
@@ -373,8 +450,16 @@ export function TodosCanvas({
                         <button
                           type="button"
                           className="wb-todos-btn"
-                          disabled={readOnly || busy}
+                          disabled={!readOnly && busy}
+                          aria-disabled={readOnly || undefined}
+                          aria-describedby={readOnly ? todosNoteId : undefined}
                           onClick={() => {
+                            // The one write handler with no guard of its own:
+                            // `decide`, `patch`, `remove` and `retryExtract`
+                            // already return before `send`, and opening the form
+                            // onto a Save that is refused would be the same
+                            // defect one step later.
+                            if (readOnly) return;
                             setEditingId(item.id);
                             setEditTitle(item.title);
                             setEditDue(item.due?.slice(0, 10) ?? "");
@@ -385,7 +470,9 @@ export function TodosCanvas({
                         <button
                           type="button"
                           className="wb-todos-btn"
-                          disabled={readOnly || busy}
+                          disabled={!readOnly && busy}
+                          aria-disabled={readOnly || undefined}
+                          aria-describedby={readOnly ? todosNoteId : undefined}
                           onClick={() =>
                             void patch(item.id, { due: item.due ? null : new Date().toISOString().slice(0, 10) })
                           }
@@ -395,7 +482,9 @@ export function TodosCanvas({
                         <button
                           type="button"
                           className="wb-todos-btn wb-todos-btn--primary"
-                          disabled={readOnly || busy}
+                          disabled={!readOnly && busy}
+                          aria-disabled={readOnly || undefined}
+                          aria-describedby={readOnly ? todosNoteId : undefined}
                           onClick={() => void patch(item.id, { status: "done" })}
                         >
                           Mark done
@@ -403,7 +492,9 @@ export function TodosCanvas({
                         <button
                           type="button"
                           className="wb-todos-btn wb-todos-btn--reject"
-                          disabled={readOnly || busy}
+                          disabled={!readOnly && busy}
+                          aria-disabled={readOnly || undefined}
+                          aria-describedby={readOnly ? todosNoteId : undefined}
                           onClick={() => void remove(item.id)}
                         >
                           Delete
@@ -416,7 +507,9 @@ export function TodosCanvas({
                           <button
                             type="button"
                             className="wb-todos-btn"
-                            disabled={readOnly || busy}
+                            disabled={!readOnly && busy}
+                            aria-disabled={readOnly || undefined}
+                            aria-describedby={readOnly ? todosNoteId : undefined}
                             onClick={() => void patch(item.id, { status: "open" })}
                           >
                             Reopen
@@ -425,7 +518,9 @@ export function TodosCanvas({
                         <button
                           type="button"
                           className="wb-todos-btn wb-todos-btn--reject"
-                          disabled={readOnly || busy}
+                          disabled={!readOnly && busy}
+                          aria-disabled={readOnly || undefined}
+                          aria-describedby={readOnly ? todosNoteId : undefined}
                           onClick={() => void remove(item.id)}
                         >
                           Delete
@@ -439,6 +534,18 @@ export function TodosCanvas({
           ))}
         </ul>
       )}
+      {/* Identified so every refused control above can point at it. The guard is
+          the three places a refused control can BE: the bulk bar, which renders
+          whenever the Candidates tab is showing even with nothing selected; the
+          extract-error Retry; and the per-card actions, which need a listed
+          card. With none of them on screen there is nothing to describe, and a
+          note would leave `aria-describedby` resolving to a sentence about
+          controls the owner was never offered. */}
+      {readOnly && (tab === "candidates" || extractError !== null || visible.length > 0) ? (
+        <p id={todosNoteId} className="wb-todos-meta">
+          {TODOS_READ_ONLY_COPY}
+        </p>
+      ) : null}
     </div>
   );
 }

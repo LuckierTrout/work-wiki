@@ -11,7 +11,7 @@ vi.mock("@/lib/workbench-request", () => ({
   }),
 }));
 
-import { TodosCanvas } from "@/components/workbench/TodosCanvas";
+import { TODOS_READ_ONLY_COPY, TodosCanvas } from "@/components/workbench/TodosCanvas";
 import { MarkMeetingControl } from "@/components/workbench/MarkMeetingControl";
 import type { TodoItem } from "@/lib/todo-types";
 
@@ -142,14 +142,27 @@ describe("Todos canvas contract", () => {
     });
   });
 
-  it("disables write controls when read-only", async () => {
+  it("refuses write controls out loud when read-only, rather than disabling them", async () => {
+    // DW-643. This case used to pin `disabled === true`, which is the defect:
+    // a `disabled` button is out of the tab order and carries no accessible
+    // description, so the standing refusal could be neither reached NOR
+    // announced. The shipped shape keeps it focusable, marks it
+    // `aria-disabled`, points it at the sentence its door answers, and refuses
+    // in the HANDLER. The full matrix lives in
+    // `canvas-read-only-refusal.test.tsx`; this row is the repin.
     render(
       <TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />,
     );
     await screen.findByText("Send recap");
     for (const name of ["Approve", "Reject"]) {
       for (const button of screen.getAllByRole("button", { name })) {
-        expect((button as HTMLButtonElement).disabled).toBe(true);
+        expect((button as HTMLButtonElement).disabled, name).toBe(false);
+        expect(button.getAttribute("aria-disabled"), name).toBe("true");
+        const noteId = button.getAttribute("aria-describedby");
+        expect(noteId, name).toBeTruthy();
+        expect(document.getElementById(noteId!)?.textContent).toBe(
+          TODOS_READ_ONLY_COPY,
+        );
       }
     }
     send.mockClear();

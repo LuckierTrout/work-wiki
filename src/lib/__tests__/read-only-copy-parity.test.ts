@@ -46,6 +46,7 @@ import {
 } from "../research-panel";
 import { GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY } from "@/components/workbench/GraphCanvas";
 import { REVIEW_QUEUE_READ_ONLY_COPY } from "@/components/workbench/ReviewCanvas";
+import { TODOS_READ_ONLY_COPY } from "@/components/workbench/TodosCanvas";
 import { SETTINGS_READ_ONLY_COPY } from "../workbench-settings";
 
 /**
@@ -484,6 +485,24 @@ describe("client refusal copy mirrors the server's", () => {
         RESEARCH_CREATE_READ_ONLY_COPY,
       ]).size,
     ).toBe(3);
+  });
+
+  it("the Todos canvas says exactly what its THREE doors answer", () => {
+    // DW-643, the same defect one canvas later. `TodosCanvas` folded `readOnly`
+    // into bare `disabled={readOnly || …}` on every write control and rendered
+    // no sentence at all — in front of `POST /api/todos` and
+    // `PATCH`/`DELETE /api/todos/[id]`, all three of which DO refuse with
+    // `READ_ONLY_REFUSAL.todos`. So the refusal was out of the tab order and
+    // impossible to announce with a reason, and the client half had nothing
+    // holding it to the 403 the owner would meet. The controls now carry
+    // `aria-disabled` and point at this sentence, so it has to be that one.
+    expect(TODOS_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.todos);
+    // ONE sentence for all three doors, unlike Review's two: the server owns a
+    // single `todos` key because they are one store reached by three verbs, so
+    // a second wording here would be a sentence no door answers.
+    expect(
+      new Set([TODOS_READ_ONLY_COPY, REVIEW_QUEUE_READ_ONLY_COPY]).size,
+    ).toBe(2);
   });
 
   it("the Studio panels' own write doors refuse nothing, so there is nothing to mirror", async () => {

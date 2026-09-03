@@ -15,11 +15,24 @@ import {
   SKILLS_SCAN_HINT_COPY,
   SKILL_DISABLED_NOTE_COPY,
 } from "@/lib/chat-agent";
-import { SETTINGS_LOAD_FAILED_COPY } from "@/lib/workbench-settings";
+import {
+  SETTINGS_LOAD_FAILED_COPY,
+  SETTINGS_SAVE_ACTION,
+  SETTINGS_SAVE_UNREADABLE_COPY,
+} from "@/lib/workbench-settings";
+import { unconfirmedWriteMessage } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
 
 const { send } = vi.hoisted(() => ({ send: vi.fn() }));
-vi.mock("@/lib/workbench-request", () => ({ send }));
+// Only `send` is stubbed — `loopbackFetch` reaches the sidecar through it. The
+// REST of the module is the real thing on purpose: `workbench-settings` derives
+// every save verdict through `refusedWriteFailure`/`thrownWriteFailure` from
+// here, and a whole-module replacement would make each verdict this file drives
+// collapse into the same thrown fallback.
+vi.mock("@/lib/workbench-request", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/workbench-request")>()),
+  send,
+}));
 
 import { SkillsCanvas } from "@/components/workbench/SkillsCanvas";
 
@@ -213,6 +226,169 @@ describe("the switch writes one decision to the kernel", () => {
     await screen.findByText("recap");
     fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
     expect(await screen.findByText(SETTINGS_LOAD_FAILED_COPY)).toBeTruthy();
+  });
+
+  /**
+   * A gateway status: nobody's verdict came back, and the flip MAY be stored.
+   *
+   * DW-625. The rail used to re-scan only on `status: "ok"`, so this verdict —
+   * and `"unreadable"` below — left the pre-toggle state on screen until
+   * something else triggered a scan, while the store may already have moved.
+   */
+  it("re-scans and still shows the sentence when the save is unconfirmed", async () => {
+    // THE SECOND READ ANSWERS DIFFERENTLY, which is the whole point: the flip
+    // DID land, and the rail has to show it. Counting the reads alone pins
+    // nothing — a re-scan that fetches and throws the answer away counts the
+    // same and reinstates the exact defect DW-625 is about.
+    settingsPut = vi.fn(async () => {
+      scanned = () =>
+        new Response(
+          JSON.stringify({ skills: [{ ...SKILLS[0], enabled: false }, SKILLS[1]] }),
+          { status: 200 },
+        );
+      return new Response("{}", { status: 502 });
+    });
+    render(<SkillsCanvas active />);
+    await screen.findByRole("button", { name: "Disable recap" });
+    expect(scanCount()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
+
+    await waitFor(() => expect(scanCount()).toBe(2));
+    // The re-read landed on screen: the switch now offers to turn it back ON,
+    // and the pack says what disabled means.
+    expect(await screen.findByRole("button", { name: "Enable recap" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Disable recap" })).toBeNull();
+    expect(screen.getAllByText(SKILL_DISABLED_NOTE_COPY)).toHaveLength(2);
+    // …and the re-read did NOT swallow the one sentence this click is about.
+    expect(
+      screen.getByText(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+    ).toBeTruthy();
+    expect(screen.queryByText(SKILLS_SCAN_FAILED_COPY)).toBeNull();
+  });
+
+  it("re-scans and still shows the sentence when the answer had nothing in it", async () => {
+    // A 2xx that yields no payload. The route may well have run, so the list on
+    // screen may already be wrong for the same reason.
+    settingsPut = vi.fn(async () => new Response("{}", { status: 200 }));
+    render(<SkillsCanvas active />);
+    await screen.findByText("recap");
+    fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
+
+    await waitFor(() => expect(scanCount()).toBe(2));
+    expect(await screen.findByText(SETTINGS_SAVE_UNREADABLE_COPY)).toBeTruthy();
+  });
+
+  it("does NOT re-scan when the save was refused", async () => {
+    // An arrived refusal applied nothing, so the list on screen is still true
+    // and a second sidecar read would buy nothing. This is the half that makes
+    // `verdictClearsHeldVersion` worth asking rather than re-scanning always.
+    settingsPut = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "That Skill id is unknown." }), {
+          status: 400,
+        }),
+    );
+    render(<SkillsCanvas active />);
+    await screen.findByText("recap");
+    fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
+
+    expect(await screen.findByText("That Skill id is unknown.")).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(scanCount()).toBe(1);
+  });
+
+  it("keeps the packs it already read when the re-scan itself fails", async () => {
+    // The re-scan is QUIET: it replaces the list only when it read one, and it
+    // writes no message. Otherwise a sidecar that went away between the write
+    // and the re-read would blank the rail — which reads as "no Skills", the
+    // wrong answer this surface exists to avoid — and would overwrite the
+    // sentence about the toggle with its own.
+    settingsPut = vi.fn(async () => {
+      scanned = () => {
+        throw new Error("ECONNREFUSED");
+      };
+      return new Response("{}", { status: 502 });
+    });
+    render(<SkillsCanvas active />);
+    await screen.findByText("recap");
+    fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
+
+    await waitFor(() => expect(scanCount()).toBe(2));
+    expect(
+      await screen.findByText(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+    ).toBeTruthy();
+    // The last list the rail could actually read is still on screen…
+    expect(screen.getByText("recap")).toBeTruthy();
+    expect(screen.getByText("offsite")).toBeTruthy();
+    // …and the scan's own sentence is not shown over the toggle's.
+    expect(screen.queryByText(SKILLS_SCAN_FAILED_COPY)).toBeNull();
+    expect(screen.queryByText(workbenchMode("skills").emptyState!)).toBeNull();
+  });
+
+  it("keeps the packs it already read when the re-scan answers a shapeless 200", async () => {
+    // The third way a re-scan comes back with no list, and the one that is not
+    // an obvious failure: a 200 whose body carries no `skills` array — an error
+    // envelope, a proxy page, a login body. That is not a scan that found
+    // NOTHING; it is a scan that found nothing it can read, and answering it
+    // with `[]` would empty a rail that was listing packs a moment ago.
+    settingsPut = vi.fn(async () => {
+      scanned = () => new Response(JSON.stringify({ error: "nope" }), { status: 200 });
+      return new Response("{}", { status: 502 });
+    });
+    render(<SkillsCanvas active />);
+    await screen.findByText("recap");
+    fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
+
+    await waitFor(() => expect(scanCount()).toBe(2));
+    expect(
+      await screen.findByText(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+    ).toBeTruthy();
+    expect(screen.getByText("recap")).toBeTruthy();
+    expect(screen.getByText("offsite")).toBeTruthy();
+    expect(screen.queryByText(workbenchMode("skills").emptyState!)).toBeNull();
+    expect(screen.queryByText(SKILLS_SCAN_FAILED_COPY)).toBeNull();
+  });
+
+  it("keeps the packs it already read when the re-scan answers a refusal status", async () => {
+    // The non-ok half of the same rule. Three ways in — a status, a thrown
+    // read, a shapeless body — and one answer: leave the last list the rail
+    // could actually read on screen, and say nothing over the toggle's own
+    // sentence.
+    settingsPut = vi.fn(async () => {
+      scanned = () => new Response("{}", { status: 503 });
+      return new Response("{}", { status: 502 });
+    });
+    render(<SkillsCanvas active />);
+    await screen.findByText("recap");
+    fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
+
+    await waitFor(() => expect(scanCount()).toBe(2));
+    expect(
+      await screen.findByText(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+    ).toBeTruthy();
+    expect(screen.getByText("recap")).toBeTruthy();
+    expect(screen.getByText("offsite")).toBeTruthy();
+    expect(screen.queryByText(SKILLS_SCAN_FAILED_COPY)).toBeNull();
+  });
+
+  it("shows the sentence without waiting for the re-scan to come back", async () => {
+    // `loopbackFetch` carries no deadline, so a sidecar that accepts the
+    // connection and never answers must not hold the sentence about the click
+    // hostage — nor leave `busy` set, which disables every switch on the rail.
+    // The message goes on screen FIRST; the quiet re-scan writes none on any
+    // path, so it cannot overwrite it afterwards.
+    settingsPut = vi.fn(async () => {
+      scanned = () => new Promise<Response>(() => {}) as unknown as Response;
+      return new Response("{}", { status: 502 });
+    });
+    render(<SkillsCanvas active />);
+    await screen.findByText("recap");
+    fireEvent.click(screen.getByRole("button", { name: "Disable recap" }));
+
+    expect(
+      await screen.findByText(unconfirmedWriteMessage(SETTINGS_SAVE_ACTION)),
+    ).toBeTruthy();
+    expect(screen.getByText("recap")).toBeTruthy();
   });
 
   it("read-only disables the switch and writes nothing", async () => {

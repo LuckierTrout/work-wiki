@@ -1,6 +1,6 @@
 /**
- * The Graph, Review and Deep Research canvases on a read-only deployment,
- * MOUNTED (DW-531, DW-644).
+ * The Graph, Review, Deep Research and Todos canvases on a read-only
+ * deployment, MOUNTED (DW-531, DW-644, DW-643).
  *
  * Graph and Review used to pass `readOnly` straight into `disabled`. A
  * `disabled` button is out of the tab order and carries no accessible
@@ -17,6 +17,13 @@
  * an `aria-describedby` that resolves to the sentence ITS OWN door answers; a
  * handler that returns before any request; and nothing at all rendered on a
  * writable deployment.
+ *
+ * FOUR canvases now. `TodosCanvas` (DW-643) was the last of the four to still
+ * carry the first shape — `disabled={readOnly || …}` on every write control and
+ * no sentence anywhere — in front of three doors that all answer
+ * `READ_ONLY_REFUSAL.todos`. It needs no Sigma mock; it is here because what is
+ * pinned about it is the same shape, and one file is where a fifth canvas gets
+ * held to it too.
  *
  * Its own file rather than more rows in `graph-lint-review-canvas.test.tsx`:
  * that suite is about what the canvases DO, and every row here is about what
@@ -74,6 +81,11 @@ import {
   ReviewCanvas,
 } from "@/components/workbench/ReviewCanvas";
 import { ResearchCanvas } from "@/components/workbench/ResearchCanvas";
+import {
+  TODOS_READ_ONLY_COPY,
+  TodosCanvas,
+} from "@/components/workbench/TodosCanvas";
+import type { TodoItem } from "@/lib/todo-types";
 import {
   RESEARCH_CREATE_READ_ONLY_COPY,
   RESEARCH_MUTATE_READ_ONLY_COPY,
@@ -154,6 +166,34 @@ const reviewItem = {
   updatedAt: "2026-08-23T00:00:00.000Z",
   pageSlug: "topic",
 };
+
+const todo: TodoItem = {
+  id: "t1",
+  wikiId: "wiki-1",
+  sourceId: "raw/sources/meet/abc.md",
+  pageSlug: "standup",
+  title: "Send recap",
+  rationale: "Alice committed at close.",
+  due: "2026-09-01",
+  speaker: "Alice",
+  createdAt: "2026-08-23T00:00:00.000Z",
+  updatedAt: "2026-08-23T00:00:00.000Z",
+};
+
+/**
+ * The Todos load, per tab.
+ *
+ * The canvas re-reads `/api/todos?tab=…` on every tab click, so the stub has to
+ * answer by tab rather than once: a single resolved value would show the
+ * Candidates rows under the Open tab and pin the wrong controls.
+ */
+function todosLoad(byTab: Partial<Record<string, unknown>>) {
+  return async (url: string) => {
+    const match = /tab=(\w+)/.exec(String(url));
+    if (match) return byTab[match[1]] ?? { items: [], pendingCount: 0 };
+    return {};
+  };
+}
 
 beforeEach(() => {
   send.mockReset();
@@ -558,5 +598,323 @@ describe("Research canvas — read-only", () => {
       expect(call).toBeTruthy();
       expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ action: "cancel" });
     });
+  });
+});
+
+describe("Todos canvas — read-only", () => {
+  it("keeps the bulk bar and the card's decisions focusable and announced", async () => {
+    send.mockImplementation(todosLoad({ candidates: { items: [todo], pendingCount: 1 } }));
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    await screen.findByText("Send recap");
+    // Two Approves and two Rejects: the bulk bar's pair and the card's pair.
+    // ONE door behind all four — `POST /api/todos` — so one sentence.
+    for (const name of ["Approve", "Reject"]) {
+      const controls = screen.getAllByRole("button", { name });
+      expect(controls, name).toHaveLength(2);
+      for (const control of controls) {
+        expectStandingRefusal(control);
+        expect(describedBy(control)).toBe(TODOS_READ_ONLY_COPY);
+      }
+    }
+  });
+
+  it("issues no request when any decision is activated", async () => {
+    send.mockImplementation(todosLoad({ candidates: { items: [todo], pendingCount: 1 } }));
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    await screen.findByText("Send recap");
+    const reads = send.mock.calls.length;
+    for (const name of ["Approve", "Reject"]) {
+      for (const control of screen.getAllByRole("button", { name })) {
+        fireEvent.click(control);
+      }
+    }
+    // A focusable control is a REACHABLE one, so the handler is what refuses.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(send.mock.calls.length).toBe(reads);
+    // …and the candidate stays listed: nothing was resolved optimistically.
+    expect(screen.getByText("Send recap")).toBeTruthy();
+  });
+
+  it("refuses all four Open-tab controls and opens no edit form", async () => {
+    send.mockImplementation(
+      todosLoad({
+        candidates: { items: [], pendingCount: 0 },
+        open: { items: [{ ...todo, status: "open" as const, decision: "approve" as const }] },
+      }),
+    );
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    await screen.findByRole("tab", { name: "Open" });
+    fireEvent.click(screen.getByRole("tab", { name: "Open" }));
+    await screen.findByText("Send recap");
+
+    // "Clear due" rather than "Set due": the fixture carries a due date.
+    for (const name of ["Edit", "Clear due", "Mark done", "Delete"]) {
+      const control = screen.getByRole("button", { name });
+      expectStandingRefusal(control);
+      expect(describedBy(control), name).toBe(TODOS_READ_ONLY_COPY);
+    }
+
+    const reads = send.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mark done" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(send.mock.calls.length).toBe(reads);
+    // The inline Edit handler is the one that had no guard of its own: it wrote
+    // nothing, but it opened a form onto a Save the door refuses.
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("refuses both Done-tab controls", async () => {
+    send.mockImplementation(
+      todosLoad({
+        candidates: { items: [], pendingCount: 0 },
+        done: {
+          items: [{ ...todo, status: "done" as const, decision: "approve" as const }],
+        },
+      }),
+    );
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Done" }));
+    await screen.findByText("Send recap");
+    // Reopen rides on an APPROVED decision; Delete is offered either way.
+    for (const name of ["Reopen", "Delete"]) {
+      const control = screen.getByRole("button", { name });
+      expectStandingRefusal(control);
+      expect(describedBy(control), name).toBe(TODOS_READ_ONLY_COPY);
+    }
+  });
+
+  it("refuses the extract Retry with the same sentence", async () => {
+    send.mockImplementation(
+      todosLoad({
+        candidates: {
+          items: [],
+          pendingCount: 0,
+          extractError: {
+            message: "Couldn’t read the meeting.",
+            slug: "standup",
+            at: "2026-08-23T00:00:00.000Z",
+          },
+        },
+      }),
+    );
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expectStandingRefusal(retry);
+    // The retry is a `POST /api/todos` like the decisions, so it announces the
+    // same sentence rather than a second wording of it.
+    expect(describedBy(retry)).toBe(TODOS_READ_ONLY_COPY);
+    const reads = send.mock.calls.length;
+    fireEvent.click(retry);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(send.mock.calls.length).toBe(reads);
+  });
+
+  it("keeps the extract Retry announced on a tab that renders no other control", async () => {
+    // WHAT HOLDS THE `extractError` DISJUNCT OF THE NOTE GUARD. The Retry case
+    // above stubs the Candidates tab, where `tab === "candidates"` already
+    // renders the note for the bulk bar — so that row stays green with the
+    // disjunct deleted. `getTodoExtractError` takes no tab, so an extract error
+    // is served on Done and Open alike: here it is the ONLY refused control on
+    // screen, and without the disjunct its `aria-describedby` would resolve to
+    // no element at all.
+    send.mockImplementation(
+      todosLoad({
+        candidates: { items: [], pendingCount: 0 },
+        done: {
+          items: [],
+          extractError: {
+            message: "Couldn’t read the meeting.",
+            slug: "standup",
+            at: "2026-08-23T00:00:00.000Z",
+          },
+        },
+      }),
+    );
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Done" }));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    // No bulk bar on this tab and no card listed: Retry is on its own.
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expectStandingRefusal(retry);
+    expect(describedBy(retry)).toBe(TODOS_READ_ONLY_COPY);
+  });
+
+  it("refuses an edit form left open when the flag flips underneath it", async () => {
+    // Nothing closes an open form when `readOnly` turns on — the Edit button
+    // refuses to OPEN one, which is a different thing — so this state is
+    // reachable and both halves of the shape have to hold in it: Save ACTS and
+    // takes the standing refusal, while Title and Due HOLD input and keep plain
+    // `disabled`, because `aria-disabled` on a field that still accepts typing
+    // states something false.
+    const onDockPreview = vi.fn();
+    send.mockImplementation(
+      todosLoad({
+        candidates: { items: [], pendingCount: 0 },
+        open: { items: [{ ...todo, status: "open" as const }] },
+      }),
+    );
+    const view = render(
+      <TodosCanvas wikiId="current" onDockPreview={onDockPreview} />,
+    );
+    fireEvent.click(await screen.findByRole("tab", { name: "Open" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const save = await screen.findByRole("button", { name: "Save" });
+    expect((save as HTMLButtonElement).disabled).toBe(false);
+    expect(save.getAttribute("aria-disabled")).toBeNull();
+
+    view.rerender(
+      <TodosCanvas wikiId="current" readOnly onDockPreview={onDockPreview} />,
+    );
+    const refusedSave = screen.getByRole("button", { name: "Save" });
+    expectStandingRefusal(refusedSave);
+    expect(describedBy(refusedSave)).toBe(TODOS_READ_ONLY_COPY);
+
+    const fields = Array.from(
+      document.querySelectorAll<HTMLInputElement>(".wb-todos-edit input"),
+    );
+    expect(fields).toHaveLength(2);
+    for (const field of fields) {
+      expect(field.disabled, field.type).toBe(true);
+      expect(field.getAttribute("aria-disabled"), field.type).toBeNull();
+      expect(field.getAttribute("aria-describedby"), field.type).toBeNull();
+    }
+  });
+
+  it("states the sentence ONCE for the whole surface, however many cards there are", async () => {
+    // ONE NOTE, NOT ONE PER CARD. Moved inside the `.map()` it would mint an id
+    // per todo, and `aria-describedby` on the second card's controls would
+    // resolve to the first card's node. Every other case here lists one card and
+    // would stay green through exactly that regression.
+    send.mockImplementation(
+      todosLoad({
+        candidates: {
+          items: [todo, { ...todo, id: "t2", title: "Book the room" }],
+          pendingCount: 2,
+        },
+      }),
+    );
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    await screen.findByText("Book the room");
+    expect(screen.getAllByText(TODOS_READ_ONLY_COPY)).toHaveLength(1);
+    const approvals = screen.getAllByRole("button", { name: "Approve" });
+    // The bulk bar's Approve plus one per card.
+    expect(approvals).toHaveLength(3);
+    const ids = new Set(approvals.map((c) => c.getAttribute("aria-describedby")));
+    expect(ids.size).toBe(1);
+    expect(describedBy(approvals[2])).toBe(TODOS_READ_ONLY_COPY);
+  });
+
+  it("renders no note when no refused control is on screen", async () => {
+    // The Done tab with nothing in it: no bulk bar, no Retry, no card. A note
+    // here would announce the refusal of operations the owner was never
+    // offered, and would leave `aria-describedby` pointing at nothing.
+    send.mockImplementation(todosLoad({ candidates: { items: [], pendingCount: 0 } }));
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Done" }));
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith("/api/todos?tab=done", expect.anything()),
+    );
+    expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+    expect(screen.queryByText(TODOS_READ_ONLY_COPY)).toBeNull();
+  });
+
+  it("keeps the bulk bar's note on the Candidates tab even with nothing listed", async () => {
+    // The other direction. The bulk bar renders whenever Candidates is showing,
+    // selection or not — so its two controls are on screen and DO need the
+    // sentence, and a guard written as "some card is listed" would drop it.
+    send.mockImplementation(todosLoad({ candidates: { items: [], pendingCount: 0 } }));
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    const approve = await screen.findByRole("button", { name: "Approve" });
+    expectStandingRefusal(approve);
+    expect(describedBy(approve)).toBe(TODOS_READ_ONLY_COPY);
+  });
+
+  it("leaves the FIELDS on plain `disabled`", async () => {
+    // The candidate checkbox HOLDS input rather than acting. `aria-disabled` on
+    // a box that still ticks states something false, and guarding its `onChange`
+    // makes one that silently swallows the tick — so it keeps `disabled`, and
+    // the buttons around it carry the sentence.
+    send.mockImplementation(todosLoad({ candidates: { items: [todo], pendingCount: 1 } }));
+    render(<TodosCanvas wikiId="current" readOnly onDockPreview={vi.fn()} />);
+
+    await screen.findByText("Send recap");
+    const box = screen.getByRole("checkbox", { name: "Select Send recap" }) as HTMLInputElement;
+    expect(box.disabled).toBe(true);
+    expect(box.getAttribute("aria-disabled")).toBeNull();
+    expect(box.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("lets the standing refusal win over a write already in flight", async () => {
+    // The matrix's stalled row, driven the only way this canvas allows: `busy`
+    // is set exclusively by handlers that early-return under `readOnly`, so it
+    // is reached WRITABLE and the flag is flipped underneath it. A request that
+    // never settles leaves `busy` true forever, and it must not take the
+    // controls carrying the sentence out of the tab order.
+    const onDockPreview = vi.fn();
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return new Promise(() => {});
+      return { items: [todo], pendingCount: 1 };
+    });
+    const view = render(
+      <TodosCanvas wikiId="current" onDockPreview={onDockPreview} />,
+    );
+    await screen.findByText("Send recap");
+    fireEvent.click(screen.getAllByRole("button", { name: "Approve" })[1]!);
+    await waitFor(() =>
+      expect(
+        (screen.getAllByRole("button", { name: "Reject" })[1] as HTMLButtonElement)
+          .disabled,
+      ).toBe(true),
+    );
+    // WRITABLE and busy is the transient half, unchanged by DW-643: plainly
+    // `disabled`, with no standing refusal to announce and nothing to point at.
+    for (const control of screen.getAllByRole("button", { name: "Reject" })) {
+      expect(control.getAttribute("aria-disabled")).toBeNull();
+      expect(control.getAttribute("aria-describedby")).toBeNull();
+    }
+    expect(screen.queryByText(TODOS_READ_ONLY_COPY)).toBeNull();
+
+    view.rerender(
+      <TodosCanvas wikiId="current" readOnly onDockPreview={onDockPreview} />,
+    );
+    for (const control of screen.getAllByRole("button", { name: "Reject" })) {
+      expectStandingRefusal(control);
+      expect(describedBy(control)).toBe(TODOS_READ_ONLY_COPY);
+    }
+  });
+
+  it("renders nothing and still reaches the door when writable", async () => {
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return { pendingCount: 0 };
+      return { items: [todo], pendingCount: 1 };
+    });
+    render(<TodosCanvas wikiId="current" onDockPreview={vi.fn()} />);
+
+    await screen.findByText("Send recap");
+    const approve = screen.getAllByRole("button", { name: "Approve" })[1] as HTMLButtonElement;
+    expect(approve.disabled).toBe(false);
+    expect(approve.getAttribute("aria-disabled")).toBeNull();
+    expect(approve.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText(TODOS_READ_ONLY_COPY)).toBeNull();
+    fireEvent.click(approve);
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        "/api/todos",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
   });
 });

@@ -4961,7 +4961,9 @@ location: src/components/workbench/SkillsCanvas.tsx:106-118
 source_spec: `spec-dw-556-557-558-settings-save-verdict-shape.md`
 severity: low
 reason: `SkillsCanvas.tsx:106-118` calls `saveWorkbenchSettings` and re-scans only on `result.status === "ok"`; every error path sets the message and returns. A `"unconfirmed"` verdict means the enablement flip may already be stored, so the list it renders can disagree with the sidecar until something else triggers a scan. Pre-existing since DW-376 — the verdict collapse only made the state readable by name — and this is the one `saveWorkbenchSettings` call site the intent deliberately left untouched.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-workbench-canvas-write-feedback
+resolution-undo: c42e6fa28f2308f0f028590bd078867406b513eac598acdc8ff8036eec3a94bb 2026-09-02 7374617475733a206f70656e
 
 ### DW-626: Edits typed while a save is in flight are silently dropped, and the DW-555 recovery read doubles the window in which that can happen.
 origin: spec-deferred 72bb54e8c37e
@@ -5137,7 +5139,9 @@ location: src/components/workbench/TodosCanvas.tsx:216
 source_spec: `spec-dw-529-530-531-read-only-client-refusal-parity.md`
 severity: medium
 reason: `src/components/workbench/TodosCanvas.tsx` gates every write control with `disabled={readOnly || …}` (216, 224, 266, 286, 307, 316, 319, 356, 364, 376, 388, 398, 406, 419, 428) and renders no read-only sentence at all, while `POST /api/todos` and `PATCH`/`DELETE /api/todos/[id]` answer `READ_ONLY_REFUSAL.todos`. It takes the same `readOnly` from the same parent (`ModeCanvas.tsx:226`) as the two canvases DW-531 named, uses the same `.wb-todos-btn` class this change gave an `aria-disabled` face, and has no client mirror and no parity-suite row. `todos-canvas.test.tsx:145-158` pins the OLD shape, so adopting the new one is a test change too. Not in DW-531's five controls, so left alone rather than widened into this change.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-workbench-canvas-write-feedback
+resolution-undo: c42e6fa28f2308f0f028590bd078867406b513eac598acdc8ff8036eec3a94bb 2026-09-02 7374617475733a206f70656e
 
 ### DW-644: The Deep Research canvas HIDES its row controls under read-only instead of refusing them, so `RESEARCH_MUTATE_READ_ONLY_COPY` has no Workbench voice.
 origin: spec-deferred 0ee6df37af63
@@ -5914,4 +5918,12 @@ location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:167
 source_spec: `spec-dw-641-684-door-fault-status-parity.md`
 severity: low
 reason: That handler calls `createResearchProject` (`src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:141`) — the same function whose exhausted CAS in `applyResearchProjectMutation` throws `ResearchProjectBusyError` — and its catch is still the pre-DW-684 ladder `isClientInputError(error) ? 400 : 500` at `:167`, whose own comment cites "the `src/app/api/research/route.ts` idiom", the ladder this pass changed out from under it. `createResearchProject`'s docblock already names it as the second caller ("the Review-accept handler"). So an API agent is told a permanent server fault for a registry write that provably never landed and would succeed on an immediate retry, while the in-product door for the same store tells it to retry. Out of scope here: DW-684's intent enumerates `POST /api/research`, `PATCH` and `DELETE /api/research/[id]` only. Its suite would not surface it either — `epic8-v1-routes.test.ts:598` has a `ClientInputError` row and an EINVAL row and no `ResearchProjectBusyE
+status: open
+
+### DW-733: `MarkMeetingControl` stands in front of a door that DOES refuse and folds the refusal into plain `disabled=`, with no sentence and no client mirror.
+origin: spec-deferred 43c75138b2ac
+location: src/components/workbench/MarkMeetingControl.tsx:72
+source_spec: `spec-dw-643-625-workbench-canvas-write-feedback.md`
+severity: low
+reason: `src/components/workbench/MarkMeetingControl.tsx:72` gates its one write with `disabled={readOnly || busy}` and renders no read-only term, while `POST /api/sources/meeting` answers `READ_ONLY_REFUSAL.sourceMeeting` — pinned by NAME in the very door loop `read-only-copy-parity.test.ts:398` runs. `sourceMeeting` is the only `READ_ONLY_REFUSAL` key with ZERO client references, so nothing holds a client sentence to that 403 and the owner meets a dead control with no reason. The control renders on the Todos surface this change hardened (it is exercised in `todos-canvas.test.tsx`), but it is a different door and a different component, and the bundle intent named only `TodosCanvas`'s own write controls — so it was left alone rather than widened into this change.
 status: open
