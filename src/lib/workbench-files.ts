@@ -169,6 +169,18 @@ export function wikiLeafName(displayPath: string): string | null {
   return segments[1].length > 0 ? segments[1] : null;
 }
 
+/**
+ * The head of the ONE two-segment slug shape `validateSlug` admits
+ * (`queries/<leaf>`, `wiki.ts`).
+ *
+ * A constant rather than a literal because TWO places in this module have to
+ * agree on it and they answer different questions: {@link rawPathSlug} joins
+ * across it, and {@link rawPathAllowed} tests the bare head as a SECOND
+ * candidate because a page may also be slugged plain `queries` (DW-492). Two
+ * spellings of the string is how the join and the refusal drift apart again.
+ */
+const QUERIES_SLUG_HEAD = "queries";
+
 /** Drop a trailing extension; a leading dot is not one (`.env` keeps its name). */
 function stripRawExtension(name: string): string {
   const dot = name.lastIndexOf(".");
@@ -220,6 +232,13 @@ function isLegacyAssetsLeaf(segments: readonly string[]): boolean {
  * and hyphens with no dots and no slashes, which is what makes the
  * extension-strip unambiguous rather than a guess.
  *
+ * The join is not the whole answer, though, because `validateSlug` admits plain
+ * `queries` as an ordinary one-segment slug TOO: `raw/sources/queries/<sha>.md`
+ * is either page `queries/<sha>`'s flat source or page `queries`' sharded one,
+ * and the path alone cannot say which. This function keeps answering the joined
+ * spelling — one path, one slug — and {@link rawPathAllowed} is where that
+ * ambiguity is resolved, by testing BOTH candidates (DW-492).
+ *
  * A leading {@link RAW_SOURCES_DIR} or {@link RAW_ASSETS_DIR} segment is
  * DROPPED rather than read as a slug, because each is a fixed structural root
  * whose NEXT segment is the page slug: every Source lives under
@@ -269,9 +288,9 @@ export function rawPathSlug(displayPath: string): string | null {
   const rest = dropsHead ? segments.slice(2) : segments.slice(1);
   const first = rest[0];
   if (first === undefined || first.length === 0) return null;
-  if (first === "queries" && rest.length > 1) {
+  if (first === QUERIES_SLUG_HEAD && rest.length > 1) {
     const leaf = rest.length === 2 ? stripRawExtension(rest[1]) : rest[1];
-    return leaf.length > 0 ? `queries/${leaf}` : null;
+    return leaf.length > 0 ? `${QUERIES_SLUG_HEAD}/${leaf}` : null;
   }
   const slug = rest.length === 1 ? stripRawExtension(first) : first;
   return slug.length > 0 ? slug : null;
@@ -294,6 +313,28 @@ export function rawPathSlug(displayPath: string): string | null {
  * ORPHANED source is the owner's own file in the owner's own silo (`raw/` is
  * silo-only since DW-40), and refusing it would hide real data to protect
  * nothing. Hence a refusal SET rather than a readable-set membership test.
+ *
+ * TWO candidates are tested, not one (DW-492). {@link rawPathSlug} answers a
+ * single slug per path, but one path shape genuinely spells two: because
+ * `validateSlug` admits plain `queries` as an ordinary slug as well as the
+ * `queries/<leaf>` prefix shape, `raw/sources/queries/<sha>.md` is either page
+ * `queries/<sha>`'s flat source or page `queries`' sharded one. Testing only
+ * the joined answer asked about a page nobody hid, so a hidden page slugged
+ * `queries` was never refused — its source filenames listed, its bytes served.
+ * So when the derived slug carries the `queries/` head, the bare head is tested
+ * as well and EITHER page being hidden refuses the path.
+ *
+ * Deliberately shape-blind rather than depth-sensitive: `queries/leaf` derives
+ * from `raw/sources/queries/leaf/ab12.md` too, where only `queries/leaf` can
+ * own the file, so this over-refuses that subtree when a DIFFERENT page is
+ * slugged `queries`. That is the same fail-closed direction the module already
+ * takes for `raw/parsed/…`, and it costs one rule instead of a depth
+ * comparison — the exact kind of subtlety that produced DW-492.
+ *
+ * The second candidate lives HERE, in the predicate, rather than in
+ * `rawPathSlug`, so it reaches the listing filter, the directory filter and
+ * {@link resolveWorkbenchFile} together: leaf, directory row and bytes are what
+ * DW-41/DW-204 requires one refusal to cover.
  */
 export function rawPathAllowed(
   displayPath: string,
@@ -301,7 +342,13 @@ export function rawPathAllowed(
 ): boolean {
   if (hiddenSlugs.size === 0) return true;
   const slug = rawPathSlug(displayPath);
-  return slug === null || !hiddenSlugs.has(slug);
+  if (slug === null) return true;
+  if (hiddenSlugs.has(slug)) return false;
+  // Keyed on the HEAD, not on "the answer contains a slash": the rule is about
+  // the one prefixed slug shape, and spelling it as a structural test would
+  // silently widen if another two-segment shape were ever admitted.
+  if (!slug.startsWith(`${QUERIES_SLUG_HEAD}/`)) return true;
+  return !hiddenSlugs.has(QUERIES_SLUG_HEAD);
 }
 
 /**

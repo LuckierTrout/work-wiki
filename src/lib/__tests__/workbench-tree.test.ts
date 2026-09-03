@@ -38,6 +38,7 @@ import {
   WORKBENCH_FILE_MAX_DEPTH,
   listWorkbenchFilePaths,
   listRawSourceFilePaths,
+  rawPathAllowed,
   rawPathSlug,
   readWorkbenchFile,
   readWorkbenchFileBytes,
@@ -525,10 +526,10 @@ describe("rawPathSlug", () => {
     // directory row `raw/assets/agentpage/` announce a hidden page.
     expect(rawPathSlug("raw/assets/agentpage/pic.png")).toBe("agentpage");
     expect(rawPathSlug("raw/assets/agentpage")).toBe("agentpage");
-    // DW-492 (OPEN — this row is NOT coverage of it): a page slugged plain
-    // `queries` still escapes refusal, because the two-segment branch swallows
-    // the segment after it. Dropping the `assets` head carries that hole into
-    // this subtree too; what passes here is the `queries/<leaf>` shape only.
+    // The `queries/<leaf>` shape reaches this subtree too. This function still
+    // answers ONE slug per path — the joined spelling — and it is
+    // `rawPathAllowed` that resolves the ambiguity with plain `queries` by
+    // testing the bare head as a second candidate (DW-492, covered below).
     expect(rawPathSlug("raw/assets/queries/leaf/pic.png")).toBe("queries/leaf");
 
     // Nothing spelled below the root, so nothing to disclose.
@@ -562,6 +563,41 @@ describe("rawPathSlug", () => {
     // Dotless, so it is a per-page directory row and the head IS dropped.
     expect(rawPathSlug("raw/assets/agentpage")).toBe("agentpage");
     expect(rawPathSlug("raw/assets/agentpage/pic.png")).toBe("agentpage");
+  });
+});
+
+describe("rawPathAllowed", () => {
+  it("refuses a hidden page slugged plain `queries`, in both raw shapes", () => {
+    // DW-492. `validateSlug` admits plain `queries` as an ordinary slug as well
+    // as the `queries/<leaf>` prefix shape, so `raw/sources/queries/<sha>.md`
+    // is either page `queries/<sha>`'s flat source or page `queries`' sharded
+    // one. `rawPathSlug` answers the joined spelling for both, so testing that
+    // answer alone asked about a page NOBODY hid: the hidden page slugged
+    // `queries` had its source filenames listed and its bytes served.
+    const hidden = new Set(["queries"]);
+    expect(rawPathAllowed("raw/sources/queries/ab12.md", hidden)).toBe(false);
+    // The mirrored binary tree spells the same slug, so one refusal covers it.
+    expect(rawPathAllowed("raw/assets/queries/pic.png", hidden)).toBe(false);
+  });
+
+  it("still refuses a hidden `queries/<leaf>` page — the first candidate", () => {
+    expect(
+      rawPathAllowed("raw/sources/queries/leaf.md", new Set(["queries/leaf"])),
+    ).toBe(false);
+  });
+
+  it("admits a sibling under the same head when neither candidate is hidden", () => {
+    // The second candidate must not turn the `queries/` head into a blanket
+    // refusal: hiding `queries/leaf` says nothing about page `queries/ab12`.
+    expect(
+      rawPathAllowed("raw/sources/queries/ab12.md", new Set(["queries/leaf"])),
+    ).toBe(true);
+  });
+
+  it("leaves an ordinary slug with no `queries` head unchanged", () => {
+    expect(
+      rawPathAllowed("raw/sources/alpha/ab12.md", new Set(["alpha-2"])),
+    ).toBe(true);
   });
 });
 
@@ -1532,6 +1568,24 @@ describe("listWorkbenchFilePaths", () => {
     await expect(
       readWorkbenchFile(OWNER, null, "raw/sources/queries/kept.md", g),
     ).resolves.toEqual({ content: "x" });
+  });
+
+  it("withholds the sharded source of a hidden page slugged plain `queries`", async () => {
+    // DW-492 at the doors. `queries` is BOTH an ordinary one-segment slug and
+    // the head of the one two-segment shape, so `raw/sources/queries/ab12.md`
+    // is this page's shard AND the flat source of a page `queries/ab12`.
+    // `rawPathSlug` answers the joined spelling, so the refusal set — holding
+    // the slug actually hidden, `queries` — used to miss entirely.
+    await writeSilo("raw", "sources/queries/ab12.md");
+    const g = hiding("queries");
+
+    const { paths } = await listWorkbenchFilePaths(OWNER, null, g);
+    expect(paths).not.toContain("raw/sources/queries/ab12.md");
+    expect(paths.some((p) => p.includes("queries"))).toBe(false);
+
+    const hidden = "raw/sources/queries/ab12.md";
+    expect(await readWorkbenchFile(OWNER, null, hidden, g)).toBeNull();
+    expect(await workbenchFileExists(OWNER, null, hidden, g)).toBe(false);
   });
 
   it("spends no budget on a refused raw subtree, so the cap is not reached", async () => {

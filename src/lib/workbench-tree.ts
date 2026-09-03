@@ -875,12 +875,14 @@ export interface WorkbenchSlugGate {
  * holds.
  *
  * A function, and the only one, for the reason {@link readableSlugsFromKnowledge}
- * gives and one more: the pair must not be spellable two ways. Seven doors build
+ * gives and one more: the pair must not be spellable two ways. Eight doors build
  * this gate (SSR first paint, three `/api/workbench/*` routes, three `/api/v1`
- * routes), and a call site that derived `hiddenSlugs` from a DIFFERENT knowledge
- * tree than `readableSlugs` would produce a gate that both hides a readable
- * page's sources and shows a hidden one's — exactly the drift DW-41 found
- * between the listing filter and the read gate.
+ * routes, and `/api/assets/[...path]` — which is neither, but serves the same
+ * per-page binary tree and so has to refuse the same slugs, DW-536), and a call
+ * site that derived `hiddenSlugs` from a DIFFERENT knowledge tree than
+ * `readableSlugs` would produce a gate that both hides a readable page's
+ * sources and shows a hidden one's — exactly the drift DW-41 found between the
+ * listing filter and the read gate.
  *
  * `groups` must be `buildKnowledgeTree(entries)`; passing both is what keeps
  * this module free of the storage read the entries came from.

@@ -3758,7 +3758,9 @@ source_spec: `spec-dw-32-42-workbench-read-write-gate-parity.md`
 location: src/lib/workbench-files.ts:207
 severity: low
 reason: `validateSlug` admits `queries` as an ordinary one-segment slug as well as the prefixed `queries/<leaf>` shape. For a page slugged `queries`, `saveRawSourceFor` writes `raw/sources/queries/<sha>.md`; `rawPathSlug` sees head `queries` with a following segment and returns `queries/<sha>` instead of `queries`, so a hidden page slugged `queries` is not refused. Fix: have `rawPathAllowed` test BOTH candidates (`queries` and `queries/<leaf>`) when the head is `queries`. Triaged `patch` (low), not applied — session budget.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-raw-path-gate-reach
+resolution-undo: f947a5bf826190bd472159a840ecbf21c37c9d84390482c41b43c01afa2c23e6 2026-09-03 7374617475733a206f70656e
 
 ### DW-493: `rescanSources`' `hiddenSlugs` forwarding is never exercised with a non-empty set, so the gate on the one door a caller can point at an arbitrary raw path is unpinned.
 
@@ -4159,7 +4161,9 @@ location: src/app/api/assets/[...path]/route.ts:73
 source_spec: `spec-dw-491-493-494-workbench-raw-path-gate-parity.md`
 severity: medium
 reason: DW-491 closed the disclosure at the Workbench doors (`listWorkbenchFilePaths`, `readWorkbenchFile`, `readWorkbenchFileBytes`, `/api/workbench/media`), which all route through `rawPathAllowed`. `/api/assets/[...path]` reads the SAME bytes out of the same `raw/assets/<slug>/<file>` tree (route.ts:83, `rawRelPath("assets/" + segments.join("/"))`) and its only gate is `page.frontmatter.visibility === "private"` (route.ts:73-79). `hiddenSlugs` is broader than that: `workbenchSlugGate` refuses every slug the principal's index named that `buildKnowledgeTree` dropped — agent-scoped types and artifacts included, none of which need `visibility: private`. So after this change the Files tab withholds `raw/assets/agentpage/pic.png` while a plain `GET /api/assets/agentpage/pic.png` still returns the bytes. Pre-existing: that route's gate predates DW-491 and was not touched here. Whether the two gates SHOULD agree is a product decision — `/api/assets/` is deliberately no-auth so public pages skip pri
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-raw-path-gate-reach
+resolution-undo: f947a5bf826190bd472159a840ecbf21c37c9d84390482c41b43c01afa2c23e6 2026-09-03 7374617475733a206f70656e
 decision: 2026-08-29 Align the assets route on hiddenSlugs — Give `/api/assets/[...path]` the same `hiddenSlugs`/`rawPathAllowed` gate the Workbench doors use, derived for the request's principal, keeping the no-auth path only for slugs that gate admits. Pin that an agent-scoped page's asset is refused unauthenticated and that an ordinary public page's asset still serves with no session.
 decision: 2026-08-29 Align the assets route on hiddenSlugs — Give `/api/assets/[...path]` the same `hiddenSlugs`/`rawPathAllowed` gate the Workbench doors use, derived for the request's principal, keeping the no-auth path only for slugs that gate admits. Pin that an agent-scoped page's asset is refused unauthenticated and that an ordinary public page's asset still serves with no session.
 
@@ -6020,4 +6024,12 @@ location: src/lib/lifecycle.ts (delete branch); src/lib/wiki.ts (wikiPageExists)
 source_spec: `spec-dw-489-490-case-variant-read-and-write-election.md`
 severity: medium
 reason: This spec retargeted the three doors its decision named — `readWikiPage` recovery, `writeWikiPage` and `writeWikiPageIfContentMatches` — so a variant-held Page is now a live, listed, readable, WRITABLE state rather than an anomaly `readWikiPage` refused to serve at all. Two sibling doors did not move with it, and each is a wrong answer the owner can hit: (1) DELETE. `src/lib/lifecycle.ts`'s delete branch unlinks exactly `tenantWikiRelPath(deleteTenant, `${slug}.md`)` and `wikiRelPath(`${slug}.md`)`, swallowing ENOENT on both. On a case-SENSITIVE store holding only `wiki/cased.MD`, the pre-delete read NOW succeeds (it did not before this change), both unlinks miss, the op reports success — and the next `readWikiPage("cased")` recovers the variant and serves the full body. A hard delete that reports success and removes nothing is worse than the pre-change state, where the Page was simply unreadable through `readWikiPage`. (2) EXISTENCE. `wikiPageExists` (`src/lib/wiki.ts`) probes `tenant
+status: open
+
+### DW-742: `/api/raw/[slug]` serves the raw SOURCE text of a page the Knowledge tab hides to anyone, unauthenticated — the sources-half twin of the hole DW-536 just closed on the assets half.
+origin: spec-deferred 6bfe3e1ce755
+location: src/app/api/raw/[slug]/route.ts:24
+source_spec: `spec-dw-492-536-raw-path-gate-reach.md`
+severity: medium
+reason: DW-536 aligned `/api/assets/[...path]` on `hiddenSlugs`/`rawPathAllowed`. `/api/raw/[slug]` (`src/app/api/raw/[slug]/route.ts:24-30`) reads the same silo tree — `readRawSource` / `readRawSourceById` over `raw/sources/<slug>.md` and `raw/sources/<slug>/<rawId>.<ext>` — and its ONLY gate is `canReadSlug(slug, principal)` (`src/lib/authz.ts:144-162`), which reads frontmatter visibility/owner and nothing else. Those are exactly the paths `rawPathAllowed` refuses for a hidden slug at `listWorkbenchFilePaths`, `resolveWorkbenchFile` and the `/api/v1` file doors. An `agent-*` typed page with `visibility: public` is kept by `listReadableWikiPages` but dropped by `buildKnowledgeTree` (`src/lib/workbench-tree.ts:656`), so its slug is in `hiddenSlugs` and the Files tab withholds its source — while `GET /api/raw/<that-slug>` returns the source text with no session. Verified by reading both routes; no test in the suite exercises that route's GET at all (only citation-href string assertions in `raw-
 status: open
