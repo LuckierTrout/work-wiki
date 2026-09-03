@@ -27,6 +27,14 @@ import { validateUrlSafety } from "./url-safety";
 import { getStorage } from "./storage";
 import { rawRelPath } from "./wiki";
 import { ClientInputError, getErrorMessage } from "./errors";
+import { bytesSha256 } from "./source-sha256";
+
+/**
+ * Hex characters of the SHA-256 folded into a stored asset filename. 12 hex
+ * chars is 48 bits — far past collision range for one page's images, and short
+ * enough to keep the key readable in a markdown embed.
+ */
+const IMAGE_DIGEST_PREFIX_LEN = 12;
 
 // Re-export HTML parsing utilities for backwards compatibility
 export { stripHtml, htmlToMarkdown, extractTitle, extractWithReadability } from "./html-parse";
@@ -600,19 +608,44 @@ export async function fetchImageBytes(
   return { bytes, filename: sanitizeImageFilename(url), contentType };
 }
 
+/**
+ * Fetch an image by URL and store it as an asset.
+ *
+ * The returned `filename` is the name {@link storeImageBytes} ACTUALLY wrote —
+ * the digest-prefixed one — not the name the fetch suggested. The two fields
+ * have to compose: a caller rebuilding `assets/<slug>/<filename>` from this
+ * return value must land on the key `localPath` names, and since DW-693 the
+ * stored name carries a content digest the suggested name does not.
+ */
 export async function storeImageAsset(
   url: string,
   slug: string,
 ): Promise<{ localPath: string; bytes: ArrayBuffer; filename: string; contentType: string }> {
-  const { bytes, filename, contentType } = await fetchImageBytes(url);
-  const { localPath } = await storeImageBytes(bytes, slug, filename);
+  const { bytes, filename: suggestedName, contentType } = await fetchImageBytes(url);
+  const { localPath, filename } = await storeImageBytes(bytes, slug, suggestedName);
   return { localPath, bytes, filename, contentType };
 }
 
 /**
  * Store raw image bytes (e.g. an uploaded file) as an asset under
- * `assets/<slug>/<filename>`. `suggestedName` may be a URL or a plain filename;
- * it's sanitized. Enforces {@link MAX_RESPONSE_SIZE}.
+ * `assets/<slug>/<digest>-<filename>`. `suggestedName` may be a URL or a plain
+ * filename; it's sanitized. Enforces {@link MAX_RESPONSE_SIZE}.
+ *
+ * CONTENT-ADDRESSED, and it has to be (DW-693). Callers mint `slug` BEFORE the
+ * page slug is final — `ingestImage` derives it from `slugify(title)` because
+ * the key has to be embedded in the body it hands to `ingest()`, and `ingest()`
+ * is what uniquifies the slug (forking off another owner's private page). So
+ * two uploads sharing a title and a sanitized filename would otherwise address
+ * ONE key, and the door below is `writeAsset` — an overwrite — so the second
+ * upload would silently replace the first page's image. Folding a digest of the
+ * bytes into the filename makes that impossible: different bytes can never
+ * share a key, identical bytes harmlessly share one.
+ *
+ * The digest goes in the FILENAME, never the directory. `/api/assets/[...path]`
+ * reads the first segment as the page slug to gate private-page assets; a
+ * digest there resolves to no page and every such image would be served
+ * ungated. Keeping it ahead of the sanitized name also preserves the extension,
+ * so `contentTypeFor` still answers correctly.
  */
 export async function storeImageBytes(
   bytes: ArrayBuffer,
@@ -624,7 +657,8 @@ export async function storeImageBytes(
       `Image too large (${bytes.byteLength} bytes, max ${MAX_RESPONSE_SIZE})`,
     );
   }
-  const filename = sanitizeImageFilename(suggestedName);
+  const digest = (await bytesSha256(bytes)).slice(0, IMAGE_DIGEST_PREFIX_LEN);
+  const filename = `${digest}-${sanitizeImageFilename(suggestedName)}`;
   const localPath = `assets/${slug}/${filename}`;
   await getStorage().writeAsset(rawRelPath(localPath), bytes);
   return { localPath, filename };

@@ -1509,11 +1509,23 @@ function ownerClassKey(handle: string): string {
   return human === handle && handle.includes("--") ? "" : slugify(human);
 }
 
-/** Find a slug not taken by any existing page (`base`, `base-2`, `base-3`, …). */
+/**
+ * Find a slug not taken by any existing page (`base`, `base-2`, `base-3`, …).
+ *
+ * Reads `{ fresh: true, strict: true }` because this is NOT a pure existence
+ * probe. Its only caller is the realm-fork guard below, so a `false` here is a
+ * decision to WRITE onto the probed slug. A non-ENOENT provider failure or a
+ * stale `pageCache` entry answering "free" flattens the loop on its first
+ * candidate and hands back `base` itself — the very private page the fork
+ * exists to get off — or forks onto some other occupied slug. Fail the ingest
+ * closed instead; ENOENT still answers `null`, so genuine absence is unchanged.
+ */
 async function findFreeSlug(base: string): Promise<string> {
   let candidate = base;
   let n = 2;
-  while (await readWikiPageWithFrontmatter(candidate)) {
+  while (
+    await readWikiPageWithFrontmatter(candidate, { fresh: true, strict: true })
+  ) {
     candidate = `${base}-${n++}`;
   }
   return candidate;
@@ -2072,7 +2084,20 @@ export async function ingest(
   // private page — via the concept resolver, an alias, or a slug collision —
   // FORK to a fresh slug so the ingest produces the actor's OWN page and never
   // writes to (or leaks the slug of) the private one.
-  const resolvedExisting = await readWikiPageWithFrontmatter(slug);
+  //
+  // `{ fresh: true, strict: true }` because this is NOT a pure existence probe:
+  // it is the only gate that declines a write onto another owner's page. The
+  // write base below reads fresh+strict and DOES find the private page — it
+  // preserves that page's `owner`/`visibility` and writes the actor's body over
+  // it, with nothing downstream to re-decide. So a `null` here from a
+  // non-ENOENT provider blip, or from a stale `pageCache` entry left open by a
+  // concurrent bulk scan, AUTHORIZES a cross-owner overwrite. Fail the ingest
+  // closed instead. No `owner` hint, deliberately: it only reaches the ACTOR's
+  // own silo, which can never be the other-owner private page being forked from.
+  const resolvedExisting = await readWikiPageWithFrontmatter(slug, {
+    fresh: true,
+    strict: true,
+  });
   if (
     resolvedExisting &&
     resolvedExisting.frontmatter.visibility === "private" &&

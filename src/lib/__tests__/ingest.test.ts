@@ -41,6 +41,8 @@ import {
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
   tenantForOwner,
+  wikiRelPath,
+  beginPageCache,
   type Frontmatter,
 } from "../wiki";
 import { resetSourceIndex } from "../source-index";
@@ -2960,6 +2962,212 @@ describe("ingest — private-page convergence guard", () => {
     expect(
       Number((await readWikiPageWithFrontmatter("transformer"))!.frontmatter.source_count),
     ).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingest — realm fork guard reads fresh + strict (DW-698)
+//
+// The realm guard is the ONLY thing standing between "this ingest resolved
+// onto another owner's PRIVATE page" and "the write base below merges the
+// actor's body INTO that page". The write base already reads
+// `{ fresh: true, strict: true, owner }`, so it DOES find the private page —
+// it preserves the private `owner`/`visibility` and writes the actor's body
+// over it, and nothing downstream re-decides. A `null` from the guard is
+// therefore not a neutral "no page here": it AUTHORIZES a cross-owner
+// overwrite. The same is true of the `findFreeSlug` probe the guard calls — a
+// flattened first probe returns `base` itself, i.e. the very private slug the
+// fork exists to get off.
+//
+// So neither read may answer "absent" for any reason except genuine absence:
+// not a provider blip (needs `strict`), and not a stale `pageCache` entry left
+// open by a concurrent bulk scan (needs `fresh`).
+//
+// ANCHORING: each fault row counts reads of the FLAT page path
+// (`wiki/<slug>.md`) and asserts the total, the way the DW-427 rows do. One
+// `readWikiPage` performs at most one flat read, so the count is a stable
+// ordinal over the reads that matter, and a row whose one-shot drifted onto an
+// earlier read fails on the count rather than passing for the wrong reason.
+// ---------------------------------------------------------------------------
+
+describe("ingest — realm fork guard reads fresh + strict (DW-698)", () => {
+  beforeEach(() => {
+    resetSourceIndex();
+    resetAliasIndex();
+    mockedHasLLMKey.mockResolvedValue(true);
+  });
+  afterEach(() => {
+    mockedHasLLMKey.mockResolvedValue(false);
+    mockedCallLLM.mockReset();
+  });
+
+  /** The private page Alice owns, serialized. */
+  function privatePageBytes(slug: string, owner: string, body: string) {
+    const fm: Frontmatter = {
+      created: "2026-01-01",
+      updated: "2026-01-01",
+      owner,
+      visibility: "private",
+      authors: [owner],
+      contributors: [],
+      source_count: "1",
+      confidence: 0.7,
+      expiry: "2099-01-01",
+      tags: [],
+      content_hash: contentHash(body),
+    };
+    return serializeFrontmatter(fm, `# ${slug}\n\n${body}`);
+  }
+
+  /** Seed a PRIVATE page owned by `owner`, the way the convergence-guard rows do. */
+  async function seedPrivatePage(slug: string, owner: string, body: string) {
+    await writeWikiPage(slug, privatePageBytes(slug, owner, body));
+    resetSourceIndex();
+    resetAliasIndex();
+  }
+
+  /** Bob's ingest, worded so the concept resolver lands him on `transformer`. */
+  function bobIngestsOntoTransformer() {
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Transformer\nALIASES: none\n\n# Transformer\n\n## Summary\n\nBob's own take.",
+    );
+    return ingest("Transformer", "Bob's distinct source text about transformers.", {
+      owner: "bob",
+      author: "bob",
+    });
+  }
+
+  /**
+   * Fail the `nth` FLAT read of `<slug>.md` with a non-ENOENT storage error,
+   * once. Every other read (including every other read of the same file) goes
+   * through untouched, so the ingest pipeline is not broken wholesale — a spy
+   * that failed every read would reject either way and pin nothing.
+   */
+  function blipFlatRead(slug: string, nth: number) {
+    const storage = getStorage();
+    const originalRead = storage.readFile.bind(storage);
+    const flatPath = wikiRelPath(`${slug}.md`);
+    const counter = { reads: 0 };
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (filePath: string) => {
+        if (filePath === flatPath) {
+          counter.reads++;
+          // A non-ENOENT failure: the file is there, the provider is not.
+          if (counter.reads === nth) throw new Error("storage unavailable");
+        }
+        return originalRead(filePath);
+      });
+    return { counter, restore: () => spy.mockRestore() };
+  }
+
+  // The three flat reads a forking ingest makes of the private slug, in order:
+  //   1. resolveConceptSlug step 1 (the exact concept-slug hit),
+  //   2. the realm fork guard — the read under test,
+  //   3. findFreeSlug's first probe, of `base` itself.
+  // Measured, not assumed. The fault rows below assert the RUNNING COUNT at the
+  // point the ingest died, which is what pins a one-shot to the read it was
+  // aimed at: a shot that drifted onto read 1 would stop the ingest a read
+  // early and fail the count, rather than passing for the wrong reason.
+  const FORK_GUARD_READ = 2;
+  const FREE_SLUG_PROBE_READ = 3;
+
+  // INVARIANT row: passes with either flag removed. It pins the behaviour the
+  // fault rows below are the ablation for — with healthy storage and no cache,
+  // the guard already forks. Its value is that the fault rows are compared
+  // against a known-good baseline, not that it fails without the fix.
+  it("forks off Alice's private page and leaves it byte for byte untouched (healthy)", async () => {
+    await seedPrivatePage("transformer", "alice", "Alice's private notes on transformers.");
+    const before = (await readWikiPageWithFrontmatter("transformer"))!.content;
+
+    const result = await bobIngestsOntoTransformer();
+
+    expect(result.primarySlug).toMatch(/^transformer-\d+$/);
+    expect(result.wikiPages).not.toContain("transformer");
+    expect((await readWikiPageWithFrontmatter("transformer"))!.content).toBe(before);
+  });
+
+  // ABLATION row: fails with `strict` removed from the guard read. Without it
+  // the blip is swallowed into `null`, the fork is skipped, and the write base
+  // merges Bob's body into Alice's private page — the assertion that catches it
+  // is `.rejects` (the old code RESOLVES) and the byte comparison below it.
+  it("rejects with the STORAGE error when the fork guard's read of the private page blips", async () => {
+    await seedPrivatePage("transformer", "alice", "Alice's private notes on transformers.");
+    const before = (await readWikiPageWithFrontmatter("transformer"))!.content;
+    const { counter, restore } = blipFlatRead("transformer", FORK_GUARD_READ);
+
+    try {
+      await expect(bobIngestsOntoTransformer()).rejects.toThrow("storage unavailable");
+      // The shot landed on the GUARD, not on the concept resolver before it:
+      // the ingest stopped at exactly that read.
+      expect(counter.reads).toBe(FORK_GUARD_READ);
+    } finally {
+      restore();
+    }
+
+    expect((await readWikiPageWithFrontmatter("transformer"))!.content).toBe(before);
+    expect(await readWikiPageWithFrontmatter("transformer-2")).toBeNull();
+  });
+
+  // ABLATION row: fails with `strict` removed from the `findFreeSlug` probe.
+  // Without it the probe's blip flattens to `null`, so the loop exits on its
+  // FIRST candidate and hands back `base` — the private slug the fork exists to
+  // get off — and the write base then merges onto it.
+  it("rejects with the STORAGE error when the findFreeSlug probe blips", async () => {
+    await seedPrivatePage("transformer", "alice", "Alice's private notes on transformers.");
+    const before = (await readWikiPageWithFrontmatter("transformer"))!.content;
+    const { counter, restore } = blipFlatRead("transformer", FREE_SLUG_PROBE_READ);
+
+    try {
+      await expect(bobIngestsOntoTransformer()).rejects.toThrow("storage unavailable");
+      // The guard read (2) succeeded and forked; the probe (3) is what blew up.
+      expect(counter.reads).toBe(FREE_SLUG_PROBE_READ);
+    } finally {
+      restore();
+    }
+
+    expect((await readWikiPageWithFrontmatter("transformer"))!.content).toBe(before);
+    expect(await readWikiPageWithFrontmatter("transformer-2")).toBeNull();
+  });
+
+  // ABLATION row: fails with `fresh` removed from the guard read. `pageCache` is
+  // module-global and ref-counted around bulk scans, so an unrelated scan can be
+  // holding a negative entry open when this ingest arrives.
+  it("sees the STORED private page through a stale pageCache entry and still forks", async () => {
+    const closeCache = beginPageCache();
+    try {
+      // Prime the cache with the ABSENCE of `transformer` (what a scan that ran
+      // before Alice's page landed would have left behind).
+      expect(await readWikiPageWithFrontmatter("transformer")).toBeNull();
+
+      // Now make that entry stale: write Alice's private page straight through
+      // the storage provider, the one door that does not invalidate the cache.
+      const flatPath = wikiRelPath("transformer.md");
+      const bytes = privatePageBytes("transformer", "alice", "Alice's private notes.");
+      await getStorage().writeFile(flatPath, bytes);
+      resetSourceIndex();
+      resetAliasIndex();
+
+      const result = await bobIngestsOntoTransformer();
+
+      expect(result.primarySlug).toMatch(/^transformer-\d+$/);
+      expect(result.wikiPages).not.toContain("transformer");
+      // Alice's stored bytes are what a stale-cache read would have overwritten.
+      expect(await getStorage().readFile(flatPath)).toBe(bytes);
+    } finally {
+      closeCache();
+    }
+  });
+
+  // INVARIANT row: `strict` must not turn an absence into an error. Passes with
+  // either flag removed by design — what breaks it is making the ENOENT `null`
+  // a throw, which is the regression it exists to prevent.
+  it("does not fork a genuinely absent slug — ENOENT still reads as null under strict", async () => {
+    const result = await bobIngestsOntoTransformer();
+
+    expect(result.primarySlug).toBe("transformer");
+    const page = await readWikiPageWithFrontmatter("transformer");
+    expect(page!.frontmatter.owner).toBe("bob");
   });
 });
 

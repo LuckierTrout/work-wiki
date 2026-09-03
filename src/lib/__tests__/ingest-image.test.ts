@@ -17,11 +17,18 @@ import { ingest, ingestImage } from "../ingest";
 import { hasLLMKey, callLLM } from "../llm";
 import { describeImage } from "../vision";
 import { fetchImageBytes, storeImageBytes } from "../fetch";
-import { readWikiPageWithFrontmatter, readRawSourceById } from "../wiki";
+import {
+  readWikiPageWithFrontmatter,
+  readRawSourceById,
+  rawRelPath,
+  wikiRelPath,
+  tenantWikiRelPath,
+  tenantForOwner,
+} from "../wiki";
 import { parseSources } from "../sources";
 import { resetSourceIndex } from "../source-index";
 import { resetAliasIndex } from "../alias-index";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 
 const mockedDescribe = vi.mocked(describeImage);
 const mockedFetchBytes = vi.mocked(fetchImageBytes);
@@ -198,5 +205,151 @@ describe("source provenance — text-paste supersession", () => {
     // The stale text-paste is gone; only the real URL remains.
     expect(sources).toHaveLength(1);
     expect(sources[0]).toMatchObject({ type: "x-mention", url: "https://x.com/i/status/123" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ingestImage — asset keys are content-addressed (DW-693)
+//
+// `ingestImage` mints the asset key from `slugify(title)` BEFORE calling
+// `ingest()`, because the key is embedded in the body `ingest()` is handed —
+// so the key is built from the PRE-uniquified slug. When `ingest()` then
+// uniquifies (the realm fork off another owner's private page), the two pages
+// keep pointing at ONE key, and `writeAsset` is an overwrite door: the second
+// upload silently replaces the first page's image.
+//
+// Every other row in this file runs against the module-level
+// `vi.mock("../fetch")` stub of `storeImageBytes`, which is exactly why nothing
+// here ever exercised the real key. These rows restore the REAL implementation
+// via `vi.importActual` and let it write to the per-test tmpdir the suite
+// already roots DATA_DIR/RAW_DIR at, so the key is exercised against real
+// storage at the `ingestImage` boundary rather than mocked away.
+//
+// Only ONE of the two rows pins the collision. The different-bytes row is the
+// ABLATION — it is what fails without the digest. The identical-bytes row is an
+// INVARIANT: it passes unchanged against the pre-fix code, and its job is to
+// stop the fix from being "over-applied" into a per-call unique key.
+// ---------------------------------------------------------------------------
+
+describe("ingestImage — asset keys are content-addressed (DW-693)", () => {
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import("../fetch")>("../fetch");
+    mockedStoreBytes.mockImplementation(actual.storeImageBytes);
+    mockedHasLLMKey.mockResolvedValue(false);
+    mockedDescribe.mockResolvedValue(null);
+  });
+
+  /** The `assets/<...>` ref the page body embeds. */
+  function embeddedRef(content: string): string {
+    const ref = content.match(/!\[[^\]]*\]\((assets\/[^)]+)\)/)?.[1];
+    expect(ref).toBeDefined();
+    return ref!;
+  }
+
+  /** Resolve that ref to stored bytes the way `/api/assets/[...path]` does. */
+  async function readAssetBytes(ref: string): Promise<number[]> {
+    return [...new Uint8Array(await getStorage().readAsset(rawRelPath(ref)))];
+  }
+
+  /**
+   * Make the page PRIVATE so the next owner's same-titled ingest FORKS instead
+   * of merging — the two-page state the collision needs. This is the realm-fork
+   * guard doing its job (DW-698), which is what leaves two pages sharing one
+   * pre-uniquified asset directory.
+   */
+  async function makePrivate(slug: string) {
+    const page = await readWikiPageWithFrontmatter(slug);
+    const flipped = page!.content.replace(/^visibility: .*$/m, "visibility: private");
+    expect(flipped).not.toBe(page!.content);
+    // Rewrite wherever the page actually landed: `ingest()` writes the owner's
+    // tenant silo (plus, historically, a flat compatibility copy), and the silo
+    // is what a read resolves to. Flipping only the flat copy would leave the
+    // authoritative bytes public and the fork would never happen.
+    const owner = String(page!.frontmatter.owner ?? "");
+    const storage = getStorage();
+    const paths = [
+      tenantWikiRelPath(tenantForOwner(owner), `${slug}.md`),
+      wikiRelPath(`${slug}.md`),
+    ];
+    let written = 0;
+    for (const p of paths) {
+      if (!(await storage.fileExists(p))) continue;
+      await storage.writeFile(p, flipped);
+      written++;
+    }
+    expect(written).toBeGreaterThan(0);
+  }
+
+  const ALICE_BYTES = [11, 22, 33, 44];
+  const BOB_BYTES = [55, 66, 77, 88];
+
+  // ABLATION row: fails with the digest removed from the stored filename. Both
+  // pages then address `assets/photo/photo.png`, and `writeAsset` is an
+  // overwrite door — Bob's upload replaces Alice's bytes under the key her page
+  // still embeds. The assertions that catch it are `bobRef` vs `aliceRef` and
+  // the two byte read-backs below it.
+  it("gives two same-title, same-filename uploads with DIFFERENT bytes two different keys", async () => {
+    const alice = await ingestImage(
+      { bytes: new Uint8Array(ALICE_BYTES).buffer, filename: "photo.png" },
+      { author: "alice", owner: "alice", title: "Photo" },
+    );
+    expect(alice.primarySlug).toBe("photo");
+    await makePrivate("photo");
+
+    const bob = await ingestImage(
+      { bytes: new Uint8Array(BOB_BYTES).buffer, filename: "photo.png" },
+      { author: "bob", owner: "bob", title: "Photo" },
+    );
+    // Bob's PAGE forked, but his asset directory is still `assets/photo/` —
+    // minted from the title before `ingest()` uniquified. Only the digest in
+    // the filename keeps the two keys apart.
+    expect(bob.primarySlug).not.toBe("photo");
+
+    const aliceRef = embeddedRef((await readWikiPageWithFrontmatter("photo"))!.content);
+    const bobRef = embeddedRef(
+      (await readWikiPageWithFrontmatter(bob.primarySlug))!.content,
+    );
+
+    // The page slug stays the FIRST segment — `/api/assets/[...path]` reads it
+    // as the page slug to gate private images.
+    expect(aliceRef.startsWith("assets/photo/")).toBe(true);
+    expect(bobRef.startsWith("assets/photo/")).toBe(true);
+    // Two uploads, two keys.
+    expect(bobRef).not.toBe(aliceRef);
+    // …and each page reads back its OWN bytes.
+    expect(await readAssetBytes(aliceRef)).toEqual(ALICE_BYTES);
+    expect(await readAssetBytes(bobRef)).toEqual(BOB_BYTES);
+    // The extension survives, so `contentTypeFor` still answers image/png.
+    expect(aliceRef.endsWith("photo.png")).toBe(true);
+  });
+
+  // INVARIANT row: passes with the digest removed too, by design — identical
+  // bytes already shared one key before the fix. What it pins is that the key
+  // is derived from the BYTES and nothing else: swap the digest for a random or
+  // per-call token and this row fails, because two copies of one image would
+  // start occupying two keys.
+  it("gives two same-title, same-filename uploads with IDENTICAL bytes one shared key", async () => {
+    const shared = [9, 8, 7, 6];
+
+    const alice = await ingestImage(
+      { bytes: new Uint8Array(shared).buffer, filename: "photo.png" },
+      { author: "alice", owner: "alice", title: "Photo" },
+    );
+    await makePrivate("photo");
+
+    const bob = await ingestImage(
+      { bytes: new Uint8Array(shared).buffer, filename: "photo.png" },
+      { author: "bob", owner: "bob", title: "Photo" },
+    );
+    expect(bob.primarySlug).not.toBe(alice.primarySlug);
+
+    const aliceRef = embeddedRef((await readWikiPageWithFrontmatter("photo"))!.content);
+    const bobRef = embeddedRef(
+      (await readWikiPageWithFrontmatter(bob.primarySlug))!.content,
+    );
+
+    // Content-addressed: same bytes, same key — and it holds those bytes.
+    expect(bobRef).toBe(aliceRef);
+    expect(await readAssetBytes(aliceRef)).toEqual(shared);
   });
 });

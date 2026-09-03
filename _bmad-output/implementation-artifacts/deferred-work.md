@@ -5615,7 +5615,9 @@ location: src/lib/ingest.ts:425
 source_spec: `spec-dw-570-572-content-addressed-write-immutability.md`
 severity: medium
 reason: `src/lib/ingest.ts:425` calls `storeImageBytes(bytes, slug, filename)` with `slug = slugify(title)`, computed BEFORE `ingest()` uniquifies the page slug (`findFreeSlug`). Two ingests deriving the same title and sanitized filename therefore address the same asset key while landing on two different pages. This change did not create the collision, but it moved which page is wrong: with the overwrite door the second upload replaced the first page's image; with the create-only door the second page renders the first upload's bytes. The freeze is now logged (`storeImageBytes` warns on an occupied key) but nothing surfaces it to the user, and no test exercises the collision at the `ingestImage` boundary — every ingest-level suite mocks `storeImageBytes` away. The fix is to key the asset off the final page slug or off a digest, not to revert the create-only door.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-ingest-read-and-asset-keying
+resolution-undo: e1e7d6e89229fea29659ce26502686b549c0d62bcbb9dfba1a16c2f555af437b 2026-09-03 7374617475733a206f70656e
 
 ### DW-694: `handleRevertRevision` performs no write ACL at all, so on the HTTP MCP surface any authenticated principal can revert a Page they cannot edit through `update_page`.
 origin: spec-deferred 09fbd9dcf213
@@ -5658,7 +5660,9 @@ location: src/lib/ingest.ts:1952
 source_spec: `spec-dw-427-ingest-fresh-merge-bases.md`
 severity: low
 reason: Traced during the DW-427 review (not executed). `const resolvedExisting = await readWikiPageWithFrontmatter(slug)` at src/lib/ingest.ts:1952 is the only gate that forks to a free slug when the resolved slug landed on another owner's PRIVATE page. Without `strict` a blip answers `null`, the guard is skipped, and the ingest proceeds to the merge base at :2068 — which DOES find the private page, preserves its `owner`/`visibility` (:2140-2146) and writes the actor's body over it. `writeWikiPageWithSideEffects` in lifecycle.ts carries no authorization of its own, so nothing downstream re-decides the fork. The DW-427 bundle named this line only as one of the "roughly eight pure existence probes" to leave alone; it did not name this harm, and the intent's Never clause kept it out of scope for this session.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-ingest-read-and-asset-keying
+resolution-undo: e1e7d6e89229fea29659ce26502686b549c0d62bcbb9dfba1a16c2f555af437b 2026-09-03 7374617475733a206f70656e
 
 ### DW-699: QueryResultPanel's Sources chip and saved-answer "View" link are hrefForSlug call sites that no suite renders, because the only file that mounts the panel always passes sources: [] and no save state.
 origin: spec-deferred 9065fc4dffed
@@ -5976,4 +5980,12 @@ location: src/lib/source-cascade.ts:193
 source_spec: `spec-dw-495-497-691-strict-merge-base-sweep.md`
 severity: medium
 reason: `src/lib/source-cascade.ts:193` runs `readWikiPageWithFrontmatter(entry.slug)` with no options inside the loop that builds `summaries` and `others`. A non-ENOENT blip flattens to `null`, `if (!page) continue` skips the page, and the result is PERSISTED into the resume marker written at `:203` — after which `if (resumed)` skips enumeration entirely, so a retry inherits the omission. The cascade then reaches `deleteRawSourceBytes` at `:281` and removes the raw bytes anyway, returning success with the skipped page still carrying a `sources:` entry that points at bytes that no longer exist. This is verbatim the harm that justifies the conversion 40 lines below it at `:229`, which this bundle did convert. The new row in `src/lib/__tests__/strict-merge-base-reads.test.ts` deliberately arms AROUND this read to reach the converted one, so the gap is now documented in a test rather than closed. Out of scope on the intent's own authority: the bundle intent and DW-495's location list name `source
+status: open
+
+### DW-738: A forked page's image stays in the OTHER page's asset directory, so `/api/assets/[...path]` gates it on the wrong page's visibility.
+origin: spec-deferred 84c8352da242
+location: src/lib/ingest.ts:425
+source_spec: `spec-dw-698-693-ingest-read-and-asset-keying.md`
+severity: medium
+reason: `ingestImage` mints `assets/<slugify(title)>/…` before `ingest()` uniquifies, so when the realm guard forks (Alice's private `photo`, Bob's page `photo-2`) Bob's image is still stored under `assets/photo/`. `src/app/api/assets/[...path]/route.ts:69-76` reads `segments[0]` as the page slug and gates on THAT page: Bob's own image 404s for Bob and for every reader of his public page, while Alice — who owns neither the page nor the image — can fetch it. The mirror case (first page public, forked page private) serves a private page's image ungated. `syncSiloForPage` (`src/lib/silo.ts:281-295`) likewise mirrors Bob's bytes into Alice's tenant silo and never into his own. Pre-existing — the directory was always the pre-uniquified slug — and unchanged in kind by DW-693's digest keying, which the intent sanctioned as an alternative to keying off the final page slug. Keying off the final page slug (a post-ingest re-key plus body rewrite, or deferring the store) is the fix that would close it. `s
 status: open
