@@ -504,8 +504,8 @@ const ASCII_PART_LINE_STRIDE = 76;
  * The payload of a part written with NO transfer encoding (`7bit`), which is
  * the only shape that can still carry more decoded bytes than
  * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` while staying under the raw gate: since
- * DW-449 that gate is 25 MiB, and base64's ~1.37x puts the budget's ~19.9 MiB
- * of decoded payload at ~27.2 MiB on the wire, refused at the door. An unencoded
+ * DW-449 that gate is 25 MiB, and base64's ~1.37x puts the budget's ~19.71 MiB
+ * of decoded payload at ~27.0 MiB on the wire, refused at the door. An unencoded
  * part costs ~1x, so the DW-360 bound is reachable through it and through
  * nothing else.
  *
@@ -728,9 +728,9 @@ async function forwardedForm(raw: string, subject: string, slug: string) {
 // copy of the shape would mean encoding ~28 MB of base64 twice for no gain.
 /**
  * The budget as the acknowledgement quotes it, derived with the SAME floor
- * arithmetic production uses. Since DW-455 the budget is 20,871,520 bytes --
- * ~19.90 MiB, not MiB-aligned at all -- so the floor is doing real work and a
- * plain `/ 1024 / 1024` would quote 19.9 where the acknowledgement says 19. The
+ * arithmetic production uses. Since DW-455 the budget is not MiB-aligned at all
+ * -- 20,671,520 bytes, ~19.71 MiB -- so the floor is doing real work and a plain
+ * `/ 1024 / 1024` would quote 19.7 where the acknowledgement says 19. The
  * "rounded DOWN, so the figure quoted is never larger than the one enforced"
  * invariant is pinned for `MAX_RAW_EMAIL_MB` and would otherwise be unpinned
  * here.
@@ -1366,7 +1366,7 @@ describe("email-ingest oversized attachments", () => {
    *
    * The aggregate budget (DW-360) is deliberately NOT in play: the oversized
    * pair never reaches the selection loop, and eleven 96-byte parts cannot spend
-   * a ~19.9 MiB budget. Its own three-way case lives next door.
+   * a ~19.71 MiB budget. Its own three-way case lives next door.
    */
   it("reports oversized, over-cap and unsupported losses in one scrubbed acknowledgement", async () => {
     const raw = multipartEmail(
@@ -2255,7 +2255,7 @@ describe("email-ingest Content-ID parts", () => {
  * Unencoded (`7bit`) parts on purpose: they are what makes the gap reachable
  * now. Quoted-printable at ~3.12x was never a candidate, and base64 at ~1.37x
  * stopped being one when DW-449 clamped the raw gate to Email Routing's 25 MiB
- * ceiling -- ~19.9 MiB of decoded payload is ~27.2 MiB of base64, refused at the
+ * ceiling -- ~19.71 MiB of decoded payload is ~27.0 MiB of base64, refused at the
  * door, which would test the raw gate rather than this bound. At ~1x the door
  * is clear and the budget is the only thing that can drop a part.
  *
@@ -2979,7 +2979,7 @@ describe("email-ingest raw message cap", () => {
   it("refuses the whole aggregate budget on the worst-case wire, quoting a size that can be resent", async () => {
     // DW-362's aggregate at the gate. Measured per part, because ten short final
     // lines cost more than one. On the worst-case wire those ten mid-size files
-    // are 65,119,170 bytes: what the DERIVATION was sized to admit, and two and a
+    // are 64,495,170 bytes: what the DERIVATION was sized to admit, and two and a
     // half times the 25 MiB this repo records for Email Routing. This gate
     // refuses the message. Under that recorded bound the transport would have
     // refused it upstream first. Either way the sender must hear a figure they

@@ -20,9 +20,11 @@ import {
   MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
+  MAX_EMAIL_CONTENT_BYTES as WORKER_MAX_EMAIL_CONTENT_BYTES,
   MAX_EMAIL_CONTENT_CHARS as WORKER_MAX_EMAIL_CONTENT_CHARS,
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_RAW_EMAIL_BYTES,
+  MAX_UTF8_BYTES_PER_UTF16_CODE_UNIT,
   MIME_ENVELOPE_HEADROOM_BYTES,
   MIME_STRUCTURAL_HEADROOM_BYTES,
   QUOTED_PRINTABLE_EXPANSION_FACTOR,
@@ -240,9 +242,16 @@ describe("email-ingest allowlist parity", () => {
    *
    * Since DW-455 it is also a statement about the BODY. The envelope headroom
    * used to claim it covered "an ordinary text body" while the Worker truncates
-   * to `MAX_EMAIL_CONTENT_CHARS`, a body 4.8x the whole headroom on the
+   * to `MAX_EMAIL_CONTENT_CHARS`, a body 14.3x the whole headroom on the
    * worst-case wire. The aggregate and a MAXIMAL body are measured together
    * here, because covering both at once is what the derivation now asserts.
+   *
+   * The body is measured in BYTES since DW-705, not in code units: the cap the
+   * Worker truncates by counts UTF-16 code units, and a non-ASCII one costs up
+   * to three bytes each. Every body pin below therefore reads
+   * `MAX_EMAIL_CONTENT_BYTES`; aiming them at the code-unit figure measured the
+   * ASCII case only and let the widest admissible body sit outside the
+   * derivation unobserved.
    */
   it("derives room for MAX_EMAIL_ATTACHMENTS mid-size documents beside a maximal body, which the enforced cap then refuses", () => {
     // Measured PER PART, never by scaling one measurement. Ten separate mid-size
@@ -264,7 +273,7 @@ describe("email-ingest allowlist parity", () => {
     // counted as raw characters, because that is the encoding the derivation is
     // built from -- a character count would understate it by ~3.12x and the
     // assertion would pass on slack rather than on the headroom.
-    const maximalBodyWireSize = quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_CHARS);
+    const maximalBodyWireSize = quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_BYTES);
     expect(aggregateWireSize + maximalBodyWireSize).toBeLessThan(
       AGGREGATE_DERIVED_RAW_EMAIL_BYTES,
     );
@@ -282,7 +291,7 @@ describe("email-ingest allowlist parity", () => {
     // over-estimate makes the assertion harder to pass, not easier.
     //
     // Charged against the aggregate-PLUS-BODY figure, which is the tight one now:
-    // measuring the bare aggregate would leave the body's 312,000 bytes sitting
+    // measuring the bare aggregate would leave the body's 936,000 bytes sitting
     // in the margin and the assertion would no longer be about structure.
     //
     // `MAX_EMAIL_ATTACHMENTS + 1` parts, not `MAX_EMAIL_ATTACHMENTS`: the shape
@@ -305,19 +314,25 @@ describe("email-ingest allowlist parity", () => {
     ).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
     expect(
       MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 24) +
-        quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_CHARS, 24),
+        quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_BYTES, 24),
     ).toBeGreaterThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
     // How far down the bare aggregate now reaches, pinned at its own edge rather
     // than left as the `QUOTED_PRINTABLE_EXPANSION_FACTOR` comment's prose: a
-    // 66-column wrap still fits, a 63-column one does not. Both sides are
+    // 54-column wrap still fits, a 51-column one does not. Both sides are
     // asserted, so a change that moved the edge in EITHER direction is caught --
     // a one-sided pin would stay green if the aggregate quietly stopped fitting
     // at wraps it is documented to survive.
+    //
+    // The edge MOVED DOWN with DW-705 (it was k=22 fits / k=21 over): the
+    // byte-derived body term takes three times as much out of the average, so
+    // the bare aggregate is smaller and survives narrower wraps. That is the
+    // aggregate half of the trade becoming observable -- the pair-with-a-body
+    // edge above did not move, because the derivation did not.
     expect(
-      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 22),
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 18),
     ).toBeLessThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
     expect(
-      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 21),
+      MAX_EMAIL_ATTACHMENTS * quotedPrintablePartWireSize(AGGREGATE_DOCUMENT_AVERAGE_BYTES, 17),
     ).toBeGreaterThan(AGGREGATE_DERIVED_RAW_EMAIL_BYTES);
   });
 
@@ -345,11 +360,11 @@ describe("email-ingest allowlist parity", () => {
     // attachment's share of the body...
     expect(AGGREGATE_DOCUMENT_AVERAGE_BYTES).toBe(
       AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES -
-        Math.ceil(WORKER_MAX_EMAIL_CONTENT_CHARS / MAX_EMAIL_ATTACHMENTS),
+        Math.ceil(WORKER_MAX_EMAIL_CONTENT_BYTES / MAX_EMAIL_ATTACHMENTS),
     );
     // ...and the envelope gains exactly the wire bytes that body costs.
     expect(MIME_ENVELOPE_HEADROOM_BYTES - MIME_STRUCTURAL_HEADROOM_BYTES).toBe(
-      Math.ceil(WORKER_MAX_EMAIL_CONTENT_CHARS * WORST_CASE_TRANSFER_ENCODING_FACTOR),
+      Math.ceil(WORKER_MAX_EMAIL_CONTENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR),
     );
     // The share is rounded UP, against the budget, so the budget can never round
     // in its own favour: ten shares cover the whole body rather than falling
@@ -357,7 +372,7 @@ describe("email-ingest allowlist parity", () => {
     expect(
       MAX_EMAIL_ATTACHMENTS *
         (AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES - AGGREGATE_DOCUMENT_AVERAGE_BYTES),
-    ).toBeGreaterThanOrEqual(WORKER_MAX_EMAIL_CONTENT_CHARS);
+    ).toBeGreaterThanOrEqual(WORKER_MAX_EMAIL_CONTENT_BYTES);
     // And the budget stays an integer -- `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`
     // feeds a `Math.floor(... / 1024 / 1024)` the acknowledgement quotes, and a
     // fractional byte count there is a figure no sender could act on.
@@ -423,7 +438,7 @@ describe("email-ingest allowlist parity", () => {
       MAX_EMAIL_ATTACHMENTS * AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES -
         MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
     ).toBe(
-      MAX_EMAIL_ATTACHMENTS * Math.ceil(WORKER_MAX_EMAIL_CONTENT_CHARS / MAX_EMAIL_ATTACHMENTS),
+      MAX_EMAIL_ATTACHMENTS * Math.ceil(WORKER_MAX_EMAIL_CONTENT_BYTES / MAX_EMAIL_ATTACHMENTS),
     );
     // ...and ONE full-size document still fits, which is the DW-104/DW-358
     // admission the floor above exists to protect. The cost stopped at the
@@ -532,5 +547,46 @@ describe("email-ingest allowlist parity", () => {
     // Above this the route 400s the whole message, so a larger Worker cap turns
     // a truncated-but-ingested email into a total rejection.
     expect(WORKER_MAX_EMAIL_CONTENT_CHARS).toBe(MAX_EMAIL_CONTENT_CHARS);
+  });
+
+  /**
+   * DW-705. The body cap counts UTF-16 CODE UNITS -- both the Worker's
+   * truncation and the route's rejection slice by `.length` -- while the size
+   * derivation is arithmetic in BYTES. `MAX_EMAIL_CONTENT_BYTES` is the
+   * conversion between the two, and this is the pin on it: an ASCII-only reading
+   * of the cap is exactly the defect DW-705 recorded, and it would leave a
+   * perfectly admissible non-ASCII body outside the derivation with nothing
+   * failing.
+   */
+  it("sizes the body term for the widest encoding of the body cap, not the narrowest", () => {
+    // Three UTF-8 bytes per UTF-16 code unit is the maximum over every input: a
+    // BMP character is one code unit and at most 3 bytes, and a supplementary
+    // character is 4 bytes across TWO code units -- 2 per unit, cheaper by this
+    // measure. Asserted against real encoded strings rather than restated as a
+    // literal, so the constant is checked against Unicode and not against
+    // itself.
+    const utf8Length = (value: string) => new TextEncoder().encode(value).length;
+    expect(utf8Length("\u0041")).toBeLessThanOrEqual(MAX_UTF8_BYTES_PER_UTF16_CODE_UNIT);
+    // U+FFFD: one code unit, three UTF-8 bytes -- the maximum is REACHED, so the
+    // bound is tight rather than merely safe.
+    expect("\uFFFD".length).toBe(1);
+    expect(utf8Length("\uFFFD")).toBe(MAX_UTF8_BYTES_PER_UTF16_CODE_UNIT);
+    // U+1F600: two code units, four UTF-8 bytes -- under the bound per unit,
+    // which is why supplementary characters need no wider factor.
+    expect("\u{1F600}".length).toBe(2);
+    expect(utf8Length("\u{1F600}")).toBeLessThanOrEqual(
+      MAX_UTF8_BYTES_PER_UTF16_CODE_UNIT * "\u{1F600}".length,
+    );
+    // And the byte figure the derivation spends is the cap at that maximum.
+    expect(WORKER_MAX_EMAIL_CONTENT_BYTES).toBe(
+      WORKER_MAX_EMAIL_CONTENT_CHARS * MAX_UTF8_BYTES_PER_UTF16_CODE_UNIT,
+    );
+    // A body of `MAX_EMAIL_CONTENT_CHARS` non-ASCII BMP characters -- the shape
+    // that used to be over the derivation -- is inside the envelope's body term
+    // on the worst-case wire. Measured through the shared helper, the same way
+    // the aggregate cases measure their parts.
+    expect(
+      quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_CHARS * utf8Length("\uFFFD")),
+    ).toBeLessThanOrEqual(MIME_ENVELOPE_HEADROOM_BYTES - MIME_STRUCTURAL_HEADROOM_BYTES);
   });
 });

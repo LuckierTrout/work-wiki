@@ -27,6 +27,7 @@ import {
   loadEmailIngestConfig,
   normalizeEmailAddress,
   sanitizeAttachmentNames,
+  sanitizeAttachmentNamesUnique,
   sanitizeEmailSubject,
   senderIsAllowed,
 } from "@/lib/email-ingest";
@@ -233,10 +234,20 @@ export async function POST(request: Request) {
     // Worker's `unsupportedCount`, and what decides whether the refusal below
     // may still claim nothing supported arrived.
     const unsupportedFileCount = payload.attachments.length - supportedFiles.length;
-    const attachmentNames = sanitizeAttachmentNames(Array.from(new Set([
+    // What the message is recorded as having carried: the names the caller told
+    // us about UNIONED with the names of the files that actually arrived. The
+    // caller's half is already scrubbed at parse time; the file names are raw,
+    // which is why the union is de-duplicated by
+    // `sanitizeAttachmentNamesUnique` rather than by a bare `new Set` over the
+    // inputs (DW-690). A `Set` over RAW strings compares what nobody records:
+    // `report.pdf` and `report.pdf\r\n` are two distinct raw strings and one
+    // recorded name, so both used to survive and the list reported a file that
+    // was never sent twice. Scrubbing first collapses them; capping after the
+    // collapse keeps all twenty recorded slots for distinct names.
+    const attachmentNames = sanitizeAttachmentNamesUnique([
       ...payload.attachmentNames,
       ...payload.attachments.map((file) => file.name),
-    ])));
+    ]);
 
     if (!from || !to || !messageId) {
       return NextResponse.json(
@@ -369,9 +380,44 @@ export async function POST(request: Request) {
     // contributes no name at all and that subtraction answers zero — beside an
     // `oversizedAttachmentNames` list proving a file was dropped. The route's
     // own drop count cannot lie about itself, so it is the second floor.
+    //
+    // The first floor counts the CALLER'S recorded names, never the recorded
+    // list `attachmentNames` above (DW-690). That list is the caller's names
+    // UNIONED with the names of the files that arrived, and a forwarded file's
+    // own filename is evidence the file arrived — never that one was skipped. So
+    // any name the union contributes on the file side inflates the minuend
+    // without adding anything the subtrahend can cancel, and the floor invents a
+    // skip. The ordinary case reaches it: a supported part with no filename is
+    // recorded by the Worker as `unnamed attachment` and forwarded as
+    // `attachment-1`, which is one file, two names, and a phantom skip of 1.
+    // `payload.attachmentNames` is the caller's claim about what it had, which
+    // is the only side of the union a shortfall can be read off.
+    //
+    // THE PREMISE that makes this length a PART COUNT rather than a name count,
+    // stated because the subtraction is meaningless without it. The Worker posts
+    // exactly one recorded name per countable part
+    // (`workers/email-ingest/index.ts`, the `countableAttachments.map(
+    // replyAttachmentName)` that builds the field): `replyAttachmentName` falls
+    // back to `unnamed attachment` and so never returns an empty string, so no
+    // part loses its slot to `sanitizeAttachmentNames`'s `filter(Boolean)` —
+    // and the Worker deliberately does NOT name a part it did not forward, which
+    // is the DW-359 rule its own comments defend. One name in, one part; count
+    // the names and you have counted the parts the sender was told travelled.
+    //
+    // THE ACCEPTED COST, for a caller that does not honour that. A hand-rolled
+    // direct caller that records names ONLY for files it did not forward now
+    // floors at 0 where the old union answered 1, because its recorded count is
+    // below its forwarded count and the union used to add the two lists
+    // together. That is not fixable by matching the caller's names against the
+    // forwarded file names: `unnamed attachment` and `attachment-1` are ONE file
+    // under two names, so any such matching re-creates exactly the phantom skip
+    // DW-690 removed. It is recorded as accepted rather than worked around, and
+    // such a caller already has an honest channel — its own
+    // `skippedAttachmentCount`, which the `Math.max` below takes whenever it is
+    // the larger figure.
     const localSkipped = Math.max(
       0,
-      attachmentNames.length - attachments.length,
+      payload.attachmentNames.length - attachments.length,
       payload.attachments.length - attachments.length,
     );
     const skippedAttachmentCount =

@@ -144,9 +144,46 @@ export function sanitizeEmailSubject(value: string): string {
   return (singleLine || "Emailed note").slice(0, 200);
 }
 
+/**
+ * The per-name scrub, factored out rather than written twice (DW-690).
+ * `sanitizeAttachmentNamesUnique` de-duplicates the SCRUBBED values, which only
+ * means anything if "scrubbed" is exactly what the plain variant records; two
+ * copies of this expression could drift and the unique variant would then
+ * collapse names the recorded list does not actually equate.
+ */
+function scrubAttachmentName(value: string): string {
+  return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200);
+}
+
 export function sanitizeAttachmentNames(values: string[]): string[] {
   return values
-    .map((value) => value.replace(/[\r\n\t]+/g, " ").trim().slice(0, 200))
+    .map(scrubAttachmentName)
     .filter(Boolean)
     .slice(0, MAX_EMAIL_ATTACHMENTS_RECORDED);
+}
+
+/**
+ * `sanitizeAttachmentNames`, plus de-duplication of the names AS RECORDED
+ * (DW-690).
+ *
+ * Order is the whole point: scrub, THEN de-duplicate, THEN cap. De-duplicating
+ * raw strings first — which the route's caller-name/file-name union used to do
+ * with a bare `new Set` — lets two names that scrub to the same string both
+ * survive, so `report.pdf` and `report.pdf\r\n` were recorded twice and the
+ * recorded-name skip floor read the surplus as a file that never arrived. And
+ * the cap has to come LAST: applied before the collapse it would spend recorded
+ * slots on duplicates and hide real names past the twentieth.
+ *
+ * A SEPARATE export rather than de-duplication folded into
+ * `sanitizeAttachmentNames`, because that function's other callers need the
+ * length it returns to track the input's. `src/app/api/email/ingest/route.ts`
+ * derives `unnamedOversized` from `oversizedCount - oversizedAttachmentNames.length`,
+ * so collapsing two oversized files that share a name there would invent a
+ * phantom unnamed file in the refusal text.
+ */
+export function sanitizeAttachmentNamesUnique(values: string[]): string[] {
+  return Array.from(new Set(values.map(scrubAttachmentName).filter(Boolean))).slice(
+    0,
+    MAX_EMAIL_ATTACHMENTS_RECORDED,
+  );
 }

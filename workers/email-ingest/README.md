@@ -69,13 +69,13 @@ encoding the sending client picks. **Wire sizes below are MiB** (1,048,576
 bytes), the same unit as the ceiling. The "10 MB" and "19 MB" above are the
 figures the acknowledgement quotes, and both are binary megabytes — but only the
 first is exact: the per-document ceiling is 10 MiB on the nose, while the total
-budget is ~19.90 MiB rounded DOWN to 19, so a sender is never told the budget is
+budget is ~19.71 MiB rounded DOWN to 19, so a sender is never told the budget is
 larger than it really is:
 
 - One full-size (10 MB) document arrives comfortably in base64 — ~13.7 MiB on
   the wire, ~11.3 MiB clear of the ceiling.
 - The 19 MB total attachment budget is **not** reachable in base64: ten
-  ~1.99 MiB parts are ~27.2 MiB encoded, past the 25 MiB recorded above, so the
+  ~1.97 MiB parts are ~27.0 MiB encoded, past the 25 MiB recorded above, so the
   Worker refuses them — and if that bound is right Email Routing refused them
   first. It is reachable only from a client that sends its parts unencoded
   (`7bit`/`8bit`).

@@ -95,6 +95,18 @@ function multipartRequest(
     files?: File[];
     /** Names with no file part -- what the Worker sends for attachments it would not forward. */
     unforwardedNames?: string[];
+    /**
+     * The `attachmentName` fields the caller records, REPLACING the one-per-file
+     * default below.
+     *
+     * The default (a recorded name equal to every file's own name) is the easy
+     * case and the one the Worker produces least often: it names a part from the
+     * MIME headers and falls back to `unnamed attachment`, then forwards the file
+     * under a generated `attachment-N`, so the two lists routinely disagree on a
+     * file that arrived perfectly. This option is how a fixture posts that
+     * disagreement.
+     */
+    recordedNames?: string[];
     messageId?: string;
     /**
      * The Worker's own total. A string, not a number: this is a multipart field,
@@ -114,9 +126,10 @@ function multipartRequest(
   // never sent.
   const files = [...(options.file ? [options.file] : []), ...(options.files ?? [])];
   for (const file of files) {
-    form.append("attachmentName", file.name);
+    if (!options.recordedNames) form.append("attachmentName", file.name);
     form.append("attachments", file, file.name);
   }
+  for (const name of options.recordedNames ?? []) form.append("attachmentName", name);
   for (const name of options.unforwardedNames ?? []) form.append("attachmentName", name);
   if (options.skippedAttachmentCount !== undefined) {
     form.append("skippedAttachmentCount", options.skippedAttachmentCount);
@@ -517,6 +530,102 @@ describe("POST /api/email/ingest", () => {
   });
 
   /**
+   * DW-690, the ordinary shape the phantom skip was reachable through. A
+   * supported part with no filename is recorded by the Worker as
+   * `unnamed attachment` and forwarded under a generated `attachment-1`: ONE
+   * file, TWO names. The recorded-name floor used to subtract the forwarded file
+   * count from the UNION of both lists, so a message that lost nothing at all
+   * reported a skip of 1 -- and the sender was told to resend a file that had
+   * already arrived.
+   *
+   * The union itself is unchanged and still asserted here: both names belong in
+   * the record of what the message carried. What may not be read off it is a
+   * loss, because a forwarded file's own filename is evidence the file ARRIVED.
+   */
+  it("reports no skip when a forwarded file is recorded under a different name", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(multipartRequest({
+      messageId: "<message-unnamed-part@example.com>",
+      files: [new File([SECOND_BYTES], "attachment-1", { type: "text/csv" })],
+      recordedNames: ["unnamed attachment"],
+    }));
+    expect(response.status).toBe(200);
+
+    expect(await response.json()).toMatchObject({
+      accepted: true,
+      supportedAttachmentCount: 1,
+      skippedAttachmentCount: 0,
+    });
+    expect(mockedCreateJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: expect.objectContaining({
+          attachmentNames: ["unnamed attachment", "attachment-1"],
+        }),
+      }),
+    );
+  });
+
+  /**
+   * DW-690's other half. The union used to be de-duplicated with a `Set` over
+   * RAW strings and sanitized afterwards, so two names that scrub to the same
+   * recorded string both survived: the list said a file arrived twice, and the
+   * surplus name became a skip of a file nobody sent.
+   *
+   * `report.pdf\r\n` is the shape a client that folded a long
+   * `Content-Disposition` header produces -- the exact input
+   * `sanitizeAttachmentNames` exists to scrub. Asserting the RECORDED LIST as
+   * well as the count matters: collapsing the pair only in the arithmetic would
+   * leave Activity showing one file under two names.
+   */
+  it("records a name once when the caller's name and the file's name scrub alike", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(multipartRequest({
+      messageId: "<message-scrub-collision@example.com>",
+      files: [new File([FIRST_BYTES], "report.pdf\r\n", { type: "application/pdf" })],
+      recordedNames: ["report.pdf"],
+    }));
+    expect(response.status).toBe(200);
+
+    expect(await response.json()).toMatchObject({
+      accepted: true,
+      supportedAttachmentCount: 1,
+      skippedAttachmentCount: 0,
+    });
+    expect(mockedCreateJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: expect.objectContaining({ attachmentNames: ["report.pdf"] }),
+      }),
+    );
+  });
+
+  /**
+   * The other side of the DW-690 floor change, and the case that keeps it from
+   * over-correcting. Narrowing the recorded-name subtraction to the CALLER'S
+   * names alone must not let a real drop go unreported when the caller recorded
+   * no names at all: `payload.attachmentNames.length - attachments.length` is
+   * negative here, and the route's own drop count -- the second floor -- is what
+   * answers.
+   */
+  it("counts a route-dropped file the caller recorded no name for", async () => {
+    const { POST } = await import("@/app/api/email/ingest/route");
+    const response = await POST(multipartRequest({
+      messageId: "<message-unnamed-unsupported-drop@example.com>",
+      content: "The sheet is attached.",
+      files: [
+        new File([SECOND_BYTES], "metrics.csv", { type: "text/csv" }),
+        new File([SECOND_BYTES], "program.exe", { type: "application/octet-stream" }),
+      ],
+      recordedNames: [],
+    }));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      accepted: true,
+      supportedAttachmentCount: 1,
+      skippedAttachmentCount: 1,
+    });
+  });
+
+  /**
    * The Worker knows what it never forwarded -- unsupported parts plus supported
    * ones it dropped at its own per-email cap -- and the route cannot re-derive
    * that from a name list truncated at 20 and a file list truncated at 10. So
@@ -583,10 +692,20 @@ describe("POST /api/email/ingest", () => {
      * The floor masks a bad parse whenever it is the larger number, so both of
      * these are built where it cannot: `Infinity` overshoots any floor, and the
      * negative case needs a fixture where the route's OWN drop count exceeds the
-     * local subtraction. That only happens when recorded names collapse -- the
-     * name union is deduplicated, so four identically-named parts contribute one
-     * name and four drops. With distinct names the subtraction is always the
-     * larger of the two and a negative count is unobservable.
+     * recorded-name subtraction.
+     *
+     * Since DW-690 that subtraction reads `payload.attachmentNames` -- the
+     * caller's recorded names ALONE, no longer their union with the forwarded
+     * file names -- and parse-time `sanitizeAttachmentNames` does not
+     * de-duplicate, so identically-named parts no longer collapse into one name
+     * the way they did when the union was the minuend. What makes the drop count
+     * the larger term now is a caller that records FEWER names than it forwards
+     * files: one recorded name beside four refused parts. Record one name per
+     * file and the two floors are equal and a negative count is unobservable.
+     *
+     * That shape is a hand-rolled POST, not something this repo's Worker emits
+     * -- it posts one recorded name per countable part -- which is the same
+     * class of caller the `-1` and the `Infinity` themselves come from.
      */
     it("ignores a non-finite count instead of letting it reach the response", async () => {
       const { POST } = await import("@/app/api/email/ingest/route");
@@ -614,13 +733,14 @@ describe("POST /api/email/ingest", () => {
           { length: 4 },
           () => new File([SECOND_BYTES], "scan.exe", { type: "application/octet-stream" }),
         ),
+        recordedNames: ["scan.exe"],
         skippedAttachmentCount: "-1",
       }));
       expect(response.status).toBe(200);
-      // The name union is DEDUPLICATED, so four identically-named parts leave
-      // one recorded name and the name subtraction answers 1 -- while four files
-      // really were refused. The floor takes the route's own drop count too, so
-      // the honest answer is 4.
+      // ONE recorded name beside FOUR forwarded parts, so the recorded-name
+      // subtraction answers 1 while four files really were refused. The floor
+      // takes the route's own drop count as its second term, so the honest
+      // answer is 4 -- which is the whole point of there being two floors.
       expect(await response.json()).toMatchObject({
         supportedAttachmentCount: 0,
         skippedAttachmentCount: 4,
@@ -666,6 +786,16 @@ describe("POST /api/email/ingest", () => {
       }));
       // One recorded name, no attachments: the local subtraction.
       expect(await withoutCount.json()).toMatchObject({ skippedAttachmentCount: 1 });
+      // And it scales with the recorded names rather than answering a constant.
+      // The JSON branch carries no files at all, so this is the one caller shape
+      // where the recorded-name floor is the ONLY floor -- the route's own drop
+      // count is zero minus zero -- which is why DW-690 narrowed that floor to
+      // `payload.attachmentNames` instead of removing it.
+      const twoNames = await POST(request({
+        messageId: "<message-json-two-names@example.com>",
+        attachmentNames: ["a.pdf", "b.pdf"],
+      }));
+      expect(await twoNames.json()).toMatchObject({ skippedAttachmentCount: 2 });
     });
   });
 

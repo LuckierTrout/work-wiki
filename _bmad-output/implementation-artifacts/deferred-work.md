@@ -5613,7 +5613,9 @@ location: src/app/api/email/ingest/route.ts:236
 source_spec: `spec-dw-451-452-454-email-worker-forward-reply-tail.md`
 severity: low
 reason: `src/app/api/email/ingest/route.ts:236` builds `sanitizeAttachmentNames(Array.from(new Set([...payload.attachmentNames, ...payload.attachments.map((file) => file.name)])))` -- the `Set` collapses RAW strings, and `sanitizeAttachmentNames` scrubs afterwards, so two raw names that scrub to the same string survive as duplicates. `localSkipped` (route.ts:372-376) then takes `attachmentNames.length - attachments.length` as a floor and reports a skip that did not happen. Reachable at HEAD, before and independently of this change, by the most ordinary case: a supported part with no filename at all. The Worker records it as `unnamed attachment` and forwards the Blob as `attachment-1`, so the `Set` holds two entries for one file and the floor is 1 -- a message whose single unnamed attachment ingested cleanly is reported as having skipped one. Verified by evaluating the route's own expression against those two inputs. This change shifts WHICH malformed name trips it rather than creating the clas
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-email-ingest-accounting
+resolution-undo: 64148c67f6111e307f15748324cb1ac12502d14d5f7eed4335cfac608346cec7 2026-09-03 7374617475733a206f70656e
 
 ### DW-691: The DELETE door DW-496 just hardened can still report a stored page as absent: `deleteWikiPage`'s own read, and the MCP delete mirror, are both still unqualified.
 origin: spec-deferred 866174ab7f8d
@@ -5754,7 +5756,9 @@ location: workers/email-ingest/index.ts (MIME_ENVELOPE_HEADROOM_BYTES)
 source_spec: `spec-dw-455-email-envelope-body-budget.md`
 severity: low
 reason: MIME_ENVELOPE_HEADROOM_BYTES adds Math.ceil(MAX_EMAIL_CONTENT_CHARS * WORST_CASE_TRANSFER_ENCODING_FACTOR) = 312,000, but MAX_EMAIL_CONTENT_CHARS bounds code units (rawContent.length / rawContent.slice at the Worker's truncation, content.length on the route). 100,000 non-ASCII BMP characters are up to ~300,000 decoded bytes and ~936,000 on the worst-case quoted-printable wire, against 312,000 bought plus 65,509 bytes of structural slack. 312,000 is the figure the recorded DW-455 decision named, so it was documented rather than re-derived. Inert today: since DW-449 the Math.min picks EMAIL_ROUTING_MAX_INBOUND_BYTES, so AGGREGATE_DERIVED_RAW_EMAIL_BYTES gates nothing -- it becomes live only if the platform ceiling rises above the derivation (the open DW-457 question).
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-email-ingest-accounting
+resolution-undo: 64148c67f6111e307f15748324cb1ac12502d14d5f7eed4335cfac608346cec7 2026-09-03 7374617475733a206f70656e
 
 ### DW-706: Nine code and test sites now cite DW-457 for the email inbound-ceiling decision, but the ledger entry under that id is an unrelated, already-closed MCP `missing-concept-page` slug-parity defect.
 origin: spec-deferred 7b2a0e867d77
