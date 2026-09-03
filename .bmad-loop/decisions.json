@@ -412,5 +412,14 @@
     "key": "2",
     "label": "Route ollama through it",
     "resolution": ""
+  },
+  "DW-703": {
+    "answered_at": "2026-09-03",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a second owner-facing constant beside partialSaveMessage that says only the provable half \u2014 the text was saved, and the metadata outcome is unknown \u2014 wire it into WikiEditor's outer catch for the post-PUT branch, and pin the case that currently makes no claim.",
+    "key": "1",
+    "label": "Add an unknown-outcome sentence",
+    "resolution": ""
   }
 }

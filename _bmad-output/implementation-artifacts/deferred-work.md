@@ -5717,6 +5717,7 @@ source_spec: `spec-dw-428-editor-per-leg-save-reporting.md`
 severity: medium
 reason: `handleSave`'s prefix sits inside the metadata leg's `!res.ok` branch, so a dropped or aborted `PATCH` falls straight to the outer `catch` and the owner reads only "Failed to fetch" over a body that is already on disk — and retypes or reloads over it, which is the whole harm the change exists to remove. The omission is deliberate and argued (`partialSaveMessage`'s docblock, and the case `makes no claim about a metadata leg whose fetch never came back`): the decision's frozen sentence asserts "the metadata change was not", which nobody can claim about a request that never came back, and it interpolates a `<served error>` that branch does not have. Saying only the provable half — that the text was saved, and that the metadata outcome is unknown — needs a SECOND owner-facing sentence, which is an intent-level copy decision the 2026-08-22 decision did not open.
 status: open
+decision: 2026-09-03 Add an unknown-outcome sentence — Add a second owner-facing constant beside partialSaveMessage that says only the provable half — the text was saved, and the metadata outcome is unknown — wire it into WikiEditor's outer catch for the post-PUT branch, and pin the case that currently makes no claim.
 
 ### DW-704: A ledger row the listing now surfaces because its page is on disk but missing from the page index is still refused by DELETE, so the owner sees a row that can never be cleared.
 origin: spec-deferred 450979fe0e60
