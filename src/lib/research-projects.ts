@@ -482,8 +482,8 @@ function isResearchProject(value: unknown): value is ResearchProject {
  * nothing at all to a route that classifies by MESSAGE: "…is not a list." has
  * no marker a regex can read, so a store fault could be reported as the
  * caller's own 4xx and retried forever (DW-481). The type carries the verdict
- * instead, and `POST /api/tasks/run` now has an explicit store-fault row
- * (DW-482) so this refusal reaches its 500 by decision rather than by
+ * instead, and `POST /api/tasks/run` now has an explicit infrastructure-fault
+ * row (DW-482) so this refusal reaches its 500 by decision rather than by
  * fall-through. `StoreFaultError` extends `Error` directly, so every ladder
  * that ended in a bare 500 for these throws still does. What `parseSlots` in
  * `research-concurrency.ts` shares is the REFUSAL, not the type: it fails

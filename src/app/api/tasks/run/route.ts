@@ -23,7 +23,7 @@ import {
 } from "@/lib/agents";
 import { hasIngestAnalysis } from "@/lib/ingest-analysis";
 import { enqueueReviewAfterIngest, ReviewDeliveryUnretainedError } from "@/lib/review-queue";
-import { getErrorMessage, isClientInputError, isStoreFault } from "@/lib/errors";
+import { getErrorMessage, isClientInputError, isInfrastructureFault } from "@/lib/errors";
 import { getVectorSearchSettings, isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { logger } from "@/lib/logger";
@@ -51,6 +51,7 @@ import { createOwnerBackup, summarizeBackup, verifyOwnerBackup } from "@/lib/bac
 import { recordOperationSafe } from "@/lib/operation-ledger";
 import { compileKnowledgePage } from "@/lib/knowledge-compilation";
 import { runResearchProject } from "@/lib/research-runtime";
+import { ResearchProjectNotFoundError } from "@/lib/research-projects";
 import { getStorage } from "@/lib/storage";
 import { fetchPdfBytes } from "@/lib/fetch";
 import { enqueueExtract } from "@/lib/extract-dispatch";
@@ -880,7 +881,7 @@ export async function POST(req: Request) {
     const message = getErrorMessage(err);
     // One predicate, read twice: the ingest auto-retry cap. It decides both
     // how the tracked job is recorded here and the 422 at the bottom, and it
-    // is hoisted so the store-fault row in between can step around ingest
+    // is hoisted so the infrastructure-fault row in between can step around ingest
     // without a third copy drifting from these two.
     const ingestRetriesExhausted =
       task.kind === "ingest" && Number.isFinite(queueAttempt) && queueAttempt >= 3;
@@ -937,20 +938,45 @@ export async function POST(req: Request) {
         detail: message,
       });
     }
-    // A store fault is OURS and repairable in place, so it gets the transient
-    // 500 and the queue's bounded retry to the DLQ — never the 422 poison.
-    // Ahead of `/not found/i` on purpose (DW-482): the corrupt-registry
+    // An infrastructure fault is OURS and repairable in place, so it gets the
+    // transient 500 and the queue's bounded retry to the DLQ — never the 422
+    // poison. Ahead of the poison row on purpose (DW-482): the corrupt-registry
     // refusals in `research-projects.ts` reached this 500 only by falling all
-    // the way through, and a store fault whose sentence happens to say "not
-    // found" would have been poisoned as a missing page instead. Ingest at its
+    // the way through, and one whose sentence happens to say "not found"
+    // would have been poisoned as a missing page instead. Ingest at its
     // auto-retry cap is excluded so the 422 below still wins for it — this row
     // pins `run-research`, it does not re-decide ingest.
-    if (isStoreFault(err) && !ingestRetriesExhausted) {
-      logger.error("tasks", `task "${task.kind}" hit a store fault`, err);
+    //
+    // The predicate answers `true` for a NETWORK errno too (`ECONNREFUSED`,
+    // `ETIMEDOUT`), which is why the log line names the infrastructure rather
+    // than the disk (DW-685): the verdict for a refused socket is the same
+    // 500-plus-retry, but the old sentence sent an operator to the filesystem
+    // for a fault that was never there.
+    if (isInfrastructureFault(err) && !ingestRetriesExhausted) {
+      logger.error("tasks", `task "${task.kind}" hit an infrastructure fault`, err);
       return NextResponse.json({ error: message }, { status: 500 });
     }
     // A missing page/thread is permanent → poison (422), don't retry forever.
-    if (/not found/i.test(message)) {
+    // Typed FIRST (DW-650): `runResearchProject` rejects with a
+    // `ResearchProjectNotFoundError` — the same class `POST
+    // /api/research/[id]/run` maps to its 404. Both of its throws carry the
+    // class's DEFAULT message today, which is the whole problem: the 422 was
+    // riding on that string happening to read "not found", so rewording either
+    // throw — the way `queueResearchProject` already words its own refusal
+    // "Research project is retired" — would have flipped a permanent miss into
+    // a 500 retried to the DLQ, with nothing failing to say so.
+    //
+    // The regex SURVIVES as the residual branch, not as a replacement: this
+    // door serves ten task kinds and only `run-research` throws typed, so
+    // `reingest`'s untyped `page "x" not found` still needs it. It also still
+    // answers for a DEFAULT-message miss arriving from a second copy of the
+    // module graph, where `instanceof` cannot — a reworded one from that same
+    // second copy would fall past both, which is the residue DW-725 tracks for
+    // the classifier one file over.
+    //
+    // `graphifyFailureIsTerminal` above keeps its bare regex on purpose: it
+    // decides `extract-knowledge`, a kind this class can never reach.
+    if (err instanceof ResearchProjectNotFoundError || /not found/i.test(message)) {
       logger.warn("tasks", `task "${task.kind}" permanently failed: ${message}`);
       return NextResponse.json({ error: message }, { status: 422 });
     }

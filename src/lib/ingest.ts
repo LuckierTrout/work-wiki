@@ -539,11 +539,12 @@ export async function ingestDocument(
  * What that buys is the removal of the BOGUS `not found` sentence — the one
  * `POST /api/tasks/run` poisons at 422, a permanent verdict on a page that is
  * fine. Where the rethrown error lands instead depends on its SHAPE, and only
- * two shapes reach the store-fault row: a `StoreFaultError`, or an `Error`
- * carrying an errno `code` (see `isStoreFault` in `./errors`). Those get a
- * transient 500 and the queue's bounded retry. Anything else — an R2 provider
- * failure carries neither, `./storage/r2` propagates non-miss failures raw —
- * falls through to the generic transient 500 at the bottom of the same ladder.
+ * two shapes reach the infrastructure-fault row: a `StoreFaultError`, or an
+ * `Error` carrying an errno `code` (see `isInfrastructureFault` in
+ * `./errors`). Those get a transient 500 and the queue's bounded retry.
+ * Anything else — an R2 provider failure carries neither, `./storage/r2`
+ * propagates non-miss failures raw — falls through to the generic transient
+ * 500 at the bottom of the same ladder.
  * Both are retried; neither is the 422 poison, unless the provider's own
  * sentence happens to contain "not found".
  */

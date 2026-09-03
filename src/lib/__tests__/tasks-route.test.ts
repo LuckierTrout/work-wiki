@@ -141,6 +141,9 @@ import {
 } from "@/lib/graphify-jobs";
 import { deliverMonitorDigest } from "@/lib/monitor-digests";
 import { runResearchProject } from "@/lib/research-runtime";
+// NOT mocked, unlike `@/lib/research-runtime` above — so the class this file
+// throws is the same class the route's `instanceof` arm imports.
+import { ResearchProjectNotFoundError } from "@/lib/research-projects";
 import { StoreFaultError } from "@/lib/errors";
 import { READ_ONLY_REFUSAL } from "@/lib/read-only";
 
@@ -885,8 +888,63 @@ describe("POST /api/tasks/run", () => {
       expect((await run(RESEARCH_TASK)).status).toBe(500);
     });
 
+    it("500s a network errno — infrastructure beneath us, never the 422 poison", async () => {
+      // DW-685. The row's verdict for `ECONNREFUSED` is unchanged; only the
+      // name and the log line stopped pointing at the disk for it. The
+      // SENTENCE is what this row exists for: `logger.error` reaches
+      // `console.error` at the test default level, and the operator reading it
+      // is the person DW-685 was sent to the wrong subsystem by.
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        mockedRunResearch.mockRejectedValueOnce(
+          Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:443"), {
+            code: "ECONNREFUSED",
+          }),
+        );
+
+        expect((await run(RESEARCH_TASK)).status).toBe(500);
+
+        const sentences = logged.mock.calls.map((call) => String(call[1]));
+        expect(sentences).toContain('task "run-research" hit an infrastructure fault');
+        expect(sentences.some((line) => /store fault/i.test(line))).toBe(false);
+      } finally {
+        logged.mockRestore();
+      }
+    });
+
     it("still 422s a genuine miss that is not a store fault", async () => {
       mockedRunResearch.mockRejectedValueOnce(new Error('research project "x" not found'));
+
+      expect((await run(RESEARCH_TASK)).status).toBe(422);
+    });
+
+    /**
+     * DW-650. The 422 for a research miss used to ride entirely on
+     * `/not found/i` agreeing with `ResearchProjectNotFoundError`'s DEFAULT
+     * message — a coupling nothing pinned, so rewording either
+     * `runResearchProject` throw would have flipped a permanent miss into a
+     * 500 retried to the DLQ.
+     *
+     * The message here is a STAND-IN for any such rewording, not a sentence
+     * this door sees today: `runResearchProject` throws the default at both
+     * sites, and "Research project is retired" is the wording
+     * `queueResearchProject` gives the same class at the research door. What
+     * the row pins is the ROUTE's decision — it fails against a regex-only
+     * ladder and passes only against the typed arm checked first.
+     */
+    it("422s a typed ResearchProjectNotFoundError whose message never says 'not found'", async () => {
+      mockedRunResearch.mockRejectedValueOnce(
+        new ResearchProjectNotFoundError("Research project is retired"),
+      );
+
+      const res = await run(RESEARCH_TASK);
+
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({ error: "Research project is retired" });
+    });
+
+    it("422s a default-message ResearchProjectNotFoundError, as it always did", async () => {
+      mockedRunResearch.mockRejectedValueOnce(new ResearchProjectNotFoundError());
 
       expect((await run(RESEARCH_TASK)).status).toBe(422);
     });

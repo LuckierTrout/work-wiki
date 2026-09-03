@@ -38,8 +38,8 @@ export class ClientInputError extends Error {
  * {@link import("./read-only").isReadOnlyError}.
  *
  * `instanceof Error` is proven BEFORE `name` is read, for the reason
- * {@link isStoreFault} documents: the caught value in a route's catch block is
- * arbitrary, and a property read on it can itself throw.
+ * {@link isInfrastructureFault} documents: the caught value in a route's catch
+ * block is arbitrary, and a property read on it can itself throw.
  *
  * Narrows to `Error`, not to `ClientInputError`: under a duplicated graph the
  * value genuinely is NOT an instance of the imported class, so claiming that
@@ -68,8 +68,9 @@ export class StoreFaultError extends Error {
 }
 
 /**
- * Check whether an unknown caught value is a storage fault — one we threw as a
- * {@link StoreFaultError}, or a Node errno failure off the filesystem itself.
+ * Check whether an unknown caught value is a fault in the INFRASTRUCTURE
+ * beneath us — one we threw as a {@link StoreFaultError}, or ANY Node errno
+ * failure, off the filesystem or off the network. Never the caller's input.
  *
  * The errno branch is the load-bearing half (DW-481): `EINVAL: invalid
  * argument, open '…'` never passes through our code as a typed throw, so no
@@ -77,8 +78,35 @@ export class StoreFaultError extends Error {
  * like "invalid" input, which is exactly how a message-matching route ladder
  * mistook a broken disk for the caller's own 400. Probing the errno `code` is
  * the same shape {@link isEnoent} uses one function down.
+ *
+ * THE NAME SAYS "INFRASTRUCTURE", NOT "STORE", BECAUSE THE PROBE IS SHAPED,
+ * NOT ENUMERATED (DW-685). The pattern reads the errno's SHAPE, so a socket's
+ * `ECONNREFUSED` / `ETIMEDOUT` / `ECONNRESET` answers `true` here exactly as
+ * the disk's `EINVAL` does. That answer is CORRECT — a refused socket is ours
+ * to repair and deserves the same 500-plus-bounded-retry as a refused disk —
+ * but under the old name it sent an operator to the filesystem for a fault
+ * that was never there.
+ *
+ * TWO LIMITS, both deliberate and both pre-existing; this pass renamed the
+ * predicate, it did not re-scope it.
+ *
+ * 1. The errno must sit on the CAUGHT VALUE ITSELF. A raw socket or DNS
+ *    rejection carries it there and matches. Node's `fetch` does not: undici
+ *    rejects with `TypeError: fetch failed` and keeps the errno one level down
+ *    on `.cause`, so a fetch-shaped network failure answers `false` and lands
+ *    on the generic transient 500 at the bottom of a route's ladder — the same
+ *    500, reached by fall-through. Unwrapping `cause` would change what this
+ *    predicate answers, which is a behaviour change nothing has asked for.
+ * 2. `/^E[A-Z0-9]+$/` has no `_` in its class, so codes that carry one —
+ *    `EAI_AGAIN` off `getaddrinfo`, the whole `ERR_FS_*` family — do NOT
+ *    match. That under-claim is the other half of DW-685, and it is why
+ *    narrowing to a storage-errno allowlist was considered and rejected: an
+ *    allowlist must enumerate every storage errno and would still miss
+ *    `ERR_FS_*`, trading one wrong answer for another. Of the two halves, only
+ *    the NAME was wrong for every code the probe does match; the verdict for
+ *    those was right, and still is.
  */
-export function isStoreFault(error: unknown): boolean {
+export function isInfrastructureFault(error: unknown): boolean {
   if (error instanceof StoreFaultError) return true;
   // `instanceof Error` is proven BEFORE `code` is read: this classifier runs
   // inside a route's catch block, where the caught value is arbitrary, and a

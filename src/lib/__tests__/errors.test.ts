@@ -4,7 +4,7 @@ import {
   getErrorMessage,
   isClientInputError,
   isEnoent,
-  isStoreFault,
+  isInfrastructureFault,
   StoreFaultError,
 } from "../errors";
 
@@ -109,43 +109,78 @@ describe("StoreFaultError", () => {
   });
 });
 
-describe("isStoreFault", () => {
+describe("isInfrastructureFault", () => {
   it("returns true for a StoreFaultError", () => {
-    expect(isStoreFault(new StoreFaultError("Research projects file is not a list."))).toBe(true);
+    expect(isInfrastructureFault(new StoreFaultError("Research projects file is not a list."))).toBe(true);
   });
 
   it("returns true for a Node EINVAL errno error — the DW-481 fault", () => {
     const err = Object.assign(new Error("EINVAL: invalid argument, open '/data/x.json'"), {
       code: "EINVAL",
     });
-    expect(isStoreFault(err)).toBe(true);
+    expect(isInfrastructureFault(err)).toBe(true);
   });
 
   it.each(["EACCES", "ENOSPC", "ENOENT", "EMFILE", "EIO"])(
     "returns true for errno %s",
     (code) => {
-      expect(isStoreFault(Object.assign(new Error("disk said no"), { code }))).toBe(true);
+      expect(isInfrastructureFault(Object.assign(new Error("disk said no"), { code }))).toBe(true);
+    },
+  );
+
+  /**
+   * DW-685. These answered `true` before the rename too — the probe reads the
+   * errno's shape, and these three carry it on the caught value itself — but
+   * the name said "store fault" and the task door's log line sent an operator
+   * to the disk for a refused socket. The verdict is unchanged and correct: a
+   * network failure is infrastructure beneath us, worth the same 500 and
+   * bounded retry as a broken disk. What is new is that this is NAMED
+   * behavior with a row pinning it, not an accident of the regex.
+   *
+   * These are the codes as a socket rejection carries them. A `fetch`-shaped
+   * failure does NOT reach here — undici keeps the errno on `.cause` — and an
+   * underscore-bearing code (`EAI_AGAIN`) does not match the pattern. Both
+   * limits are the predicate's docblock's, unchanged by the rename.
+   */
+  it.each(["ECONNREFUSED", "ETIMEDOUT", "ECONNRESET"])(
+    "returns true for network errno %s — infrastructure, not the disk",
+    (code) => {
+      expect(
+        isInfrastructureFault(Object.assign(new Error("socket said no"), { code })),
+      ).toBe(true);
     },
   );
 
   it("returns false for a ClientInputError — the caller's input is not our fault", () => {
-    expect(isStoreFault(new ClientInputError("Invalid slug: 'a b'"))).toBe(false);
+    expect(isInfrastructureFault(new ClientInputError("Invalid slug: 'a b'"))).toBe(false);
   });
 
   it("returns false for a plain Error", () => {
-    expect(isStoreFault(new Error("EINVAL: invalid argument, open '/data/x.json'"))).toBe(false);
+    expect(isInfrastructureFault(new Error("EINVAL: invalid argument, open '/data/x.json'"))).toBe(false);
   });
 
   it("returns false for an Error whose code is not errno-shaped", () => {
-    expect(isStoreFault(Object.assign(new Error("nope"), { code: "invalid_request" }))).toBe(false);
-    expect(isStoreFault(Object.assign(new Error("nope"), { code: 42 }))).toBe(false);
+    expect(isInfrastructureFault(Object.assign(new Error("nope"), { code: "invalid_request" }))).toBe(false);
+    expect(isInfrastructureFault(Object.assign(new Error("nope"), { code: 42 }))).toBe(false);
   });
 
   it("returns false for non-Error values, errno-shaped or not", () => {
-    expect(isStoreFault(null)).toBe(false);
-    expect(isStoreFault(undefined)).toBe(false);
-    expect(isStoreFault("EINVAL")).toBe(false);
-    expect(isStoreFault({ code: "EINVAL" })).toBe(false);
+    expect(isInfrastructureFault(null)).toBe(false);
+    expect(isInfrastructureFault(undefined)).toBe(false);
+    expect(isInfrastructureFault("EINVAL")).toBe(false);
+    expect(isInfrastructureFault({ code: "EINVAL" })).toBe(false);
+    // `instanceof Error` is proven before `code` is read, so a NON-Error
+    // value wearing a hostile getter cannot detonate inside a route's catch
+    // block and replace the fault being reported with an unrelated second one.
+    // Scoped to non-Errors on purpose: that is the guard's reach, and the
+    // `isClientInputError` row below pins the identical shape.
+    expect(
+      isInfrastructureFault({
+        get code() {
+          throw new Error("property getter exploded");
+        },
+      }),
+    ).toBe(false);
   });
 });
 

@@ -5233,7 +5233,9 @@ location: src/app/api/tasks/run/route.ts:918
 source_spec: `spec-dw-480-576-577-research-run-route-error-typing.md`
 severity: low
 reason: `src/app/api/tasks/run/route.ts:918` returns 422 (permanent, poison the task) when the message matches `/not found/i`, and `:883` uses the same regex for the Graphify terminal decision. `runResearchProject` now throws `ResearchProjectNotFoundError` at `src/lib/research-runtime.ts:1303` and `:1491`, and the `run-research` task lands in exactly that catch. Nothing breaks today only because this bundle preserved the message verbatim — the poison decision is now silently coupled to the class's DEFAULT message string, with no test pinning the coupling. It is the same anti-pattern DW-480/DW-577 retired, one door over, and out of this bundle's named scope.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-store-fault-naming-and-typed-errors
+resolution-undo: 7ab63e309d5be486db161e536fb7ab3073f48869cf9859c8d4281264975f7d74 2026-09-03 7374617475733a206f70656e
 
 ### DW-651: Same-shaped refusals at `POST /api/research/[id]/run` still answer 500, including one retired project that the GET on the same path answers 404 for.
 origin: spec-deferred a81ed2c6e1d2
@@ -5582,7 +5584,9 @@ location: src/lib/errors.ts:41
 source_spec: `spec-dw-481-482-store-fault-status-classification.md`
 severity: low
 reason: The predicate keys on the SHAPE of `code`, not on a storage errno set. No status outcome changes today: at `POST /api/tasks/run` a network errno reached the same 500 by fall-through before this change, and its message ("getaddrinfo ENOTFOUND host") never matched `/not found/i`. What is wrong today is the NAME and the log line `task "<kind>" hit a store fault`, which sends an operator to the disk for an outbound-network fault. An allowlist was considered and not taken here: it would have to enumerate storage errnos, and it would still miss the `ERR_FS_*` family, so it trades one wrong answer for another without the intent to say which is preferred.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-store-fault-naming-and-typed-errors
+resolution-undo: 7ab63e309d5be486db161e536fb7ab3073f48869cf9859c8d4281264975f7d74 2026-09-03 7374617475733a206f70656e
 
 ### DW-688: A wedged tenant is told to issue `POST /api/research/repair` by hand; no control anywhere in the product performs it.
 origin: spec-deferred 3d0ce9242795

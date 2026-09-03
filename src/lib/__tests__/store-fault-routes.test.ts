@@ -44,8 +44,8 @@ const mockedPrincipal = vi.mocked(getPrincipal);
 /**
  * The errno failure DW-481 names. It never passes through our code as a typed
  * throw — Node attaches `code` on the way out of the filesystem — which is
- * why `isStoreFault` probes the code and no amount of retyping inside the
- * store modules would have caught it.
+ * why `isInfrastructureFault` probes the code and no amount of retyping inside
+ * the store modules would have caught it.
  */
 function errnoFault(code = "EINVAL"): Error {
   return Object.assign(
