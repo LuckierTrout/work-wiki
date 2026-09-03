@@ -5107,7 +5107,9 @@ location: src/lib/__tests__/read-only-door-coverage.test.ts:34
 source_spec: `spec-dw-316-319-526-read-only-lifecycle-route-status.md`
 severity: low
 reason: `read-only-door-coverage.test.ts` exists precisely to catch "the door added TOMORROW", but its `KERNEL_WRITERS`/`WRITER_EXPORTS` cover only `writeWikiPageWithSideEffects`, `deleteWikiPage`, `patchMetadata` and `writeWikiArtifact`. `createWiki`, `renameWiki`, `deleteWiki`, `setCurrentWiki`, `applyScenarioTemplate`, `saveWorkspaceProfile`, `createNamesTerm`/`updateNamesTerm`/`deleteNamesTerm`, `saveEmailIngestConfig`, `createResearchProject` and `retireResearchProject` are all gated in the kernel (DW-266, DW-314, DW-385) yet invisible to it. Every one of the eleven handlers fixed in this pass is pinned only by a hand-written per-door case. Widening the map is a change of its own: it would also demand a treatment on the doors listed in the entry above and on `PUT /api/settings`, `POST /api/tasks/scan` and the rebuild-embeddings doors, none of which this bundle's intent reaches.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-read-only-kernel-writer-registry
+resolution-undo: 86395c2554442a6c9e3653cb0c4c0110c976443ee4c7abbc5da2f9d82150f850 2026-09-02 7374617475733a206f70656e
 
 ### DW-641: POST /api/names-terms and PUT /api/names-terms/[id] still answer a storage fault 400, telling the owner their input was wrong — DW-319's complaint at a different door.
 origin: spec-deferred 814be1124eb2
@@ -5123,7 +5125,9 @@ location: src/lib/__tests__/read-only-door-coverage.test.ts:36
 source_spec: `spec-dw-302-315-317-read-only-kernel-writer-coverage.md`
 severity: low
 reason: `KERNEL_WRITERS` in `read-only-door-coverage.test.ts` now names the page/artifact, wiki-lifecycle and workspace-profile writers. Still absent and still carrying `assertWritable`: `createNamesTerm`, `updateNamesTerm`, `deleteNamesTerm` (`src/lib/names-terms.ts:322,354,378`), `createResearchProject` / `deleteResearchProject` (`src/lib/research-projects.ts`), `saveEmailIngestConfig` (`src/lib/email-ingest.ts:107`), plus `lifecycle.ts`'s `pruneStaleIndexEntry` (:1118) and `deleteWikiPageWhileLocked` (:1205). Their doors are enumerated by name in `read-only-copy-parity.test.ts` rather than derived, so nothing is broken today — the gap is prospective, the same one DW-315 named for the wiki-lifecycle writers. The new `KERNEL_WRITERS` docblock records the omission explicitly, so this is a recorded scope boundary rather than an oversight. Out of this bundle's intent, which names only the wiki-lifecycle and workspace-profile writers.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-read-only-kernel-writer-registry
+resolution-undo: 86395c2554442a6c9e3653cb0c4c0110c976443ee4c7abbc5da2f9d82150f850 2026-09-02 7374617475733a206f70656e
 
 ### DW-643: The Workbench Todos canvas still folds the standing read-only refusal into plain `disabled=`, in front of a door that DOES refuse.
 origin: spec-deferred 3b2a6f3f943e

@@ -38,30 +38,46 @@ const LIB = path.resolve(__dirname, "..");
  * The writers this file scans for. Named, not inferred — and NOT every gated
  * function in `src/lib`.
  *
- * What the roll holds, and only this: the DW-187 kernel writers (page bytes,
- * page metadata, Wiki artifact bytes) plus the wiki-lifecycle and
- * workspace-profile writers gated later (DW-266, DW-314, DW-315). The latter
- * are not kernel writers in the DW-188 sense — they carry sentences of their
- * own rather than the four page/artifact ones — but they have the same
+ * What the roll holds: the DW-187 kernel writers (page bytes, page metadata,
+ * Wiki artifact bytes), the wiki-lifecycle and workspace-profile writers gated
+ * later (DW-266, DW-314, DW-315), `lifecycle.ts`'s two internal-step writers,
+ * and the DW-385 store writers for names terms, research projects (including
+ * `research-runtime.ts`'s `retireResearchProject`, which gates at its own entry
+ * rather than leaning on the delete it ends with) and the email-ingest config
+ * (DW-640/DW-642). Everything past the first group is not a
+ * kernel writer in the DW-188 sense — each carries sentences of its own rather
+ * than the four page/artifact ones — but they have the same
  * exposure: exported functions that write bytes, so a route reaching one
  * untreated ships the same 500-shaped refusal this file exists to prevent.
  *
  * OUT OF SCOPE, deliberately, and stated so the list is not read as a census of
  * `assertWritable`:
  *
- *   - The DW-385 store writers — `names-terms.ts`, `research-projects.ts`,
- *     `email-ingest.ts`, `todos.ts`, `review-queue.ts` and the rest — carry the
- *     refusal too, and their doors are pinned by name in
- *     `read-only-copy-parity.test.ts`. Scanning them here would mean a second
- *     `WRITER_EXPORTS` half the size of `src/lib`, and their routes are already
- *     enumerated rather than derived.
- *   - `lifecycle.ts`'s `pruneStaleIndexEntry` and `deleteWikiPageWhileLocked`,
- *     which are internal steps of the two writers already named — no route
- *     imports either.
+ *   - The REMAINING DW-385 store writers — `todos.ts`, `review-queue.ts`,
+ *     `graph-insight-dismissals.ts`, `source-meeting.ts`, `maintenance.ts` and
+ *     `workspace-profile-backfill.ts`. They carry the refusal too, and their
+ *     doors are pinned BY NAME in `read-only-copy-parity.test.ts` rather than
+ *     derived here. Reaching them is a further widening with its own question
+ *     behind it, not a gap this pass left open by accident.
+ *   - The research `*OrRefusal` wrappers and `applyResearchProjectMutation`,
+ *     which return the `RESEARCH_WRITE_REFUSED` sentinel instead of calling
+ *     `assertWritable` — they are not writers by this file's definition, and the
+ *     third case below would fail on them for the right reason.
+ *   - `lifecycle.ts`'s THIRD `*WhileLocked` export,
+ *     `writeWikiPageWithSideEffectsWhileLocked`. It is registered in
+ *     {@link WRITER_EXPORTS} so a route importing it is scanned, but it is not
+ *     on this roll: its gate lives one frame down, in the private
+ *     `writeWikiPageWithSideEffectsInternal`, so the third case's head probe
+ *     would fail on it for the wrong reason. Two of the family are writers by
+ *     this file's definition; this one is reaching-only.
  *   - `sweepOrphanWikiDirectories`, whose only caller outside `deleteWiki` is
  *     `maintenance.ts`'s fail-soft dynamic import, so naming it would mean
  *     adding `@/lib/maintenance` to {@link WRITER_EXPORTS} — a different
  *     widening, with a different question behind it.
+ *   - `wikis.ts`'s `canonicalizeWikiPurpose`, gated in its own right but reached
+ *     only through `workspace-profile-backfill.ts` and from there the same
+ *     fail-soft dynamic import in `maintenance.ts` — the identical situation to
+ *     `sweepOrphanWikiDirectories`, and out for the identical reason.
  *
  * This list is the file's ONE hand-written roll of writers, and both cases
  * below read FROM it: the staleness case re-derives which of these writers each
@@ -90,6 +106,33 @@ const KERNEL_WRITERS = [
   // past this file untreated.
   "putWorkspaceProfile",
   "copyWorkspaceProfileIfAbsent",
+  // DW-640: `lifecycle.ts`'s two internal-step writers, each gated in its own
+  // right. Like the workspace putters above, no route imports either today —
+  // the only callers are `lint-fix.ts`'s `fixStaleIndex` and, under
+  // `mergePages`, `merge.ts`'s private `mergePagesWhileSourceLocked` — so the
+  // value here is PROSPECTIVE and the same: a future route that takes the
+  // lifecycle lock itself and calls one directly is exactly the door that would
+  // otherwise walk past this file untreated.
+  "pruneStaleIndexEntry",
+  "deleteWikiPageWhileLocked",
+  // DW-642: the DW-385 store writers whose doors are real routes TODAY. Each is
+  // an `export async function` carrying its own `assertWritable` sentence, so a
+  // route reaching one untreated ships the same 500-shaped refusal.
+  "createNamesTerm",
+  "updateNamesTerm",
+  "deleteNamesTerm",
+  "repairResearchRegistry",
+  "createResearchProject",
+  "editResearchProject",
+  "deleteResearchProject",
+  "saveEmailIngestConfig",
+  // Declared in `research-runtime.ts`, not `research-projects.ts`, and a writer
+  // in its own right rather than merely writer-reaching: it TOMBSTONES through
+  // the CAS mutator before it ever reaches `deleteResearchProject`, so it gates
+  // at its own entry. Registering it as reaching-only would leave that gate
+  // deletable with all three cases green — the one thing the third case exists
+  // to stop.
+  "retireResearchProject",
 ] as const;
 
 /**
@@ -107,7 +150,26 @@ const KERNEL_WRITERS = [
  * `src/lib` and fails if a new one appears, so the list cannot quietly go stale.
  */
 const WRITER_EXPORTS: Record<string, readonly string[]> = {
-  "@/lib/lifecycle": ["writeWikiPageWithSideEffects", "deleteWikiPage"],
+  "@/lib/lifecycle": [
+    "writeWikiPageWithSideEffects",
+    "deleteWikiPage",
+    // DW-640's two internal-step writers, listed here because this is the
+    // module that DECLARES them — which is also how the third case finds their
+    // gate.
+    "pruneStaleIndexEntry",
+    "deleteWikiPageWhileLocked",
+    // Registry-only, and deliberately NOT on {@link KERNEL_WRITERS}: the third
+    // `*WhileLocked` export gates one frame down, in the private
+    // `writeWikiPageWithSideEffectsInternal`, so the third case's head probe
+    // would fail on it for the wrong reason. It is here because
+    // `writerImports` matches symbols on a `\b` boundary — the
+    // `writeWikiPageWithSideEffects` entry above does NOT match an import of
+    // this longer name, so without its own row a future route importing it is
+    // skipped entirely.
+    "writeWikiPageWithSideEffectsWhileLocked",
+  ],
+  // `src/lib/wiki.ts` re-exports only these two of `lifecycle.ts`'s writers, so
+  // the putters above deliberately have no entry here.
   "@/lib/wiki": ["writeWikiPageWithSideEffects", "deleteWikiPage"],
   "@/lib/patch-metadata": ["patchMetadata"],
   "@/lib/wikis": [
@@ -116,7 +178,9 @@ const WRITER_EXPORTS: Record<string, readonly string[]> = {
     // these today already satisfies the rule above — as it happens each carries
     // both treatments, though ONE is all the scan asks for. What the widening
     // buys is the NEXT route: one reaching `createWiki` or `deleteWiki` with
-    // neither.
+    // neither. The DW-642 store-writer keys at the bottom of this map were added
+    // for exactly the same reason, and found every door they reach already
+    // treated too.
     "createWiki",
     "applyScenarioTemplate",
     "renameWiki",
@@ -147,6 +211,9 @@ const WRITER_EXPORTS: Record<string, readonly string[]> = {
     "fixLintIssue",
     "fixOrphanPage",
     "fixEmptyPage",
+    // Writer-reaching since DW-640 put `pruneStaleIndexEntry` on the roll: this
+    // is its one production caller.
+    "fixStaleIndex",
     "fixMissingCrossRef",
     "fixContradiction",
     "fixMissingConceptPage",
@@ -165,9 +232,62 @@ const WRITER_EXPORTS: Record<string, readonly string[]> = {
   "@/lib/document-sources": ["preserveDocumentSources"],
   "@/lib/review-queue": ["createPageFromReview"],
   "@/lib/workbench-lint-fix": ["fixWorkbenchLintIssue"],
+  // Writer-REACHING: the Source cascade calls `deleteWikiPage` for each page it
+  // retires and `writeWikiPageWithSideEffects` for the survivor it rewrites.
+  // `/api/workbench/source` imports it, so this key is what puts a LIVE door in
+  // front of the scan — until it was added, both of that route's treatments
+  // could have been deleted with all three cases green.
+  "@/lib/source-cascade": ["cascadeDeleteSource"],
+  // DW-642's store-writer definers. Per-SYMBOL matters most here: each of these
+  // modules also exports the READ side that unrelated routes import —
+  // `listNamesTerms`/`expandQueryWithNamesTerms` (`/api/query/stream`,
+  // `/api/sources/search`), `getResearchProject`/`listResearchProjects`, and
+  // `loadEmailIngestConfig` (`/api/settings`). A module-level rule would start
+  // demanding a read-only treatment on routes that write nothing. The ONE
+  // deliberate module-level exception is `writerImports`' dynamic-`import()`
+  // branch, which cannot see what a call site destructures: it is why
+  // `/api/research/[id]/run` counts as reached even though its only match is the
+  // dynamic `import("@/lib/research-projects")` that pulls the READ
+  // `getResearchProject`. Over-reaching there is the safe direction — the cost
+  // is a treatment on a route that may not need one, not a door left unasked.
+  "@/lib/names-terms": ["createNamesTerm", "updateNamesTerm", "deleteNamesTerm"],
+  "@/lib/research-projects": [
+    "repairResearchRegistry",
+    "createResearchProject",
+    "editResearchProject",
+    "deleteResearchProject",
+  ],
+  "@/lib/email-ingest": ["saveEmailIngestConfig"],
+  // Mixed: `retireResearchProject` is on {@link KERNEL_WRITERS} and this is the
+  // module that DECLARES it, so the third case reads its gate from here.
+  // `reconcileResearchProjects` is writer-REACHING only — the shape of
+  // `@/lib/ingest` and `@/lib/lint-fix` above — calling `deleteResearchProject`
+  // without gating itself, so the third case never looks for an
+  // `assertWritable` under its name.
+  "@/lib/research-runtime": ["retireResearchProject", "reconcileResearchProjects"],
 };
 
-/** Every `src/lib/*.ts` module whose own code calls a kernel writer. */
+/**
+ * Every `src/lib/*.ts` module whose own code calls a writer on
+ * {@link KERNEL_WRITERS} — the corpus the staleness case re-derives
+ * {@link WRITER_EXPORTS} from, so that claim has to stay true as the roll grows.
+ *
+ * NOT here, deliberately, and these are the only absences:
+ *
+ *   - `lifecycle.ts` and `patch-metadata.ts`. They DEFINE the four original
+ *     page/artifact writers, so scanning them would flag most of
+ *     `lifecycle.ts`'s exports as writer-reaching and widen the route scan far
+ *     past what any of these entries is asking about. The third case reaches
+ *     those modules by a different route — through {@link WRITER_EXPORTS} — and
+ *     is what guards them.
+ *   - `ingest-bookkeeping.ts` (calls `writeWikiPageWithSideEffects`) and
+ *     `workspace-profile-backfill.ts` (calls `copyWorkspaceProfileIfAbsent`).
+ *     Both are real writer-reaching modules, but NO ROUTE imports either —
+ *     `ingest.ts` and `maintenance.ts` respectively are their only importers —
+ *     so a {@link WRITER_EXPORTS} key for either could never match an import
+ *     and listing them here would demand one that buys nothing. They come in
+ *     the day a route imports them.
+ */
 const WRITER_MODULES = [
   "agents",
   "document-sources",
@@ -178,6 +298,7 @@ const WRITER_MODULES = [
   "query",
   "review-queue",
   "search",
+  "source-cascade",
   "tenant-admin",
   // DW-315: the two modules that DEFINE the lifecycle writers. They are scanned
   // for the same reason as the rest — a new export in either that reaches one
@@ -185,6 +306,19 @@ const WRITER_MODULES = [
   // set of routes the first case skips.
   "wikis",
   "workspace-profile",
+  // DW-642: the three store-writer definers, plus the two modules that REACH
+  // their writers.
+  "names-terms",
+  "research-projects",
+  "email-ingest",
+  "research-runtime",
+  // Scanned with NO {@link WRITER_EXPORTS} key, and that is the point rather
+  // than an omission: today `research-completion.ts` reaches
+  // `deleteResearchProject` only through the private
+  // `deleteRetiredProjectIfLeaseGone`, which the case's export-body read cannot
+  // see (its documented KNOWN LIMIT), and no route imports the module. Listing
+  // it says "if an EXPORT here ever calls the writer directly, say so by name".
+  "research-completion",
 ] as const;
 
 /** Which writer-reaching symbols this route module imports, if any. */
@@ -237,6 +371,13 @@ describe("read-only coverage of every kernel-writer door", () => {
       "src/app/api/query/route.ts",
       "src/app/api/ingest/route.ts",
       "src/app/api/v1/projects/route.ts",
+      // DW-640/DW-642 brought three more subtrees into `reached`. Unpinned,
+      // dropping `names-terms` or `email` from the walk would leave the count
+      // above the floor below and this case green while covering less — the
+      // exact failure the pin idiom exists to catch.
+      "src/app/api/names-terms/route.ts",
+      "src/app/api/email/settings/route.ts",
+      "src/app/api/research/route.ts",
     ]) {
       expect(scanned, `${pin} is a real route the scan must reach`).toContain(pin);
     }
@@ -268,12 +409,14 @@ describe("read-only coverage of every kernel-writer door", () => {
     // The scan is only evidence if it actually matched something — a broken
     // regex would produce an empty `untreated` and a green, meaningless test.
     //
-    // A floor, not the exact count, for the reason above (31 writer-reaching
-    // routes at the time of writing). It is set so that losing the LARGEST
-    // single `src/app/api` subtree — `ingest`, which contributes 7 — drops the
-    // count below it, while leaving room for a handful of routes to be retired
-    // without anyone having to edit this line to make an unrelated PR green.
-    expect(reached.length).toBeGreaterThanOrEqual(25);
+    // A floor, not the exact count, for the reason above (39 writer-reaching
+    // routes since DW-640/DW-642 widened the roll, up from 31). It is set so
+    // that losing the LARGEST single `src/app/api` subtree — `ingest`, which
+    // still contributes 7 — drops the count below it, while leaving room for a
+    // handful of routes to be retired without anyone having to edit this line to
+    // make an unrelated PR green. RAISE IT WITH THE ROLL: left at 25 the whole
+    // widening could be reverted with this case staying green.
+    expect(reached.length).toBeGreaterThanOrEqual(33);
   });
 
   it("names every writer-reaching export, so the map cannot go stale", async () => {
