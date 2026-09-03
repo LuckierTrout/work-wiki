@@ -670,6 +670,10 @@ async function mergePagesWhileSourceLocked({
         receiptPath: `${operationPath}.${receipt.generation}.delete`,
       },
       true,
+      // Merge-absorb, not a discard: the survivor's frontmatter already claims
+      // this page's sources (step 3 unioned them), so the delete-time silo
+      // cleanup must leave its raw Sources alone (DW-609).
+      true,
     );
     await repointBacklinks(fromSlug, intoSlug, actor);
     await completeMergeOperation(operationPath, receipt);
@@ -730,6 +734,10 @@ async function mergePagesWhileSourceLocked({
       key: `merge-delete:${receipt.generation}`,
       receiptPath: `${operationPath}.${receipt.generation}.delete`,
     },
+    true,
+    // Merge-absorb, not a discard: the survivor's frontmatter already claims
+    // this page's sources (step 3 unioned them), so the delete-time silo
+    // cleanup must leave its raw Sources alone (DW-609).
     true,
   );
   // Catch a linker edit that landed after the pre-delete repoint snapshot.

@@ -296,29 +296,54 @@ export async function syncSiloForPage(
   return n;
 }
 
+/** Options for {@link removeSiloForPage}. */
+export interface RemoveSiloForPageOptions {
+  /**
+   * Keep the page's silo raw Sources (both flat addresses and both hashed
+   * trees) while still clearing the wiki md, discuss thread, revisions and
+   * assets.
+   *
+   * Set by the merge-absorb delete (DW-609): `mergePages` unions the absorbed
+   * page's sources into the SURVIVOR's frontmatter before hard-deleting the
+   * absorbed page through the shared delete branch, so removing those bytes
+   * would destroy provenance the survivor now claims. A plain discard leaves
+   * this off and clears the whole silo.
+   */
+  preserveRawSources?: boolean;
+}
+
 /** Remove every per-page artifact for one slug from its tenant silo. */
 export async function removeSiloForPage(
   slug: string,
   tenant: string,
+  options?: RemoveSiloForPageOptions,
 ): Promise<void> {
   validateTenant(tenant);
+  const preserveRawSources = options?.preserveRawSources === true;
   await Promise.all([
     deleteSafe(tenantWikiRelPath(tenant, `${slug}.md`)),
-    deleteSafe(tenantRawSourceRelPath(tenant, `${slug}.md`)),
-    deleteSafe(tenantRawRelPath(tenant, `${slug}.md`)),
     deleteSafe(`tenants/${tenant}/discuss/${slug}.json`),
     deleteDirSafe(tenantWikiRelPath(tenant, `.revisions/${slug}`)),
     deleteDirSafe(tenantRawRelPath(tenant, `${RAW_ASSETS_DIR}/${slug}`)),
-    // Hashed arrivals mirrored by syncSiloForPage (DW-435/DW-610) — without
-    // this a deleted page leaves Sources in the silo for reverse-orphan
-    // cleanup to trip over. SELECTIVE, not a recursive directory delete: the
-    // directory may be shared with a folder import (DW-611). Same structural-
-    // root skip as the mirror, so a page slugged `assets` cannot delete out of
-    // `tenants/<t>/raw/assets/`.
-    removeHashedTree(tenantRawSourceRelPath(tenant, slug)),
-    ...(RAW_STRUCTURAL_DIRS.has(slug)
+    // Raw-Source arms. Skipped wholesale when the caller preserves Sources —
+    // a merge-absorb delete hands them to the survivor rather than dropping
+    // them.
+    ...(preserveRawSources
       ? []
-      : [removeHashedTree(tenantRawRelPath(tenant, slug))]),
+      : [
+          deleteSafe(tenantRawSourceRelPath(tenant, `${slug}.md`)),
+          deleteSafe(tenantRawRelPath(tenant, `${slug}.md`)),
+          // Hashed arrivals mirrored by syncSiloForPage (DW-435/DW-610) —
+          // without this a deleted page leaves Sources in the silo for
+          // reverse-orphan cleanup to trip over. SELECTIVE, not a recursive
+          // directory delete: the directory may be shared with a folder import
+          // (DW-611). Same structural-root skip as the mirror, so a page
+          // slugged `assets` cannot delete out of `tenants/<t>/raw/assets/`.
+          removeHashedTree(tenantRawSourceRelPath(tenant, slug)),
+          ...(RAW_STRUCTURAL_DIRS.has(slug)
+            ? []
+            : [removeHashedTree(tenantRawRelPath(tenant, slug))]),
+        ]),
   ]);
 }
 

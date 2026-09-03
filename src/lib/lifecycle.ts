@@ -42,6 +42,7 @@ import { syncBacklinksForPage, removeBacklinksForSlug } from "./backlink-index";
 import { pushRecentEvent, removeRecentForSlug } from "./recent-index";
 import { isAgentHandle, removeSlugFromAgentPages } from "./agents";
 import { removeSlugFromAllVaults } from "./vault";
+import { removeSiloForPage } from "./silo";
 import { normalizeActor } from "./agent-handle";
 import { parseFrontmatter } from "./frontmatter";
 import { parseSources, newestSourceType } from "./sources";
@@ -183,6 +184,16 @@ type PageLifecycleOp =
       author?: string;
       /** Refuse deletion unless the authoritative Page still has these bytes. */
       expectedContent?: string;
+      /**
+       * Keep the page's silo raw Sources when the delete-time silo cleanup
+       * runs (DW-609). A plain DISCARD leaves this off and clears the whole
+       * silo. A MERGE-ABSORB delete sets it on: `mergePages` unions the
+       * absorbed page's sources into the survivor's frontmatter before
+       * deleting it through this same branch, so dropping those bytes would
+       * destroy provenance the survivor now claims. Discussions and assets are
+       * cleaned either way.
+       */
+      preserveRawSources?: boolean;
     };
 
 /** Internal result of a lifecycle op — a superset of Write/Delete result shapes. */
@@ -641,8 +652,15 @@ async function runPageLifecycleOp(
 
   // 2b–2d. Secondary storage cleanup. Derived, recoverable steps are
   //        failure-tolerant (logged + swallowed) so they never fail the op.
-  //        Revision erasure is intentionally absent here: it is a required
-  //        pre-delete step above because portable exports include tenant data.
+  //        Revision ERASURE is still the required pre-delete step above, not a
+  //        member of this batch, because portable exports include tenant data
+  //        and so a revision-erasure failure must leave a visible Page the
+  //        operator can retry. `removeSiloForPage` below does call
+  //        `deleteDirSafe` on tenants/<t>/wiki/.revisions/<slug> — that is a
+  //        deliberate ENOENT-safe overlap on a path the pre-delete step has
+  //        already cleared, keeping the helper whole-silo idempotent for its
+  //        other callers. It is not a second erasure policy, and it is not what
+  //        guarantees revisions are gone.
   if (op.kind === "write") {
     // Skip embedding rendered artifacts (e.g. saved `html` outputs): they're
     // excluded from the search/query corpus, and their raw markup would pollute
@@ -675,6 +693,20 @@ async function runPageLifecycleOp(
     const cleanups: { label: string; run: Promise<unknown> }[] = [
       { label: "embedding remove", run: removeEmbedding(slug) },
       { label: "deleteDiscussions", run: deleteDiscussions(slug) },
+      // DW-609. Step 2 removes only the silo wiki md; every OTHER per-page silo
+      // artifact (flat + hashed raw Sources, discuss thread, assets) would leak,
+      // and the reverse-orphan pass cannot recover it because it discovers
+      // ghosts by scanning the very md the delete just removed. Fail-soft, and
+      // deliberately NOT beside `deleteRevisions`: these are derived and
+      // recoverable, so a failure here must never fail an already-committed
+      // page delete. Same tenant the primary md delete and `deleteRevisions`
+      // used, so an unknown owner cleans the default tenant.
+      {
+        label: "removeSiloForPage",
+        run: removeSiloForPage(slug, tenantForOwner(deletedOwner), {
+          preserveRawSources: op.preserveRawSources === true,
+        }),
+      },
     ];
     const settled = await Promise.allSettled(cleanups.map((c) => c.run));
     settled.forEach((r, i) => {
@@ -900,10 +932,21 @@ async function runPageLifecycleOp(
     logger.warn("page-index", `page index sync skipped for "${slug}":`, err);
   }
 
-  // 3c. (Retired) Silo writes now happen directly at step 2 — the lifecycle
-  //     write targets tenants/<tenant>/wiki/ via writeWikiPage(…, tenant), and
-  //     the delete targets the silo path explicitly. The redundant syncSiloForPage
-  //     / removeSiloForPage mirror is no longer needed here.
+  // 3c. (Write mirror retired; delete-side cleanup lives at 2b–2d.) Silo WRITES
+  //     now happen directly at step 2 — the lifecycle write targets
+  //     tenants/<tenant>/wiki/ via writeWikiPage(…, tenant), so the redundant
+  //     syncSiloForPage mirror is genuinely gone from here.
+  //
+  //     The DELETE side is NOT retired, only relocated. Step 2 removes the silo
+  //     wiki md (and the flat copy) as the throwing primary step; every other
+  //     per-page silo artifact — flat and hashed raw Sources, the discuss
+  //     thread, binary assets — is cleared by `removeSiloForPage` in the
+  //     fail-soft `cleanups` batch at 2b–2d. Without it a hard delete leaks
+  //     those artifacts, and the reverse-orphan pass in `reconcileSilos` cannot
+  //     recover them because it discovers ghosts by scanning the very silo wiki
+  //     md the delete already removed (DW-609). A merge-absorb delete passes
+  //     `preserveRawSources` so the absorbed page's Sources — which the
+  //     survivor's frontmatter now claims — survive that cleanup.
 
   // 3d. (removed) Pages no longer auto-join a vault. In the multi-vault model
   //     vault membership is EXPLICIT — a page joins a vault only via an
@@ -1141,9 +1184,14 @@ export async function pruneStaleIndexEntry(
  * in the shared pipeline. See the block comment above `runPageLifecycleOp`
  * for details.
  *
- * Hard delete only — no trash, no undo. Raw source files in `raw/` are
- * intentionally NOT touched (the raw layer is immutable per the founding
- * vision).
+ * Hard delete only — no trash, no undo. Raw source bytes in the FLAT `raw/`
+ * tree are intentionally NOT touched (that layer is immutable per the founding
+ * vision); dropping them is `deleteRawSourceBytes`' job, on cascade delete. The
+ * page's TENANT SILO raw mirror (`tenants/<t>/raw/…`) is different: a hard
+ * delete clears it, along with the silo discuss thread and assets, via the
+ * fail-soft `removeSiloForPage` cleanup (DW-609). The one exception is a
+ * merge-absorb delete, which passes `preserveRawSources` so the absorbed page's
+ * silo Sources — provenance the survivor's frontmatter now claims — survive.
  *
  * `triggeredBy` is the handle of whoever ASKED for an automated delete, when a
  * door resolved one (DW-447) — today only the `empty-page` lint auto-fix passes
@@ -1203,7 +1251,14 @@ export async function deleteWikiPage(
   };
 }
 
-/** Delete under a lock minted by {@link withPageLifecycleLocks}. */
+/**
+ * Delete under a lock minted by {@link withPageLifecycleLocks}.
+ *
+ * `preserveRawSources` marks this delete a MERGE-ABSORB rather than a discard:
+ * the caller has already unioned this page's sources into a survivor's
+ * frontmatter, so the delete-time silo cleanup (DW-609) must leave the silo raw
+ * Sources in place while still clearing the discuss thread and assets.
+ */
 export async function deleteWikiPageWhileLocked(
   slug: string,
   held: PageLifecycleLockHeld,
@@ -1211,6 +1266,7 @@ export async function deleteWikiPageWhileLocked(
   expectedContent?: string,
   idempotency?: { key: string; receiptPath: string },
   skipDeleteBacklinks = false,
+  preserveRawSources = false,
 ): Promise<DeletePageResult> {
   assertWritable(READ_ONLY_REFUSAL.pageDelete);
   validateSlug(slug);
@@ -1246,7 +1302,13 @@ export async function deleteWikiPageWhileLocked(
     : undefined;
   const result = await runPageLifecycleOp(
     slug,
-    { kind: "delete", title: page?.title ?? recoveredTitle ?? slug, author, expectedContent },
+    {
+      kind: "delete",
+      title: page?.title ?? recoveredTitle ?? slug,
+      author,
+      expectedContent,
+      preserveRawSources,
+    },
     "delete",
     ({ strippedBacklinksFrom }) =>
       `deleted after merge · stripped backlinks from ${strippedBacklinksFrom.length} page(s)`,

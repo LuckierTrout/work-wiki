@@ -4823,7 +4823,9 @@ location: src/lib/lifecycle.ts:618
 source_spec: `spec-dw-435-silo-hashed-intake-paths.md`
 severity: medium
 reason: lifecycle.ts:618-638 deletes the silo wiki md, the flat wiki md and both revision layouts directly; lifecycle.ts:932-936 records that the syncSiloForPage/removeSiloForPage mirror was deliberately retired from that path. removeSiloForPage's only production caller is the reverse-orphan pass (src/lib/silo.ts:311), which discovers ghosts by scanning `tenants/<t>/wiki/*.md` — a hard-deleted page's silo md is already gone, so its slug never appears. Pre-existing and identical for the assets directory and the discuss thread; DW-435's new deleteDirSafe inherits the shape rather than introducing it.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-silo-mirror-lifecycle
+resolution-undo: a1fa5e02db8594ce88f7dbe538181ff281d94db1ac44c8aac6d895f4790b2f19 2026-09-03 7374617475733a206f70656e
 
 ### DW-610: The legacy hashed root `raw/<slug>/<rawId>.md` is still never mirrored into any silo, so pre-move hashed arrivals stay invisible in Files.
 origin: spec-deferred c6af80f1ec65
@@ -5751,7 +5753,9 @@ location: src/lib/workbench-files.ts:726
 source_spec: `spec-dw-608-610-611-silo-sync-gate-coverage.md`
 severity: low
 reason: `listRawSourceFilePaths` (src/lib/workbench-files.ts:726) walks the silo `raw/` root but descends only toward `raw/sources` (`underSources`/`towardSources`, :770-776), while `listWorkbenchFilePaths` walks the whole root. Both legacy addresses this mirror writes — `tenants/<t>/raw/<slug>.md` (pre-existing) and `tenants/<t>/raw/<slug>/<rawId>.<ext>` (DW-610, added here) — therefore list in Files and never in the Sources pane. DW-610's harm is stated as "invisible in Files" and that surface IS closed; the Sources pane is a second surface the bundle never named. Pre-existing for the flat legacy address, and unchanged by the address-preserving choice recorded in this spec's Design Notes.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-silo-mirror-lifecycle
+resolution-undo: a1fa5e02db8594ce88f7dbe538181ff281d94db1ac44c8aac6d895f4790b2f19 2026-09-03 7374617475733a206f70656e
 
 ### DW-708: `POST /api/wikis` answers 500 while the wiki was in fact created and made current, whenever `writeRegistry` stores `wikis.json` and then rejects.
 origin: spec-deferred d843fdc55060
@@ -6038,4 +6042,12 @@ location: src/app/api/raw/[slug]/route.ts:24
 source_spec: `spec-dw-492-536-raw-path-gate-reach.md`
 severity: medium
 reason: DW-536 aligned `/api/assets/[...path]` on `hiddenSlugs`/`rawPathAllowed`. `/api/raw/[slug]` (`src/app/api/raw/[slug]/route.ts:24-30`) reads the same silo tree — `readRawSource` / `readRawSourceById` over `raw/sources/<slug>.md` and `raw/sources/<slug>/<rawId>.<ext>` — and its ONLY gate is `canReadSlug(slug, principal)` (`src/lib/authz.ts:144-162`), which reads frontmatter visibility/owner and nothing else. Those are exactly the paths `rawPathAllowed` refuses for a hidden slug at `listWorkbenchFilePaths`, `resolveWorkbenchFile` and the `/api/v1` file doors. An `agent-*` typed page with `visibility: public` is kept by `listReadableWikiPages` but dropped by `buildKnowledgeTree` (`src/lib/workbench-tree.ts:656`), so its slug is in `hiddenSlugs` and the Files tab withholds its source — while `GET /api/raw/<that-slug>` returns the source text with no session. Verified by reading both routes; no test in the suite exercises that route's GET at all (only citation-href string assertions in `raw-
+status: open
+
+### DW-743: A merge-absorb strands the absorbed page's raw Sources at the absorbed slug's silo addresses, so a page later created at that slug inherits them in Files and the Sources pane.
+origin: spec-deferred e7a866f30680
+location: src/lib/silo.ts:311
+source_spec: `spec-dw-609-707-silo-mirror-lifecycle.md`
+severity: low
+reason: `removeSiloForPage(slug, tenant, { preserveRawSources: true })` (src/lib/silo.ts:311-347, reached from src/lib/merge.ts:676,741) leaves `tenants/<t>/raw/sources/<from>.md`, `tenants/<t>/raw/<from>.md` and both hashed trees in place at the ABSORBED slug's address, with no silo wiki md anchoring them. `listWorkbenchFilePaths` resolves `raw/` silo-primary (src/lib/workbench-files.ts:707-712) and `rawPathAllowed`'s refusal set covers hidden pages, not deleted ones, so those bytes keep listing. Slugs are reusable: recreating a page at `<from>` makes another page's provenance show up as the new page's Sources, and under a cross-owner merge (`bypassOwnerCheck`, src/mcp.ts:489) the survivor's owner cannot read the bytes at all because DW-40 resolves `raw/` strictly inside the owner's silo. Preserving in place is the recorded decision for this bundle, which records that "nothing reaps them"; the slug-reuse and cross-tenant consequences are not named anywhere, and no test covers the listing surf
 status: open

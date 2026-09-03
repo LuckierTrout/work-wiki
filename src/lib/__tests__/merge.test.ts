@@ -505,6 +505,27 @@ describe("mergePages", () => {
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const storage = getStorage();
+    // The absorbed page's silo artifacts, so the RESUME delete call site
+    // (the `!currentFrom` recovery branch) is pinned too — it passes
+    // `preserveRawSources` just as the normal one does, and nothing else
+    // observes it (DW-609). The first, failing attempt already reaches the
+    // 2b-2d cleanup batch, so the raw Sources that survive into the resume are
+    // themselves evidence the normal call site preserved them; the resumed
+    // delete then has to preserve them a second time.
+    const hex = "e".repeat(64);
+    const preservedOnResume = [
+      "tenants/alice/raw/sources/harness-ai-agents.md",
+      "tenants/alice/raw/harness-ai-agents.md",
+      `tenants/alice/raw/sources/harness-ai-agents/${hex}.md`,
+      `tenants/alice/raw/harness-ai-agents/${hex}.md`,
+    ];
+    const cleanedOnResume = [
+      "tenants/alice/discuss/harness-ai-agents.json",
+      "tenants/alice/raw/assets/harness-ai-agents/pic.png",
+    ];
+    for (const rel of [...preservedOnResume, ...cleanedOnResume]) {
+      await storage.writeFile(rel, "absorbed provenance bytes");
+    }
     const originalWrite = storage.writeFile.bind(storage);
     let failDeleteIndex = true;
     vi.spyOn(storage, "writeFile").mockImplementation(async (target, content) => {
@@ -547,6 +568,16 @@ describe("mergePages", () => {
       .not.toContain("harness-ai-agents");
     expect((await readWikiPage("agent-harness"))?.content)
       .toContain("Owner edit after partial delete.");
+
+    // The resumed merge-absorb delete is still a merge, not a discard: the
+    // survivor's frontmatter claims the absorbed page's sources.
+    for (const rel of preservedOnResume) {
+      expect(await storage.fileExists(rel), rel).toBe(true);
+    }
+    // Its discuss thread and assets are still cleaned up.
+    for (const rel of cleanedOnResume) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
   }, 15_000);
 
   it("rejects a recreated survivor after the absorbed Page was already deleted", async () => {
@@ -1671,5 +1702,72 @@ describe("mergePages leaves the retired contributor index alone", () => {
     expect(await getContributorIndex()).toEqual(before);
     // …and the receipt that used to guard the decrement is never minted.
     expect(await findFilesEndingIn(tmpDir, ".delete.contributor")).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A merge is not a discard (DW-609)
+// ---------------------------------------------------------------------------
+//
+// `mergePages` hard-deletes the absorbed page through the SAME lifecycle delete
+// branch that now clears the whole silo — but it first unions the absorbed
+// page's sources into the survivor's frontmatter. Dropping the absorbed page's
+// silo raw Sources there would destroy provenance the survivor now claims, so
+// both `deleteWikiPageWhileLocked` call sites pass `preserveRawSources`.
+// ---------------------------------------------------------------------------
+
+describe("mergePages preserves the absorbed page's silo Sources", () => {
+  it("keeps alpha's silo raw Sources while beta's frontmatter claims them", async () => {
+    const hex = "d".repeat(64);
+    const storage = getStorage();
+    const ALPHA_URL = "https://example.com/alpha-provenance";
+    const BETA_URL = "https://example.com/beta-provenance";
+
+    await seedPage("beta", {
+      title: "Beta",
+      created: "2026-02-01",
+      sources: [src(BETA_URL)],
+    });
+    await seedPage("alpha", {
+      title: "Alpha",
+      created: "2026-01-15",
+      sources: [src(ALPHA_URL)],
+    });
+
+    // Both pages are owned by "alice" → tenant "alice".
+    const preserved = [
+      "tenants/alice/raw/sources/alpha.md",
+      "tenants/alice/raw/alpha.md",
+      `tenants/alice/raw/sources/alpha/${hex}.md`,
+      `tenants/alice/raw/alpha/${hex}.md`,
+    ];
+    const cleaned = [
+      "tenants/alice/discuss/alpha.json",
+      "tenants/alice/raw/assets/alpha/pic.png",
+    ];
+    for (const rel of [...preserved, ...cleaned]) {
+      await storage.writeFile(rel, "alpha provenance bytes");
+    }
+
+    await mergePages({ from: "alpha", into: "beta", actor: "alice" });
+
+    // The absorbed page really is gone…
+    expect(await readWikiPage("alpha")).toBeNull();
+    expect(await storage.fileExists("tenants/alice/wiki/alpha.md")).toBe(false);
+
+    // …and the survivor now claims alpha's provenance.
+    const survivor = await readWikiPageWithFrontmatter("beta", { fresh: true });
+    const sources = JSON.stringify(survivor!.frontmatter.sources);
+    expect(sources).toContain(ALPHA_URL);
+    expect(sources).toContain(BETA_URL);
+
+    // So alpha's silo raw Sources MUST survive the merge delete…
+    for (const rel of preserved) {
+      expect(await storage.fileExists(rel), rel).toBe(true);
+    }
+    // …while its discuss thread and assets are still cleaned up.
+    for (const rel of cleaned) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
   });
 });

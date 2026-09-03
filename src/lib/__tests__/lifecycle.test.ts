@@ -28,6 +28,7 @@ import { registerAgent, getAgent } from "../agents";
 import { _resetLocks, _setDurableLocksForTests, withDurableLock } from "../lock";
 import { getPageIndexDirtySlugs, rebuildPageIndex } from "../page-index";
 import { canReadSlug } from "../authz";
+import { logger } from "../logger";
 
 // ---------------------------------------------------------------------------
 // Temp directory setup — mirrors wiki.test.ts approach
@@ -1454,6 +1455,118 @@ describe("per-tenant silo mirror", () => {
       "tenants/carol/wiki/page-b.md",
     );
     expect(siloAfter).not.toContain("page-a.md");
+  });
+
+  // ── DW-609: a hard delete must clear the WHOLE silo, not just the wiki md ──
+  // Step 2 of the delete branch removes the silo wiki md directly. That used to
+  // be all it did, so the page's other mirrored artifacts — flat and hashed raw
+  // Sources, the discuss thread, binary assets — leaked, and `reconcileSilos`'
+  // reverse-orphan pass could not recover them: it discovers ghosts by scanning
+  // the very wiki md the delete already removed.
+
+  it("clears every per-page silo artifact on delete, leaving no ghost (DW-609)", async () => {
+    const storage = getStorage();
+    const hex = "a".repeat(64);
+    await writeWikiPageWithSideEffects({
+      slug: "alpha",
+      title: "Alpha",
+      content: serializeFrontmatter({ owner: "alice" }, "# Alpha\n\nBody."),
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+
+    // The artifacts `syncSiloForPage` mirrors beyond the wiki md.
+    const mirrored = [
+      "tenants/alice/raw/sources/alpha.md",
+      "tenants/alice/raw/alpha.md",
+      `tenants/alice/raw/sources/alpha/${hex}.md`,
+      `tenants/alice/raw/alpha/${hex}.md`,
+      "tenants/alice/discuss/alpha.json",
+      "tenants/alice/raw/assets/alpha/pic.png",
+    ];
+    for (const rel of mirrored) await storage.writeFile(rel, "mirrored bytes");
+    expect(await storage.fileExists("tenants/alice/wiki/alpha.md")).toBe(true);
+
+    await deleteWikiPage("alpha");
+
+    for (const rel of ["tenants/alice/wiki/alpha.md", ...mirrored]) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+  });
+
+  it("completes the delete and warns when the silo cleanup rejects", async () => {
+    const storage = getStorage();
+    await writeWikiPageWithSideEffects({
+      slug: "fragile",
+      title: "Fragile",
+      content: serializeFrontmatter({ owner: "alice" }, "# Fragile\n\nBody."),
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await storage.writeFile("tenants/alice/raw/assets/fragile/pic.png", "bytes");
+
+    const originalDeleteDirectory = storage.deleteDirectory.bind(storage);
+    vi.spyOn(storage, "deleteDirectory").mockImplementation(async (target) => {
+      // Only the SILO RAW arms fail — the required tenant revision erasure
+      // (tenants/<t>/wiki/.revisions/…) must still succeed, or this would be
+      // testing the throwing pre-delete step instead.
+      if (target.startsWith("tenants/") && target.includes("/raw/")) {
+        throw new Error("silo raw store unavailable");
+      }
+      return originalDeleteDirectory(target);
+    });
+    // `logger` is a module singleton and this file's `afterEach` does not
+    // restore mocks, so the stub MUST come back off in a `finally` — otherwise
+    // a failure below would silently mute warnings for every later test here.
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    try {
+      // The delete is already committed by the time the cleanup batch runs, so
+      // a cleanup failure is logged and swallowed — never rethrown.
+      await expect(deleteWikiPage("fragile")).resolves.toMatchObject({
+        slug: "fragile",
+      });
+      expect(await readWikiPage("fragile", { fresh: true, strict: true })).toBeNull();
+      expect(
+        warn.mock.calls.some(
+          (call) =>
+            call[0] === "wiki" && String(call[1]).includes("removeSiloForPage"),
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("cleans the default tenant's silo when the deleted page has no owner", async () => {
+    // `deletedOwner` is undefined both for an ownerless page and for one whose
+    // frontmatter read failed; either way the cleanup must target the SAME
+    // tenant the primary md delete and `deleteRevisions` used.
+    const storage = getStorage();
+    const hex = "b".repeat(64);
+    const tenant = tenantForOwner(undefined);
+    await writeWikiPageWithSideEffects({
+      slug: "ownerless",
+      title: "Ownerless",
+      content: "# Ownerless\n\nNo owner frontmatter.",
+      summary: "x",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    const mirrored = [
+      `tenants/${tenant}/raw/sources/ownerless.md`,
+      `tenants/${tenant}/raw/sources/ownerless/${hex}.md`,
+      `tenants/${tenant}/discuss/ownerless.json`,
+      `tenants/${tenant}/raw/assets/ownerless/pic.png`,
+    ];
+    for (const rel of mirrored) await storage.writeFile(rel, "mirrored bytes");
+
+    await deleteWikiPage("ownerless");
+
+    for (const rel of [`tenants/${tenant}/wiki/ownerless.md`, ...mirrored]) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
   });
 });
 

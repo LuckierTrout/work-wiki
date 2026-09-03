@@ -6,6 +6,8 @@ import { syncSiloForPage, removeSiloForPage, reconcileSilos } from "../silo";
 import { writeWikiPage, ensureDirectories, updateIndex } from "../wiki";
 import { getStorage, _resetStorage } from "../storage";
 import { listWorkbenchFilePaths } from "../workbench-files";
+import { deleteWikiPage } from "../lifecycle";
+import { _resetLocks } from "../lock";
 
 let tmpDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -17,6 +19,7 @@ beforeEach(async () => {
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
   _resetStorage();
+  _resetLocks();
   await ensureDirectories();
 });
 
@@ -471,6 +474,80 @@ describe("syncSiloForPage", () => {
     expect(await getStorage().fileExists("tenants/alice/wiki/gamma.md")).toBe(
       false,
     );
+  });
+});
+
+describe("removeSiloForPage on page delete", () => {
+  // ── DW-609 routes the real page delete through here ──
+  // The narrowness DW-611 bought is only worth anything if it survives the
+  // caller that now runs on EVERY hard delete, so assert it through
+  // `deleteWikiPage` and not just a direct `removeSiloForPage` call.
+
+  it("a page delete spares a foreign file and its shared hashed directory", async () => {
+    const hex = "9".repeat(64);
+    const storage = getStorage();
+    const tenant = "yopedia"; // ownerless page → default tenant
+    await writeWikiPage("papers", "# Papers\n\nBody.");
+    await updateIndex([
+      { title: "Papers", slug: "papers", summary: "shares a hashed dir" },
+    ]);
+    await storage.writeFile(`tenants/${tenant}/raw/sources/papers/${hex}.md`, "mine");
+    await storage.writeFile(
+      `tenants/${tenant}/raw/sources/papers/note.md`,
+      "import file",
+    );
+
+    await deleteWikiPage("papers");
+
+    // The page-owned content-addressed snapshot goes…
+    expect(
+      await storage.fileExists(`tenants/${tenant}/raw/sources/papers/${hex}.md`),
+    ).toBe(false);
+    // …the folder-import file and the directory holding it survive.
+    expect(
+      await storage.readFile(`tenants/${tenant}/raw/sources/papers/note.md`),
+    ).toBe("import file");
+  });
+
+  it("preserveRawSources keeps the raw Sources while clearing the rest", async () => {
+    // The merge-absorb delete: `mergePages` unions the absorbed page's sources
+    // into the SURVIVOR's frontmatter before deleting it through the same
+    // branch, so these bytes are provenance the survivor now claims.
+    const hex = "c".repeat(64);
+    const storage = getStorage();
+    const kept = [
+      "tenants/alice/raw/sources/sigma.md",
+      "tenants/alice/raw/sigma.md",
+      `tenants/alice/raw/sources/sigma/${hex}.md`,
+      `tenants/alice/raw/sigma/${hex}.md`,
+    ];
+    const cleared = [
+      "tenants/alice/wiki/sigma.md",
+      "tenants/alice/discuss/sigma.json",
+      // The revisions arm must keep running under `preserveRawSources` — only
+      // the RAW-SOURCE arms are skipped. Without this a regression that
+      // bundled `.revisions` in with the skipped arms would go unnoticed.
+      "tenants/alice/wiki/.revisions/sigma/2026-01-01T00-00-00.md",
+      "tenants/alice/raw/assets/sigma/pic.png",
+    ];
+    for (const rel of [...kept, ...cleared]) {
+      await storage.writeFile(rel, "mirrored bytes");
+    }
+
+    await removeSiloForPage("sigma", "alice", { preserveRawSources: true });
+
+    for (const rel of kept) {
+      expect(await storage.fileExists(rel), rel).toBe(true);
+    }
+    for (const rel of cleared) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+
+    // Default (discard) behaviour is unchanged — the same silo clears fully.
+    await removeSiloForPage("sigma", "alice");
+    for (const rel of kept) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
   });
 });
 
