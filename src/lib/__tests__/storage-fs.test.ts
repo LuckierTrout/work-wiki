@@ -1106,6 +1106,34 @@ describe("FilesystemStorageProvider", () => {
    * every subsequent pass would look exactly like "nothing to reclaim".
    */
   describe("reapStrandedScratchFiles", () => {
+    /**
+     * DW-722 — one instant for the whole row, so the grace windows below are
+     * arithmetic rather than a race with the wall clock.
+     *
+     * `plantScratch` dates its files from `Date.now()` and the reaper computes
+     * `cutoff` from `Date.now()`. Left live, those are two different readings
+     * with an unbounded amount of real work between them: a file planted at
+     * `NOW - 1_000` against a `5_000` window is "fresh" only while fewer than
+     * four seconds elapse before the walk stats it, which under a loaded
+     * machine (two `vitest run`s at once) is not something the row controls.
+     * Pinning the single call makes elapsed time irrelevant by construction —
+     * not by widening a window or a timeout, which would only move the odds.
+     *
+     * Restored through this handle rather than `vi.restoreAllMocks()`: that
+     * would reach past this block and unmock spies the surrounding file owns.
+     */
+    let nowSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+    beforeEach(() => {
+      const frozen = Date.now();
+      nowSpy = vi.spyOn(Date, "now").mockReturnValue(frozen);
+    });
+
+    afterEach(() => {
+      nowSpy?.mockRestore();
+      nowSpy = undefined;
+    });
+
     /** A name matching the provider's `.tmp-<uuid>.tmp` convention. */
     function scratchName(n: number): string {
       return `.tmp-00000000-0000-4000-8000-${String(n).padStart(12, "0")}.tmp`;
@@ -1226,24 +1254,110 @@ describe("FilesystemStorageProvider", () => {
       await expect(missing.reapStrandedScratchFiles()).rejects.toThrow();
     });
 
-    it("stops at STRANDED_SCRATCH_CANDIDATE_CAP and reclaims the remainder next pass", async () => {
-      // The cap imported, never retyped: a row asserting a hardcoded 500 goes
-      // on passing against a guard keyed on something else entirely.
+    it("stops at the candidate cap and reclaims the remainder next pass", async () => {
+      // DW-722 — the CAP'S BEHAVIOUR, driven through the reaper's test-only
+      // `candidateCap` override rather than by planting
+      // `STRANDED_SCRATCH_CANDIDATE_CAP + 3` real files. That population is
+      // what turned this row into a duration failure ("Test timed out in
+      // 5000ms") whenever the machine was busy — an outcome that had nothing
+      // to do with whether the cap works. A small injected cap exercises the
+      // identical `considered >= candidateCap` guard on the identical walk.
+      //
+      // The default is pinned to `STRANDED_SCRATCH_CANDIDATE_CAP` by the row
+      // below, so this seam cannot silently become production's bound.
+      const cap = 4;
       const overflow = 3;
-      for (let i = 0; i < STRANDED_SCRATCH_CANDIDATE_CAP + overflow; i++) {
+      // Non-vacuity: an injected cap observes the guard only while it is BELOW
+      // the shipped bound. At or above it, the planted population would be what
+      // ends the walk and this row would pass with the guard deleted.
+      expect(cap).toBeLessThan(STRANDED_SCRATCH_CANDIDATE_CAP);
+      for (let i = 0; i < cap + overflow; i++) {
         await plantScratch(scratchName(i), AGED);
       }
 
-      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(
-        STRANDED_SCRATCH_CANDIDATE_CAP,
-      );
+      const reap = () =>
+        provider.reapStrandedScratchFiles(STRANDED_SCRATCH_GRACE_MS, cap);
+
+      await expect(reap()).resolves.toBe(cap);
       // Removal IS the progress — no cursor is persisted, so the next pass
       // simply starts on what is left.
-      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(overflow);
-      await expect(provider.reapStrandedScratchFiles()).resolves.toBe(0);
+      await expect(reap()).resolves.toBe(overflow);
+      await expect(reap()).resolves.toBe(0);
+    });
+
+    /**
+     * The parameter list a function DECLARES, as source text — read off the
+     * RUNNING function object, never off a file on disk.
+     *
+     * `Function.prototype.length` cannot serve as this pin: it stops counting
+     * at the first default-valued parameter, and every parameter here has a
+     * default, so `.length` is 0 whatever the signature says. Reading the
+     * declared list catches required, optional AND defaulted parameters alike.
+     *
+     * `String(fn)` is deliberately the source of truth rather than
+     * `filesystem.ts` itself. The file is not what executes: the transform
+     * strips the `: number` annotations and joins the parameter list onto one
+     * line, so a substring match written against the file's text is a
+     * false-failure waiting for a reformat, a moved file, or a dropped
+     * annotation — precisely the class of spurious red DW-722 exists to remove.
+     * Matching is therefore whitespace- and annotation-tolerant, and keys on
+     * the `STRANDED_SCRATCH_CANDIDATE_CAP` IDENTIFIER rather than on `500`, so
+     * repointing the default at some other bound fails here.
+     *
+     * A signature pin that can report "no parameters" for a function it failed
+     * to parse is worse than no pin, so this THROWS rather than guessing —
+     * `declaredParams` in `wiki-schema-source.test.ts` makes the same choice for
+     * the same reason. Two forms would otherwise read as empty: a bound or
+     * native function (`[native code]`, no parameter text), and an arrow with
+     * one unparenthesized parameter (`async olderThanMs => { … }`), where the
+     * first `(...)` in the source belongs to the BODY. This one anchors on the
+     * CLASS-METHOD shorthand `reapStrandedScratchFiles` is written in, rather
+     * than on the `function` keyword that helper anchors on.
+     */
+    function declaredParams(fn: (...args: never[]) => unknown): string[] {
+      const src = String(fn);
+      const declaration = src.includes("[native code]")
+        ? null
+        : /^(?:async\s+)?(?:function\s*)?\*?\s*[\w$]*\s*\(([^)]*)\)/.exec(src);
+      if (!declaration) {
+        throw new Error(
+          `declaredParams: ${fn.name || "<anonymous>"} is no longer a method or ` +
+            `function declaration whose parameter list can be read (source ` +
+            `starts: ${src.slice(0, 60)}…). Re-express this pin for the new ` +
+            `form — do not let it report an empty parameter list for a ` +
+            `signature it could not parse.`,
+        );
+      }
+      return declaration[1]
+        .split(",")
+        .map((p) => p.trim())
+        .filter((p) => p !== "");
+    }
+
+    it("DEFAULTS its cap to STRANDED_SCRATCH_CANDIDATE_CAP, so the override is only a seam", async () => {
+      // The row above proves the parameter is WIRED to the guard; this proves
+      // it did not also LOWER what production runs with. Pinned at the
+      // signature rather than behaviourally: reproducing it through the walk
+      // means planting 500-odd files, which is the exact wall-clock cost
+      // DW-722 removed. `maintenance.test.ts` pins the other half — that the
+      // sole production caller passes no cap at all.
+      const params = declaredParams(provider.reapStrandedScratchFiles);
+
+      expect(params).toHaveLength(2);
+      // Order matters as much as the value: production calls with NO arguments,
+      // so a swapped list would silently reinterpret the window as the cap.
+      expect(params[0].replace(/\s+/g, "")).toMatch(
+        /^olderThanMs(?::[\w<>[\]|]+)?=STRANDED_SCRATCH_GRACE_MS$/,
+      );
+      expect(params[1].replace(/\s+/g, "")).toMatch(
+        /^candidateCap(?::[\w<>[\]|]+)?=STRANDED_SCRATCH_CANDIDATE_CAP$/,
+      );
     });
 
     it("honours an explicit window, so the grace period is a parameter and not a hardcode", async () => {
+      // DW-722 — `1_000` against a `5_000` window is only "fresh" while the
+      // clock is frozen (see the describe's `beforeEach`); it used to depend on
+      // this row finishing within four real seconds of planting.
       const older = await plantScratch(scratchName(1), 10_000);
       const newer = await plantScratch(scratchName(2), 1_000);
 

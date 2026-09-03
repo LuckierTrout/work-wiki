@@ -690,10 +690,39 @@ describe("checkContradictions", () => {
   });
 
   it("includes SCHEMA.md conventions in contradiction detection prompt", async () => {
+    /**
+     * DW-501 — this row used to `chdir` into `tmpDir` so that
+     * `rootSchemaPath()`'s `${process.cwd()}/SCHEMA.md` would land on a
+     * synthetic fixture, and restore the cwd only in a `finally`. A throw
+     * anywhere above that restore left every LATER test in the same Vitest
+     * worker running under a working directory it never set — and this file is
+     * not the only one that resolves paths from the cwd. There is no cwd
+     * mutation here any more, so nothing this file does can leak that way.
+     *
+     * What replaces it is stronger rather than merely equivalent. The two
+     * things the old row bundled together are now asserted separately:
+     *
+     *   1. the explicit `loadPageConventions(schemaPath)` override reads the
+     *      section out of the file it is handed, and
+     *   2. the detector's no-argument load reaches the REAL repo-root
+     *      `SCHEMA.md` — its conventions arrive at the prompt surface.
+     *
+     * (2) is the pin the `chdir` could never make: a marker that exists ONLY in
+     * the root file cannot have come from a fixture this test wrote, and
+     * `CONTRADICTION_SYSTEM_PROMPT` carries no SCHEMA.md prose of its own, so
+     * it can only have come through `loadPageConventions()`. `DATA_DIR` is the
+     * tmpdir throughout (`beforeEach`), which is fine: the provider reaches the
+     * root file through a `path.relative` escape — the same fact the active-Wiki
+     * block at the bottom of this file already leans on.
+     */
     mockedHasLLMKey.mockResolvedValue(true);
     mockedCallLLM.mockResolvedValue("[]");
 
-    // Write a temporary SCHEMA.md in tmpDir so loadPageConventions picks it up
+    // A marker that appears in the repo-root SCHEMA.md's `## Page conventions`
+    // and nowhere in the fixture below, so the prompt assertion cannot be
+    // satisfied by anything this test wrote.
+    const ROOT_CONVENTIONS_MARKER = "Every page starts with an H1 title";
+
     const schemaContent = `# Wiki Schema
 
 ## Page conventions
@@ -702,48 +731,57 @@ Every page must start with a level-1 heading.
 
 ## Operations
 `;
-    // loadPageConventions reads SCHEMA.md via storage provider relative to
-    // process.cwd(). Set DATA_DIR to tmpDir and reset storage so the
-    // provider picks up the temp directory.
-    const origCwd = process.cwd();
-    const origDataDir = process.env.DATA_DIR;
     const schemaPath = path.join(tmpDir, "SCHEMA.md");
     await fs.writeFile(schemaPath, schemaContent, "utf-8");
-    process.env.DATA_DIR = tmpDir;
-    const { _resetStorage } = await import("../storage");
-    _resetStorage();
-    process.chdir(tmpDir);
 
-    try {
-      await writeWikiPage(
-        "schema-a",
-        "# Schema A\n\nContent about topic. See [Schema B](schema-b.md).",
-      );
-      await writeWikiPage(
-        "schema-b",
-        "# Schema B\n\nContent about topic. See [Schema A](schema-a.md).",
-      );
-      await updateIndex([
-        { slug: "schema-a", title: "Schema A", summary: "Test" },
-        { slug: "schema-b", title: "Schema B", summary: "Test" },
-      ]);
+    // (1) The explicit override names a file and bypasses Wiki resolution
+    // entirely — it returns THAT file's section, whatever the cwd is.
+    const fixtureConventions = await loadPageConventions(schemaPath);
+    expect(fixtureConventions).toContain("## Page conventions");
+    expect(fixtureConventions).toContain("Every page must start with a level-1 heading");
+    // Non-vacuity for (2): the fixture cannot be the source of the root marker.
+    expect(fixtureConventions).not.toContain(ROOT_CONVENTIONS_MARKER);
 
-      await checkContradictions(["schema-a", "schema-b"]);
+    // PRECONDITION for (2), separated from it deliberately. The marker is a
+    // verbatim bullet from the repo-root SCHEMA.md, so two very different
+    // events would otherwise land on the SAME failing assertion below: the
+    // conventions stopping reaching the prompt (a wiring regression, the thing
+    // under test), and the root document simply being reworded or unreadable —
+    // `readSchemaFile` swallows ENOENT to `""`, so a missing root file reads as
+    // "the detector dropped the conventions". Checking the source first splits
+    // them: a failure HERE means the DOCUMENT changed, and the fix is to
+    // re-point the marker at a bullet the root file still carries. Loaded the
+    // way the detector's no-argument path loads it — no owner is configured
+    // (`beforeEach`), so this resolves the repo-root fallback exactly as it does.
+    const rootConventions = await loadPageConventions();
+    expect(
+      rootConventions,
+      "PRECONDITION FAILED, not a wiring regression: the repo-root SCHEMA.md no " +
+        "longer carries ROOT_CONVENTIONS_MARKER (reworded, or the file is " +
+        "unreadable). Re-point the marker at a `## Page conventions` bullet the " +
+        "root file still has — the prompt assertions below are unaffected.",
+    ).toContain(ROOT_CONVENTIONS_MARKER);
 
-      // The system prompt passed to callLLM should include SCHEMA.md conventions
-      expect(mockedCallLLM).toHaveBeenCalled();
-      const systemPromptArg = mockedCallLLM.mock.calls[0][0];
-      expect(systemPromptArg).toContain("conventions (from SCHEMA.md)");
-      expect(systemPromptArg).toContain("Every page must start with a level-1 heading");
-    } finally {
-      process.chdir(origCwd);
-      if (origDataDir === undefined) {
-        delete process.env.DATA_DIR;
-      } else {
-        process.env.DATA_DIR = origDataDir;
-      }
-      _resetStorage();
-    }
+    await writeWikiPage(
+      "schema-a",
+      "# Schema A\n\nContent about topic. See [Schema B](schema-b.md).",
+    );
+    await writeWikiPage(
+      "schema-b",
+      "# Schema B\n\nContent about topic. See [Schema A](schema-a.md).",
+    );
+    await updateIndex([
+      { slug: "schema-a", title: "Schema A", summary: "Test" },
+      { slug: "schema-b", title: "Schema B", summary: "Test" },
+    ]);
+
+    await checkContradictions(["schema-a", "schema-b"]);
+
+    // (2) The system prompt carries the conventions, and they are the root's.
+    expect(mockedCallLLM).toHaveBeenCalled();
+    const systemPromptArg = mockedCallLLM.mock.calls[0][0];
+    expect(systemPromptArg).toContain("conventions (from SCHEMA.md)");
+    expect(systemPromptArg).toContain(ROOT_CONVENTIONS_MARKER);
   });
 
   // ── Missing concept page detection ──────────────────────────────────
@@ -2062,12 +2100,13 @@ describe("lint dispatches the disputed-page check", () => {
  * the repo-root `SCHEMA.md` — `loadPageConventions(`${process.cwd()}/SCHEMA.md`)`
  * — passes the whole suite. These two tests are the ones that would not.
  *
- * Deliberately no `process.chdir` (unlike the root-conventions test above): the
- * contrast under test is "the active Wiki's seeded conventions" vs "the real
- * repo-root SCHEMA.md", so the root file must stay reachable for the marker
- * assertion to mean anything. `"Preserve sequence when it matters"` is the
- * `reading` Scenario Template's own prose — present in a seeded `schema.md`,
- * absent from the repo-root file.
+ * Deliberately nothing that hides the repo-root file — no cwd change, no
+ * fixture standing in for it (DW-501 removed the last such trick from the
+ * root-conventions test above): the contrast under test is "the active Wiki's
+ * seeded conventions" vs "the real repo-root SCHEMA.md", so the root file must
+ * stay reachable for the marker assertion to mean anything.
+ * `"Preserve sequence when it matters"` is the `reading` Scenario Template's
+ * own prose — present in a seeded `schema.md`, absent from the repo-root file.
  */
 describe("lint detectors resolve the ACTIVE Wiki's Schema", () => {
   const OWNER = "alice";

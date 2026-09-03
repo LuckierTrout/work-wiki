@@ -3822,7 +3822,9 @@ source_spec: `spec-dw-155-156-157-158-owner-and-schema-resolution-pins.md`
 location: src/lib/__tests__/auth.test.ts and src/lib/__tests__/middleware-write-gate.test.ts
 severity: low
 reason: `E2E_DEFAULT_HANDLE` is `"e2e-owner"` (`src/lib/e2e-identity.ts:24`), and `e2e-identity.test.ts`, `auth.test.ts`, `middleware-write-gate.test.ts` and `e2e/env.ts` all configured exactly that handle, so `expect(x ?? DEFAULT).toBe(DEFAULT)` was the shape of every assertion — replacing the function body with `return E2E_DEFAULT_HANDLE;` left the whole suite green. This change closes the hole at the handle itself (`src/lib/__tests__/e2e-identity.test.ts`), but the SAME same-string-as-the-default fixture convention still governs `YOPEDIA_OWNER_USER_ID` / `e2eOwnerUserId()` and the middleware write gate, so sibling assertions there may be vacuous for the same reason. Pre-existing; the convention predates this change.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-test-suite-determinism
+resolution-undo: c31fee82fe2c024a94a6fbc49e87257a58f1d712556f3a00390c1a71f11a685c 2026-09-02 7374617475733a206f70656e
 
 ### DW-501: `src/lib/__tests__/lint.test.ts:670` still `process.chdir`s into its tmpdir, which makes the suite cwd-sensitive if it ever throws before the `finally`.
 origin: spec-deferred 3964a9e36702
@@ -3830,7 +3832,9 @@ source_spec: `spec-dw-155-156-157-158-owner-and-schema-resolution-pins.md`
 location: src/lib/__tests__/lint.test.ts:670
 severity: low
 reason: The `includes SCHEMA.md conventions in contradiction detection prompt` test changes the process working directory and restores it in a `finally`. Vitest runs a file's tests in one worker process, so a restore that is skipped leaves every later test in that worker with a cwd it did not set, and `rootSchemaPath()` is `${process.cwd()}/SCHEMA.md`. The new DW-158 block deliberately avoids `chdir` for exactly this reason; making the older test use the explicit `schemaPath` override instead would remove the hazard. Pre-existing.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-test-suite-determinism
+resolution-undo: c31fee82fe2c024a94a6fbc49e87257a58f1d712556f3a00390c1a71f11a685c 2026-09-02 7374617475733a206f70656e
 
 ### DW-502: `runStatus()` never awaits `loadConfig()`, so `yopedia status` reports env-only settings and is blind to anything the owner stored.
 
@@ -5810,7 +5814,9 @@ location: src/lib/__tests__/storage-fs.test.ts:1229
 source_spec: `spec-dw-257-468-469-mounted-rail-tree-split-coverage.md`
 severity: low
 reason: Reproduced at BASELINE with every file from this bundle removed from the working tree (`git stash` + the new file moved aside): three consecutive `pnpm vitest run --project node` runs failed, 2/2/1 cases respectively, always in `FilesystemStorageProvider > reapStrandedScratchFiles` ("stops at STRANDED_SCRATCH_CANDIDATE_CAP…" and "honours an explicit window…", `AssertionError: expected 3 to be 1`). The same file passes in 685ms when run alone. The cases plant scratch files at explicit mtimes and reap against a grace window measured in wall-clock milliseconds (1_000 / 5_000), so under parallel load a candidate crosses the window mid-pass. Independently observed by a review layer on the unmodified tree. This bundle touches only the `dom` project, which is fully green (72 files, 1111 tests).
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-test-suite-determinism
+resolution-undo: c31fee82fe2c024a94a6fbc49e87257a58f1d712556f3a00390c1a71f11a685c 2026-09-02 7374617475733a206f70656e
 
 ### DW-723: A component mounted while /api/wiki/routes was failing still keeps its DEFAULT_TENANT hrefs for its whole lifetime when no OTHER component mounts afterwards, because the only recovery signal is anothe
 origin: spec-deferred be34af8b6828
@@ -5858,4 +5864,12 @@ location: src/lib/__tests__/storage-fs.test.ts
 source_spec: `spec-dw-470-606-shared-test-helper-extraction.md`
 severity: low
 reason: Two cases — "stops at STRANDED_SCRATCH_CANDIDATE_CAP and reclaims the remainder next pass" and "honours an explicit window, so the grace period is a parameter and not a hardcode" — failed in three of five full-suite runs during this story and passed in the other two. They pass standalone every time. Proven pre-existing and unrelated to this change: with every file of this story stashed (`git stash -u`, tree at f095692c), a full `pnpm test` failed the same two cases. The assertions turn on real wall-clock mtime grace windows (one case took 5352 ms), so they lose under the scheduling pressure of 369 parallel test files. Nothing in this story touches `storage-fs.ts` or its suite.
+status: open
+
+### DW-729: `research-runtime.test.ts`'s "deep research — remediations" rows time out under parallel `node`-project load, so `pnpm test` still has a load-sensitive row after DW-722 closed the `storage-fs.test.ts`
+origin: spec-deferred 2b6e6d159ded
+location: src/lib/__tests__/research-runtime.test.ts
+source_spec: `spec-dw-500-501-722-test-suite-determinism.md`
+severity: low
+reason: Observed on the FINISHED tree of this story, in both halves of two concurrent `npx vitest run --project node` runs: run A failed "logs a read-only skip, not data damage, when a delete is refused" and "still names a DAMAGED project when the fault is not a refusal"; run B failed the same two. ~5.1s against the 5s default timeout — a duration failure, not an assertion. The file is NOT touched by this story (absent from `git diff --name-only`), so its behaviour is identical to the 2c00cfaede05a95c326bf1c59447f9e305b0b958 baseline; it passes in a normal single run and in `pnpm test` (369 files green). Same class as DW-722 — the repo's own CI command is not reliably green independent of any change — but a different file that this bundle's intent did not name.
 status: open

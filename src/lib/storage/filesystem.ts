@@ -581,9 +581,21 @@ export class FilesystemStorageProvider implements StorageProvider {
    * Bounded by {@link STRANDED_SCRATCH_CANDIDATE_CAP} candidates per pass; the
    * remainder is reclaimed by the next one, since removal is the only progress
    * state this needs.
+   *
+   * `candidateCap` is a TEST-ONLY OVERRIDE, in the same spirit as
+   * `loadPageConventions`' `schemaPath`: it names a bound instead of resolving
+   * one, and no production path passes it. `maintenance.ts` — the only caller
+   * — calls with no arguments, so the shipped bound is
+   * {@link STRANDED_SCRATCH_CANDIDATE_CAP} and nothing about the reaper's
+   * semantics changes. It exists so a test can observe the cap being ENFORCED
+   * without planting 500-odd files, which is a wall-clock cost that made that
+   * row fail under parallel load rather than on its merits (DW-722). Injecting
+   * a small cap is the seam; `storage-fs.test.ts` pins the default separately
+   * so the seam cannot quietly become the bound.
    */
   async reapStrandedScratchFiles(
     olderThanMs: number = STRANDED_SCRATCH_GRACE_MS,
+    candidateCap: number = STRANDED_SCRATCH_CANDIDATE_CAP,
   ): Promise<number> {
     const cutoff = Date.now() - olderThanMs;
     let considered = 0;
@@ -600,7 +612,7 @@ export class FilesystemStorageProvider implements StorageProvider {
         return;
       }
       for (const entry of entries) {
-        if (considered >= STRANDED_SCRATCH_CANDIDATE_CAP) return;
+        if (considered >= candidateCap) return;
         if (entry.isDirectory()) {
           if (entry.name === LOCK_DIR) continue;
           await walk(path.join(dir, entry.name), false);

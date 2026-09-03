@@ -659,6 +659,31 @@ describe("reapStrandedScratchFiles — the scheduled scratch GC (DW-292)", () =>
     expect(await exists(stranded)).toBe(false);
   });
 
+  it("calls the provider with NO cap argument, so production keeps the shipped bound", async () => {
+    // THE CALL-SITE HALF of the reaper's cap pin. `storage-fs.test.ts` pins
+    // that `candidateCap` DEFAULTS to `STRANDED_SCRATCH_CANDIDATE_CAP`, but a
+    // default only holds while nobody overrides it — and the parameter exists
+    // precisely so tests CAN. Nothing else in the suite would notice this
+    // wrapper starting to pass one: adding a cap of 5 here leaves every row
+    // green while production silently reclaims 5 stranded files per tick
+    // instead of 500, a backlog that grows forever and whose symptom —
+    // a small non-zero count on every tick — is indistinguishable from health.
+    //
+    // Asserted as "called with exactly zero arguments" rather than "not called
+    // with 5": the override is test-only, so ANY argument from this call site
+    // is the regression, whatever its value.
+    const provider = getStorage() as unknown as {
+      reapStrandedScratchFiles: (...args: unknown[]) => Promise<number>;
+    };
+    const pass = vi
+      .spyOn(provider, "reapStrandedScratchFiles")
+      .mockResolvedValue(7);
+
+    await expect(reapStrandedScratchFiles()).resolves.toBe(7);
+
+    expect(pass).toHaveBeenCalledWith();
+  });
+
   it("leaves a scratch file a live write could still be holding", async () => {
     // The grace window is the ONLY thing separating a crash leftover from an
     // in-flight write's tmp file — both are `.tmp-<uuid>.tmp` in the
