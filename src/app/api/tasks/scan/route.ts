@@ -75,9 +75,12 @@ export async function POST(req: Request) {
   // inspection switch and its 200 says "here is what a scan would do"; a
   // read-only deployment answering that shape would report a scan that never
   // ran, and `AUTONOMOUS_MAINTENANCE` semantics stay exactly as documented
-  // above. `POST /api/tasks/run` refuses the same way, and the consumer treats
-  // a 4xx as terminal — which is the honest answer here too, since retrying
-  // cannot succeed while the deployment is read-only.
+  // above. `POST /api/tasks/run` refuses the same way, but consumer ack/retry
+  // semantics do not apply to this door at all: it is never queue-delivered.
+  // The consumer's `scheduled()` cron POSTs it and logs the status plus the
+  // first 400 chars of the body, so there is no ack, no retry and no DLQ
+  // decision to make here — and an external monitor can match either the
+  // non-2xx status or the refusal sentence itself in the log stream.
   if (isReadOnly()) {
     return NextResponse.json(
       { error: READ_ONLY_REFUSAL.maintenanceScan },

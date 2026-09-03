@@ -5149,7 +5149,9 @@ location: src/app/api/tasks/run/route.ts:166
 source_spec: `spec-dw-268-388-read-only-operator-docs.md`
 severity: medium
 reason: `src/app/api/tasks/run/route.ts:166-173` states "4xx means the consumer ACKS AND DROPS the message ... work queued against a read-only deployment is discarded rather than replayable"; `src/app/api/tasks/scan/route.ts:73-77` repeats "the consumer treats a 4xx as terminal"; and `src/lib/__tests__/scan-route.test.ts:409-414` restates it inside a passing test's rationale. `workers/task-consumer/index.ts:114` acks and drops on `400 || 404 || 422` only; a 403 falls to the transient branch at `:126-139` and is retried to `MAX_DELIVERY_ATTEMPTS = 4`, then parked in the DLQ. The first draft of this doc inherited the falsehood from the route comment, which is how it was found. Whoever edits the consumer next reads these comments, not DEPLOY.md.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-read-only-comment-truth
+resolution-undo: a4b2c4f930729f550cf24f419a5b644f479db5900b99c75475e3d7074d3b711b 2026-09-02 7374617475733a206f70656e
 
 ### DW-646: `POST /api/tasks/run`'s read-only 403 is pinned by no test, and the one check that touches it passes even if the gate is deleted.
 origin: spec-deferred ffc35a87d8c8
@@ -5187,7 +5189,9 @@ location: src/app/api/agents/[id]/route.ts:268
 source_spec: `spec-dw-268-388-read-only-operator-docs.md`
 severity: low
 reason: `src/app/api/agents/[id]/route.ts:268-272` says `updateAgent` "writes the agent's identity PAGE through the kernel before it persists the profile with `registerAgent`". In `src/lib/agents.ts:772-846` that `writeWikiPageWithSideEffects` call sits inside `if (options.addPages && options.addPages.length > 0)`; a name, description, trigger, instructions, `defaultVault` or `removePages` edit reaches only `registerAgent`, a bare `storage.writeFile`, and returns 200 on a read-only deployment. DEPLOY.md now documents the split correctly, so the comment is the remaining wrong statement.
-status: open
+status: done 2026-09-02
+resolution: resolved by sweep bundle dw-read-only-comment-truth
+resolution-undo: a4b2c4f930729f550cf24f419a5b644f479db5900b99c75475e3d7074d3b711b 2026-09-02 7374617475733a206f70656e
 
 ### DW-650: `POST /api/tasks/run` still decides a task's poison-vs-retry by `/not found/i` over the message, and it is the consumer of `runResearchProject`'s newly typed not-found throw.
 origin: spec-deferred 6e4bccef92b7
@@ -5886,4 +5890,12 @@ location: workers/task-consumer/wrangler.jsonc:27
 source_spec: `spec-dw-646-647-648-read-only-queue-door-pins.md`
 severity: low
 reason: `workers/task-consumer/wrangler.jsonc` declares the `yopedia-tasks` consumer's `dead_letter_queue: "yopedia-tasks-dlq"` and `max_retries: 3`, which paired with `MAX_DELIVERY_ATTEMPTS = 4` (`workers/task-consumer/index.ts:56`) is what turns "the consumer retried" into "the message survived". Repo-wide, the only tests that open either wrangler file are `src/lib/__tests__/e2e-identity.test.ts:147-157`, which asserts only `not.toMatch(/YOPEDIA_E2E\b/)`, and `brand-copy.test.ts:952,1000`, which are frozen spelling-list entries that never read the file. DW-647's new pins build `bindings` by hand and never touch the config. Deleting the `dead_letter_queue` line leaves the whole suite green while a read-only deployment DISCARDS every queued message once retries are exhausted — the exact inversion those pins exist to prevent. Bumping `max_retries` to 5 likewise stays green while `attempts = 4` stops being the final delivery, staling DEPLOY.md's "up to four delivery attempts". Only the code->con
+status: open
+
+### DW-731: Three comments state that a poison task goes to the DLQ; poison messages are acked and dropped and never reach it.
+origin: spec-deferred e99a008cf7c7
+location: src/lib/tasks.ts:454
+source_spec: `spec-dw-645-649-read-only-comment-truth.md`
+severity: low
+reason: `src/lib/tasks.ts:452-454` (`parseTask` JSDoc) reads "reject malformed messages as poison (4xx -> DLQ) rather than retrying them forever"; `src/lib/tasks.ts:326-328` says a poison task "went to the DLQ"; `src/lib/__tests__/prose-inventory-parity.test.ts:347` restates "poison -> DLQ" inside a passing test's rationale. `workers/task-consumer/index.ts:114-125` acks and RETURNS for the poison set, so the message is discarded on the spot. `yopedia-tasks-dlq` is reached only through the transient/retry branch after `max_retries: 3` (`workers/task-consumer/wrangler.jsonc`). This is a different claim from DW-645 (which statuses are poison, now corrected): it is where a poison message ends up. The operational cost is an operator searching the DLQ for a malformed ingest that was never parked there. DW-645's own pass added the correct rule at `src/app/api/tasks/run/route.ts:144-145` ("discarded on the spot and never reaches the DLQ"), so the fix has an in-repo anchor to cite.
 status: open

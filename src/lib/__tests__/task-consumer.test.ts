@@ -107,11 +107,12 @@ describe("task consumer email receipts", () => {
    * stayed green while inverting the documented outcome: every queued message
    * would be silently discarded instead of retried.
    *
-   * Read the CODE, not the prose, if the two disagree: the route's own status
-   * contract (`src/app/api/tasks/run/route.ts`) and `scan-route.test.ts` still
-   * say in prose that 4xx acks and drops, which stopped being true of 403 the
-   * moment the read-only gate landed. Correcting those comments is DW-645,
-   * tracked separately; this case pins what the consumer actually does.
+   * Read the CODE, not the prose, if the two disagree. The comments that used
+   * to say 4xx acks and drops — the JSDoc status contract and the read-only
+   * gate comment in `src/app/api/tasks/run/route.ts`, the read-only comment in
+   * `src/app/api/tasks/scan/route.ts`, and the `?dry=1` rationale in
+   * `scan-route.test.ts` — were all corrected under DW-645 to scope the ack to
+   * 400/404/422; this case pins what the consumer actually does.
    */
   it("retries a read-only 403 rather than acking it away", async () => {
     const entry = message();

@@ -1323,12 +1323,12 @@ describe("POST /api/tasks/run", () => {
  *
  * Modelled on `scan-route.test.ts`'s "on a read-only deployment" describe.
  *
- * One prose conflict to know about before reading this as the bug: the route's
- * own status contract (`route.ts`, above the gate) and `scan-route.test.ts`
- * still say 4xx means the consumer ACKS AND DROPS, which stopped being true of
- * 403 when the gate landed — `task-consumer.test.ts` pins the retry. Correcting
- * those two comments is DW-645, tracked separately and deliberately not touched
- * here.
+ * One prose conflict that used to sit here: the route's own status contract
+ * (`route.ts`, above the gate), the read-only comment in
+ * `src/app/api/tasks/scan/route.ts` and `scan-route.test.ts` all said 4xx means
+ * the consumer ACKS AND DROPS, which stopped being true of 403 when the gate
+ * landed. DW-645 corrected all three, plus the gate comment itself — the ack
+ * set is 400/404/422, and `task-consumer.test.ts` pins the 403 retry.
  */
 describe("POST /api/tasks/run on a read-only deployment", () => {
   beforeEach(() => {

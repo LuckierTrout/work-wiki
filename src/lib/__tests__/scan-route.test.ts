@@ -452,8 +452,8 @@ describe("POST /api/tasks/scan on a read-only deployment", () => {
     // The decision this case exists to pin. `dry` is documented as the one true
     // inspection switch and its 200 says "here is what a scan would do"; a
     // read-only deployment answering that shape would be reporting a scan that
-    // never ran. So the refusal wins, and the consumer treats the 4xx as
-    // terminal exactly as it does for `POST /api/tasks/run`.
+    // never ran. So the refusal wins: `?dry=1` gets the same 403 and the same
+    // sentence as a plain scan, and `scanForMaintenance` is never called.
     const res = await scan("?dry=1");
 
     expect(res.status).toBe(403);

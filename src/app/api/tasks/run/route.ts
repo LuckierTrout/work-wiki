@@ -141,8 +141,13 @@ async function divertToExtract(input: {
  *
  * Status contract (drives the consumer's ack/retry, which maps to CF Queues):
  *   - 2xx → done, ack the message.
- *   - 4xx → permanently-bad/poison task → ack + drop (don't retry; → DLQ on the
- *           consumer side if it chooses). Malformed body, or a missing page/thread.
+ *   - 400/404/422 → permanently-bad/poison task → ack + drop: the message is
+ *           discarded on the spot and never reaches the DLQ. Malformed body, or
+ *           a missing page/thread. These three are the WHOLE non-2xx set the
+ *           consumer acks on.
+ *   - any other 4xx → transient → the consumer retries. The read-only 403, and
+ *           the auth/rate-limit cases the consumer's own comment names, land
+ *           here: retried, then parked in the DLQ — not dropped.
  *   - 5xx → transient failure → the consumer retries (CF redelivers; DLQ after
  *           max_retries).
  *
@@ -164,13 +169,27 @@ export async function POST(req: Request) {
   // have stated for free.
   //
   // THIS CHANGES QUEUE SEMANTICS, and the status contract above is why it has
-  // to be said out loud: 4xx means the consumer ACKS AND DROPS the message,
-  // where the un-gated 500 would have been retried and eventually parked in the
-  // DLQ. On a read-only deployment retrying cannot succeed — the refusal is
-  // deployment-wide, not transient to this message — so failing fast is the
-  // honest answer, but it does mean work queued against a read-only deployment
-  // is discarded rather than replayable. Drain or pause the queue before
-  // setting `YOPEDIA_READONLY`.
+  // to be said out loud — but it does NOT drop the message. The consumer acks
+  // only on 400/404/422 (`workers/task-consumer/index.ts:114`), so this 403
+  // falls into its transient branch and is retried, then parks in the
+  // `yopedia-tasks-dlq` DLQ. For most tasks that matches the un-gated 500 the
+  // catch below would have answered — but NOT for the case that most justifies
+  // this gate: an ingest message at delivery attempt 3+ trips
+  // `ingestRetriesExhausted` and gets a 422, which IS in the ack set, so an
+  // un-gated read-only failure there would have been acked and DROPPED.
+  // Refusing here saves that message too.
+  //
+  // Redelivery and parking are the QUEUE's job, governed by `max_retries: 3`
+  // and `dead_letter_queue` in `workers/task-consumer/wrangler.jsonc` — four
+  // attempts total, one delivery plus three retries. (`MAX_DELIVERY_ATTEMPTS`
+  // in the worker is NOT that ceiling; it gates only the final failure-receipt
+  // email.) Queued work is replayable, not lost.
+  //
+  // The cost is noise rather than loss: retrying cannot succeed while the
+  // refusal is deployment-wide, so every queued message burns its retries, and
+  // on the final attempt an email-origin ingest mails its submitter a FAILURE
+  // receipt for what is only a paused deployment. Drain or pause the queue
+  // before setting `YOPEDIA_READONLY`.
   if (isReadOnly()) {
     return NextResponse.json(
       { error: READ_ONLY_REFUSAL.queuedWork },
@@ -930,7 +949,7 @@ export async function POST(req: Request) {
       logger.error("tasks", `task "${task.kind}" hit a store fault`, err);
       return NextResponse.json({ error: message }, { status: 500 });
     }
-    // A missing page/thread is permanent → poison (4xx), don't retry forever.
+    // A missing page/thread is permanent → poison (422), don't retry forever.
     if (/not found/i.test(message)) {
       logger.warn("tasks", `task "${task.kind}" permanently failed: ${message}`);
       return NextResponse.json({ error: message }, { status: 422 });
