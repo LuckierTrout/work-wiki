@@ -17,7 +17,7 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 
-import { ensureDirectories } from "../wiki";
+import { ensureDirectories, tenantForOwner } from "../wiki";
 import {
   applyResearchProjectMutation,
   createResearchProject,
@@ -36,6 +36,11 @@ import {
 } from "../research-projects";
 import { acquireResearchSlot } from "../research-concurrency";
 import {
+  drainResearchOutbox,
+  loadResearchOutbox,
+  saveResearchOutbox,
+} from "../research-completion";
+import {
   cancelResearchProject,
   queueResearchProject,
   retireResearchProject,
@@ -51,7 +56,7 @@ import { loadEmailIngestConfig, saveEmailIngestConfig } from "../email-ingest";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "../read-only";
 import { isEnoent } from "../errors";
 import { _resetLocks, _setDurableLocksForTests } from "../lock";
-import { _resetStorage } from "../storage";
+import { _resetStorage, getStorage } from "../storage";
 import * as config from "../config";
 
 const OWNER = "yuanhao";
@@ -65,10 +70,15 @@ const ENV_KEYS = [
   "RAW_DIR",
   "NEXT_PUBLIC_OWNER_HANDLE",
   "YOPEDIA_READONLY",
-  // `queueResearchProject` resolves the provider BEFORE its CAS, and
-  // `resolveResearchProvider` reads this env credential AHEAD of any stored
-  // setting — so the refusal case below has to make one available or the run
-  // fails on the missing credential instead of on the flag.
+  // `queueResearchProject` resolves the provider once past its DW-680 entry
+  // gate, and `resolveResearchProvider` reads this env credential AHEAD of any
+  // stored setting — so the one case that gets past that gate (the mid-request
+  // flip, which has to reach the CAS) sets it for itself. Cleared by default
+  // and restored after, which makes its ABSENCE load-bearing for the two cases
+  // that refuse AT the gate: with no credential in the environment an ungated
+  // queue would fail on the missing provider, so a refusal carrying
+  // `researchMutate` is also evidence the gate ran ahead of provider
+  // resolution.
   "TAVILY_API_KEY",
 ] as const;
 
@@ -83,7 +93,8 @@ beforeEach(async () => {
   // start WRITABLE — and be cleared rather than inherited, or a value exported
   // in one developer's shell would turn the writable control cases red.
   delete process.env.YOPEDIA_READONLY;
-  // Same rule for the provider credential: the one case that needs it sets it
+  // Same rule for the provider credential: the one case that needs it — the
+  // mid-flip case that gets past `queueResearchProject`'s entry gate — sets it
   // for itself, so a key exported in a developer's shell cannot quietly change
   // which fault the other cases exercise.
   delete process.env.TAVILY_API_KEY;
@@ -192,18 +203,6 @@ function registryEntry(tree: Record<string, string>): [string, string] {
   const found = Object.entries(tree).filter(([key]) => key.endsWith("research-projects.json"));
   expect(found.length, "no research registry in the tree").toBe(1);
   return found[0];
-}
-
-/**
- * A {@link snapshot} with the research LEASE file removed.
- *
- * For the one path whose pre-CAS behaviour is outside this suite's claim — see
- * the `queueResearchProject` case, which explains why.
- */
-function withoutLeases(tree: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(tree).filter(([key]) => !key.endsWith("research-leases.json")),
-  );
 }
 
 const RESEARCH_INPUT = {
@@ -477,6 +476,10 @@ describe("the read-only gate precedes the store's lock", () => {
         path.resolve(__dirname, "../research-runtime.ts"),
         "utf8",
       ),
+      "research-completion": await fs.readFile(
+        path.resolve(__dirname, "../research-completion.ts"),
+        "utf8",
+      ),
     };
 
     for (const [module, fn, after] of [
@@ -499,9 +502,30 @@ describe("the read-only gate precedes the store's lock", () => {
       // gated delete, so the gate has to precede that call or the refusal
       // arrives after the damage.
       ["research-runtime", "retireResearchProject", "mutateResearchProjectOrRefusal(owner"],
+      // Also a WRITE rather than a lock, and the one this table exists for
+      // (DW-680): `queueResearchProject` releases the project's slot through
+      // `releaseResearchSlotAndConfirmGone` — into `research-concurrency.ts`,
+      // which carries no gate of its own — as its LAST statement before the
+      // CAS. A gate that drifted below that line would leave the byte case
+      // above passing only by accident of ordering.
+      ["research-runtime", "queueResearchProject", "releaseResearchSlotAndConfirmGone(owner"],
+      // DW-681, and the reason the probe below stopped requiring `export`:
+      // `drainOrphanOutbox` is PRIVATE. Its unclaimed branch deletes the outbox
+      // JSON and every staged body beside it, so the gate has to precede that
+      // call — and `deleteResearchOutbox` itself stays ungated, because ~20
+      // in-flight and fail-soft call sites reach it.
+      ["research-completion", "drainOrphanOutbox", "deleteResearchOutbox(owner, id)"],
     ] as const) {
       const source = sources[module];
-      const start = source.indexOf(`export async function ${fn}(`);
+      // `export` is OPTIONAL: a gate that has to precede a write is the same
+      // claim whether the function is exported or private, and a probe that
+      // could not see a private one would silently skip it. ANCHORED at column
+      // zero — the same reasoning as the `}` bound below — so a mention of the
+      // name inside a comment or a string cannot be mistaken for the
+      // declaration and hand the assertions some other function's body.
+      const start = source.search(
+        new RegExp(`^(?:export )?async function ${fn}\\(`, "m"),
+      );
       expect(start, `${module}.ts: ${fn}`).toBeGreaterThan(-1);
       // The function's OWN body: bounded by the `}` in column 0 that closes it,
       // so the next declaration's text is never attributed to this one.
@@ -821,32 +845,38 @@ describe("the read-only gate precedes the store's lock", () => {
   });
 
   it("queueResearchProject refuses with the deployment's own sentence", async () => {
-    // DW-657, the other half of the run door.
+    // DW-657, the other half of the run door — and since DW-680 a WHOLE-TREE
+    // claim, like every other refusal in this suite.
     //
-    // WHAT THIS CASE DOES NOT CLAIM. Unlike every other refusal here it cannot
-    // assert whole-tree byte-identity, and pretending otherwise would be
-    // worse than not asserting it: `queueResearchProject` retires the
-    // project's previous slot through `releaseResearchSlotAndConfirmGone`
-    // BEFORE it reaches the CAS, and `research-concurrency.ts` carries no
-    // read-only gate at all — so on a read-only deployment a project that
-    // holds a lease really does have it released, and `research-leases.json`
-    // really does change, before the registry write is refused. That ungated
-    // pre-CAS release is pre-existing behaviour outside this change's scope
-    // (this change moves the CAS onto the refusal-preserving sibling and
-    // nothing else), so the lease file is EXCLUDED from the comparison rather
-    // than seeded into looking unchanged, and its mutation is not pinned here
-    // as expected behaviour either way.
+    // WHAT USED TO BE EXCLUDED HERE, and why it no longer is.
+    // `queueResearchProject` retires the project's previous slot through
+    // `releaseResearchSlotAndConfirmGone` BEFORE it reaches the CAS, and
+    // `research-concurrency.ts` carries no read-only gate at all — so a refused
+    // Run really did empty the project's lease out of `research-leases.json`
+    // while the row went on recording that `runAttemptId`. The lease file was
+    // excluded from the comparison rather than pinned. DW-680 put an
+    // `assertWritable` at the ENTRY POINT, above that release and above the
+    // done-phase `deleteResearchOutbox`, so the lease is now compared like every
+    // other byte in the tree.
     //
-    // The project therefore holds a REAL lease when the flag flips, which is
-    // the state that makes the exclusion honest — with an empty lease file
-    // there would be nothing for the release to change and the exclusion would
-    // be hiding nothing.
-    process.env.TAVILY_API_KEY = "test-key";
+    // The project holds a REAL lease when the flag flips, which is what keeps
+    // the claim non-vacuous: with an empty lease file there would be nothing
+    // for the release to change and byte-identity would prove nothing about the
+    // pre-CAS writes.
+    //
+    // And NO `TAVILY_API_KEY`: the gate precedes `resolveResearchProvider`, so
+    // with no credential in the environment an ungated queue would fail on the
+    // missing provider instead. A refusal carrying `researchMutate` is
+    // therefore also evidence the gate runs first.
     const project = await createResearchProject(OWNER, RESEARCH_INPUT);
     const grant = await acquireResearchSlot(OWNER, project.id);
     expect(grant.attemptId, "the seed took no slot").toBeTruthy();
     await updateResearchProject(OWNER, project.id, { runAttemptId: grant.attemptId });
     const before = await seededSnapshot();
+    expect(
+      Object.keys(before).some((key) => key.endsWith("research-leases.json")),
+      "the seed left no lease file — the whole-tree claim would prove nothing",
+    ).toBe(true);
     process.env.YOPEDIA_READONLY = "1";
 
     await expectRefusal(
@@ -855,11 +885,12 @@ describe("the read-only gate precedes the store's lock", () => {
     );
 
     const after = await snapshot();
-    // WHAT THIS CHANGE OWNS: the registry, byte for byte. The CAS refused, so
-    // not one field of the stored row moved.
+    // The registry byte for byte, called out separately because it is the row
+    // the CAS would have rewritten.
     expect(registryEntry(after)).toEqual(registryEntry(before));
-    // And nothing else in the tree moved either — the lease aside.
-    expect(withoutLeases(after)).toEqual(withoutLeases(before));
+    // And the whole tree, LEASE FILE INCLUDED — the half this case could not
+    // claim before DW-680.
+    expect(after).toEqual(before);
     // Read back through the store as well as off the bytes: not queued, not
     // handed a provider it never got to search with, and still carrying the
     // attempt token the seed gave it.
@@ -883,9 +914,10 @@ describe("the read-only gate precedes the store's lock", () => {
     // would never be reached at all. It takes the refusal-preserving sibling
     // now, so contention and a refusal stay two different answers.
     //
-    // WHOLE-TREE byte-identity here, unlike the case above: this branch returns
-    // before `releaseResearchSlotAndConfirmGone`, so no lease is touched and
-    // nothing needs excluding.
+    // WHOLE-TREE byte-identity, as in the case above — but reached differently:
+    // that one is stopped at the entry gate before any write, while this branch
+    // would not have touched a lease even without one, since it returns before
+    // `releaseResearchSlotAndConfirmGone` is ever reached.
     const project = await createResearchProject(OWNER, RESEARCH_INPUT);
     await updateResearchProject(OWNER, project.id, {
       status: "failed",
@@ -906,6 +938,219 @@ describe("the read-only gate precedes the store's lock", () => {
     expect(stored?.deliveryBlocked).toBe(true);
     expect(stored?.status).toBe("failed");
     expect(stored?.deliveryAttemptId).toBeUndefined();
+  });
+
+  it("queueResearchProject THROWS on the DELIVERY-RETRY branch when the flag flips after its own gate", async () => {
+    // The coverage DW-680's entry gate would otherwise have taken away. With
+    // the gate in front, both read-only cases above stop at the door, so the
+    // two `isResearchWriteRefused(...)` -> `ReadOnlyError` conversions inside
+    // `queueResearchProject` (DW-657, DW-651) are reachable ONLY on a
+    // mid-request flip — and with nothing exercising that window, deleting both
+    // conversions would leave every other case in this suite green.
+    //
+    // `isReadOnly()` is read TWICE on this path: once by the entry
+    // `assertWritable`, once by the CAS primitive. Writable at the first read
+    // and read-only at the second IS the window, the same idiom the create,
+    // delete and retire cases above use.
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    await updateResearchProject(OWNER, project.id, {
+      status: "failed",
+      deliveryBlocked: true,
+      completion: { phase: "page", pageSlug: "research-competitor-pricing", sources: [] },
+    });
+    const before = await seededSnapshot();
+    let reads = 0;
+    const flag = vi.spyOn(config, "isReadOnly").mockImplementation(() => reads++ > 0);
+
+    try {
+      await expectRefusal(
+        () => queueResearchProject(OWNER, project.id),
+        READ_ONLY_REFUSAL.researchMutate,
+      );
+    } finally {
+      flag.mockRestore();
+    }
+
+    // WHOLE-TREE byte-identity IS assertable on this branch: it reaches its CAS
+    // without writing anything first, so a refusal converted at the sentinel
+    // leaves the deployment exactly as it was.
+    expect(await snapshot()).toEqual(before);
+    // And not the COLLAPSED answer: a `null` here is `ResearchProjectBusyError`
+    // -> 503, telling the owner to come back in a moment for a write this
+    // deployment will never accept.
+    const stored = await getResearchProject(OWNER, project.id);
+    expect(stored?.deliveryBlocked).toBe(true);
+    expect(stored?.status).toBe("failed");
+    expect(stored?.deliveryAttemptId).toBeUndefined();
+  });
+
+  it("queueResearchProject THROWS on the MAIN CAS when the flag flips after its own gate", async () => {
+    // The second of the two conversions, and the second half of the coverage
+    // the entry gate would otherwise have removed. Collapsed, this refusal left
+    // as `ResearchProjectNotFoundError` -> `POST .../run` 404: the row reported
+    // as gone when nothing had been written to it at all (DW-657).
+    //
+    // The credential is set HERE and nowhere else in the suite. Once the entry
+    // gate passes, `resolveResearchProvider` runs for real, and with no key it
+    // would throw `ResearchProviderUnconfiguredError` long before the CAS —
+    // which is exactly what makes its absence evidence in the two gate cases.
+    process.env.TAVILY_API_KEY = "test-key";
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const grant = await acquireResearchSlot(OWNER, project.id);
+    expect(grant.attemptId, "the seed took no slot").toBeTruthy();
+    await updateResearchProject(OWNER, project.id, { runAttemptId: grant.attemptId });
+    const before = await seededSnapshot();
+    let reads = 0;
+    const flag = vi.spyOn(config, "isReadOnly").mockImplementation(() => reads++ > 0);
+
+    try {
+      await expectRefusal(
+        () => queueResearchProject(OWNER, project.id),
+        READ_ONLY_REFUSAL.researchMutate,
+      );
+    } finally {
+      flag.mockRestore();
+    }
+
+    // NO whole-tree comparison here, and deliberately — this is the ONE case in
+    // the suite that cannot make that claim. The flip lets the entry gate pass,
+    // so the ungated pre-CAS writes really do run:
+    // `releaseResearchSlotAndConfirmGone` empties this project's slot out of
+    // `research-leases.json` through `research-concurrency.ts`, which carries
+    // no gate of its own. That is the cost of the flip window, not of the gate,
+    // and asserting an unchanged tree would be a false claim rather than a
+    // stronger one. What IS pinned is that the refusal keeps its class and its
+    // sentence, and that the row itself never moved.
+    expect(registryEntry(await snapshot())).toEqual(registryEntry(before));
+    const stored = await getResearchProject(OWNER, project.id);
+    expect(stored?.status).toBe("draft");
+    expect(stored?.provider).toBeUndefined();
+  });
+
+  it("drainResearchOutbox refuses to DROP an unclaimed orphan outbox", async () => {
+    // DW-681, which names THIS path: an outbox whose project row is gone and
+    // which never won the Page-write claim reaches `drainOrphanOutbox`, and its
+    // unclaimed branch calls `deleteResearchOutbox` — a `clearResearchStaging`
+    // plus a raw `deleteFile`, so the outbox JSON and the staged bodies beside
+    // it both go. Nothing on a deployment that refuses writes can produce them
+    // again, so the drop has to be refused rather than run fail-soft.
+    //
+    // NOT the last such path, and this case does not claim to be: several
+    // other `deleteResearchOutbox` call sites still delete on a read-only
+    // deployment — `drainResearchOutbox`'s own done-phase and `deleteRequested`
+    // branches, `commitResearchPage`'s retire/cancel branches, and
+    // `reconcileResearchProjects`' done-phase branch with its ungated lease
+    // release. Each is reached with a project row in hand, which is a different
+    // shape from an orphan and a different decision; DW-681 closed the one
+    // where the row is already gone and the outbox is all that is left.
+    //
+    // The gate lives at `drainOrphanOutbox`, not at `deleteResearchOutbox`,
+    // which ~20 in-flight and fail-soft call sites reach — hence the
+    // source-order pin below rather than a "no assertWritable" pin.
+    const orphanId = "orphan-outbox-project";
+    const stagingPath =
+      `tenants/${tenantForOwner(OWNER)}/research-outbox`
+      + `/staging-${orphanId}-example-com-abc123.md`;
+    await getStorage().writeFile(stagingPath, "# Staged body\n");
+    await saveResearchOutbox(OWNER, orphanId, {
+      pageSlug: "research-orphan",
+      title: "Orphan",
+      synthesis: "Synthesis the deployment can no longer reproduce.",
+      thinking: [],
+      // No `claimed`, which is what makes this the UNCLAIMED branch.
+      sources: [{
+        url: "https://example.com/a",
+        title: "A",
+        slug: "example-com",
+        sha: "abc123",
+        sourcePath: stagingPath,
+        length: 14,
+      }],
+      evidence: [{ url: "https://example.com/a", title: "A" }],
+    });
+    // ORPHAN means exactly this: an outbox with no registry row behind it, so
+    // `drainResearchOutbox` takes the orphan path rather than the normal drain.
+    expect(
+      await getResearchProject(OWNER, orphanId),
+      "the seed left a project row, so this is not an orphan",
+    ).toBeNull();
+    const before = await seededSnapshot();
+    expect(
+      before[stagingPath],
+      "the seed wrote no staging body — the deletion would have nothing to destroy",
+    ).toBeTruthy();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => drainResearchOutbox(OWNER, orphanId),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    // Whole tree: the outbox JSON, the staging body, and everything else.
+    expect(await snapshot()).toEqual(before);
+    // And read back through the loader, not just off the bytes: what survived
+    // is still a loadable outbox, drainable once the deployment is writable.
+    const survived = await loadResearchOutbox(OWNER, orphanId);
+    expect(survived?.synthesis).toBe("Synthesis the deployment can no longer reproduce.");
+    expect(survived?.sources.map((source) => source.sourcePath)).toEqual([stagingPath]);
+  });
+
+  it("a CLAIMED orphan outbox refuses at the PAGE writer, with that door's sentence", async () => {
+    // The sibling of the case above, and the reason DW-681's gate covers only
+    // the unclaimed branch. A CLAIMED outbox already won the Page-write claim,
+    // so the drain goes on to `writeResearchPage` ->
+    // `writeWikiPageWithSideEffects`, gated since DW-188 — and it answers
+    // `pageWrite`, a DIFFERENT sentence from the unclaimed branch's
+    // `researchMutate`, because they are two different doors: one is a page
+    // write refused, the other the deletion of a research outbox refused.
+    //
+    // The tree is byte-identical anyway, which is the claim
+    // `drainOrphanOutbox`'s comment makes and which nothing pinned until now:
+    // `claimOrphanWrite` writes a `<outbox>.writing` claim file BEFORE the page
+    // write, and the `finally` removes it in the same call, so a refusal in
+    // between leaves nothing behind.
+    const orphanId = "claimed-orphan-project";
+    const stagingPath =
+      `tenants/${tenantForOwner(OWNER)}/research-outbox`
+      + `/staging-${orphanId}-example-com-def456.md`;
+    await getStorage().writeFile(stagingPath, "# Staged body\n");
+    await saveResearchOutbox(OWNER, orphanId, {
+      pageSlug: "research-claimed-orphan",
+      title: "Claimed orphan",
+      synthesis: "Synthesis whose Page write never landed.",
+      thinking: [],
+      claimed: true,
+      sources: [{
+        url: "https://example.com/b",
+        title: "B",
+        slug: "example-com",
+        sha: "def456",
+        sourcePath: stagingPath,
+        length: 14,
+      }],
+      evidence: [{ url: "https://example.com/b", title: "B" }],
+    });
+    expect(
+      await getResearchProject(OWNER, orphanId),
+      "the seed left a project row, so this is not an orphan",
+    ).toBeNull();
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => drainResearchOutbox(OWNER, orphanId),
+      READ_ONLY_REFUSAL.pageWrite,
+    );
+
+    // Asserted DISTINCT, or a later "these two refusals are nearly the same,
+    // unify them" edit would collapse the two doors and still pass everything
+    // above.
+    expect(READ_ONLY_REFUSAL.pageWrite).not.toBe(READ_ONLY_REFUSAL.researchMutate);
+    // No `.writing` claim file left behind, and nothing else moved either.
+    expect(await snapshot()).toEqual(before);
+    const survived = await loadResearchOutbox(OWNER, orphanId);
+    expect(survived?.claimed).toBe(true);
+    expect(survived?.synthesis).toBe("Synthesis whose Page write never landed.");
   });
 
   it("the research CAS primitives carry no THROWING gate in their own source", async () => {

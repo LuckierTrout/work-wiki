@@ -406,6 +406,23 @@ export async function queueResearchProject(
   owner: string,
   id: string,
 ): Promise<ResearchProject> {
+  // Deployment read-only (DW-680). THE ENTRY POINT gates rather than leaning on
+  // the CAS mutator below — which since DW-527 refuses by returning a sentinel
+  // rather than by throwing: this function WRITES before it ever reaches that
+  // CAS. The done-phase `deleteResearchOutbox` drops the delivered run's
+  // outbox, the delivery-retry branch takes its own write and returns, and the
+  // last statement before the mutation,
+  // `releaseResearchSlotAndConfirmGone`, empties the project's slot out of
+  // `research-leases.json` — through `research-concurrency.ts`, which carries
+  // no gate of its own, so nothing below here would stop it. A refused Run must
+  // not empty the lease while the row still records that `runAttemptId`.
+  // Refusing here is what makes "read-only" mean nothing changed.
+  //
+  // The `isResearchWriteRefused` conversions further down (DW-657, DW-651)
+  // STAY: this gate answers a deployment already read-only on arrival, those
+  // answer the flag flipping mid-request, and both carry the same sentence so
+  // the caller cannot tell which flag read lost.
+  assertWritable(READ_ONLY_REFUSAL.researchMutate);
   const project = await getResearchProject(owner, id);
   if (!project) throw new ResearchProjectNotFoundError();
   if (project.deleteRequested) {
@@ -992,8 +1009,10 @@ export async function reconcileResearchProjects(
         // `writeWikiPageWithSideEffects`, which is gated, so a read-only
         // deployment raises a `ReadOnlyError` here — and calling that "damaged
         // orphan outbox" told an operator their outbox was corrupt when nothing
-        // was wrong with it. (An UNCLAIMED one never reaches a gated writer:
-        // `drainOrphanOutbox` deletes it and returns.) Same shape and same
+        // was wrong with it. An UNCLAIMED one refuses at `drainOrphanOutbox`'s
+        // OWN entry gate (DW-681), which sits ahead of the
+        // `deleteResearchOutbox` that would otherwise drop a staged outbox this
+        // deployment could never rewrite. Same shape and same
         // channel as the per-project catch above; either way the loop continues
         // to the next orphan.
         if (isReadOnlyError(error)) {

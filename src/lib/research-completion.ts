@@ -11,6 +11,7 @@ import { writeWikiPageWithSideEffects } from "./lifecycle";
 import { logger } from "./logger";
 import { saveRawSourceFor } from "./raw";
 import { withDurableLock, withFileLock } from "./lock";
+import { READ_ONLY_REFUSAL, assertWritable } from "./read-only";
 import {
   deleteResearchProject,
   getResearchProject,
@@ -1043,6 +1044,23 @@ async function drainOrphanOutbox(
   outbox: ResearchOutbox,
 ): Promise<void> {
   if (outbox.claimed !== true) {
+    // Deployment read-only (DW-681). An unclaimed outbox is a pre-write staging
+    // file, and dropping it is a DESTRUCTIVE write: `deleteResearchOutbox` is a
+    // `clearResearchStaging` plus a raw `deleteFile`, so the outbox JSON and
+    // every `staging-<id>-*.md` body beside it go with it — on a deployment
+    // that has refused every other write and can never reproduce them.
+    //
+    // The gate is HERE and not on `deleteResearchOutbox`: that helper has ~20
+    // call sites inside in-flight delivery and fail-soft recovery, several with
+    // `.catch(() => undefined)`, so a throw there strands a run — the same
+    // reason DW-527 left the research CAS primitives refusing by return.
+    //
+    // The CLAIMED branch below is deliberately untouched. It already refuses
+    // inside `writeResearchPage` -> `writeWikiPageWithSideEffects`, carrying
+    // `pageWrite`, and its claim file is created and removed in the same call,
+    // so the tree is unchanged either way. `reconcileResearchProjects`'
+    // `isReadOnlyError` branch catches both shapes and continues the sweep.
+    assertWritable(READ_ONLY_REFUSAL.researchMutate);
     await deleteResearchOutbox(owner, id);
     return;
   }

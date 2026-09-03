@@ -172,6 +172,27 @@
  * the entry point, where the contract is known — never in the CAS layer, which
  * cannot tell one kind of caller from the other.
  *
+ * TWO RESEARCH PATHS STILL WROTE AFTER ALL OF THAT (DW-680, DW-681), and both
+ * are now ENTRY-POINT gates for the reason `retireResearchProject` records:
+ * each writes through deliberately ungated machinery before it reaches
+ * anything gated. `queueResearchProject` takes
+ * {@link READ_ONLY_REFUSAL.researchMutate} as its first statement, above the
+ * done-phase `deleteResearchOutbox` and above `releaseResearchSlotAndConfirmGone`
+ * — which goes into `research-concurrency.ts`, a module with no gate at all, so
+ * a refused Run used to empty the project's slot out of `research-leases.json`
+ * while the row went on recording that `runAttemptId`. Its two sentinel
+ * conversions below are unchanged and stay the mid-request-flip backstop.
+ * `drainOrphanOutbox`'s UNCLAIMED branch in `research-completion.ts` takes the
+ * same sentence, and is that file's first `assertWritable`: an outbox with no
+ * project row was dropped by `deleteResearchOutbox` — a `clearResearchStaging`
+ * plus a raw `deleteFile` — taking the staged bodies with it. The gate is on
+ * the branch and NOT on `deleteResearchOutbox`, which ~20 in-flight delivery
+ * and fail-soft recovery sites reach, several with `.catch(() => undefined)`:
+ * a throw there is DW-527's stranded run, not a gate. The CLAIMED branch keeps
+ * refusing where it already did, inside `writeWikiPageWithSideEffects`, so that
+ * one path answers {@link READ_ONLY_REFUSAL.pageWrite} — two doors, two
+ * sentences, and `reconcileResearchProjects` classifies both.
+ *
  * AND FOURTEEN OF THOSE DOORS NOW CARRY A BACKSTOP AS WELL (DW-316, DW-319,
  * DW-526, DW-527's `PATCH /api/research/[id]`, and DW-639/DW-657's
  * `DELETE /api/research/[id]` and `POST /api/research/[id]/run`). The five

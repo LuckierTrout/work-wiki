@@ -5495,7 +5495,9 @@ location: src/lib/research-runtime.ts:412
 source_spec: `spec-dw-657-658-661-research-readonly-cas-sentinel.md`
 severity: low
 reason: `queueResearchProject` calls `releaseResearchSlotAndConfirmGone` (src/lib/research-runtime.ts:412) ahead of the CAS, and `research-concurrency.ts` carries no `isReadOnly`/`assertWritable` gate of its own. Demonstrated during review: with a project holding a real lease and the flag set, the call throws `ReadOnlyError` as intended, but `research-leases.json` goes from `[{projectId, attemptId, ...}]` to `[]` while the row still records that `runAttemptId`. Pre-existing — the same release ran before this change, which merely relabelled what the CAS then threw — so it is out of this bundle's scope, but it is a write on a deployment that refused the request, which is the invariant the research read-only work exists to hold. `read-only-store-gate.test.ts`'s queue case now excludes the lease file from its byte comparison and says why, rather than seeding the lease to manufacture a green whole-tree snapshot.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-research-readonly-write-leaks
+resolution-undo: 20c12edfdd4db126d5fbdbc91b4636b85eecf0b0d1807832b664447ac4560f00 2026-09-03 7374617475733a206f70656e
 
 ### DW-681: Reconcile's orphan-outbox loop deletes an UNCLAIMED orphan outbox on a read-only deployment, writing where the deployment promises to write nothing.
 origin: spec-deferred dbfaa9d6f88f
@@ -5503,7 +5505,9 @@ location: src/lib/research-completion.ts:991
 source_spec: `spec-dw-656-659-660-research-readonly-door-copy.md`
 severity: low
 reason: `reconcileResearchProjects`' orphan loop calls `drainResearchOutbox`, which for a missing project row calls `drainOrphanOutbox` (src/lib/research-completion.ts:991-994). When `outbox.claimed !== true` that path calls `deleteResearchOutbox` and returns — and `deleteResearchOutbox` (research-completion.ts:314-321) is an ungated `clearResearchStaging` + `getStorage().deleteFile`, so it destroys the outbox on a deployment that has refused every other write. The gated writer DW-660 branches on is only reached for a CLAIMED outbox, so the new `isReadOnlyError` branch does not cover this shape at all. Reachable today only by a direct library caller: `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses, the same caveat DW-528's per-project branch carries.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-research-readonly-write-leaks
+resolution-undo: 20c12edfdd4db126d5fbdbc91b4636b85eecf0b0d1807832b664447ac4560f00 2026-09-03 7374617475733a206f70656e
 
 ### DW-682: A cancel that lands on a project whose stored completion is malformed can no longer finalize: `commitResearchPage` now refuses before the cancel-teardown branch that used to delete the completion and
 origin: spec-deferred 275568ef7f5b
@@ -5926,4 +5930,12 @@ location: src/components/workbench/MarkMeetingControl.tsx:72
 source_spec: `spec-dw-643-625-workbench-canvas-write-feedback.md`
 severity: low
 reason: `src/components/workbench/MarkMeetingControl.tsx:72` gates its one write with `disabled={readOnly || busy}` and renders no read-only term, while `POST /api/sources/meeting` answers `READ_ONLY_REFUSAL.sourceMeeting` — pinned by NAME in the very door loop `read-only-copy-parity.test.ts:398` runs. `sourceMeeting` is the only `READ_ONLY_REFUSAL` key with ZERO client references, so nothing holds a client sentence to that 403 and the owner meets a dead control with no reason. The control renders on the Todos surface this change hardened (it is exercised in `todos-canvas.test.tsx`), but it is a different door and a different component, and the bundle intent named only `TodosCanvas`'s own write controls — so it was left alone rather than widened into this change.
+status: open
+
+### DW-734: Reconcile's done-phase branch and `drainResearchOutbox`'s two row-in-hand branches still empty `research-leases.json` and destroy an outbox plus its staged bodies on a read-only deployment.
+origin: spec-deferred 4170863e3525
+location: src/lib/research-runtime.ts:741
+source_spec: `spec-dw-680-681-research-readonly-write-leaks.md`
+severity: low
+reason: DW-680/DW-681 closed the two paths their ledger entries name, but the same two shapes remain at sites this bundle did not name. `reconcileResearchProjects`' `completion.phase === "done"` branch calls the ungated `releaseResearchSlotAndConfirmGone` and `releaseExpiredResearchSlot` (src/lib/research-runtime.ts:733-740) and then `deleteResearchOutbox` (:741), and `drainResearchOutbox`'s own done-phase (src/lib/research-completion.ts:934) and `deleteRequested` (:971) branches call the same ungated helper — `clearResearchStaging` plus a raw `deleteFile`, so the staged bodies go with the outbox. The new reconcile case in `research-runtime.test.ts` drives that whole sweep under `YOPEDIA_READONLY=1` and proves the loop runs, but seeds only orphans, so nothing asserts what the done-phase branch does. Same reachability caveat DW-681 carries: `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses, so this is a direct-library-caller and mid-sweep-flip exposure ra
 status: open

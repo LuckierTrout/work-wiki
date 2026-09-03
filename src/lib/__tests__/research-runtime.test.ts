@@ -2304,6 +2304,61 @@ describe("deep research — remediations", () => {
     }
   });
 
+  it("logs a read-only skip for an UNCLAIMED orphan outbox too, and drops nothing", async () => {
+    // DW-681. The sibling shape of the case above, and the one DW-660's branch
+    // did not actually reach: an UNCLAIMED orphan never gets as far as
+    // `writeResearchPage`, so nothing gated stood between the sweep and
+    // `deleteResearchOutbox` — a `clearResearchStaging` plus a raw `deleteFile`
+    // — and the outbox was destroyed on a deployment that had refused every
+    // other write. `drainOrphanOutbox` now gates at its own entry, so this
+    // catch classifies the unclaimed shape exactly like the claimed one.
+    //
+    // The REAL flag rather than a mocked rejection, unlike the case above: what
+    // is under test here IS the gate, and a rejection stubbed onto some other
+    // writer would stay green with the gate deleted.
+    const ids: string[] = [];
+    for (const title of ["Unclaimed one", "Unclaimed two"]) {
+      const created = await project({ title });
+      await saveResearchOutbox("alice", created.id, {
+        pageSlug: "research-launch-evidence",
+        title: "Launch evidence",
+        synthesis: "# Launch evidence\n\nA brief.",
+        thinking: [],
+        sources: [],
+        evidence: [],
+        // No `claimed`, which is the whole difference: this is the branch that
+        // used to delete and return.
+      });
+      expect(await deleteResearchProject("alice", created.id)).toBe(true);
+      ids.push(created.id);
+    }
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const savedReadOnly = process.env.YOPEDIA_READONLY;
+    process.env.YOPEDIA_READONLY = "1";
+
+    let lines: string[] = [];
+    try {
+      await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    } finally {
+      if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+      else process.env.YOPEDIA_READONLY = savedReadOnly;
+      // BEFORE `mockRestore`, for the reason the case above gives.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+    }
+
+    // BOTH orphans, which is also how the loop's continuation is pinned.
+    for (const id of ids) {
+      expect(lines).toContain(`reconcile skipped read-only orphan outbox ${id}`);
+    }
+    expect(lines.some((line) => line.includes("damaged orphan outbox"))).toBe(false);
+    // And nothing was dropped: each outbox is still loadable, drainable once
+    // the deployment is writable again.
+    for (const id of ids) {
+      expect(await loadResearchOutbox("alice", id)).not.toBeNull();
+    }
+  });
+
   it("still names a DAMAGED orphan outbox when the fault is not a refusal", async () => {
     // The control for the case above (DW-660). A catch that logged the
     // read-only line for EVERY fault would satisfy it and hide every real one,
