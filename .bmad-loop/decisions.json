@@ -484,5 +484,14 @@
     "key": "1",
     "label": "Degrade to newBody at the ingest door",
     "resolution": ""
+  },
+  "DW-740": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Give createWikiPage and lifecycle.ts's createOnly precondition the same variant probe the read and write doors carry, so a variant-held page refuses the create rather than producing a second object. Pin the case-sensitive-store create-conflict case at both the route and MCP guards.",
+    "key": "1",
+    "label": "Probe variants in the create-conflict guard",
+    "resolution": ""
   }
 }
