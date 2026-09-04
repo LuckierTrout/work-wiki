@@ -6185,6 +6185,7 @@ source_spec: `spec-dw-594-596-graph-canvas-keyboard-cursor.md`
 severity: medium
 reason: A `tabIndex={0}` canvas takes focus on mousedown in every browser, so a click both focuses the canvas — seeding the cursor at index 0 via `handleFocus` — and navigates through `openNode`. `handleClick` never writes `cursorIndexRef`, so the pointer and the keyboard disagree about where "here" is from the first click onward, and the live region announces the first node rather than the clicked one. The fix was implemented during review and then REVERTED: this spec's `Never` list forbids "mouse-driven cursor movement" and the bundle's recorded 2026-08-29 decision says "keep the pointer path unchanged", both of which a click that moves the cursor contradicts. Resolving it needs a human to widen that boundary, not an unattended reading of it.
 status: open
+decision: 2026-09-04 Widen the boundary: click moves the cursor — Have handleClick write cursorIndexRef to the clicked node's index before openNode, so a subsequent arrow key resumes from the node the reader acted on and the live region announces that node. Record the supersession of the spec's Never clause and the 2026-08-29 decision, and pin click-then-arrow.
 
 ### DW-752: The two sibling /api/v1 file doors still assert their v1SlugGate forward with expect.anything(), so both could stop applying the caller's slug gate with a green suite.
 origin: spec-deferred 0c52b43478a1

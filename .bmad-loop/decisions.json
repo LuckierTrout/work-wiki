@@ -511,5 +511,14 @@
     "key": "1",
     "label": "Refuse in seedAgent with a default arm",
     "resolution": ""
+  },
+  "DW-751": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Have handleClick write cursorIndexRef to the clicked node's index before openNode, so a subsequent arrow key resumes from the node the reader acted on and the live region announces that node. Record the supersession of the spec's Never clause and the 2026-08-29 decision, and pin click-then-arrow.",
+    "key": "1",
+    "label": "Widen the boundary: click moves the cursor",
+    "resolution": ""
   }
 }
