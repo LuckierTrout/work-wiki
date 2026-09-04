@@ -420,7 +420,24 @@ export function ActionInbox() {
                         {item.assignee && <span className="receipt" style={{ fontSize: 10.5 }}>owner · {item.assignee}</span>}
                         {item.dueDate && <span className="receipt" style={{ fontSize: 10.5 }}>due · {item.dueDate}</span>}
                         {typeof item.confidence === "number" && <span className="receipt" style={{ fontSize: 10.5 }}>{Math.round(item.confidence * 100)}% confidence</span>}
-                        {item.sourceSlug && <Link href={hrefForSlug(item.sourceSlug)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>}
+                        {/* A cascade-deleted Source keeps its SLUG but loses
+                            its anchor (DW-593). `sourceMissing` is set by
+                            `markSourceMissing` when the cited page is gone, and
+                            this row used to link to it regardless — offering a
+                            live route into a page that no longer exists. The
+                            slug still shows, because the owner needs to know
+                            WHICH source went away to judge the to-do, and a
+                            vanished chip would read as "this cited nothing".
+                            The wording is `TodosCanvas`'s, so the two Todo
+                            surfaces say one thing about one state. */}
+                        {item.sourceSlug && (item.sourceMissing ? (
+                          <>
+                            <span className="receipt" style={{ fontSize: 10.5 }}>source · {item.sourceSlug}</span>
+                            <span className="receipt" style={{ fontSize: 10.5, color: "var(--rust)" }}>Source missing</span>
+                          </>
+                        ) : (
+                          <Link href={hrefForSlug(item.sourceSlug)} className="receipt" style={{ fontSize: 10.5, color: "var(--accent)" }}>source · {item.sourceSlug}</Link>
+                        ))}
                       </div>
                     </div>
                     <div className="row" style={{ gap: 6, alignSelf: "start", flexWrap: "wrap", justifyContent: "end" }}>

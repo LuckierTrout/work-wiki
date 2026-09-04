@@ -47,6 +47,7 @@ import {
 } from "@/lib/v1-contract";
 import {
   loopbackHealthSentence,
+  loopbackSkillCountSentence,
   probeLoopbackApiPane,
   type ClassifiedLoopbackHealth,
 } from "@/lib/workbench-loopback-health";
@@ -139,7 +140,8 @@ export function SettingsApiMcpPane({
   const tokenDescribedBy = `${field("apiToken-label")} ${field("apiToken-hint")}`;
   const [apiLive, setApiLive] = useState<{
     health: ClassifiedLoopbackHealth;
-    skills: SkillSummary[];
+    /** `null` is a scan that DID NOT ANSWER, which is not a count (DW-716). */
+    skills: SkillSummary[] | null;
   } | null>(null);
   // ONE probe, on mount — which is now exactly once per visit to this category,
   // because the pane unmounts when the owner leaves it. Nothing is shown until
@@ -184,9 +186,14 @@ export function SettingsApiMcpPane({
               yet — was described as serving. The switch in the health module
               cannot compile with a status it has no sentence for. */}
           {loopbackHealthSentence(apiLive.health)}{" "}
-          {apiLive.skills.length === 1
-            ? "1 Skill on disk."
-            : `${apiLive.skills.length} Skills on disk.`}
+          {/* The count comes from the SAME module and the same exhaustive
+              shape (DW-716). The inline ternary that used to stand here read
+              `apiLive.skills.length` off a list the probe filled with `[]`
+              whenever the scan failed — so a sidecar that was not running was
+              reported as having zero Skills on disk, a counted claim nothing
+              had counted. `null` now means "did not answer" and gets its own
+              sentence; an empty array still gets a real zero. */}
+          {loopbackSkillCountSentence(apiLive.skills)}
         </p>
       ) : null}
 

@@ -42,6 +42,7 @@ import {
   SETTINGS_API_HEALTH_RUNNING_COPY,
   SETTINGS_API_HEALTH_STARTING_COPY,
   SETTINGS_API_HEALTH_UNREACHABLE_COPY,
+  SETTINGS_API_SKILLS_UNKNOWN_COPY,
 } from "@/lib/workbench-loopback-health";
 import { LOOPBACK_BASE_URL } from "@/lib/v1-contract";
 import { clearLoopbackDoorToken } from "@/lib/loopback-client";
@@ -78,7 +79,16 @@ function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSe
 type Live = {
   /** What `/api/v1/health` answers, or `null` for a sidecar that is not there. */
   health?: unknown;
-  /** What the Skills scan answers. */
+  /**
+   * What the Skills scan answers, or `undefined` for a scan that DOES NOT
+   * ANSWER — the same convention `health` uses one field up.
+   *
+   * The two have to be separately expressible (DW-716): a scan that answered
+   * `[]` is a real zero, and a scan that never answered is not a count at all.
+   * The route used to hand back `{ skills: [] }` for both, so the case below
+   * that stages a dead sidecar was asserting a Skills count the fixture itself
+   * had invented.
+   */
   skills?: Array<{ id: string }>;
   /**
    * Hold `/health` OPEN until the test releases it.
@@ -141,10 +151,14 @@ function routeFetch(
       return { ok: true, status: 200, json: async () => live.health } as Response;
     }
     if (target.includes("/api/v1/skills")) {
+      // No `skills` in the fixture means nothing is serving the scan either —
+      // which is the state a dead sidecar actually produces, both of its calls
+      // rejected. A case that wants a counted zero says `skills: []`.
+      if (live.skills === undefined) throw new TypeError("Failed to fetch");
       return {
         ok: true,
         status: 200,
-        json: async () => ({ skills: live.skills ?? [] }),
+        json: async () => ({ skills: live.skills }),
       } as Response;
     }
     // The SAVE, held when the case asked for it — the mount read is a GET and
@@ -179,7 +193,24 @@ async function mountPane(stored: WorkbenchSettingsPayload, live: Live = {}) {
 function healthNote(): HTMLElement | undefined {
   return screen
     .queryAllByRole("status")
-    .find((element) => /\d Skills? on disk\./.test(element.textContent ?? ""));
+    .find((element) => skillClaim(element.textContent ?? "") !== null);
+}
+
+/**
+ * What the note says about Skills on disk: the counted sentence, the
+ * did-not-answer sentence, or `null` for a node that is not the health line.
+ *
+ * Widened from the count regex alone (DW-716). The line is still found by its
+ * Skills half rather than by its health half — the health sentences are prose
+ * full of `.` and `:`, and the token-absent note carries `role="status"` too —
+ * but "N Skills on disk." is no longer the ONLY thing that half can say, and a
+ * matcher that still insisted on a digit would simply stop finding the line in
+ * exactly the case this fix is about.
+ */
+function skillClaim(text: string): "counted" | "unknown" | null {
+  if (/\d Skills? on disk\./.test(text)) return "counted";
+  if (text.includes(SETTINGS_API_SKILLS_UNKNOWN_COPY)) return "unknown";
+  return null;
 }
 
 function healthLine(): Promise<HTMLElement> {
@@ -302,11 +333,32 @@ describe("the pane probes once and says what it found", () => {
     );
   });
 
-  it("reads a rejected probe as unreachable with no Skills", async () => {
+  it("reads a rejected probe as unreachable and COUNTS NOTHING (DW-716)", async () => {
+    // Nothing on 19828: both halves of the probe reject. The pane used to
+    // append "0 Skills on disk." here, because the probe swallowed the failed
+    // scan into an empty list — telling an owner with a folder full of Skills
+    // that they had none, on the evidence of a call that never landed.
     await mountPane(payload());
     const note = await healthLine();
     expect(note.textContent).toContain(SETTINGS_API_HEALTH_UNREACHABLE_COPY);
+    expect(note.textContent).toContain(SETTINGS_API_SKILLS_UNKNOWN_COPY);
+    // The claim's ABSENCE is what fails: any digit followed by the count
+    // phrase, not just the "0" this case used to assert.
+    expect(note.textContent).not.toMatch(/\d Skills? on disk\./);
+    // …and nowhere else on the surface either, so a second copy of the count
+    // cannot satisfy the line above by living in another node.
+    expect(document.body.textContent).not.toMatch(/\d Skills? on disk\./);
+  });
+
+  it("still states a REAL zero when the scan answers with an empty list", async () => {
+    // The other side of the same fix, and the reason it cannot be applied as
+    // "never count": a running sidecar that scanned and found nothing has
+    // established a fact, and "0 Skills on disk." is that fact stated.
+    await mountPane(payload(), { health: { status: "running" }, skills: [] });
+    const note = await healthLine();
+    expect(note.textContent).toContain(SETTINGS_API_HEALTH_RUNNING_COPY);
     expect(note.textContent).toContain("0 Skills on disk.");
+    expect(note.textContent).not.toContain(SETTINGS_API_SKILLS_UNKNOWN_COPY);
   });
 
   it("re-probes on a return visit and shows the token masked again", async () => {
