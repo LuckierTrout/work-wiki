@@ -762,6 +762,17 @@ describe("R2StorageProvider", () => {
         /atomic counter keys/,
       );
     });
+
+    it("counts the embedding rebuild epoch in the R2 object, not KV", async () => {
+      // The drift re-arm reads this counter across isolates (DW-599), so it has
+      // to be an atomic-counter key for exactly the reason `data-version` is —
+      // otherwise `incrementIndex` refuses it and `getIndex` would answer from
+      // eventually-consistent KV.
+      await expect(provider.incrementIndex("embedding-rebuild-epoch")).resolves.toBe(1);
+      await expect(provider.getIndex("embedding-rebuild-epoch")).resolves.toBe(1);
+      expect(await env.YOPEDIA_BUCKET.head("_idx/embedding-rebuild-epoch")).not.toBeNull();
+      await expect(provider.incrementIndex("embedding-rebuild-epoch")).resolves.toBe(2);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -773,7 +784,8 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.upsertEmbedding("page2", [0, 1, 0], { hash: "b" });
 
-      const results = await provider.queryEmbeddings([1, 0, 0], 2);
+      const { matches: results, rejected } = await provider.queryEmbeddings([1, 0, 0], 2);
+      expect(rejected).toBe(0);
       expect(results).toHaveLength(2);
       expect(results[0].id).toBe("page1");
       expect(results[0].score).toBeCloseTo(1.0);
@@ -783,7 +795,7 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.removeEmbedding("page1");
 
-      const results = await provider.queryEmbeddings([1, 0, 0], 5);
+      const { matches: results } = await provider.queryEmbeddings([1, 0, 0], 5);
       expect(results).toHaveLength(0);
     });
 
@@ -791,10 +803,48 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.upsertEmbedding("page1", [0, 1, 0], { hash: "b" });
 
-      const results = await provider.queryEmbeddings([0, 1, 0], 5);
+      const { matches: results } = await provider.queryEmbeddings([0, 1, 0], 5);
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe("page1");
       expect(results[0].metadata.hash).toBe("b");
+    });
+
+    it("applies `accept` BEFORE the top-K slice, like the filesystem provider", async () => {
+      // The KV fallback ranks locally, so it owes the pre-slice guarantee
+      // exactly, not best-effort: the nearest vector is refused and the single
+      // slot goes to the accepted one behind it (DW-598).
+      await provider.upsertEmbedding("stale", [1, 0, 0], { model: "old" });
+      await provider.upsertEmbedding("current", [1, 1, 0], { model: "new" });
+
+      const { matches, rejected } = await provider.queryEmbeddings(
+        [1, 0, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      expect(matches.map((m) => m.id)).toEqual(["current"]);
+      expect(rejected).toBe(1);
+    });
+
+    it("reports every refused vector in `rejected` on a fully drifted KV store", async () => {
+      await provider.upsertEmbedding("page1", [1, 0, 0], { model: "old" });
+      await provider.upsertEmbedding("page2", [0, 1, 0], { model: "old" });
+
+      const { matches, rejected } = await provider.queryEmbeddings(
+        [1, 0, 0],
+        5,
+        (metadata) => metadata.model === "new",
+      );
+      expect(matches).toEqual([]);
+      expect(rejected).toBe(2);
+    });
+
+    it("is byte-identical with an accept-all predicate and with none", async () => {
+      await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
+      await provider.upsertEmbedding("page2", [0, 1, 0], { hash: "b" });
+
+      const unfiltered = await provider.queryEmbeddings([1, 0, 0], 1);
+      expect(await provider.queryEmbeddings([1, 0, 0], 1, () => true)).toEqual(unfiltered);
+      expect(unfiltered.rejected).toBe(0);
     });
 
     it("getEmbeddingById returns the vector + metadata, or null", async () => {
@@ -808,7 +858,7 @@ describe("R2StorageProvider", () => {
       await provider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await provider.clearEmbeddings();
       expect(await provider.getEmbeddingById("page1")).toBeNull();
-      expect(await provider.queryEmbeddings([1, 0, 0], 5)).toHaveLength(0);
+      expect((await provider.queryEmbeddings([1, 0, 0], 5)).matches).toHaveLength(0);
     });
   });
 
@@ -828,7 +878,8 @@ describe("R2StorageProvider", () => {
       await vecProvider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await vecProvider.upsertEmbedding("page2", [0, 1, 0], { hash: "b" });
 
-      const results = await vecProvider.queryEmbeddings([1, 0, 0], 2);
+      const { matches: results, rejected } = await vecProvider.queryEmbeddings([1, 0, 0], 2);
+      expect(rejected).toBe(0);
       expect(results).toHaveLength(2);
       expect(results[0].id).toBe("page1");
       expect(results[0].score).toBeCloseTo(1.0);
@@ -838,8 +889,107 @@ describe("R2StorageProvider", () => {
       await vecProvider.upsertEmbedding("page1", [1, 0, 0], { hash: "a" });
       await vecProvider.removeEmbedding("page1");
 
-      const results = await vecProvider.queryEmbeddings([1, 0, 0], 5);
+      const { matches: results } = await vecProvider.queryEmbeddings([1, 0, 0], 5);
       expect(results).toHaveLength(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // The over-fetched, locally-filtered window (DW-598)
+    // -----------------------------------------------------------------------
+
+    it("over-fetches to the metadata ceiling when `accept` is supplied, then filters and slices", async () => {
+      const queries: number[] = [];
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const index = vecEnv.YOPEDIA_VECTORIZE!;
+      const realQuery = index.query.bind(index);
+      index.query = async (vector: number[], options: VectorizeQueryOptions) => {
+        queries.push(options.topK as number);
+        return realQuery(vector, options);
+      };
+      const p = new R2StorageProvider(vecEnv);
+
+      await p.upsertEmbedding("stale", [1, 0, 0], { model: "old" });
+      await p.upsertEmbedding("current", [1, 1, 0], { model: "new" });
+
+      const { matches, rejected } = await p.queryEmbeddings(
+        [1, 0, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      // Vectorize ranks server-side, so the nearest-but-refused vector would
+      // have eaten the single slot had the branch asked for topK: 1.
+      expect(queries).toEqual([20]);
+      expect(matches.map((m) => m.id)).toEqual(["current"]);
+      expect(rejected).toBe(1);
+    });
+
+    it("asks for exactly `topK` and rejects nothing when no predicate is supplied", async () => {
+      const queries: number[] = [];
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const index = vecEnv.YOPEDIA_VECTORIZE!;
+      const realQuery = index.query.bind(index);
+      index.query = async (vector: number[], options: VectorizeQueryOptions) => {
+        queries.push(options.topK as number);
+        return realQuery(vector, options);
+      };
+      const p = new R2StorageProvider(vecEnv);
+
+      await p.upsertEmbedding("page1", [1, 0, 0], { model: "old" });
+      const { matches, rejected } = await p.queryEmbeddings([1, 0, 0], 3);
+      expect(queries).toEqual([3]);
+      expect(matches).toHaveLength(1);
+      expect(rejected).toBe(0);
+    });
+
+    it("scopes `rejected` to the OVER-FETCHED WINDOW, not the corpus", async () => {
+      // The honest limit of the Vectorize branch, pinned rather than left in a
+      // comment. Vectorize ranks server-side, so this branch can only see the
+      // window it asked for: with 25 stored vectors and a floor of 20, five are
+      // never returned and cannot be counted. `rejected` therefore reports what
+      // the WINDOW turned away — a corpus-scoped count is not obtainable here
+      // without a second, unfiltered probe query.
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const p = new R2StorageProvider(vecEnv);
+
+      // 25 stale vectors, ranked by descending similarity to [1, 0, 0] so the
+      // 20 the branch over-fetches to are a deterministic prefix.
+      for (let i = 0; i < 25; i++) {
+        await p.upsertEmbedding(`stale-${i}`, [25 - i, i, 0], { model: "old" });
+      }
+
+      const { matches, rejected } = await p.queryEmbeddings(
+        [1, 0, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      expect(matches).toEqual([]);
+      // 20, not 25: the ceiling the branch over-fetched to, which is exactly
+      // what the interface means by "best-effort" for a server-ranking
+      // provider. The KV fallback on the same corpus reports all 25.
+      expect(rejected).toBe(20);
+
+      const kvOnly = new R2StorageProvider(createMockEnv());
+      for (let i = 0; i < 25; i++) {
+        await kvOnly.upsertEmbedding(`stale-${i}`, [25 - i, i, 0], { model: "old" });
+      }
+      expect(
+        (await kvOnly.queryEmbeddings([1, 0, 0], 1, (m) => m.model === "new")).rejected,
+      ).toBe(25);
+    });
+
+    it("never narrows the window below the caller's topK", async () => {
+      const queries: number[] = [];
+      const vecEnv = createMockEnv({ withVectorize: true });
+      const index = vecEnv.YOPEDIA_VECTORIZE!;
+      const realQuery = index.query.bind(index);
+      index.query = async (vector: number[], options: VectorizeQueryOptions) => {
+        queries.push(options.topK as number);
+        return realQuery(vector, options);
+      };
+      const p = new R2StorageProvider(vecEnv);
+
+      await p.queryEmbeddings([1, 0, 0], 50, () => true);
+      expect(queries).toEqual([50]);
     });
 
     it("getEmbeddingById fetches a stored vector via getByIds", async () => {

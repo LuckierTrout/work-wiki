@@ -62,6 +62,7 @@ import {
   WORKERS_AI_EMBEDDING_DIMENSIONS,
   getWorkersAiBinding,
   _resetEmbeddingWarnings,
+  EMBEDDING_REBUILD_EPOCH_KEY,
 } from "../embeddings";
 import {
   EMBEDDING_PROVIDERS,
@@ -88,6 +89,22 @@ async function seedVector(
   hash = "h",
 ): Promise<void> {
   await getStorage().upsertEmbedding(slug, vector, { model, contentHash: hash });
+}
+
+/**
+ * Move the persisted rebuild epoch, standing in for a completed
+ * `rebuildVectorStore` without driving the whole function.
+ *
+ * The drift key's re-arm is gated on THIS counter and nothing else since
+ * DW-598/DW-599 — re-tagging vectors is what a rebuild does to the corpus, not
+ * what a per-query door can observe. Every "and then the rebuild landed" step
+ * below therefore has to bump it; a test that only re-tags is asserting a gate
+ * that no longer exists. The one test that drives the real function
+ * ("SPEAKS again after a REAL rebuildVectorStore") is what pins that
+ * `rebuildVectorStore` actually moves this.
+ */
+async function bumpRebuildEpoch(): Promise<number> {
+  return getStorage().incrementIndex(EMBEDDING_REBUILD_EPOCH_KEY);
 }
 
 // Cast for convenience
@@ -679,10 +696,12 @@ describe("relatedByVector", () => {
     const { result, warnings } = await withWarnSpy(async () => {
       // 1. Drifted: a search burns `drift:…-3-small`.
       const one = await searchByVector("one", 10);
-      // 2. The rebuild lands, and the ONLY traffic that observes it is a page
-      //    render. Its window (anchor dropped) matches WHOLLY and positively
-      //    holds an active-model vector → re-arm.
+      // 2. The rebuild lands — it re-tags the corpus AND moves the persisted
+      //    epoch — and the ONLY traffic that observes it is a page render. Its
+      //    window (anchor dropped) is non-empty and the epoch has advanced past
+      //    the one recorded at burn → re-arm.
       await reseed(DEFAULT_TEST_MODEL);
+      await bumpRebuildEpoch();
       const related = await relatedByVector("anchor", 10);
       // 3. Drift again under the SAME active model.
       await reseed("old-model");
@@ -704,11 +723,12 @@ describe("relatedByVector", () => {
   });
 
   it("does NOT re-arm — or warn — on a partially rebuilt (MIXED) window", async () => {
-    // DW-404's line, held at this door too: `rebuildVectorStore` upserts page
-    // by page with no bulk swap, so mid-rebuild a window holds stale and
-    // re-tagged vectors together. A window the filter demonstrably DROPPED
-    // something from is not evidence the rebuild landed — and it is not
-    // evidence of total drift either, since it still returned results.
+    // Held at this door too, now on the epoch: `rebuildVectorStore` upserts
+    // page by page with no bulk swap, so mid-rebuild a window holds stale and
+    // re-tagged vectors together — and, crucially, the rebuild has NOT
+    // COMPLETED, so the epoch has not moved. A partially rebuilt corpus is not
+    // evidence the rebuild landed, and it is not evidence of total drift
+    // either, since it still returned results.
     await seedAnchorSet("old-model");
     process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
     process.env.OPENAI_API_KEY = "sk-test";
@@ -731,8 +751,9 @@ describe("relatedByVector", () => {
       return [one, related, two];
     });
 
-    // Still ONE line: the mixed render neither warned nor re-armed. A gate
-    // loosened to `kept.length > 0` re-arms here and this test hears two.
+    // Still ONE line: the mid-rebuild render neither warned nor re-armed. A
+    // gate that re-armed on window composition — or on inequality against the
+    // epoch rather than strictly-greater — hears two here.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("searchByVector");
     // And the door still ANSWERED, with exactly what it answered before.
@@ -742,10 +763,14 @@ describe("relatedByVector", () => {
   });
 
   it("does NOT re-arm on an all-UNLABELLED window, and stays silent", async () => {
-    // DW-405's proof conjunct, held here. `modelMatches` deliberately KEEPS
-    // unlabelled legacy vectors, so a window carried entirely by them matches
-    // WHOLLY while proving nothing about the active model. Nothing was dropped
-    // either, so there is nothing to warn about.
+    // An all-unlabelled window, held here. `modelMatches` deliberately KEEPS
+    // unlabelled legacy vectors, so the provider rejects nothing and the door
+    // answers — but no rebuild has COMPLETED, so the epoch has not moved and
+    // the key stays burnt. Nothing was rejected either, so there is nothing to
+    // warn about. (Under the old proof conjunct this was the case a
+    // whole-window match could not tell from a finished rebuild; the epoch
+    // makes the question moot, and takes the conjunct's mirror-image cost —
+    // an all-unlabelled corpus that could NEVER re-arm — away with it.)
     await seedAnchorSet("old-model");
     process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
     process.env.OPENAI_API_KEY = "sk-test";
@@ -777,9 +802,10 @@ describe("relatedByVector", () => {
       return [one, related, two];
     });
 
-    // Still ONE line. Dropping the `kept.some(...)` conjunct re-arms here and
-    // this test hears two — and so does reading the gate off `matches` rather
-    // than `others`, which lets the anchor's own label be the proof.
+    // Still ONE line: no rebuild completed, so nothing may re-arm. Reading the
+    // gate off `matches` rather than `others` would still be wrong here for the
+    // OTHER reason the split exists — a lone anchor vouching for itself — which
+    // the "LONE page" pin below holds.
     expect(warnings).toHaveLength(1);
     expect(result[0]).toEqual([]);
     expect(result[1].map((r) => r.slug)).toEqual(["near", "far"]);
@@ -798,6 +824,57 @@ describe("relatedByVector", () => {
     expect(result.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
   });
 
+  it("reads NO epoch at all on a healthy render whose key was never burnt", async () => {
+    // The acceptance criterion, held at the door where it matters MOST. This is
+    // the render path — `findSimilarPages` runs on every article view — so a
+    // storage round-trip added here is one per page view, not one per search.
+    // The gate reads the epoch only when the key is already burnt or this read
+    // is about to burn it; a deployment that has never seen drift pays nothing.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const storage = getStorage();
+    const getIndex = vi.spyOn(storage, "getIndex");
+    try {
+      const results = await relatedByVector("anchor", 10);
+      expect(results.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      expect(
+        getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+      ).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("does NOT warn on a render the CALLER asked to be empty (topK: 0)", async () => {
+    // The `topK > 0` conjunct at this door. The query is for `topK + 1`, so at
+    // `topK: 0` the anchor eats the only slot, `others` is empty and `rejected`
+    // is non-zero on a corpus that has not drifted at all — burning the shared
+    // process-wide key on nothing.
+    await seedAnchorSet();
+    await seedVector("orphan", [0, 1, 0], "old-model", "z");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const zero = await relatedByVector("anchor", 0);
+      // The corpus GENUINELY drifts afterwards — the line a spurious burn would
+      // have swallowed.
+      for (const slug of ["anchor", "near", "mid", "far", "orphan"]) {
+        await removeEmbedding(slug);
+      }
+      await seedAnchorSet("old-model");
+      const real = await searchByVector("q", 10);
+      return [zero, real];
+    });
+
+    expect(result).toEqual([[], []]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("searchByVector: the model filter dropped every match");
+  });
+
   it("says nothing on a LONE page — an empty window is not evidence", async () => {
     await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
     process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
@@ -805,9 +882,9 @@ describe("relatedByVector", () => {
 
     const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
 
-    // `others` is empty: nothing was dropped, so the warn's second conjunct
-    // rejects it — a bare `else` would say "the filter dropped every match"
-    // about a corpus of one page.
+    // `others` is empty and the provider rejected NOTHING, so the warn's
+    // `rejected > 0` conjunct refuses it — a bare `else` would say "the filter
+    // dropped every match" about a corpus of one page.
     expect(result).toEqual([]);
     expect(warnings).toEqual([]);
   });
@@ -859,9 +936,11 @@ describe("relatedByVector", () => {
     const { result, warnings } = await withWarnSpy(async () => {
       // 1. Drifted: every anchor is stale, so the early return speaks.
       const one = await relatedByVector("anchor", 10);
-      // 2. The rebuild lands. This render's window matches WHOLLY and holds an
-      //    active-model vector → re-arm, silently.
+      // 2. The rebuild lands: the corpus is re-tagged and the epoch moves.
+      //    This render's window is non-empty and the epoch has advanced past
+      //    the one recorded at burn → re-arm, silently.
       await reseed(DEFAULT_TEST_MODEL);
+      await bumpRebuildEpoch();
       const two = await relatedByVector("anchor", 10);
       // 3. Drift again under the SAME active model.
       await reseed("old-model");
@@ -888,9 +967,11 @@ describe("relatedByVector", () => {
     // never DELETES, so a renamed or re-embedded page leaves its old vector
     // behind; rendering it makes the stale-anchor return fire on an otherwise
     // healthy corpus and burn the PROCESS-WIDE key on one page's evidence.
-    // `searchByVector` cannot produce this — its warn needs the filter to have
-    // dropped the WHOLE window. The cost is a suppressed line, never a wrong
-    // answer, and it is the price of the two doors sharing one piece of news.
+    // `searchByVector` cannot produce this — its warn needs the provider to
+    // have rejected EVERY candidate. The cost is a suppressed line, never a
+    // wrong answer, and it is the price of the two doors sharing one piece of
+    // news. The epoch bounds it: the next COMPLETED rebuild clears the key,
+    // where before DW-599 it stayed burnt for the rest of the process.
     await seedAnchorSet();
     await seedVector("orphan", [1, 0, 0], "old-model", "z"); // renamed page's leftover
     process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
@@ -920,10 +1001,11 @@ describe("relatedByVector", () => {
 
   it("says nothing when NO active model resolves", async () => {
     // No provider keys → `getEmbeddingModelName()` is null, and every branch is
-    // already false on it: `modelMatches` keeps everything, so the stale-anchor
-    // return never fires, the re-arm's proof conjunct compares a stored label
-    // against null, and the warn needs a non-empty `others` it kept nothing
-    // from. `drift:null` is structurally unspeakable — no null branch needed.
+    // already false on it: `modelMatches` is true against null, so the
+    // stale-anchor return never fires, `accept` degrades to accept-all and
+    // NOTHING is ever rejected, and the warn's `rejected > 0` conjunct
+    // therefore cannot hold. `drift:null` is structurally unspeakable — no null
+    // branch needed.
     await seedAnchorSet();
 
     const { result, warnings } = await withWarnSpy(() => relatedByVector("anchor", 10));
@@ -1200,10 +1282,10 @@ describe("searchByVector", () => {
     // operator has no breadcrumb for.
     //
     // The corpus is deliberately TWO vectors wide, and the rebuild re-tags
-    // BOTH. This is the file's only place a re-arm is directly OBSERVABLE — a
-    // missed one suppresses the second drift line below — so it is also the
-    // only place that can pin the re-arm over a window bigger than one match. A
-    // gate degraded to "exactly one match, exactly one kept" fails HERE.
+    // BOTH and moves the persisted epoch. This is the file's only place a
+    // re-arm is directly OBSERVABLE — a missed one suppresses the second drift
+    // line below — so it is also the only place that can pin the re-arm over a
+    // window bigger than one match.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     await seedVector("page-b", [0.9, 0.1, 0], "old-model", "b");
     process.env.OPENAI_API_KEY = "sk-test";
@@ -1219,11 +1301,12 @@ describe("searchByVector", () => {
     const { result, warnings } = await withWarnSpy(async () => {
       // 1. Drifted: the line is said.
       const one = await searchByVector("one", 10);
-      // 2. Rebuild — the WHOLE corpus is re-embedded under the ACTIVE model, so
-      //    the next query's window is non-empty and the filter drops nothing
-      //    from it. That whole-window match is the signal, and it re-arms
-      //    `drift:text-embedding-3-small`.
+      // 2. Rebuild — the WHOLE corpus is re-embedded under the ACTIVE model
+      //    and the rebuild COMPLETES, raising the persisted epoch. The next
+      //    query's window is non-empty and its epoch beats the one recorded at
+      //    burn, which re-arms `drift:text-embedding-3-small`.
       await reseed(DEFAULT_TEST_MODEL);
+      await bumpRebuildEpoch();
       const two = await searchByVector("two", 10);
       // 3. Drift again under the SAME active model.
       await reseed("old-model");
@@ -1236,26 +1319,24 @@ describe("searchByVector", () => {
     expect(warnings).toHaveLength(2);
     expect(warnings[1]).toBe(warnings[0]);
     expect(warnings[1]).toContain('active="text-embedding-3-small"');
-    // Pin the CAUSE too, not just the effect: the middle query is the one
-    // whose window matched WHOLLY, which is the only thing that re-arms.
-    // Asserting warnings alone would still pass if step 2 had somehow dropped
-    // everything and the second line came from somewhere else.
+    // Pin the CAUSE too, not just the effect: the middle query is the one that
+    // saw a non-empty window on a bumped epoch, which is the only thing that
+    // re-arms. Asserting warnings alone would still pass if step 2 had somehow
+    // rejected everything and the second line came from somewhere else.
     expect(result[0]).toEqual([]);
     expect(result[1].map((r) => r.slug)).toEqual(["page-a", "page-b"]);
     expect(result[2]).toEqual([]);
   });
 
   it("does NOT re-arm on a PARTIALLY rebuilt (MIXED) window", async () => {
-    // DW-404. `rebuildVectorStore` upserts page by page with no bulk swap, so
-    // mid-rebuild the store holds stale and re-tagged vectors together, and
-    // under the old `kept.length > 0` gate ONE kept match among them re-armed
-    // the key on the very condition the re-arm exists to detect the END of.
-    // The WHOLE-WINDOW gate fixes exactly that much and no more: a window the
-    // filter DROPPED something from stops counting as evidence a rebuild
-    // landed. It does NOT make the oscillation impossible — `queryEmbeddings`
-    // slices to topK BEFORE the filter, so a window too small to SEE the stale
-    // vector (the ledger's own reproduction uses `topK: 1`) is a whole-window
-    // match and still re-arms. Hence `topK: 10` here, wide enough to hold both.
+    // `rebuildVectorStore` upserts page by page with no bulk swap, so
+    // mid-rebuild the store holds stale and re-tagged vectors together — and
+    // the rebuild has NOT completed, so the persisted epoch has not moved. The
+    // window's composition is no longer what decides this (DW-598/DW-599): a
+    // partially rebuilt corpus is not evidence a rebuild landed because no
+    // rebuild has landed, whatever any one query happens to see. `topK: 10`
+    // here so the window is wide enough to hold both vectors; the `topK: 1`
+    // reproduction DW-404 could not close is pinned separately below.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     await seedVector("page-b", [0.9, 0.1, 0], "old-model", "b");
     process.env.OPENAI_API_KEY = "sk-test";
@@ -1276,27 +1357,293 @@ describe("searchByVector", () => {
       return [one, two, three, four];
     });
 
-    // Still ONE line: the mixed reads never re-armed, so step 3 stayed silent.
+    // Still ONE line: the mid-rebuild reads never re-armed, so step 3 stayed
+    // silent. A gate that compared the epoch for INEQUALITY rather than
+    // strictly-greater would also pass here — nothing bumps the counter in this
+    // test. The two pins that hold that line are "re-arms ONLY the read's OWN
+    // drift identity" (a key burnt at the CURRENT epoch, which `!==` would
+    // clear) and "treats a DEGRADED epoch read as no rebuild observed" below.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('active="text-embedding-3-small"');
-    // Pin the CAUSE as well as the effect. The middle reads DID keep a match —
-    // that is what the old gate re-armed on — and they still RETURN it: the
-    // narrowing is on the re-arm gate alone, never on what the door answers.
+    // Pin the CAUSE as well as the effect. The middle reads DID accept a match
+    // and they still RETURN it: the gate is on the re-arm alone, never on what
+    // the door answers.
     expect(result[0]).toEqual([]);
     expect(result[1].map((r) => r.slug)).toEqual(["page-b"]);
     expect(result[2].map((r) => r.slug)).toEqual(["page-b"]);
     expect(result[3]).toEqual([]);
   });
 
+  it("says the drift line ONCE across alternating topK:1 reads of a MIXED corpus (DW-598)", async () => {
+    // The reproduction DW-404 was reported with and neither of its narrowings
+    // could close. Two vectors, one stale and one re-tagged, and a window of
+    // exactly ONE: whichever vector a query happened to rank first decided
+    // everything. A query near the stale one returned a window of [stale],
+    // which the filter emptied → warn; a query near the current one returned a
+    // window of [current], which the filter left whole → re-arm. Alternating
+    // them produced FOUR drift lines over eight queries, where DW-310's
+    // throttle promises one.
+    //
+    // The fix is at the provider: `accept` narrows the candidate set BEFORE the
+    // top-K slice, so the stale vector can never occupy the single slot and
+    // every one of these reads sees the SAME window — the nearest ACCEPTED
+    // vector — whatever it was aiming at.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("page-b", [0, 1, 0], "old-model", "b");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said once, burning `drift:…-3-small`.
+      const first = await searchByVector("zero", 1);
+
+      // 2. `page-b` is re-tagged; `page-a` stays stale. No rebuild has
+      //    COMPLETED, so the epoch has not moved.
+      await removeEmbedding("page-b");
+      await seedVector("page-b", [0, 1, 0], DEFAULT_TEST_MODEL, "b");
+
+      // 3. Eight alternating reads at topK: 1 — four aimed at the stale vector,
+      //    four at the current one.
+      const rest: Array<Array<{ slug: string; score: number }>> = [];
+      for (let i = 0; i < 8; i++) {
+        mockEmbed.mockResolvedValue({
+          embedding: i % 2 === 0 ? [1, 0, 0] : [0, 1, 0],
+        });
+        rest.push(await searchByVector(`q${i}`, 1));
+      }
+      return [first, ...rest];
+    });
+
+    // ONE line, from step 1. The mixed phase neither warned nor re-armed.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("dropped every match");
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    // And the CAUSE: every mixed read answered with the accepted vector, even
+    // the four aimed squarely at the stale one. Filtering after the slice
+    // returns [] for those — which is what made them warn.
+    expect(result[0]).toEqual([]);
+    for (const window of result.slice(1)) {
+      expect(window.map((r) => r.slug)).toEqual(["page-b"]);
+    }
+  });
+
+  it("SPEAKS again after a rebuild even though a stale ORPHAN keeps the window mixed (DW-599)", async () => {
+    // The other reproduction, and the reason the epoch REPLACED the window
+    // conjuncts rather than joining them. `rebuildVectorStore` never DELETES,
+    // so a deleted, renamed or emptied page leaves a stale vector behind that
+    // no rebuild can ever re-tag. Every window containing it is permanently
+    // mixed, so a re-arm that also demanded a whole-window match stayed wedged
+    // shut for the rest of the process and a second genuine drift shipped
+    // silent — on any store that has ever deleted a page.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    await seedVector("orphan", [0.9, 0.1, 0], "old-model", "z");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    // The orphan is NOT in the page index — that is what makes it an orphan.
+    mockListWikiPages.mockResolvedValue([
+      { title: "Page A", slug: "page-a", summary: "Summary A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "Content A",
+      path: "/fake/page-a.md",
+    });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
+      const one = await searchByVector("one", 10);
+
+      // 2. A REAL, COMPLETED rebuild. It re-tags `page-a` and leaves the orphan
+      //    exactly where it was, so the corpus is permanently mixed from here
+      //    on — and it raises the epoch.
+      const rebuilt = await rebuildVectorStore();
+      expect(rebuilt.embedded).toBe(1);
+      expect(await getStorage().getEmbeddingById("orphan")).not.toBeNull();
+
+      // 3. A read over that permanently mixed corpus. The window is non-empty
+      //    and the epoch beats the one recorded at burn → re-arm.
+      const two = await searchByVector("two", 10);
+
+      // 4. The corpus drifts again under the SAME active model.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // TWO lines. Under any gate that also demanded a whole-window match this is
+    // ONE, because the orphan is in every window forever.
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
+    // Pin the CAUSE: step 3's window really was mixed — the orphan was rejected
+    // alongside the accepted `page-a` — and it re-armed anyway.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm when the epoch read FAILS, and never propagates", async () => {
+    // Every storage read on the warn/re-arm path is fail-soft. A throwing or
+    // unparseable epoch degrades to "no rebuild observed" — `0`, which is below
+    // every value that was ever recorded — so it can only ever FAIL to re-arm.
+    // It can never re-arm spuriously, and it can never turn a search into an
+    // error.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const storage = getStorage();
+    const realGetIndex = storage.getIndex.bind(storage);
+    // `incrementIndex` reads the counter through this same door, so the failure
+    // is armed around the door's reads only — otherwise the "a rebuild landed"
+    // step below could not land at all and the test would prove nothing.
+    let failEpochRead = true;
+    const getIndex = vi
+      .spyOn(storage, "getIndex")
+      .mockImplementation(async (key: string) => {
+        if (failEpochRead && key === EMBEDDING_REBUILD_EPOCH_KEY) {
+          throw new Error("index store down");
+        }
+        return realGetIndex(key);
+      });
+
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        // 1. Drifted: the burn's own epoch read throws, so it records 0.
+        const one = await searchByVector("one", 10);
+        // 2. A rebuild completes and the corpus is healthy — but the re-arm's
+        //    epoch read throws too, so nothing re-arms.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+        failEpochRead = false;
+        await bumpRebuildEpoch();
+        failEpochRead = true;
+        const two = await searchByVector("two", 10);
+        // 3. Drift again under the SAME active model — and stay silent.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const three = await searchByVector("three", 10);
+        return [one, two, three];
+      });
+
+      // The drift line was still said ONCE, the failure was warned about, and
+      // every read ANSWERED — degraded, never broken.
+      expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(1);
+      expect(warnings.some((w) => w.includes("rebuild-epoch read failed"))).toBe(true);
+      expect(result[0]).toEqual([]);
+      expect(result[1].map((r) => r.slug)).toEqual(["page-a"]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("treats a DEGRADED epoch read as no rebuild observed, even from a NON-ZERO watermark", async () => {
+    // The comparison is STRICTLY GREATER, and this is the pin that separates it
+    // from inequality. The key is burnt at epoch 2, then the re-arm read's
+    // `getIndex` fails and degrades to 0. `0 > 2` is false and the key stays
+    // burnt — but `0 !== 2` is TRUE, so an inequality gate re-arms on a FAILED
+    // READ and speaks a second line about a rebuild that never happened.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    // Two completed rebuilds BEFORE the burn, so the watermark is 2 and not 0.
+    await bumpRebuildEpoch();
+    await bumpRebuildEpoch();
+
+    const storage = getStorage();
+    const realGetIndex = storage.getIndex.bind(storage);
+    let failEpochRead = false;
+    const getIndex = vi
+      .spyOn(storage, "getIndex")
+      .mockImplementation(async (key: string) => {
+        if (failEpochRead && key === EMBEDDING_REBUILD_EPOCH_KEY) {
+          throw new Error("index store down");
+        }
+        return realGetIndex(key);
+      });
+
+    try {
+      const { warnings } = await withWarnSpy(async () => {
+        // 1. Drifted, with a working read: the burn records the real epoch, 2.
+        await searchByVector("one", 10);
+        // 2. The counter has NOT moved, and the read fails on top of that.
+        failEpochRead = true;
+        await searchByVector("two", 10);
+        await searchByVector("three", 10);
+      });
+
+      expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(1);
+      expect(warnings.some((w) => w.includes("rebuild-epoch read failed"))).toBe(true);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("treats a NON-INTEGER stored epoch as no rebuild observed", async () => {
+    // The other half of the fail-soft rule. A hand-edited `"x"`, a `1.5` or a
+    // `-1` is narrowed to `0` by the same `narrowIndexInteger` the provider's
+    // own `incrementIndex` applies, so a corrupt counter can only ever fail to
+    // re-arm — never re-arm on a value that means nothing.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const storage = getStorage();
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: the burn reads an absent counter as 0.
+      const one = await searchByVector("one", 10);
+      // 2. The stored value is garbage rather than missing. Read as a number it
+      //    would look like movement; narrowed, it is 0 and nothing re-arms.
+      await storage.putIndex(EMBEDDING_REBUILD_EPOCH_KEY, "x");
+      const two = await searchByVector("two", 10);
+      await storage.putIndex(EMBEDDING_REBUILD_EPOCH_KEY, 1.5);
+      const three = await searchByVector("three", 10);
+      await storage.putIndex(EMBEDDING_REBUILD_EPOCH_KEY, -3);
+      const four = await searchByVector("four", 10);
+      return [one, two, three, four];
+    });
+
+    // Still ONE line, and no failure was logged — a corrupt value is narrowed,
+    // not an error.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(result).toEqual([[], [], [], []]);
+  });
+
+  it("reads NO epoch at all on a healthy read whose key was never burnt", async () => {
+    // The whole point of gating the epoch read on `warnedMisconfigurations.has`
+    // rather than reading it unconditionally and comparing. A deployment that
+    // has never seen drift is the common case, and it must not pay a storage
+    // round-trip per query for a signal it will never look at.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const storage = getStorage();
+    const getIndex = vi.spyOn(storage, "getIndex");
+    try {
+      const results = await searchByVector("q", 10);
+      expect(results.map((r) => r.slug)).toEqual(["page-a"]);
+      expect(
+        getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+      ).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
   it("does NOT re-arm on a window carried ENTIRELY by UNLABELLED vectors", async () => {
-    // DW-405. `modelMatches` deliberately keeps vectors with no `model`
-    // metadata — dropping them would empty the corpus after a first deploy —
-    // so a window carried by one is a WHOLE-WINDOW match under DW-404's gate
-    // alone, and re-armed the key on a corpus where every LABELLED vector was
-    // still stale. Alternating queries then produced TWO drift lines where
-    // DW-310's throttle guarantees one. The positive-proof conjunct
-    // (`kept.some((m) => m.metadata.model === currentModel)`) closes it: the
-    // window has to demonstrably HOLD an active-model-labelled vector.
+    // `modelMatches` deliberately keeps vectors with no `model` metadata —
+    // dropping them would empty the corpus after a first deploy — so a window
+    // carried by one is fully ACCEPTED while proving nothing about the active
+    // model. Under the whole-window gate that re-armed the key on a corpus
+    // where every LABELLED vector was still stale, and alternating queries then
+    // produced TWO drift lines where DW-310's throttle guarantees one. The
+    // epoch closes it outright and without the mirror-image cost the
+    // positive-proof conjunct carried: no rebuild has completed, so nothing
+    // re-arms, whatever the window is made of.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
@@ -1304,13 +1651,14 @@ describe("searchByVector", () => {
     const { result, warnings } = await withWarnSpy(async () => {
       // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
       const one = await searchByVector("one", 10);
-      // 2. An UNLABELLED legacy vector joins the stale one. The filter keeps it
-      //    (no `model` key to compare) and drops `page-a`, so this is not even
-      //    a whole-window match…
+      // 2. An UNLABELLED legacy vector joins the stale one. The provider
+      //    accepts it (no `model` key to compare) and rejects `page-a`, so the
+      //    window is non-empty…
       await getStorage().upsertEmbedding("legacy", [0.9, 0.1, 0], { contentHash: "x" });
       const two = await searchByVector("two", 10);
-      // 3. …and with the stale vector gone the window is whole-window UNLABELLED,
-      //    which is the case DW-404 alone could not tell from a finished rebuild.
+      // 3. …and with the stale vector gone the window is entirely UNLABELLED
+      //    and nothing is rejected at all — the case the whole-window gate
+      //    could not tell from a finished rebuild.
       await removeEmbedding("page-a");
       const three = await searchByVector("three", 10);
       const four = await searchByVector("four", 10);
@@ -1322,12 +1670,13 @@ describe("searchByVector", () => {
       return [one, two, three, four, five];
     });
 
-    // Still ONE line: no read over an unlabelled-only window re-armed the key.
+    // Still ONE line: no rebuild completed, so no read re-armed the key.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('active="text-embedding-3-small"');
     // Pin the CAUSE too: the probe reads still RETURNED the unlabelled vector.
-    // The narrowing is on the re-arm gate alone, never on what the door
-    // answers — `modelMatches` stays permissive.
+    // The gate is on the re-arm alone, never on what the door answers —
+    // `modelMatches` stays permissive, and it stays permissive after being
+    // pushed down into the provider as `accept`.
     expect(result[0]).toEqual([]);
     expect(result[1].map((r) => r.slug)).toEqual(["legacy"]);
     expect(result[2].map((r) => r.slug)).toEqual(["legacy"]);
@@ -1336,12 +1685,13 @@ describe("searchByVector", () => {
   });
 
   it("DOES re-arm on a window holding an ACTIVE-model vector beside an unlabelled one", async () => {
-    // The other side of DW-405's line, and the reason the gate is a CONJUNCTION
-    // rather than `matches.every((m) => m.metadata.model === currentModel)`:
-    // the two differ on exactly this window, and the 2026-08-22 decision keeps
-    // it re-arming. `modelMatches` is permissive by design, and a legacy vector
-    // riding along with a genuinely rebuilt one is not evidence the rebuild
-    // failed — the filter dropped nothing AND an active-model vector is there.
+    // A legacy vector riding along with a genuinely rebuilt one is not evidence
+    // the rebuild failed. `modelMatches` is permissive by design, so the
+    // unlabelled vector is ACCEPTED and rides into the window; the rebuild
+    // completed, so the epoch moved; the window is non-empty; the key re-arms.
+    // A gate that inspected the window's LABELS instead — the whole-window or
+    // positive-proof conjuncts, or `matches.every(...)` — would let one
+    // unlabelled vector veto a rebuild that demonstrably landed.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
@@ -1349,12 +1699,13 @@ describe("searchByVector", () => {
     const { result, warnings } = await withWarnSpy(async () => {
       // 1. Fully drifted: the line is said, burning `drift:…-3-small`.
       const one = await searchByVector("one", 10);
-      // 2. Rebuilt: `page-a` is re-tagged under the ACTIVE model, and an
-      //    unlabelled legacy vector sits beside it. Whole-window match WITH
-      //    positive proof → re-arm.
+      // 2. Rebuilt: `page-a` is re-tagged under the ACTIVE model, the rebuild
+      //    completes and moves the epoch, and an unlabelled legacy vector sits
+      //    beside it in the accepted window → re-arm.
       await removeEmbedding("page-a");
       await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
       await getStorage().upsertEmbedding("legacy", [0.9, 0.1, 0], { contentHash: "x" });
+      await bumpRebuildEpoch();
       const two = await searchByVector("two", 10);
       // 3. Drift again under the SAME active model.
       await removeEmbedding("legacy");
@@ -1365,8 +1716,8 @@ describe("searchByVector", () => {
     });
 
     // Twice: the mixed labelled/unlabelled read re-armed, so the second drift
-    // is audible. Under `matches.every(...)` the unlabelled vector would have
-    // vetoed the re-arm and this would be ONE line.
+    // is audible. Under any label-inspecting gate the unlabelled vector would
+    // have vetoed the re-arm and this would be ONE line.
     expect(warnings).toHaveLength(2);
     expect(warnings[1]).toBe(warnings[0]);
     expect(warnings[1]).toContain('active="text-embedding-3-small"');
@@ -1375,26 +1726,71 @@ describe("searchByVector", () => {
     expect(result[2]).toEqual([]);
   });
 
-  it("does NOT re-arm on an EMPTY window", async () => {
-    // DW-404's non-empty requirement, now carried by DW-405's proof conjunct.
-    // `kept.length === matches.length` is vacuously true when the store returns
-    // nothing, so something has to reject an EMPTY window — an empty read
-    // establishes nothing at all, and re-arming on it would be strictly worse
-    // than the old gate. Since 2026-08-22 that is `kept.some(...)`, which is
-    // false on an empty array; the standalone `matches.length > 0` conjunct it
-    // subsumed is gone, so THIS pin is what fails if `some` is dropped.
+  it("re-arms on the EPOCH ALONE — no non-empty read in between (DW-599)", async () => {
+    // The re-arm carries no window conjunct at all, not even "the accepted
+    // window is non-empty". Gating on the window would leave DW-599 alive in a
+    // narrower form: a corpus that is rebuilt and then drifts again BEFORE any
+    // read happens to return something would fall into the warn branch forever,
+    // where `warnOnceAbout` silently declines to speak because the key is
+    // burnt. This drives both shapes of "nothing came back in between" — an
+    // EMPTY read, and no read at all — across a REAL `rebuildVectorStore`.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+    mockListWikiPages.mockResolvedValue([
+      { title: "Page A", slug: "page-a", summary: "Summary A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "page-a",
+      title: "Page A",
+      content: "Content A",
+      path: "/fake/page-a.md",
+    });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Drifted: the line is said, burning `drift:…-3-small` at epoch 0.
+      const one = await searchByVector("one", 10);
+
+      // 2. An EMPTY read — every vector gone. Nothing to accept, nothing
+      //    rejected: it says nothing and establishes nothing.
+      await removeEmbedding("page-a");
+      const two = await searchByVector("two", 10);
+
+      // 3. A REAL, COMPLETED rebuild raises the epoch…
+      const rebuilt = await rebuildVectorStore();
+      expect(rebuilt.embedded).toBe(1);
+
+      // 4. …and the corpus drifts again under the SAME active model with NO
+      //    read in between at all. This read is itself drifted: it must re-arm
+      //    on the epoch first and then speak, rather than being swallowed as a
+      //    repeat of step 1.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const three = await searchByVector("three", 10);
+      return [one, two, three];
+    });
+
+    // TWO lines. Under a re-arm gated on a non-empty window this is ONE: the
+    // empty read at step 2 could not re-arm, and step 4's drifted read never
+    // reaches a branch that could.
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
+    expect(warnings[1]).toBe(warnings[0]);
+    expect(result[0]).toEqual([]);
+    expect(result[1]).toEqual([]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("does NOT re-arm on an empty read with no rebuild behind it", async () => {
+    // The other half: an empty window is not itself evidence of anything. What
+    // re-arms is the epoch, and no rebuild has completed here.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
     const { result, warnings } = await withWarnSpy(async () => {
-      // 1. Drifted: the line is said, burning `drift:…-3-small`.
       const one = await searchByVector("one", 10);
-      // 2. Every vector is removed. This read sees an empty window: no hits to
-      //    drop, so nothing was proved and nothing may be re-armed.
       await removeEmbedding("page-a");
       const two = await searchByVector("two", 10);
-      // 3. Re-seeded fully STALE under the same active model.
       await seedVector("page-a", [1, 0, 0], "old-model", "a");
       const three = await searchByVector("three", 10);
       return [one, two, three];
@@ -1403,16 +1799,45 @@ describe("searchByVector", () => {
     // Still ONE line. The empty read neither warned nor re-armed.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(result).toEqual([[], [], []]);
+  });
+
+  it("does NOT warn on a topK the CALLER asked to be empty", async () => {
+    // `browse.ts` computes its limit as `Math.min(allowedSlugs.size, …)`, which
+    // is ZERO when a tag filter matches no page — so `searchByVector(q, 0)` is
+    // reachable in production. With the predicate applied BEFORE the slice, a
+    // perfectly healthy corpus carrying ONE stale orphan answers that query
+    // with an empty window and `rejected: 1`, which without the `topK > 0`
+    // conjunct burns `drift:<model>` on a corpus that has not drifted — and
+    // suppresses the line a later genuine drift would have spoken.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("orphan", [0, 1, 0], "old-model", "z");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. The zero-width query. Empty window, one rejected vector, healthy
+      //    corpus — and nothing to say about it.
+      const zero = await searchByVector("q", 0);
+      // 2. The corpus GENUINELY drifts under the same active model. This is the
+      //    line the spurious burn would have swallowed.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      const real = await searchByVector("q", 10);
+      return [zero, real];
+    });
+
     expect(result[0]).toEqual([]);
     expect(result[1]).toEqual([]);
-    expect(result[2]).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("searchByVector: the model filter dropped every match");
   });
 
   it("does NOT re-arm while the drift is still standing", async () => {
-    // The re-arm is gated on a window the filter dropped NOTHING from, not on
-    // a query having run. A corpus that keeps drifting has never proved itself
-    // answerable — every match is dropped — so the throttle must still hold
-    // across any number of queries.
+    // The re-arm is gated on a COMPLETED REBUILD, not on a query having run. A
+    // corpus that keeps drifting has had no rebuild land on it — and every
+    // candidate is rejected, so the window is empty too — so the throttle must
+    // hold across any number of queries.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     await seedVector("page-b", [0, 1, 0], "old-model", "b");
     process.env.OPENAI_API_KEY = "sk-test";
@@ -1424,21 +1849,26 @@ describe("searchByVector", () => {
       await searchByVector("three", 10),
     ]);
 
-    // The gate, not just the throttle: EVERY query kept nothing, which is the
-    // precondition for the re-arm never having run. Without this the test is
-    // satisfied by a `warnOnceAbout` that simply works, and would keep passing
-    // if the re-arm gate loosened to "a query ran" or "the store had hits".
-    // (It does NOT catch a loosening to `kept.length > 0` — nothing is ever
-    // kept here; the mixed-window pin above is what holds that line.)
+    // The gate, not just the throttle: EVERY query accepted nothing, which is
+    // the precondition for the re-arm never having run. Without this the test
+    // is satisfied by a `warnOnceAbout` that simply works, and would keep
+    // passing if the re-arm gate loosened to "a query ran" or "the store had
+    // hits". (It does NOT catch a loosening on the EPOCH half — no rebuild
+    // completes here; the mid-rebuild pin above is what holds that line.)
     expect(result).toEqual([[], [], []]);
     expect(warnings).toHaveLength(1);
   });
 
   it("re-arms ONLY the drift key — other warning FAMILIES keep theirs", async () => {
-    // The Set has four key namespaces and exactly one of them re-arms. A
-    // wholesale `warnedMisconfigurations.clear()` here would satisfy every
-    // drift test in this file while silently un-throttling the other three
-    // families — the DW-273/DW-278 noise those keys exist to suppress.
+    // The Map has four key namespaces and exactly one of them re-arms off the
+    // rebuild epoch. A wholesale `warnedMisconfigurations.clear()` here would
+    // satisfy every drift test in this file while silently un-throttling the
+    // other three families — the DW-273/DW-278 noise those keys exist to
+    // suppress. What holds that line is the KEY: `rearmDriftIfRebuilt` is only
+    // ever called with the read's own `drift:<model>`, so the other namespaces
+    // are unreachable from it. (The `null` epoch those families are recorded
+    // with is a defensive floor, not the guard — no caller passes their keys,
+    // so it is never reached.)
     await seedVector("kept", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
@@ -1457,9 +1887,9 @@ describe("searchByVector", () => {
     expect(first.result).toBe(DEFAULT_TEST_MODEL);
     expect(first.warnings).toHaveLength(2);
 
-    // A healthy read: the window is non-empty and the filter dropped nothing,
-    // so the re-arm runs. Both other keys are already burnt, so this window is
-    // silent.
+    // A healthy read: the window is non-empty, so the re-arm path runs (and
+    // finds no burnt drift key to act on). Both other keys are already burnt,
+    // so this window is silent.
     const read = await withWarnSpy(() => searchByVector("q", 10));
     expect(read.result.map((r) => r.slug)).toEqual(["kept"]);
     expect(read.warnings).toEqual([]);
@@ -1473,47 +1903,65 @@ describe("searchByVector", () => {
   });
 
   it("re-arms ONLY the read's OWN drift identity, not every drift key", async () => {
-    // Two active models are two drift identities. A read that is answerable
-    // under A says nothing about whether the corpus is answerable under B, so
-    // B's burnt key must survive A's re-arm.
+    // Two active models are two drift identities, each with its OWN watermark.
+    // A read answerable under A says nothing about whether the corpus is
+    // answerable under B, and — because the epochs recorded at burn differ — B
+    // must still be sitting on a watermark A's rebuild does not clear.
+    //
+    // The epochs are what make this observable at all. A is burnt at 0 and B at
+    // 1, and the counter then stops moving: A's read beats its own watermark
+    // (1 > 0) and re-arms, while B's read does not (1 > 1 is false) and stays
+    // burnt. That second half is ALSO this file's pin on the comparison being
+    // STRICTLY GREATER — under `!==` B re-arms here and speaks a fourth line.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
     const { warnings } = await withWarnSpy(async () => {
-      // 1. Drift under B — B's key is burnt.
-      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      // 1. Drift under A (the default model) — `drift:A` is burnt at epoch 0.
       await searchByVector("one", 10);
-      // 2. Switch to A and re-tag the WHOLE window under it: re-arms
-      //    `drift:A` only. Both halves matter. Leaving stale `page-a` beside a
-      //    newly A-tagged `page-b` would make the window MIXED, which no longer
-      //    re-arms at all (DW-404), and the assertions below would pass
-      //    vacuously. And the window is deliberately TWO matches wide, so what
-      //    re-arms `drift:A` is a real whole-window match rather than the
-      //    degenerate single-match one. (A MISSED re-arm cannot be caught here
-      //    — this test asserts B's key SURVIVES, and `drift:A` is never spoken
-      //    either way; the DW-332 rebuild pin above is what holds that line.)
+      // 2. A rebuild completes, then drift under B — `drift:B` is burnt at
+      //    epoch 1, one ahead of A's watermark.
+      await bumpRebuildEpoch();
+      process.env.EMBEDDING_MODEL = "text-embedding-3-large";
+      await searchByVector("two", 10);
+      // 3. Back to A, with the corpus re-tagged under it. The epoch has NOT
+      //    moved again, so A re-arms off the step-2 rebuild it never saw.
       delete process.env.EMBEDDING_MODEL;
       await removeEmbedding("page-a");
       await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
-      await seedVector("page-b", [0.9, 0.1, 0], DEFAULT_TEST_MODEL, "b");
-      const healthy = await searchByVector("two", 10);
-      expect(healthy.map((r) => r.slug)).toEqual(["page-a", "page-b"]);
-      // 3. Back to B, which is still drifted (both vectors are tagged A).
+      const healthy = await searchByVector("three", 10);
+      expect(healthy.map((r) => r.slug)).toEqual(["page-a"]);
+      // 4. A drifts again: it speaks, proving step 3 re-armed `drift:A`.
+      await removeEmbedding("page-a");
+      await seedVector("page-a", [1, 0, 0], "old-model", "a");
+      await searchByVector("four", 10);
+      // 5. B is still drifted, and its watermark is still the current epoch —
+      //    so it must stay SILENT. A wholesale `clear()` in place of the keyed
+      //    delete, or an inequality comparison, both speak here.
       process.env.EMBEDDING_MODEL = "text-embedding-3-large";
-      await searchByVector("three", 10);
+      await searchByVector("five", 10);
     });
 
-    // ONE line, from step 1. Step 3 stayed silent because B was never re-armed.
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('active="text-embedding-3-large"');
+    expect(warnings).toHaveLength(3);
+    expect(warnings[0]).toContain('active="text-embedding-3-small"');
+    expect(warnings[1]).toContain('active="text-embedding-3-large"');
+    expect(warnings[2]).toContain('active="text-embedding-3-small"');
   });
 
-  it("re-arms on the SAME snapshot the filter used, never a re-derived model", async () => {
-    // The mirror of the one-snapshot test below, for the DELETE. Re-deriving
-    // the model after `embedText`'s round-trip can straddle the 5 s cache
-    // expiry — and on the re-arm path that is worse than on the warn path: it
-    // would un-burn a DIFFERENT model's key on evidence about this one.
+  it("keeps BOTH halves of the drift gate on the SAME snapshot the filter used", async () => {
+    // The mirror of the one-snapshot test below, for the gate rather than the
+    // query. Re-deriving the model after `embedText`'s round-trip can straddle
+    // the 5 s cache expiry, and on this path that is worse than a wrong answer:
+    // the filter would compare against a model the query was never embedded
+    // with, drop a perfectly good hit, and BURN a drift key for a corpus that
+    // has not drifted.
+    //
+    // Both halves are now structurally tied to the snapshot by ONE `driftKey`
+    // local, computed once from `currentModel` and used by the warn and the
+    // re-arm alike, so they cannot diverge from each other. What is still
+    // separately observable — and what this pins — is the warn: a re-derived
+    // model makes the straddle read speak when it must stay silent.
     await seedVector("page-a", [1, 0, 0], "text-embedding-3-large", "a");
     const cfgSmall = {
       embeddingProvider: "openai",
@@ -1530,8 +1978,9 @@ describe("searchByVector", () => {
     expect(drifted.warnings[0]).toContain('active="text-embedding-3-small"');
 
     // 2. A query whose config cache turns over mid-`embed()`: the snapshot says
-    //    `-large` (and the hit is KEPT under it), while a re-read would say
-    //    `-small`. The re-arm must delete `drift:text-embedding-3-large`.
+    //    `-large` (under which the hit is ACCEPTED), while a re-read would say
+    //    `-small` (under which the provider would reject it, leaving an empty
+    //    window with `rejected: 1` — the warn's exact condition).
     mockLoadConfigSync.mockReturnValue(cfgLarge);
     mockEmbed.mockImplementation(async () => {
       mockLoadConfigSync.mockReturnValue(cfgSmall);
@@ -1541,8 +1990,8 @@ describe("searchByVector", () => {
     expect(straddle.result.map((r) => r.slug)).toEqual(["page-a"]);
     expect(straddle.warnings).toEqual([]);
 
-    // 3. `-small` is STILL burnt. A re-derived name would have deleted it in
-    //    step 2 and this genuinely-drifted read would speak a second time.
+    // 3. `-small` is STILL burnt: no rebuild has completed, so nothing may
+    //    re-arm it, and the genuinely-drifted read stays silent.
     mockLoadConfigSync.mockReturnValue(cfgSmall);
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
     const again = await withWarnSpy(() => searchByVector("three", 10));
@@ -1550,34 +1999,60 @@ describe("searchByVector", () => {
     expect(again.warnings).toEqual([]);
   });
 
-  it("does NOT re-arm when the query THROWS", async () => {
-    // The re-arm lives on the success path inside the `try`. A throw means no
-    // read completed, so nothing was established and the burnt key stays burnt.
+  it("does NOT even CONSULT the epoch when the query THROWS", async () => {
+    // The whole gate lives on the success path inside the `try`, AFTER the
+    // query resolves. A throw means no read completed, so nothing was
+    // established — and the epoch, which HAS moved here, is never even asked
+    // for. Asserting silence alone would not show that: a rebuild has landed,
+    // so the very next read that does complete re-arms and speaks, which is
+    // exactly what step 3 pins.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
+    const storage = getStorage();
     const { warnings } = await withWarnSpy(async () => {
-      await searchByVector("one", 10); // drifted → the line is said
-      // A mismatched-dimension vector makes the scan throw (the mid-migration
-      // case). `searchByVector` degrades to [] through its catch.
-      await seedVector("bad", [1, 0], "old-model", "b");
-      expect(await searchByVector("two", 10)).toEqual([]);
+      // 1. Drifted → the line is said, burning the key at epoch 0.
+      await searchByVector("one", 10);
+
+      // 2. A rebuild completes, and a mismatched-dimension vector makes the
+      //    scan throw (the mid-migration case). It is tagged with the ACTIVE
+      //    model deliberately: the predicate runs BEFORE the scoring now, so a
+      //    STALE bad vector would simply be rejected and never scored at all.
+      await bumpRebuildEpoch();
+      await seedVector("bad", [1, 0], DEFAULT_TEST_MODEL, "b");
+      const getIndex = vi.spyOn(storage, "getIndex");
+      try {
+        expect(await searchByVector("two", 10)).toEqual([]);
+        // Nothing past the query ran — not the warn, not the re-arm, not the
+        // storage read either of them would have needed.
+        expect(
+          getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+        ).toEqual([]);
+      } finally {
+        getIndex.mockRestore();
+      }
+
+      // 3. With the bad vector gone the next drifted read DOES complete, sees
+      //    the epoch it was denied in step 2, re-arms and speaks.
       await removeEmbedding("bad");
-      await searchByVector("three", 10); // still drifted
+      await searchByVector("three", 10);
     });
 
-    // Still ONE drift line. (The catch adds its own query-failed warning to the
-    // window, which is why this filters rather than counting everything.)
-    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(1);
+    // TWO drift lines — the second from step 3, never from step 2. (The catch
+    // adds its own query-failed warning to the window, which is why this
+    // filters rather than counting everything.)
+    expect(warnings.filter((w) => w.includes("embedding-model drift"))).toHaveLength(2);
     expect(warnings.some((w) => w.includes("query failed"))).toBe(true);
   });
 
   it("SPEAKS again after a REAL rebuildVectorStore, not a simulated one", async () => {
     // Every comment on this feature names `rebuildVectorStore` as the
     // in-process fix; this drives the actual function rather than hand-rolling
-    // it from remove+seed. It tests THROUGH the rebuild — nothing re-arms FROM
-    // it, which stays `searchByVector`'s job alone.
+    // it from remove+seed. It is now the canonical WIRING pin: every other
+    // re-arm test in this file bumps the epoch by hand, so this is the only one
+    // that proves `rebuildVectorStore` is what moves it. The door still does
+    // the re-arming — nothing re-arms FROM the rebuild.
     await seedVector("page-a", [1, 0, 0], "old-model", "a");
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
@@ -1598,7 +2073,8 @@ describe("searchByVector", () => {
       expect(rebuilt.embedded).toBe(1);
       expect(rebuilt.model).toBe(DEFAULT_TEST_MODEL);
 
-      // The rebuild re-tagged the vector, so this read keeps it and re-arms.
+      // The rebuild re-tagged the vector AND raised the epoch, so this read
+      // accepts it and re-arms.
       const healthy = await searchByVector("two", 10);
       expect(healthy.map((r) => r.slug)).toEqual(["page-a"]);
 
@@ -1658,12 +2134,12 @@ describe("searchByVector", () => {
     //
     // This mixed window is load-bearing twice over. It is the ONLY case that
     // fails if the warn branch is loosened back to a bare
-    // `else if (matches.length > 0)` — since DW-404 the two branches stopped
-    // being complementary, and a mixed window that legitimately returned
-    // results must fall through BOTH of them. It says nothing about the re-arm
-    // half — a re-arm is silent too, so silence cannot distinguish the two
-    // branches; that a mixed window does not re-arm is pinned above, by
-    // "does NOT re-arm on a PARTIALLY rebuilt (MIXED) window".
+    // `else if (rejected > 0)` — the two branches are not complementary, and a
+    // mixed window that legitimately returned results must fall through BOTH of
+    // them. It says nothing about the re-arm half — a re-arm is silent too, so
+    // silence cannot distinguish the two branches; that a mid-rebuild window
+    // does not re-arm is pinned above, by "does NOT re-arm on a PARTIALLY
+    // rebuilt (MIXED) window".
     await seedVector("kept", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
     await seedVector("dropped", [0, 1, 0], "old-model", "b");
     process.env.OPENAI_API_KEY = "sk-test";
@@ -1677,7 +2153,10 @@ describe("searchByVector", () => {
 
   it("stays SILENT when the store returns nothing at all", async () => {
     // An empty store is not a drifted one. Warning here would fire on every
-    // fresh deployment, before a single page had been embedded.
+    // fresh deployment, before a single page had been embedded. `rejected` is
+    // what tells the two apart: nothing was refused because there was nothing
+    // to refuse. (Before DW-598 the only way to distinguish them would have
+    // been a second, unfiltered probe query.)
     process.env.OPENAI_API_KEY = "sk-test";
     mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
 
@@ -2133,6 +2612,101 @@ describe("rebuildVectorStore", () => {
     expect(newPage!.metadata.model).toBe("text-embedding-3-small");
     // The orphan isn't actively purged (no bulk-clear on a managed index); it's
     // harmless because reads intersect with the readable slug set.
+  });
+
+  // -------------------------------------------------------------------------
+  // The rebuild epoch (DW-599)
+  // -------------------------------------------------------------------------
+
+  it("raises the rebuild epoch when at least one page was embedded", async () => {
+    // The wiring between the fix and its trigger. `searchByVector` and
+    // `relatedByVector` re-arm `drift:<model>` off this counter and nothing
+    // else, so a rebuild that does not move it is a rebuild no door can ever
+    // observe — the DW-599 silence, straight back.
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "a",
+      title: "A",
+      content: "Content A",
+      path: "/fake/a.md",
+    });
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    const storage = getStorage();
+    expect(await storage.getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBeNull();
+
+    const first = await rebuildVectorStore();
+    expect(first.embedded).toBe(1);
+    expect(await storage.getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBe(1);
+
+    // Monotonic: every completed rebuild moves it FORWARD by exactly one, which
+    // is what makes the doors' strictly-greater comparison sound.
+    await rebuildVectorStore();
+    expect(await storage.getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBe(2);
+  });
+
+  it("leaves the rebuild epoch untouched when NOTHING was embedded", async () => {
+    // A rebuild that stored no vector changed no vector, so it is not evidence
+    // a corpus was rebuilt and must not un-burn a drift warning. Both ways of
+    // getting there — an empty wiki and a wiki whose every page is skipped —
+    // land on the same `embedded === 0`.
+    mockListWikiPages.mockResolvedValue([]);
+    const empty = await rebuildVectorStore();
+    expect(empty.embedded).toBe(0);
+    expect(await getStorage().getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBeNull();
+
+    mockListWikiPages.mockResolvedValue([
+      { title: "Empty", slug: "empty", summary: "No content" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "empty",
+      title: "Empty",
+      content: "   ",
+      path: "/fake/empty.md",
+    });
+    const skipped = await rebuildVectorStore();
+    expect(skipped.embedded).toBe(0);
+    expect(skipped.skipped).toBe(1);
+    expect(await getStorage().getIndex(EMBEDDING_REBUILD_EPOCH_KEY)).toBeNull();
+  });
+
+  it("returns the RebuildResult unchanged when the epoch bump throws", async () => {
+    // Fail-soft, and in the direction that matters: the vectors have already
+    // landed by the time the bump runs, so a counter that will not increment
+    // must not turn a successful rebuild into a rejected one. The cost is one
+    // drift line that stays unsaid.
+    mockListWikiPages.mockResolvedValue([
+      { title: "A", slug: "a", summary: "A" },
+    ]);
+    mockReadWikiPage.mockResolvedValue({
+      slug: "a",
+      title: "A",
+      content: "Content A",
+      path: "/fake/a.md",
+    });
+    mockEmbed.mockResolvedValue({ embedding: [0.5, 0.5] });
+
+    const storage = getStorage();
+    const increment = vi
+      .spyOn(storage, "incrementIndex")
+      .mockRejectedValue(new Error("counter store down"));
+
+    try {
+      const { result, warnings } = await withWarnSpy(() => rebuildVectorStore());
+      expect(result).toEqual({
+        total: 1,
+        embedded: 1,
+        skipped: 0,
+        model: "text-embedding-3-small",
+      });
+      expect(warnings.some((w) => w.includes("rebuild-epoch bump failed"))).toBe(true);
+      // The vector still landed — the bump is the tail, never a precondition.
+      expect(await storage.getEmbeddingById("a")).not.toBeNull();
+    } finally {
+      increment.mockRestore();
+    }
   });
 
   it("calls onProgress callback", async () => {

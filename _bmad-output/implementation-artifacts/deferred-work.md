@@ -4766,7 +4766,9 @@ location: src/lib/embeddings.ts (searchByVector re-arm branch)
 source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: medium
 reason: `queryEmbeddings` sorts and slices to topK BEFORE `searchByVector` applies the model filter, so with `topK: 1` the window holds a single match; when that match is the current-tagged vector the window matches wholly and re-arms exactly as `kept.length > 0` did. Reproduced independently by two reviewers against the patched code: four lines before, four lines after. Closing it needs a corpus-level signal (the rebuild-completion epoch the ledger names as the alternative fix), which the 2026-08-22 decision did not authorize and this spec forbids.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-vector-drift-window-and-epoch
+resolution-undo: 5a9ca12ec2710c81241a481b30e96c1aa57a6ec18b9fabb5f7af2a92229d0531 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-29 Filter before the topK slice — Apply the model filter inside `queryEmbeddings` before the sort-and-slice, so the window `searchByVector` judges is a filtered one and a topK-1 window can no longer be wholly-current by accident. This stays inside the authorized whole-window gate rather than reopening the decision. Pin DW-404's own reproduction — topK 1, one stale-tagged and one current-tagged vector, alternating queries — as the case that must emit one line, not four.
 decision: 2026-08-29 Filter before the topK slice — Apply the model filter inside `queryEmbeddings` before the sort-and-slice, so the window `searchByVector` judges is a filtered one and a topK-1 window can no longer be wholly-current by accident. This stays inside the authorized whole-window gate rather than reopening the decision. Pin DW-404's own reproduction — topK 1, one stale-tagged and one current-tagged vector, alternating queries — as the case that must emit one line, not four.
 
@@ -4776,7 +4778,9 @@ location: src/lib/embeddings.ts (warnedMisconfigurations drift bullet; rebuildVe
 source_spec: `spec-dw-404-drift-rearm-whole-window.md`
 severity: medium
 reason: `rebuildVectorStore` never deletes (its own docblock says so) and `continue`s past pages with empty content or a failed embed, so a COMPLETED rebuild can still leave stale-tagged vectors behind. Every window containing one is mixed forever, and a mixed window no longer re-arms. Verified by probe: two vectors, a completed rebuild re-tagging only the live one, then a genuine re-drift under the same active model produced ONE warning where the DW-332 pins assert two. Documented in prose on `warnedMisconfigurations` by this change, but not mitigated and not pinned by any test — mitigating it would need the rebuild to delete, or persisted rebuild state, both Block-If conditions here.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-vector-drift-window-and-epoch
+resolution-undo: 5a9ca12ec2710c81241a481b30e96c1aa57a6ec18b9fabb5f7af2a92229d0531 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-29 Persist rebuild state and re-arm from it — Persist the completion of a rebuild (an epoch or generation stamp) and re-arm the drift warning from that rather than from the composition of a query window, so an orphan vector cannot wedge the warning shut. Leave `rebuildVectorStore`'s never-delete contract intact. Pin the probe's scenario: two vectors, a completed rebuild re-tagging only the live one, then a genuine re-drift must warn again.
 decision: 2026-08-29 Persist rebuild state and re-arm from it — Persist the completion of a rebuild (an epoch or generation stamp) and re-arm the drift warning from that rather than from the composition of a query window, so an orphan vector cannot wedge the warning shut. Leave `rebuildVectorStore`'s never-delete contract intact. Pin the probe's scenario: two vectors, a completed rebuild re-tagging only the live one, then a genuine re-drift must warn again.
 
@@ -6269,4 +6273,12 @@ location: src/lib/query.ts:410-433
 source_spec: `spec-dw-662-666-683-llm-finish-reason-honesty.md`
 severity: low
 reason: `query()` appends the sentence to `answer` for every format, including the baked HTML document / Marp deck built just above it. The client renders that string through `HtmlPreview`, whose `composeSrcDoc` (`src/lib/html.ts`) deletes anything after the document's closing `</html>` — so on a `content-filter` or a clean-document cap the sentence is discarded before display and before `/api/query/save`. Where the cap cut the document mid-tag there is no closing `</html>`, and the sentence is spliced into whatever unterminated tag, script or attribute the cut left. This is the same mechanism the stream route's DW-64/DW-547 notices already ride, so it predates this bundle — but DW-662's own reason text names `slides` and `html` as what `useStreamingQuery` sends to `/api/query` ALWAYS, which makes these the formats the door most needs to be honest on, and the half-answer-reading-as-whole failure survives there. No test in the repo drives a non-`stop` finish at a non-prose format.
+status: open
+
+### DW-758: On Cloudflare, `searchByVector` can say "the model filter dropped every match" about a corpus that is not drifted, because Vectorize ranks server-side and the pre-slice filter is best-effort over a 20
+origin: spec-deferred ffa4c65ea91c
+location: src/lib/storage/r2.ts (queryEmbeddings, Vectorize branch)
+source_spec: `spec-dw-598-599-vector-drift-window-and-epoch.md`
+severity: medium
+reason: `queryEmbeddings`' pre-slice guarantee is exact only where the provider ranks locally (filesystem, the R2 KV fallback). The Vectorize branch over-fetches to `VECTORIZE_FILTERED_TOPK` (20, the `returnMetadata: "all"` ceiling) and filters that window here, so on a corpus whose nearest 20 vectors are all stale the door returns `matches: []` with `rejected: 20` and burns `drift:<model>` — while perfectly current vectors sit at rank 21. The owner reads "rebuild embeddings" about a corpus that does not need it, and the burn then suppresses the next genuine drift line until a rebuild bumps the epoch. The bundle's own note named a Vectorize metadata filter plus a pre-created metadata index as the fix; that route was found unusable, not merely unbuilt — `modelMatches` is "model equals the active one OR the vector carries no model at all", Vectorize's filter grammar has no existence operator and excludes vectors missing the filtered field, so any expressible filter would drop unlabelled legacy v
 status: open

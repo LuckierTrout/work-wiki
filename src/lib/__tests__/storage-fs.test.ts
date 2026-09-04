@@ -482,7 +482,8 @@ describe("FilesystemStorageProvider", () => {
       await provider.upsertEmbedding("c", [1, 1], { label: "diagonal" });
 
       // Query with [1, 0] — should match "a" best, then "c", then "b"
-      const results = await provider.queryEmbeddings([1, 0], 3);
+      const { matches: results, rejected } = await provider.queryEmbeddings([1, 0], 3);
+      expect(rejected).toBe(0);
       expect(results).toHaveLength(3);
       expect(results[0].id).toBe("a");
       expect(results[0].score).toBeCloseTo(1.0);
@@ -501,7 +502,7 @@ describe("FilesystemStorageProvider", () => {
       await provider.upsertEmbedding("b", [0, 1], {});
       await provider.upsertEmbedding("c", [1, 1], {});
 
-      const results = await provider.queryEmbeddings([1, 0], 1);
+      const { matches: results } = await provider.queryEmbeddings([1, 0], 1);
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe("a");
     });
@@ -510,7 +511,7 @@ describe("FilesystemStorageProvider", () => {
       await provider.upsertEmbedding("a", [1, 0], { v: "1" });
       await provider.upsertEmbedding("a", [0, 1], { v: "2" });
 
-      const results = await provider.queryEmbeddings([0, 1], 1);
+      const { matches: results } = await provider.queryEmbeddings([0, 1], 1);
       expect(results[0].id).toBe("a");
       expect(results[0].metadata.v).toBe("2");
       expect(results[0].score).toBeCloseTo(1.0);
@@ -518,7 +519,62 @@ describe("FilesystemStorageProvider", () => {
 
     it("returns empty array when no embeddings exist", async () => {
       const results = await provider.queryEmbeddings([1, 0], 5);
-      expect(results).toEqual([]);
+      expect(results).toEqual({ matches: [], rejected: 0 });
+    });
+
+    // -----------------------------------------------------------------------
+    // The pre-slice filter (DW-598)
+    // -----------------------------------------------------------------------
+
+    it("applies `accept` BEFORE the top-K slice, so a rejected vector never takes the slot", async () => {
+      // The DW-598 shape in miniature: the NEAREST vector is the one the
+      // predicate refuses. Filtering after the slice would hand back an empty
+      // window on a corpus that holds a perfectly good accepted vector one rank
+      // down; filtering before it hands back that vector.
+      await provider.upsertEmbedding("stale", [1, 0], { model: "old" });
+      await provider.upsertEmbedding("current", [1, 1], { model: "new" });
+
+      const { matches, rejected } = await provider.queryEmbeddings(
+        [1, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      expect(matches).toHaveLength(1);
+      expect(matches[0].id).toBe("current");
+      expect(rejected).toBe(1);
+    });
+
+    it("counts every turned-away vector in `rejected`, not just the ones in the window", async () => {
+      await provider.upsertEmbedding("a", [1, 0], { model: "old" });
+      await provider.upsertEmbedding("b", [1, 1], { model: "old" });
+      await provider.upsertEmbedding("c", [0, 1], { model: "old" });
+
+      const { matches, rejected } = await provider.queryEmbeddings(
+        [1, 0],
+        1,
+        (metadata) => metadata.model === "new",
+      );
+      // A fully drifted store: nothing accepted, but the count says vectors
+      // were there — which is what tells this apart from an empty store.
+      expect(matches).toEqual([]);
+      expect(rejected).toBe(3);
+    });
+
+    it("reports `rejected: 0` on an empty store even with a predicate that accepts nothing", async () => {
+      const { matches, rejected } = await provider.queryEmbeddings([1, 0], 5, () => false);
+      expect(matches).toEqual([]);
+      expect(rejected).toBe(0);
+    });
+
+    it("ranks and slices identically with an accept-all predicate and with none", async () => {
+      await provider.upsertEmbedding("a", [1, 0], { model: "new" });
+      await provider.upsertEmbedding("b", [0, 1], { model: "new" });
+      await provider.upsertEmbedding("c", [1, 1], { model: "new" });
+
+      const unfiltered = await provider.queryEmbeddings([1, 0], 2);
+      const acceptAll = await provider.queryEmbeddings([1, 0], 2, () => true);
+      expect(acceptAll).toEqual(unfiltered);
+      expect(unfiltered.rejected).toBe(0);
     });
   });
 
@@ -528,7 +584,7 @@ describe("FilesystemStorageProvider", () => {
       await provider.upsertEmbedding("b", [0, 1], {});
 
       await provider.removeEmbedding("a");
-      const results = await provider.queryEmbeddings([1, 0], 10);
+      const { matches: results } = await provider.queryEmbeddings([1, 0], 10);
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe("b");
     });
@@ -536,7 +592,7 @@ describe("FilesystemStorageProvider", () => {
     it("is a no-op for non-existent id", async () => {
       await provider.upsertEmbedding("a", [1, 0], {});
       await provider.removeEmbedding("nonexistent");
-      const results = await provider.queryEmbeddings([1, 0], 10);
+      const { matches: results } = await provider.queryEmbeddings([1, 0], 10);
       expect(results).toHaveLength(1);
     });
   });

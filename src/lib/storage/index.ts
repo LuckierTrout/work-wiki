@@ -178,6 +178,8 @@ export type {
   FileEntry,
   EmbeddingEntry,
   EmbeddingMatch,
+  EmbeddingFilter,
+  EmbeddingQueryResult,
 } from "./types";
 export {
   ATOMIC_COUNTER_INDEX_KEYS,

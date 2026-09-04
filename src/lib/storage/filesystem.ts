@@ -20,7 +20,8 @@ import type {
   FileWithEtag,
   FileEntry,
   EmbeddingEntry,
-  EmbeddingMatch,
+  EmbeddingFilter,
+  EmbeddingQueryResult,
 } from "./types";
 import { mergeEmbeddingEntries } from "./types";
 import { narrowIndexInteger } from "./index-integer";
@@ -933,18 +934,34 @@ export class FilesystemStorageProvider implements StorageProvider {
     await this.saveEmbeddings(mergeEmbeddingEntries(stored, entries));
   }
 
+  /**
+   * Brute-force cosine ranking over the whole blob.
+   *
+   * `accept` is applied to the LOADED ENTRIES, before scoring, sorting and
+   * slicing — the pre-slice guarantee the interface states. This provider is
+   * the one DW-598 was reported against: with the filter applied afterwards a
+   * `topK: 1` query returned whichever vector was nearest and then dropped it,
+   * so the caller saw an empty window on a corpus that held a perfectly good
+   * accepted vector one rank down. Ranking only what the caller will accept
+   * costs nothing here — every vector is already in memory.
+   */
   async queryEmbeddings(
     vector: number[],
     topK: number,
-  ): Promise<EmbeddingMatch[]> {
+    accept?: EmbeddingFilter,
+  ): Promise<EmbeddingQueryResult> {
     const entries = await this.loadEmbeddings();
-    const scored = entries.map((e) => ({
+    const candidates = accept
+      ? entries.filter((e) => accept(e.metadata))
+      : entries;
+    const rejected = entries.length - candidates.length;
+    const scored = candidates.map((e) => ({
       id: e.id,
       score: cosineSimilarity(vector, e.vector),
       metadata: e.metadata,
     }));
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK);
+    return { matches: scored.slice(0, topK), rejected };
   }
 
   async getEmbeddingById(id: string): Promise<EmbeddingEntry | null> {

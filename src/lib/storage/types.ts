@@ -179,6 +179,38 @@ export interface EmbeddingMatch {
 }
 
 /**
+ * A predicate over a stored vector's metadata, handed to
+ * {@link StorageProvider.queryEmbeddings} to narrow the candidate set BEFORE
+ * the top-K reduction.
+ *
+ * Metadata only — deliberately not the vector or its score. The one caller is
+ * the embedding-model filter (`modelMatches`), which is a property of how a
+ * vector was WRITTEN, so a predicate that could see the score would invite
+ * ranking policy into a place the provider cannot honour uniformly.
+ */
+export type EmbeddingFilter = (metadata: Record<string, string>) => boolean;
+
+/**
+ * What {@link StorageProvider.queryEmbeddings} answers.
+ *
+ * `rejected` is the whole reason this is an object rather than an array: a
+ * caller that gets back an EMPTY `matches` cannot otherwise tell an empty store
+ * from a store whose every vector the predicate turned away, and those two
+ * states mean opposite things to a drift warning (DW-598). Without the count
+ * the only way to distinguish them is a second, unfiltered probe query.
+ */
+export interface EmbeddingQueryResult {
+  /** Accepted matches, sorted by descending similarity, at most `topK`. */
+  matches: EmbeddingMatch[];
+  /**
+   * How many stored vectors the `accept` predicate turned away. `0` whenever
+   * no predicate was supplied. On a provider that ranks SERVER-side this is
+   * window-scoped — see that provider's note.
+   */
+  rejected: number;
+}
+
+/**
  * Merge a set of incoming embeddings into a stored list, id-keyed.
  *
  * ONE implementation for the rule every provider's bulk upsert states: within
@@ -256,7 +288,19 @@ export interface BatchWriter {
  * `onlyIf.etagMatches` / `etagDoesNotMatch` is the isolate-safe primitive this
  * repo already uses for files.
  */
-export const ATOMIC_COUNTER_INDEX_KEYS = ["data-version"] as const;
+export const ATOMIC_COUNTER_INDEX_KEYS = [
+  "data-version",
+  // `embedding-rebuild-epoch` belongs here for the same reason `data-version`
+  // does, and one more. It is the evidence a completed `rebuildVectorStore`
+  // leaves behind, read by a per-query door to decide whether the
+  // `drift:<model>` warning may speak a second time (DW-599) — which is what
+  // turns that decision from a WINDOW signal into a CORPUS one. A counter kept
+  // in eventually-consistent KV would let a read observe a bump that has not
+  // landed for the next isolate, or miss one that has; and KV has no
+  // increment at all, so `incrementIndex` would have to fake atomicity with a
+  // read-modify-write that two isolates can both lose.
+  "embedding-rebuild-epoch",
+] as const;
 
 export function isAtomicCounterIndexKey(
   key: string,
@@ -568,11 +612,39 @@ export interface StorageProvider {
 
   /**
    * Find the nearest neighbors to a query vector.
+   *
+   * **The pre-slice guarantee.** When `accept` is supplied, a provider that
+   * ranks LOCALLY (filesystem; the R2 KV fallback) applies it to the whole
+   * candidate set BEFORE sorting and slicing, so `matches` is the top-K nearest
+   * ACCEPTED vectors rather than the accepted subset of the top-K nearest. The
+   * difference is not cosmetic: filtering afterwards lets a rejected vector
+   * occupy a slot and hand back a window that is empty, or wholly accepted,
+   * for reasons that have nothing to do with the corpus (DW-598).
+   *
+   * A provider that ranks SERVER-side (Vectorize) cannot express this
+   * predicate remotely — see the note on its implementation for why a
+   * metadata filter is the wrong tool — so it satisfies the guarantee
+   * BEST-EFFORT: it over-fetches to a bounded ceiling, filters that window
+   * locally, then slices to `topK`. A corpus deeper than the ceiling can still
+   * return fewer than `topK` accepted matches.
+   *
+   * `rejected` counts the stored vectors `accept` turned away — over the whole
+   * candidate set on a locally-ranking provider, over the over-fetched window
+   * on a server-ranking one. It is `0` when no predicate is supplied, and
+   * ranking, slicing and returned matches are then byte-identical to a call
+   * that never knew about filtering.
+   *
    * @param vector — the query embedding
-   * @param topK — maximum number of results to return
-   * @returns matches sorted by descending similarity score
+   * @param topK — maximum number of ACCEPTED results to return
+   * @param accept — optional metadata predicate applied before the top-K slice
+   * @returns accepted matches sorted by descending similarity, plus the count
+   *          of vectors the predicate turned away
    */
-  queryEmbeddings(vector: number[], topK: number): Promise<EmbeddingMatch[]>;
+  queryEmbeddings(
+    vector: number[],
+    topK: number,
+    accept?: EmbeddingFilter,
+  ): Promise<EmbeddingQueryResult>;
 
   /**
    * Fetch a single stored embedding (vector + metadata) by id, or null when it

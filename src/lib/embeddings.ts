@@ -8,6 +8,8 @@ import type { Ai } from "./storage/cloudflare-types";
 import { listWikiPages, readWikiPage } from "./wiki";
 import { getStorage } from "./storage";
 import type { EmbeddingEntry } from "./storage";
+import { isAtomicCounterIndexKey } from "./storage/types";
+import { narrowIndexInteger } from "./storage/index-integer";
 import {
   loadConfigSync,
   getEmbeddingModelOverride,
@@ -28,6 +30,98 @@ import { logger } from "./logger";
 // ---------------------------------------------------------------------------
 // Embedding provider detection
 // ---------------------------------------------------------------------------
+
+/**
+ * `embedding-rebuild-epoch` — how many times {@link rebuildVectorStore} has
+ * COMPLETED with at least one page embedded, on this store, ever.
+ *
+ * The same module shape as `data-version.ts` (a logical key, an
+ * `isAtomicCounterIndexKey` assertion at import time, a fail-soft reader, a
+ * fail-soft bump over the provider-atomic `incrementIndex`) and for the same
+ * reason: an in-process `getIndex`/`putIndex` pair is isolate-local, so two
+ * Workers isolates can both read `n` and both store `n + 1`, and an
+ * eventually-consistent read can store a value LOWER than what is there.
+ *
+ * What it exists for: the `drift:<active model>` warning re-arms on evidence
+ * that a rebuild has landed, and a per-query door has no other way to learn
+ * that. Every window-shaped proxy for it is a property of ONE query's window,
+ * which is why the previous proxies failed in both directions (DW-598, DW-599)
+ * — see {@link warnedMisconfigurations}. A counter that only a completed
+ * rebuild moves is corpus-level evidence, and it is monotonic, so a read that
+ * observes it moving FORWARD past a recorded value cannot be a stale read.
+ *
+ * Never decremented, never reset, never compared for equality by anything that
+ * matters — only `>` against a value recorded earlier in the same process.
+ */
+export const EMBEDDING_REBUILD_EPOCH_KEY = "embedding-rebuild-epoch";
+
+if (!isAtomicCounterIndexKey(EMBEDDING_REBUILD_EPOCH_KEY)) {
+  throw new Error(
+    `EMBEDDING_REBUILD_EPOCH_KEY ${JSON.stringify(EMBEDDING_REBUILD_EPOCH_KEY)} is not in ATOMIC_COUNTER_INDEX_KEYS`,
+  );
+}
+
+/**
+ * The current epoch, or `0` when it has never been written or cannot be read.
+ *
+ * `0` is deliberately indistinguishable from "absent" and from "the read
+ * failed", and it never propagates — a config-store hiccup must not turn a
+ * search into an error. What a degraded read costs depends on WHICH read
+ * degraded, and both directions are real:
+ *
+ *   · At RE-ARM time, `0` is below every value ever recorded, so the key stays
+ *     burnt and a genuine second drift goes unsaid until a read that can reach
+ *     the counter.
+ *   · At BURN time, `0` is recorded as the watermark, so the next read that
+ *     CAN reach a real epoch sees it as movement and re-arms with no rebuild
+ *     behind it — costing ONE extra drift line.
+ *
+ * The second is the same side of DW-310's trade this module takes everywhere:
+ * a suppressed second outage is the failure the throttle exists to prevent, and
+ * an extra line is cheap beside it. Recording `null` on a failed burn read
+ * would trade it for the opposite — a key nothing can ever clear, which is
+ * precisely DW-599.
+ *
+ * Narrowed through {@link narrowIndexInteger}, the same "what a stored counter
+ * is worth" rule `incrementIndex` itself applies, so a hand-edited `"x"`, a
+ * `1.5` or a `-1` reads as `0` here exactly as it does there.
+ */
+async function readRebuildEpoch(): Promise<number> {
+  try {
+    return narrowIndexInteger(
+      await getStorage().getIndex<unknown>(EMBEDDING_REBUILD_EPOCH_KEY),
+    );
+  } catch (err) {
+    logger.warn(
+      "embeddings",
+      "rebuild-epoch read failed; treating as no rebuild observed",
+      err,
+    );
+    return 0;
+  }
+}
+
+/**
+ * Raise the epoch by exactly one and return what was stored.
+ *
+ * Fail-soft on the same terms as `bumpDataVersion`: a store that rejects is
+ * warned about and answered with `0`, never thrown. The caller is the tail of a
+ * rebuild whose vectors have ALREADY landed, and turning a successful rebuild
+ * into a failed one to report a counter problem would be the wrong trade — the
+ * cost of a lost bump is one drift line that stays unsaid.
+ */
+async function bumpRebuildEpoch(): Promise<number> {
+  try {
+    return await getStorage().incrementIndex(EMBEDDING_REBUILD_EPOCH_KEY);
+  } catch (err) {
+    logger.warn(
+      "embeddings",
+      "rebuild-epoch bump failed; the drift warning stays burnt",
+      err,
+    );
+    return 0;
+  }
+}
 
 /**
  * Misconfiguration identities this process has already spoken about.
@@ -62,57 +156,84 @@ import { logger } from "./logger";
  * TWO keys re-arm, and both for the same reason: the state behind them is
  * fixable IN-process, so "it is still broken" has to be askable again.
  *
- *   - `drift:<active model>` (DW-332). Drift is cleared by `rebuildVectorStore`
- *     with no restart involved — and a per-read door already computes the
- *     closest signal such a door has that a rebuild has landed: a
- *     WHOLE-WINDOW model match that POSITIVELY holds an active-model-labelled
- *     vector — `kept.length === matches.length && kept.some((m) =>
- *     m.metadata.model === currentModel)`, in the same branch chain that
- *     decides whether to warn — so it re-arms that key there through
- *     `rearmWarningAbout`. Without it, a corpus that drifts, is rebuilt, and
- *     drifts again under the SAME active model would be silent for the rest of
- *     the process.
+ *   - `drift:<active model>` (DW-332). Drift is cleared by
+ *     `rebuildVectorStore` with no restart involved, so the key has to be able
+ *     to re-arm in-process. The evidence it re-arms on is a PERSISTED REBUILD
+ *     EPOCH: `rebuildVectorStore` raises {@link EMBEDDING_REBUILD_EPOCH_KEY} by
+ *     one when it completes having embedded at least one page, the epoch
+ *     observed at BURN time is recorded beside the key in this Map, and a later
+ *     read re-arms when a freshly-read epoch is STRICTLY GREATER than the
+ *     recorded one. That is the WHOLE gate — there is no conjunct about the
+ *     window at all, not even "the accepted window is non-empty": a read that
+ *     returns nothing still knows a rebuild landed, and gating on the window
+ *     would leave the key wedged for a corpus that is rebuilt and re-drifts
+ *     before any read happens to return something, which is DW-599 in a
+ *     narrower form. Every burnt key is therefore consulted on every read
+ *     through either door, warn branch included, and the re-arm runs BEFORE the
+ *     warn so a rebuild that landed since the burn makes the current read's own
+ *     drift a NEW piece of news rather than a suppressed repeat. Without the
+ *     re-arm, a
+ *     corpus that drifts, is rebuilt, and drifts again under the SAME active
+ *     model would be silent for the rest of the process.
  *
- *     This is the CANONICAL statement of the gate; the re-arm branch points
+ *     This is the CANONICAL statement of the gate; both doors' branches point
  *     here rather than restating it. The gate read `kept.length > 0`
- *     (2026-08-21) and was narrowed twice by decisions dated 2026-08-22 (both
- *     narrowings landed 2026-08-29). First DW-404 added the whole-window half:
- *     `rebuildVectorStore` upserts page by page with no bulk swap, so a
- *     half-finished rebuild leaves stale and current vectors in the same
- *     window, and ONE kept match among them re-armed the key on the very
- *     condition the re-arm exists to detect the END of. What that buys is
- *     exactly this and only this: a window the filter demonstrably DROPPED
- *     something from stops counting as evidence a rebuild landed. Then DW-405
- *     added the positive-proof half, because whole-window is not evidence on
- *     its own: `modelMatches` deliberately KEEPS unlabelled legacy vectors (for
- *     RESULTS — dropping them would empty the corpus after a first deploy), so
- *     a window carried entirely by unlabelled vectors matched WHOLLY and
- *     re-armed the key on a corpus where every labelled vector was still stale.
- *     Requiring one kept vector tagged with the ACTIVE model closes that. The
- *     conjunct also subsumes DW-404's non-empty requirement, since `some` is
- *     false on an empty array; the separate `matches.length > 0` was dropped as
- *     redundant. A window holding one active-model vector BESIDE an unlabelled
- *     one still re-arms, deliberately: a legacy vector riding along with a
- *     genuinely rebuilt one is not evidence the rebuild failed.
+ *     (2026-08-21), was narrowed to a WHOLE-WINDOW match (DW-404) and then to
+ *     require a POSITIVELY active-model-labelled vector in it (DW-405), and
+ *     those window-composition conjuncts are now GONE — replaced, not joined.
+ *     Every one of them was a property of ONE query's window, and a window is
+ *     not the corpus:
  *
- *     The signal is still narrower than "the corpus is healthy", and the
- *     remaining gaps are LIVE, not hypothetical. `queryEmbeddings` sorts and
- *     slices to topK BEFORE the filter, so a window too small to SEE the stale
- *     vectors is a whole-window match and re-arms anyway (DW-598, open) —
- *     DW-404's own reproduction uses `topK: 1` and still oscillates under this
- *     gate exactly as it did under the old one, so neither narrowing closes
- *     that reproduction. And both narrowings cost something in the OTHER
- *     direction. `rebuildVectorStore` never DELETES, and it skips pages with
- *     empty content or a failed embed, so a stale ORPHAN vector — a deleted,
- *     renamed, or emptied page — leaves every window that contains it
- *     permanently mixed (DW-599, open); past that point this key can never
- *     re-arm for that model again, and a second genuine drift ships silent for
- *     the rest of the process. The proof conjunct has the mirror-image cost: a
- *     corpus whose vectors are ALL unlabelled can never re-arm either, so if
- *     such a corpus ever burns this key it stays burnt. That is harmless in the
- *     normal case — an all-unlabelled corpus keeps every match, so the warn
- *     branch never fires and the key is never burnt in the first place — but
- *     permanent if the key was burnt before the labels went missing.
+ *       · DW-598. `queryEmbeddings` sorted and sliced to topK BEFORE the model
+ *         filter ran, so a window too small to SEE the stale vectors was a
+ *         whole-window match and re-armed anyway; DW-404's own reproduction
+ *         (`topK: 1`, alternating tags) oscillated under both narrowings. That
+ *         half is fixed at the PROVIDER: the filter is now an `accept`
+ *         predicate handed to `queryEmbeddings` and applied BEFORE the top-K
+ *         reduction, so the window a door judges is the top-K nearest ACCEPTED
+ *         vectors and the provider reports how many it turned away. The warn
+ *         reads `matches.length === 0 && rejected > 0` — an empty window with
+ *         nothing rejected is an empty STORE, which is not drift.
+ *
+ *       · DW-599. `rebuildVectorStore` never DELETES, and skips pages with
+ *         empty content or a failed embed, so one stale ORPHAN vector — a
+ *         deleted, renamed or emptied page — leaves every window containing it
+ *         permanently mixed. Any re-arm that also demanded a whole-window match
+ *         therefore stayed wedged for the rest of the process, and a second
+ *         genuine drift shipped silent. The epoch is corpus-level evidence that
+ *         an orphan cannot contradict, which is exactly why the window
+ *         conjuncts are replaced rather than kept as an additional AND: keeping
+ *         them would re-open this. The mirror-image cost the proof conjunct had
+ *         — an all-unlabelled corpus that could never re-arm — goes with them.
+ *
+ *     The comparison is STRICTLY GREATER, never inequality: `incrementIndex` is
+ *     monotonic, so a read holding a stale (lower) epoch cannot re-arm, and a
+ *     read that another query burnt underneath sees its own epoch equal to the
+ *     recorded one. A failed or unparseable epoch read is `0`, which likewise
+ *     can only ever fail to re-arm. And the epoch is read only in the two
+ *     states that need it — about to burn, or already burnt — never on the
+ *     common healthy read, so this costs no storage round-trip per query on a
+ *     process that has never seen drift.
+ *
+ *     The residue, stated once here rather than papered over. A provider that
+ *     ranks SERVER-side (Vectorize) cannot evaluate `accept` remotely — a
+ *     metadata filter would drop unlabelled legacy vectors from what the door
+ *     RETURNS, not merely from what it judges — so it over-fetches to a bounded
+ *     ceiling and filters locally; on a corpus deeper than that ceiling the
+ *     window is best-effort and `rejected` is window-scoped. The epoch is read
+ *     AFTER the query resolves, so a rebuild that completes in that gap has its
+ *     bump recorded as the BURN's own watermark: the key then stays burnt
+ *     through the whole of the rebuild that was already running, and clears
+ *     only on the NEXT one — erring toward silence, for one cycle. (The mirror
+ *     case, a burn whose epoch read failed and recorded `0`, errs toward
+ *     speaking and costs one extra line; see {@link readRebuildEpoch}.)
+ *     Concurrent interleaving of a burn and a bump is NOT closed here (DW-602).
+ *
+ *     A BURNT key costs one epoch read per read through either door until it
+ *     clears — the gate has to ask "has a rebuild landed since?" on every read,
+ *     and the answer only lives in storage. A healthy read on a key that was
+ *     never burnt issues NONE, which is the common case and the one that had to
+ *     stay free.
  *
  *     TWO doors share this key (DW-406): `searchByVector`, the query path, and
  *     `relatedByVector`, the page-render path behind `findSimilarPages`. They
@@ -120,40 +241,38 @@ import { logger } from "./logger";
  *     ACTIVE MODEL and nothing else, so drift is ONE piece of news however it
  *     is found — a deployment whose only vector traffic is related-page
  *     lookups still hears it, and a rebuild proven out through either door
- *     re-arms the key the other burnt. `relatedByVector` reads BOTH branches
+ *     re-arms the key the other burnt. `relatedByVector` reads both branches
  *     off the window with the anchor's own vector already dropped: the anchor
- *     was vetted by that door's stale-anchor early return, so counting it as
- *     proof would let a page vouch for a corpus it is the only current member
- *     of. That early return warns too — on a fully drifted corpus every anchor
- *     is stale, so control never reaches the window and the door would
- *     otherwise be mute in precisely the case the second door exists for.
+ *     was vetted by that door's stale-anchor early return, so counting it would
+ *     let a page vouch for a corpus it is the only current member of. That
+ *     early return warns too — on a fully drifted corpus every anchor is stale,
+ *     so control never reaches the window and the door would otherwise be mute
+ *     in precisely the case the second door exists for.
  *
  *     Sharing one key costs one accepted FALSE POSITIVE, which only the render
- *     door can produce. A stale ORPHAN anchor — a renamed or re-embedded page
- *     whose old vector `rebuildVectorStore` never deletes — is a stale anchor
- *     on an otherwise healthy corpus, so its early return burns the
- *     process-wide key on ONE page's evidence and suppresses the line a later
- *     genuine drift would have spoken. `searchByVector` cannot produce it: its
- *     warn requires the filter to have dropped the WHOLE window. This is the
- *     mirror of DW-599's cost and is accepted deliberately — a burnt key costs
- *     a suppressed line, not a wrong answer, and giving the two doors separate
- *     keys would cost drift being one piece of news.
+ *     door can produce, and which the epoch does not change. A stale ORPHAN
+ *     anchor — a renamed or re-embedded page whose old vector
+ *     `rebuildVectorStore` never deletes — is a stale anchor on an otherwise
+ *     healthy corpus, so its early return burns the process-wide key on ONE
+ *     page's evidence and suppresses the line a later genuine drift would have
+ *     spoken until the next rebuild bumps the epoch. `searchByVector` cannot
+ *     produce it: its warn requires the provider to have rejected every
+ *     candidate. Accepted deliberately — a burnt key costs a suppressed line,
+ *     not a wrong answer, and giving the two doors separate keys would cost
+ *     drift being one piece of news.
  *
  *     What is NOT a case here: a null active model. `currentModel` is typed
  *     `string | null`, but past `searchByVector`'s `if (!queryEmbedding)`
  *     guard it cannot BE null — `embedText` and `getEmbeddingModelName` read
  *     the same `cfg` snapshot and both refuse only on a missing provider
  *     (`resolveEmbeddingModelName` returns `string`, never null), so a null
- *     model has already returned `[]` before this branch chain runs. Neither
- *     branch needs a null case; do not add one. In `relatedByVector` null IS
- *     reachable — it embeds nothing, so no guard refuses first — and needs no
- *     case either, because every branch there is already false on it:
- *     `modelMatches` is true against a null model, so the stale-anchor return
- *     never fires and `kept` is `others` elementwise; the re-arm's proof
- *     conjunct compares a stored `string | undefined` against null and cannot
- *     hold; and the warn's `kept.length === 0` then implies an empty `others`,
- *     which its own second conjunct rejects. `drift:null` is structurally
- *     unspeakable — do not add a branch to say so.
+ *     model has already returned `[]` before this branch chain runs. In
+ *     `relatedByVector` null IS reachable — it embeds nothing, so no guard
+ *     refuses first — and needs no case either, because `modelMatches` is true
+ *     against a null model: the stale-anchor return never fires, `accept`
+ *     degrades to accept-all so nothing is ever rejected, and the warn's
+ *     `rejected > 0` conjunct therefore cannot hold. `drift:null` is
+ *     structurally unspeakable — do not add a branch to say so.
  *   - `ollama-endpoint:sdk-default` (DW-401, repointed by DW-70). The embedding
  *     endpoint (`cfg.embeddingBaseUrl`) is STORE-ONLY and moved by a save, so an
  *     owner who reads the line and fills the field in changes the answer without
@@ -185,28 +304,83 @@ import { logger } from "./logger";
  * misconfiguration, and keying on it would have re-armed the warning for every
  * distinct number of hits.
  */
-const warnedMisconfigurations = new Set<string>();
+/**
+ * Key → the rebuild epoch observed when that key was burnt.
+ *
+ * A Map rather than a Set because the drift key's re-arm needs to compare
+ * "what has happened since" against "what had happened when we spoke", and
+ * membership alone cannot express that. `null` is the value for the four
+ * identities that carry no epoch — they are env/binding state, not corpus
+ * state — and is distinct from `undefined`, which means the key was never
+ * burnt at all. `has`/`get` therefore both still answer "have we spoken about
+ * this", and the epoch rides along only where it means something.
+ */
+const warnedMisconfigurations = new Map<string, number | null>();
 
-/** Emit `message` the first time `key` is seen; later repeats are silent. */
-function warnOnceAbout(key: string, message: string): void {
+/**
+ * Emit `message` the first time `key` is seen; later repeats are silent.
+ *
+ * `observedEpoch` is recorded beside the key for the identities whose re-arm is
+ * epoch-gated (`drift:<model>`), and left `null` for the rest. It is read at
+ * the CALL SITE rather than here so the epoch belongs to the same read that
+ * decided to warn, and so a warn on a path with no epoch to speak of does not
+ * pay a storage round-trip to record one.
+ */
+function warnOnceAbout(
+  key: string,
+  message: string,
+  observedEpoch: number | null = null,
+): void {
   if (warnedMisconfigurations.has(key)) return;
-  warnedMisconfigurations.add(key);
+  warnedMisconfigurations.set(key, observedEpoch);
   logger.warn("embeddings", message);
 }
 
 /**
- * Forget `key` so the NEXT occurrence of this identity speaks again.
+ * Re-arm an epoch-gated key if — and only if — a rebuild has completed since it
+ * was burnt.
  *
- * The counterpart to `warnOnceAbout`, for the misconfigurations a caller can
- * see EVIDENCE of ending from inside the process: embedding-model drift,
- * cleared by a corpus rebuild (DW-332) — see the re-arm branch in
- * `searchByVector` for how strong that evidence is and is not — and an Ollama
- * endpoint that starts resolving again after a save (DW-401), re-armed in
- * {@link selectOllama} off the ladder's own answer. Deleting a key
- * that was never set is a silent no-op, so a caller can re-arm unconditionally
- * on its success path without first asking whether it ever warned. Named rather
- * than an inline `.delete` at the call site so the Set keeps exactly two
- * mutators plus the test-only reset, all greppable from here.
+ * `observedEpoch` is the caller's own freshly-read epoch; the comparison is
+ * STRICTLY GREATER against the epoch recorded at burn time. Monotonicity is
+ * what makes that sound: `incrementIndex` only ever moves the counter forward,
+ * so a read holding a stale (lower) epoch cannot re-arm, a read that another
+ * query burnt underneath sees its own epoch EQUAL to the recorded one, and a
+ * degraded `0` from a failed read is below every value that was ever recorded.
+ * The gate can fail to speak; it cannot speak on nothing.
+ *
+ * A key that was never burnt (`undefined`) is a silent no-op, so a caller can
+ * call this unconditionally on its healthy path. A key burnt with a `null`
+ * epoch — one of the non-drift identities — is never re-armed here, which is
+ * correct: those have no corpus-level evidence of ending, and the one that does
+ * re-arm off other evidence uses {@link rearmWarningAbout}.
+ *
+ * See {@link warnedMisconfigurations} for why the epoch REPLACED the
+ * window-composition conjuncts this gate used to carry rather than joining
+ * them (DW-598, DW-599).
+ */
+function rearmDriftIfRebuilt(key: string, observedEpoch: number): void {
+  const epochAtBurn = warnedMisconfigurations.get(key);
+  if (epochAtBurn == null) return;
+  if (observedEpoch > epochAtBurn) warnedMisconfigurations.delete(key);
+}
+
+/**
+ * Forget `key` so the NEXT occurrence of this identity speaks again —
+ * UNCONDITIONALLY, whatever epoch the key was burnt with.
+ *
+ * The counterpart to `warnOnceAbout` for a misconfiguration whose evidence of
+ * ending is the caller's OWN answer rather than a corpus-level counter: an
+ * Ollama endpoint that starts resolving again after a save (DW-401), re-armed
+ * in {@link selectOllama} off the ladder's own answer. Embedding-model drift
+ * does NOT come through here — its evidence is a rebuild that a per-query door
+ * cannot observe directly, so it goes through {@link rearmDriftIfRebuilt} and
+ * its epoch comparison instead.
+ *
+ * Deleting a key that was never set is a silent no-op, so a caller can re-arm
+ * unconditionally on its success path without first asking whether it ever
+ * warned. Named rather than an inline `.delete` at the call site so the Map
+ * keeps exactly three mutators plus the test-only reset, all greppable
+ * from here.
  */
 function rearmWarningAbout(key: string): void {
   warnedMisconfigurations.delete(key);
@@ -1121,22 +1295,28 @@ export function cosineSimilarity(a: number[], b: number[]): number {
  * would be silent until something re-armed it. The model that embedded and the
  * model the filter compares against have to come from the same read.
  *
- * The key does re-arm, on exactly one signal: a read from which the model
- * filter dropped NOTHING and which kept at least one vector labelled with the
- * ACTIVE model (DW-332, narrowed by decisions dated 2026-08-22: DW-404 from
- * "keeps at least one match", then DW-405 to require that positive proof). That is the
- * closest a per-query door gets to "a rebuild has landed", and it is what makes
- * rebuild-then-re-drift under the same model audible a second time. It is not
- * corpus proof and does not claim to be — topK slicing runs BEFORE the filter,
- * one stale orphan can wedge the key shut for good, and an all-unlabelled
- * corpus can never re-arm at all; the residue is spelled out once, on
- * `warnedMisconfigurations`. That delete is subject to this same one-snapshot
- * rule, and for a sharper reason than the warn: it must use the SAME
- * `currentModel` the filter compared against, never a second
- * `getEmbeddingModelName()` read, because a
- * re-derived name straddling the expiry would re-arm a DIFFERENT identity than
- * the one this read said anything about — un-burning some other model's key on
- * evidence that has nothing to do with it.
+ * The key does re-arm, on exactly one signal and no conjunct beside it: a
+ * PERSISTED REBUILD EPOCH strictly greater than the one recorded when the key
+ * was burnt (DW-332; the window-composition conjuncts DW-404 and DW-405 added
+ * were REPLACED by the epoch, closing DW-598 and DW-599). A completed
+ * `rebuildVectorStore` is what moves that counter, so this is corpus-level
+ * evidence a per-query door can actually see, and it is what makes
+ * rebuild-then-re-drift under the same model audible a second time — including
+ * when no read in between returned anything. The residue it does not close is
+ * spelled out once, on `warnedMisconfigurations`.
+ *
+ * The model filter itself now travels DOWN into the provider as an `accept`
+ * predicate, so it is applied before the top-K slice and this door judges the
+ * top-K nearest ACCEPTED vectors rather than the accepted subset of the top-K
+ * nearest. That is DW-598's half of the fix and it lives at the provider, not
+ * here.
+ *
+ * The re-arm is subject to this same one-snapshot rule, and for a sharper
+ * reason than the warn: it must use the SAME `currentModel` the filter compared
+ * against, never a second `getEmbeddingModelName()` read, because a re-derived
+ * name straddling the expiry would re-arm a DIFFERENT identity than the one
+ * this read said anything about — un-burning some other model's key on evidence
+ * that has nothing to do with it.
  */
 export async function searchByVector(
   query: string,
@@ -1151,12 +1331,21 @@ export async function searchByVector(
   // the store still holds vectors of the previous dimension). Degrade to "no
   // vector results" rather than propagating — callers fuse/fall back on [].
   try {
-    const matches = await getStorage().queryEmbeddings(queryEmbedding, topK);
-    const kept = matches.filter((m) => modelMatches(m.metadata, currentModel));
-    // If the store returned hits but the model filter dropped ALL of them, the
-    // active model name has drifted from what every stored vector was embedded
-    // with — vector search is silently disabled until a re-embed/rebuild. Leave
-    // a breadcrumb so that's diagnosable rather than looking like "no matches".
+    // The model filter goes DOWN to the provider so it narrows the candidate
+    // set BEFORE the top-K slice (DW-598). `rejected` is how many stored
+    // vectors it turned away, which is the only thing that tells an EMPTY
+    // STORE (nothing to rank) apart from a FULLY DRIFTED one (everything
+    // ranked, everything refused).
+    const { matches, rejected } = await getStorage().queryEmbeddings(
+      queryEmbedding,
+      topK,
+      (metadata) => modelMatches(metadata, currentModel),
+    );
+    const driftKey = `drift:${currentModel}`;
+    // If the store held vectors but the filter refused ALL of them, the active
+    // model name has drifted from what every stored vector was embedded with —
+    // vector search is silently disabled until a re-embed/rebuild. Leave a
+    // breadcrumb so that's diagnosable rather than looking like "no matches".
     //
     // Said ONCE per drifted ACTIVE MODEL per process (DW-310). The drift is
     // standing state — it holds for every query until the corpus is rebuilt —
@@ -1164,51 +1353,46 @@ export async function searchByVector(
     // every search anyone ran against a drifted corpus. The key is the active
     // model name and nothing else: the query is not part of the identity, and
     // neither is how many hits it happened to return, which is why the sentence
-    // no longer names `matches.length` — keying on a per-query count would have
-    // re-armed the warning for every distinct number of hits and defeated the
-    // throttle. An active model that CHANGES and still drifts is a new identity
-    // and speaks again.
-    if (kept.length === matches.length && kept.some((m) => m.metadata.model === currentModel)) {
-      // Re-arm (DW-332; narrowed by decisions dated 2026-08-22, first by
-      // DW-404 and then by DW-405). Both conjuncts are load-bearing: a
-      // WHOLE-WINDOW match the model filter dropped NOTHING from, which
-      // POSITIVELY holds a vector labelled with the active model. The second conjunct also carries
-      // DW-404's non-empty half — `some` is false on an empty array, of which
-      // `kept.length === matches.length` is vacuously true — which is why
-      // there is no separate `matches.length > 0` here any more.
-      //
-      // Read off `kept` rather than `matches`: the two are interchangeable
-      // only because the first conjunct already forces them equal elementwise,
-      // and reading the proof off `kept` keeps this branch talking about what
-      // the filter KEPT, exactly as the warn branch below does.
-      //
-      // The state this turns on is INVISIBLE to the type system: `EmbeddingMeta`
-      // declares `model: string`, but `queryEmbeddings` hands back
-      // `Record<string, string>` and legacy vectors genuinely carry no `model`
-      // key, so on those this comparison is `undefined === string` at runtime.
-      // The types say unlabelled cannot happen; the corpus says otherwise.
-      //
-      // What each conjunct buys, what it costs, and the residue neither closes
-      // are stated once on `warnedMisconfigurations` rather than restated here.
-      rearmWarningAbout(`drift:${currentModel}`);
-    } else if (kept.length === 0 && matches.length > 0) {
-      // Spelled out rather than left as a bare `else`: since the two
-      // narrowings above (DW-404, then DW-405) the branches are no longer
-      // complementary, and TWO kinds of window have to fall through BOTH of
-      // them. A MIXED window — which legitimately returned results — fails the
-      // re-arm's first conjunct and is not empty of kept matches. A
-      // whole-window UNLABELLED read fails only the second (`kept.length ===
-      // matches.length` holds, `some` does not) and likewise kept matches. A
-      // bare `else` would warn "the filter dropped every match" about both,
-      // which is false of each.
-      warnOnceAbout(
-        `drift:${currentModel}`,
-        "searchByVector: the model filter dropped every match " +
-          `(active="${currentModel}") — likely embedding-model drift; ` +
-          "rebuild embeddings.",
-      );
+    // does not name a count — keying on a per-query count would have re-armed
+    // the warning for every distinct number of hits and defeated the throttle.
+    // An active model that CHANGES and still drifts is a new identity and
+    // speaks again.
+    //
+    // `topK > 0` is load-bearing, not defensive. `browse.ts` computes its limit
+    // as `Math.min(allowedSlugs.size, …)`, which is ZERO when a tag filter
+    // matches no page — and with the predicate now applied BEFORE the slice, a
+    // perfectly healthy corpus carrying one stale orphan answers a `topK: 0`
+    // query with an empty window and a non-zero `rejected`. An empty window the
+    // CALLER asked for is not evidence of anything, least of all drift.
+    const drifted = matches.length === 0 && rejected > 0 && topK > 0;
+    const burnt = warnedMisconfigurations.has(driftKey);
+    if (burnt || drifted) {
+      // ONE epoch read, shared by both halves. It is read only in these two
+      // states — the key is already burnt, or this read is about to burn it —
+      // so a healthy process that has never seen drift issues none at all.
+      const epoch = await readRebuildEpoch();
+      // Re-arm FIRST, and on the epoch ALONE: a rebuild that landed since the
+      // burn makes this read's own drift, if it is drifted, a NEW piece of news
+      // rather than a repeat. Gating the re-arm on a non-empty window instead
+      // would leave DW-599 alive in a narrower form — a corpus that is rebuilt
+      // and re-drifts before any read returns anything would fall into the warn
+      // branch forever, where `warnOnceAbout` silently declines to speak.
+      if (burnt) rearmDriftIfRebuilt(driftKey, epoch);
+      // If the store held vectors and the predicate refused ALL of them, the
+      // active model name has drifted from what every stored vector was
+      // embedded with. The epoch goes in with the burn as the watermark a later
+      // read has to beat.
+      if (drifted) {
+        warnOnceAbout(
+          driftKey,
+          "searchByVector: the model filter dropped every match " +
+            `(active="${currentModel}") — likely embedding-model drift; ` +
+            "rebuild embeddings.",
+          epoch,
+        );
+      }
     }
-    return kept.map((m) => ({ slug: m.id, score: m.score }));
+    return matches.map((m) => ({ slug: m.id, score: m.score }));
   } catch (err) {
     logVectorQueryFailure("searchByVector", err);
     return [];
@@ -1240,17 +1424,30 @@ export async function relatedByVector(
   if (!self) return [];
 
   const currentModel = getEmbeddingModelName();
+  const driftKey = `drift:${currentModel}`;
   if (!modelMatches(self.metadata, currentModel)) {
     // On a fully drifted corpus EVERY anchor is stale, so control never reaches
     // the window below — without this line the render path stays mute in
     // exactly the case that made it worth wiring up (DW-406). Keyed on the
     // ACTIVE MODEL, the same identity `searchByVector` uses, so drift is one
     // piece of news whichever door finds it; see `warnedMisconfigurations`.
+    //
+    // The epoch is read once and used for BOTH halves, in the same order the
+    // window branches below use: re-arm first, then burn. Re-arming here is
+    // what bounds the one false positive this door alone can produce (a stale
+    // ORPHAN anchor on a healthy corpus) — a rebuild that lands after such a
+    // burn clears it on the very next render, where before DW-599 the key
+    // stayed shut for the rest of the process. Without the re-arm on THIS
+    // path the orphan is rendered on every page view, so control would never
+    // reach a branch that could clear it.
+    const epoch = await readRebuildEpoch();
+    rearmDriftIfRebuilt(driftKey, epoch);
     warnOnceAbout(
-      `drift:${currentModel}`,
+      driftKey,
       "relatedByVector: the anchor's own vector is from another model " +
         `(active="${currentModel}") — likely embedding-model drift; ` +
         "rebuild embeddings.",
+      epoch,
     );
     return [];
   }
@@ -1260,29 +1457,46 @@ export async function relatedByVector(
   // this runs unguarded on the article render path (findSimilarPages), so
   // degrade to "no related pages" rather than failing the page.
   try {
-    const matches = await getStorage().queryEmbeddings(self.vector, topK + 1);
-    // Split what used to be one combined filter, because the drift gate has to
-    // be read off the window MINUS the anchor. The anchor was already vetted by
-    // the early return above, so counting it as proof of a landed rebuild would
-    // let a page vouch for a corpus it is the only current member of.
+    // The model filter travels down as `accept`, so it narrows the candidate
+    // set BEFORE the top-K slice (DW-598) — the anchor's own vector is the only
+    // thing this door still drops locally, and only because the provider
+    // predicate sees metadata, not ids.
+    const { matches, rejected } = await getStorage().queryEmbeddings(
+      self.vector,
+      topK + 1,
+      (metadata) => modelMatches(metadata, currentModel),
+    );
+    // The drift gate has to be read off the window MINUS the anchor. The anchor
+    // was already vetted by the early return above, so counting it as evidence
+    // would let a page vouch for a corpus it is the only current member of.
     const others = matches.filter((m) => m.id !== slug);
-    const kept = others.filter((m) => modelMatches(m.metadata, currentModel));
-    if (kept.length === others.length && kept.some((m) => m.metadata.model === currentModel)) {
-      // The canonical gate, copied predicate-for-predicate from
-      // `searchByVector` (DW-332, narrowed by DW-404 then DW-405). What each
-      // conjunct buys and costs is stated once on `warnedMisconfigurations`;
-      // both doors re-arm the SAME key, so a rebuild proven out on a page
-      // render un-burns the line a search would otherwise never say again.
-      rearmWarningAbout(`drift:${currentModel}`);
-    } else if (kept.length === 0 && others.length > 0) {
-      warnOnceAbout(
-        `drift:${currentModel}`,
-        "relatedByVector: the model filter dropped every match " +
-          `(active="${currentModel}") — likely embedding-model drift; ` +
-          "rebuild embeddings.",
-      );
+    // The same shape as `searchByVector`, including the `topK > 0` conjunct:
+    // this door queries for `topK + 1`, so at `topK: 0` the anchor eats the
+    // only slot, `others` is empty and `rejected` can be non-zero on a corpus
+    // that has not drifted at all. An empty window the caller asked for is not
+    // evidence of anything.
+    const drifted = others.length === 0 && rejected > 0 && topK > 0;
+    const burnt = warnedMisconfigurations.has(driftKey);
+    if (burnt || drifted) {
+      // The canonical gate, shaped exactly as `searchByVector`'s (DW-332,
+      // re-anchored on the rebuild epoch by DW-598/DW-599): one epoch read,
+      // re-arm on the epoch alone, then burn. What it buys and costs is stated
+      // once on `warnedMisconfigurations`; both doors re-arm the SAME key, so a
+      // rebuild observed on a page render un-burns the line a search would
+      // otherwise never say again.
+      const epoch = await readRebuildEpoch();
+      if (burnt) rearmDriftIfRebuilt(driftKey, epoch);
+      if (drifted) {
+        warnOnceAbout(
+          driftKey,
+          "relatedByVector: the model filter dropped every match " +
+            `(active="${currentModel}") — likely embedding-model drift; ` +
+            "rebuild embeddings.",
+          epoch,
+        );
+      }
     }
-    return kept.slice(0, topK).map((m) => ({ slug: m.id, score: m.score }));
+    return others.slice(0, topK).map((m) => ({ slug: m.id, score: m.score }));
   } catch (err) {
     logVectorQueryFailure("relatedByVector", err);
     return [];
@@ -1416,6 +1630,31 @@ export async function rebuildVectorStore(
     // already on its way out.
     await flushPending();
   }
+
+  // The rebuild is over and whatever landed has landed. Raise the persisted
+  // epoch so the `drift:<model>` warning may speak again about a corpus that
+  // drifts AFTER this point (DW-599) — a per-query door has no other way to
+  // observe that a rebuild completed, and every window-shaped proxy for it was
+  // wrong in one direction or the other. See `warnedMisconfigurations`.
+  //
+  // Gated on `embedded > 0`: a rebuild that stored nothing — every page empty,
+  // every embed refused, every flush rejected — changed no vector, so it is not
+  // evidence of anything and must not un-burn a warning.
+  //
+  // Fail-soft and AFTER the tail flush, in that order for a reason: the never-
+  // delete contract and the per-page/per-flush fail-soft behaviour above are
+  // untouched, and a counter that will not increment must not turn a rebuild
+  // whose vectors are already stored into a rejected one. The cost of a lost
+  // bump is one drift line that stays unsaid.
+  //
+  // OUTSIDE the `try/finally`, deliberately. `readWikiPage` and `onProgress`
+  // sit outside the per-page catch, so a throw from either escapes the loop:
+  // the `finally` still flushes and those vectors DO land, but this line never
+  // runs. That is the intended reading of the counter — it means a rebuild
+  // COMPLETED, not that some vectors were written — and its cost is named
+  // rather than hidden: after such a throw the corpus may be partly re-embedded
+  // while the drift key stays burnt until the next rebuild that finishes.
+  if (embedded > 0) await bumpRebuildEpoch();
 
   return { total, embedded, skipped, model: modelName };
 }

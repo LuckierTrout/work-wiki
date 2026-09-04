@@ -18,8 +18,9 @@ import type {
   FileInfo,
   FileWithEtag,
   FileEntry,
-  EmbeddingMatch,
   EmbeddingEntry,
+  EmbeddingFilter,
+  EmbeddingQueryResult,
 } from "./types";
 import {
   ATOMIC_COUNTER_INDEX_KEYS,
@@ -75,6 +76,30 @@ const EMBEDDINGS_KV_KEY = "_idx:embeddings";
  * fits works, and the merge that precedes it already fixed the ordering.
  */
 const VECTORIZE_UPSERT_CHUNK = 1000;
+
+/**
+ * The FLOOR this branch raises a filtered Vectorize request to.
+ *
+ * Vectorize ranks SERVER-side, so the pre-slice guarantee cannot be met by
+ * asking it for the top-K accepted vectors — see the comment on
+ * `queryEmbeddings` for why a server-side metadata filter is not the answer
+ * either. The branch therefore asks for a window at least this wide, filters it
+ * here, and slices to the caller's `topK`. Without the floor a filtered
+ * `topK: 1` would hand the single slot to whichever vector the predicate is
+ * about to refuse, which is the DW-598 shape exactly.
+ *
+ * It is a floor, never a cap: the request is `Math.max(topK, …)`, so a caller
+ * asking for more than this still gets its own width. Narrowing the door's
+ * ANSWER to buy a tidier filtered window would be the worse trade — callers
+ * already pass 30 (`RELATED_CANDIDATE_POOL`) and 64 (`browse.ts`).
+ *
+ * 20 is where the documented `topK` ceiling for `returnMetadata: "all"` sits,
+ * and this branch needs the metadata to evaluate the predicate at all. A caller
+ * that already asks for more than that is a PRE-EXISTING condition of this
+ * branch — it requested `returnMetadata: "all"` at that width before the
+ * predicate existed — which this change neither introduces nor fixes.
+ */
+const VECTORIZE_FILTERED_TOPK = 20;
 
 // ---------------------------------------------------------------------------
 // Provider
@@ -426,31 +451,73 @@ export class R2StorageProvider implements StorageProvider {
     );
   }
 
+  /**
+   * Two branches, and only one of them can honour the pre-slice guarantee
+   * exactly.
+   *
+   * The KV fallback ranks locally over a blob it already holds in memory, so it
+   * mirrors the filesystem provider precisely: filter, then score, sort and
+   * slice.
+   *
+   * Vectorize ranks SERVER-side. When `accept` is supplied this branch
+   * over-fetches to {@link VECTORIZE_FILTERED_TOPK}, filters that window here,
+   * and slices to `topK` — so `rejected` is WINDOW-SCOPED, not corpus-scoped: it
+   * counts what the over-fetched window turned away and says nothing about
+   * vectors ranked below it. A corpus deeper than the ceiling can therefore
+   * still hand back fewer than `topK` accepted matches, and the caller's drift
+   * gate is stated in those terms rather than pretending otherwise (see
+   * `warnedMisconfigurations` in `embeddings.ts`).
+   *
+   * A server-side metadata filter is NOT the fix, and is deliberately not used.
+   * The only caller's predicate is "the vector's model is the active one OR the
+   * vector carries no model at all" — unlabelled legacy vectors are KEPT on
+   * purpose, since dropping them empties the corpus after a first deploy.
+   * Vectorize's filter grammar is `$eq/$ne/$lt/$lte/$gt/$gte/$in/$nin` over a
+   * field with no existence operator, and a vector missing the filtered field
+   * is excluded, so every expressible approximation would drop the legacy
+   * vectors from what this door RETURNS, not merely from what the caller
+   * judges. That is a change to the answer, which the caller forbids.
+   */
   async queryEmbeddings(
     vector: number[],
     topK: number,
-  ): Promise<EmbeddingMatch[]> {
+    accept?: EmbeddingFilter,
+  ): Promise<EmbeddingQueryResult> {
     if (this.vectorize) {
       const result = await this.vectorize.query(vector, {
-        topK,
+        topK: accept ? Math.max(topK, VECTORIZE_FILTERED_TOPK) : topK,
         returnMetadata: "all",
       });
-      return result.matches.map((m) => ({
+      const window = result.matches.map((m) => ({
         id: m.id,
         score: m.score,
         metadata: (m.metadata as Record<string, string>) ?? {},
       }));
+      if (!accept) return { matches: window, rejected: 0 };
+      const kept = window.filter((m) => accept(m.metadata));
+      return {
+        matches: kept.slice(0, topK),
+        rejected: window.length - kept.length,
+      };
     }
 
-    // Fallback: brute-force cosine similarity in KV
+    // Fallback: brute-force cosine similarity in KV. Local ranking, so the
+    // predicate narrows the candidate set BEFORE the sort and slice — exactly
+    // as the filesystem provider does.
     const entries = await this.loadEmbeddingsFromKV();
-    const scored = entries.map((e) => ({
+    const candidates = accept
+      ? entries.filter((e) => accept(e.metadata))
+      : entries;
+    const scored = candidates.map((e) => ({
       id: e.id,
       score: cosineSimilarity(vector, e.vector),
       metadata: e.metadata,
     }));
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, topK);
+    return {
+      matches: scored.slice(0, topK),
+      rejected: entries.length - candidates.length,
+    };
   }
 
   async getEmbeddingById(id: string): Promise<EmbeddingEntry | null> {

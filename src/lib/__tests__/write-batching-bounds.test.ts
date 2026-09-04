@@ -209,17 +209,27 @@ const REBUILD_PAGES = 40;
 const REBUILD_FLUSH_BATCH = EMBEDDING_FLUSH_BATCH;
 
 /**
- * How many times a rebuild may store the whole embeddings index.
+ * The ONE non-flush index write a completed rebuild makes: the rebuild-epoch
+ * bump at its tail (DW-599). It is an `incrementIndex` — on this provider a
+ * read-modify-write of the counter file serialized under `withFileLock`, whose
+ * single WRITE half goes through the same atomic-write path as any other index
+ * store and so costs one barrier. Flat, not per page.
+ */
+const REBUILD_EPOCH_STORES = 1;
+
+/**
+ * How many barriers a rebuild may spend.
  *
- * `ceil(N / 32)` flushes plus one of slack, so a change to where the tail flush
- * falls does not need this file edited. MEASURED at N = 40: 2 stores (one full
- * batch of 32, one tail of 8), against a bound of 3.
+ * `ceil(N / 32)` index flushes plus the epoch bump, plus one of slack so a
+ * change to where the tail flush falls does not need this file edited.
+ * MEASURED at N = 40: 2 index stores (one full batch of 32, one tail of 8) plus
+ * 1 epoch bump = 3, against a bound of 4.
  *
- * Before this change it was N: the provider reloaded, rewrote and fsynced the
- * entire blob once per vector.
+ * Before the batching change the flush half was N: the provider reloaded,
+ * rewrote and fsynced the entire blob once per vector.
  */
 const REBUILD_INDEX_STORES =
-  Math.ceil(REBUILD_PAGES / REBUILD_FLUSH_BATCH) + 1;
+  Math.ceil(REBUILD_PAGES / REBUILD_FLUSH_BATCH) + REBUILD_EPOCH_STORES + 1;
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -482,12 +492,15 @@ describe("write barrier bounds — the loop paths", () => {
     const used = barriers();
 
     expect(result.embedded).toBe(REBUILD_PAGES);
-    // The ONLY writes a rebuild makes are the index stores, so the barrier
-    // count IS the number of times the whole index was rewritten. Asserted
-    // exactly at the DERIVED flush count — one full batch plus the tail — and
-    // then against the recorded ceiling, so neither a regression nor an
-    // unexplained improvement passes silently.
-    expect(used).toBe(Math.ceil(REBUILD_PAGES / REBUILD_FLUSH_BATCH));
+    // The only writes a rebuild makes are the index flushes and the one
+    // rebuild-epoch bump at its tail, so the barrier count IS those. Asserted
+    // exactly at the DERIVED total — one full batch, the tail, and the epoch —
+    // and then against the recorded ceiling, so neither a regression nor an
+    // unexplained improvement passes silently. The epoch term is FLAT: a
+    // rebuild of ten thousand pages still bumps it once.
+    expect(used).toBe(
+      Math.ceil(REBUILD_PAGES / REBUILD_FLUSH_BATCH) + REBUILD_EPOCH_STORES,
+    );
     expect(used).toBeLessThanOrEqual(REBUILD_INDEX_STORES);
     for (let i = 0; i < REBUILD_PAGES; i++) {
       expect(await getStorage().getEmbeddingById(`vec-${i}`)).not.toBeNull();
