@@ -1,4 +1,4 @@
-import { callLLM, callLLMStream, hasLLMKey } from "./llm";
+import { callLLMStream, callLLMWithFinish, hasLLMKey } from "./llm";
 import {
   LLM_DEADLINE_RESEARCH_COPY,
   LLM_RESEARCH_LENGTH_CAP_COPY,
@@ -91,8 +91,9 @@ export { extractThinking } from "./research-text";
  * partial `results` (they are worth seeing) and the wiki untouched.
  *
  * IT DOES NOT TAKE THE AD-9 INGEST COMPILE LOCK. `withDurableLock("ingest-llm:…")`
- * is one-compile-per-owner and belongs to `ingest()`. Research calls `callLLM`
- * directly and leases a research slot instead
+ * is one-compile-per-owner and belongs to `ingest()`. Research calls
+ * `callLLMWithFinish` directly (through {@link callResearchLLM}) and leases a
+ * research slot instead
  * ({@link acquireResearchSlot}), so a collecting run and a compiling ingest
  * proceed together. The auto-Ingest this run dispatches DOES take that lock —
  * but only after the run has released its research slot, so a slow compile
@@ -166,7 +167,8 @@ async function cancelled(owner: string, id: string): Promise<boolean> {
  * Hold the research slot across one long await.
  *
  * Search and fetch renew between steps, so their slot never ages far. SYNTHESIS
- * has no steps: it is a single `callLLM` on a seven-thousand-token brief, which
+ * has no steps: it is a single `callLLMWithFinish` on a seven-thousand-token
+ * brief, which
  * on a slow model or a retrying provider can outlast the slot's whole TTL. The
  * lease would then expire under a run that is very much alive, a fourth run
  * would be admitted over the ceiling, and — with the reaper's window at twice
@@ -1335,8 +1337,15 @@ function streamCutShortMessage(): string {
 }
 
 /**
- * `callLLM` for a research run, with a FIRED DEADLINE converted to the owner's
- * sentence (DW-544, DW-665).
+ * `callLLMWithFinish` for a research run, with a FIRED DEADLINE converted to
+ * the owner's sentence (DW-544, DW-665).
+ *
+ * RETURNS THE PAIR, not the text (DW-683). The finish reason is what tells the
+ * synthesis fallback that the model was CUT at its output budget rather than
+ * having finished under it, and only that call site acts on it — the two
+ * evidence sites take `.text` and behave exactly as before. Reading the reason
+ * here rather than at each site keeps the deadline conversion and the finish
+ * reason arriving from the same one call.
  *
  * THREE CALL SITES, one conversion: the synthesis fallback, evidence
  * condensation, and hierarchical reduction. `runResearchProject`'s catch writes
@@ -1373,10 +1382,10 @@ async function callResearchLLM(
   attemptId: string,
   system: string,
   user: string,
-  options?: Parameters<typeof callLLM>[2],
-): Promise<string> {
+  options?: Parameters<typeof callLLMWithFinish>[2],
+): Promise<Awaited<ReturnType<typeof callLLMWithFinish>>> {
   try {
-    return await callLLM(system, user, options);
+    return await callLLMWithFinish(system, user, options);
   } catch (error) {
     if (!isLlmDeadlineAbort(error)) throw error;
     logger.warn("research", `research LLM call for ${id} hit its deadline`, error);
@@ -1399,8 +1408,8 @@ async function callResearchLLM(
  * exact rather than absolute. Every throw sits inside the `try`, so it meets
  * `receivedStreamContent` in the catch: with text in hand the run dies and no
  * page is written, which is the failure being closed. With NO text at all,
- * these endings still take the pre-existing `callLLM` fallback for a stream
- * that died before saying anything — that fallback can complete and commit,
+ * these endings still take the pre-existing `callLLMWithFinish` fallback for a
+ * stream that died before saying anything — that fallback can complete and commit,
  * and this change deliberately does not remove it. Nothing is truncated in
  * that case: there was no partial brief, only a stream that never started.
  *
@@ -1431,7 +1440,8 @@ async function callResearchLLM(
  *
  * Everything else is unchanged: token-by-token streaming, the 400 ms thinking
  * flush, the per-text-part cancellation check `textStream` used to get, and the
- * `callLLM` fallback for a stream that died before emitting anything.
+ * `callLLMWithFinish` fallback for a stream that died before emitting
+ * anything.
  */
 async function synthesizeResearchBrief(
   owner: string,
@@ -1573,9 +1583,36 @@ async function synthesizeResearchBrief(
     // {@link callResearchLLM} is where that conversion now lives, shared with
     // evidence condensation and hierarchical reduction; the rationale for
     // leaving it ungated travels with it.
-    return await callResearchLLM(owner, id, attemptId, system, user, {
+    const fallback = await callResearchLLM(owner, id, attemptId, system, user, {
       maxOutputTokens: 7_000,
     });
+    // DW-683. The fallback runs under the SAME output budget the stream ran
+    // under, so it can be CUT the same way — and until now it committed the
+    // fragment as a finished wiki page, which is precisely the failure DW-663
+    // closed one branch above for the streamed path. Same reason, same
+    // sentence, same fail-closed outcome: nothing is written.
+    //
+    // `length` ALONE, mirroring the streamed loop rather than inventing a
+    // second rule for the same door. In that loop (DW-663/DW-664's frozen
+    // shape) no finish reason but `length` is fatal ON ITS OWN: an `error`
+    // finish is not waved through as clean either — it declines to clear a
+    // pending `error` part, which is how a provider failure fails the run
+    // there. So the reason the loop ACTS on by itself is `length`, and that is
+    // the one this branch mirrors; a provider failure on the fallback surfaces
+    // as a rejection from the call, not as a finish reason. Narrowing to it
+    // keeps both halves of this function saying the same thing about the same
+    // brief.
+    //
+    // {@link requireResearchActive} FIRST, exactly as the streamed branches do:
+    // the whole cancel window is the call itself, so an owner who pressed
+    // Cancel while it was in flight is reported `cancelled` rather than
+    // relabelled `failed` under a cap sentence they did not cause.
+    // `ResearchCancelledError` is rethrown untouched by callers above.
+    if (fallback.finishReason === "length") {
+      await requireResearchActive(owner, id, attemptId);
+      throw new Error(LLM_RESEARCH_LENGTH_CAP_COPY);
+    }
+    return fallback.text;
   }
 }
 
@@ -1636,8 +1673,11 @@ async function researchEvidenceForSynthesis(
         `Research question: ${question}\n\nSource: ${source.title}\nExact URL: ${source.url}\nPart ${chunkIndex + 1} of ${chunks}\n\n${wrapUntrusted(chunk, { source: `web-research:${provider}` })}`,
         { maxOutputTokens: 1_500 },
       );
+      // `.text`: the finish reason is read only by the synthesis fallback
+      // (DW-683). A cap on a condensation call keeps today's behaviour exactly
+      // — the notes are used as they arrived.
       summaries.push(wrapUntrusted(
-        `[${sourceIndex + 1}.${chunkIndex + 1}] ${source.title}\nURL: ${source.url}\n${summary.trim()}`,
+        `[${sourceIndex + 1}.${chunkIndex + 1}] ${source.title}\nURL: ${source.url}\n${summary.text.trim()}`,
         { source: `web-research-summary:${provider}` },
       ));
       await renewResearchSlot(owner, id, attemptId);
@@ -1701,8 +1741,9 @@ async function researchEvidenceForSynthesis(
         `Research question: ${question}\n\n${wrapUntrusted(batches[index].join("\n\n"), { source: `web-research-reduce:${provider}` })}`,
         { maxOutputTokens: 1_500 },
       );
+      // `.text`, as above: a cap on a reduction call is unchanged behaviour.
       reduced.push(wrapUntrusted(
-        `[reduce ${pass}.${index + 1}]\n${summary.trim()}`,
+        `[reduce ${pass}.${index + 1}]\n${summary.text.trim()}`,
         { source: `web-research-reduced:${provider}` },
       ));
       await renewResearchSlot(owner, id, attemptId);

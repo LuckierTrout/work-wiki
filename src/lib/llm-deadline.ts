@@ -2,18 +2,24 @@ import { getLlmTimeoutMs } from "./config";
 import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
 
 /**
- * Why a streamed answer stopped early — every sentence, and every predicate
- * that licenses one (DW-64, DW-544, DW-545, DW-547, DW-663, DW-664).
+ * Why an answer stopped early — every sentence, and every predicate that
+ * licenses one (DW-64, DW-544, DW-545, DW-547, DW-662, DW-663, DW-664, DW-666,
+ * DW-683).
  *
  * The deadline was the first reason and named the file; it is no longer the
- * only one. A streamed answer can also end because the model ran into an output
+ * only one. An answer can also end because the model ran into an output
  * cap — `QUERY_MAX_OUTPUT_TOKENS` on the query route, the synthesis budget on a
  * research run — because the stream was cut with no deadline configured at all,
- * or because a provider `error` part ended a research brief. All five sentences
- * share one failure — a half answer, or half a brief, that reads as a whole one
- * — so they share one home, and callers import the sentence rather than each
- * keeping a copy of it. The FILENAME stays: `./llm` and DW-64's spec both name
- * it, and renaming it would buy nothing this docblock does not say.
+ * because a provider `error` part ended a research brief, or because the model
+ * simply stopped somewhere that was not the end (a content filter, a provider
+ * failure) and said so in its finish reason. All six sentences share one
+ * failure — a half answer, or half a brief, that reads as a whole one — so they
+ * share one home, and callers import the sentence rather than each keeping a
+ * copy of it. STREAMED IS NOT THE BOUNDARY any more either: DW-662 and DW-683
+ * reach the non-streamed `callLLMWithFinish` doors, which learned the same
+ * facts from `finishReason` that the streamed readers learned from
+ * `fullStream`. The FILENAME stays: `./llm` and DW-64's spec both name it, and
+ * renaming it would buy nothing this docblock does not say.
  *
  * A SEPARATE, dependency-light module rather than another export on `llm.ts`,
  * for two reasons that both have to hold at once:
@@ -36,7 +42,7 @@ import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
  * The Settings pointer is the dividing line. A sentence gets one only when it
  * names a control the owner actually has: the LLM timeout, which they filled in
  * and can raise or clear. {@link LLM_LENGTH_CAP_COPY},
- * {@link LLM_RESEARCH_LENGTH_CAP_COPY} and
+ * {@link LLM_RESEARCH_LENGTH_CAP_COPY}, {@link LLM_STOPPED_EARLY_COPY} and
  * {@link LLM_RESEARCH_STREAM_CUT_SHORT_COPY} get none, because there is no field behind
  * any of them. Neither output cap is settable: the query route's is the named
  * constant `QUERY_MAX_OUTPUT_TOKENS` in `./constants`, and the research budget
@@ -138,10 +144,10 @@ export const LLM_DEADLINE_RESEARCH_COPY =
  * RESEARCH-SCOPED, and named for it. The text says "this research run" and
  * "nothing was written to the wiki", both of which would be false on either
  * query route: a query writes nothing ever, so telling its owner the wiki is
- * untouched names a reassurance about a risk that was never on the table. A
- * general "a stream ended early" sentence for the query surfaces does not exist
- * yet, and if one is ever needed it is a new constant beside this one, not this
- * one reused.
+ * untouched names a reassurance about a risk that was never on the table. The
+ * general "the model stopped early" sentence for the query surfaces is
+ * {@link LLM_STOPPED_EARLY_COPY}, the new constant beside this one that DW-666
+ * needed — not this one reused.
  *
  * The counterpart to {@link LLM_DEADLINE_RESEARCH_COPY} on the far side of
  * {@link llmDeadlineConfigured}. Research fails closed on a cut stream either
@@ -157,6 +163,62 @@ export const LLM_DEADLINE_RESEARCH_COPY =
 export const LLM_RESEARCH_STREAM_CUT_SHORT_COPY =
   `This research run is incomplete: the model's response stopped before it ` +
   `was finished. Nothing was written to the wiki. Run the research again.`;
+
+/**
+ * The model stopped before it finished, for a reason that is neither this
+ * repo's output cap nor the owner's deadline — read by the owner of a QUERY
+ * (DW-662, DW-666).
+ *
+ * The reason is the `finishReason` the model itself reports: `content-filter`
+ * (the provider stopped it), `error` (it died), `tool-calls` or `other` (it
+ * stopped somewhere this repo cannot name). This repo passes no tools on query
+ * calls, so every one of those means the same thing to the owner — the text on
+ * screen is not the whole answer — and a rule keyed on "did the model finish"
+ * needs no per-reason table. `stop` is the only clean ending, and the only
+ * silent one.
+ *
+ * THE PROMISE is what separates this from {@link LLM_LENGTH_CAP_COPY}, not the
+ * advice. Both sentences end by suggesting a narrower question, and narrowing
+ * is reasonable advice after a content filter or a provider failure too. What
+ * the cap sentence adds is "to SEE THE REST": an assertion that a remainder
+ * exists and that narrowing is how to retrieve it. That is true of a cap, which
+ * stopped a complete answer partway through, and it is exactly what cannot be
+ * promised here — a content filter may have refused the remainder outright, and
+ * a provider that died may never have produced one. So `length` keeps the
+ * sentence that promises a retrievable rest, and every other reason gets the
+ * one that offers the same action while promising nothing about what it
+ * returns.
+ *
+ * TWO DOORS, ONE SENTENCE. `/api/query/stream` reads it off the `finish` part
+ * (DW-666) and `/api/query`'s `query()` off `callLLMWithFinish` (DW-662). Both
+ * hand the owner the same half answer, and `useStreamingQuery` prefers the
+ * stream route's message over its neighbour's — two different sentences for one
+ * ending would mean the surviving one depending on which door answered.
+ *
+ * QUERY-SCOPED, and named for it. It deliberately does NOT say "nothing was
+ * written to the wiki": a query writes nothing ever, so that reassurance names
+ * a risk that was never on the table. {@link LLM_RESEARCH_STREAM_CUT_SHORT_COPY}
+ * is the research-side sentence for the same shape of ending and stays separate
+ * for exactly that clause.
+ *
+ * UNGATED, like both cap sentences and unlike the deadline ones.
+ * {@link llmDeadlineConfigured} has no bearing on it: the model reporting it
+ * did not finish is its own statement about its own output, true whether or not
+ * the owner ever filled a timeout in — and a configured deadline did not cause
+ * a content filter.
+ *
+ * NO Settings pointer, and none may be added. There is no field anywhere on the
+ * Settings surface that causes, prevents or relaxes a `content-filter` or an
+ * `error` ending, so pointing the owner at Settings would send them to a
+ * control that cannot act on what happened. What they CAN do is ask again, or
+ * ask for less at a time, which is what this says instead.
+ *
+ * NO transport or SDK vocabulary. The owner never sees `finishReason` — that
+ * word names the field this branch read, not anything that happened to them.
+ */
+export const LLM_STOPPED_EARLY_COPY =
+  `This answer is incomplete: the model stopped before it finished. Ask ` +
+  `again, or ask for a narrower part of the question.`;
 
 /**
  * The answer ran into this repo's own output cap (DW-547).

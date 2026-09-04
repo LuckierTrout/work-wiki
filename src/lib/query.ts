@@ -1,4 +1,10 @@
-import { callLLM, hasLLMKey } from "./llm";
+import type { FinishReason } from "ai";
+import { callLLMWithFinish, hasLLMKey } from "./llm";
+import {
+  LLM_LENGTH_CAP_COPY,
+  LLM_STOPPED_EARLY_COPY,
+} from "./llm-deadline";
+import { logger } from "./logger";
 import { QUERY_MAX_OUTPUT_TOKENS, LISTED_OTHER_PAGES } from "./constants";
 import {
   listReadableWikiPages,
@@ -260,6 +266,36 @@ export async function buildQuerySystemPrompt(
 // ---------------------------------------------------------------------------
 
 /**
+ * Which sentence — if any — the owner reads when the model stopped (DW-662).
+ *
+ * ONE DESCRIPTOR per ending, pairing the owner's sentence with the operator's
+ * log line, exactly as `/api/query/stream` does. Two adjacent bare strings are
+ * the same type: transposing them type-checks cleanly and would write the log
+ * line into the answer body while logging the notice. Binding them here means
+ * the call site names WHICH ending happened and cannot pick a mismatched half.
+ *
+ * `null` for `stop` — the model saying it finished — which is the only clean
+ * ending and therefore the only silent one. The log lines differ from the
+ * route's on purpose: this is the NON-streamed door, and an operator reading
+ * "query" warnings has to be able to tell which of the two answered.
+ */
+function stoppedEarlyNotice(
+  finishReason: FinishReason,
+): { copy: string; log: string } | null {
+  if (finishReason === "stop") return null;
+  if (finishReason === "length") {
+    return {
+      copy: LLM_LENGTH_CAP_COPY,
+      log: "Output token cap reached on a non-streamed query; the answer was cut short and the owner told",
+    };
+  }
+  return {
+    copy: LLM_STOPPED_EARLY_COPY,
+    log: `Model stopped before finishing a non-streamed query (${finishReason}); the answer was cut short and the owner told`,
+  };
+}
+
+/**
  * Query the wiki with a user question.
  *
  * Index-first approach: reads the index to find relevant pages, then loads
@@ -345,9 +381,18 @@ export async function query(
       principal?.handle,
     );
 
-    const raw = await callLLM(systemPrompt, question, {
-      maxOutputTokens: QUERY_MAX_OUTPUT_TOKENS,
-    });
+    // DW-662. `callLLMWithFinish`, not `callLLM`: the model reports WHY it
+    // stopped, and this door commits what it returns as the answer. `length`
+    // means `QUERY_MAX_OUTPUT_TOKENS` CUT it; `content-filter`, `error`,
+    // `tool-calls` and `other` mean it stopped somewhere that is not the end.
+    // Discarding that field is how a fragment reached the owner looking
+    // finished — the silence DW-547 closed for `/api/query/stream` alone, on
+    // the sibling route that answers the same question.
+    const { text: raw, finishReason } = await callLLMWithFinish(
+      systemPrompt,
+      question,
+      { maxOutputTokens: QUERY_MAX_OUTPUT_TOKENS },
+    );
 
     // Bake yoyo illustrations into slides/HTML answers now, server-side: each
     // scene is generated once, stored in R2, and the directive is replaced with
@@ -365,7 +410,28 @@ export async function query(
     const allSlugs = entries.map((e) => e.slug);
     const sources = extractCitedSlugs(answer, allSlugs);
 
-    return { answer, sources, retrievedSources: selectedSlugs };
+    // DW-662. The notice is appended AFTER `extractCitedSlugs`, so no sentence
+    // this repo wrote is ever scanned for citations — `sources` describes the
+    // MODEL's answer and nothing else. Same blank-line rule as the stream
+    // route: the separator exists to hold the notice apart from the answer it
+    // interrupts, so a cut that landed before any text opens the body with the
+    // sentence alone rather than two empty lines. `stop` is the only clean
+    // ending and the only silent one; `length` keeps the cap sentence, which
+    // promises the rest is reachable by narrowing, and every other reason gets
+    // the sentence that promises nothing of the kind.
+    const notice = stoppedEarlyNotice(finishReason);
+    if (!notice) {
+      return { answer, sources, retrievedSources: selectedSlugs };
+    }
+    // The OPERATOR's line, never the owner's sentence — the two are bound in
+    // one descriptor for the same reason the stream route binds them (a
+    // transposition would put a log string into the answer body).
+    logger.warn("query", notice.log);
+    return {
+      answer: answer ? `${answer}\n\n${notice.copy}` : notice.copy,
+      sources,
+      retrievedSources: selectedSlugs,
+    };
   });
 }
 

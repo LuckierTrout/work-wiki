@@ -6,10 +6,32 @@ import path from "path";
 // ---------------------------------------------------------------------------
 // Mock LLM and embeddings — real filesystem, fake AI
 // ---------------------------------------------------------------------------
-vi.mock("../llm", () => ({
-  hasLLMKey: vi.fn(() => true),
-  callLLM: vi.fn(async () => "mocked"),
-}));
+// `callLLMWithFinish` DELEGATES to the same `callLLM` double (DW-662):
+// `query()` calls the sibling now, and every assertion here is written against
+// `callLLM`. `"stop"` is the clean ending, so nothing this suite asserts moves.
+vi.mock("../llm", () => {
+  const callLLM = vi.fn(
+    async (
+      _system: string,
+      _user: string,
+      _options?: { maxOutputTokens?: number },
+    ) => "mocked",
+  );
+  return {
+    hasLLMKey: vi.fn(() => true),
+    callLLM,
+    callLLMWithFinish: vi.fn(
+      async (
+        system: string,
+        user: string,
+        options?: { maxOutputTokens?: number },
+      ) => ({
+        text: await callLLM(system, user, options),
+        finishReason: "stop" as const,
+      }),
+    ),
+  };
+});
 
 vi.mock("../embeddings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../embeddings")>();

@@ -15,10 +15,36 @@ import type { IndexEntry } from "../types";
 // ---------------------------------------------------------------------------
 // Mock callLLM and hasLLMKey so tests don't require real API keys
 // ---------------------------------------------------------------------------
-vi.mock("../llm", () => ({
-  hasLLMKey: vi.fn(() => false),
-  callLLM: vi.fn(async () => "mocked response"),
-}));
+// `callLLMWithFinish` DELEGATES to the same `callLLM` double rather than being
+// a second, independent one (DW-662). `query()` calls the sibling now, and
+// every assertion in this file — call counts, prompt indices, throwing
+// implementations — hangs off `callLLM`. A separate double would silently
+// detach all of them from the call under test. `"stop"` is the clean ending, so
+// the delegate reproduces the pre-DW-662 behaviour exactly; the rows that need
+// another ending override `callLLMWithFinish` itself.
+vi.mock("../llm", () => {
+  const callLLM = vi.fn(
+    async (
+      _system: string,
+      _user: string,
+      _options?: { maxOutputTokens?: number },
+    ) => "mocked response",
+  );
+  return {
+    hasLLMKey: vi.fn(() => false),
+    callLLM,
+    callLLMWithFinish: vi.fn(
+      async (
+        system: string,
+        user: string,
+        options?: { maxOutputTokens?: number },
+      ) => ({
+        text: await callLLM(system, user, options),
+        finishReason: "stop" as const,
+      }),
+    ),
+  };
+});
 
 // Mock searchByVector from embeddings so tests don't need a real provider
 vi.mock("../embeddings", () => ({
@@ -27,11 +53,14 @@ vi.mock("../embeddings", () => ({
   removeEmbedding: vi.fn(async () => {}),
 }));
 
-import { hasLLMKey, callLLM } from "../llm";
+import { hasLLMKey, callLLM, callLLMWithFinish } from "../llm";
+import { LLM_LENGTH_CAP_COPY, LLM_STOPPED_EARLY_COPY } from "../llm-deadline";
+import { logger } from "../logger";
 import { searchByVector } from "../embeddings";
 
 const mockedHasLLMKey = vi.mocked(hasLLMKey);
 const mockedCallLLM = vi.mocked(callLLM);
+const mockedCallLLMWithFinish = vi.mocked(callLLMWithFinish);
 const mockedSearchByVector = vi.mocked(searchByVector);
 
 // ---------------------------------------------------------------------------
@@ -55,6 +84,14 @@ beforeEach(async () => {
   // Reset mocks
   mockedHasLLMKey.mockResolvedValue(false);
   mockedCallLLM.mockReset();
+  // Back to DELEGATING (DW-662). A row that installed its own ending must not
+  // leak that ending into the next row's `query()` — every other assertion in
+  // this file is written against `callLLM` and a clean `stop`.
+  mockedCallLLMWithFinish.mockReset();
+  mockedCallLLMWithFinish.mockImplementation(async (system, user, options) => ({
+    text: await callLLM(system, user, options),
+    finishReason: "stop",
+  }));
   mockedSearchByVector.mockReset();
   mockedSearchByVector.mockResolvedValue([]);
 });
@@ -882,6 +919,171 @@ describe("query", () => {
     const result = await query("tell me about alpha", "prose");
 
     expect(result.answer).toContain("```yoyo-illustration");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DW-662. `/api/query` is the OTHER door onto the same question, and it was
+// committing a cut answer as a whole one.
+//
+// `callLLM` discarded `finishReason`, so `query()` could not tell an answer the
+// model finished from one `QUERY_MAX_OUTPUT_TOKENS` had cut, or one a content
+// filter had stopped. `/api/query/stream` learned that distinction from its
+// `finish` part in DW-547 and DW-666; this is the same distinction reaching the
+// non-streamed sibling through `callLLMWithFinish`.
+//
+// The sentences are IMPORTED, never restated — they are the same constants the
+// stream route serves, and a second copy here would be the test grading its own
+// wording rather than the route's.
+// ---------------------------------------------------------------------------
+describe("query — the answer the model did not finish (DW-662)", () => {
+  /** One page, one key, one call — the shortest path to the answer call. */
+  async function oneSmallPage() {
+    mockedHasLLMKey.mockResolvedValue(true);
+    await writeWikiPage("alpha", "# Alpha\n\nAlpha content.");
+    await updateIndex([{ slug: "alpha", title: "Alpha", summary: "Alpha page" }]);
+  }
+
+  /**
+   * The OPERATOR log lines `stoppedEarlyNotice` emits beside each sentence.
+   *
+   * Restated here rather than imported, because `query.ts` does not export
+   * them — and restating is safe in a way it would NOT be for the owner-facing
+   * sentences: these are log strings for an operator, not copy in an answer
+   * body, so there is no Settings pointer to drift and no second home for the
+   * wording. What they pin is the property the descriptor exists for. Copy and
+   * log are bound in one object precisely so they cannot be transposed, and a
+   * row that counts `logger.warn` without reading its MESSAGE would stay green
+   * through exactly that transposition.
+   */
+  const CAP_LOG =
+    "Output token cap reached on a non-streamed query; the answer was cut short and the owner told";
+  const stoppedEarlyLog = (reason: string) =>
+    `Model stopped before finishing a non-streamed query (${reason}); the answer was cut short and the owner told`;
+
+  /** The stream route's lines, which this door must never emit. */
+  const STREAM_CAP_LOG =
+    "Output token cap reached; the answer was cut short and the owner told";
+  const STREAM_STOPPED_EARLY_LOG =
+    "Model stopped before finishing; the answer was cut short and the owner told";
+
+  /** The `(scope, message)` pair of the single `logger.warn` a query emitted. */
+  function warnedOnce(): [string, string] {
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const [scope, message] = vi.mocked(logger.warn).mock.calls[0];
+    return [scope, message];
+  }
+
+  /** Answer the query call with this text and this ending. */
+  function finishes(text: string, finishReason: string) {
+    mockedCallLLMWithFinish.mockResolvedValue({
+      text,
+      finishReason,
+    } as Awaited<ReturnType<typeof callLLMWithFinish>>);
+  }
+
+  beforeEach(() => {
+    // Real `logger` is silent under NODE_ENV=test, so the operator line is
+    // observable only through a spy. Restored per-test by `afterEach` below.
+    vi.spyOn(logger, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.mocked(logger.warn).mockRestore();
+  });
+
+  it("appends the cap sentence after a blank line when the answer hit the cap", async () => {
+    await oneSmallPage();
+    finishes("As far as this w", "length");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toBe(`As far as this w\n\n${LLM_LENGTH_CAP_COPY}`);
+    // The CAP line, and specifically not the stopped-early one — a transposed
+    // descriptor would send an operator looking for the wrong ending.
+    expect(warnedOnce()).toEqual(["query", CAP_LOG]);
+    expect(warnedOnce()[1]).not.toBe(stoppedEarlyLog("length"));
+    // Nor the STREAM route's wording: an operator reading `query` warnings has
+    // to be able to tell which of the two doors answered.
+    expect(warnedOnce()[1]).not.toBe(STREAM_CAP_LOG);
+  });
+
+  it.each(["content-filter", "error", "tool-calls", "other"])(
+    "appends the stopped-early sentence for finishReason %s",
+    async (reason) => {
+      await oneSmallPage();
+      finishes("As far as this w", reason);
+
+      const result = await query("tell me about alpha");
+
+      // Not the cap sentence: that one promises the REST of the answer is
+      // reachable by narrowing, which a content filter does not make true.
+      expect(result.answer).toBe(`As far as this w\n\n${LLM_STOPPED_EARLY_COPY}`);
+      expect(result.answer).not.toContain(LLM_LENGTH_CAP_COPY);
+      // Its own line, carrying the REASON — the one diagnostic an operator has
+      // for which of the four endings this was, since the owner's sentence
+      // deliberately says nothing about it.
+      expect(warnedOnce()).toEqual(["query", stoppedEarlyLog(reason)]);
+      expect(warnedOnce()[1]).toContain(reason);
+      expect(warnedOnce()[1]).not.toBe(CAP_LOG);
+      expect(warnedOnce()[1]).not.toBe(STREAM_STOPPED_EARLY_LOG);
+    },
+  );
+
+  it("returns the answer verbatim, and logs nothing, when the model finished", async () => {
+    await oneSmallPage();
+    finishes("A whole answer about [Alpha](alpha.md)", "stop");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toBe("A whole answer about [Alpha](alpha.md)");
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("emits the notice alone when the cut left no answer to separate it from", async () => {
+    // Same blank-line rule as the stream route: the separator exists to hold
+    // the notice apart from an answer, so with none there is no leading blank.
+    //
+    // A DEFENSIVE branch, and this row pins it AT THE DOUBLE ONLY — it is not
+    // production coverage, and must not be read as any. `callLLMWithFinish`
+    // throws "LLM response contained no text" before it can ever return an
+    // empty `text`, so nothing on the real stack reaches `query()` with one.
+    // What keeps the ternary worth having is that it mirrors the stream
+    // route's rule exactly, where an empty body IS reachable (a `finish` part
+    // can arrive before any delta), so the two doors state the same rule about
+    // the same notice rather than one of them quietly assuming an invariant.
+    await oneSmallPage();
+    finishes("", "length");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toBe(LLM_LENGTH_CAP_COPY);
+  });
+
+  it("keeps `sources` describing the MODEL's answer, never the notice", async () => {
+    // The notice is appended AFTER `extractCitedSlugs`, so no sentence this
+    // repo wrote is ever scanned for citations.
+    await oneSmallPage();
+    finishes("Half an answer citing [Alpha](alpha.md)", "content-filter");
+
+    const result = await query("tell me about alpha");
+
+    expect(result.sources).toEqual(["alpha"]);
+    expect(result.retrievedSources).toEqual(["alpha"]);
+  });
+
+  it("still answers the no-key fallback without reaching the model at all", async () => {
+    // The notice sits after the answer call, so the pre-LLM early returns are
+    // untouched — no ending to report when nothing was asked.
+    mockedHasLLMKey.mockResolvedValue(false);
+    await writeWikiPage("alpha", "# Alpha\n\nAlpha content.");
+    await updateIndex([{ slug: "alpha", title: "Alpha", summary: "Alpha page" }]);
+
+    const result = await query("tell me about alpha");
+
+    expect(result.answer).toContain("No API key configured");
+    expect(result.answer).not.toContain(LLM_STOPPED_EARLY_COPY);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
 

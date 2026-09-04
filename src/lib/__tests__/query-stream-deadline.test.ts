@@ -64,7 +64,11 @@ import { getPrincipal } from "@/lib/auth";
 import { getLlmTimeoutMs } from "@/lib/config";
 import { callLLMStream } from "@/lib/llm";
 import { logger } from "@/lib/logger";
-import { LLM_DEADLINE_COPY, LLM_LENGTH_CAP_COPY } from "@/lib/llm-deadline";
+import {
+  LLM_DEADLINE_COPY,
+  LLM_LENGTH_CAP_COPY,
+  LLM_STOPPED_EARLY_COPY,
+} from "@/lib/llm-deadline";
 import { SETTINGS_LABEL, settingsPointer } from "@/lib/workbench-settings";
 import { POST } from "@/app/api/query/stream/route";
 
@@ -140,14 +144,17 @@ function abortError(name: "TimeoutError" | "AbortError"): Error {
  * only their HTTP handlers. Restating is safe in a way it would NOT be for the
  * owner-facing sentences — these are log strings for an operator, not copy in
  * an answer body, so there is no Settings pointer to drift and no second home
- * for the wording. What these pin is that the two endings are DISTINGUISHABLE:
- * a cap truncation logging "LLM deadline reached" would send an operator to
- * raise a timeout that never fired.
+ * for the wording. What these pin is that the THREE endings are
+ * DISTINGUISHABLE: a cap truncation logging "LLM deadline reached" would send
+ * an operator to raise a timeout that never fired, and a content filter logged
+ * as either would hide the one ending nothing in this repo caused.
  */
 const DEADLINE_LOG =
   "LLM deadline reached; the answer was cut short and the owner told";
 const LENGTH_CAP_LOG =
   "Output token cap reached; the answer was cut short and the owner told";
+const STOPPED_EARLY_LOG =
+  "Model stopped before finishing; the answer was cut short and the owner told";
 
 /** The `(scope, message)` pair of the single `logger.warn` a run emitted. */
 function warnedOnce(): [string, string] {
@@ -474,17 +481,20 @@ describe("POST /api/query/stream — the output cap sentence (DW-547)", () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it.each(["tool-calls", "content-filter", "other"] as const)(
-    "says nothing about the cap for finishReason %s",
+  it.each(["tool-calls", "content-filter", "other", "error"] as const)(
+    "never claims the CAP for finishReason %s",
     async (reason) => {
       // Only `length` is the cap. The rest are other endings entirely, and
-      // claiming a maximum length for them would be a false sentence.
+      // claiming a maximum length for them would be a false sentence — the cap
+      // sentence promises the REST of the answer is reachable by narrowing,
+      // which nothing about a content filter or a provider failure makes true.
       fakeResult([delta("Answer"), { type: "finish", finishReason: reason }]);
 
       const res = await ask();
 
-      expect(await res.text()).toBe("Answer");
-      expect(logger.warn).not.toHaveBeenCalled();
+      const body = await res.text();
+      expect(body).not.toContain(LLM_LENGTH_CAP_COPY);
+      expect(warnedOnce()[1]).not.toBe(LENGTH_CAP_LOG);
     },
   );
 
@@ -501,6 +511,172 @@ describe("POST /api/query/stream — the output cap sentence (DW-547)", () => {
 
     expect(await res.text()).toBe(`Half\n\n${LLM_DEADLINE_COPY}`);
     expect(warnedOnce()).toEqual(["query", DEADLINE_LOG]);
+  });
+});
+
+describe("LLM_STOPPED_EARLY_COPY", () => {
+  it("points at no Settings destination, because no field causes this ending", () => {
+    // Nothing on the Settings surface causes, prevents or relaxes a
+    // `content-filter` or an `error` ending, so a pointer would send the owner
+    // to a control that cannot act on what happened. Composed rather than
+    // typed even to ASSERT its absence, so this stays true through a category
+    // rename.
+    expect(LLM_STOPPED_EARLY_COPY).not.toContain(
+      settingsPointer("llm-models", SETTINGS_LABEL),
+    );
+    expect(LLM_STOPPED_EARLY_COPY).not.toContain(SETTINGS_LABEL);
+  });
+
+  it("carries no transport or SDK vocabulary", () => {
+    // `finishReason` names the field this branch read, not anything that
+    // happened to the owner.
+    for (const word of [
+      "finishReason",
+      "token",
+      "maxOutputTokens",
+      "aborted",
+      "signal",
+      "content-filter",
+    ]) {
+      expect(LLM_STOPPED_EARLY_COPY).not.toContain(word);
+    }
+  });
+
+  it("is neither of the other two sentences wearing a different name", () => {
+    expect(LLM_STOPPED_EARLY_COPY).not.toBe(LLM_DEADLINE_COPY);
+    expect(LLM_STOPPED_EARLY_COPY).not.toBe(LLM_LENGTH_CAP_COPY);
+  });
+
+  it("promises no retrievable remainder, which is what the cap sentence does", () => {
+    // The PROPERTY the two sentences actually differ on, not merely that their
+    // bytes differ — `not.toBe` above would pass for two sentences a single
+    // word apart. Both end by suggesting a narrower question, and that advice
+    // is fine after a content filter. What the cap sentence adds is "to see the
+    // rest": an assertion that a remainder exists and narrowing retrieves it.
+    // A content filter may have refused the remainder outright, and a provider
+    // that died may never have produced one, so this sentence must not make
+    // that claim.
+    expect(LLM_LENGTH_CAP_COPY).toContain("the rest");
+    expect(LLM_STOPPED_EARLY_COPY).not.toContain("the rest");
+  });
+
+  it("is never an operator's log line, which the owner must not read", () => {
+    for (const log of [DEADLINE_LOG, LENGTH_CAP_LOG, STOPPED_EARLY_LOG]) {
+      expect(LLM_STOPPED_EARLY_COPY).not.toBe(log);
+    }
+    // And the reverse pairing, so the third descriptor cannot be assembled
+    // out of another notice's half.
+    for (const copy of [LLM_DEADLINE_COPY, LLM_LENGTH_CAP_COPY]) {
+      expect(copy).not.toBe(STOPPED_EARLY_LOG);
+    }
+  });
+});
+
+describe("POST /api/query/stream — the model stopped early (DW-666)", () => {
+  it.each(["content-filter", "error", "tool-calls", "other"] as const)(
+    "appends the third notice after a blank line for finishReason %s",
+    async (reason) => {
+      // The silence this closes: every one of these fell into the route's
+      // bookkeeping tail and the body simply ended. `content-filter` is the
+      // concrete case — the model was stopped and the owner was told nothing.
+      fakeResult([
+        { type: "start" },
+        delta("As far as this w"),
+        { type: "finish", finishReason: reason },
+      ]);
+
+      const res = await ask();
+
+      // Still an ordinary 200 text stream with the same headers: an early
+      // ending is a truthful ending, not a failure the client handles apart.
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+      expect(res.headers.get("X-Wiki-Sources")).toBe(
+        encodeURIComponent(JSON.stringify(["concept-a"])),
+      );
+      expect(await res.text()).toBe(
+        `As far as this w\n\n${LLM_STOPPED_EARLY_COPY}`,
+      );
+      // Its OWN log line, once — distinguishable from both others, or an
+      // operator reads a content filter as a timeout to raise.
+      expect(warnedOnce()).toEqual(["query", STOPPED_EARLY_LOG]);
+    },
+  );
+
+  it("emits the third notice alone when nothing was streamed first", async () => {
+    // Same blank-line rule as the other two notices: nothing to separate it
+    // from, so no leading empty lines.
+    fakeResult([{ type: "finish", finishReason: "content-filter" }]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe(LLM_STOPPED_EARLY_COPY);
+    expect(warnedOnce()).toEqual(["query", STOPPED_EARLY_LOG]);
+  });
+
+  it("stays silent for finishReason stop, the one clean ending", async () => {
+    fakeResult([delta("A whole answer"), { type: "finish", finishReason: "stop" }]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe("A whole answer");
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps the CAP sentence for finishReason length", async () => {
+    // The widened branch must not swallow DW-547's distinction: `length` is
+    // the one non-`stop` reason with a sentence of its own.
+    fakeResult([delta("Half"), { type: "finish", finishReason: "length" }]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe(`Half\n\n${LLM_LENGTH_CAP_COPY}`);
+    expect(warnedOnce()).toEqual(["query", LENGTH_CAP_LOG]);
+  });
+
+  it("emits the third notice with NO deadline configured", async () => {
+    // Ungated, like both cap sentences. The model reporting that it did not
+    // finish is its own statement about its own output — true whether or not
+    // the owner ever filled a timeout in.
+    mockedTimeout.mockReturnValue(null);
+    fakeResult([delta("Half"), { type: "finish", finishReason: "content-filter" }]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe(`Half\n\n${LLM_STOPPED_EARLY_COPY}`);
+    expect(warnedOnce()).toEqual(["query", STOPPED_EARLY_LOG]);
+  });
+
+  it("prefers the deadline sentence when an abort arrives before the finish part", async () => {
+    // Deadline wins over finish, unchanged (DW-64). The deadline is what
+    // actually stopped the run; the third sentence would describe an ending
+    // the owner's own limit caused.
+    fakeResult([
+      delta("Half"),
+      { type: "abort" },
+      { type: "finish", finishReason: "error" },
+    ]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe(`Half\n\n${LLM_DEADLINE_COPY}`);
+    expect(warnedOnce()).toEqual(["query", DEADLINE_LOG]);
+  });
+
+  it("still lets a warning-shaped error part through when the brief carries on", async () => {
+    // A non-deadline `error` part the stream continues past is dropped exactly
+    // as it always has been — DW-666 keys on the FINISH part, not on errors.
+    fakeResult([
+      delta("Half"),
+      { type: "error", error: new Error("a warning-shaped part") },
+      delta(" an answer"),
+      { type: "finish", finishReason: "stop" },
+    ]);
+
+    const res = await ask();
+
+    expect(await res.text()).toBe("Half an answer");
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
 

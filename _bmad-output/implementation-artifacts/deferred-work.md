@@ -5394,7 +5394,9 @@ location: src/lib/query.ts:349
 source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
 severity: medium
 reason: `src/lib/query.ts:349` passes the same `QUERY_MAX_OUTPUT_TOKENS` to `callLLM`, and `callLLM` (`src/lib/llm.ts`) destructures only `{ text }` from `generateText`, discarding `finishReason` entirely. So a capped answer on this route simply ends, looking whole. Not a dead path: `useStreamingQuery` sends `slides` and `html` here ALWAYS (`src/hooks/useStreamingQuery.ts:105-119`) and falls back to it on any non-2xx from the stream route. Closing it needs `callLLM` to surface `finishReason`, which this intent's third sentence scopes to `src/app/api/query/stream/route.ts` and the spec's Never list forbids.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-llm-finish-reason-honesty
+resolution-undo: f6d14a0fe5051d45568a7b5779f0fe2008501c9a509b2e2ba716575e4b0e8c27 2026-09-04 7374617475733a206f70656e
 
 ### DW-663: A research brief truncated by its own 7,000-token output cap is still committed as a finished wiki page.
 origin: spec-deferred cc24ba54e0bb
@@ -5432,7 +5434,9 @@ location: src/app/api/query/stream/route.ts:282
 source_spec: `spec-dw-544-545-547-truncated-answer-honesty.md`
 severity: low
 reason: `src/app/api/query/stream/route.ts:282` branches on `length` alone; every other non-`stop` reason falls into the bookkeeping tail and the body just ends — a half answer reading as a whole one, which is DW-547's own failure from a third cause. `content-filter` is the concrete one: the model stopped, the owner is told nothing. The intent names `finishReason === "length"`, and the covering tests deliberately pin the other reasons as emitting nothing.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-llm-finish-reason-honesty
+resolution-undo: f6d14a0fe5051d45568a7b5779f0fe2008501c9a509b2e2ba716575e4b0e8c27 2026-09-04 7374617475733a206f70656e
 
 ### DW-667: The `@/lib/wiki` mock stubs `isArtifactType` as `t === "html"`, but the real predicate also matches `"slides"`, so the artifact-exclusion test cannot see a route that stopped filtering slides.
 origin: spec-deferred b08856857e56
@@ -5597,7 +5601,9 @@ location: src/lib/research-runtime.ts:1451
 source_spec: `spec-dw-663-664-research-synthesis-truncation-truth.md`
 severity: low
 reason: `synthesizeResearchBrief`'s catch takes the `callLLM` fallback whenever the stream ended before producing text (`receivedStreamContent === false`), including on the two endings DW-663/DW-664 just made fatal. That call passes the identical `{ maxOutputTokens: 7_000 }`, and `callLLM` (`src/lib/llm.ts:513-537`) destructures only `{ text }` from `generateText`, discarding `finishReason` — so a fallback brief cut at the cap is indistinguishable from a whole one and commits. Pinned by the two boundary tests added in this pass, which assert the fallback path completes and writes a page. Closing it means surfacing `finishReason` from `callLLM`, which this spec's Never list rules out.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-llm-finish-reason-honesty
+resolution-undo: f6d14a0fe5051d45568a7b5779f0fe2008501c9a509b2e2ba716575e4b0e8c27 2026-09-04 7374617475733a206f70656e
 
 ### DW-684: The three sibling research doors still answer 500 for the contended-store fault this bundle made a 503 at the run door.
 origin: spec-deferred f7d67f62ac0a
@@ -6248,4 +6254,12 @@ location: src/components/workbench/ChatCanvas.tsx (createConversation, deleteCon
 source_spec: `spec-dw-587-chat-canvas-decomposition.md`
 severity: low
 reason: `void createConversation()`, `void deleteConversation(item.id)` and `void commitRename(item.id)` in `ChatCanvas.tsx` have no `catch`, and `useChatConversations` routes only the mount load and "Conversation not found." through its `onError`. A refused DELETE leaves the row on screen with no explanation; a refused rename silently restores the old label. Pre-existing — the same three call sites are unguarded at `c19a5a29`, and DW-587 moved the doors without changing them — but the split is what introduced the `onError` reporter that would close it.
+status: open
+
+### DW-757: The truncation notice never reaches the owner on `html` and `slides` answers: it is appended after the baked document, and the renderer drops everything past the last `</html>`.
+origin: spec-deferred f7430da626c1
+location: src/lib/query.ts:410-433
+source_spec: `spec-dw-662-666-683-llm-finish-reason-honesty.md`
+severity: low
+reason: `query()` appends the sentence to `answer` for every format, including the baked HTML document / Marp deck built just above it. The client renders that string through `HtmlPreview`, whose `composeSrcDoc` (`src/lib/html.ts`) deletes anything after the document's closing `</html>` — so on a `content-filter` or a clean-document cap the sentence is discarded before display and before `/api/query/save`. Where the cap cut the document mid-tag there is no closing `</html>`, and the sentence is spliced into whatever unterminated tag, script or attribute the cut left. This is the same mechanism the stream route's DW-64/DW-547 notices already ride, so it predates this bundle — but DW-662's own reason text names `slides` and `html` as what `useStreamingQuery` sends to `/api/query` ALWAYS, which makes these the formats the door most needs to be honest on, and the half-answer-reading-as-whole failure survives there. No test in the repo drives a non-`stop` finish at a non-prose format.
 status: open

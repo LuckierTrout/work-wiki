@@ -102,11 +102,41 @@ vi.mock("../vision", () => ({
 
 // Mock callLLM so tests that reach the synthesis pipeline (e.g. reingest) do
 // not make real API calls.  hasLLMKey is kept real so no-key fallback tests work.
+//
+// `callLLMWithFinish` HAS TO BE LISTED, and the `...actual` spread is exactly
+// why (DW-662). Spreading the real module and overriding one name leaves every
+// OTHER export real — including the sibling `query()` now calls, which would
+// reach a live provider through the door this factory exists to close. The
+// spread is what makes that failure quiet: nothing throws "not a function", the
+// call simply escapes the double. Today the MCP rows that touch `query()` take
+// the no-key fallback and never get that far, but that is an accident of which
+// rows exist, not a property this factory guarantees.
+//
+// DELEGATING to the same `callLLM` double rather than being a second one, so
+// the existing assertions and its canned synthesis output keep covering both
+// entry points. `"stop"` is the clean ending — no notice, no behaviour change.
 vi.mock("../llm", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../llm")>();
+  const callLLM = vi.fn(
+    async (
+      _system: string,
+      _user: string,
+      _options?: { maxOutputTokens?: number },
+    ) => "CONCEPT: Mock Page\nALIASES:\n\n# Mock Page\n\nMocked LLM synthesis.",
+  );
   return {
     ...actual,
-    callLLM: vi.fn(async () => "CONCEPT: Mock Page\nALIASES:\n\n# Mock Page\n\nMocked LLM synthesis."),
+    callLLM,
+    callLLMWithFinish: vi.fn(
+      async (
+        system: string,
+        user: string,
+        options?: { maxOutputTokens?: number },
+      ) => ({
+        text: await callLLM(system, user, options),
+        finishReason: "stop" as const,
+      }),
+    ),
   };
 });
 

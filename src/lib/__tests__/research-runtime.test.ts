@@ -33,13 +33,34 @@ vi.mock("../research-providers", () => ({
     }
   },
 }));
-vi.mock("../llm", () => ({
-  callLLM: vi.fn(),
-  callLLMStream: vi.fn(async () => {
-    throw new Error("stream unavailable in unit tests");
-  }),
-  hasLLMKey: vi.fn(() => true),
-}));
+// `callLLMWithFinish` DELEGATES to the same `callLLM` double (DW-683).
+// `callResearchLLM` calls the sibling now, and ~50 assertions in this file hang
+// off `callLLM` — prompt-matching implementations, call counts, throwing
+// stubs. A second, independent double would detach every one of them from the
+// call under test. `"stop"` is the clean ending, so the delegate reproduces the
+// pre-DW-683 behaviour exactly; the cap rows override `callLLMWithFinish`.
+vi.mock("../llm", () => {
+  // No default implementation, exactly as before: every row that reaches it
+  // installs its own, and one that does not is meant to see `undefined`.
+  const callLLM = vi.fn();
+  return {
+    callLLM,
+    callLLMWithFinish: vi.fn(
+      async (
+        system: string,
+        user: string,
+        options?: { maxOutputTokens?: number },
+      ) => ({
+        text: await callLLM(system, user, options),
+        finishReason: "stop" as const,
+      }),
+    ),
+    callLLMStream: vi.fn(async () => {
+      throw new Error("stream unavailable in unit tests");
+    }),
+    hasLLMKey: vi.fn(() => true),
+  };
+});
 vi.mock("../lifecycle", () => ({ writeWikiPageWithSideEffects: vi.fn() }));
 vi.mock("../raw", () => ({ saveRawSourceFor: vi.fn() }));
 vi.mock("../ingest-jobs", () => ({
@@ -79,7 +100,7 @@ import { createIngestJobIfAbsent } from "../ingest-jobs";
 import { drainResearchOutbox, loadResearchOutbox, saveResearchOutbox } from "../research-completion";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
 import { getLlmTimeoutMs } from "../config";
-import { callLLM, callLLMStream } from "../llm";
+import { callLLM, callLLMStream, callLLMWithFinish } from "../llm";
 import {
   LLM_DEADLINE_RESEARCH_COPY,
   LLM_LENGTH_CAP_COPY,
@@ -140,6 +161,7 @@ const mockedSearch = vi.mocked(searchResearchProvider);
 const mockedExtract = vi.mocked(extractResearchSourceText);
 const mockedResolve = vi.mocked(resolveResearchProvider);
 const mockedLLM = vi.mocked(callLLM);
+const mockedLLMWithFinish = vi.mocked(callLLMWithFinish);
 const mockedStream = vi.mocked(callLLMStream);
 const mockedTimeout = vi.mocked(getLlmTimeoutMs);
 const mockedWritePage = vi.mocked(writeWikiPageWithSideEffects);
@@ -255,6 +277,14 @@ beforeEach(async () => {
   });
   mockedPages.mockResolvedValue([]);
   mockedConventions.mockResolvedValue("");
+  // Back to DELEGATING (DW-683). A row that installed its own finish reason
+  // must not leak it into the next row — every other assertion in this file is
+  // written against `callLLM` and a clean `stop`.
+  mockedLLMWithFinish.mockReset();
+  mockedLLMWithFinish.mockImplementation(async (system, user, options) => ({
+    text: await callLLM(system, user, options),
+    finishReason: "stop",
+  }));
 });
 
 afterEach(async () => {
@@ -3069,6 +3099,151 @@ describe("deep research — a synthesis stream that stopped early (DW-544, DW-66
     expect((await getResearchProject("alice", created.id))?.error).toBe(
       LLM_DEADLINE_RESEARCH_COPY,
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // DW-683. The fallback is the LAST door onto the page write, and it was still
+  // committing a fragment.
+  //
+  // `callResearchLLM` discarded `finishReason`, so a fallback the 7,000-token
+  // budget CUT was indistinguishable from one that fit under it — and unlike
+  // the streamed path (DW-663), what followed was `commitResearchPage`. Same
+  // budget, same cut, same sentence, same fail-closed outcome.
+  // -------------------------------------------------------------------------
+
+  /** The synthesis fallback ends this way; every other research call is clean. */
+  function fallbackFinishes(
+    text: string,
+    finishReason: string,
+    before?: () => Promise<void>,
+  ) {
+    mockedLLMWithFinish.mockImplementation(async (system, user, options) => {
+      if (!system.includes("evidence-first private research brief")) {
+        return { text: await callLLM(system, user, options), finishReason: "stop" };
+      }
+      // Runs INSIDE the call, which is the whole cancel window — the moment
+      // `requireResearchActive` exists to cover.
+      if (before) await before();
+      return { text, finishReason } as Awaited<
+        ReturnType<typeof callLLMWithFinish>
+      >;
+    });
+  }
+
+  it("fails the run and writes nothing when the CAP cut the fallback", async () => {
+    // A brief that would have passed every downstream gate: `GOOD_BRIEF` cites
+    // its source, so the only thing standing between it and the wiki is the
+    // finish reason. Before DW-683 it was published as a finished page.
+    fakeStream([{ type: "abort" }]);
+    fallbackFinishes(GOOD_BRIEF, "length");
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+    );
+
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    const failed = await getResearchProject("alice", created.id);
+    expect(failed?.status).toBe("failed");
+    // The RESEARCH cap sentence, not the query one: this run wrote nothing, so
+    // "ask for a narrower part to see the rest" would promise a page that is
+    // not there.
+    expect(failed?.error).toBe(LLM_RESEARCH_LENGTH_CAP_COPY);
+    expect(failed?.error).not.toBe(LLM_LENGTH_CAP_COPY);
+  });
+
+  it("fails on the cap even with a deadline configured", async () => {
+    // Ungated, exactly as the streamed `length` branch is. A configured
+    // deadline did not cut this brief, the budget did — so naming the timeout
+    // would send the owner to raise a limit that never bound.
+    mockedTimeout.mockReturnValue(30_000);
+    fakeStream([{ type: "abort" }]);
+    fallbackFinishes(GOOD_BRIEF, "length");
+    const created = await project();
+
+    await expect(runResearchProject("alice", created.id)).rejects.toThrow(
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+    );
+    expect((await getResearchProject("alice", created.id))?.error).toBe(
+      LLM_RESEARCH_LENGTH_CAP_COPY,
+    );
+  });
+
+  it("reports a run cancelled as the cap lands as CANCELLED, not failed", async () => {
+    // `requireResearchActive` runs BEFORE the throw, mirroring the streamed
+    // branches: the owner's own action wins, or someone who pressed Cancel is
+    // told their research question was too broad.
+    fakeStream([{ type: "abort" }]);
+    const created = await project();
+    fallbackFinishes(GOOD_BRIEF, "length", async () => {
+      await cancelResearchProject("alice", created.id);
+    });
+
+    const finished = await runResearchProject("alice", created.id);
+
+    expect(finished.status).toBe("cancelled");
+    expect(finished.error).not.toBe(LLM_RESEARCH_LENGTH_CAP_COPY);
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(finished.progress?.message).toBe("Cancelled.");
+  });
+
+  it.each(["stop", "content-filter", "error", "tool-calls", "other"])(
+    "commits the fallback brief unchanged for finishReason %s",
+    async (reason) => {
+      // NARROWER THAN THE QUERY DOOR, on purpose. The streamed loop treats
+      // every reason but `length` as a clean ending and catches a provider
+      // failure through its `error` part instead; the fallback mirrors that
+      // rather than inventing a second rule for the same door.
+      fakeStream([{ type: "abort" }]);
+      fallbackFinishes(GOOD_BRIEF, reason);
+      const created = await project();
+
+      const finished = await runResearchProject("alice", created.id);
+
+      expect(finished.status).toBe("complete");
+      expect(mockedWritePage).toHaveBeenCalled();
+    },
+  );
+
+  it("leaves condensation and reduction untouched when THEY hit the cap", async () => {
+    // DW-683 names the synthesis fallback alone. The two evidence sites read
+    // `.text` and use it exactly as they always have — a cap there is not a
+    // page being published as whole, it is notes being a little shorter.
+    mockedLLMWithFinish.mockImplementation(async (system, user, options) => ({
+      text: await callLLM(system, user, options),
+      // Every non-synthesis call is cut; the run must still complete.
+      finishReason: system.includes("evidence-first private research brief")
+        ? "stop"
+        : "length",
+    }));
+    // Evidence large enough to force condensation AND reduction — the same
+    // shape the mapping/reducing row above uses.
+    mockedSearch.mockResolvedValue([
+      {
+        title: "Large source",
+        url: "https://example.com/launch/brief",
+        snippet: "s",
+        content: `BEGIN-${"x".repeat(600_000)}-END`,
+      },
+    ]);
+    mockedLLM.mockImplementation(async (system) => {
+      if (system.startsWith("Extract only evidence")) {
+        return `condensed evidence ${"m".repeat(24_000)}`;
+      }
+      if (system.startsWith("Reduce these evidence notes")) return "reduced evidence";
+      return GOOD_BRIEF;
+    });
+    const created = await project();
+
+    const finished = await runResearchProject("alice", created.id);
+
+    // Both capped sites actually ran, or this row would prove nothing.
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.startsWith("Extract only evidence"))).not.toHaveLength(0);
+    expect(mockedLLM.mock.calls.filter(([system]) =>
+      system.startsWith("Reduce these evidence notes"))).not.toHaveLength(0);
+    expect(finished.status).toBe("complete");
+    expect(mockedWritePage).toHaveBeenCalled();
   });
 });
 

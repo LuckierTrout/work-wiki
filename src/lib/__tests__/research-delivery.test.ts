@@ -31,13 +31,29 @@ vi.mock("@/lib/research-providers", () => ({
     }
   },
 }));
-vi.mock("@/lib/llm", () => ({
-  callLLM: vi.fn(),
-  callLLMStream: vi.fn(async () => {
-    throw new Error("stream unavailable in unit tests");
-  }),
-  hasLLMKey: vi.fn(() => true),
-}));
+// `callLLMWithFinish` DELEGATES to the same `callLLM` double (DW-683):
+// `callResearchLLM` calls the sibling now, and this suite drives the run
+// through `callLLM`. `"stop"` is the clean ending the fallback commits on.
+vi.mock("@/lib/llm", () => {
+  const callLLM = vi.fn();
+  return {
+    callLLM,
+    callLLMWithFinish: vi.fn(
+      async (
+        system: string,
+        user: string,
+        options?: { maxOutputTokens?: number },
+      ) => ({
+        text: await callLLM(system, user, options),
+        finishReason: "stop" as const,
+      }),
+    ),
+    callLLMStream: vi.fn(async () => {
+      throw new Error("stream unavailable in unit tests");
+    }),
+    hasLLMKey: vi.fn(() => true),
+  };
+});
 vi.mock("@/lib/lifecycle", () => ({ writeWikiPageWithSideEffects: vi.fn() }));
 vi.mock("@/lib/schema", () => ({ loadPageConventions: vi.fn(async () => "") }));
 vi.mock("@/lib/tasks", async (importOriginal) => {

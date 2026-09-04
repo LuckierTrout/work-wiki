@@ -4,6 +4,7 @@ import { hasLLMKey, callLLMStream } from "@/lib/llm";
 import {
   LLM_DEADLINE_COPY,
   LLM_LENGTH_CAP_COPY,
+  LLM_STOPPED_EARLY_COPY,
   isOwnLlmDeadline,
   llmDeadlineConfigured,
 } from "@/lib/llm-deadline";
@@ -22,7 +23,7 @@ import { logger } from "@/lib/logger";
 import { expandQueryWithNamesTerms } from "@/lib/names-terms";
 
 /**
- * The two reasons this route can close an answer early, each as ONE object
+ * The three reasons this route can close an answer early, each as ONE object
  * pairing the owner's sentence with the operator's log line.
  *
  * A DESCRIPTOR rather than two `string` parameters on `closeWithNotice`,
@@ -31,7 +32,9 @@ import { expandQueryWithNamesTerms } from "@/lib/names-terms";
  * owner's answer body while logging the notice. Binding the pair here means a
  * call site names WHICH ending happened and cannot pick a mismatched half —
  * a cap truncation can no longer log "LLM deadline reached" and send an
- * operator to raise a timeout that never fired.
+ * operator to raise a timeout that never fired. The third one arrives under
+ * exactly that rule (DW-666): a descriptor beside these two, never a bare
+ * `(copy, log)` pair added alongside them.
  *
  * Not exported — Next 15 type-checks route exports, and this file's export
  * surface stays the `POST` handler alone.
@@ -43,6 +46,10 @@ const DEADLINE_NOTICE = {
 const LENGTH_CAP_NOTICE = {
   copy: LLM_LENGTH_CAP_COPY,
   log: "Output token cap reached; the answer was cut short and the owner told",
+} as const;
+const STOPPED_EARLY_NOTICE = {
+  copy: LLM_STOPPED_EARLY_COPY,
+  log: "Model stopped before finishing; the answer was cut short and the owner told",
 } as const;
 
 export async function POST(request: NextRequest) {
@@ -266,27 +273,47 @@ export async function POST(request: NextRequest) {
             closeWithNotice(controller, DEADLINE_NOTICE);
             return;
           }
-          // DW-547. The other way an answer ends early, and until now the
-          // silent one: `finishReason: "length"` means the model stopped
-          // because it reached `maxOutputTokens`, which is
-          // `QUERY_MAX_OUTPUT_TOKENS` on every call this route makes. That part
-          // fell into the bookkeeping tail below and the body simply ended —
-          // the same half answer looking like a whole one that DW-64 fixed for
-          // the deadline.
+          // DW-547, widened by DW-666. The other way an answer ends early, and
+          // until now the silent one: the model reports WHY it stopped on the
+          // `finish` part, and this branch used to read only `"length"` — the
+          // cap CUTTING the answer at `maxOutputTokens`, which is
+          // `QUERY_MAX_OUTPUT_TOKENS` on every call this route makes. Every
+          // other reason fell into the bookkeeping tail below and the body
+          // simply ended — the same half answer looking like a whole one that
+          // DW-64 fixed for the deadline, and `content-filter` is the concrete
+          // case: the model was stopped and the owner was told nothing.
+          //
+          // `stop` IS THE ONLY CLEAN ENDING, so it is the only silent one.
+          // `length` keeps its own sentence, which promises the rest of the
+          // answer is reachable by narrowing. The rest — `content-filter`,
+          // `error`, `tool-calls`, `other` — share one sentence: this repo
+          // passes no tools on these calls, so any of them means the model
+          // stopped somewhere that is not the end of the answer, and a rule
+          // keyed on "did the model finish" needs no per-reason table.
           //
           // UNGATED, unlike the abort branch above. The abort branch asks
           // `llmDeadlineConfigured()` because an abort with no deadline set is
-          // someone else's; the cap is passed on every single call, so a
-          // `length` finish is always this repo's own and there is no state in
-          // which it is not.
-          if (part.type === "finish" && part.finishReason === "length") {
-            closeWithNotice(controller, LENGTH_CAP_NOTICE);
+          // someone else's; the cap is passed on every single call and the
+          // model's own report of how it stopped is its own either way, so
+          // there is no state in which either belongs to somebody else.
+          //
+          // AFTER the abort/deadline branch, deliberately: a deadline that
+          // fires mid-answer can be followed by a `finish` carrying `length`,
+          // and the deadline is what actually stopped the run. Reaching the
+          // abort branch first means the deadline sentence wins, unchanged.
+          if (part.type === "finish" && part.finishReason !== "stop") {
+            closeWithNotice(
+              controller,
+              part.finishReason === "length"
+                ? LENGTH_CAP_NOTICE
+                : STOPPED_EARLY_NOTICE,
+            );
             return;
           }
-          // Everything else is bookkeeping (`start`, a `finish` for any other
-          // reason, step markers, and the non-deadline `error` part, which goes
-          // on being dropped exactly as it is today — that is DW-64's
-          // neighbour, not DW-64).
+          // Everything else is bookkeeping (`start`, a clean `finish`, step
+          // markers, and the non-deadline `error` part, which goes on being
+          // dropped exactly as it is today — that is DW-64's neighbour, not
+          // DW-64).
         }
       },
       async cancel() {

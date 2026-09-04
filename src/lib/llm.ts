@@ -1,4 +1,5 @@
 import { generateText, streamText } from "ai";
+import type { FinishReason } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -574,29 +575,48 @@ export async function getConfiguredModel(options?: {
 }
 
 /**
- * Call the configured LLM provider and return the assistant's text response.
+ * Call the configured LLM provider and return the assistant's text response
+ * TOGETHER WITH WHY THE MODEL STOPPED (DW-662, DW-666, DW-683).
  *
- * Automatically retries on transient errors (429, 5xx, network issues) with
- * exponential backoff. See {@link retryWithBackoff} for details.
+ * `generateText` reports both, and this file used to destructure `{ text }`
+ * alone. A `finishReason` of `"length"` means the model was CUT at
+ * `maxOutputTokens`; `"content-filter"` means it was stopped by the provider;
+ * `"error"` means it died. All three produce a fragment that reads exactly like
+ * a finished answer, and the two doors that commit non-streamed model output —
+ * `query()` in `./query` and `synthesizeResearchBrief`'s fallback in
+ * `./research-runtime` — were presenting those fragments as whole. This is the
+ * same silent truncation DW-547 and DW-663 closed on the streamed paths, which
+ * could see the reason because they read `fullStream`.
  *
- * Requires at least one supported provider env var to be set:
- * ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY,
- * OLLAMA_API_KEY, or OLLAMA_BASE_URL / OLLAMA_MODEL.
+ * A SIBLING rather than an option on {@link callLLM}. A flag would make the
+ * return type conditional on an argument, and every one of the ~19 existing
+ * `Promise<string>` callers would then depend on inference staying `string`.
+ * Two functions with two return types is additive: {@link callLLM} delegates
+ * here, so there is still exactly one `generateText` call for a non-streamed
+ * request in this file, and nothing that reads only the text had to change.
+ *
+ * The empty-text throw lives HERE, not in the delegating wrapper, so both
+ * entry points refuse an empty response identically — a caller reading the
+ * finish reason must not be handed `{ text: "", finishReason: "stop" }` and
+ * left to invent its own rule for it.
+ *
+ * Retries, the config snapshot and the deadline option are exactly
+ * {@link callLLM}'s — this IS that body.
  *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
  */
-export async function callLLM(
+export async function callLLMWithFinish(
   systemPrompt: string,
   userMessage: string,
   options?: { maxOutputTokens?: number },
-): Promise<string> {
+): Promise<{ text: string; finishReason: FinishReason }> {
   // The snapshot is FORWARDED rather than discarded (DW-618): `getModel()`
   // would otherwise re-enter the 5 s-TTL cache and could build one client out
   // of two config generations. Empty stays unthreaded — see `configSnapshot`.
   const cfg = await configSnapshot();
   const model = getModel(cfg);
 
-  const { text } = await retryWithBackoff(() =>
+  const { text, finishReason } = await retryWithBackoff(() =>
     generateText({
       model,
       system: systemPrompt,
@@ -611,7 +631,33 @@ export async function callLLM(
     throw new Error("LLM response contained no text");
   }
 
-  return text;
+  return { text, finishReason };
+}
+
+/**
+ * Call the configured LLM provider and return the assistant's text response.
+ *
+ * Automatically retries on transient errors (429, 5xx, network issues) with
+ * exponential backoff. See {@link retryWithBackoff} for details.
+ *
+ * Requires at least one supported provider env var to be set:
+ * ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY,
+ * OLLAMA_API_KEY, or OLLAMA_BASE_URL / OLLAMA_MODEL.
+ *
+ * DELEGATES to {@link callLLMWithFinish} and drops the finish reason. Every
+ * caller that reaches this name is one for which "the model stopped early" is
+ * not a distinction it acts on — an ingest summary, a title, a classification.
+ * A caller that DOES commit the text as an answer or a page should call the
+ * sibling and branch, which is what `./query` and `./research-runtime` do.
+ *
+ * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
+ */
+export async function callLLM(
+  systemPrompt: string,
+  userMessage: string,
+  options?: { maxOutputTokens?: number },
+): Promise<string> {
+  return (await callLLMWithFinish(systemPrompt, userMessage, options)).text;
 }
 
 /**
