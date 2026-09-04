@@ -5953,6 +5953,7 @@ source_spec: `spec-dw-234-262-slug-tenant-map-lifecycle.md`
 severity: low
 reason: DW-234 is closed by propagation: `loadSlugTenants` broadcasts a successful cache fill to every mounted hook. Verified by grep over src/, e2e/ and workers/ that nothing outside `useSlugTenants` calls `loadSlugTenants()`, so "the next cold caller" is always a later MOUNT. On a surface that goes idle after the outage — a Workbench sitting still, no navigation, no panel opening — no later mount occurs, nothing re-fetches, and that component stays on the wrong-handle 308 hop until reload. Closing it needs a self-initiated refresh (retry-after-degraded, or a visibility/focus signal), which this spec's Never clause rules out on the authority of DW-234's own reason field ("the next cold caller re-fetches").
 status: open
+decision: 2026-09-04 Re-fetch on visibility or focus — Add a visibilitychange/focus listener that re-fetches the slug-tenant map when the map is in its degraded DEFAULT_TENANT state, leaving the healthy path unchanged and unpolled. Pin that a degraded hook recovers on the next focus without a mount.
 
 ### DW-724: extractPptx accepts any archive entry as a slide, so a crafted presentation rel aimed at a real non-slide part (an image, docProps) passes the existence filter, makes `ordered` non-empty and silently
 origin: spec-deferred d2fdde158ba7

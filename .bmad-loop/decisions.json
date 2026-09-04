@@ -448,5 +448,14 @@
     "key": "1",
     "label": "Route by workload at the call sites",
     "resolution": ""
+  },
+  "DW-723": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a visibilitychange/focus listener that re-fetches the slug-tenant map when the map is in its degraded DEFAULT_TENANT state, leaving the healthy path unchanged and unpolled. Pin that a degraded hook recovers on the next focus without a mount.",
+    "key": "1",
+    "label": "Re-fetch on visibility or focus",
+    "resolution": ""
   }
 }
