@@ -291,7 +291,14 @@ describe("Workbench Chat does not use Worker query or ChatWorkspace", () => {
     expect(chat).toContain("@/lib/chat-session-transport");
     expect(chat).not.toContain("sidecarChatUrl");
     expect(chat).toContain("CHAT_COMPOSER_PLACEHOLDER");
-    expect(chat).toContain("send<{");
+    // The conversation doors moved to `chat-conversation-store.ts` (DW-587).
+    // The same doubling as above: the store owns the parsed-body helper, and
+    // Chat reaches the conversations through it rather than re-opening a door
+    // of its own beside the JSX.
+    const store = await readRel("src/lib/chat-conversation-store.ts");
+    expect(store).toContain("send<{");
+    expect(chat).toContain("@/lib/chat-conversation-store");
+    expect(chat).not.toContain("send<");
     expect(chat).not.toContain("await response.json()");
     expect(search).not.toContain("await response.json()");
     // DW-607: the constant became a selector over the page's own origin. The
@@ -311,7 +318,12 @@ describe("Workbench Chat does not use Worker query or ChatWorkspace", () => {
     const css = await readRel("src/app/globals.css");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
     expect(css).toContain(".wb-chat-thinking--live p");
-    expect(chat).toContain("body: JSON.stringify({ messageId: assistant.id })");
+    // The Save-to-Wiki body followed its door into the store (DW-587), so this
+    // half is aimed there; Chat's half is that it still names the ANSWER it is
+    // saving, which is what stops the button drifting onto the conversation or
+    // onto whatever message happens to be last.
+    expect(store).toContain("body: JSON.stringify({ messageId })");
+    expect(chat).toContain("saveAnswerToWiki(activeId, assistant.id)");
     expect(chat).not.toContain("assistant.thinking");
   });
 });

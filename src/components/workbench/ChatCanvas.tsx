@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -9,15 +8,26 @@ import {
   type KeyboardEvent,
 } from "react";
 import { ChatBody } from "./ChatBody";
+import { useChatConversations } from "./useChatConversations";
 import {
-  CHAT_HISTORY_DEPTH_DEFAULT,
-  CHAT_TOKEN_BUDGET_DEFAULT,
   CHAT_TOKEN_BUDGET_MAX,
   CHAT_TOKEN_BUDGET_MIN,
   type ChatCitation,
-  type ChatExportMessage,
 } from "@/lib/chat-contract";
-import { loopbackFetch } from "@/lib/loopback-client";
+import { assembleTurn, chatHistorySlice } from "@/lib/chat-assemble";
+import {
+  attachThroughIntake,
+  composerHintText,
+  scanSkills,
+  skillCommandOutcome,
+} from "@/lib/chat-composer";
+import {
+  groupCitationsByType,
+  lastAssistantMessage,
+  regenerateTarget,
+  saveAnswerToWiki,
+  type CanvasMessage,
+} from "@/lib/chat-conversation-store";
 import {
   runSidecarTurn,
   type SidecarTurnHandlers,
@@ -29,7 +39,6 @@ import {
   turnFailureCopy,
   type OpenTurn,
 } from "@/lib/chat-pending-turn";
-import { send } from "@/lib/workbench-request";
 import {
   CHAT_COMPOSER_PLACEHOLDER,
   CHAT_MODEL_MISSING_COPY,
@@ -41,12 +50,6 @@ import {
   workspaceSelection,
   type TreeSelection,
 } from "@/lib/workbench-tree";
-import type { ChatOutput, ChatToolCall } from "@/lib/chat";
-import {
-  intakeReport,
-  intakeShouldRefresh,
-  submitIntakeFiles,
-} from "@/lib/workbench-intake-client";
 import { requestDataVersionCheck } from "@/lib/workbench-data-version";
 import {
   COMPOSER_TOOLS,
@@ -56,12 +59,10 @@ import {
   SHELL_APPROVE_LABEL,
   SHELL_DENY_LABEL,
   SKILL_CLEARED_COPY,
-  SKILL_SCAN_URL,
   formIsSubmittable,
   matchSkills,
   mergeToolRow,
   outputChipLabel,
-  parseSkillCommand,
   selectedSkillSummary,
   shellApprovalReasonCopy,
   shellCommandLine,
@@ -79,64 +80,45 @@ export interface ChatCanvasProps {
   onDockPreview: (selection: TreeSelection) => void;
 }
 
-interface ConversationRow {
-  id: string;
-  title: string;
-  name?: string;
-  retrievalMode?: "wiki" | "sources";
-  tokenBudget?: number;
-  historyDepth?: number;
-  selectedSkill?: string;
-  messages?: CanvasMessage[];
-}
-
-interface CanvasMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  citations?: ChatCitation[];
-  thinking?: string;
-  /** Tool rows and outputs, persisted with the turn (Stories 8.5 / 8.8). */
-  toolCalls?: ChatToolCall[];
-  outputs?: ChatOutput[];
-}
-
-interface AssembleResponse {
-  coverage: boolean;
-  coverageMessage: string | null;
-  citations: ChatCitation[];
-  numberedBodies: string;
-  systemPrompt: string;
-  indexSlice: string;
-  historySlice: Array<{ role: "user" | "assistant"; content: string }>;
-  vectorPhase: { status: string; message?: string };
-  chatModel: {
-    provider: string | null;
-    model: string | null;
-    configured: boolean;
-    baseUrl?: string;
-  };
-}
-
 function thinkingLines(text: string): string[] {
   return text.split(/\n/).filter((line) => line.trim().length > 0).slice(-5);
 }
 
 export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps) {
-  const [conversations, setConversations] = useState<ConversationRow[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<CanvasMessage[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  // The conversation half — the list, the open one, its messages and its
+  // settings — lives in `useChatConversations`, over the doors in
+  // `@/lib/chat-conversation-store`. What is left here is the composer, the
+  // turn, and the screen.
+  const {
+    conversations,
+    activeId,
+    messages,
+    retrievalMode,
+    tokenBudget,
+    historyDepth,
+    selectedSkill,
+    setActiveId,
+    setMessages,
+    setRetrievalMode,
+    setTokenBudget,
+    setHistoryDepth,
+    setSelectedSkill,
+    loadConversation,
+    startConversation,
+    removeConversation,
+    renameActive,
+    patchActive,
+    persistFrames,
+    clearOptimistic,
+  } = useChatConversations({ readOnly, onError: setError });
   const [composer, setComposer] = useState("");
   const drafts = useRef<Record<string, string>>({});
-  const [retrievalMode, setRetrievalMode] = useState<"wiki" | "sources">("wiki");
-  const [tokenBudget, setTokenBudget] = useState(CHAT_TOKEN_BUDGET_DEFAULT);
-  const [historyDepth, setHistoryDepth] = useState(CHAT_HISTORY_DEPTH_DEFAULT);
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [streamThinking, setStreamThinking] = useState("");
   const [thinkingOpen, setThinkingOpen] = useState<Record<string, boolean>>({});
   const [citationsOpen, setCitationsOpen] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [vectorNote, setVectorNote] = useState<string | null>(null);
   const [renameId, setRenameId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -144,7 +126,6 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   // settled turn's rows live on the message, because they were persisted with it.
   const [liveRows, setLiveRows] = useState<ChatToolRow[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
-  const [selectedSkill, setSelectedSkill] = useState<string | undefined>(undefined);
   const [skillPicker, setSkillPicker] = useState<string | null>(null);
   const [skillNote, setSkillNote] = useState<string | null>(null);
   const [pending, setPending] = useState<ChatPending | null>(null);
@@ -153,63 +134,10 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   const abortRef = useRef<AbortController | null>(null);
   const sendInFlight = useRef(false);
   const saveInFlight = useRef(false);
-  const loadSeq = useRef(0);
-  const persistSeq = useRef(0);
-  const patchChain = useRef(Promise.resolve());
   const turnRef = useRef<OpenTurn | null>(null);
   const attachRef = useRef<HTMLInputElement>(null);
 
   const empty = messages.length === 0 && !streaming;
-
-  const loadList = useCallback(async () => {
-    const body = await send<{ conversations?: ConversationRow[] }>(
-      "/api/chat/conversations",
-      { method: "GET" },
-    );
-    setConversations(body.conversations ?? []);
-    return body.conversations ?? [];
-  }, []);
-
-  const loadConversation = useCallback(async (id: string) => {
-    const seq = ++loadSeq.current;
-    const body = await send<{ conversation?: ConversationRow }>(
-      `/api/chat/conversations/${encodeURIComponent(id)}`,
-      { method: "GET" },
-    );
-    if (seq !== loadSeq.current) return;
-    const conversation = body.conversation;
-    if (!conversation) {
-      setMessages([]);
-      setError("Conversation not found.");
-      return;
-    }
-    setMessages(conversation.messages ?? []);
-    setRetrievalMode(conversation.retrievalMode === "sources" ? "sources" : "wiki");
-    setTokenBudget(conversation.tokenBudget ?? CHAT_TOKEN_BUDGET_DEFAULT);
-    setHistoryDepth(conversation.historyDepth ?? CHAT_HISTORY_DEPTH_DEFAULT);
-    setSelectedSkill(conversation.selectedSkill);
-    setConversations((current) =>
-      current.map((item) => (item.id === id ? { ...item, ...conversation } : item)),
-    );
-  }, []);
-
-  useEffect(() => {
-    void loadList()
-      .then((rows) => {
-        const wanted =
-          typeof window !== "undefined"
-            ? new URLSearchParams(window.location.search).get("conversation")
-            : null;
-        const next = rows.find((row) => row.id === wanted) ?? rows[0];
-        if (next) {
-          setActiveId(next.id);
-          return loadConversation(next.id);
-        }
-      })
-      .catch((cause) => {
-        setError(cause instanceof Error ? cause.message : "Chat failed.");
-      });
-  }, [loadList, loadConversation]);
 
   useEffect(() => {
     return () => {
@@ -249,28 +177,20 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   }, [pending, skillPicker, formValues]);
 
   /**
-   * Skills on disk, read once on mount through the shared loopback client.
+   * Skills on disk, read once on mount through `scanSkills`.
    *
-   * SKILLS ARE SCANNED, NOT INSTALLED (Story 8.6): this asks the sidecar what is
-   * on disk right now, so a `SKILL.md` the owner dropped in a minute ago appears
-   * without a reinstall and without a rebuild. A failure is silent on purpose —
-   * no Skills is the normal state, and an error banner for it would greet every
-   * owner who has never written one.
+   * `null` MEANS "THE SCAN SAID NOTHING" — a sidecar that is down, an API that
+   * is off, a body that would not parse — and nothing is written, because none
+   * of those is a reason to render. A wiki with NO SKILLS is a different answer:
+   * it comes back as `[]` and is written like any other list. Neither is an
+   * error the owner is shown; the door and its silence live in
+   * `@/lib/chat-composer`.
    */
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
-      try {
-        const scan = await loopbackFetch(SKILL_SCAN_URL, {
-          cache: "no-store",
-          signal: controller.signal,
-        });
-        if (!scan.ok) return;
-        const body = (await scan.json()) as { skills?: SkillSummary[] };
-        setSkills(Array.isArray(body.skills) ? body.skills : []);
-      } catch {
-        // Sidecar down, API off, or no Skills. All three mean "no list".
-      }
+      const scanned = await scanSkills(controller.signal);
+      if (scanned) setSkills(scanned);
     })();
     return () => controller.abort();
   }, []);
@@ -300,37 +220,24 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   async function createConversation() {
     if (readOnly) return;
     if (activeId) drafts.current[activeId] = composer;
-    const body = await send<{ conversation?: ConversationRow }>("/api/chat/conversations", {
-      method: "POST",
-      body: JSON.stringify({
-        retrievalMode,
-        tokenBudget,
-        historyDepth,
-      }),
-    });
-    if (!body.conversation) return;
-    setConversations((current) => [body.conversation!, ...current]);
-    setActiveId(body.conversation.id);
+    const conversation = await startConversation();
+    if (!conversation) return;
     setMessages([]);
     setComposer("");
-    drafts.current[body.conversation.id] = "";
+    drafts.current[conversation.id] = "";
   }
 
   async function deleteConversation(id: string) {
     if (readOnly) return;
     abortRef.current?.abort();
-    await send(`/api/chat/conversations/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    const next = conversations.filter((item) => item.id !== id);
-    setConversations(next);
+    const outcome = await removeConversation(id);
     delete drafts.current[id];
-    if (activeId === id) {
-      const fallback = next[0];
-      setActiveId(fallback?.id ?? null);
-      setMessages([]);
-      setComposer(fallback ? (drafts.current[fallback.id] ?? "") : "");
-      if (fallback) void loadConversation(fallback.id);
+    // The composer follows the conversation the removal left the surface on —
+    // its own draft, or empty when nothing is left to be on.
+    if (outcome.switched) {
+      setComposer(
+        outcome.fallbackId ? (drafts.current[outcome.fallbackId] ?? "") : "",
+      );
     }
   }
 
@@ -338,41 +245,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     const name = renameValue.trim();
     setRenameId(null);
     if (!name || readOnly) return;
-    const body = await send<{ conversation?: ConversationRow }>(
-      `/api/chat/conversations/${encodeURIComponent(id)}`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ name }),
-      },
-    );
-    if (body.conversation) {
-      setConversations((current) =>
-        current.map((item) => (item.id === id ? { ...item, ...body.conversation } : item)),
-      );
-    }
-  }
-
-  function patchActive(patch: Record<string, unknown>) {
-    if (!activeId || readOnly) return;
-    const id = activeId;
-    patchChain.current = patchChain.current
-      .then(async () => {
-        const body = await send<{ conversation?: ConversationRow }>(
-          `/api/chat/conversations/${encodeURIComponent(id)}`,
-          {
-            method: "PATCH",
-            body: JSON.stringify(patch),
-          },
-        );
-        if (body.conversation) {
-          setConversations((current) =>
-            current.map((item) =>
-              item.id === id ? { ...item, ...body.conversation } : item,
-            ),
-          );
-        }
-      })
-      .catch(() => undefined);
+    await renameActive(id, name);
   }
 
   function dockCitation(citation: ChatCitation) {
@@ -382,46 +255,6 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   function citeNumber(n: number, citations: ChatCitation[] | undefined) {
     const row = citations?.find((item) => item.n === n);
     if (row) dockCitation(row);
-  }
-
-  async function persistFrames(
-    id: string,
-    frames: CanvasMessage[],
-    options?: { replaceLastTurn?: boolean },
-  ) {
-    const seq = ++persistSeq.current;
-    const body = await send<{ conversation?: ConversationRow }>(
-      `/api/chat/conversations/${encodeURIComponent(id)}/messages`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          persist: true,
-          replaceLastTurn: options?.replaceLastTurn === true,
-          messages: frames.map((frame) => ({
-            role: frame.role,
-            content: frame.content,
-            citations: frame.citations ?? [],
-            ...(frame.thinking ? { thinking: frame.thinking } : {}),
-            // PERSISTED WITH THE TURN, which is what makes "survives restart with
-            // the Conversation" true for a chip and auditable for a tool row.
-            ...(frame.toolCalls?.length ? { toolCalls: frame.toolCalls } : {}),
-            ...(frame.outputs?.length ? { outputs: frame.outputs } : {}),
-          })),
-        }),
-      },
-    );
-    if (!body.conversation) throw new Error("Persist failed.");
-    if (seq !== persistSeq.current) return;
-    setMessages(body.conversation.messages ?? []);
-    setConversations((current) =>
-      current.map((item) =>
-        item.id === id ? { ...item, ...body.conversation } : item,
-      ),
-    );
-  }
-
-  function clearOptimistic() {
-    setMessages((current) => current.filter((item) => !item.id.startsWith("pending-")));
   }
 
   async function sendTurn(
@@ -442,30 +275,16 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     setStreamText("");
     setStreamThinking("");
     const historySource = options?.history ?? messages;
-    const history: ChatExportMessage[] = historySource.map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content,
-      citations: message.citations ?? [],
-      createdAt: "",
-    }));
+    const history = chatHistorySlice(historySource);
     try {
-      const assembled = await send<AssembleResponse>(
-        `/api/v1/projects/${encodeURIComponent(wikiId)}/retrieve`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            query: trimmed,
-            retrievalMode,
-            tokenBudget,
-            historyDepth,
-            history,
-          }),
-        },
-      );
-      if (typeof assembled.coverage !== "boolean") {
-        throw new Error("Retrieve failed.");
-      }
+      const assembled = await assembleTurn({
+        wikiId,
+        query: trimmed,
+        retrievalMode,
+        tokenBudget,
+        historyDepth,
+        history,
+      });
       if (assembled.vectorPhase?.status === "failed") {
         setVectorNote(assembled.vectorPhase.message || CHAT_VECTOR_FALLBACK_COPY);
       }
@@ -590,24 +409,19 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   /**
    * Attach files from the composer (Story 8.5).
    *
-   * THROUGH INTAKE, the one arrival path for bytes (FR-2): the file lands under
-   * `raw/sources/` and auto-queues a compile, exactly as a drop on the Sources
-   * tree does. A Chat-local upload would be a second door with no pipeline behind
-   * it, and the Agent would then be asked about a Source that was never compiled.
-   *
-   * The outcome is reported in the composer's own error line rather than silently:
-   * a refused CSV has to say so, or the owner will ask about a file that is not
-   * there.
+   * The Intake path itself is `attachThroughIntake` — bytes arrive the one way
+   * they are allowed to (FR-2). What is the surface's here is what the owner
+   * then sees: the report in the composer's own note line, and the refresh nudge
+   * that sends the trees to re-poll.
    */
   async function attachFiles(list: FileList | null) {
     const files = list ? Array.from(list) : [];
     if (files.length === 0 || readOnly) return;
     setSkillNote(null);
     try {
-      const outcomes = await submitIntakeFiles(files);
-      const report = intakeReport(outcomes);
-      if (report) setSkillNote(report);
-      if (intakeShouldRefresh(outcomes)) requestDataVersionCheck();
+      const outcome = await attachThroughIntake(files);
+      if (outcome.note) setSkillNote(outcome.note);
+      if (outcome.refresh) requestDataVersionCheck();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Attach failed.");
     } finally {
@@ -635,31 +449,18 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   /**
    * `/skill` — a command, not a message.
    *
-   * Handled BEFORE the send so it never reaches a provider: `/skill` bare clears,
-   * `/skill <term>` opens the picker filtered to ENABLED Skills only, and an exact
-   * name selects outright. A disabled Skill matches nothing, which is what makes
-   * the switch real rather than cosmetic.
+   * The decision is `skillCommandOutcome`, which is where the rules live:
+   * handled BEFORE the send so it never reaches a provider, completing against
+   * ENABLED Skills only. What is left here is the composer clear the command
+   * implies and which of the two surfaces the outcome opens.
    */
   function handleSkillCommand(text: string): boolean {
-    const command = parseSkillCommand(text);
-    if (command.kind === "none") return false;
+    const outcome = skillCommandOutcome(text, skills);
+    if (outcome.kind === "none") return false;
     setComposer("");
     if (activeId) drafts.current[activeId] = "";
-    if (command.kind === "clear") {
-      // A bare `/skill` with Skills available opens the picker rather than
-      // clearing blind — "which Skills do I have" is the likelier question, and
-      // Clear is one press away inside it.
-      if (skills.some((skill) => skill.enabled)) setSkillPicker("");
-      else pickSkill(null);
-      return true;
-    }
-    const matches = matchSkills(skills, command.term);
-    const exact = matches.find(
-      (skill) => skill.name.toLowerCase() === command.term.toLowerCase(),
-    );
-    if (exact) pickSkill(exact.id);
-    else if (matches.length === 1) pickSkill(matches[0].id);
-    else setSkillPicker(command.term);
+    if (outcome.kind === "pick") pickSkill(outcome.id);
+    else setSkillPicker(outcome.term);
     return true;
   }
 
@@ -670,14 +471,9 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     if (handleSkillCommand(text)) return;
     let id = activeId;
     if (!id) {
-      const body = await send<{ conversation?: ConversationRow }>("/api/chat/conversations", {
-        method: "POST",
-        body: JSON.stringify({ retrievalMode, tokenBudget, historyDepth }),
-      });
-      if (!body.conversation) return;
-      id = body.conversation.id;
-      setConversations((current) => [body.conversation!, ...current]);
-      setActiveId(id);
+      const conversation = await startConversation();
+      if (!conversation) return;
+      id = conversation.id;
     }
     setComposer("");
     if (id) drafts.current[id] = "";
@@ -696,41 +492,31 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   }
 
   async function regenerate() {
-    if (readOnly || !activeId || messages.length < 2 || streaming) return;
-    const assistant = messages.at(-1);
-    const user = messages.at(-2);
-    if (
-      !assistant ||
-      !user ||
-      assistant.role !== "assistant" ||
-      user.role !== "user"
-    ) {
-      return;
-    }
+    if (readOnly || !activeId || streaming) return;
+    // Only a user-then-assistant tail can be replaced; `regenerateTarget` says
+    // so, and hands back the question plus the transcript before it.
+    const target = regenerateTarget(messages);
+    if (!target) return;
     const prior = messages;
-    const history = messages.slice(0, -2);
-    setMessages(history);
-    const ok = await sendTurn(user.content, activeId, {
-      history,
+    setMessages(target.history);
+    const ok = await sendTurn(target.userText, activeId, {
+      history: target.history,
       replaceLastTurn: true,
     });
     if (!ok) {
       setMessages(prior);
-      setComposer(user.content);
-      drafts.current[activeId] = user.content;
+      setComposer(target.userText);
+      drafts.current[activeId] = target.userText;
     }
   }
 
   async function saveToWiki() {
     if (!activeId || readOnly || saveInFlight.current) return;
-    const assistant = [...messages].reverse().find((item) => item.role === "assistant");
+    const assistant = lastAssistantMessage(messages);
     if (!assistant) return;
     saveInFlight.current = true;
     try {
-      await send(`/api/chat/conversations/${encodeURIComponent(activeId)}/save`, {
-        method: "POST",
-        body: JSON.stringify({ messageId: assistant.id }),
-      });
+      await saveAnswerToWiki(activeId, assistant.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Save failed.");
     } finally {
@@ -739,7 +525,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
   }
 
   const lastCitations = useMemo(() => {
-    return [...messages].reverse().find((item) => item.role === "assistant")?.citations ?? [];
+    return lastAssistantMessage(messages)?.citations ?? [];
   }, [messages]);
 
   /** The selected Skill, or `null` when it was disabled or deleted since. */
@@ -748,15 +534,10 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
     [skills, selectedSkill],
   );
 
-  const grouped = useMemo(() => {
-    const groups = new Map<string, ChatCitation[]>();
-    for (const citation of lastCitations) {
-      const list = groups.get(citation.type) ?? [];
-      list.push(citation);
-      groups.set(citation.type, list);
-    }
-    return groups;
-  }, [lastCitations]);
+  const grouped = useMemo(
+    () => groupCitationsByType(lastCitations),
+    [lastCitations],
+  );
 
   return (
     <div className={`wb-chat${retrievalMode === "sources" ? " wb-chat--sources" : ""}`}>
@@ -1066,9 +847,7 @@ export function ChatCanvas({ wikiId, readOnly, onDockPreview }: ChatCanvasProps)
                   void patchActive({ retrievalMode: next });
                   return;
                 }
-                setComposer((current) =>
-                  current.startsWith(tool.hint) ? current : tool.hint + current,
-                );
+                setComposer((current) => composerHintText(current, tool.hint));
               }}
             >
               {tool.label}

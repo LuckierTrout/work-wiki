@@ -4667,7 +4667,9 @@ location: src/components/workbench/ChatCanvas.tsx
 source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: DW-444 named exactly two subjects and both are out, but the retro finding that opened this thread was about file size. A further decomposition pass (the conversation store, and the composer's non-render concerns) is the natural next follow-on to `epic-8-retro-architecture-follow-on`.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-chatcanvas-decomposition
+resolution-undo: 87910582fdfa5b2437490436830d8ca966b7c173067bb272bcd6ac94340cef41 2026-09-04 7374617475733a206f70656e
 
 ### DW-588: The whole vitest `dom` project is broken on Node 26: `window.localStorage` is undefined, so 13 files / 233 mounted tests fail before asserting anything.
 
@@ -6238,4 +6240,12 @@ location: src/lib/chat-pending-turn.ts:155 (the `sanitizeCitedAnswer` call), aga
 source_spec: `spec-dw-585-629-chat-settle-citations-and-mcp-pointer.md`
 severity: low
 reason: Pre-existing and untouched by this bundle: it is the FULL-array branch of the same read, and it survives unchanged under both `??` and the new length test. The two copies of `sanitizeCitedAnswer` disagree. The sidecar's takes a fourth `allowUncited` argument (`sidecar/chat-transport.mjs:44-47,76-82`) and `runToolTurn` passes `allowUncited: result.outputs.length > 0 || result.toolCalls.length > 0` (`:376-379`), so an answer with no `[n]` marker survives when the turn ran a tool. The browser's copy (`src/lib/chat-citations.ts:19-56`) has NO such parameter: `used.size === 0` returns `CHAT_COVERAGE_MISSING_COPY` with `citations: []` unconditionally. So the frame the sidecar settles is re-sanitized on arrival under a stricter rule than it was emitted under, and its content is replaced. VERIFIED during this run's review with a throwaway `node`-project probe (since removed) composing the real functions: the sidecar emits `{"content":"Denied. The command did not run.","citations":[{"n":1,…}],"
+status: open
+
+### DW-756: Chat's create, delete and rename call sites report nothing when their door refuses: the failure is an unhandled rejection and the owner sees no sentence.
+origin: spec-deferred 022ce79ad36c
+location: src/components/workbench/ChatCanvas.tsx (createConversation, deleteConversation, commitRename)
+source_spec: `spec-dw-587-chat-canvas-decomposition.md`
+severity: low
+reason: `void createConversation()`, `void deleteConversation(item.id)` and `void commitRename(item.id)` in `ChatCanvas.tsx` have no `catch`, and `useChatConversations` routes only the mount load and "Conversation not found." through its `onError`. A refused DELETE leaves the row on screen with no explanation; a refused rename silently restores the old label. Pre-existing — the same three call sites are unguarded at `c19a5a29`, and DW-587 moved the doors without changing them — but the split is what introduced the `onError` reporter that would close it.
 status: open
