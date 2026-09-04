@@ -395,6 +395,15 @@
     "label": "Exempt teardown from the guard",
     "resolution": ""
   },
+  "DW-686": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Read getVectorSearchSettings (src/lib/config.ts:1655) at src/lib/search.ts:66 and :299, browse.ts:130 and query-search.ts:195, returning empty when vector search is disabled, so one switch governs every vector-backed door. Add tests pinning that Related pages, browse and the query fallback all degrade to their non-vector behaviour with the switch off.",
+    "key": "1",
+    "label": "Gate all four call sites",
+    "resolution": ""
+  },
   "DW-697": {
     "answered_at": "2026-09-03",
     "bundle_name": "",
