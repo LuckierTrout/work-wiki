@@ -502,5 +502,14 @@
     "key": "1",
     "label": "Add a distinct capacity/state token",
     "resolution": ""
+  },
+  "DW-749": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a default arm to seedAgent's bucketing switch that refuses the section as a ClientInputError before any page is written, naming the three valid types. This leaves the HTTP gate's declared no-enum-judgement contract intact and makes the three doors agree on the outcome. Pin the bogus-type body at the HTTP door.",
+    "key": "1",
+    "label": "Refuse in seedAgent with a default arm",
+    "resolution": ""
   }
 }
