@@ -503,6 +503,15 @@
     "label": "Probe variants in the create-conflict guard",
     "resolution": ""
   },
+  "DW-743": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "On merge-absorb, move the absorbed page's raw Sources to the survivor's silo addresses so they follow the content, leaving listWorkbenchFilePaths and rawPathAllowed untouched; amend the 'preserve in place' resolve decision to record the relocation.",
+    "key": "1",
+    "label": "Relocate to the survivor's silo",
+    "resolution": ""
+  },
   "DW-748": {
     "answered_at": "2026-09-04",
     "bundle_name": "",
