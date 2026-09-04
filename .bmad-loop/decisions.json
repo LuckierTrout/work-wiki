@@ -475,5 +475,14 @@
     "key": "1",
     "label": "Re-key assets to the final page slug",
     "resolution": ""
+  },
+  "DW-739": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Extend the no-prose predicate to the ingest door so a fold carrying no prose falls back to newBody rather than overwriting the page with the literal, repinning the test that currently freezes the verbatim return and recording that the two specs' out-of-scope clauses are superseded here.",
+    "key": "1",
+    "label": "Degrade to newBody at the ingest door",
+    "resolution": ""
   }
 }
