@@ -8,6 +8,8 @@
  * not a style choice, so no caller may inline its own.
  */
 
+import { isSidecarDefaultAdmittedOrigin } from "./sidecar";
+
 export type WorkbenchModeId =
   | "wiki"
   | "chat"
@@ -76,9 +78,76 @@ export const TODOS_NON_MEETING_COPY =
  * Chat fails closed when no sidecar answers on the loopback port. It names the
  * port because that is the only thing the owner can act on — the Worker cannot
  * reach localhost, so there is no server-side fallback to offer instead.
+ *
+ * TRUE ONLY ON A PAGE THE DOOR ADMITS WITH NOTHING CONFIGURED (DW-607). There,
+ * `down` can only mean nothing answered. Elsewhere the sidecar may well be
+ * running and simply refused, so {@link chatSidecarDownCopy} chooses between
+ * this and {@link CHAT_SIDECAR_UNREACHABLE_COPY} — no caller renders either
+ * constant directly.
  */
 export const CHAT_SIDECAR_DOWN_COPY =
   "Start the local sidecar on 127.0.0.1:19828 to use Chat.";
+
+/**
+ * The same fail-closed state on a page the sidecar does not admit by default.
+ *
+ * NAMES BOTH CAUSES because the browser cannot tell them apart: a refused
+ * connection and a CORS refusal reach `fetch` as the same rejected promise, and
+ * the only way to distinguish them would be a second request or a same-origin
+ * server route that cannot see loopback either. So the sentence stays honest
+ * about the ambiguity and names the one knob that resolves half of it — an
+ * owner whose sidecar is already running must not be told to start it.
+ *
+ * The env name is spelled in full because it is what the operator will grep for
+ * in `.env.example` and `DEPLOY.md`, which document its shape.
+ */
+export const CHAT_SIDECAR_UNREACHABLE_COPY =
+  "Chat can’t reach the local sidecar on 127.0.0.1:19828. Start it, or add this page’s origin to WORKWIKI_SIDECAR_ALLOWED_ORIGINS.";
+
+/**
+ * A real `scheme://host[:port]` origin, and nothing else.
+ *
+ * `window.location.origin` is a string on every page that has one, but the
+ * value reaching this module can also be `null` (server render, first client
+ * render), `""`, or the literal `"null"` a sandboxed iframe or a `file://` page
+ * reports — none of which say anything about whether the door would admit the
+ * page. Round-tripping through `URL` and comparing against `origin` is what
+ * separates a genuine origin from all three, and it never throws.
+ */
+function isPageOrigin(value: string | null | undefined): boolean {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    return url.origin.toLowerCase() === trimmed.toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Which fail-closed Chat sentence this page has earned (DW-607).
+ *
+ * Pure, and decided by the ONE fact a page holds for free: its own origin. The
+ * probe cannot report WHY it failed, so the copy is selected from what the
+ * browser already knows rather than from a diagnosis it cannot make.
+ *
+ * DEGRADES TO {@link CHAT_SIDECAR_DOWN_COPY}, not to the longer sentence. An
+ * origin that is absent or unparseable is the server render, the first client
+ * render, and the sandboxed embedding — and the shorter sentence is the one
+ * that is true more often, so it is the conservative answer. That also keeps
+ * the server's markup and the first client render identical, which is what
+ * stops a hydration mismatch.
+ */
+export function chatSidecarDownCopy(
+  pageOrigin: string | null | undefined,
+): string {
+  if (isSidecarDefaultAdmittedOrigin(pageOrigin)) return CHAT_SIDECAR_DOWN_COPY;
+  if (!isPageOrigin(pageOrigin)) return CHAT_SIDECAR_DOWN_COPY;
+  return CHAT_SIDECAR_UNREACHABLE_COPY;
+}
 
 export const CHAT_COVERAGE_MISSING_COPY =
   "Wiki has no coverage for this. Ingest a source or run Deep Research.";

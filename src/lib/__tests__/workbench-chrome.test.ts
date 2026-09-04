@@ -316,7 +316,17 @@ describe("ModeCanvas", () => {
   it("sources every sentence from the shared module", async () => {
     const source = await read("ModeCanvas.tsx");
     expect(source).toContain("@/lib/workbench-modes");
-    expect(source).toContain("CHAT_SIDECAR_DOWN_COPY");
+    // The fail-closed Chat sentence is now CHOSEN by the page's own origin
+    // (DW-607), so the component imports the selector rather than a constant.
+    // The claim the pin was always making — no sentence is typed here — is
+    // still what is checked, one line down.
+    expect(source).toContain("chatSidecarDownCopy");
+    // NEITHER sentence may be spelled here. Banning only the old one would let
+    // the new one be inlined with every pin still green, which is the same
+    // second definition the rule exists to stop — the env name is the
+    // distinctive substring, and it carries no curly apostrophe to mistype.
+    expect(source).not.toContain("Start the local sidecar");
+    expect(source).not.toContain("WORKWIKI_SIDECAR_ALLOWED_ORIGINS");
     expect(source).toContain("surface.emptyState");
     const graph = await read("GraphCanvas.tsx");
     expect(graph).toContain("GRAPH_NARROW_COPY");
@@ -327,7 +337,16 @@ describe("ModeCanvas", () => {
 
   it("fails Chat closed rather than degrading it", async () => {
     const source = await read("ModeCanvas.tsx");
-    expect(source).toContain("CHAT_SIDECAR_DOWN_COPY");
+    expect(source).toContain("chatSidecarDownCopy");
+    expect(source).not.toContain("Start the local sidecar");
+    expect(source).not.toContain("WORKWIKI_SIDECAR_ALLOWED_ORIGINS");
+    // The selector is only honest if it is fed the REAL page origin (DW-607).
+    // A hardcoded string or an omitted argument still renders the unreachable
+    // sentence under `sidecar-down-copy.test.tsx`'s deployed-origin mount — that
+    // suite fixes the document URL, so it cannot tell a wired component from a
+    // constant — while handing every LOOPBACK page the wrong sentence, which no
+    // other test in the repo mounts. This line is where that regression lands.
+    expect(source).toContain("window.location.origin");
     expect(source).toContain("<ChatCanvas");
     expect(source).toContain('sidecar === "up"');
     expect(source).toContain("<ChatCanvas");

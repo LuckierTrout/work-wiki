@@ -85,7 +85,26 @@ export const SETTINGS_POLL_INTERVAL_MS = 15_000;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const LOOPBACK_ORIGIN_RE = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i;
+/**
+ * The three spellings of THIS MACHINE, admitted with nothing configured.
+ *
+ * `[::1]` — the bracketed IPv6 loopback literal, as it appears in an origin —
+ * belongs beside the other two and not in the allowlist (DW-605). It is the
+ * same machine; it carries the same Secure Contexts "potentially trustworthy"
+ * carve-out that makes a plain-HTTP loopback subresource reachable from an
+ * HTTPS page at all; and on a dual-stack host `localhost` frequently resolves
+ * to it already. A dev server listening on IPv6 loopback was therefore refused
+ * while the same process reached through `localhost` was admitted — a
+ * difference the contract has no way to defend.
+ *
+ * THE WIDENING STOPS THERE. Only the bracketed literal: not a bare `::1`, not
+ * any other IPv6 address (`[::ffff:127.0.0.1]`, a link-local `[fe80::1]`), and
+ * not the rest of `127.0.0.0/8`. The pattern stays anchored at both ends, so
+ * `http://[::1].evil.test` is not loopback however much it reads like it — a
+ * deployed page is admitted by being NAMED in the allowlist, never by
+ * resembling loopback.
+ */
+const LOOPBACK_ORIGIN_RE = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
 
 export const SIDECAR_VERSION =
   typeof pkg.version === "string" ? pkg.version : "0.1.0";
@@ -250,8 +269,10 @@ export function parseSidecarAllowedOrigins(value) {
  *
  * `allowedOrigins` defaults to empty so the one-argument call sites — and a
  * sidecar with nothing configured — behave exactly as they did before DW-25.
- * `LOOPBACK_ORIGIN_RE` is untouched: a deployed page is admitted by being
- * NAMED, never by resembling loopback.
+ * The two tests stay SEPARATE: {@link LOOPBACK_ORIGIN_RE} answers only for the
+ * spellings of this machine, and a deployed page is admitted by being NAMED in
+ * the list, never by resembling loopback. DW-605 added `[::1]` to that regex
+ * because it IS this machine; nothing about a remote origin got easier.
  *
  * @param {string | undefined} origin
  * @param {string[]} [allowedOrigins]

@@ -1,9 +1,9 @@
 "use client";
 
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import {
-  CHAT_SIDECAR_DOWN_COPY,
+  chatSidecarDownCopy,
   workbenchMode,
   type WorkbenchModeId,
 } from "@/lib/workbench-modes";
@@ -139,6 +139,24 @@ export function ModeCanvas({
 }: ModeCanvasProps) {
   const surface = workbenchMode(mode);
   const wikiActive = mode === "wiki";
+
+  // This page's own origin, which decides which fail-closed Chat sentence the
+  // owner is owed (DW-607). The probe cannot say WHY it failed, so the origin
+  // is the only evidence available: on one the sidecar admits without
+  // configuration, `down` means nothing answered; anywhere else the process may
+  // be running and simply refused.
+  //
+  // READ AFTER MOUNT, never during render. `window` does not exist on the
+  // server, and a render that reached for it on the client would produce
+  // different markup from the one React is hydrating — the sentence would swap
+  // under a hydration mismatch. `null` until the effect runs is the state the
+  // selector already degrades to, so the first client render is byte-identical
+  // to the server's and the swap is a normal re-render.
+  const [pageOrigin, setPageOrigin] = useState<string | null>(null);
+  useEffect(() => {
+    setPageOrigin(window.location.origin);
+  }, []);
+
   // On screen — the mode is Wiki AND no other surface is over the canvas. What
   // the wrapper's own `hidden` and the published visibility both key on, so the
   // two can never disagree.
@@ -269,7 +287,7 @@ export function ModeCanvas({
           <h2 id={headingId} className="wb-surface-title">
             {workbenchMode("chat").label}
           </h2>
-          <p className="wb-empty">{CHAT_SIDECAR_DOWN_COPY}</p>
+          <p className="wb-empty">{chatSidecarDownCopy(pageOrigin)}</p>
         </div>
       ) : null}
 

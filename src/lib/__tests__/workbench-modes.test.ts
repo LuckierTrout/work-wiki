@@ -13,12 +13,14 @@ import {
   CHAT_COMPOSER_PLACEHOLDER,
   CHAT_COVERAGE_MISSING_COPY,
   CHAT_SIDECAR_DOWN_COPY,
+  CHAT_SIDECAR_UNREACHABLE_COPY,
   CHAT_SIDECAR_UP_COPY,
   DEFAULT_WORKBENCH_MODE,
   GRAPH_NARROW_COPY,
   TODOS_NON_MEETING_COPY,
   WORKBENCH_MODES,
   badgeAccessibleName,
+  chatSidecarDownCopy,
   isWorkbenchModeId,
   workbenchMode,
 } from "../workbench-modes";
@@ -106,6 +108,67 @@ describe("empty-state copy", () => {
     expect(TODOS_NON_MEETING_COPY).toBe(
       "This Source is not a meeting. Mark as meeting to extract Todos.",
     );
+  });
+
+  /**
+   * DW-607 — the fail-closed sentence is now a CHOICE, and the rule is pure.
+   *
+   * `CHAT_SIDECAR_DOWN_COPY` told every owner to start a process, including the
+   * one whose sidecar was already running and whose deployed origin the door
+   * simply refuses. The probe cannot say which failure it met — a refused
+   * connection and a CORS refusal are the same rejected fetch — so the sentence
+   * is selected from the one fact the page holds for free: its own origin.
+   * Executed here rather than argued from a mount, because it is a function.
+   */
+  it("chooses the fail-closed sentence from the page's own origin", () => {
+    // The value is UNCHANGED: on a loopback page the old sentence is still the
+    // right one, byte for byte.
+    expect(CHAT_SIDECAR_DOWN_COPY).toBe(
+      "Start the local sidecar on 127.0.0.1:19828 to use Chat.",
+    );
+    // The new sibling names the port AND the knob, and neither cause alone.
+    expect(CHAT_SIDECAR_UNREACHABLE_COPY).toContain("127.0.0.1:19828");
+    expect(CHAT_SIDECAR_UNREACHABLE_COPY).toContain(
+      "WORKWIKI_SIDECAR_ALLOWED_ORIGINS",
+    );
+    expect(CHAT_SIDECAR_UNREACHABLE_COPY).not.toBe(CHAT_SIDECAR_DOWN_COPY);
+    expect(CHAT_SIDECAR_UNREACHABLE_COPY).not.toMatch(/\p{Extended_Pictographic}/u);
+    expect(CHAT_SIDECAR_UNREACHABLE_COPY).not.toMatch(/!/);
+
+    // Every row of the copy half of the I/O matrix.
+    for (const origin of [
+      "http://localhost:3000",
+      "http://127.0.0.1:19828",
+      "http://[::1]:3000",
+      "https://localhost",
+    ]) {
+      expect(chatSidecarDownCopy(origin)).toBe(CHAT_SIDECAR_DOWN_COPY);
+    }
+    for (const origin of [
+      "https://app.example",
+      "http://app.example:8080",
+      "https://localhost.evil.test",
+    ]) {
+      expect(chatSidecarDownCopy(origin)).toBe(CHAT_SIDECAR_UNREACHABLE_COPY);
+    }
+    // Before the origin is known, and for anything that is not an origin at
+    // all, the answer degrades to the sentence that is true more often — which
+    // is also what keeps the server render and the first client render equal.
+    // `http://[::1].evil.test` belongs here rather than above: the door refuses
+    // it, but no browser can be SERVED from it — it does not parse as a URL —
+    // so as a page origin it is unknown, not deployed.
+    for (const origin of [
+      null,
+      undefined,
+      "",
+      "   ",
+      "null",
+      "not a url",
+      "http://[::1].evil.test",
+      "file:///Users/owner/page.html",
+    ]) {
+      expect(chatSidecarDownCopy(origin)).toBe(CHAT_SIDECAR_DOWN_COPY);
+    }
   });
 });
 

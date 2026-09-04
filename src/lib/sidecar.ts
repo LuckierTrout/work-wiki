@@ -20,10 +20,11 @@
  * browser extension or corporate proxy, and a sandboxed embedding that sends
  * `Origin: null` all produce the same `down`.)
  *
- * 1. ORIGIN NOT ALLOWED. `sidecar/server.mjs` admits `localhost` and
- *    `127.0.0.1` on either scheme and any port with no configuration — but only
- *    those two hostnames, so IPv6 loopback (`http://[::1]:3000`) is NOT
- *    admitted and has to be named like any other origin. Every other origin
+ * 1. ORIGIN NOT ALLOWED. `sidecar/server.mjs` admits the three spellings of
+ *    THIS MACHINE — `localhost`, `127.0.0.1`, and the bracketed IPv6 loopback
+ *    literal `[::1]` (DW-605) — on either scheme and any port with no
+ *    configuration. Only those three hostnames, and the match is anchored, so
+ *    `http://[::1].evil.test` is not loopback. Every other origin
  *    must be listed in `WORKWIKI_SIDECAR_ALLOWED_ORIGINS` (comma-separated,
  *    e.g. `https://app.example`). An origin that is neither gets
  *    `403 {"error":"origin_not_allowed"}` with no `Access-Control-Allow-Origin`
@@ -74,6 +75,57 @@
 
 export const SIDECAR_ORIGIN = "http://127.0.0.1:19828";
 export const SIDECAR_HEALTH_URL = `${SIDECAR_ORIGIN}/api/v1/health`;
+
+/**
+ * The browser-side MIRROR of `sidecar/server.mjs`'s `LOOPBACK_ORIGIN_RE`.
+ *
+ * A DUPLICATE ON PURPOSE. AD-6 forbids `sidecar/*.mjs` importing `src/lib`, and
+ * nothing the browser ships may import `sidecar/*.mjs`, so there is no module
+ * the two sides could share. What holds them together is a parity test that
+ * imports both and runs them over one table of origins — not this comment.
+ *
+ * Anchored at both ends, for the same reason the door compares NORMALIZED
+ * origins rather than substrings: `http://[::1].evil.test` and
+ * `https://localhost.evil.test` are not loopback.
+ */
+const DEFAULT_ADMITTED_ORIGIN_RE =
+  /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
+
+/**
+ * Would the door admit this origin with NOTHING configured?
+ *
+ * This is the ONE thing the browser can know about which of the three failures
+ * above it is looking at. `fetch` cannot report why it was rejected — a refused
+ * connection and a CORS refusal are the same rejected promise — so no probe can
+ * tell them apart. But on an origin admitted by default, a `down` can only mean
+ * nothing answered; on any other origin it is genuinely ambiguous, and the copy
+ * has to say so ({@link chatSidecarDownCopy} in `workbench-modes`).
+ *
+ * NEVER THROWS, and answers `false` for anything that is not a string: the
+ * caller holds `window.location.origin`, which is absent on the server render
+ * and before the first effect runs.
+ *
+ * TWO DELIBERATE DIVERGENCES from the door, both from the two sides reading
+ * different KINDS of value, and both pinned as exceptions in the parity suite
+ * rather than left to be discovered:
+ *
+ * - `""`. `allowSidecarOrigin("")` admits it, because a falsy origin on the
+ *   wire means NO `Origin` header — curl, a non-browser client — which the
+ *   sidecar has always allowed. A page with no origin to reason about is not
+ *   that, and must not claim the door would admit it.
+ * - PADDING. This trims; `LOOPBACK_ORIGIN_RE.test(origin)` does not, so
+ *   `"  http://localhost:3000  "` is refused at the door and admitted here.
+ *   The door reads a header a browser never pads, and a padded one is
+ *   malformed. This reads a JS value — a prop, a stored string, a test's
+ *   literal — where surrounding whitespace is an artefact of how it was
+ *   carried, not a claim about the origin. Trimming is the right answer on
+ *   THIS side and would be a loosened door on the other.
+ */
+export function isSidecarDefaultAdmittedOrigin(
+  origin: string | null | undefined,
+): boolean {
+  return typeof origin === "string" && DEFAULT_ADMITTED_ORIGIN_RE.test(origin.trim());
+}
 
 /** Locked SSE event names for loopback Chat. The sidecar must emit only these. */
 export const SIDECAR_SSE_EVENTS = [

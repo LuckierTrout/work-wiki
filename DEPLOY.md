@@ -744,3 +744,67 @@ ports:
 ### Permission errors on mounted directories
 
 Ensure the host directories are writable, or use named volumes (the default).
+
+### Chat says the sidecar is down
+
+Chat fails closed: anything that is not an affirmative `2xx` from
+`http://127.0.0.1:19828/api/v1/health` inside 1.5 seconds is reported as down.
+The browser cannot tell you which failure it was — a refused connection and a
+blocked cross-origin request reach the page as the same rejected fetch — so
+there is no diagnosis to read off the screen, only causes to rule out.
+
+The sidecar is a separate Node process from this deployment — `sidecar/server.mjs`,
+started with `pnpm sidecar` — and it runs on the **owner's own host machine**,
+not in the container and not on the Worker. It binds `127.0.0.1:19828` over
+plain HTTP and hosts the local Agent, shell and Skills, which is why the browser
+probes it directly.
+
+So confirm first that it is running, and that port 19828 is free: a port
+conflict makes it exit rather than serve. Nothing in this deployment can stand
+in for it: the Worker cannot reach `localhost`, so there is no server-side
+fallback.
+
+Its environment is that host machine's, which is why the variable below is
+**not** in the [Additional Settings](#additional-settings) table above and must
+not be set as a Cloudflare Worker secret or var: the Worker never sees the
+sidecar's door. `pnpm sidecar` reads the repo root's `.env`, then `.env.local`,
+and an already-exported shell value wins over both — see `.env.example`.
+
+If it *is* running and a deployed page still reports it down, it is one of these
+three, in this order.
+
+**1. The page's origin is not allowed.** With nothing configured the sidecar
+admits only this machine — `localhost`, `127.0.0.1` and the IPv6 loopback
+literal `[::1]`, on either scheme and any port. Any other page gets
+`403 {"error":"origin_not_allowed"}` until its origin is named:
+
+```sh
+WORKWIKI_SIDECAR_ALLOWED_ORIGINS=https://app.example
+```
+
+Comma-separated bare origins (`scheme://host[:port]`), matched exactly on the
+normalized origin — no wildcards, no suffixes, so `https://app.example` does not
+admit `https://app.example.evil.test`. An entry that is not a bare origin is
+dropped and logged rather than fatal. Put it in the repo root's `.env` on the
+owner's machine (or export it in the shell) and restart `pnpm sidecar`. Note that a preflight is cacheable for ten minutes, so an
+origin *removed* from the list stays usable in an already-primed browser for up
+to that long. Naming an origin exposes every `/api/v1` route to it — Chat, which
+drives the local Agent and shell, plus the workspace file routes, Skills and the
+kernel proxy — with the loopback token as the only remaining barrier. See
+`.env.example` for the full note.
+
+**2. Chrome's Private Network Access preflight went unanswered.** Chrome treats
+`127.0.0.1` as a private network, so a request from a public page is preceded by
+an `OPTIONS` carrying `Access-Control-Request-Private-Network: true`. The
+sidecar answers it — but only for an origin already allowed by cause 1, so
+fixing that fixes this. Recent Chrome versions may additionally show a Local
+Network Access *permission prompt* that no response header can satisfy; the
+owner has to accept it.
+
+**3. The browser blocked it as mixed content.** Safari refuses an
+`http://127.0.0.1` subresource from an HTTPS page and the request never leaves
+the browser. **No configuration fixes this** — the sidecar serves plain HTTP on
+loopback and mints no certificate, so there is nothing to allow. Chrome and
+Firefox exempt loopback from mixed-content blocking (`127.0.0.1` is "potentially
+trustworthy" per Secure Contexts); Chrome, with the origin allowed and the PNA
+preflight accepted, is the supported path for a deployed page.

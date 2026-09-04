@@ -15,6 +15,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+
 import {
   SIDECAR_ALLOWED_ORIGINS_ENV,
   allowSidecarOrigin,
@@ -24,6 +27,7 @@ import {
   SIDECAR_HEALTH_URL,
   SIDECAR_ORIGIN,
   SIDECAR_PROBE_TIMEOUT_MS,
+  isSidecarDefaultAdmittedOrigin,
   probeSidecar,
 } from "../sidecar";
 import { settingsSource, sidecarHarness } from "./sidecar-harness";
@@ -172,6 +176,46 @@ describe("sidecar cross-origin contract (DW-25)", () => {
     );
     expect(response.headers.get("vary")).toBe("Origin");
     await response.json();
+  });
+
+  it("admits IPv6 loopback with nothing configured (DW-605)", async () => {
+    // The same machine, on the address `localhost` frequently resolves to on a
+    // dual-stack host. A dev server bound to IPv6 loopback was refused by
+    // default while the identical process reached through `localhost` was
+    // admitted — the difference the widened regex removes.
+    const base = await listen();
+    const response = await fetch(`${base}/api/v1/health`, {
+      headers: { origin: "http://[::1]:3000" },
+    });
+    expect(response.status).toBe(200);
+    // Echoed back with the brackets intact: `normalizeOrigin` already returns
+    // an IPv6 literal unchanged, so no further change was needed for `cors`.
+    expect(response.headers.get("access-control-allow-origin")).toBe(
+      "http://[::1]:3000",
+    );
+    expect(response.headers.get("vary")).toBe("Origin");
+    await response.json();
+  });
+
+  it("still refuses an origin that only LOOKS like IPv6 loopback", async () => {
+    // The widening is the bracketed literal and nothing else. Anchored at both
+    // ends, so a hostname that merely opens with it is a different machine.
+    const base = await listen();
+    for (const origin of [
+      "http://[::1].evil.test",
+      "http://[::1]evil.test",
+      "https://evil.example",
+    ]) {
+      const response = await fetch(`${base}/api/v1/health`, {
+        headers: { origin },
+      });
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({
+        error: "origin_not_allowed",
+      });
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+      expect(response.headers.get("vary")).toBe("Origin");
+    }
   });
 
   it("admits a request with no Origin header, echoes nothing, still varies", async () => {
@@ -489,5 +533,142 @@ describe("allowSidecarOrigin with a configured list", () => {
 
   it("refuses the literal string null", () => {
     expect(allowSidecarOrigin("null", ["https://app.example"])).toBe(false);
+  });
+});
+
+/**
+ * DW-607 — the browser's mirror of the door's default, held to the door.
+ *
+ * `src/lib/sidecar.ts` restates `LOOPBACK_ORIGIN_RE` because it has to: AD-6
+ * forbids `sidecar/*.mjs` importing `src/lib`, and nothing the browser ships may
+ * import `sidecar/*.mjs`, so the two definitions cannot be one module. This
+ * suite is the only thing that keeps them the same rule — it imports BOTH and
+ * runs them over one table, so widening or narrowing either alone fails here
+ * rather than in a browser nobody is watching.
+ *
+ * The two sides do NOT agree on every input, and the rows where they differ are
+ * enumerated in `DIVERGENT` below with the reason. Enumerating them is the
+ * point: an unlisted disagreement is a drift, and the table is what surfaces it.
+ */
+describe("isSidecarDefaultAdmittedOrigin mirrors the door (DW-607)", () => {
+  /** Loopback, IPv6, deployed, malformed, padded, and the literal `null`. */
+  const ORIGINS = [
+    "http://localhost:3000",
+    "http://LOCALHOST:3000",
+    "https://localhost",
+    "http://127.0.0.1:19828",
+    "http://127.0.0.1",
+    "http://[::1]:3000",
+    "http://[::1]",
+    "https://[::1]:8443",
+    "http://[::ffff:127.0.0.1]:3000",
+    "http://[fe80::1]:3000",
+    "http://127.0.0.2:3000",
+    "https://app.example",
+    "https://app.example.evil.test",
+    "http://[::1].evil.test",
+    "https://localhost.evil.test",
+    "ws://localhost:3000",
+    "not a url",
+    "null",
+    "",
+    "  http://localhost:3000  ",
+  ] as const;
+
+  /**
+   * The rows where the two sides answer differently ON PURPOSE.
+   *
+   * Both come from the sides reading different KINDS of value, and both are
+   * argued in `isSidecarDefaultAdmittedOrigin`'s docblock. They are listed here
+   * rather than dropped from the table so the divergence is enumerated — an
+   * unlisted third one is a drift, not an exemption.
+   */
+  const DIVERGENT: Record<string, { door: boolean; mirror: boolean }> = {
+    // A falsy origin on the wire is NO `Origin` header — curl, a non-browser
+    // client — which the sidecar has always admitted. A page with no origin to
+    // reason about is not that.
+    "": { door: true, mirror: false },
+    // The mirror trims and the door does not. The door reads a header a browser
+    // never pads; the mirror reads a JS value whose surrounding whitespace is an
+    // artefact of how it was carried.
+    "  http://localhost:3000  ": { door: false, mirror: true },
+  };
+
+  it("agrees with the one-argument allowSidecarOrigin on every origin", () => {
+    for (const origin of ORIGINS) {
+      // The one-argument call IS "nothing configured", which is exactly the
+      // question the browser-side predicate answers — so on every row but the
+      // enumerated exceptions the two must return the SAME boolean.
+      const divergent = DIVERGENT[origin];
+      if (divergent) {
+        expect(allowSidecarOrigin(origin)).toBe(divergent.door);
+        expect(isSidecarDefaultAdmittedOrigin(origin)).toBe(divergent.mirror);
+        continue;
+      }
+      expect(isSidecarDefaultAdmittedOrigin(origin)).toBe(
+        allowSidecarOrigin(origin),
+      );
+    }
+  });
+
+  it("admits the three loopback spellings and nothing else", () => {
+    expect(isSidecarDefaultAdmittedOrigin("http://localhost:3000")).toBe(true);
+    expect(isSidecarDefaultAdmittedOrigin("http://127.0.0.1:19828")).toBe(true);
+    expect(isSidecarDefaultAdmittedOrigin("http://[::1]:3000")).toBe(true);
+    // Not a bare `::1`, not another IPv6 address, not a lookalike hostname.
+    expect(isSidecarDefaultAdmittedOrigin("http://::1:3000")).toBe(false);
+    expect(isSidecarDefaultAdmittedOrigin("http://[::ffff:127.0.0.1]")).toBe(false);
+    expect(isSidecarDefaultAdmittedOrigin("http://[::1].evil.test")).toBe(false);
+    expect(isSidecarDefaultAdmittedOrigin("https://app.example")).toBe(false);
+  });
+
+  it("never throws on what a page can actually hand it", () => {
+    // The caller holds `window.location.origin`, which is absent on the server
+    // render and can be the literal `"null"` in a sandboxed frame.
+    expect(isSidecarDefaultAdmittedOrigin(null)).toBe(false);
+    expect(isSidecarDefaultAdmittedOrigin(undefined)).toBe(false);
+    expect(isSidecarDefaultAdmittedOrigin("")).toBe(false);
+    expect(isSidecarDefaultAdmittedOrigin("null")).toBe(false);
+    // Trimmed — one of the two enumerated divergences from the door above.
+    expect(isSidecarDefaultAdmittedOrigin("  http://localhost:3000  ")).toBe(true);
+  });
+});
+
+/**
+ * DW-604 — the knob has to be findable without reading the source.
+ *
+ * The env name lived in a JSDoc in `sidecar/server.mjs` and a module comment in
+ * `src/lib/sidecar.ts`, which is nowhere an operator looks. Both pins read the
+ * name FROM THE MODULE rather than retyping it, so a rename that leaves the
+ * docs behind fails here instead of stranding the one person who needs them.
+ */
+describe("the origin allowlist is documented for operators (DW-604)", () => {
+  const ROOT = path.resolve(__dirname, "../../..");
+
+  it("names the env, its shape and a worked value in .env.example", async () => {
+    const env = await readFile(path.join(ROOT, ".env.example"), "utf8");
+    expect(env).toContain(SIDECAR_ALLOWED_ORIGINS_ENV);
+    // A worked value, not just the name: the comma-separated bare-origin shape
+    // is the part a reader gets wrong.
+    expect(env).toContain(`${SIDECAR_ALLOWED_ORIGINS_ENV}=https://`);
+    expect(env).toContain("Comma-separated bare origins");
+    // Loopback needs no entry, and a bad entry is dropped rather than fatal.
+    expect(env).toMatch(/\[::1\]/);
+    expect(env).toContain("DROPPED");
+    // Naming an origin opens more than health.
+    expect(env).toContain("/api/v1");
+  });
+
+  it("answers the SYMPTOM in DEPLOY.md's troubleshooting", async () => {
+    const deploy = await readFile(path.join(ROOT, "DEPLOY.md"), "utf8");
+    const troubleshooting = deploy.slice(deploy.indexOf("## Troubleshooting"));
+    expect(troubleshooting).toContain("### Chat says the sidecar is down");
+    expect(troubleshooting).toContain(SIDECAR_ALLOWED_ORIGINS_ENV);
+    // The three causes, in `src/lib/sidecar.ts`'s order.
+    expect(troubleshooting).toContain("origin_not_allowed");
+    expect(troubleshooting).toContain("mixed content");
+    // The one failure no configuration can fix has to say so.
+    expect(troubleshooting).toContain("No configuration fixes this");
+    expect(troubleshooting).toContain("Safari");
   });
 });

@@ -294,7 +294,14 @@ describe("Workbench Chat does not use Worker query or ChatWorkspace", () => {
     expect(chat).toContain("send<{");
     expect(chat).not.toContain("await response.json()");
     expect(search).not.toContain("await response.json()");
-    expect(mode).toContain("CHAT_SIDECAR_DOWN_COPY");
+    // DW-607: the constant became a selector over the page's own origin. The
+    // subject is unchanged — the sentence has one definition, in the shared
+    // module, and none is typed in the component.
+    expect(mode).toContain("chatSidecarDownCopy");
+    // Neither sentence is typed here — banning only the old one would leave the
+    // new one free to be inlined with this pin still passing.
+    expect(mode).not.toContain("Start the local sidecar");
+    expect(mode).not.toContain("WORKWIKI_SIDECAR_ALLOWED_ORIGINS");
     expect(chat).toContain("Regenerate");
     expect(chat).toContain("Save to Wiki");
     expect(chat).toContain("Stop");

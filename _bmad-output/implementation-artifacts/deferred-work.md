@@ -4793,7 +4793,9 @@ location: .env.example
 source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
 severity: low
 reason: The env is described only in a JSDoc in sidecar/server.mjs and the module comment in src/lib/sidecar.ts. `.env.example` and DEPLOY.md carry no sidecar variables at all, so there is no existing convention this change skipped — but the whole point of DW-25 is explainability to the owner, and the two places it is explained are both source files.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-sidecar-origin-contract
+resolution-undo: 75ac84c7b1df8e76de3904767d0c63e637d1e0d68edf3f1c07f6d40e1484c4a7 2026-09-03 7374617475733a206f70656e
 
 ### DW-605: LOOPBACK_ORIGIN_RE admits only 127.0.0.1 and localhost, so a dev server on IPv6 loopback (http://[::1]:3000) is refused with no configuration.
 origin: spec-deferred 95592f2fb71c
@@ -4801,7 +4803,9 @@ location: sidecar/server.mjs:88
 source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
 severity: low
 reason: sidecar/server.mjs:88 is `^https?://(127\.0\.0\.1|localhost)(:\d+)?$`. Pre-existing since Epic 3 and deliberately untouched here (the intent forbids widening the regex); the new contract prose now states the limit explicitly rather than fixing it.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-sidecar-origin-contract
+resolution-undo: 75ac84c7b1df8e76de3904767d0c63e637d1e0d68edf3f1c07f6d40e1484c4a7 2026-09-03 7374617475733a206f70656e
 
 ### DW-606: The `listen()` test harness is now duplicated in three suites, which will drift.
 origin: spec-deferred b50971939acf
@@ -4819,7 +4823,9 @@ location: src/lib/workbench-modes.ts:81
 source_spec: `spec-dw-25-sidecar-cross-origin-contract.md`
 severity: medium
 reason: CHAT_SIDECAR_DOWN_COPY (src/lib/workbench-modes.ts:81) is unchanged and useSidecarStatus still collapses every failure into "down". This change makes that state configurable away and explicable to a reader of the source, but not to the owner in the product. The recorded 2026-08-28 decision names only sidecar/server.mjs, src/lib/sidecar.ts and the pins, so distinguishing the two states in copy is beyond it.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-sidecar-origin-contract
+resolution-undo: 75ac84c7b1df8e76de3904767d0c63e637d1e0d68edf3f1c07f6d40e1484c4a7 2026-09-03 7374617475733a206f70656e
 
 ### DW-608: `reconcileSilos`' forward pass gates on the wiki md, so a page whose silo copy is already current never re-syncs its Sources — flat or hashed.
 origin: spec-deferred 89c8fd2fb206
@@ -6132,4 +6138,12 @@ location: src/lib/agents.ts:995 (seedAgent section bucketing) + src/lib/mcp-http
 source_spec: `spec-dw-672-673-mcp-nested-elements-and-schema-parity.md`
 severity: low
 reason: Neither door's gate judges `enum` members by design (the Never clause, carried from DW-563), so `seed_agent … sections:[{slug,title, type:"bogus",content}]` passes the HTTP gate as a well-typed string. In `seedAgent` (`src/lib/agents.ts:995-1006`) the `switch (section.type)` that appends the slug to `identityPages` / `learningPages` / `socialPages` has no `default`, so the page is written to the wiki and then referenced by no list — the HTTP caller gets a success result and an agent profile that does not mention the page it just seeded. The stdio door refuses the same body at `z.enum(["identity","learnings","social"])` and the REST door at `src/app/api/agents/seed/route.ts` validates per index, so this answer is reachable through the HTTP MCP door alone. Pre-existing and outside this bundle: closing it is either a `default` arm in `seedAgent` or a decision to enforce `enum` somewhere, both of which need a message design this bundle's Never clause rules out.
+status: open
+
+### DW-750: Settings and the icon rail still assert "not running" for a sidecar that is running but refused, so the two surfaces now contradict Chat on the same screen.
+origin: spec-deferred 6c682cf6168f
+location: src/lib/workbench-loopback-health.ts:26
+source_spec: `spec-dw-604-605-607-sidecar-origin-contract.md`
+severity: low
+reason: `SETTINGS_API_HEALTH_UNREACHABLE_COPY` (src/lib/workbench-loopback-health.ts:26) is "The sidecar is not running on 127.0.0.1:19828." and `IconRail.tsx:83` is "Sidecar not running". Both are decided by the same origin-blind browser fetch this change concedes cannot report WHY it failed: `probeLoopbackApiPane` collapses any rejected fetch — including the bare 403 with no `Access-Control-Allow-Origin` — to `unreachable`. On a deployed unconfigured origin Chat now correctly says the sidecar may be running and simply refused, while Settings, one panel away, flatly asserts it is not running; the pane's own comment (SettingsApiMcpPane.tsx:165) says such a claim beside a running sidecar "is worse than no claim at all". Pre-existing — both sentences were equally wrong before this change — and outside this bundle's intent, which named `CHAT_SIDECAR_DOWN_COPY` alone. `isSidecarDefaultAdmittedOrigin` is now exported and is the piece a fix would reuse. Existing pins assert the current sentences fro
 status: open
