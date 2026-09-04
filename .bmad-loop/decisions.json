@@ -520,5 +520,14 @@
     "key": "1",
     "label": "Widen the boundary: click moves the cursor",
     "resolution": ""
+  },
+  "DW-753": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a CI job that installs Playwright browsers, starts the dev server via playwright.config.ts's webServer, and runs pnpm test:e2e, with the runtime and flake budget recorded. Update AGENTS.md:115 so the lane is no longer described as local-only.",
+    "key": "1",
+    "label": "Enroll test:e2e in CI",
+    "resolution": ""
   }
 }
