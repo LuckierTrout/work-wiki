@@ -24,6 +24,7 @@ import {
   getCustomBaseUrl,
   getOllamaBaseUrl,
   getVectorSearchSettings,
+  loadConfig,
   loadConfigSync,
 } from "./config";
 import type { AppConfig } from "./config";
@@ -556,6 +557,15 @@ function numberBodies(hits: readonly RetrieveHit[]): {
  * four parts of ONE answer, and resolving them from separate entries into the
  * 5 s-TTL cache let a payload pair one generation's provider with another's
  * endpoint — or with the cold-cache `{}` (DW-619).
+ *
+ * THE DEFAULT IS A FALLBACK, NOT THE ROUTE (DW-712).
+ * `/api/v1/projects/[wikiId]/retrieve` warms nothing, so on a cold process
+ * `loadConfigSync()` answers `{}` — and re-stamps it for another 5 s — which
+ * told an API caller that a correctly configured wiki had `configured: false`,
+ * DW-548's class one door further out. The one caller
+ * (`assembleWikiContext`, already `async`) awaits the real read and hands the
+ * snapshot in; the default is what that caller falls back TO on an empty
+ * answer, which is the only state that still reaches it.
  */
 function chatModelForRetrieve(
   cfg: AppConfig = loadConfigSync(),
@@ -581,7 +591,25 @@ export async function assembleWikiContext(
 ): Promise<AssembledContext> {
   const tokenBudget = clampTokenBudget(options.tokenBudget ?? CHAT_TOKEN_BUDGET_DEFAULT);
   const historyDepth = clampHistoryDepth(options.historyDepth ?? CHAT_HISTORY_DEPTH_DEFAULT);
-  const chatModel = chatModelForRetrieve();
+
+  // WARMED ONCE, ABOVE THE `!trimmed` RETURN (DW-712), because the payload
+  // describes the deployment rather than the query: an empty query gets the
+  // same `chatModel` a real one does, and getting there by a second read would
+  // be a second config generation.
+  //
+  // An EMPTY answer is NOT threaded — the same rule `configSnapshot` spells out
+  // in `src/lib/llm.ts`. `loadConfig()` returns `{}` both for "no config file"
+  // and for "the store could not be read", and on that second branch it does
+  // not prime the cache either, so the PREVIOUS generation is still warm behind
+  // `loadConfigSync()`. Threading `{}` from it would turn a transient read
+  // failure into a payload reporting an unconfigured wiki, which is the very
+  // lie this fix removes. Passing nothing means "read it yourself", which is
+  // exactly what this call did before.
+  const storedConfig = await loadConfig();
+  const chatModel =
+    Object.keys(storedConfig).length > 0
+      ? chatModelForRetrieve(storedConfig)
+      : chatModelForRetrieve();
   const emptyUsage = {
     pages: 0,
     history: 0,

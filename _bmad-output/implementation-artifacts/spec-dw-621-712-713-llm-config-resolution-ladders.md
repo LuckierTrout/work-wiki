@@ -2,8 +2,8 @@
 title: 'LLM config-resolution ladders read the stored facts (DW-621, DW-712, DW-713)'
 type: 'bugfix'
 created: '2026-09-04'
-status: 'blocked'
-baseline_revision: 'e92745f6760a2e12906faa66fe3271907e568dd8'
+status: done
+baseline_revision: 83deec55ae57153b3d5d250bd433e850659916bb
 review_loop_iteration: 0
 followup_review_recommended: false
 context: []
@@ -137,6 +137,58 @@ re-dispatch does not have to rediscover them:
   reports `configured: false` for a store that exists; `readConfig()` is what
   `src/app/api/status/route.ts` uses to tell those apart.
 
+### 2026-09-04 — Review pass (2)
+
+- intent_gap: 0
+- bad_spec: 0
+- patch: 6: (high 0, medium 1, low 5)
+- defer: 0
+- reject: 11: (high 0, medium 0, low 11)
+- addressed_findings:
+  - `[medium]` `[patch]` The DW-713 stored-model leg fires for EVERY provider whose
+    identity matches the store's primary, but all four existing cases seeded
+    `provider: "custom"` — and `custom` is the one provider the production door
+    (`runSpecializedAgent`, `agent-runtime.ts:156`) cannot ask for, since
+    `AgentProfile.provider` excludes it. A mutation narrowing the leg to `custom`
+    left the whole suite green. Added two cases to `llm.test.ts`: a stored
+    `anthropic` model beating `DEFAULT_MODELS.anthropic`, and a stored `ollama`
+    model outranking `OLLAMA_MODEL` (the rung this insertion moved, which was also
+    reversible green). Both fail under the narrowing mutation.
+  - `[low]` `[patch]` `hasLLMKey`'s new docblock listed `source-monitors.ts` among the
+    gate's consumers; it calls `getConfiguredModel` only and never this gate.
+    Dropped from the list.
+  - `[low]` `[patch]` The new `chatModelForRetrieve` docblock named the door
+    `/api/retrieve`; the route is `/api/v1/projects/[wikiId]/retrieve`. Corrected in
+    the docblock and in the matching test comment. Same paragraph claimed the
+    default parameter also serves "any synchronous caller" — no such caller exists;
+    reworded to what the default is actually for.
+  - `[low]` `[patch]` In `llm.test.ts`, the comment "asserted as an equality between
+    the two ladders rather than against a literal" sat directly above the literal
+    assertion, pointing a later reader at the wrong line. Split so the claim sits on
+    the cross-ladder equality it describes.
+  - `[low]` `[patch]` `mockedLoadConfigAsync` was never reset in `beforeEach`, and both
+    DW-712 cases armed `mockResolvedValueOnce` before awaited setup — an unconsumed
+    one-shot could leak into the next case. Added a reset plus the shared default
+    implementation, and moved each arming below the awaited setup.
+  - `[low]` `[patch]` The "warmed once, above the `!trimmed` return" claim was prose
+    only: no case covered an empty query, and none pinned a single read. Added
+    `reads the store ONCE, above the empty-query return (DW-712)`, which fails if the
+    read moves below the early return or is duplicated.
+
+Rejected (11, all low by consequence): the ~20/~25 consumer-count mismatch between
+the new docblock and the pre-existing test comment (the inconsistency predates this
+diff; the real count is 23); the local re-statement of `configSnapshot`'s empty-answer
+rule and the ternary around it (the Code Map directs reproducing it locally); a
+whitespace-only stored model being trimmed here but not in `getModel` (degenerate
+input); `getConfiguredModel({workload})` now inheriting the primary's model where
+`workloadModelSettings` resolves `null` (unreachable — nothing in `src/` passes
+`workload`); an env-detected primary letting `LLM_MODEL` through for the matching
+provider (that IS the primary ladder, by construction); `loadConfig()` priming the
+sync cache so `runVectorPhase`'s later read now sees a warm generation (an improvement,
+not a defect); the DW-621 regression test having existed at baseline (the amended
+intent makes this leg documentation-only); the per-request storage read (see residual
+risks); and three reviewer suggestions that would have required DW-711's wiring.
+
 ## Design Notes
 
 **Why DW-621 is a pin, not a change.** The gate's ~20 callers all resolve their model through the PRIMARY ladder — `callLLM`/`callLLMStream`/`callVisionLLM` → `getModel` → `getResolvedCredentials`, or `getConfiguredModel()` with no options (`action-extractor.ts:41`, `todo-extract.ts:136`, `source-monitors.ts:385`). That ladder resolves `cfg.provider ?? env.provider` and ignores `chatProvider`/`ingestProvider` entirely; nothing in `src/` passes `workload:` yet, by design. So for a store with `chatProvider: "ollama"` and no primary, a `true` answer would send `analyzeSource` (`ingest.ts:1767`, no try/catch) into `callLLM` and throw `No LLM API key found…` where it returns an empty analysis today — an ingest failure traded for a cosmetic honesty gain. The refusal at `chat.ts:866` is accurate as long as chat runs on the primary provider; making it accurate for a workload-only store is Epic 3's wiring, and the 2026-09-03 decision on DW-711 assigns that to DW-711's story: "Route by workload at the call sites … Resolve DW-621 the same way." That decision and this pin agree — the fix is at the call sites, not in this predicate — so what this bundle writes into the code is the pointer to it, not an argument against it. This bundle does not re-open the question and does not do DW-711's wiring.
@@ -152,62 +204,79 @@ re-dispatch does not have to rediscover them:
 
 ## Auto Run Result
 
-Status: blocked
-Blocking condition: intent gap
+Status: done
 
-**What was attempted.** DW-712 and DW-713 were implemented and verified; DW-621 was resolved
-as a documented refusal rather than a code change. All of it is reverted; the diff is saved at
-[spec-dw-621-712-713-llm-config-resolution-ladders.attempted.patch](spec-dw-621-712-713-llm-config-resolution-ladders.attempted.patch)
-against baseline `e92745f6760a2e12906faa66fe3271907e568dd8`.
+**Summary.** Two config-resolution ladders were made to read the facts they already
+own, and one predicate was pinned rather than changed.
 
-- `src/lib/wiki-retrieve.ts` -- DW-712: `assembleWikiContext` awaited `loadConfig()` once and
-  threaded a non-empty snapshot into `chatModelForRetrieve`; `{}` stayed unthreaded.
-- `src/lib/llm.ts` -- DW-713: `getConfiguredModel`'s explicit-provider branch took the primary
-  ladder's model from `getResolvedCredentials(cfg)`, guarded on `provider === credentials.provider`.
-- `src/lib/llm.ts` -- DW-621: docblock only, recording why the workload fields are not read.
-- `src/lib/__tests__/wiki-retrieve.test.ts`, `.../llm.test.ts`, `.../llm-key-cold-config.test.ts`
-  -- the cold-cache, stored-model and gate-pin cases.
+- DW-712 — `assembleWikiContext` now awaits `loadConfig()` once, above the
+  `!trimmed` return, and threads that snapshot into `chatModelForRetrieve`; an
+  empty (`{}`) answer stays unthreaded so the resolver's own `loadConfigSync()`
+  default still stands. A cold `/api/v1/projects/[wikiId]/retrieve` process no
+  longer reports `configured: false` for a configured wiki.
+- DW-713 — `getConfiguredModel`'s explicit-provider branch takes the primary
+  ladder's model from `getResolvedCredentials(cfg)`, between `options.model` and
+  the `OLLAMA_MODEL`/`DEFAULT_MODELS` tail, guarded on
+  `provider === credentials.provider` so one provider's stored model never reaches
+  another's client.
+- DW-621 — no behaviour change. `hasLLMKey`'s answer is identical for every store;
+  the docblock and the existing workload-only test now record why the workload
+  fields are not read here and name DW-711 as the story that closes the
+  owner-visible gap at the call sites.
 
-**Why it is blocked.** `_bmad-output/implementation-artifacts/deferred-work.md:5870` carries an
-ANSWERED human decision (2026-09-03, `effect: build`, `bundle_name: ""` — authorised but never
-bundled): *"Route by workload at the call sites … Resolve DW-621 the same way. Pin that a
-chatProvider-only store passes both gates and reaches the provider it names."* This bundle's
-intent asks for the opposite shape — widen `hasLLMKey` to read `chatProvider` / `ingestProvider`
-— and investigation ruled that out on its own evidence: every one of the gate's ~24 consumers
-resolves through the PRIMARY ladder, so a `true` answer sends `analyzeSource`
-(`src/lib/ingest.ts:1767`, no `try` around its `callLLM`) into a throw where it degrades today.
-Neither reading is available to this run: the decision's resolution is DW-711's story, which
-this run's own triage lists under `decisions`, not under bundles, and which reopens scope Epics
-2 and 3 closed. The spec resolved the conflict by choosing a third answer — pinning the refusal
-in a docblock and a test comment — which writes an argument into the codebase that the answered
-decision has already overturned. That choice lives inside `<intent-contract>` (Intent, and the
-`Block If` clause forbidding the workload wiring), so it cannot be repaired without a human.
+**Files changed:**
+- `src/lib/wiki-retrieve.ts` — awaited config read in `assembleWikiContext`, threaded
+  into `chatModelForRetrieve`; docblock records the cold-cache reason and the real
+  route name.
+- `src/lib/llm.ts` — the stored-model rung in `getConfiguredModel`'s explicit-provider
+  branch, plus the DW-621 paragraph on `hasLLMKey`'s docblock.
+- `src/lib/__tests__/wiki-retrieve.test.ts` — `loadConfig` mocked alongside
+  `loadConfigSync`; cold-cache, empty-answer and read-once/empty-query cases.
+- `src/lib/__tests__/llm.test.ts` — five DW-713 cases (stored custom model,
+  cross-provider refusal, `LLM_MODEL` ordering, non-custom provider, `OLLAMA_MODEL`
+  precedence) replacing the deferral comment that disclaimed them.
+- `src/lib/__tests__/llm-key-cold-config.test.ts` — comment recording `analyzeSource`
+  as what a widened gate would break, and where the reasoning lives.
 
-**Unresolved questions for the orchestrator:**
-1. Should DW-621 be unbundled from this bundle and ride with DW-711's answered "route by
-   workload at the call sites" story, leaving DW-712 and DW-713 to be re-dispatched as a
-   two-entry bundle? (The attempted patch already contains both, reviewed.)
-2. If DW-621 must be resolved in this bundle, is this run authorised to do DW-711's wiring —
-   `workload` threaded through the production `chat.ts` / `ingest.ts` call sites, both the
-   `ChatCanvas` gate and the `chat.ts` gate reading one resolved answer — i.e. to resolve
-   DW-711 as well, and to reopen scope `sprint-status.yaml` marks done for Epics 2 and 3?
-3. If neither: is the documented-refusal outcome an acceptable resolution for DW-621, given it
-   contradicts the 2026-09-03 decision, and should that decision be withdrawn?
+**Review findings breakdown:** 6 patches applied (1 medium, 5 low); 0 items deferred
+to frontmatter; 11 items rejected. The nine patch findings and two defers carried
+forward from the first pass were all re-derived by this pass's reviewers and are
+accounted for above — the two carried defers were rejected because this spec's own
+`Never` clause and I/O matrix already name both states, so neither is a leftover the
+bundle failed to see.
 
-**Review findings breakdown:** patches applied 0 (moot behind the intent gap); items deferred 0
-recorded to frontmatter (the cascade stops before the defer branch — both are written into the
-Review Triage Log instead); items rejected 5.
+**Follow-up review recommendation:** false. Patched findings by severity — high 0,
+medium 1, low 5; score 0 (only a high-severity patch recommends another pass).
 
-**Follow-up review recommendation:** false — no finding was triaged `patch` and fixed in this
-pass (patched high count 0; score 0).
+**Verification performed:**
+- `npx vitest run src/lib/__tests__/wiki-retrieve.test.ts src/lib/__tests__/llm.test.ts src/lib/__tests__/llm-key-cold-config.test.ts src/lib/__tests__/config.test.ts` — 244 passed (241 before this pass's three new cases).
+- Full suite `npx vitest run` — 386 files, 9587 passed, 1 skipped.
+- `npx tsc --noEmit` — exit 0. `npm run lint` — no errors, only the pre-existing
+  `jsx-ast-utils` warnings.
+- Mutation checks: narrowing the DW-713 leg to `custom` fails the two new
+  non-custom cases; moving the awaited read below the `!trimmed` return fails the new
+  read-once case; reverting `chatModelForRetrieve(storedConfig)` to a bare call fails
+  the cold-cache case; dropping the `Object.keys(...)` guard fails the warm-default
+  case; dropping the provider-identity guard fails the cross-provider refusal case.
+- Every I/O matrix row has a covering case that ran and passed.
 
-**Verification performed (before the revert):**
-- `npx vitest run src/lib/__tests__/wiki-retrieve.test.ts src/lib/__tests__/llm.test.ts src/lib/__tests__/llm-key-cold-config.test.ts src/lib/__tests__/config.test.ts` — 241 passed.
-- Full suite `npx vitest run` — 386 files, 9584 passed, 1 skipped.
-- `npx tsc --noEmit` — clean. `npm run lint` — no errors or warnings.
-- Every I/O matrix row had a covering case that ran and passed.
-
-**Residual risks:** the working tree is back at the baseline, so DW-712 (medium — the public
-retrieve API reporting `configured: false` for a configured wiki on a cold process) remains
-open and unfixed. The attempted patch is reviewed but unverified against any later HEAD, and
-the nine patch findings logged above are NOT applied in it.
+**Residual risks:**
+- `assembleWikiContext` now issues one unconditional storage read per retrieve
+  request. `loadConfig()` → `readStoredConfig()` never consults `_configCache` (it
+  only primes it), so on the R2 provider this is a network round-trip per Chat turn.
+  It is the read the approach asks for, and the route is already storage-bound
+  (pages, index, purpose), but it is a real added cost that the sync path did not pay.
+- The DW-712 cases prove the wiring at the call-argument surface: `../config` is
+  mocked file-wide in `wiki-retrieve.test.ts`, so "cold" is simulated by pulling the
+  sync and async mocks apart rather than by an unwarmed real store. That `loadConfig()`
+  itself sees a cold store is pinned separately by `llm-key-cold-config.test.ts`
+  (DW-548), so the composition is covered by two pins rather than one end-to-end case.
+- `getConfiguredModel({workload})` can now inherit the primary's model where
+  `workloadModelSettings` resolves `null`, which would let a workload call build while
+  the retrieve payload's badge still reads `configured: false`. Unreachable today —
+  nothing in `src/` passes `workload` — and it is DW-711's wiring that makes it
+  reachable, so it is named here rather than filed.
+- `runVectorPhase`/`getVectorSearchSettings`' cold read at `src/lib/wiki-retrieve.ts:311`
+  is the same class in the same payload and remains open by this spec's `Never` clause.
+  The awaited read added above it does now prime the cache before it runs, which
+  narrows but does not close it.

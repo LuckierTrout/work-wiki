@@ -152,6 +152,12 @@ describe("hasLLMKey() sees a store nothing warmed (DW-548)", () => {
     // graceful skip for a thrown `No LLM API key found…` at every one of them.
     // Nothing in production passes `workload`, so the `false` is honest.
     //
+    // `analyzeSource` (`src/lib/ingest.ts`) is the sharpest of the ~25: it gates
+    // on this function and then calls `callLLM` with NO `try` around it, so the
+    // gate opening turns today's empty-analysis degrade into a failed ingest.
+    // The reasoning is recorded on `hasLLMKey`'s own docblock; this case is what
+    // stops a later reading of DW-621 from quietly re-widening it.
+    //
     // THE WHOLE ARGUMENT, though: this `false` is not costless either. For a
     // `chatProvider`-only store `chat.ts:865` throws "No LLM provider is
     // configured." after `ChatCanvas` has already reported the chat model

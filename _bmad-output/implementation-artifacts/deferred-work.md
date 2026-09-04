@@ -4986,7 +4986,9 @@ location: src/lib/llm.ts:247-270
 source_spec: `spec-dw-548-549-551-cli-config-warm-and-status.md`
 severity: low
 reason: The gate reads `cfg.provider` and nothing else (`src/lib/llm.ts:247-270`), but `AppConfig` carries `chatProvider` and `ingestProvider` as independent workload selections (`src/lib/config.ts:63,66`) and the resolvers honour them (`getChatModelSettings` at `src/lib/config.ts:1351`, `getIngestModelSettings` at `:1362`). A deployment that sets only `chatProvider: "ollama"` therefore has Chat refused by the gate at `src/lib/chat.ts:865` for a provider the workload resolver would have constructed. Pre-existing — the gate has always read that one field; DW-548 changed WHERE the field is read from, not WHICH field.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-llm-config-resolution-ladders
+resolution-undo: 80ca8dcea2f9b16662e8628c9910f3998c12b1cbe27c5e7559832b8ed7b6a890 2026-09-04 7374617475733a206f70656e
 decision: 2026-09-04 Superseded by DW-711's routing decision — Do NOT widen `hasLLMKey` to read `chatProvider`/`ingestProvider`. The 2026-09-03 decision on DW-711 ("Route by workload at the call sites ... Resolve DW-621 the same way") assigns this fix to DW-711's story: the call sites start passing `workload`, and both the ChatCanvas gate and the chat.ts gate read that one resolved answer. Widening the predicate instead would send `analyzeSource` (src/lib/ingest.ts, no try/catch around its callLLM) into a throw where it degrades today. Bundle dw-llm-config-resolution-ladders therefore closes this entry with DOCUMENTATION ONLY -- the predicate's answer is unchanged and `hasLLMKey`'s docblock plus a regression case in llm-key-cold-config.test.ts name DW-711 as the story that closes the owner-visible gap. Recorded by /bmad-loop-resolve, human present, run 20260904-130751-f452.
 
 ### DW-622: `src/app/api/status/route.ts` still reads through `loadConfig()`, so the web status surface keeps the unreadable-versus-absent conflation DW-549 just closed on the CLI.
@@ -5876,7 +5878,9 @@ location: src/lib/wiki-retrieve.ts:552
 source_spec: `spec-dw-618-619-621-single-snapshot-model-client.md`
 severity: medium
 reason: `chatModelForRetrieve` is synchronous and its only production caller, `src/app/api/v1/projects/[wikiId]/retrieve/route.ts:51`, never awaits `loadConfig()` (grepped: the file contains no `loadConfig` call). On a process nothing else warmed, `loadConfigSync()` answers `{}` and re-stamps it for another 5 s (`src/lib/config.ts:1180-1186`), so `provider`, `model`, `configured` and `baseUrl` all describe an empty store and the public retrieve API tells a caller the wiki has no chat model. This is DW-548's class of defect — the one that forced `hasLLMKey` to become async — at a different surface. PRE-EXISTING: the bare `getChatModelSettings()` had the same cold read before DW-619 threaded a snapshot through it, and DW-619 neither caused nor names it. Not covered by the suite, which module-mocks `loadConfigSync`.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-llm-config-resolution-ladders
+resolution-undo: 80ca8dcea2f9b16662e8628c9910f3998c12b1cbe27c5e7559832b8ed7b6a890 2026-09-04 7374617475733a206f70656e
 
 ### DW-713: `getConfiguredModel` never reads `cfg.model` or `LLM_MODEL`, so a stored primary model refuses a `custom` provider the primary ladder builds fine.
 origin: spec-deferred a5a25d7b2c00
@@ -5884,7 +5888,9 @@ location: src/lib/llm.ts:519
 source_spec: `spec-dw-630-631-632-llm-refusal-copy-pointers.md`
 severity: low
 reason: DW-632 aligned the two ladders' KEYLESS diagnoses; the MODEL gap still diverges, and this one is not copy. `getResolvedCredentials` (`src/lib/config.ts:2613-2632`) resolves the model from `LLM_MODEL`, then `cfg.model`; `getConfiguredModel`'s explicit-provider branch (`src/lib/llm.ts:519-524`) resolves only `options.model`, the workload settings, `OLLAMA_MODEL` and `DEFAULT_MODELS[provider]` — and `DEFAULT_MODELS.custom` is deliberately absent. Verified with a seeded config `{provider: "custom", model: "my-model", customApiKey, customBaseUrl}`: `getModel` builds the client, while `getConfiguredModel({provider: "custom"})` throws "The Custom provider needs a model name." Reachable in production at `src/lib/agent-runtime.ts:156`, which spreads `provider` with no `model` when an agent carries no model override — so a correctly configured custom endpoint is refused for a model the owner did set. Pre-existing and outside this bundle's named sites; the new cross-ladder equality tests delibera
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-llm-config-resolution-ladders
+resolution-undo: 80ca8dcea2f9b16662e8628c9910f3998c12b1cbe27c5e7559832b8ed7b6a890 2026-09-04 7374617475733a206f70656e
 
 ### DW-714: Every `SourceBadge`-bearing label on /settings computes an accessible name with no separating space, so a screen reader announces "Modelfrom environment" and "Ollama Base URLfrom environment".
 origin: spec-deferred 8a0b73bf34b1

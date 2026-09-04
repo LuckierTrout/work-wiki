@@ -755,11 +755,122 @@ describe("the pre-switch keyless guard: who it catches and who it lets past", ()
       `The Custom provider needs an API key. Set it in ${pointer}.`,
     );
 
-    // NO model-state equality on purpose. The two ladders genuinely diverge
-    // once both credentials are present — `getConfiguredModel` resolves the
-    // model from its own arguments and never reads `cfg.model` or `LLM_MODEL`,
-    // which `getModel` does — so asserting parity there would pin a difference
-    // that is real and deferred, not a copy that drifted.
+    // THE THIRD GAP STATE, which used to be a documented divergence (DW-713).
+    // With both credentials present and no model anywhere, this branch resolved
+    // the model from its own arguments alone — never `cfg.model`, never
+    // `LLM_MODEL` — so the two ladders could not be compared here at all. It
+    // takes the primary ladder's answer from `getResolvedCredentials` now, so
+    // the model gap is an equality like the two above.
+    process.env.LLM_CUSTOM_API_KEY = "sk-custom-test";
+    _resetConfigCache();
+    expect(await primaryRefusal()).toBe(await refusal({ provider: "custom" }));
+    expect(await primaryRefusal()).toBe(
+      `The Custom provider needs a model name. Set it in ${pointer}.`,
+    );
+  });
+
+  it("builds a STORED custom model instead of refusing it (DW-713)", async () => {
+    // THE BUG. `getModel` builds this exact store fine — `cfg.model` is a leg of
+    // its ladder — while this branch skipped from `options.model` straight to
+    // `DEFAULT_MODELS`, which has no `custom` entry on purpose. So an owner who
+    // had saved a complete Custom provider was told it "needs a model name" at
+    // `agent-runtime.ts`'s door, for a model sitting in the store.
+    seedConfig({
+      provider: "custom",
+      model: "my-model",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://example.invalid/v1",
+    });
+    const model = await getConfiguredModel({ provider: "custom" });
+    // The name the owner saved, which is the refusal this branch used to send
+    // instead.
+    expect(model.modelId).toBe("my-model");
+    // AND THE SAME NAME `getModel()` BUILDS, as an equality between the two
+    // ladders rather than a second literal: the point is that one ladder is
+    // derived from the other, not that both happen to spell "my-model". A bare
+    // `getConfiguredModel()` falls straight through to `getModel(cfg)`, so this
+    // IS the primary ladder's answer.
+    expect(model.modelId).toBe((await getConfiguredModel()).modelId);
+  });
+
+  it("refuses a stored model that belongs to ANOTHER provider (DW-713)", async () => {
+    // THE GUARD. The stored model is the PRIMARY provider's, so it may only be
+    // spent on that provider. Unguarded, `claude-x` would reach an OpenAI-shaped
+    // custom client as a request for a model that endpoint has never heard of —
+    // a wire error about nothing, which is the state the refusal below exists to
+    // replace. Both credential halves are present, so the model is the only gap.
+    seedConfig({
+      provider: "anthropic",
+      model: "claude-x",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://example.invalid/v1",
+    });
+    expect(await refusal({ provider: "custom" })).toBe(
+      `The Custom provider needs a model name. Set it in ${pointer}.`,
+    );
+  });
+
+  it("takes the STORED model for a NON-custom provider too (DW-713)", async () => {
+    // WHERE THE LEG ACTUALLY LANDS IN PRODUCTION. `custom` is the vivid case —
+    // no `DEFAULT_MODELS` tail, so the gap surfaces as a refusal — but the only
+    // door that reaches this branch with a provider and no model,
+    // `runSpecializedAgent` in `agent-runtime.ts`, cannot even ask for it:
+    // `AgentProfile.provider` excludes `custom`. For every provider it CAN ask
+    // for, the old skip was silent rather than loud — an agent pinned to the
+    // store's own provider quietly ran on `DEFAULT_MODELS[provider]` instead of
+    // the model the owner had saved. Narrowing the leg back to `custom` would
+    // restore exactly that, and nothing above this line would notice.
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    seedConfig({ provider: "anthropic", model: "claude-x" });
+
+    expect((await getConfiguredModel({ provider: "anthropic" })).modelId).toBe(
+      "claude-x",
+    );
+    expect((await getConfiguredModel({ provider: "anthropic" })).modelId).toBe(
+      (await getConfiguredModel()).modelId,
+    );
+  });
+
+  it("puts the stored model ABOVE OLLAMA_MODEL, as its owner does (DW-713)", async () => {
+    // THE RUNG THAT MOVED. `OLLAMA_MODEL` used to be the first thing this branch
+    // read for an ollama provider; `getResolvedCredentials` reads it BELOW
+    // `cfg.model`, so taking the ladder from its owner necessarily reorders the
+    // two here. That reorder is the point rather than a side effect — it is what
+    // "one ladder, derived" means for this provider — and without this case it
+    // could be reversed back green.
+    process.env.OLLAMA_MODEL = "env-llama";
+    seedConfig({ provider: "ollama", model: "cfg-llama" });
+
+    expect((await getConfiguredModel({ provider: "ollama" })).modelId).toBe(
+      "cfg-llama",
+    );
+    expect((await getConfiguredModel({ provider: "ollama" })).modelId).toBe(
+      (await getConfiguredModel()).modelId,
+    );
+  });
+
+  it("takes LLM_MODEL here too, and options.model still outranks it (DW-713)", async () => {
+    // The other leg `getResolvedCredentials` owns, and the ordering that had to
+    // survive the fix: `options.model` is the CALLER's explicit choice — an
+    // agent's model override, or the workload settings' own model — so it stays
+    // above the store, and the store sits above the `OLLAMA_MODEL` /
+    // `DEFAULT_MODELS` tail.
+    seedConfig({
+      provider: "custom",
+      model: "stored-model",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://example.invalid/v1",
+    });
+    process.env.LLM_MODEL = "env-model";
+    _resetConfigCache();
+
+    expect((await getConfiguredModel({ provider: "custom" })).modelId).toBe(
+      "env-model",
+    );
+    expect(
+      (await getConfiguredModel({ provider: "custom", model: "explicit-model" }))
+        .modelId,
+    ).toBe("explicit-model");
   });
 
   it("still BUILDS a fully configured custom provider on this ladder", async () => {

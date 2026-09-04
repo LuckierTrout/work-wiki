@@ -8,8 +8,19 @@ vi.mock("../embeddings", () => ({
 }));
 vi.mock("../config", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../config")>();
+  // Declared INSIDE the factory because `vi.mock` is hoisted above every
+  // module-scope const — and shared with the async read below so that a case
+  // seeding one store seeds both by default. Only the DW-712 cases pull the two
+  // apart, which is the whole of what a cold cache is.
+  const loadConfigSync = vi.fn(() => ({ vectorSearchEnabled: false }));
   return {
     ...actual,
+    loadConfigSync,
+    // MOCKED TOO (DW-712). Left real, this resolved against whatever the
+    // suite's temp `DATA_DIR` happened to hold, so the awaited read this file
+    // now depends on was unobservable — and the cold-cache regression it exists
+    // to catch was unrepresentable.
+    loadConfig: vi.fn(async () => loadConfigSync()),
     getVectorSearchSettings: vi.fn(() => ({
       enabled: false,
       provider: null,
@@ -25,7 +36,6 @@ vi.mock("../config", async (importOriginal) => {
       configured: true,
       usesPrimary: true,
     })),
-    loadConfigSync: vi.fn(() => ({ vectorSearchEnabled: false })),
     // Wrappers over the REAL resolvers, not replacements: the DW-619 case below
     // asserts which snapshot object they were handed, which only means anything
     // if the resolution itself is the production one. Nothing else in this file
@@ -41,6 +51,7 @@ import {
   getCustomBaseUrl,
   getOllamaBaseUrl,
   getVectorSearchSettings,
+  loadConfig,
   loadConfigSync,
 } from "../config";
 import { _resetStorage } from "../storage";
@@ -62,6 +73,8 @@ import { INTERNAL_LINK_FIXTURE, INTERNAL_LINK_TARGETS } from "./internal-link-fi
 const mockedVector = vi.mocked(searchByVector);
 const mockedVectorSettings = vi.mocked(getVectorSearchSettings);
 const mockedLoadConfig = vi.mocked(loadConfigSync);
+/** The AWAITED read `assembleWikiContext` takes (DW-712). */
+const mockedLoadConfigAsync = vi.mocked(loadConfig);
 const mockedChatModelSettings = vi.mocked(getChatModelSettings);
 const mockedCustomBaseUrl = vi.mocked(getCustomBaseUrl);
 const mockedOllamaBaseUrl = vi.mocked(getOllamaBaseUrl);
@@ -104,6 +117,11 @@ beforeEach(async () => {
     hasKey: false,
   });
   mockedLoadConfig.mockReturnValue({ vectorSearchEnabled: false } as never);
+  // RESET TOO, and back to answering whatever the sync mock answers (DW-712).
+  // Without it a `mockResolvedValueOnce` that its own case did not consume
+  // survives into the next one, where nothing would explain the store it sees.
+  mockedLoadConfigAsync.mockReset();
+  mockedLoadConfigAsync.mockImplementation(async () => mockedLoadConfig());
   await ensureDirectories();
 });
 
@@ -483,6 +501,127 @@ describe("assemble and search", () => {
     const settingsCfg = mockedChatModelSettings.mock.calls[0][0];
     expect(settingsCfg).toBeDefined();
     expect(mockedOllamaBaseUrl.mock.calls[0][0]).toBe(settingsCfg);
+  });
+
+  it("describes the store on a COLD cache, from the awaited read (DW-712)", async () => {
+    // DW-712, DW-548's class one door further out.
+    // `/api/v1/projects/[wikiId]/retrieve` warms nothing, so
+    // `chatModelForRetrieve`'s default `loadConfigSync()` answered
+    // the cold-cache `{}` — and re-stamped it for another 5 s — telling an API
+    // caller that a correctly configured wiki had `configured: false` and no
+    // endpoint. The snapshot has to come from an AWAITED `loadConfig()`.
+    //
+    // The two reads are pulled APART here, which is the whole of what a cold
+    // cache is: sync sees nothing, the awaited read is the only thing that can
+    // see the store.
+    mockedChatModelSettings.mockClear();
+    mockedCustomBaseUrl.mockClear();
+    mockedLoadConfig.mockReturnValue({} as never);
+    const stored = {
+      vectorSearchEnabled: false,
+      customBaseUrl: "https://cold.example/v1",
+    };
+    mockedChatModelSettings.mockReturnValueOnce({
+      provider: "custom",
+      providerSource: "config",
+      model: "cold-model",
+      modelSource: "config",
+      configured: true,
+      usesPrimary: false,
+    } as never);
+
+    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
+    // ARMED AFTER the awaited setup above: a one-shot queued before it would be
+    // spent by whatever read the store first, and this case would then pass on
+    // the default answer instead of the cold one it is about.
+    mockedLoadConfigAsync.mockResolvedValueOnce(stored as never);
+    const assembled = await assembleWikiContext("alpha", { principal: null });
+
+    expect(assembled.chatModel).toEqual({
+      provider: "custom",
+      model: "cold-model",
+      configured: true,
+      baseUrl: "https://cold.example/v1",
+    });
+    // ONE generation, not two: both legs are handed the very object the awaited
+    // read answered. Reverting to a bare `chatModelForRetrieve()` leaves them
+    // holding the `{}` above, which is the regression this case exists for.
+    expect(mockedChatModelSettings.mock.calls[0][0]).toBe(stored);
+    expect(mockedCustomBaseUrl.mock.calls[0][0]).toBe(stored);
+  });
+
+  it("does NOT thread an empty awaited answer over the warm default (DW-712)", async () => {
+    // The other half of the rule, copied from `configSnapshot` in `llm.ts`:
+    // `loadConfig()` answers `{}` both for "no config file" and for "the store
+    // could not be read", and on that second branch it does not prime the cache
+    // either — so the PREVIOUS generation is still warm behind
+    // `loadConfigSync()`. Threading `{}` would turn a transient read failure
+    // into a payload reporting an unconfigured wiki, which is the very lie the
+    // fix above removes. Passing nothing means "read it yourself".
+    mockedChatModelSettings.mockClear();
+    mockedCustomBaseUrl.mockClear();
+    const warm = {
+      vectorSearchEnabled: false,
+      customBaseUrl: "https://warm.example/v1",
+    };
+    mockedLoadConfig.mockReturnValue(warm as never);
+    mockedChatModelSettings.mockReturnValueOnce({
+      provider: "custom",
+      providerSource: "config",
+      model: "warm-model",
+      modelSource: "config",
+      configured: true,
+      usesPrimary: false,
+    } as never);
+
+    await seedPages([{ slug: "alpha", title: "Alpha", body: "alpha body" }]);
+    mockedLoadConfigAsync.mockResolvedValueOnce({} as never);
+    const assembled = await assembleWikiContext("alpha", { principal: null });
+
+    expect(assembled.chatModel).toEqual({
+      provider: "custom",
+      model: "warm-model",
+      configured: true,
+      baseUrl: "https://warm.example/v1",
+    });
+    // The resolver fell to its own default read, not to the empty answer.
+    expect(mockedChatModelSettings.mock.calls[0][0]).toBe(warm);
+  });
+
+  it("reads the store ONCE, above the empty-query return (DW-712)", async () => {
+    // Both halves of where the read was put. The payload describes the
+    // DEPLOYMENT, not the query, so an empty query is owed the same `chatModel`
+    // a real one gets — which is why the read sits above the `!trimmed` return
+    // rather than beside the retrieval below it. And it is ONE read: moving it
+    // under the return, or resolving any leg from a second call, breaks one of
+    // these two assertions.
+    mockedChatModelSettings.mockClear();
+    mockedLoadConfig.mockReturnValue({} as never);
+    const stored = {
+      vectorSearchEnabled: false,
+      customBaseUrl: "https://cold.example/v1",
+    };
+    mockedChatModelSettings.mockReturnValueOnce({
+      provider: "custom",
+      providerSource: "config",
+      model: "cold-model",
+      modelSource: "config",
+      configured: true,
+      usesPrimary: false,
+    } as never);
+
+    mockedLoadConfigAsync.mockClear();
+    mockedLoadConfigAsync.mockResolvedValueOnce(stored as never);
+    const assembled = await assembleWikiContext("   ", { principal: null });
+
+    expect(assembled.hits).toEqual([]);
+    expect(assembled.chatModel).toEqual({
+      provider: "custom",
+      model: "cold-model",
+      configured: true,
+      baseUrl: "https://cold.example/v1",
+    });
+    expect(mockedLoadConfigAsync).toHaveBeenCalledTimes(1);
   });
 
   it("Sources-only returns source paths", async () => {

@@ -245,6 +245,29 @@ export async function retryWithBackoff<T>(
  * lint rule in this repo would catch it. `llm-key-cold-config.test.ts` scans
  * `src/` for exactly that slip, which is also why this sentence does not spell
  * the offending call out: the scan reads this file too.
+ *
+ * `chatProvider` / `ingestProvider` ARE NOT READ HERE, ON PURPOSE (DW-621).
+ * This gate answers one question — "can the PRIMARY route make a call" — and
+ * every one of its ~20 consumers takes that route immediately after: `callLLM`,
+ * `callLLMStream` and `callVisionLLM` go through {@link getModel}, and the bare
+ * `getConfiguredModel()` calls (`action-extractor.ts`, `todo-extract.ts`) pass
+ * no options at all. That route resolves
+ * `cfg.provider ?? env.provider` in `getResolvedCredentials` and ignores the
+ * workload fields entirely; nothing in `src/` passes `workload:` yet, by design
+ * (see {@link LlmWorkload}). So for a store that names a provider ONLY through
+ * `chatProvider` or `ingestProvider`, a `true` answer here would be a promise
+ * the resolvers cannot keep: `analyzeSource` in `src/lib/ingest.ts` gates on
+ * this function and then calls `callLLM` with no `try` around it, so the gate
+ * opening would turn today's empty-analysis degrade into a thrown
+ * `No LLM API key found…` and take the ingest with it — ~20 graceful skips
+ * traded for a cosmetic honesty gain.
+ *
+ * THE DISHONESTY IS REAL BUT BELONGS AT THE CALL SITES. A `chatProvider`-only
+ * store makes `chat.ts` refuse with "No LLM provider is configured." after the
+ * retrieve payload has already reported that chat model configured. That is
+ * fixed by wiring the workload route through `chat.ts` and `ingest.ts` (Epics 2
+ * and 3, filed as DW-711), not by widening this predicate — which would only
+ * move the throw down into `getModel()`.
  */
 export async function hasLLMKey(): Promise<boolean> {
   // Fast path: check env vars via shared helper
@@ -509,8 +532,30 @@ export async function getConfiguredModel(options?: {
         `The ${providerLabel(provider)} provider is not configured on this server. Set it in ${LLM_MODELS_POINTER}.`,
       );
     }
+    // THE STORED MODEL, TAKEN FROM ITS OWNER (DW-713). This branch used to skip
+    // from `options.model` straight to `OLLAMA_MODEL`/`DEFAULT_MODELS`, reading
+    // neither `LLM_MODEL` nor `cfg.model` — so a `custom` provider whose model
+    // was saved in the store built fine through `getModel` and was refused
+    // "needs a model name" here, at `agent-runtime`'s door. `custom` is where it
+    // bites because `DEFAULT_MODELS.custom` deliberately does not exist: it is
+    // the one provider with no tail to fall back to.
+    //
+    // DERIVED, NOT RE-TYPED: `getResolvedCredentials` owns the ladder
+    // (`LLM_MODEL` → `cfg.model` → `OLLAMA_MODEL` → `DEFAULT_MODELS`), so
+    // asking it is what keeps the two ladders from drifting. It is threaded the
+    // same `cfg` as `apiKeyForProvider` and the base-URL accessors below, so
+    // every leg of this client comes from one config generation.
+    //
+    // GUARDED ON PROVIDER IDENTITY: the stored model belongs to the store's
+    // PRIMARY provider, so it may only be spent on that provider. Without this,
+    // a store of `{provider: "anthropic", model: "claude-x"}` would hand
+    // `claude-x` to an explicitly requested OpenAI or custom client.
+    const credentials = getResolvedCredentials(cfg);
+    const storedModel =
+      provider === credentials.provider ? credentials.model : null;
     const resolvedModel =
       model?.trim() ||
+      storedModel?.trim() ||
       ((provider === "ollama" || provider === "ollama-cloud")
         ? process.env.OLLAMA_MODEL
         : undefined) ||
