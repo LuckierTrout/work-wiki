@@ -13,88 +13,36 @@ import {
   SETTINGS_API_HEALTH_STARTING_COPY,
   SETTINGS_API_HEALTH_UNREACHABLE_COPY,
 } from "../src/lib/workbench-loopback-health";
-import { E2E_OWNER_HANDLE } from "./env";
 import { expect, test, unsignedTest } from "./fixtures/owner";
+// Shared with `workbench-layout.spec.ts`. `fixtures/wiki.ts` is a module both
+// specs import, and its NAME is what keeps it one: the config sets no
+// `testMatch`, so Playwright's default would collect a `wiki.test.ts` here as a
+// suite of its own.
+import {
+  E2E_TENANT_DIR,
+  createOwnWiki,
+  currentWikiId,
+  readE2ePage,
+  readE2ePageOrEmpty,
+  resetOwnerTenant,
+  seedWikiPages,
+} from "./fixtures/wiki";
 
-const E2E_TENANT_DIR = path.join(
-  process.cwd(),
-  "e2e/.data/tenants",
-  E2E_OWNER_HANDLE,
-);
-
-async function readE2ePage(slug: string): Promise<string> {
-  return fs.readFile(path.join(E2E_TENANT_DIR, "wiki", `${slug}.md`), "utf8");
-}
-
-async function readE2ePageOrEmpty(slug: string): Promise<string> {
-  try {
-    return await readE2ePage(slug);
-  } catch {
-    return "";
-  }
-}
-
-async function createOwnWiki(page: Page, name: string): Promise<string> {
-  await page.goto("/");
-  const response = await page.request.post("/api/wikis", {
-    data: { name, scenario: "general" },
-  });
-  expect(response.status()).toBe(201);
-  const body = (await response.json()) as { wiki?: { id?: string } };
-  const wikiId = body.wiki?.id;
-  expect(wikiId, "createOwnWiki must return a wiki id").toBeTruthy();
-  await page.reload();
-  await expect(page.getByRole("heading", { name: "Wiki", exact: true })).toBeVisible();
-  await expect(page.locator("#wb-canvas").getByText("No wiki yet.")).toHaveCount(0);
-  return wikiId as string;
-}
-
-async function currentWikiId(page: Page): Promise<string> {
-  const response = await page.request.get("/api/wikis");
-  expect(response.ok()).toBeTruthy();
-  const body = (await response.json()) as { currentId?: string | null };
-  expect(body.currentId, "a current Wiki is required").toBeTruthy();
-  return body.currentId as string;
-}
-
-async function replaceWikiPage(
-  page: Page,
-  slug: string,
-  content: string,
-) {
-  const preview = await page.request.get(
-    `/api/workbench/preview?kind=page&slug=${encodeURIComponent(slug)}`,
-  );
-  expect(preview.ok()).toBeTruthy();
-  const payload = (await preview.json()) as { body?: string; version?: string };
-  if (typeof payload.body === "string" && payload.body.includes(content)) {
-    return;
-  }
-  expect(payload.version, `preview version for ${slug}`).toBeTruthy();
-  const put = await page.request.put(`/api/wiki/${encodeURIComponent(slug)}`, {
-    headers: { "If-Match": `"${payload.version}"` },
-    data: { content },
-  });
-  expect(put.ok(), `PUT /api/wiki/${slug} ${put.status()}`).toBeTruthy();
-}
-
-async function seedWikiPages(
-  page: Page,
-  pages: Array<{ slug: string; content: string }>,
-) {
-  for (const entry of pages) {
-    const response = await page.request.post("/api/wiki", {
-      data: { slug: entry.slug, content: entry.content },
-    });
-    expect([201, 409]).toContain(response.status());
-    if (response.status() === 409) {
-      await replaceWikiPage(page, entry.slug, entry.content);
-    }
-    await expect
-      .poll(() => readE2ePageOrEmpty(entry.slug))
-      .toContain(entry.content);
-  }
-}
+/**
+ * The first two cases below open on an EMPTY tenant — "No wiki yet." on the
+ * canvas and a **Create Wiki** button — so this file establishes that itself
+ * rather than inheriting it.
+ *
+ * One worker shares one store across every spec file, and `webServer` wipes it
+ * once, before the server boots. Whichever files ran first therefore decide
+ * what this one starts from, and any of them may have minted a wiki. Resting on
+ * path order would make this file's result depend on what it is named and on
+ * what else happens to be on disk — and the failure it produces when that
+ * changes ("Create Wiki" not found) says nothing about the cause.
+ */
+test.beforeAll(async () => {
+  await resetOwnerTenant();
+});
 
 async function seedReviewQueue(
   page: Page,

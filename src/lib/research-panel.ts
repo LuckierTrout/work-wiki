@@ -1,4 +1,8 @@
-import { REPAIR_HINT, URL_MAX_CHARS } from "./research-projects";
+// From the leaf module, NOT from `research-projects.ts`: this file is imported
+// by the Workbench canvases, and a VALUE import off the store pulls
+// `./storage` and `node:fs/promises` into the browser graph. The type import
+// below is erased, so it may keep pointing at the store.
+import { REPAIR_HINT, URL_MAX_CHARS } from "./research-contract";
 import type { ResearchProject, ResearchProjectStatus } from "./research-projects";
 
 /**

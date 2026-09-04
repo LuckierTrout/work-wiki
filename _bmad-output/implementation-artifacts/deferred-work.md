@@ -1361,7 +1361,9 @@ source_spec: `spec-dw-34-workbench-preview-announcements.md`
 location: vitest.config.ts (no browser project); src/lib/__tests__/workbench-left-column.test.ts (the CSS scans)
 severity: low
 reason: `vitest.config.ts` has exactly two projects, `node` and `dom` (jsdom), and jsdom has no layout engine; there is no Playwright config, no `e2e/` directory and no browser project anywhere. So DW-34's user-visible payoff — "a docked column below 900px is reachable" — is pinned by `workbench-left-column.test.ts` asserting that declaration strings appear inside a slice of the stylesheet. That scan cannot show the new rule wins the cascade, that the released clamp actually makes the row reachable, or that the `[data-sheet-open]` counter-rule outranks the docked selectors. The mounted suite observes only that the shell ASKS the platform to scroll. Pre-existing and repo-wide: every earlier Workbench story verified its stylesheet half the same way. Closing it means adding a browser test project, which is a project-level decision rather than a fix to this change.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-real-runtime-verification-gaps
+resolution-undo: 6cf72f25afc601d5a1f83d6fafa6e61de8e1bd08b7d18221f22ce5c5ac923309 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-19 Add a browser project — Add a real browser test project (Playwright, or Vitest browser mode) covering the layout claims the stylesheet scans currently stand in for — the 900px docked-column reachability, the split-handle geometry, and the sheet counter-rule — and mark the corresponding scan assertions as structural rather than behavioural once a real check exists.
 
 ### DW-186: Follow-up review still recommended for dw-workbench-preview-announcements after the damping cap was spent
@@ -2119,7 +2121,9 @@ source_spec: `spec-dw-181-184-preview-refresh-affordances.md`
 location: src/lib/live-region.ts and src/components/workbench/__tests__/preview-announcements.test.tsx
 severity: low
 reason: DW-182's fix is an alternating U+200B appended to a repeated sentence. The node and jsdom suites prove only that the region's string CHANGED — which was never in doubt. Whether NVDA, JAWS or VoiceOver re-utters on that change, and whether any of them normalises the mark away before diffing, is asserted in prose only. The DW-182 ledger entry predicted this ("no test in a node or jsdom project can verify"), and the repo already records the equivalent gap for CSS. Without a browser/AT project the suite reads as if the mechanism is proven.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-real-runtime-verification-gaps
+resolution-undo: 6cf72f25afc601d5a1f83d6fafa6e61de8e1bd08b7d18221f22ce5c5ac923309 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-28 Document a manual AT check — Record a short manual verification procedure (which AT, which surface, what to hear) beside live-region.ts and in the test-strategy docs, and close the gap as knowingly manual.
 decision: 2026-08-26 Document a manual AT check — Record a short manual verification procedure (which AT, which surface, what to hear) beside live-region.ts and in the test-strategy docs, and close the gap as knowingly manual.
 
@@ -6178,4 +6182,12 @@ location: src/lib/__tests__/epic8-v1-routes.test.ts:207 (and l.214, l.241, l.349
 source_spec: `spec-dw-581-586-537-unexecuted-test-premises.md`
 severity: medium
 reason: DW-537 is now pinned at the rescan door, but `v1SlugGate` returns a PAIR precisely so the three `/api/v1` doors cannot drift (DW-32). `files/route.ts:46` spreads `{ ...slugGate, limit: V1_MAX_TREE_NODES }` into `listWorkbenchFilePaths` and `files/content/route.ts:62` passes `slugGate` into `readWorkbenchFile`; the only tests that import either route module live in `src/lib/__tests__/epic8-v1-routes.test.ts`, and their assertions are `expect(listPaths).toHaveBeenCalledWith("alice", "wiki-1", expect.anything())` (l.207, l.214, l.241) with `readWorkbenchFile`'s gate argument never inspected at all (l.349, l.361). VERIFIED during this run's review: replacing `...slugGate` with `readableSlugs: new Set(), hiddenSlugs: new Set()` in BOTH route files leaves the suite at 35/35 green. `epic8-remediation.test.ts` touches the two sets only by calling `workbench-files` directly, never through these routes. Consequence: the doors an agent actually talks to could serve a hidden page's `wiki/` paths a
+status: open
+
+### DW-753: The browser half of the two-halves CSS rule this change introduces runs in no automated lane — `pnpm test:e2e` is not in CI, so a cascade, geometry or hit-test regression is caught only when someone r
+origin: spec-deferred 180035aaedcd
+location: .github/workflows/ci.yml (no test:e2e step); e2e/workbench-layout.spec.ts
+source_spec: `spec-dw-185-287-real-runtime-verification-gaps.md`
+severity: medium
+reason: `.github/workflows/ci.yml` runs `tsc --noEmit`, `pnpm lint`, `pnpm test`, `pnpm build` and `pnpm build:cloudflare`, and no `pnpm test:e2e` step; `AGENTS.md` records the Playwright lane as "Not in CI; run it locally". No assertion was removed by this change — the stylesheet scans still run on every `pnpm test` and still fail when a declaration is deleted — so CI's detection power is unchanged. What is new is that the resolved-cascade claim now exists somewhere, and that somewhere is opt-in. Enrolling the lane needs a CI dev server and browser install, which is the same project-level decision DW-185 was originally waiting on.
 status: open

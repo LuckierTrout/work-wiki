@@ -43,7 +43,18 @@ import { setMediaQuery } from "@/test/dom-helpers";
  * COVERAGE LIMIT: jsdom has no layout engine, so "the column is now on screen"
  * is not observable here — the narrow-width case pins that the shell asks the
  * platform to scroll, and `globals.css` is what leaves it somewhere to scroll
- * to. That half is a rule in the stylesheet, argued in its own comment.
+ * to. That half is a rule in the stylesheet, argued in its own comment, and it
+ * is resolved in a real browser by `e2e/workbench-layout.spec.ts` ("a stacked
+ * Preview below 900px is reachable").
+ *
+ * SECOND COVERAGE LIMIT, and it is not closable here (DW-287): the repeat-mark
+ * cases below assert that the region's STRING changed. Whether a screen reader
+ * re-utters on that change — and whether it normalises `U+200B` away before
+ * diffing — is not observable from a rendered tree, and no automated lane in
+ * this repo speaks. That half is verified by hand against VoiceOver and NVDA,
+ * by the procedure recorded in `src/lib/live-region.ts` and pointed at from
+ * `AGENTS.md` → "Test environments". Read the cases below as "the write
+ * happened", not as "the sentence was heard".
  */
 
 // ONE stable router object, for the reason `workbench-mode-url.test.tsx` gives:
@@ -977,7 +988,15 @@ describe("a 404 takes the Edit affordance with the body (DW-181)", () => {
   });
 });
 
-describe("a region that has to repeat itself is still heard (DW-182)", () => {
+/**
+ * DW-182's mechanism, up to the edge of what a rendered tree can show.
+ *
+ * Every case here observes the region's VALUE. The utterance is DW-287's half
+ * and is verified by hand — VoiceOver and NVDA, by the procedure in
+ * `src/lib/live-region.ts`. A green run below means the write reached the
+ * region, not that anything spoke.
+ */
+describe("a region that has to repeat itself is re-WRITTEN (DW-182)", () => {
   it("changes the column's region on a SECOND body swap reading the same sentence", async () => {
     const view = await renderShell();
     fireEvent.click(row("Alpha"));
@@ -1007,6 +1026,10 @@ describe("a region that has to repeat itself is still heard (DW-182)", () => {
     // one, and the second body swap went unmentioned.
     expect(second).not.toBe(first);
     expect(second).toBe(first + LIVE_REGION_REPEAT_MARK);
+    // …which is the WRITE, and only the write. That a screen reader re-utters
+    // "Preview updated" on this change is DW-287's half: not observable from a
+    // rendered tree, checked by hand against VoiceOver and NVDA by the
+    // procedure in `src/lib/live-region.ts`.
     // …while the sentence a reader HEARS is unchanged: the mark is invisible
     // and unspoken.
     expect(columnAnnounced()).toBe(PREVIEW_UPDATED_COPY);
@@ -1041,6 +1064,9 @@ describe("a region that has to repeat itself is still heard (DW-182)", () => {
     expect(announced()).toBe("Chat");
     expect(announcedRaw()).not.toBe(first);
     expect(announcedRaw()).toBe(first + LIVE_REGION_REPEAT_MARK);
+    // Same boundary as the column case: the region moved. Hearing "Chat" a
+    // second time is the manual pass in `src/lib/live-region.ts` (DW-287) —
+    // this is the second gesture that procedure names.
   });
 
   it("never marks a CLEARED region — silence is silence", async () => {

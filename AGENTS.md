@@ -115,7 +115,35 @@ scan reads this file too.
   assistive technology — are Playwright's, `pnpm test:e2e`
   (`playwright.config.ts`, specs in `e2e/`). Not in CI; run it locally. Focus
   ORDER is executable in jsdom (`workbench-sheet.test.tsx` asserts
-  `document.activeElement`); what a screen reader announces is not.
+  `document.activeElement`); what a screen reader announces is not. Shared
+  seeding lives in `e2e/fixtures/` — and it is the FILENAME that keeps those
+  modules from being collected: `playwright.config.ts` sets no `testMatch`, so
+  the default picks up `*.test.ts` as well as `*.spec.ts`, and a fixture named
+  `*.test.ts` would run as an empty suite wherever it sat.
+- The e2e run is ONE worker against ONE store (`DATA_DIR=e2e/.data`), wiped
+  once by the `webServer` command before the server boots — so every spec file
+  inherits whatever the files before it left behind. A file whose cases need an
+  empty tenant calls `resetOwnerTenant()` from `e2e/fixtures/wiki.ts` in
+  `beforeAll`; a file that mints wikis calls it in `afterAll`. Do not rest on
+  path order: it changes when a file is renamed, run alone, or sharded, and the
+  failure it produces names the wrong thing.
+- CSS CLAIMS come in two halves, and both are required (DW-185). The node
+  suites slice `src/app/globals.css` and pin declaration text and source order
+  (`workbench-split.test.ts`, `workbench-left-column.test.ts`) — that is what
+  runs on every `pnpm test` and what fails when a declaration is deleted. It
+  cannot show which rule won the cascade, what a `calc()` resolved to, or that
+  a target is hittable. `e2e/workbench-layout.spec.ts` settles those in a real
+  browser: separator geometry against live boxes, `document.elementFromPoint`
+  on the 24px grab strips, and the 900px clamp release measured through
+  `getComputedStyle` plus a real document scroll. Add the browser half there
+  rather than making a stylesheet scan claim more than text can.
+- WHAT A SCREEN READER UTTERS has no automated home here and is checked by hand
+  (DW-287). The live-region repeat mark (`src/lib/live-region.ts`) is the
+  standing case: the vitest suites prove the region's string changed, and the
+  MANUAL procedure — which AT, which surface, what to hear — is recorded in
+  that module's header comment. Run it against VoiceOver and NVDA whenever the
+  mark or its callers change. This is a knowingly manual gap, not an untested
+  one; say so in any suite that touches the mechanism.
 - jsdom computes no layout, so every box is all-zeros and no stylesheet applies.
   `vitest.setup.dom.ts` holds every shim and nothing in `src/` does — still
   literally true alongside `@/test/dom-helpers` above, which re-exports all

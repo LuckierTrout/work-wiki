@@ -1571,7 +1571,7 @@ describe("globals.css docks the Preview as a fourth column", () => {
     }
   });
 
-  it("releases the shell's clamp below 900px so a docked column is reachable", async () => {
+  it("declares the clamp release and its sheet counter-rule below 900px", async () => {
     // DW-34. `.wb-shell` is `height: 100dvh; max-height: 100dvh; overflow:
     // hidden` — right for a desktop surface that must not scroll as a page, and
     // fatal here: below 900px the Preview is a fourth ROW, so that rule places
@@ -1579,6 +1579,18 @@ describe("globals.css docks the Preview as a fourth column", () => {
     // by scroll, by `scrollIntoView`, by anything. A tap on a tree row appeared
     // to do nothing at all, which is why `Workbench`'s reveal effect cannot fix
     // this on its own.
+    //
+    // WHAT THIS CASE CHECKS is the stylesheet's STRUCTURE: that all four
+    // declarations of the release are present, that the counter-rule is written
+    // three attributes wide, and that both sit in the 899px block. It cannot
+    // check that the release WORKS — a declaration string says nothing about
+    // which rule won the cascade or whether a column ended up reachable
+    // (DW-185). Reachability itself is observed in a real browser by
+    // `e2e/workbench-layout.spec.ts` ("a stacked Preview below 900px is
+    // reachable"), which resolves `overflow` through `getComputedStyle`,
+    // scrolls the document for real, and asserts the column is in the viewport.
+    // Keep the two together: this case is the one that fails loudly when a
+    // declaration is deleted, and it runs on every `pnpm test`.
     const css = await globals();
     const start = css.lastIndexOf("@media (max-width: 899px)");
     const next = css.indexOf("@media", start + 1);

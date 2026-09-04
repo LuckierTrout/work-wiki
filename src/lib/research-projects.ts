@@ -6,29 +6,19 @@ import { READ_ONLY_REFUSAL, ReadOnlyError, assertWritable } from "./read-only";
 import { getStorage } from "./storage";
 import { tenantForOwner, validateTenant } from "./wiki";
 import { hasResearchSlot } from "./research-concurrency";
-
-const CAS_ATTEMPTS = 8;
+import { REPAIR_HINT, URL_MAX_CHARS } from "./research-contract";
 
 /**
- * The suffix every {@link parseRegistry} refusal carries (DW-477).
- *
- * A 500 that only says the file is unreadable leaves the owner with a tenant
- * whose every research door — the DELETEs that could shrink the file included
- * — refuses, and no named way out. The hint is a SUFFIX so each refusal keeps
- * its existing leading diagnosis verbatim: the element index and the parser's
- * byte offset are still the first thing read, and the `toThrow(substring)`
- * rows that pin those sentences are unaffected.
- *
- * EXPORTED because it is also the MARKER the clients recognise (DW-688). Both
- * surfaces that render a research failure — the Studio's feedback banner and
- * the Workbench's `ResearchCanvas` — are handed only `{ error }` by
- * `GET /api/research`, with no type to switch on, so
- * `researchRegistryRepairable` in `research-panel.ts` derives its predicate
- * from THIS constant rather than retyping the sentence. One owner for the
- * marker: a reworded hint moves the predicate with it instead of silently
- * withdrawing the **Repair** control the sentence promises.
+ * Both constants keep their old spelling HERE — every caller that reads them off
+ * the store still does. They are declared in `research-contract.ts` because
+ * `research-panel.ts` reads them too, and it is imported by the Workbench
+ * canvases: a value import from this module drags `./storage` and
+ * `node:fs/promises` into the browser graph. The re-export is what lets that
+ * move stay invisible to the routes and suites that already import them here.
  */
-export const REPAIR_HINT = " Repair it with POST /api/research/repair, then retry.";
+export { REPAIR_HINT, URL_MAX_CHARS } from "./research-contract";
+
+const CAS_ATTEMPTS = 8;
 
 /**
  * The three research-project faults a route has to tell apart from a server
@@ -284,20 +274,11 @@ function cleanList(values: readonly string[] | undefined, maxItems: number, maxC
   return result;
 }
 
-/** The `cleanUrls` bounds, named so the counting below reads against the same
- *  numbers the store actually applies rather than re-typing them. */
+/** One of the two `cleanUrls` bounds, named so the counting below reads against
+ *  the number the store actually applies rather than re-typing it. The other,
+ *  `URL_MAX_CHARS`, is declared in `./research-contract` and re-exported at the
+ *  head of this file — the panel shows that one to an owner in a sentence. */
 const URL_MAX_ITEMS = 40;
-/**
- * The per-URL character cap.
- *
- * EXPORTED for `research-panel.ts` alone, which names this number in the
- * sentence it shows an owner ("shortened to 2,000 characters"). A re-typed
- * literal there would go on saying 2,000 after this constant changed — the
- * store telling the owner something false — which is the same re-typing these
- * named constants exist to prevent one scope down.
- */
-export const URL_MAX_CHARS = 2_000;
-
 function isHttpUrl(value: string): boolean {
   try {
     const parsed = new URL(value);

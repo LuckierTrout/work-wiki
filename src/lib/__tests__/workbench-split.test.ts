@@ -1808,7 +1808,25 @@ describe("TreePanel remembers where each tree was left", () => {
   });
 });
 
-describe("globals.css positions the divider from the grid's own properties", () => {
+/**
+ * The divider's geometry as the stylesheet STATES it.
+ *
+ * Every case in this block slices `globals.css` and compares declaration text
+ * and source order. That is a real check and it is the one that runs on every
+ * `pnpm test`: it fails the moment a declaration is deleted, retyped as a
+ * literal, or moved out of the block whose order the cascade depends on.
+ *
+ * What it cannot do is confirm the RESULT (DW-185). Declaration text says
+ * nothing about which rule won, what `calc(var(--wb-rail) + var(--wb-tree))`
+ * resolved to, whether a 24px strip rendered 24px wide on the boundary it
+ * names, or whether a pointer two pixels inside it reaches the separator rather
+ * than something painted over it. Those are settled in a real browser by
+ * `e2e/workbench-layout.spec.ts` ("the docked shell measured in a real
+ * browser"), which reads `getBoundingClientRect` and `document.elementFromPoint`
+ * and never opens the stylesheet. Read the two together: the scan pins the
+ * source, the spec pins what the browser did with it.
+ */
+describe("globals.css declares the divider from the grid's own properties", () => {
   it("declares the hit width in the one token block and makes the shell its origin", async () => {
     const css = await globals();
     expect(css.match(/^\.wb-shell \{$/gm) ?? []).toHaveLength(1);
@@ -2036,10 +2054,15 @@ describe("globals.css positions the divider from the grid's own properties", () 
     );
   });
 
-  it("reads --wb-tree and --wb-preview for the handle positions", async () => {
+  it("declares the handle positions from --wb-tree and --wb-preview", async () => {
     // Computing `left` in JavaScript would be a second derivation of the layout;
     // reading the same custom property the track read makes the divider land on
     // the boundary by construction, inline override included.
+    //
+    // The strings below are the DERIVATION. That each one lands on the column
+    // edge is measured between two live boxes in
+    // `e2e/workbench-layout.spec.ts` ("puts each separator's grab strip on its
+    // own column boundary").
     const css = await globals();
     // Both strips start AT their boundary and extend RIGHT of it (DW-44), which
     // is off `.wb-tree-body`'s scrollbar at the tree boundary and off
@@ -2086,12 +2109,22 @@ describe("globals.css positions the divider from the grid's own properties", () 
     expect(resizing).toContain("user-select: none;");
   });
 
-  it("gives the handle the box the pointer path depends on", async () => {
+  it("declares the box the pointer path depends on", async () => {
     // Three declarations the drag cannot work without, and which no other
     // assertion here reaches. Deleting `touch-action: none` makes every touch
     // drag scroll the page instead of moving the divider; deleting the width
     // leaves a zero-wide target; dropping the stacking order puts the strip
     // under the column borders it sits between.
+    //
+    // Present, not effective — for TWO of the three.
+    // `e2e/workbench-layout.spec.ts` settles that the strip renders
+    // `SPLIT_HIT_WIDTH` wide on its boundary, and that a point inside it
+    // hit-tests to the separator through `document.elementFromPoint`, which is
+    // the only place the transparent `z-index: 2` target is shown reachable at
+    // all. `touch-action: none` is NOT settled there: that spec performs no
+    // pointer down/move/up, so nothing yet observes a touch drag moving the
+    // divider instead of scrolling the page. This declaration string is the
+    // only guard that rule has.
     const css = await globals();
     const start = css.indexOf(".wb-split-handle {");
     expect(start).toBeGreaterThan(-1);
