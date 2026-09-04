@@ -5453,7 +5453,9 @@ location: src/lib/mcp-http.ts (validateToolArguments) + src/mcp.ts handleSeedAge
 source_spec: `spec-dw-563-614-mcp-door-hardening.md`
 severity: medium
 reason: The HTTP gate reads `items.type` only for primitive elements, by design. Two reviewers independently drove `seed_agent {agent_id, name, description, sections:[{slug:"s"}]}` through `dispatchMcp` and got `Error: Cannot read properties of undefined (reading 'split')`, thrown by `section.content.split` in `src/lib/agents.ts`. The stdio door refuses the same body at `z.object({...})`. `handleSeedAgent` validates nothing — it maps and delegates — so nothing between the wire and `agents.ts` speaks for the nested `required: ["slug","title","type","content"]` that the schema already declares. Pre-existing (the crash predates this change); surfaced because the gate's doc block had to state what it does not cover. Same shape for `update_agent.addPages`.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-mcp-http-argument-and-schema-parity
+resolution-undo: 6a34ce26477a2e9445da6d937ffc53a072aa3699c19849db9e1dbcc9e035d74d 2026-09-03 7374617475733a206f70656e
 
 ### DW-673: The HTTP `inputSchema` declarations are now enforced at runtime, but nothing pins them against the stdio door's zod schemas they are supposed to mirror.
 origin: spec-deferred 1ba349db68fb
@@ -5461,7 +5463,9 @@ location: src/lib/__tests__/mcp-http.test.ts (MCP_TOOLS ↔ stdio registration p
 source_spec: `spec-dw-563-614-mcp-door-hardening.md`
 severity: medium
 reason: `MCP_TOOLS ↔ stdio registration parity` compares tool names, the `write`/`readOnlyHint` flag, and (new) that every `required` name is a declared property with a decidable `type`. It does not compare the two doors' `required` lists or declared types. Before this change a drift there was cosmetic; now a field the HTTP schema calls `required` while the stdio zod calls it `.optional()`, or a `number` against a `z.string()`, refuses every real call to that tool at one door only. A hand comparison of ~11 fields found no live disagreement, so this is an unpinned risk rather than a present defect, and seven tools have no authenticated door-level row that would notice.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-mcp-http-argument-and-schema-parity
+resolution-undo: 6a34ce26477a2e9445da6d937ffc53a072aa3699c19849db9e1dbcc9e035d74d 2026-09-03 7374617475733a206f70656e
 
 ### DW-674: `newestWriteTime` guards its mtime with `Number.isFinite` but not against `Date`'s +/-8.64e15 ms range, so a wild provider mtime turns the future-dated log line into a `RangeError` that aborts the who
 origin: spec-deferred 3528a52f021c
@@ -6120,4 +6124,12 @@ location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:177
 source_spec: `spec-dw-564-580-machine-door-field-and-error-vocabulary.md`
 severity: medium
 reason: `reviews/[reviewId]/route.ts`'s caller-fault 400 answers `V1_INVALID_INPUT_ERROR` for every `ClientInputError`, and the dominant one is `research-projects.ts`'s "This workspace already has the maximum of 100 research projects." That request's body is well-formed — the refusal is workspace STATE, and no edit to the body clears it. `cleanInput`'s verdict on `item.title` lands in the same branch, where the offending value is the stored review row rather than anything the caller sent. The sentence still rides in `detail`, so nothing regressed against the prose body this bundle replaced, and the single-token shape is what DW-580's "give it a token" authorized; a finer vocabulary (a cap/limit token beside `too_many_paths`, or a 409) is a scope decision the ledger entry did not make. Raised independently by two review layers.
+status: open
+
+### DW-749: `seed_agent` accepts a section `type` outside its declared `enum` at the HTTP door and half-seeds the agent: the page is written but bucketed into none of the profile's three page lists.
+origin: spec-deferred 86c55d7054c9
+location: src/lib/agents.ts:995 (seedAgent section bucketing) + src/lib/mcp-http.ts seed_agent.sections.items.properties.type
+source_spec: `spec-dw-672-673-mcp-nested-elements-and-schema-parity.md`
+severity: low
+reason: Neither door's gate judges `enum` members by design (the Never clause, carried from DW-563), so `seed_agent … sections:[{slug,title, type:"bogus",content}]` passes the HTTP gate as a well-typed string. In `seedAgent` (`src/lib/agents.ts:995-1006`) the `switch (section.type)` that appends the slug to `identityPages` / `learningPages` / `socialPages` has no `default`, so the page is written to the wiki and then referenced by no list — the HTTP caller gets a success result and an agent profile that does not mention the page it just seeded. The stdio door refuses the same body at `z.enum(["identity","learnings","social"])` and the REST door at `src/app/api/agents/seed/route.ts` validates per index, so this answer is reachable through the HTTP MCP door alone. Pre-existing and outside this bundle: closing it is either a `default` arm in `seedAgent` or a decision to enforce `enum` somewhere, both of which need a message design this bundle's Never clause rules out.
 status: open

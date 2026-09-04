@@ -196,20 +196,43 @@ const PRIMITIVE_ITEM_TYPES = new Set(["string", "number", "boolean"]);
  * closes all of them at once and cannot drift from what `tools/list` advertises,
  * because it IS what `tools/list` advertises.
  *
- * WHY ONLY `required`, `type`, AND PRIMITIVE ARRAY ELEMENTS. That is exactly the
- * parity the stdio door has, and no more. Where a handler already answers for a
- * value in a better sentence than a schema error could, it keeps doing so:
- * `autoFixRefusal` names the check type and its clear path, `validateQuery`
- * answers `unknown filter op` for a bad dataview operator. A generic "expected
- * string" in front of those would be a worse answer, not a safer one.
+ * WHY ONLY `required` AND `type`. That is exactly the parity the stdio door has,
+ * and no more. Where a handler already answers for a value in a better sentence
+ * than a schema error could, it keeps doing so: `autoFixRefusal` names the check
+ * type and its clear path, `validateQuery` answers `unknown filter op` for a bad
+ * dataview operator. A generic "expected string" in front of those would be a
+ * worse answer, not a safer one.
  *
- * NESTED-OBJECT `required` IS NOT CHECKED, AND NOTHING ELSE CHECKS IT EITHER.
- * That is a scope decision, not a claim about the handlers: `seed_agent` with
- * `sections: [{slug:"s"}]` reaches `handleSeedAgent`, which validates nothing —
- * it maps and delegates, and `src/lib/agents.ts` then throws "Cannot read
- * properties of undefined". Element-level `required` was out of scope for
- * DW-563, so that body still reaches the handler and what it answers is not
- * pinned anywhere. Closing it is a separate change with its own message design.
+ * OBJECT ARRAY ELEMENTS ARE READ TOO (DW-672). An array whose `items` declares
+ * `type: "object"` has each element read against that `items` schema's own
+ * `required` list and property `type`s — the same two loops, the same
+ * vocabulary, with an indexed-and-dotted PATH: `seed_agent` with
+ * `sections: [{slug:"s"}]` is now `Missing required field: sections[0].title`
+ * instead of travelling into `handleSeedAgent` (which validates nothing — it
+ * maps and delegates) and out the other side as `src/lib/agents.ts` throwing
+ * "Cannot read properties of undefined". A non-object element is
+ * ``Invalid request field `sections[0]`: expected object``, and a mistyped member
+ * is ``Invalid request field `sections[0].slug`: expected string``. Every
+ * sentence that predates this paragraph is byte-identical; the vocabulary grew
+ * by path alone.
+ *
+ * HOW FAR DOWN. The reading follows array `items` at WHATEVER DEPTH the schemas
+ * declare — an object element carrying its own array-of-objects member is read
+ * the same way, as `outer[0].inner[1].member`, because `checkObject`'s property
+ * loop reaches the same branch again. That is not a designed depth so much as
+ * the absence of a bound: nothing on disk nests past one level today (three
+ * fields — `seed_agent.sections`, `update_agent.addPages`,
+ * `dataview_query.filters`, each with primitive members), so the deeper
+ * behaviour is UNEXERCISED and unpinned by any row. A bound is deliberately not
+ * added, because a limb no schema can reach is untestable dead code.
+ *
+ * WHAT STAYS OUT OF SCOPE AT EVERY LEVEL. `enum` members, string formats, ranges
+ * and numeric bounds: `seed_agent` with `sections: [{…, type:"bogus", …}]` is a
+ * well-typed string as far as this gate reads, and whatever the handler answers
+ * stands. And a PROPERTY declared `type: "object"` is NEVER recursed into, at any
+ * depth — array `items` is the only nesting this gate follows, while
+ * `update_metadata.metadata` is a deliberate `additionalProperties: true` bag
+ * whose members are the caller's, not a contract to enforce.
  *
  * WHAT IT DELIBERATELY LETS THROUGH. Undeclared keys: `vault_curate` is called
  * with an `owner` its schema never mentions, and `run` overrides it from the
@@ -223,9 +246,10 @@ const PRIMITIVE_ITEM_TYPES = new Set(["string", "number", "boolean"]);
  * at the REST door and a silent success at this one.
  *
  * Returns the refusal sentence, or `null` when the arguments are acceptable.
- * The vocabulary is the doors' shared one: `Missing required field: <name>`
- * (`@/lib/lint-fix`) and ``Invalid request field `<name>`: expected <type>``
- * (`src/app/api/lint/fix/route.ts`).
+ * The vocabulary is the doors' shared one: `Missing required field: <path>`
+ * (`@/lib/lint-fix`) and ``Invalid request field `<path>`: expected <type>``
+ * (`src/app/api/lint/fix/route.ts`), where `<path>` is a bare name at the top
+ * level and `<array>[<index>].<member>` inside an object array element.
  */
 function validateToolArguments(
   inputSchema: Record<string, unknown>,
@@ -234,10 +258,36 @@ function validateToolArguments(
   if (jsonType(args) !== "object") {
     return "Invalid request arguments: expected a JSON object";
   }
-  const values = args as Record<string, unknown>;
+  // Empty prefix at the top level, so every sentence this door already answers
+  // is unchanged: the path IS the bare field name there.
+  return checkObject(inputSchema, args as Record<string, unknown>, "");
+}
 
-  const required = Array.isArray(inputSchema.required)
-    ? (inputSchema.required as unknown[])
+/**
+ * The gate's one reading, applied at whatever depth its caller is at.
+ *
+ * `declarations` is a JSON Schema object — the tool's `inputSchema` at the top
+ * level, an array's `items` schema inside an element — and only its `required`
+ * list and `properties` types are read. `prefix` is the path already walked:
+ * `""` at the top level, `` `sections[0]` `` inside an element, and it is the
+ * only thing that differs between the calls.
+ *
+ * SELF-CALLING, NOT TWO-LEVEL. The property loop below re-enters this function
+ * for every object element it meets, so an object array nested inside an object
+ * element is read too — array `items` is followed as deep as it is declared. A
+ * property declared `type: "object"` is never followed at any depth. See the
+ * doc block above for why no depth bound is imposed, and for the fact that
+ * nothing on disk nests past one level, so depths beyond that are unexercised.
+ */
+function checkObject(
+  declarations: { required?: unknown; properties?: unknown },
+  values: Record<string, unknown>,
+  prefix: string,
+): string | null {
+  const label = (name: string) => (prefix ? `${prefix}.${name}` : name);
+
+  const required = Array.isArray(declarations.required)
+    ? (declarations.required as unknown[])
     : [];
   // Own properties only, in this loop and the next. A bare `values[name]` walks
   // the prototype chain, so a `required` name colliding with an
@@ -249,12 +299,12 @@ function validateToolArguments(
 
   for (const name of required) {
     if (typeof name !== "string") continue;
-    if (own(name) === undefined) return `Missing required field: ${name}`;
+    if (own(name) === undefined) return `Missing required field: ${label(name)}`;
   }
 
   const properties =
-    jsonType(inputSchema.properties) === "object"
-      ? (inputSchema.properties as Record<string, unknown>)
+    jsonType(declarations.properties) === "object"
+      ? (declarations.properties as Record<string, unknown>)
       : {};
   for (const [name, declaration] of Object.entries(properties)) {
     const value = own(name);
@@ -264,20 +314,36 @@ function validateToolArguments(
     if (typeof decl.type !== "string") continue; // nothing declared to check
     if (!DECIDABLE_TYPES.has(decl.type)) continue; // see DECIDABLE_TYPES
     if (jsonType(value) !== decl.type) {
-      return `Invalid request field \`${name}\`: expected ${decl.type}`;
+      return `Invalid request field \`${label(name)}\`: expected ${decl.type}`;
     }
     if (decl.type !== "array" || jsonType(decl.items) !== "object") continue;
-    const itemType = (decl.items as { type?: unknown }).type;
-    if (typeof itemType !== "string" || !PRIMITIVE_ITEM_TYPES.has(itemType)) {
-      // Object elements (and any undecidable spelling) pass through. Nothing
-      // downstream validates them either — see the doc block above.
+    const items = decl.items as {
+      type?: unknown;
+      required?: unknown;
+      properties?: unknown;
+    };
+    const itemType = items.type;
+    if (typeof itemType !== "string") continue; // nothing declared to check
+    const elements = value as unknown[];
+    if (PRIMITIVE_ITEM_TYPES.has(itemType)) {
+      for (let i = 0; i < elements.length; i++) {
+        if (jsonType(elements[i]) !== itemType) {
+          return `Invalid request field \`${label(name)}[${i}]\`: expected ${itemType}`;
+        }
+      }
       continue;
     }
-    const elements = value as unknown[];
+    // Object elements get the same reading one step down (DW-672). Any OTHER
+    // element spelling is undecidable and still passes through — see
+    // `DECIDABLE_TYPES` for why silence is the safe direction.
+    if (itemType !== "object") continue;
     for (let i = 0; i < elements.length; i++) {
-      if (jsonType(elements[i]) !== itemType) {
-        return `Invalid request field \`${name}[${i}]\`: expected ${itemType}`;
+      const at = `${label(name)}[${i}]`;
+      if (jsonType(elements[i]) !== "object") {
+        return `Invalid request field \`${at}\`: expected object`;
       }
+      const nested = checkObject(items, elements[i] as Record<string, unknown>, at);
+      if (nested) return nested;
     }
   }
 
