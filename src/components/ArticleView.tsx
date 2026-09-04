@@ -10,6 +10,7 @@ import { isRealmRestrictedWrite } from "@/lib/authz";
 import type { Principal } from "@/lib/auth";
 import { parseSources, dedupeSourcesForDisplay, sourceLabel } from "@/lib/sources";
 import { stripLeadingH1 } from "@/lib/markdown";
+import { detectContentLanguage } from "@/lib/content-language";
 import { formatRelativeTime } from "@/lib/format";
 import { Icon } from "@/components/folio/icons";
 import { Avatar, Mark, Confidence, Freshness } from "@/components/folio/primitives";
@@ -432,7 +433,25 @@ export async function ArticleView({
         }}
       >
         <div className="min-w-0">
-          <article>
+          {/* The CONTENT's language, not the chrome's (DW-116). `<html lang="en">`
+              stays unconditional — it describes the interface, which is English
+              only — but the body may be Chinese, Japanese or Korean, and
+              inheriting `en` has a screen reader announce it in an English
+              voice. Classified from `page.body`, the FULL body ahead of
+              `stripLeadingH1`, and emitted unconditionally: an omitted
+              attribute would be indistinguishable from deleted wiring, and
+              `en` is exactly what the inherited value already says.
+
+              KNOWN LIMIT, on two of the three branches below. For `html` pages
+              and HTML decks the string classified is MARKUP, not prose — tags,
+              attributes and inline CSS are Latin whatever the page says — so
+              the tag is unreliable there; and the content itself renders inside
+              `HtmlPreview`'s `srcDoc` iframe, which is a separate document that
+              inherits nothing from this attribute anyway. On those two branches
+              this describes the `<article>` element and no more. Markdown and
+              Marp decks, which are the pages a reader actually reads as prose,
+              are classified over their own text. */}
+          <article lang={detectContentLanguage(page.body)}>
             {pageType === "html" ? (
               // A saved HTML output is rendered verbatim in a sandboxed iframe
               // (isolated; no app cookie/DOM/network access) — never markdown.

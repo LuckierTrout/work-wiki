@@ -67,6 +67,7 @@ import {
   type PreviewPayload,
   type PreviewWriteTarget,
 } from "@/lib/workbench-preview";
+import { detectContentLanguage } from "@/lib/content-language";
 import { nextAnnouncement } from "@/lib/live-region";
 import type { EditableArtifactFile } from "@/lib/wiki-scenarios";
 import {
@@ -456,6 +457,19 @@ function PreviewPane({
   // Wikilinks resolve against the same set the Knowledge tab renders, so a link
   // is actionable exactly when the row it would select is visible.
   const readableSlugs = useMemo(() => readableSlugsFromKnowledge(knowledge), [knowledge]);
+
+  // The CONTENT's language, for the `lang` on `.wb-preview-body` below (DW-116).
+  //
+  // MEMOIZED rather than called inline at the call site: the classifier strips
+  // code fences, inline spans and URLs before it counts, and this pane
+  // re-renders on every keystroke of an open draft, every poll settle and
+  // every announcement — three copies of a 200,000-character body per render
+  // is not a scan anyone asked for. Keyed on the body itself, which is the
+  // only input it has.
+  const bodyLanguage = useMemo(
+    () => detectContentLanguage(payload?.body ?? ""),
+    [payload?.body],
+  );
 
   // ---------------------------------------------------------------------------
   // The column comes back where the owner left it (DW-520)
@@ -1357,7 +1371,13 @@ function PreviewPane({
         {state.payload.truncated && (
           <p className="wb-preview-note">{PREVIEW_TRUNCATED_COPY}</p>
         )}
-        <div className="wb-preview-body" ref={bodyRef}>
+        {/* `lang` is the CONTENT's language, not the chrome's (DW-116): this
+            box wraps nothing but the rendered body, and the truncation
+            sentence above it is English chrome that stays outside. The opening
+            tag stays on ONE line — `workbench-left-column.test.ts` scans this
+            file for the literal `<div className="wb-preview-body"` to pin that
+            sentence above the body, and a wrapped tag defeats the grep. */}
+        <div className="wb-preview-body" lang={bodyLanguage} ref={bodyRef}>
           <PreviewBody
             format={state.payload.format}
             content={state.payload.body}

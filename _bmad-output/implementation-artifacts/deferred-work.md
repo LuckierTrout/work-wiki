@@ -834,7 +834,9 @@ source_spec: `spec-retire-zh-cn-locale.md`
 location: src/app/layout.tsx:70
 severity: low
 reason: `src/lib/slugify.ts`, `src/lib/bm25.ts` and `src/lib/ingest.ts` all preserve CJK by design, and nothing sets `lang` on the article or Preview subtree. Pre-existing rather than caused by this change — the old value tracked the UI locale, not the content language, so it was equally wrong — but the retirement removes the last place where a per-content `lang` could have been derived.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-accessible-name-and-lang
+resolution-undo: 0ff9fd655534df8354bff4c45456a7f742042fbfbac7dd79987c0c9b1d685513 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-28 Detect and set on the body — Detect the dominant script of a page body at render time and set lang on the article/Preview subtree only, leaving <html lang="en"> for the chrome; no schema change.
 decision: 2026-08-26 Detect and set on the body — Detect the dominant script of a page body at render time and set lang on the article/Preview subtree only, leaving <html lang="en"> for the chrome; no schema change.
 
@@ -5864,7 +5866,9 @@ location: src/components/SourceBadge.tsx and the SourceBadge-bearing labels in s
 source_spec: `spec-dw-561-617-provider-form-pick-and-env-label.md`
 severity: low
 reason: `SourceBadge.tsx` relies on the badge span's `ml-2` class for visual spacing only, and the labels in `ProviderForm.tsx` render `{settings && <SourceBadge …/>}` directly after the label text with no whitespace node between them. The accessible name is therefore the two strings run together, which both `provider-form.test.tsx` cases now pin verbatim ("Modelfrom environment", "Ollama Base URLfrom environment") as the name a browser computes. `EmbeddingSettings.tsx` already writes `Embedding Model{" "}` before its span, so the repo carries both spellings and the fix pattern is settled. Pre-existing and repo-wide across Provider, Model and Ollama Base URL; surfaced here because DW-617 pinned a second instance of it.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-accessible-name-and-lang
+resolution-undo: 0ff9fd655534df8354bff4c45456a7f742042fbfbac7dd79987c0c9b1d685513 2026-09-04 7374617475733a206f70656e
 
 ### DW-715: The `/settings` embedding hint claims "a 1,024-dimensional Vectorize index" on the strength of the resolved Workers AI provider alone, but the Vectorize binding is independently optional, so a deploym
 origin: spec-deferred 29bf19d57bde

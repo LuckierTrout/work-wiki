@@ -117,9 +117,10 @@ function writeCalls(): unknown[][] {
  * One of the form's controls, by its DOM id.
  *
  * By id rather than by label text: three of these labels carry a `SourceBadge`
- * inside them, so their accessible name is "Providerconfig" and the like — an
- * artefact of the badge that has nothing to do with what this suite is about.
- * The ids are the stable handles the `<label htmlFor>` already points at.
+ * inside them, so their accessible name is "Provider from config" and the like
+ * — the badge's own words, which have nothing to do with what this suite is
+ * about and change with the deployment's configuration source. The ids are the
+ * stable handles the `<label htmlFor>` already points at.
  */
 function field(id: string): HTMLInputElement | HTMLSelectElement {
   const control = document.getElementById(id);

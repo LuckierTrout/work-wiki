@@ -817,16 +817,19 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
     // The NAME, pinned against the label's OWN text rather than a pattern a
     // partial name would also satisfy. `getByRole(…, { name })` is what goes
     // through the accessible-name computation; the label carries a
-    // `SourceBadge`, so the whole of "Modelfrom environment" is the name and
+    // `SourceBadge`, so the whole of "Model from environment" is the name and
     // anything less would be a different one. `status` is `<output>`'s implicit
     // role.
     const label = document.querySelector("label[for='model']");
     expect(label).not.toBeNull();
     const name = label!.textContent!;
-    // Pinned EXACTLY, not with a pattern a partial name would also satisfy:
-    // `SourceBadge` renders "from environment" inside the label with no
-    // separating space, and a name missing it is a different name.
-    expect(name).toBe("Modelfrom environment");
+    // Pinned EXACTLY, and pinned WITH THE SPACE (DW-714): `SourceBadge` emits a
+    // real `{" "}` text node ahead of its span, so the badge text is a separate
+    // word in the accessible name rather than being welded onto the label's.
+    // `ml-2` is visual spacing only and contributes nothing here, which is why
+    // the separator has to be a text node — a name without it would be
+    // "Modelfrom environment", one word to every screen reader.
+    expect(name).toBe("Model from environment");
     expect(screen.getByRole("status", { name })).toBe(box);
     expect(screen.getByLabelText(name)).toBe(box);
 
@@ -877,6 +880,47 @@ describe("ProviderForm announces the model box's default-model hint (DW-506)", (
     expect(screen.getByLabelText(label!.textContent!)).toBe(box);
     expect(box!.hasAttribute("aria-live")).toBe(false);
     expect(box!.getAttribute("aria-describedby")).toBe("readOnlyNote providerModelHint");
+  });
+
+  it("separates the badge from the label text on EVERY source that renders one", () => {
+    // The exact-name pins elsewhere in this file all mount `env`, and the two
+    // loops that do reach `config` and `default` match with `/^Model/` — a
+    // pattern the run-together spelling satisfies just as well. So the
+    // separator's presence on the other two badges was unobserved: deleting it
+    // from either left the whole suite green. This walks all three.
+    for (const [source, expected] of [
+      ["env", "Model from environment"],
+      ["config", "Model from config"],
+      ["default", "Model default"],
+    ] as const) {
+      cleanup();
+      render(
+        <ProviderForm
+          {...props({ settings: settings({ modelSource: source, model: "gpt-4o" }) })}
+        />,
+      );
+      const label = document.querySelector("label[for='model']");
+      expect(label, source).not.toBeNull();
+      expect(label!.textContent, source).toBe(expected);
+    }
+  });
+
+  it("names the model box by the SEPARATED string, queried literally", () => {
+    // NOT circular. Every other name assertion in this file reads the label's
+    // own `textContent` and then queries by it, which agrees with itself
+    // whatever the label says; this hands the accessible-name computation a
+    // literal typed here, so the query fails outright if the space goes away.
+    render(
+      <ProviderForm
+        {...props({ settings: settings({ modelSource: "env", model: "gpt-4o" }) })}
+      />,
+    );
+    expect(screen.getByLabelText("Model from environment")).toBe(
+      document.getElementById("model"),
+    );
+    // And the run-together spelling is genuinely NOT a name in this document —
+    // otherwise the assertion above would pass with both present.
+    expect(screen.queryByLabelText("Modelfrom environment")).toBeNull();
   });
 
   it("keeps the editable branch's advice unchanged on every non-env source", () => {
@@ -948,7 +992,7 @@ describe("ProviderForm NAMES the env-locked Ollama endpoint box (DW-617)", () =>
    * `ollamaBlock()` above cannot serve here. It resolves the container through
    * `getByText("Ollama Base URL")`, which matches only while the badge renders
    * nothing; on an `env` source the label's own text is
-   * "Ollama Base URLfrom environment", so these cases reach it by `for`.
+   * "Ollama Base URL from environment", so these cases reach it by `for`.
    */
   const PINNED = "http://pinned:11434/api";
 
@@ -986,11 +1030,13 @@ describe("ProviderForm NAMES the env-locked Ollama endpoint box (DW-617)", () =>
 
     // The NAME, pinned against the label's OWN text rather than a pattern a
     // partial name would also satisfy: `SourceBadge` renders "from environment"
-    // inside the label with no separating space, and a name missing it is a
-    // different name. `getByRole(…, { name })` is what goes through the
-    // accessible-name computation, and `status` is `<output>`'s implicit role.
+    // inside the label BEHIND A REAL WHITESPACE TEXT NODE (DW-714), so the
+    // badge is its own word in the accessible name and a name missing either
+    // the space or the badge text is a different name. `getByRole(…, { name })`
+    // is what goes through the accessible-name computation, and `status` is
+    // `<output>`'s implicit role.
     const name = endpointLabel().textContent!;
-    expect(name).toBe("Ollama Base URLfrom environment");
+    expect(name).toBe("Ollama Base URL from environment");
     expect(screen.getByRole("status", { name })).toBe(box);
     expect(screen.getByLabelText(name)).toBe(box);
 
@@ -1077,5 +1123,35 @@ describe("ProviderForm NAMES the env-locked Ollama endpoint box (DW-617)", () =>
     const issue = document.getElementById("ollamaBaseUrlIssue");
     expect(issue!.textContent).toBe(ENV_REFUSAL);
     expect(endpointLabel().closest("div")!.textContent).toContain(ENV_REFUSAL);
+  });
+});
+
+describe("ProviderForm contributes no separator when no badge renders (DW-714)", () => {
+  /**
+   * The other half of the badge's separator, and the reason it lives inside
+   * `SourceBadge` rather than at the three call sites.
+   *
+   * A `{" "}` written at each label would be emitted whether or not a badge
+   * followed it, leaving a trailing space in the label of every deployment
+   * whose sources are `none` — and the `none` branch returns `null`, so there
+   * would be nothing after it to separate from. Emitting the space from inside
+   * the component ties it to the badge that needs it.
+   *
+   * `textContent` rather than a name query: it is the raw string, unnormalized,
+   * so a stray space is visible here and would be silently trimmed by
+   * `getByRole(…, { name })`.
+   */
+  const modelLabel = () => document.querySelector("label[for='model']")!;
+
+  it("names the model box 'Model' when the form has no settings at all", () => {
+    render(<ProviderForm {...props({ settings: null })} />);
+    expect(modelLabel().textContent).toBe("Model");
+  });
+
+  it("names it 'Model' on a `none` source too, where the badge renders null", () => {
+    // Settings ARRIVED — the `{settings && <SourceBadge …/>}` guard is open —
+    // and the badge itself declines to render. Nothing may be left behind.
+    render(<ProviderForm {...props({ settings: settings({ modelSource: "none" }) })} />);
+    expect(modelLabel().textContent).toBe("Model");
   });
 });
