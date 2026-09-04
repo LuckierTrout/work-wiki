@@ -4616,7 +4616,9 @@ location: src/lib/chat-session-transport.ts:48
 source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: `EVENT_RE = /event:\s*(\w+)/` is matched against the whole block rather than a line start, so `readSidecarSseBlock` returns `{event:"done"}` for `data: {"delta":"see event: done for details","content":"FAKE"}`. Moved verbatim from `ChatCanvas.tsx` at `ab263b98`, so it predates DW-444; the extraction is what made it reachable from a test. `/^event:\s*(\w+)/m` would close it. Low today because the sidecar's `formatSse` always writes the `event:` line first.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-chat-sse-frame-hardening
+resolution-undo: 0a0ffc11bdbc68f60b2e35c8b273c14bed953484f3074bb745075ced4a861069 2026-09-04 7374617475733a206f70656e
 
 ### DW-583: A malformed `data:` payload throws a raw SyntaxError that kills a turn the owner is already reading.
 origin: spec-deferred aaaf8e503d3f
@@ -4624,7 +4626,9 @@ location: src/lib/chat-session-transport.ts:63-71
 source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: `readSidecarSseBlock` calls `JSON.parse` with no guard, and the throw escapes `consumeSidecarStream`, so `turnFailureCopy` shows the parser's own sentence. Pre-existing: identical code in `applySseBlock` at `ab263b98`. Returning `null` for an unparseable payload would match the module's stated "an unknown block must not kill an answer" rule.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-chat-sse-frame-hardening
+resolution-undo: 0a0ffc11bdbc68f60b2e35c8b273c14bed953484f3074bb745075ced4a861069 2026-09-04 7374617475733a206f70656e
 
 ### DW-584: The stream reader is never released or cancelled when a turn throws, so an `error` or `cancelled` frame leaves the response body locked and undrained.
 origin: spec-deferred db7f98cf4216
@@ -4632,7 +4636,9 @@ location: src/lib/chat-session-transport.ts:113-133
 source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: `consumeSidecarStream` has no `try/finally` around the read loop; after an `error` frame `body.locked` stays true and `cancel()` is never called. Pre-existing shape from `ab263b98`. A `finally { reader.cancel().catch(() => {}) }` would close it. Bounded impact: the door is a local loopback connection.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-chat-sse-frame-hardening
+resolution-undo: 0a0ffc11bdbc68f60b2e35c8b273c14bed953484f3074bb745075ced4a861069 2026-09-04 7374617475733a206f70656e
 
 ### DW-585: `frame.citations ?? turn.fallbackCitations` never fires, because the sidecar sends `citations: []` rather than omitting the field.
 origin: spec-deferred 8e4217424fcf
@@ -6213,3 +6219,11 @@ reason: `.github/workflows/ci.yml` runs `tsc --noEmit`, `pnpm lint`, `pnpm test`
 status: open
 decision: 2026-09-04 Add a full e2e CI job — Add a Playwright job to ci.yml that installs browsers, boots a CI dev server with the E2E identity armed, and runs pnpm test:e2e, landing after or with the DW-534 E2E identity fix; update AGENTS.md's 'Not in CI' note.
 decision: 2026-09-04 Enroll test:e2e in CI — Add a CI job that installs Playwright browsers, starts the dev server via playwright.config.ts's webServer, and runs pnpm test:e2e, with the runtime and flake budget recorded. Update AGENTS.md:115 so the lane is no longer described as local-only.
+
+### DW-754: A `done` frame whose `data:` payload is truncated mid-write resolves the turn as a successful EMPTY answer instead of failing with the module's own incomplete-turn sentence.
+origin: spec-deferred 25bbf9a920b0
+location: src/lib/chat-session-transport.ts:74-75 (with the trailing-block flush at :142-145)
+source_spec: `spec-dw-582-584-sse-frame-hardening.md`
+severity: low
+reason: Pre-existing, and the sibling branch of the DW-583 guard rather than a consequence of it. `DATA_RE` (`chat-session-transport.ts:56`) requires a closing `}`, so a payload cut off mid-write does not match at all — `data` falls through to `{}` and the block is returned as a VALID `done` frame. The unparseable-but-complete shape this bundle fixed now returns `null`; the truncated shape three lines up still returns `{}`. It is reachable in production precisely because `consumeSidecarStream` deliberately flushes the trailing partial block at stream end (`:142-145`), which is exactly where a dropped loopback connection lands. VERIFIED during this run's review: `readSidecarSseBlock('event: done\ndata: {"content":"Roll')` returns `{"event":"done","data":{}}`, and `consumeSidecarStream` over `['event: agent\ndata: {"delta":"Roll"}\n\n', 'event: done\ndata: {"content":"Roll']` RESOLVES with `{}` rather than rejecting. Downstream, `ChatCanvas.driveTurn` (`ChatCanvas.tsx:527`) hands that `{}` to `s
+status: open

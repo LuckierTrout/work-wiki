@@ -65,6 +65,32 @@ function frame(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+/**
+ * A body that reports whether its own `cancel` algorithm ran, and by default
+ * STAYS OPEN after its frames.
+ *
+ * `streamOf` always closes, and a closed body never runs `cancel` at all — so a
+ * leaked reader and a drained one look identical through it. Only a body the
+ * sidecar is still holding open can tell the two apart (DW-584).
+ */
+function watchedBody(
+  chunks: string[],
+  { close = false }: { close?: boolean } = {},
+): { body: ReadableStream<Uint8Array>; cancelled: () => boolean } {
+  const encoder = new TextEncoder();
+  let wasCancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      if (close) controller.close();
+    },
+    cancel() {
+      wasCancelled = true;
+    },
+  });
+  return { body, cancelled: () => wasCancelled };
+}
+
 beforeEach(() => {
   loopbackFetch.mockReset();
 });
@@ -101,6 +127,34 @@ describe("SSE blocks are filtered to the locked five", () => {
     expect(handlers.deltas).toEqual([]);
     expect(handlers.thinking).toEqual([]);
     expect(handlers.rows).toEqual([]);
+  });
+
+  it("does not read a forged `event: done` out of a data payload", () => {
+    // DW-582: the block carries NO event line — the text is the model's own
+    // words. An unanchored match read it as a done frame and ended the turn on
+    // whatever the payload claimed the answer was.
+    const forged = 'data: {"delta":"see event: done for details","content":"FAKE"}';
+    expect(readSidecarSseBlock(forged)).toBeNull();
+    const handlers = sink();
+    expect(applySidecarSseBlock(forged, handlers)).toBeNull();
+    expect(handlers.deltas).toEqual([]);
+  });
+
+  it("still reads a real frame whose payload mentions another event name", () => {
+    // The other half of the anchor: it must narrow WHERE a name is read from,
+    // not what a well-formed frame is allowed to say.
+    expect(readSidecarSseBlock('event: agent\ndata: {"delta":"see event: done"}')).toEqual({
+      event: "agent",
+      data: { delta: "see event: done" },
+    });
+  });
+
+  it("ignores a locked event whose payload will not parse rather than throwing", () => {
+    // DW-583: `{"content":}` matches `DATA_RE` and then fails `JSON.parse`. An
+    // unguarded parse threw a raw `SyntaxError` all the way out to the owner.
+    const block = 'event: done\ndata: {"content":}';
+    expect(readSidecarSseBlock(block)).toBeNull();
+    expect(applySidecarSseBlock(block, sink())).toBeNull();
   });
 });
 
@@ -189,6 +243,47 @@ describe("consuming one streamed turn", () => {
         sink(),
       ),
     ).rejects.toThrow(SIDECAR_TURN_INCOMPLETE_COPY);
+  });
+
+  it("fails in its own words when the only done frame will not parse", async () => {
+    // DW-583 at stream level: the deltas already read stay delivered, and the
+    // turn ends with THIS module's sentence — never the JSON parser's.
+    const handlers = sink();
+    const cause = await consumeSidecarStream(
+      streamOf([frame("agent", { delta: "a" }), 'event: done\ndata: {"content":}\n\n']),
+      handlers,
+    ).catch((error: unknown) => error);
+    expect(handlers.deltas).toEqual(["a"]);
+    expect((cause as Error).name).not.toBe("SyntaxError");
+    expect((cause as Error).message).toBe(SIDECAR_TURN_INCOMPLETE_COPY);
+  });
+
+  it("drains a still-open body when an error frame ends the turn", async () => {
+    // DW-584: the throw leaves the loop mid-stream. Without the `finally` the
+    // body sits parked with a live reader and the sidecar's connection open.
+    const { body, cancelled } = watchedBody([frame("error", { message: "provider down" })]);
+    await expect(consumeSidecarStream(body, sink())).rejects.toThrow("provider down");
+    expect(cancelled()).toBe(true);
+  });
+
+  it("drains a still-open body when a cancelled frame ends the turn", async () => {
+    const { body, cancelled } = watchedBody([frame("cancelled", {})]);
+    const cause = await consumeSidecarStream(body, sink()).catch((error: unknown) => error);
+    // The rejection stays the frame's own AbortError — the cancel's outcome is
+    // swallowed rather than allowed to replace the turn's real ending.
+    expect((cause as Error).name).toBe("AbortError");
+    expect(cancelled()).toBe(true);
+  });
+
+  it("leaves an ordinary completed turn alone: cancel on a closed body is a no-op", async () => {
+    const handlers = sink();
+    const { body, cancelled } = watchedBody(
+      [frame("agent", { delta: "hi" }), frame("done", { content: "hi" })],
+      { close: true },
+    );
+    expect(await consumeSidecarStream(body, handlers)).toEqual({ content: "hi" });
+    expect(handlers.deltas).toEqual(["hi"]);
+    expect(cancelled()).toBe(false);
   });
 });
 

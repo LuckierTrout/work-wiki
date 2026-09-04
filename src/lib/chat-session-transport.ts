@@ -47,7 +47,12 @@ export const SIDECAR_TURN_ERROR_COPY = "Chat failed.";
 /** The stream closed without a `done` frame. */
 export const SIDECAR_TURN_INCOMPLETE_COPY = "Chat ended before a complete answer.";
 
-const EVENT_RE = /event:\s*(\w+)/;
+// ANCHORED TO A LINE START because only a line start declares an event name: an
+// unanchored match reads the literal text `event: done` inside a `data:` payload
+// as a done frame and ends the turn on the model's own words (DW-582). The wire
+// agrees — `formatSse` emits `event:` as the block's first line, and its
+// `JSON.stringify` escapes newlines, so a payload can never forge one.
+const EVENT_RE = /^event:\s*(\w+)/m;
 const DATA_RE = /data:\s*({[\s\S]*})/;
 
 export interface SidecarSseBlock {
@@ -67,7 +72,17 @@ export function readSidecarSseBlock(block: string): SidecarSseBlock | null {
     return null;
   }
   const dataMatch = DATA_RE.exec(block);
-  const data = dataMatch ? (JSON.parse(dataMatch[1]) as Record<string, unknown>) : {};
+  let data: Record<string, unknown> = {};
+  if (dataMatch) {
+    try {
+      data = JSON.parse(dataMatch[1]) as Record<string, unknown>;
+    } catch {
+      // UNUSABLE IS UNKNOWN, NOT FATAL — the same rule as a sixth event name.
+      // An unguarded parse throws a raw `SyntaxError` that escapes the reader
+      // and reaches the owner as the JSON parser's own sentence (DW-583).
+      return null;
+    }
+  }
   return { event: event as SidecarSseEvent, data };
 }
 
@@ -121,19 +136,35 @@ export async function consumeSidecarStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let done: SidecarDoneFrame | null = null;
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) {
-      buffer += decoder.decode();
-      if (buffer.trim()) done = applySidecarSseBlock(buffer, handlers) ?? done;
-      break;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        buffer += decoder.decode();
+        if (buffer.trim()) done = applySidecarSseBlock(buffer, handlers) ?? done;
+        break;
+      }
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) {
+        done = applySidecarSseBlock(block, handlers) ?? done;
+      }
     }
-    buffer += decoder.decode(chunk.value, { stream: true });
-    const blocks = buffer.split("\n\n");
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) {
-      done = applySidecarSseBlock(block, handlers) ?? done;
-    }
+  } finally {
+    // EVERY EXIT RELEASES THE BODY: an `error` or `cancelled` frame throws out
+    // of the loop mid-stream, and without this the body is left parked with a
+    // live reader and the sidecar still holding the loopback connection open
+    // (DW-584). `cancel` rather than `releaseLock` because only `cancel` runs
+    // the body's own cancel algorithm — releasing the lock drains nothing.
+    //
+    // DELIBERATELY NOT AWAITED: the cancel algorithm is invoked synchronously,
+    // so the body is released before the caller sees the turn's ending, while
+    // awaiting inside a `finally` is exactly what would let a cancel's own
+    // rejection replace the turn's real failure. The `.catch` is not about
+    // ordering: it absorbs the rejection an already-errored stream hands back,
+    // which would otherwise surface as an unhandled rejection.
+    reader.cancel().catch(() => {});
   }
   if (!done) throw new Error(SIDECAR_TURN_INCOMPLETE_COPY);
   return done;
