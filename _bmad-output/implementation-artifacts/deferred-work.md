@@ -4708,7 +4708,8 @@ location: src/components/ActionInbox.tsx:387
 source_spec: `spec-dw-259-325-component-anchor-and-flake-coverage.md`
 severity: low
 reason: `src/lib/action-items.ts:26` declares `sourceMissing` with the comment "The cited Source was cascade-deleted. The todo itself is kept." `grep -c sourceMissing src/components/ActionInbox.tsx` is 0, and the chip at `:387` is gated only on `item.sourceSlug`. Pre-existing production behaviour, surfaced because this story gave the component its first test of any kind; pinning or fixing it is a separate change.
-status: open
+status: done 2026-09-04
+resolution: already resolved: commit 7736937c: src/components/ActionInbox.tsx:433 branches on item.sourceMissing and renders a non-link receipt plus a Source-missing chip, pinned by src/components/__tests__/action-inbox-source-missing.test.tsx:94,118
 
 ### DW-594: The graph canvas's fallback `<a href={KNOWLEDGE_TREE_HREF}>` child is itself focusable, so a keyboard reader can still land on a focus stop inside the canvas that renders nothing on screen.
 origin: spec-deferred f1185431fee3
@@ -5888,7 +5889,8 @@ location: src/components/workbench/SettingsApiMcpPane.tsx (the apiLive health no
 source_spec: `spec-dw-633-634-635-settings-api-mcp-pane-copy-a11y.md`
 severity: low
 reason: `probeLoopbackApiPane` runs the Skills scan independently of `/health` and swallows its failure into `skills: []`. `SettingsApiMcpPane` then renders `${apiLive.skills.length} Skills on disk.` unconditionally beside whichever health sentence it chose. With nothing serving on 19828 — the ordinary state of a wiki whose sidecar is not started — the pane says "The sidecar is not running on 127.0.0.1:19828. 0 Skills on disk.", asserting something about the machine that the failed scan could not establish: the count is "the scan did not answer", not zero. Same false-claim class as DW-633, which this bundle fixed for the health sentence only. Pre-existing and unchanged by this story; the count rides along with the sentence exactly as before.
-status: open
+status: done 2026-09-04
+resolution: already resolved: commit 7736937c: src/lib/workbench-loopback-health.ts:101-102 loopbackSkillCountSentence returns SETTINGS_API_SKILLS_UNKNOWN_COPY for a null scan, rendered at src/components/workbench/SettingsApiMcpPane.tsx:196 instead of the unconditional count
 
 ### DW-717: Eighteen components and libs carry their own hand-rolled copy of `send`'s body parse, each with the bare `.catch(() => ({}))` this bundle just replaced — so the DW-556 misclassification is still live
 origin: spec-deferred 74dfd93a18c0
@@ -5990,7 +5992,8 @@ location: src/lib/__tests__/storage-fs.test.ts
 source_spec: `spec-dw-470-606-shared-test-helper-extraction.md`
 severity: low
 reason: Two cases — "stops at STRANDED_SCRATCH_CANDIDATE_CAP and reclaims the remainder next pass" and "honours an explicit window, so the grace period is a parameter and not a hardcode" — failed in three of five full-suite runs during this story and passed in the other two. They pass standalone every time. Proven pre-existing and unrelated to this change: with every file of this story stashed (`git stash -u`, tree at f095692c), a full `pnpm test` failed the same two cases. The assertions turn on real wall-clock mtime grace windows (one case took 5352 ms), so they lose under the scheduling pressure of 369 parallel test files. Nothing in this story touches `storage-fs.ts` or its suite.
-status: open
+status: done 2026-09-04
+resolution: already resolved: commit a7d2b07f (DW-722 determinism sweep): src/lib/__tests__/storage-fs.test.ts:1137 freezes Date.now for the reapStrandedScratchFiles describe and :1268 drives the cap row from an injected candidateCap, so neither case depends on wall-clock grace windows
 
 ### DW-729: `research-runtime.test.ts`'s "deep research — remediations" rows time out under parallel `node`-project load, so `pnpm test` still has a load-sensitive row after DW-722 closed the `storage-fs.test.ts`
 origin: spec-deferred 2b6e6d159ded
