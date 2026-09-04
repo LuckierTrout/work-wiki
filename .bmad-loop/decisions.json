@@ -493,5 +493,14 @@
     "key": "1",
     "label": "Probe variants in the create-conflict guard",
     "resolution": ""
+  },
+  "DW-748": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Add a token beside too_many_paths for refusals that are workspace state rather than caller input (the project cap, and a stored-row verdict), answer it from the review door and any sibling with the same shape, document it in the v1 error vocabulary, and pin that an agent branching on the token does not retry a request that can never succeed.",
+    "key": "1",
+    "label": "Add a distinct capacity/state token",
+    "resolution": ""
   }
 }
