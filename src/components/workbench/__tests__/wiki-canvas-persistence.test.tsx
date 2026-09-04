@@ -13,12 +13,17 @@ import type { WikiRecord } from "@/lib/wikis";
 /**
  * The Wiki canvas SURVIVES a mode switch (DW-26), MOUNTED.
  *
- * `ModeCanvas` used to return the Wiki subtree OR a stub subtree, so clicking
- * Chat destroyed `WikiWorkbench` — and with it an open Create Wiki dialog, the
+ * `ModeCanvas` used to return the Wiki subtree OR a stub subtree, so leaving
+ * Wiki destroyed `WikiWorkbench` — and with it an open Create Wiki dialog, the
  * name the owner had typed into it and the error it was showing. Coming back
  * built an empty card. Nothing a source scan can see: the defect is what React
  * does to a subtree that stops being rendered, so every assertion here is made
- * on the live document across a real rail click.
+ * on the live document across a mode switch a real owner could perform.
+ *
+ * WHICH SWITCH THAT IS depends on what is on screen (DW-581). With a dialog
+ * open the rail is not an opener — see the DW-26 block's own header — so the
+ * cases that hold one leave by BACK, and come back on the rail once the dialog
+ * is withdrawn and the backdrop is gone.
  *
  * Hiding is not closing, and that distinction is the whole design.
  * `CreateWikiDialog` resets its fields when `open` goes false, so flipping
@@ -148,6 +153,189 @@ function clickRail(label: string): HTMLButtonElement {
   return control;
 }
 
+/** How long to wait for a traversal jsdom may never perform. */
+const POPSTATE_TIMEOUT_MS = 1000;
+
+/**
+ * Traverse the session history and let the `popstate` land.
+ *
+ * The same helper `workbench-mode-url.test.tsx` documents in full (and
+ * `settings-canvas-persistence.test.tsx` keeps its own copy of): jsdom queues
+ * traversal on its own event loop and fires `popstate` some tasks later, so a
+ * `setTimeout(0)` would let the assertion run against the pre-traversal tree and
+ * pass for the wrong reason on a shell that ignores `popstate` entirely. The
+ * timeout is a deadline, not a fallback — without it a shell that never
+ * traverses would hang the run instead of failing it.
+ *
+ * COPIED, not imported — the third copy in this repo, after
+ * `workbench-mode-url.test.tsx`'s original and the one
+ * `settings-canvas-persistence.test.tsx` took from it. Per-suite duplication
+ * with a docblock pointing at the fullest copy is this repo's convention for
+ * test scaffolding: a shared helper module would put the one thing each suite
+ * most needs to read out of the file that reads it.
+ */
+async function traverse(go: () => void) {
+  await act(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        window.removeEventListener("popstate", onPop);
+        reject(new Error(`no popstate within ${POPSTATE_TIMEOUT_MS}ms`));
+      }, POPSTATE_TIMEOUT_MS);
+      function onPop() {
+        clearTimeout(timer);
+        resolve();
+      }
+      // Registered AFTER the shell's own listener, so React has already been
+      // handed the state change by the time this resolves.
+      window.addEventListener("popstate", onPop, { once: true });
+      go();
+    });
+  });
+}
+
+/** The mode named by the entry the browser is currently standing on. */
+function urlMode(): string | null {
+  return new URLSearchParams(window.location.search).get("mode");
+}
+
+/**
+ * Leave ONE Chat entry in the session history, behind the current one — the
+ * entry {@link showChat} traverses back onto.
+ *
+ * Two rail presses. `selectMode` is `applyMode` + `pushSurface`, and
+ * `pushSurface` writes an entry whenever the href moves, so pressing Chat
+ * pushes `?mode=chat` and pressing Wiki pushes `?mode=wiki` again: the RENDER
+ * ends exactly where it started — Wiki on screen, nothing withdrawn — with a
+ * Chat entry one step back.
+ *
+ * IT MUST RUN BEFORE ANY DIALOG IS OPENED, and that ordering is the whole
+ * reason this exists (DW-581). The rail is reachable only while no backdrop is
+ * on screen: once `CreateWikiDialog` mounts, its `fixed inset-0 z-[120]
+ * … bg-black/40` root covers the whole viewport — the rail declares no
+ * `z-index` of its own — and `useDialogA11y` traps Tab inside the dialog, so
+ * neither a pointer nor a keyboard could reach these two presses. Seeding first
+ * is the one ordering in which every press this file makes is a press a real
+ * owner could make.
+ *
+ * The keyboard is left on the rail's Wiki control rather than on `<body>`,
+ * which is harmless here because `openCreateWith` focuses its own opener before
+ * clicking it — so `useDialogA11y` still records the opener a real activation
+ * would.
+ */
+async function seedChatEntry() {
+  // The ordering, CHECKED rather than documented. jsdom does no hit-testing, so
+  // a future call placed after `openCreateWith(...)` would click straight
+  // through a live overlay and report green — which is the exact defect this is
+  // filed against. A comment cannot stop that; this can.
+  expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull();
+
+  const before = window.location.search;
+  const depth = window.history.length;
+
+  clickRail("Chat");
+  await act(async () => {});
+  // THE ENTRY, not just the surface. `pushSurface` swallows `SecurityError` and
+  // writes nothing when the href is unchanged, and jsdom's session history
+  // outlives `cleanup()` — `beforeEach` pushes one `/` entry and rewrites it,
+  // which puts a known entry on TOP of the previous test's stack rather than
+  // clearing it. So a silently unseeded run would send `showChat` back past
+  // that `/` and onto a PREVIOUS TEST's `?mode=` entry, where it could land on
+  // Chat and report green having proved nothing.
+  expect(urlMode()).toBe("chat");
+
+  clickRail("Wiki");
+  await act(async () => {});
+  expect(urlMode()).toBe("wiki");
+  expect(window.location.search).toBe(before);
+  // …and both presses really PUSHED. Two distinct hrefs could still be one
+  // entry if either write were replaced or dropped, and the depth is the only
+  // thing that can tell that apart from a seeded stack.
+  expect(window.history.length).toBe(depth + 2);
+}
+
+/**
+ * Press the rail to come back to Wiki — the hop that IS reachable (DW-581).
+ *
+ * The outbound direction is guarded by {@link seedChatEntry}'s dialog-null
+ * assertion, and this is the same guard pointed the other way, for the same
+ * reason: jsdom does no hit-testing, so "no backdrop is over the rail by now"
+ * is a claim a comment cannot keep. Two facts make the press reachable, and
+ * both are checked immediately before it is made — the mode canvas is
+ * WITHDRAWN, and every modal still mounted is inside that withdrawal rather
+ * than painting a `fixed inset-0` layer over the viewport. A dialog left
+ * reachable by role here would be a dialog whose overlay is still on screen.
+ *
+ * The dialog is deliberately still IN THE DOCUMENT — that is the whole of
+ * DW-26 — so the check is "withdrawn", not "gone".
+ */
+function returnToWikiOnRail(): HTMLButtonElement {
+  const wrapper = document.querySelector(".wb-canvas-mode");
+  expect(wrapper?.hasAttribute("hidden")).toBe(true);
+  // Out of the accessibility tree, which is how a `hidden` ancestor reads to
+  // testing-library's role queries — and to a screen reader and a Tab press.
+  expect(screen.queryByRole("dialog")).toBeNull();
+  const modal = document.querySelector('[role="dialog"][aria-modal="true"]');
+  // Still mounted (holding its draft), and inside the withdrawn subtree.
+  expect(modal).not.toBeNull();
+  expect(modal?.closest("[hidden]")).not.toBeNull();
+  return clickRail("Wiki");
+}
+
+/**
+ * Reach Chat by BACK — the opener that stays available with a modal dialog open
+ * (DW-581, the pointer rule DW-511 established one suite over).
+ *
+ * Back is browser chrome, and a modal covers and traps only the page: the
+ * backdrop that hides the rail from the pointer and the Tab trap that holds the
+ * keyboard both stop at the document. The traversal lands on the entry
+ * {@link seedChatEntry} left behind, and `Workbench`'s `popstate` listener
+ * re-applies the mode.
+ *
+ * IT MOVES NO FOCUS, by design: the listener bumps `canvasFocusNonce` only when
+ * the SETTINGS flag moves, so a mode-only traversal leaves the keyboard exactly
+ * where the owner had it — which is what makes "hiding must not move focus"
+ * observable across it.
+ */
+async function showChat() {
+  await traverse(() => window.history.back());
+  // The ENTRY it landed on names Chat — not merely "Chat is showing", which a
+  // stale entry left by an earlier test would also produce. This is the far
+  // half of the seed's own history assertions.
+  expect(urlMode()).toBe("chat");
+  expect(screen.getByRole("heading", { name: "Chat" })).toBeTruthy();
+}
+
+/**
+ * WITH A DIALOG OPEN, BACK IS THE OPENER — not the rail (DW-581).
+ *
+ * The four cases below hold a live Create Wiki dialog while they leave Wiki,
+ * and they used to leave it by clicking the rail. No owner can make that press.
+ * The dialog renders itself inside a `fixed inset-0 z-[120] … bg-black/40`
+ * root that covers the whole viewport, and the rail declares no `z-index` of
+ * its own, so a pointer aimed at a rail control lands on the backdrop — whose
+ * `onMouseDown` cancels the dialog, discarding the very draft these cases exist
+ * to preserve. The keyboard has no route either: `aria-modal="true"` declares
+ * the rest of the page inert, and `useDialogA11y`'s capture-phase Tab trap
+ * pulls focus back inside on every press. jsdom does no hit-testing, so the old
+ * rows reported green while describing a path that does not exist — the same
+ * defect DW-511 removed from `settings-canvas-persistence.test.tsx`.
+ *
+ * Back is browser chrome. A modal covers and traps the PAGE; it neither paints
+ * over the browser's own controls nor holds the keyboard out of them. So each
+ * case seeds a Chat entry with two rail presses BEFORE any dialog is open —
+ * {@link seedChatEntry}, which asserts that ordering rather than trusting it —
+ * and then leaves by {@link showChat}.
+ *
+ * THE RAIL IS STILL THE RETURN CONTROL, and that press is reachable. By then
+ * the mode is Chat, `.wb-canvas-mode` is `hidden`, the dialog is inside that
+ * withdrawn subtree, `useDialogA11y` has stood down and no overlay is painted
+ * anywhere — so `clickRail("Wiki")` is exactly what a real owner does. It is
+ * also the only press that carries the re-arm assertions: a traversal moves no
+ * focus, so coming back by Back would leave nothing for the re-showing dialog
+ * to take back.
+ *
+ * The refusal itself is pinned executably by the last case in this block.
+ */
 describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
   it("keeps the typed name and the shown error across Chat and back", async () => {
     // The error has to be REAL — set by a refused create rather than typed into
@@ -168,6 +356,9 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
         : ({ ok: true, status: 200, json: async () => ({}) } as unknown as Response),
     );
     await renderShell();
+    // Seeded BEFORE the dialog opens: with a backdrop on screen the rail is not
+    // an opener, so the Chat entry has to exist by then (DW-581).
+    await seedChatEntry();
     openCreateWith("Quarterly review");
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     await act(async () => {});
@@ -175,9 +366,11 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
       "A wiki with that name already exists.",
     );
 
-    fireEvent.click(rail("Chat"));
-    await act(async () => {});
-    fireEvent.click(rail("Wiki"));
+    // OUT by Back — the one route a modal leaves open — and BACK IN on the
+    // rail, whose reachability `returnToWikiOnRail` checks rather than asserts
+    // in prose.
+    await showChat();
+    returnToWikiOnRail();
     await act(async () => {});
 
     // Same dialog, same draft, same failure — not a fresh one seeded with the
@@ -193,10 +386,10 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
 
   it("is HIDDEN rather than unmounted while another mode is showing", async () => {
     await renderShell();
+    await seedChatEntry();
     openCreateWith("Quarterly review");
 
-    fireEvent.click(rail("Chat"));
-    await act(async () => {});
+    await showChat();
 
     // Out of the accessibility tree: testing-library's default queries respect
     // `hidden`, so a dialog behind it is unreachable by role and by label — the
@@ -222,13 +415,13 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
 
   it("holds neither the body scroll lock nor the Tab trap while hidden", async () => {
     await renderShell();
+    await seedChatEntry();
     openCreateWith("Quarterly review");
     // The lock is real while the dialog is on screen — a positive control, so
     // the negative below cannot pass because the lock was never taken.
     expect(document.body.style.overflow).toBe("hidden");
 
-    fireEvent.click(rail("Chat"));
-    await act(async () => {});
+    await showChat();
 
     // `hidden` removes the pixels and the a11y tree entry, and NOTHING that the
     // dialog did to the document: the scroll lock and the capture-phase Tab
@@ -249,8 +442,9 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
     expect(tab.defaultPrevented).toBe(false);
     expect(document.activeElement).toBe(railButton);
 
-    // …and coming back re-arms both.
-    fireEvent.click(rail("Wiki"));
+    // …and coming back re-arms both. The RAIL, because by here it is reachable —
+    // and `returnToWikiOnRail` checks that rather than assuming it.
+    returnToWikiOnRail();
     await act(async () => {});
     expect(document.body.style.overflow).toBe("hidden");
   });
@@ -262,21 +456,51 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
     // opened the dialog. Recapturing there is silent: the dialog looks right,
     // the draft is intact, and closing it drops the keyboard on the rail.
     await renderShell();
+    await seedChatEntry();
     const opener = openCreateWith("Quarterly review");
     const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
     // Opening focuses the dialog container, so the title is announced before
     // the button cluster.
     expect(document.activeElement).toBe(dialog);
 
-    // HIDING must not move focus. The owner put it on the rail themselves, and
-    // the recorded opener is inside the subtree that just went off screen —
-    // "restoring" to it would push the keyboard into hidden content.
-    const chat = clickRail("Chat");
-    await act(async () => {});
-    expect(document.activeElement).toBe(chat);
+    // HIDING must not move focus, and across a traversal that is an IDENTITY:
+    // `popstate` bumps `canvasFocusNonce` only when the SETTINGS flag moves, so
+    // a mode-only Back moves nothing and the keyboard stays exactly where the
+    // owner left it. The teardown that runs as the surface goes off screen is
+    // where that could break — it must recognise a HIDE (the dialog is still
+    // open) and return before restoring, because the recorded opener is inside
+    // the subtree that just went away.
+    const before = document.activeElement;
+    await showChat();
+    expect(document.activeElement).toBe(before);
+    // …and specifically NOT dragged back to the opener, which is now sitting in
+    // hidden content. That is the failure this case exists to catch, and it is
+    // stated separately because "unchanged" alone would also hold if focus had
+    // never been on anything else.
+    expect(document.activeElement).not.toBe(opener);
+    // FIDELITY LIMIT, and it is about jsdom rather than about the shell. What
+    // `before` holds here is the dialog container, which the traversal has just
+    // put inside the `[hidden]` subtree — and jsdom applies no stylesheet, so
+    // the `.wb-canvas-mode[hidden] { display: none !important }` rule this same
+    // file reads from `globals.css` further down never runs and the node stays
+    // focusable. A real browser would drop the keyboard to `<body>` at that
+    // moment. The assertion above is therefore a statement about what the SHELL
+    // does across the hide — NOTHING: no restore, no nonce bump, no `.focus()`
+    // anywhere — and not a claim that a browser strands the owner on a node
+    // they cannot see. Where focus ends up is the browser's to decide; that the
+    // shell does not decide it is what is pinned.
 
-    // RE-SHOWING focuses the dialog again, exactly as opening it did.
-    clickRail("Wiki");
+    // RE-SHOWING focuses the dialog again, exactly as opening it did — and this
+    // hop stays on the RAIL, which is reachable now that the canvas is
+    // withdrawn and nothing is painted over it. That matters for what is being
+    // asserted: `clickRail` puts the keyboard on the rail control before the
+    // click, so the focus below is something the re-arming hook has to TAKE
+    // BACK, not something it inherited. Coming back by Back instead would move
+    // no focus at all and leave this assertion true of the traversal rather than
+    // of the hook. (The taking-back happens inside `fireEvent.click`'s own `act`
+    // flush, so the rail never holds focus across a statement boundary here —
+    // `document.activeElement` is only ever read once the effects have run.)
+    returnToWikiOnRail();
     await act(async () => {});
     expect(document.activeElement).toBe(
       screen.getByRole("dialog", { name: "Create Wiki" }),
@@ -289,6 +513,89 @@ describe("an open Create Wiki dialog survives a mode switch (DW-26)", () => {
     await act(async () => {});
     expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
     expect(document.activeElement).toBe(opener);
+  });
+
+  it("leaves the keyboard on a pressed mode rail control, with no dialog open", async () => {
+    // THE POSITIVE CONTROL for the traversal above (DW-581) — and the assertion
+    // the re-route would otherwise have deleted from this repo outright.
+    //
+    // The four cases above used to leave Wiki on the rail and assert the
+    // keyboard stayed on the pressed control. That press is unreachable with a
+    // backdrop on screen, so it is gone from them; the CONTRACT it carried is
+    // not about dialogs at all. A click MOVES the keyboard and leaves it on
+    // what was clicked; Back moves nothing, because `popstate` bumps
+    // `canvasFocusNonce` only when the SETTINGS flag moves. Both halves have to
+    // hold for the replacement to be sound, and only the second one is stated
+    // elsewhere: `workbench-mode-url.test.tsx` pins the keyboard on a pressed
+    // rail control for the Settings-CLOSE direction only, and its mode-only
+    // traversal case asserts the no-move policy on purpose.
+    //
+    // NO DIALOG IS OPEN, which is exactly what makes this press one an owner
+    // can make — and the reason this case can hold the assertion the dialog
+    // cases no longer can.
+    await renderShell();
+    expect(document.querySelector('[role="dialog"][aria-modal="true"]')).toBeNull();
+
+    const chat = clickRail("Chat");
+    await act(async () => {});
+
+    expect(urlMode()).toBe("chat");
+    expect(document.activeElement).toBe(chat);
+  });
+
+  it("covers the rail with the dialog's own backdrop, which eats the pointer", async () => {
+    // WHY THE FOUR CASES ABOVE LEAVE BY BACK (DW-581), stated executably.
+    //
+    // Prose did not stop this file from clicking a rail control through a live
+    // overlay for as long as it did, and it will not stop the next author
+    // either. So the two facts the refusal is composed of are asserted here:
+    // the dialog's root is a full-viewport layer at a stated level, and the rail
+    // is not inside it. Read from the component's own class list rather than
+    // restated, so a re-levelling cannot pass by agreeing with a copy.
+    //
+    // COVERAGE LIMIT, and it is this file's own: jsdom has no layout engine and
+    // no hit-testing, so nothing here can watch a click land on the backdrop
+    // instead of on the rail. The other half of the composition — that every
+    // rule in `globals.css` naming the rail family sits BELOW this level, with
+    // `.wb-shell` opening no stacking context that could lift them — is scanned
+    // in full by `settings-canvas-persistence.test.tsx`'s
+    // "the rail is not an opener while a dialog backdrop is on screen (DW-511)"
+    // block. It is cross-referenced rather than duplicated: one stylesheet, one
+    // scan, and a second copy would be a second thing to keep in step.
+    await renderShell();
+    openCreateWith("Quarterly review");
+    const dialog = screen.getByRole("dialog", { name: "Create Wiki" });
+
+    // The dialog node's PARENT is the backdrop — the component centres the panel
+    // inside it.
+    const overlay = dialog.parentElement as HTMLElement;
+    expect(overlay.classList.contains("fixed")).toBe(true);
+    expect(overlay.classList.contains("inset-0")).toBe(true);
+    const level = Number(/(?:^|\s)z-\[(\d+)\]/.exec(overlay.className)?.[1]);
+    // A level that will not parse is a FAILURE here, not a skipped comparison:
+    // an overlay with no stated level is an overlay whose covering is a
+    // guess.
+    expect(Number.isFinite(level)).toBe(true);
+    expect(level).toBeGreaterThan(0);
+
+    // The rail is on screen and NOT inside the overlay: the backdrop leaves no
+    // hole for the control the old rows were clicking.
+    const chatRail = rail("Chat");
+    expect(chatRail.isConnected).toBe(true);
+    expect(overlay.contains(chatRail)).toBe(false);
+    expect(overlay.querySelector(".wb-rail")).toBeNull();
+
+    // The one piece of BEHAVIOUR jsdom can give: the overlay's own `onMouseDown`
+    // fires only when the press targets the overlay ITSELF, and it cancels the
+    // dialog. A press that had reached the rail underneath would have switched
+    // the mode and left this dialog open — instead the draft is gone and Wiki is
+    // still the surface on screen, which is what a real pointer aimed at the
+    // rail would actually have cost the owner.
+    fireEvent.mouseDown(overlay);
+    await act(async () => {});
+    expect(screen.queryByRole("dialog", { name: "Create Wiki" })).toBeNull();
+    expect(urlMode()).toBe("wiki");
+    expect(screen.getByRole("heading", { name: "Wiki" })).toBeTruthy();
   });
 
   it("never puts a second #wb-canvas on the page, in any mode", async () => {

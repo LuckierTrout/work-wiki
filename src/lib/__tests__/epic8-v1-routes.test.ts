@@ -100,6 +100,7 @@ import { getReviewItem, reopenReviewItem, skipReviewItem } from "@/lib/review-qu
 import { createResearchProject } from "@/lib/research-projects";
 import { retrieveHits } from "@/lib/wiki-retrieve";
 import { requireAccessibleWikiId } from "@/lib/wiki-access";
+import { listReadableWikiPages } from "@/lib/wiki";
 import { getWikiRegistry } from "@/lib/wikis";
 import { listWorkbenchFilePaths, readWorkbenchFile } from "@/lib/workbench-files";
 import {
@@ -122,6 +123,7 @@ const listPaths = vi.mocked(listWorkbenchFilePaths);
 const readFileMock = vi.mocked(readWorkbenchFile);
 const graph = vi.mocked(buildWikiGraph);
 const rescan = vi.mocked(rescanSources);
+const listReadable = vi.mocked(listReadableWikiPages);
 const readOnly = vi.mocked(isReadOnly);
 const skip = vi.mocked(skipReviewItem);
 const reopen = vi.mocked(reopenReviewItem);
@@ -152,6 +154,11 @@ beforeEach(() => {
   readFileMock.mockResolvedValue(null as never);
   graph.mockResolvedValue({ nodes: [], edges: [] } as never);
   rescan.mockResolvedValue({ requested: 0, results: [], remaining: 0 } as never);
+  // The seam `v1SlugGate` reads. Reset per test to the EMPTY listing the module
+  // factory declares, so a case that seeds an index cannot leak its pages into
+  // the next one's gate — `vi.clearAllMocks()` clears calls, not the
+  // implementation a `mockResolvedValue` installed.
+  listReadable.mockResolvedValue([] as never);
   readOnly.mockReturnValue(false);
   retrieve.mockResolvedValue({
     hits: [],
@@ -837,6 +844,115 @@ describe("sources/rescan", () => {
     expect(rescan).not.toHaveBeenCalled();
   });
 
+  /**
+   * An index entry in the shape `buildKnowledgeTree` and `workbenchSlugGate`
+   * read — the seed `assets-route.test.ts` uses for the same derivation.
+   */
+  function entry(slug: string, type?: string) {
+    return {
+      slug,
+      title: slug,
+      summary: "",
+      type,
+      owner: "alice",
+      visibility: "public",
+      updated: "2026-01-01T00:00:00.000Z",
+    } as never;
+  }
+
+  it("hands the rescan the gate it derived from the caller's own listing", async () => {
+    // DW-537. The route spreads `await v1SlugGate(caller.principal)` into the
+    // call, and the suite used to mock `rescanSources` and assert nothing about
+    // its arguments — so `listReadableWikiPages` → `buildKnowledgeTree` →
+    // `workbenchSlugGate` never ran through the POST door a real caller hits.
+    // `@/lib/workbench-tree` is NOT mocked here, so this drives the real
+    // derivation and only the storage read is stubbed.
+    //
+    // An `agent-` type is the seed because it needs no `visibility: private` to
+    // be withheld: `buildKnowledgeTree` skips agent-scoped entries outright, so
+    // the slug lands in `hiddenSlugs` and the plain page is the whole of
+    // `readableSlugs`. Both halves are asserted, because a route that picked up
+    // one and dropped the other is exactly the drift `v1SlugGate` returns a
+    // PAIR to prevent (DW-32).
+    listReadable.mockResolvedValue([
+      entry("agentpage", "agent-knowledge"),
+      entry("alpha"),
+    ] as never);
+
+    const response = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {}),
+      params("current"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(listReadable).toHaveBeenCalledWith(
+      expect.objectContaining({ handle: "alice" }),
+    );
+    expect(rescan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hiddenSlugs: new Set(["agentpage"]),
+        readableSlugs: new Set(["alpha"]),
+      }),
+    );
+  });
+
+  it("clears the scope check and still forwards the derived gate", async () => {
+    // BOTH GATES LIVE on one 200 (DW-537). The case above sends no `paths`, so
+    // the `raw/sources/` scope check is skipped entirely; the case below is a
+    // 403, so nothing is forwarded at all. Neither shows the composition a real
+    // caller naming a Source actually walks: the path clears `isV1FileInScope`
+    // AND `raw/sources/`, and the slug gate derived after it still reaches
+    // `rescanSources` alongside the `paths` it was called with.
+    listReadable.mockResolvedValue([
+      entry("agentpage", "agent-knowledge"),
+      entry("alpha"),
+    ] as never);
+
+    const response = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {
+        paths: ["raw/sources/a.txt"],
+      }),
+      params("current"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(rescan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paths: ["raw/sources/a.txt"],
+        hiddenSlugs: new Set(["agentpage"]),
+        readableSlugs: new Set(["alpha"]),
+      }),
+    );
+  });
+
+  it("runs the raw/sources scope check BEFORE deriving the gate", async () => {
+    // The ORDERING, not just the refusal. The sibling case above pins that a bad
+    // path never enqueues; this pins that it never even reads the caller's index
+    // — the route returns at `isV1FileInScope` several statements above
+    // `v1SlugGate`. Seeded identically to the passing case, so the only thing
+    // that differs is the `paths` value: a route that derived the gate first
+    // would still 403, and only this call count can tell the two apart.
+    listReadable.mockResolvedValue([
+      entry("agentpage", "agent-knowledge"),
+      entry("alpha"),
+    ] as never);
+
+    const response = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {
+        paths: ["wiki/alpha.md"],
+      }),
+      params("current"),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: V1_FILE_OUT_OF_SCOPE_ERROR,
+      path: "wiki/alpha.md",
+    });
+    expect(rescan).not.toHaveBeenCalled();
+    expect(listReadable).not.toHaveBeenCalled();
+  });
+
   it("400s a malformed paths value and 403s under read-only", async () => {
     const malformed = await postRescan(
       send("http://local/api/v1/projects/current/sources/rescan", "POST", {
@@ -854,6 +970,10 @@ describe("sources/rescan", () => {
       error: V1_INVALID_INPUT_ERROR,
       detail: "paths must be an array of strings.",
     });
+    // The same ORDERING the scope-check case pins, on the sibling branch of the
+    // same `if`: this refusal returns above `v1SlugGate`, so a malformed body
+    // costs the caller's index no read at all (DW-537).
+    expect(listReadable).not.toHaveBeenCalled();
 
     readOnly.mockReturnValue(true);
     const refused = await postRescan(
@@ -865,6 +985,9 @@ describe("sources/rescan", () => {
     // filling a queue nothing will drain.
     expect(refused.status).toBe(403);
     expect(rescan).not.toHaveBeenCalled();
+    // And read-only refuses EARLIEST of all — above the body read, so above the
+    // gate too.
+    expect(listReadable).not.toHaveBeenCalled();
   });
 
   it("503s a failed listing so a drain cannot stick on nextCursor", async () => {

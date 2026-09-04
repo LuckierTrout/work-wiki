@@ -4175,7 +4175,9 @@ location: src/app/api/v1/projects/[wikiId]/sources/rescan/route.ts:82
 source_spec: `spec-dw-491-493-494-workbench-raw-path-gate-parity.md`
 severity: medium
 reason: DW-493's new case calls `rescanSources` directly and does pin the forward at src/lib/source-rescan.ts:126 (verified: replacing it with `new Set()` fails exactly that case and nothing else). What remains untested is the route that a real caller hits: `POST /api/v1/projects/[wikiId]/sources/rescan` derives the gate with `v1SlugGate(caller.principal)` and spreads it into the call (route.ts:82-88). Nothing asserts that derivation yields a NON-EMPTY `hiddenSlugs` for a hidden page, or how it composes with the route's own `!path.startsWith("raw/sources/")` -> 403 scope check — because `src/lib/__tests__/epic8-v1-routes.test.ts:54` mocks `@/lib/source-rescan` wholesale, so no test in the suite drives the real function through the POST door. Pre-existing: that mock and that wiring predate this change.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-unexecuted-test-premises
+resolution-undo: ae5502dd78e3b00feb6fd117b97524bce6725a4011f854b62ba1fedf4391c623 2026-09-03 7374617475733a206f70656e
 
 ### DW-538: The eight `.wb-canvas-pad` mode panes are withdrawn with the same `hidden` mechanism but have no backing CSS rule at all, so their withdrawal rests on the user-agent default alone.
 origin: spec-deferred cdc2936054f0
@@ -4598,7 +4600,9 @@ location: src/components/workbench/__tests__/wiki-canvas-persistence.test.tsx (t
 source_spec: `spec-dw-511-rail-reachability-under-dialogs.md`
 severity: medium
 reason: `describe("an open Create Wiki dialog survives a mode switch (DW-26)")` opens the dialog with `openCreateWith(...)` and then drives a rail control while the backdrop is live: `fireEvent.click(rail("Chat"))` at ~l.178, ~l.198 and ~l.230, and `clickRail("Chat")` / `clickRail("Wiki")` at ~l.274 and ~l.279. `CreateWikiDialog`'s root is the same `fixed inset-0 z-[120] ... bg-black/40` overlay, and `.wb-rail` carries no `z-index`, so in a browser those clicks land on the backdrop — whose `onMouseDown` CANCELS the dialog, meaning the mode switch never happens and the draft the block exists to preserve is discarded. The cases pass only because jsdom does no hit-testing. PRE-EXISTING: this file was not touched by DW-511, which fixed the Settings suite only. The fix shape is the one DW-511 used — seed the reachable route before the dialog opens, then traverse — plus the executable backdrop pin the Settings suite now carries.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-unexecuted-test-premises
+resolution-undo: ae5502dd78e3b00feb6fd117b97524bce6725a4011f854b62ba1fedf4391c623 2026-09-03 7374617475733a206f70656e
 
 ### DW-582: The SSE event regex is unanchored, so a block with no `event:` line whose data payload contains the text `event: done` is read as a done frame.
 origin: spec-deferred 3260fb33b7ec
@@ -4639,7 +4643,9 @@ location: src/components/workbench/ChatCanvas.tsx:278
 source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: `stopTurn()` and the unmount effect abort `abortRef`, and `driveTurn` forwards `controller.signal` to `runSidecarTurn`; the transport suite only checks that whatever signal it is handed is forwarded. No mounted test presses Stop. The gap predates DW-444, but the abort hop now crosses a module boundary, so it is worth a mounted assertion.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-unexecuted-test-premises
+resolution-undo: ae5502dd78e3b00feb6fd117b97524bce6725a4011f854b62ba1fedf4391c623 2026-09-03 7374617475733a206f70656e
 
 ### DW-587: ChatCanvas is still 1,247 lines: conversation CRUD, persistence, the assemble call, the Skill scan, attachments, regenerate and save-to-wiki remain inline beside the JSX.
 origin: spec-deferred 176bde474e77
@@ -6160,4 +6166,12 @@ location: src/hooks/useGraphSimulation.ts (handleClick)
 source_spec: `spec-dw-594-596-graph-canvas-keyboard-cursor.md`
 severity: medium
 reason: A `tabIndex={0}` canvas takes focus on mousedown in every browser, so a click both focuses the canvas — seeding the cursor at index 0 via `handleFocus` — and navigates through `openNode`. `handleClick` never writes `cursorIndexRef`, so the pointer and the keyboard disagree about where "here" is from the first click onward, and the live region announces the first node rather than the clicked one. The fix was implemented during review and then REVERTED: this spec's `Never` list forbids "mouse-driven cursor movement" and the bundle's recorded 2026-08-29 decision says "keep the pointer path unchanged", both of which a click that moves the cursor contradicts. Resolving it needs a human to widen that boundary, not an unattended reading of it.
+status: open
+
+### DW-752: The two sibling /api/v1 file doors still assert their v1SlugGate forward with expect.anything(), so both could stop applying the caller's slug gate with a green suite.
+origin: spec-deferred 0c52b43478a1
+location: src/lib/__tests__/epic8-v1-routes.test.ts:207 (and l.214, l.241, l.349, l.361)
+source_spec: `spec-dw-581-586-537-unexecuted-test-premises.md`
+severity: medium
+reason: DW-537 is now pinned at the rescan door, but `v1SlugGate` returns a PAIR precisely so the three `/api/v1` doors cannot drift (DW-32). `files/route.ts:46` spreads `{ ...slugGate, limit: V1_MAX_TREE_NODES }` into `listWorkbenchFilePaths` and `files/content/route.ts:62` passes `slugGate` into `readWorkbenchFile`; the only tests that import either route module live in `src/lib/__tests__/epic8-v1-routes.test.ts`, and their assertions are `expect(listPaths).toHaveBeenCalledWith("alice", "wiki-1", expect.anything())` (l.207, l.214, l.241) with `readWorkbenchFile`'s gate argument never inspected at all (l.349, l.361). VERIFIED during this run's review: replacing `...slugGate` with `readableSlugs: new Set(), hiddenSlugs: new Set()` in BOTH route files leaves the suite at 35/35 green. `epic8-remediation.test.ts` touches the two sets only by calling `workbench-files` directly, never through these routes. Consequence: the doors an agent actually talks to could serve a hidden page's `wiki/` paths a
 status: open
