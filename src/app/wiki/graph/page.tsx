@@ -59,6 +59,10 @@ export default function GraphPage() {
     handleMouseMove,
     handleMouseLeave,
     handleClick,
+    handleKeyDown,
+    handleFocus,
+    handleBlur,
+    cursorAnnouncement,
   } = useGraphSimulation(canvasRef, router, scope);
 
   const lens = scopedHandle ? (
@@ -166,22 +170,37 @@ export default function GraphPage() {
             two sets are not the same one and promising the graph's contents
             would be a promise the tree does not keep.
 
-            The canvas below is deliberately NOT a tab stop (DW-463). It used to
-            carry `tabIndex={0}`, which put a keyboard-only reader on a focus
-            stop where Enter and Space did nothing: its only handlers are
-            pointer ones, and `handleClick` hit-tests `e.clientX/clientY`
-            against node positions, so there is no keyboard-owned selected node
-            for a key press to activate. It is a `role="img"` picture, which
-            is not required to be operable, and the keyboard-reachable text
-            alternative it already advertises is the visible Knowledge tree link
-            above — with the caveat recorded a paragraph up: the tree lists this
-            wiki's pages, not this lens-scoped graph's contents, so it stands in
-            for the picture without being an exact substitute for it. If a
-            genuine keyboard activation path is ever added here, the pin to
-            update is in `__tests__/graph-escape-hatch-mounted.test.tsx`.
+            The canvas below IS a tab stop, because there is now something to
+            do from it (DW-594/595). `useGraphSimulation` owns a keyboard cursor
+            — an index into the node set that the arrow keys move and Enter or
+            Space activates — and both input paths end in the hook's single
+            `openNode`, so the page Enter opens is by construction the page a
+            click on that node opens. This replaces the DW-463 state, where the
+            canvas carried `tabIndex={0}` beside pointer handlers only and a
+            keyboard reader landed on a focus stop where every key did nothing;
+            the answer then was to remove the stop, and the answer now is to
+            make it lead somewhere.
+
+            It stays `role="img"`, because it is still a picture with a text
+            alternative and DW-131/DW-461 pin that semantics. An operable
+            `role="img"` is unusual, so the cursor is announced by the sibling
+            live region below rather than by the canvas's own name, and the
+            `aria-label` names the keys so a screen-reader user knows they
+            exist. `role="application"` was rejected: it suppresses browse mode
+            for a surface whose text alternative is one link away.
+
+            The fallback `<a>` inside the canvas carries `tabIndex={-1}`
+            (DW-594). Canvas fallback content is displayed only by a client that
+            cannot render the canvas at all — but every browser that CAN render
+            it still puts focusable fallback content in the sequential focus
+            order, so without this a keyboard reader hits a focus stop that
+            renders nothing on screen. The link itself stays (a client with no
+            canvas needs it), and the visible `next/link` above stays the
+            reachable escape hatch either way.
           */}
           <p className="text-sm text-foreground/60 mb-4">
-            Click a node to open the page. Or open the{" "}
+            Click a node to open the page, or focus the graph and use the arrow
+            keys to move between nodes and Enter to open one. Or open the{" "}
             <Link href={KNOWLEDGE_TREE_HREF} className="underline">
               Workbench Knowledge tree
             </Link>{" "}
@@ -190,19 +209,42 @@ export default function GraphPage() {
           <div className="w-full overflow-hidden rounded-lg border border-foreground/10">
             <canvas
               ref={canvasRef}
+              tabIndex={0}
               onClick={handleClick}
               onMouseMove={handleMouseMove}
               onMouseLeave={handleMouseLeave}
+              onKeyDown={handleKeyDown}
+              onFocus={handleFocus}
+              onBlur={handleBlur}
               className="block w-full"
               style={{ height: 560, backgroundColor: canvasBg }}
               role="img"
-              aria-label="Wiki page relationship graph. Open the Workbench Knowledge tree for a text list of this wiki's pages."
+              aria-label="Wiki page relationship graph. Use the arrow keys to move between pages and Enter to open one. Or open the Workbench Knowledge tree for a text list of this wiki's pages."
             >
               Wiki relationship graph — open the{" "}
-              <a href={KNOWLEDGE_TREE_HREF}>Workbench Knowledge tree</a> for a
-              text list of this wiki&rsquo;s pages.
+              <a href={KNOWLEDGE_TREE_HREF} tabIndex={-1}>
+                Workbench Knowledge tree
+              </a>{" "}
+              for a text list of this wiki&rsquo;s pages.
             </canvas>
           </div>
+          {/*
+            The canvas's announcement channel. `role="img"` gives the canvas a
+            static name, so the node under the keyboard cursor is announced
+            here instead — polite, so it does not interrupt, and visually
+            hidden, because the canvas already shows the cursor as a ring.
+
+            One element carries both `role="status"` and `aria-live="polite"`,
+            and it stays mounted with an empty string rather than being
+            conditionally rendered: a live region announces what CHANGES inside
+            it, so a region that appears already holding its text has, for some
+            assistive technology, nothing to report. (`ToastContainer` splits
+            the pair across two elements and mounts on demand, which suits a
+            list of transient notices; this is one slot rewritten in place.)
+          */}
+          <p className="sr-only" role="status" aria-live="polite">
+            {cursorAnnouncement}
+          </p>
           <p className="text-xs text-foreground/40 mt-2">
             Node size reflects connection count. Colors indicate detected
             communities.

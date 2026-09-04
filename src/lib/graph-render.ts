@@ -130,9 +130,33 @@ export const RADIUS_SCALE = 4;
 export const MIN_RADIUS = 6;
 export const MAX_RADIUS = 24;
 
+/**
+ * How far OUTSIDE a node's own edge the keyboard cursor ring is stroked.
+ *
+ * The ring has to read as a separate mark rather than as a fatter node stroke —
+ * hover already thickens `lineWidth` from 1.5 to 2.5 on the node itself, so a
+ * cursor drawn at the node's own radius would be indistinguishable from a
+ * hovered node for a sighted keyboard user. The gap is what makes it a ring.
+ */
+export const CURSOR_RING_GAP = 5;
+export const CURSOR_RING_WIDTH = 3;
+
 export function nodeRadius(linkCount: number): number {
   const r = BASE_RADIUS + Math.sqrt(linkCount) * RADIUS_SCALE;
   return Math.max(MIN_RADIUS, Math.min(MAX_RADIUS, r));
+}
+
+/**
+ * How a node's connection count is worded, for BOTH readers of it.
+ *
+ * The hover tooltip paints this and the keyboard cursor's live region speaks
+ * it, and they describe the same node — so a second copy of the pluralisation
+ * is a place where the seen graph and the announced graph can disagree, in a
+ * change whose whole argument is that one `openNode` keeps the two input paths
+ * from diverging. One function, one wording.
+ */
+export function connectionsLabel(node: Pick<GraphNode, "linkCount">): string {
+  return `${node.linkCount} connection${node.linkCount === 1 ? "" : "s"}`;
 }
 
 // --- Physics simulation ---
@@ -214,17 +238,25 @@ export interface RenderOptions {
   hovered: GraphNode | null;
   mouse: { x: number; y: number };
   clusterCount: number;
+  /**
+   * The node the KEYBOARD cursor points at, drawn as a ring (see
+   * {@link CURSOR_RING_GAP}). Optional and defaulting to "no ring": the pointer
+   * path never sets it, and every caller that predates the keyboard cursor is
+   * describing a scene that has none.
+   */
+  cursor?: GraphNode | null;
 }
 
 /**
  * Render the full graph scene: background, edges, nodes with cluster colors,
- * labels, hover tooltip, and cluster legend.
+ * labels, the keyboard cursor ring, hover tooltip, and cluster legend.
  */
 export function renderGraph(opts: RenderOptions): void {
   const {
     nodes, edges, nodeMap, ctx,
     width: W, height: H,
     palette, hovered, mouse, clusterCount,
+    cursor = null,
   } = opts;
 
   // Clear + fill background
@@ -269,12 +301,34 @@ export function renderGraph(opts: RenderOptions): void {
     ctx.fillText(n.label, n.x, n.y - r - 4);
   }
 
+  // Keyboard cursor ring. Drawn AFTER the node pass so no later node's fill can
+  // paint over it, and stroked in the label color — the one palette entry
+  // chosen to contrast with the background rather than with a cluster hue, so
+  // the ring stays visible whichever cluster its node belongs to.
+  //
+  // Only `beginPath`/`arc`/`strokeStyle`/`lineWidth`/`stroke` are used: the
+  // scene is drawn through a deliberately small slice of the 2D API (see
+  // `graph-render.test.ts`'s mock context), and a dashed ring would need
+  // `setLineDash`, which is not part of it.
+  if (cursor) {
+    ctx.beginPath();
+    ctx.arc(
+      cursor.x,
+      cursor.y,
+      nodeRadius(cursor.linkCount) + CURSOR_RING_GAP,
+      0,
+      Math.PI * 2,
+    );
+    ctx.strokeStyle = palette.label;
+    ctx.lineWidth = CURSOR_RING_WIDTH;
+    ctx.stroke();
+  }
+
   // Tooltip for hovered node
   if (hovered) {
     const mx = mouse.x;
     const my = mouse.y;
-    const connText = `${hovered.linkCount} connection${hovered.linkCount !== 1 ? "s" : ""}`;
-    const tooltipText = `${hovered.label} — ${connText}`;
+    const tooltipText = `${hovered.label} — ${connectionsLabel(hovered)}`;
     ctx.font = "13px sans-serif";
     const metrics = ctx.measureText(tooltipText);
     const tipW = metrics.width + 16;

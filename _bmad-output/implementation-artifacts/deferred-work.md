@@ -4704,7 +4704,9 @@ location: src/app/wiki/graph/page.tsx:201
 source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
 severity: medium
 reason: Verified in this repo's jsdom: the fallback anchor reports `tabIndex === 0` and becomes `document.activeElement` after `.focus()`. Browsers likewise include focusable canvas fallback content in the sequential focus order — that is what `CanvasRenderingContext2D.drawFocusIfNeeded` exists for. `role="img"` prunes the subtree from the ACCESSIBILITY tree, which is a different thing from the focus order. Pre-existing (the fallback child predates DW-463) and out of DW-463's scope, which named the canvas element itself; the DW-463 pin is deliberately narrowed to the element and says so.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-graph-canvas-keyboard-and-focus
+resolution-undo: 01b4109da982947329f400db9279f4782c608e03be5adb46984326ee97c1ba11 2026-09-03 7374617475733a206f70656e
 
 ### DW-595: Graph nodes remain unreachable by keyboard: DW-463 was resolved by removing the inert focus stop, so the intent's other branch — a keyboard-owned node cursor plus onKeyDown reaching the same handler t
 origin: spec-deferred a4bc6951fdb6
@@ -4712,7 +4714,9 @@ location: src/app/wiki/graph/page.tsx:186
 source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
 severity: medium
 reason: `handleClick` (src/hooks/useGraphSimulation.ts:272-291) hit-tests `e.clientX/clientY` against node positions, and `hoveredRef` is written only by `handleMouseMove`, so there is no keyboard-addressable node. Opening a wiki page from the graph is therefore pointer-only. The text alternative (the Workbench Knowledge tree) covers it for WCAG purposes but is not an exact substitute — the graph is `?scope=` lens-scoped and the tree is not, as the page's own block comment records. The only trace of the unbuilt branch today is a code comment and a test failure message.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-graph-canvas-keyboard-and-focus
+resolution-undo: 01b4109da982947329f400db9279f4782c608e03be5adb46984326ee97c1ba11 2026-09-03 7374617475733a206f70656e
 decision: 2026-08-29 Build the keyboard node cursor — Give the graph a keyboard-owned node cursor: a focusable canvas with an owned index into the node set, arrow keys moving it, Enter/Space reaching the same handler `handleClick` does, and a visible cursor indication drawn on the canvas plus an accessible announcement of the focused node. Keep the pointer path unchanged and route both through one activation function. Pin keyboard activation opening the same page a click does.
 decision: 2026-08-29 Build the keyboard node cursor — Give the graph a keyboard-owned node cursor: a focusable canvas with an owned index into the node set, arrow keys moving it, Enter/Space reaching the same handler `handleClick` does, and a visible cursor indication drawn on the canvas plus an accessible announcement of the focused node. Keep the pointer path unchanged and route both through one activation function. Pin keyboard activation opening the same page a click does.
 
@@ -4722,7 +4726,9 @@ location: src/app/wiki/graph/__tests__/graph-escape-hatch-mounted.test.tsx
 source_spec: `spec-dw-463-graph-canvas-keyboard-activation.md`
 severity: low
 reason: `graph-escape-hatch-mounted.test.tsx` stubs `useGraphSimulation`, and its `handleClick` is a fresh `vi.fn()` per render that no test dispatches a click at; no other suite mounts this page or exercises the hook. "Pointer is the remaining activation path" is the premise the DW-463 removal rests on, asserted in three comments and observed nowhere. A hoisted spy plus `fireEvent.click(theCanvas())` would make it a fact.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-graph-canvas-keyboard-and-focus
+resolution-undo: 01b4109da982947329f400db9279f4782c608e03be5adb46984326ee97c1ba11 2026-09-03 7374617475733a206f70656e
 
 ### DW-597: Thirteen dom suites under src/components/workbench/__tests__/ fail at window.localStorage.clear() on Node 26, unrelated to any code change.
 
@@ -6146,4 +6152,12 @@ location: src/lib/workbench-loopback-health.ts:26
 source_spec: `spec-dw-604-605-607-sidecar-origin-contract.md`
 severity: low
 reason: `SETTINGS_API_HEALTH_UNREACHABLE_COPY` (src/lib/workbench-loopback-health.ts:26) is "The sidecar is not running on 127.0.0.1:19828." and `IconRail.tsx:83` is "Sidecar not running". Both are decided by the same origin-blind browser fetch this change concedes cannot report WHY it failed: `probeLoopbackApiPane` collapses any rejected fetch — including the bare 403 with no `Access-Control-Allow-Origin` — to `unreachable`. On a deployed unconfigured origin Chat now correctly says the sidecar may be running and simply refused, while Settings, one panel away, flatly asserts it is not running; the pane's own comment (SettingsApiMcpPane.tsx:165) says such a claim beside a running sidecar "is worse than no claim at all". Pre-existing — both sentences were equally wrong before this change — and outside this bundle's intent, which named `CHAT_SIDECAR_DOWN_COPY` alone. `isSidecarDefaultAdmittedOrigin` is now exported and is the piece a fix would reuse. Existing pins assert the current sentences fro
+status: open
+
+### DW-751: Clicking a graph node leaves the keyboard cursor where it was, so a reader who clicks and then presses an arrow resumes from the first node rather than from the node they just acted on.
+origin: spec-deferred 87acd760c2fe
+location: src/hooks/useGraphSimulation.ts (handleClick)
+source_spec: `spec-dw-594-596-graph-canvas-keyboard-cursor.md`
+severity: medium
+reason: A `tabIndex={0}` canvas takes focus on mousedown in every browser, so a click both focuses the canvas — seeding the cursor at index 0 via `handleFocus` — and navigates through `openNode`. `handleClick` never writes `cursorIndexRef`, so the pointer and the keyboard disagree about where "here" is from the first click onward, and the live region announces the first node rather than the clicked one. The fix was implemented during review and then REVERTED: this spec's `Never` list forbids "mouse-driven cursor movement" and the bundle's recorded 2026-08-29 decision says "keep the pointer path unchanged", both of which a click that moves the cursor contradicts. Resolving it needs a human to widen that boundary, not an unattended reading of it.
 status: open

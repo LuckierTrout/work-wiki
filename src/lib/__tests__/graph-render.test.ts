@@ -7,6 +7,8 @@ import {
   DARK_PALETTE,
   stepPhysics,
   renderGraph,
+  CURSOR_RING_GAP,
+  connectionsLabel,
   type GraphNode,
   type GraphEdge,
   type RenderOptions,
@@ -41,6 +43,25 @@ describe("graph-render", () => {
     it("never exceeds MAX_RADIUS", () => {
       expect(nodeRadius(1000)).toBe(MAX_RADIUS);
       expect(nodeRadius(10_000)).toBe(MAX_RADIUS);
+    });
+  });
+
+  /**
+   * The wording the hover tooltip PAINTS and the keyboard cursor's live region
+   * SPEAKS — one function since DW-595, because two copies of a pluralisation
+   * are two ways for the seen and the announced description of one node to
+   * disagree. The singular is the branch that only exists to be right: it is
+   * unreachable from the plural cases, and "1 connections" is the exact defect
+   * a shared helper is meant to make impossible.
+   */
+  describe("connectionsLabel", () => {
+    it("pluralises everything but one", () => {
+      expect(connectionsLabel({ linkCount: 0 })).toBe("0 connections");
+      expect(connectionsLabel({ linkCount: 2 })).toBe("2 connections");
+    });
+
+    it("says '1 connection', not '1 connections'", () => {
+      expect(connectionsLabel({ linkCount: 1 })).toBe("1 connection");
     });
   });
 
@@ -198,6 +219,173 @@ describe("graph-render", () => {
       expect(() => renderGraph(opts)).not.toThrow();
       // Should have drawn tooltip text
       expect(opts.ctx.fillText).toHaveBeenCalled();
+    });
+
+    /**
+     * The keyboard cursor's visible half (DW-595).
+     *
+     * `useGraphSimulation` announces the cursor through a live region, which is
+     * what a screen-reader user gets; a SIGHTED keyboard user gets only what is
+     * painted, so "there is a ring, and it is around the cursor's node" is the
+     * whole of that reader's feedback.
+     *
+     * `arc` is spied SEPARATELY from the shared `mockCtx` noop, because the
+     * node pass and the cluster legend both call it: a bare `toHaveBeenCalled`
+     * on the shared spy would be satisfied by the nodes alone. The reads below
+     * therefore filter the calls by radius, which is also the property that
+     * distinguishes a ring from a node — see `CURSOR_RING_GAP`.
+     */
+    describe("keyboard cursor ring", () => {
+      const cursorNode = makeNode({ id: "cursor", x: 140, y: 220, linkCount: 3 });
+      const otherNode = makeNode({ id: "other", x: 300, y: 300, linkCount: 3 });
+      const ringRadius = nodeRadius(cursorNode.linkCount) + CURSOR_RING_GAP;
+
+      function arcSpy() {
+        return vi.fn();
+      }
+
+      function ctxWithArc(arc: ReturnType<typeof arcSpy>): CanvasRenderingContext2D {
+        return Object.assign(mockCtx(), { arc });
+      }
+
+      /** Every `arc` call made at exactly the cursor's centre. */
+      function arcsAt(
+        arc: ReturnType<typeof arcSpy>,
+        x: number,
+        y: number,
+      ): number[] {
+        return arc.mock.calls
+          .filter((call) => call[0] === x && call[1] === y)
+          .map((call) => call[2] as number);
+      }
+
+      /**
+       * The position of an `arc` call in the whole draw sequence, or `-1`.
+       *
+       * ORDER is a real property here, not bookkeeping: the node pass fills
+       * each node opaquely, so a ring stroked before its node is painted over
+       * by it and the cursor becomes invisible with every assertion about
+       * radius and centre still green. One spy sees every arc the scene makes,
+       * so their indices are directly comparable.
+       */
+      function arcIndex(
+        arc: ReturnType<typeof arcSpy>,
+        x: number,
+        y: number,
+        radius: number,
+      ): number {
+        return arc.mock.calls.findIndex(
+          (call) => call[0] === x && call[1] === y && call[2] === radius,
+        );
+      }
+
+      it("strokes a ring OUTSIDE the cursor node's own radius", () => {
+        const arc = arcSpy();
+        const nodes = [cursorNode, otherNode];
+        renderGraph(
+          baseOpts({
+            ctx: ctxWithArc(arc),
+            nodes,
+            nodeMap: new Map(nodes.map((n) => [n.id, n])),
+            cursor: cursorNode,
+          }),
+        );
+
+        const radii = arcsAt(arc, cursorNode.x, cursorNode.y);
+        // The node itself is one of them; the ring is the larger.
+        expect(
+          radii,
+          "nothing was drawn at the cursor node's centre at all",
+        ).toContain(nodeRadius(cursorNode.linkCount));
+        expect(
+          radii,
+          `no arc at (${cursorNode.x}, ${cursorNode.y}) with the ring radius ${ringRadius} — a ` +
+            "sighted keyboard user has no indication of where the cursor is (DW-595)",
+        ).toContain(ringRadius);
+        expect(ringRadius).toBeGreaterThan(nodeRadius(cursorNode.linkCount));
+      });
+
+      it("strokes the ring after every node has been filled", () => {
+        const arc = arcSpy();
+        // `otherNode` is LAST in the array, so its fill is the last thing the
+        // node pass draws — a ring emitted before the loop, or inside it,
+        // lands at a lower index than this and the case fails.
+        const nodes = [cursorNode, otherNode];
+        renderGraph(
+          baseOpts({
+            ctx: ctxWithArc(arc),
+            nodes,
+            nodeMap: new Map(nodes.map((n) => [n.id, n])),
+            cursor: cursorNode,
+          }),
+        );
+
+        const ringAt = arcIndex(arc, cursorNode.x, cursorNode.y, ringRadius);
+        expect(ringAt, "no ring arc to order against").toBeGreaterThan(-1);
+        for (const n of nodes) {
+          const nodeAt = arcIndex(arc, n.x, n.y, nodeRadius(n.linkCount));
+          expect(nodeAt, `node ${n.id} was never drawn`).toBeGreaterThan(-1);
+          expect(
+            ringAt,
+            `the cursor ring is stroked BEFORE node ${n.id} is filled, so an overlapping node ` +
+              "paints over it and a sighted keyboard user sees no cursor at all (DW-595)",
+          ).toBeGreaterThan(nodeAt);
+        }
+      });
+
+      it("rings the cursor node and no other node", () => {
+        const arc = arcSpy();
+        const nodes = [cursorNode, otherNode];
+        renderGraph(
+          baseOpts({
+            ctx: ctxWithArc(arc),
+            nodes,
+            nodeMap: new Map(nodes.map((n) => [n.id, n])),
+            cursor: cursorNode,
+          }),
+        );
+
+        expect(
+          arcsAt(arc, otherNode.x, otherNode.y),
+          "a ring-sized arc was drawn at a node the cursor is not on",
+        ).not.toContain(nodeRadius(otherNode.linkCount) + CURSOR_RING_GAP);
+      });
+
+      it("draws no ring when there is no cursor", () => {
+        const arc = arcSpy();
+        const nodes = [cursorNode, otherNode];
+        renderGraph(
+          baseOpts({
+            ctx: ctxWithArc(arc),
+            nodes,
+            nodeMap: new Map(nodes.map((n) => [n.id, n])),
+            cursor: null,
+          }),
+        );
+
+        expect(
+          arcsAt(arc, cursorNode.x, cursorNode.y),
+          "a ring was drawn with no cursor passed — the pointer path would then paint a focus " +
+            "indication for a cursor nobody is moving",
+        ).not.toContain(ringRadius);
+      });
+
+      it("draws no ring when `cursor` is omitted entirely", () => {
+        // The pre-DW-595 call shape: every existing caller of `renderGraph`
+        // passes no `cursor` at all, and an optional field that defaulted to
+        // anything but "no ring" would repaint the whole pointer path.
+        const arc = arcSpy();
+        const nodes = [cursorNode];
+        const opts = baseOpts({
+          ctx: ctxWithArc(arc),
+          nodes,
+          nodeMap: new Map(nodes.map((n) => [n.id, n])),
+        });
+        delete opts.cursor;
+        renderGraph(opts);
+
+        expect(arcsAt(arc, cursorNode.x, cursorNode.y)).not.toContain(ringRadius);
+      });
     });
   });
 });
