@@ -466,5 +466,14 @@
     "key": "1",
     "label": "Distinguish contradiction from absence and signal it",
     "resolution": ""
+  },
+  "DW-738": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Re-key the asset directory to the page's final (post-uniquification) slug \u2014 a post-ingest re-key plus body rewrite, or defer the store until the slug is settled \u2014 and fix syncSiloForPage to mirror into the owning page's tenant. Include a migration for existing forked directories and pin both the fork and mirror cases.",
+    "key": "1",
+    "label": "Re-key assets to the final page slug",
+    "resolution": ""
   }
 }
