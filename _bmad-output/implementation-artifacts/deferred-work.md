@@ -6051,6 +6051,7 @@ source_spec: `spec-dw-676-708-wiki-create-and-template-failure-truth.md`
 severity: low
 reason: `applyScenarioTemplate`'s failure tail carries `rollbackIncomplete` (DW-210) alongside `registryLanded` (DW-484): a restore that could not put every file back leaves one artifact on the new template and one on the old. `scenarioNamedByWikiArtifacts` answers null the moment its two witnesses disagree, and `reconcileWikiScenarioDrift` is deliberately SILENT when it does not fire — so that state is now detected by nobody, repaired by nobody and logged by nobody, while the switcher still carries whichever label the registry write left. The unanimity rule is correct as written (there is no unambiguous answer to re-derive from two contradicting files, and both artifacts are owner-editable so a guess would overwrite the wrong one), which is exactly why closing this needs its own decision — probably a distinct signal rather than a repair.
 status: open
+decision: 2026-09-04 Distinguish contradiction from absence and signal it — Make scenarioNamedByWikiArtifacts distinguish 'no witness' from 'contradicting witnesses', and have reconcileWikiScenarioDrift emit a distinct diagnostic for the contradiction case — logged and surfaced to the owner — while still repairing nothing. Pin the divergent-artifacts case.
 
 ### DW-736: `PUT /api/workbench/artifact` still relays a raw storage errno into the owner's save banner when the WRITE half of the save fails, not the read half this bundle typed.
 origin: spec-deferred 0235d2b3e654

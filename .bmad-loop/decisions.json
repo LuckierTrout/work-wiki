@@ -457,5 +457,14 @@
     "key": "1",
     "label": "Re-fetch on visibility or focus",
     "resolution": ""
+  },
+  "DW-735": {
+    "answered_at": "2026-09-04",
+    "bundle_name": "",
+    "effect": "build",
+    "intent": "Make scenarioNamedByWikiArtifacts distinguish 'no witness' from 'contradicting witnesses', and have reconcileWikiScenarioDrift emit a distinct diagnostic for the contradiction case \u2014 logged and surfaced to the owner \u2014 while still repairing nothing. Pin the divergent-artifacts case.",
+    "key": "1",
+    "label": "Distinguish contradiction from absence and signal it",
+    "resolution": ""
   }
 }
