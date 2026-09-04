@@ -107,6 +107,7 @@ import {
   V1_FILE_BINARY_ERROR,
   V1_FILE_OUT_OF_SCOPE_ERROR,
   V1_FILE_TOO_LARGE_ERROR,
+  V1_INVALID_INPUT_ERROR,
   V1_MAX_FILE_BYTES,
   V1_MAX_GRAPH_LIMIT,
   V1_MAX_TREE_NODES,
@@ -595,15 +596,34 @@ describe("reviews", () => {
       getItem.mockReset();
     });
 
-    it.each([
-      ["400s", new ClientInputError("This workspace already has the maximum of 100 research projects."), 400],
-      ["500s", new Error("EINVAL: invalid argument, open '/data/research-projects.json'"), 500],
-    ])("%s a store fault", async (_label, fault, status) => {
+    // The two branches now answer DIFFERENT SHAPES, so they are two rows rather
+    // than one `it.each` over a shared body assertion: a caller fault is the
+    // façade's machine token plus the sentence in `detail`, a server fault is
+    // still the bare message with no token vocabulary to offer.
+    it("400s a caller-fault store refusal, as a token plus a detail", async () => {
+      const fault = new ClientInputError(
+        "This workspace already has the maximum of 100 research projects.",
+      );
       research.mockRejectedValue(fault);
 
       const response = await deepResearch();
 
-      expect(response.status).toBe(status);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: V1_INVALID_INPUT_ERROR,
+        detail: fault.message,
+      });
+    });
+
+    it("500s a server-fault store failure, body unchanged", async () => {
+      const fault = new Error(
+        "EINVAL: invalid argument, open '/data/research-projects.json'",
+      );
+      research.mockRejectedValue(fault);
+
+      const response = await deepResearch();
+
+      expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: fault.message });
     });
 
@@ -825,6 +845,15 @@ describe("sources/rescan", () => {
       params("current"),
     );
     expect(malformed.status).toBe(400);
+    // The token is the machine half an agent switch-cases on; the sentence
+    // naming the offending input rides in `detail` — the `{ error, detail }`
+    // shape `reviews/route.ts` and `/api/v1/web-search` already answer with.
+    // The sibling refusal further down this same `if` block, `too_many_paths`,
+    // is a token too, though it carries `limit` rather than a `detail`.
+    expect(await malformed.json()).toEqual({
+      error: V1_INVALID_INPUT_ERROR,
+      detail: "paths must be an array of strings.",
+    });
 
     readOnly.mockReturnValue(true);
     const refused = await postRescan(

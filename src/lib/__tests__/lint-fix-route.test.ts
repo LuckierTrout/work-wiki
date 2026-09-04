@@ -466,3 +466,233 @@ describe("POST /api/lint/fix — a storage blip is not a missing page", () => {
     expect(((await res.json()) as { error?: string }).error).toContain("not found");
   });
 });
+
+/**
+ * The `target` alias (DW-564/DW-580).
+ *
+ * Both MCP doors — `src/mcp.ts`'s registered `fix_lint_issue` schema and
+ * `src/lib/mcp-http.ts` — advertise the target page as `target`; this door
+ * shipped it as `targetSlug`. An agent that learned the argument names at one
+ * door POSTed a body here that was silently TARGET-LESS, and each door's
+ * "Invalid request field `…`" named a different field for the same value. The
+ * alias goes one way on purpose: `target` is now accepted here, `targetSlug` is
+ * NOT added to either MCP door's advertised schema.
+ *
+ * `fixLintIssue` is spied over the real implementation (the factory at the top
+ * of this file), so its recorded THIRD argument is the only way to see which
+ * name the door actually resolved — a 200 alone cannot tell the two apart.
+ */
+describe("POST /api/lint/fix — the `target` alias", () => {
+  let tmpDir: string;
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "lint-fix-alias-test-"));
+    for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) saved[k] = process.env[k];
+    process.env.WIKI_DIR = path.join(tmpDir, "wiki");
+    process.env.RAW_DIR = path.join(tmpDir, "raw");
+    process.env.DATA_DIR = tmpDir;
+    _resetLocks();
+    _resetStorage();
+    await ensureDirectories();
+    spiedFixLintIssue.mockClear();
+  });
+
+  afterEach(async () => {
+    for (const k of ["WIKI_DIR", "RAW_DIR", "DATA_DIR"]) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    _resetStorage();
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function seedWithLink(slug: string, target: string) {
+    await writeWikiPage(
+      slug,
+      serializeFrontmatter(
+        {
+          title: slug,
+          created: "2025-01-01",
+          updated: "2025-01-01",
+          owner: "LuckierTrout",
+          visibility: "private",
+        },
+        `# ${slug}\n\nSee [the other page](${target}.md) for details.\n`,
+      ),
+    );
+  }
+
+  /** The target `fixLintIssue` was actually handed — its third parameter. */
+  function resolvedTargetArg(): unknown {
+    return spiedFixLintIssue.mock.calls[0]?.[2];
+  }
+
+  it("accepts the MCP doors' `target` spelling and forwards it as the target", async () => {
+    await seedWithLink("alias-a", "alias-b");
+
+    const res = await postFix({
+      type: "broken-link",
+      slug: "alias-a",
+      target: "alias-b",
+    });
+
+    expect(res.status).toBe(200);
+    expect(spiedFixLintIssue).toHaveBeenCalledTimes(1);
+    expect(resolvedTargetArg()).toBe("alias-b");
+  });
+
+  it("lets the legacy `targetSlug` win when a body sends both names", async () => {
+    // `useLint.ts` sends `targetSlug`; a body carrying both must keep meaning
+    // what it meant before the alias existed.
+    await seedWithLink("alias-a", "alias-b");
+
+    const res = await postFix({
+      type: "broken-link",
+      slug: "alias-a",
+      targetSlug: "alias-b",
+      target: "alias-c",
+    });
+
+    expect(res.status).toBe(200);
+    expect(resolvedTargetArg()).toBe("alias-b");
+  });
+
+  /**
+   * Two types, because the sentence a target-less body reads is the HANDLER's,
+   * not the door's: `broken-link` reaches `fixDanglingWikilink`, which names
+   * the one missing field, while `missing-crossref` reaches `fixMissingCrossRef`,
+   * which names both. Neither sentence is the alias's business — what this pins
+   * is that adding `target` did not change either answer.
+   */
+  it.each([
+    ["broken-link", "Missing required field: targetSlug"],
+    ["missing-crossref", "Missing required fields: slug and targetSlug"],
+  ] as const)(
+    "still reaches the %s dispatcher with `undefined` when NEITHER name is sent",
+    async (type, sentence) => {
+      const res = await postFix({ type, slug: "alias-a" });
+
+      expect(res.status).toBe(400);
+      expect(spiedFixLintIssue).toHaveBeenCalledTimes(1);
+      expect(resolvedTargetArg()).toBeUndefined();
+      expect(((await res.json()) as { error?: string }).error).toBe(sentence);
+    },
+  );
+
+  it.each([
+    ["a wrong type", { type: "broken-link", slug: "alias-a", target: 5 }],
+    // Explicitly `null`, never `.nullable()` — the divergence DW-455 closed.
+    ["an explicit null", { type: "broken-link", slug: "alias-a", target: null }],
+  ] as const)("400s on the alias with %s, naming `target`", async (_label, body) => {
+    const res = await postFix(body);
+
+    expect(res.status).toBe(400);
+    expect(String(((await res.json()) as { error?: string }).error)).toContain(
+      "`target`",
+    );
+    expect(spiedFixLintIssue).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The rows above hand-type `target`, so they pin THIS door and nothing else.
+   * The claim DW-564 filed is RELATIONAL — a body composed from what an MCP
+   * door advertises works at the REST door — and a rename on the MCP side would
+   * silently reopen the defect while every literal above stayed green. So read
+   * the name off each MCP door's own advertised schema at runtime and drive
+   * this door with it. Neither MCP door is modified; both are only read.
+   *
+   * The argument is located by its DESCRIPTION ("Target slug …"), never by the
+   * key, because the key is the very thing under test — matching on it would
+   * make the check tautological.
+   */
+  describe("parity with what the MCP doors advertise", () => {
+    const TARGET_ARG = /^Target slug/i;
+
+    /** `fix_lint_issue`'s target-argument name in the HTTP door's `MCP_TOOLS`. */
+    async function httpDoorTargetArg(): Promise<string> {
+      const { MCP_TOOLS } = await import("@/lib/mcp-http");
+      const tool = MCP_TOOLS.find((t) => t.name === "fix_lint_issue");
+      expect(tool, "mcp-http.ts no longer exposes a `fix_lint_issue` tool").toBeDefined();
+      const properties =
+        (tool!.inputSchema as {
+          properties?: Record<string, { description?: string }>;
+        }).properties ?? {};
+      const named = Object.entries(properties)
+        .filter(([, prop]) => TARGET_ARG.test(String(prop?.description ?? "")))
+        .map(([name]) => name);
+      expect(
+        named,
+        "mcp-http.ts's `fix_lint_issue` no longer advertises exactly one `Target slug …` argument, so this test can no longer find the name to send",
+      ).toHaveLength(1);
+      return named[0];
+    }
+
+    /** The same argument on the stdio door's registered zod shape. */
+    async function stdioDoorTargetArg(): Promise<string> {
+      const { createMcpServer } = await import("../../mcp");
+      const server = createMcpServer();
+      // `_registeredTools` is private in TypeScript and readable at runtime —
+      // the idiom `mcp.test.ts` and `mcp-http.test.ts` already use.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entry = (server as any)._registeredTools?.fix_lint_issue;
+      expect(entry, "src/mcp.ts no longer registers `fix_lint_issue`").toBeDefined();
+      const shape = (entry.inputSchema?.shape ?? entry.inputSchema) as Record<
+        string,
+        { description?: string }
+      >;
+      const named = Object.entries(shape)
+        .filter(([, field]) => TARGET_ARG.test(String(field?.description ?? "")))
+        .map(([name]) => name);
+      expect(
+        named,
+        "src/mcp.ts's `fix_lint_issue` no longer declares exactly one `Target slug …` argument",
+      ).toHaveLength(1);
+      return named[0];
+    }
+
+    it("accepts a body keyed by the name the MCP doors advertise", async () => {
+      await seedWithLink("alias-a", "alias-b");
+      const advertised = await httpDoorTargetArg();
+
+      const res = await postFix({
+        type: "broken-link",
+        slug: "alias-a",
+        [advertised]: "alias-b",
+      });
+
+      // Were the REST schema to stop declaring this exact name, the key would
+      // be STRIPPED (unknown keys are, by design) and the dispatcher would be
+      // handed `undefined` — a 400, not this 200.
+      expect(res.status).toBe(200);
+      expect(resolvedTargetArg()).toBe("alias-b");
+    });
+
+    it("names that same argument back when it arrives with the wrong type", async () => {
+      // The other direction of the same pin: a DECLARED field trips the schema
+      // and `fieldMessage` names it, where an undeclared one would be stripped
+      // and produce the dispatcher's "Missing required field" sentence instead.
+      // So this fails if either side renames the argument.
+      const advertised = await httpDoorTargetArg();
+
+      const res = await postFix({
+        type: "broken-link",
+        slug: "alias-a",
+        [advertised]: 5,
+      });
+
+      expect(res.status).toBe(400);
+      expect(String(((await res.json()) as { error?: string }).error)).toContain(
+        `\`${advertised}\``,
+      );
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("finds the two MCP doors spelling that argument identically", async () => {
+      // Both doors are hand-maintained in separate files. If they diverge, the
+      // two tests above would keep passing against whichever one they read
+      // while the other door's callers were target-less again.
+      expect(await stdioDoorTargetArg()).toBe(await httpDoorTargetArg());
+    });
+  });
+});

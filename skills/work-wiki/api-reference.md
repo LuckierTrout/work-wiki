@@ -184,7 +184,9 @@ Query: `status=open` (default) | `all`.
 | `{ "action": "deep_research" }` | Create a **draft** research project. Returns `research` and `confirmRequired: true`. Does not run. |
 
 An unknown action is 400 `unknown_action`. Reopening something already created is
-409 `not_reopenable`.
+409 `not_reopenable`. When `deep_research` is refused for what the request asked
+for — the research-project cap, or a title the store rejects — it is 400
+`invalid_input` with the explanation in `detail`.
 
 ## POST /api/v1/projects/{id}/reviews/resolve
 
@@ -242,6 +244,8 @@ Omit `paths` to rescan every source, up to 25 per call.
 - A path outside `raw/` is 403 `out_of_scope`, and one bad path fails the whole
   call rather than being skipped silently.
 - More than 25 named paths is 400 `too_many_paths`.
+- A `paths` that is not an array of strings is 400 `invalid_input`, with the
+  explanation in `detail`.
 - `queued: false` with `reason: "queue_unavailable"` means the compile was not
   scheduled. It is not a success.
 

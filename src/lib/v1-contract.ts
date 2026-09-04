@@ -183,8 +183,30 @@ export const V1_FILE_BINARY_ERROR = "unsupported_media_type";
 export const V1_FILE_TOO_LARGE_ERROR = "too_large";
 export const V1_BODY_TOO_LARGE_ERROR = "body_too_large";
 export const V1_TREE_TOO_LARGE_ERROR = "tree_too_large";
+/**
+ * A SENTENCE, not a token, and deliberately left one: unlike every other member
+ * of this block its value is an already-published wire string — emitted as the
+ * whole `error` by `search/route.ts` and `web-search/route.ts`, hand-copied as
+ * a bare literal by `retrieve/route.ts`, and quoted verbatim in
+ * `skills/work-wiki/api-reference.md`. Tokenizing it is a wire-contract change
+ * across three doors and an installed skill pack, not a free move, so it is the
+ * one exception here rather than an oversight.
+ */
 export const V1_EMPTY_QUERY_ERROR = "query is required";
 export const V1_UNKNOWN_ACTION_ERROR = "unknown_action";
+/**
+ * The CALLER's input is wrong, not the server. The token is the machine half —
+ * what an agent switch-cases on — and the sentence naming the offending input
+ * rides in `detail` beside it, the `{ error, detail }` shape
+ * `reviews/route.ts` and `web-search/route.ts` already answer with.
+ *
+ * Emitted by the `deep_research` caller-fault 400 and the rescan `paths` 400,
+ * whose bodies used to BE that sentence — a body no agent can branch on. Those
+ * two are what this token converted; the class is NOT closed, and
+ * `V1_EMPTY_QUERY_ERROR` above says why the remaining sentence-valued refusal
+ * stays a sentence.
+ */
+export const V1_INVALID_INPUT_ERROR = "invalid_input";
 
 // ---------------------------------------------------------------------------
 // Limits. Every one of them is in the I/O matrix.

@@ -13,7 +13,11 @@ import {
   type ReviewItem,
 } from "@/lib/review-queue";
 import { createResearchProject } from "@/lib/research-projects";
-import { V1_UNKNOWN_ACTION_ERROR, v1ReviewIntent } from "@/lib/v1-contract";
+import {
+  V1_INVALID_INPUT_ERROR,
+  V1_UNKNOWN_ACTION_ERROR,
+  v1ReviewIntent,
+} from "@/lib/v1-contract";
 import { readV1JsonBody, resolveV1Caller } from "@/lib/v1-route";
 
 interface RouteContext {
@@ -164,7 +168,18 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     // (DW-478). `deep_research` calls `createResearchProject`, so both the
     // `MAX_PROJECTS` refusal and `cleanInput`'s verdict on `item.title` land
     // here — and an agent told "500" retries a request that can never succeed.
-    const status = isClientInputError(error) ? 400 : 500;
-    return NextResponse.json({ error: getErrorMessage(error) }, { status });
+    //
+    // The caller-fault body is TWO HALVES: `error` is the façade's machine
+    // token, the thing an agent switch-cases on as it does at every other 4xx
+    // here, and `detail` carries the store's own sentence, which is the only
+    // part that says WHICH input was wrong. The 500 body stays the bare
+    // message: a server fault has no token vocabulary and nothing to branch on.
+    if (isClientInputError(error)) {
+      return NextResponse.json(
+        { error: V1_INVALID_INPUT_ERROR, detail: getErrorMessage(error) },
+        { status: 400 },
+      );
+    }
+    return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }
 }

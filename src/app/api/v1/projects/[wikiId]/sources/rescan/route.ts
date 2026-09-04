@@ -3,7 +3,11 @@ import { isReadOnly } from "@/lib/config";
 import { getErrorMessage } from "@/lib/errors";
 import { isReadOnlyError, READ_ONLY_REFUSAL } from "@/lib/read-only";
 import { RESCAN_MAX_SOURCES, rescanSources } from "@/lib/source-rescan";
-import { V1_FILE_OUT_OF_SCOPE_ERROR, isV1FileInScope } from "@/lib/v1-contract";
+import {
+  V1_FILE_OUT_OF_SCOPE_ERROR,
+  V1_INVALID_INPUT_ERROR,
+  isV1FileInScope,
+} from "@/lib/v1-contract";
 import { readV1JsonBody, resolveV1Caller, v1SlugGate } from "@/lib/v1-route";
 
 interface RouteContext {
@@ -54,8 +58,17 @@ export async function POST(request: Request, { params }: RouteContext) {
         !Array.isArray(body.paths) ||
         body.paths.some((path) => typeof path !== "string")
       ) {
+        // Token first, sentence in `detail` — the shape
+        // `../../reviews/route.ts` and `/api/v1/web-search` already answer
+        // with. `too_many_paths` three branches down is the sibling TOKEN in
+        // this same `if` block (it carries `limit`, not a `detail`), and this
+        // refusal used to be the one place inside the block where `error` was
+        // an English sentence instead of a machine word.
         return NextResponse.json(
-          { error: "paths must be an array of strings." },
+          {
+            error: V1_INVALID_INPUT_ERROR,
+            detail: "paths must be an array of strings.",
+          },
           { status: 400 },
         );
       }

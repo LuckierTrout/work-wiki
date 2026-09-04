@@ -4426,7 +4426,9 @@ location: src/app/api/lint/fix/route.ts:32 vs src/lib/mcp-http.ts:509
 source_spec: `spec-dw-395-455-456-457-mcp-rest-door-parity.md`
 severity: medium
 reason: `LINT_FIX_REQUEST` (src/app/api/lint/fix/route.ts:29-34) declares `targetSlug`; `src/mcp.ts`'s registered schema and `src/lib/mcp-http.ts`'s `inputSchema` both declare `target`, and `handleFixLintIssue` forwards `args.target` into `fixLintIssue`'s `targetSlug` parameter. Pre-existing and untouched by DW-455/DW-457, but it now means the two doors' new "Invalid request field `...`" messages name different fields for the same value. `src/app/api/lint/workbench-fix/route.ts:27-32` already accepts BOTH names, which is the precedent for an alias.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-machine-door-field-and-error-vocabulary
+resolution-undo: 05ea8dfc3613f69867f3cfb4c3c9cffec555172fcd0d6c447ab1a1f6131f8fff 2026-09-03 7374617475733a206f70656e
 
 ### DW-565: A supported document a sending client labels `Content-Disposition: inline` is now dropped with no acknowledgement line at all, and some mainstream clients label genuinely-attached files inline.
 origin: spec-deferred 8d6dcf5ac9ae
@@ -4586,7 +4588,9 @@ location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:167
 source_spec: `spec-dw-476-478-479-research-store-input-and-cap-hardening.md`
 severity: low
 reason: `v1-contract.ts` supplies `unknown_action` / `not_found` / `wiki_not_found`, and the route's other 4xx bodies use them, so an agent switch-casing on `error` gets a token — except this branch, which passes the store's prose through `getErrorMessage`. Nothing in the repo pins a v1 4xx vocabulary and the door's 403 already emits a sentence, so this is an inconsistency in the façade's error contract rather than a broken one. Worth one focused pass over v1 error bodies.
-status: open
+status: done 2026-09-03
+resolution: resolved by sweep bundle dw-machine-door-field-and-error-vocabulary
+resolution-undo: 05ea8dfc3613f69867f3cfb4c3c9cffec555172fcd0d6c447ab1a1f6131f8fff 2026-09-03 7374617475733a206f70656e
 
 ### DW-581: The DW-26 mode-switch block clicks rail controls with a Create Wiki dialog open, the same unreachable pointer path DW-511 removed from the Settings suite.
 origin: spec-deferred f315fb6d2101
@@ -6108,4 +6112,12 @@ location: src/components/NamesTermsSettings.tsx (save, success branch)
 source_spec: `spec-dw-717-721-unconfirmed-write-helper-adoption.md`
 severity: low
 reason: `readJsonBody` resolves `{}` for a 2xx that merely fails to PARSE — the answer arrived and was shapeless — and every other adopting site has its own guard for that (`if (!wiki?.id) throw …` on the wiki surfaces, `if (!data.queued || !data.jobId)` in `BulkDocumentImport`). `save` has none: it pushes `data.entry` straight into `entries`, so `undefined` reaches the row map and `Cannot read properties of undefined (reading 'canonical')` takes the section down. Found while drafting a "2xx that merely fails to parse" case for that surface; the case was dropped because the crash is pre-existing and outside this spec's scope.
+status: open
+
+### DW-748: The v1 façade's new `invalid_input` token does not separate a MALFORMED body from a capacity or stored-row refusal, so an agent that branches on it can retry a `deep_research` request that can never s
+origin: spec-deferred ef94a11eb4a9
+location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:177
+source_spec: `spec-dw-564-580-machine-door-field-and-error-vocabulary.md`
+severity: medium
+reason: `reviews/[reviewId]/route.ts`'s caller-fault 400 answers `V1_INVALID_INPUT_ERROR` for every `ClientInputError`, and the dominant one is `research-projects.ts`'s "This workspace already has the maximum of 100 research projects." That request's body is well-formed — the refusal is workspace STATE, and no edit to the body clears it. `cleanInput`'s verdict on `item.title` lands in the same branch, where the offending value is the stored review row rather than anything the caller sent. The sentence still rides in `detail`, so nothing regressed against the prose body this bundle replaced, and the single-token shape is what DW-580's "give it a token" authorized; a finer vocabulary (a cap/limit token beside `too_many_paths`, or a 409) is a scope decision the ledger entry did not make. Raised independently by two review layers.
 status: open

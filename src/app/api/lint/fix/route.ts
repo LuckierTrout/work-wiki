@@ -25,11 +25,22 @@ import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
  * than a schema's. `targetSlug`/`message` are optional for the same reason.
  * Unknown keys are stripped rather than rejected, so an older client sending an
  * extra field is not broken by this gate.
+ *
+ * `target` is the SAME VALUE under the name both MCP doors advertise
+ * (`src/mcp.ts`'s registered `fix_lint_issue` schema and `src/lib/mcp-http.ts`),
+ * accepted here so one body works at all three doors — the alias
+ * `src/app/api/lint/workbench-fix/route.ts` already set the precedent for.
+ * `targetSlug` wins when both arrive, and it stays the name the in-product
+ * client (`src/hooks/useLint.ts`) sends. Both are `.optional()`, never
+ * nullable: an explicit `null` is still a 400 naming the field it arrived on.
+ * The alias goes ONE WAY on purpose — `targetSlug` is not added to either MCP
+ * door's advertised `inputSchema`, which would give one value four spellings.
  */
 const LINT_FIX_REQUEST = z.object({
   type: z.enum(AUTO_FIXABLE_CHECK_TYPES),
   slug: z.string().optional(),
   targetSlug: z.string().optional(),
+  target: z.string().optional(),
   message: z.string().optional(),
 });
 
@@ -69,7 +80,9 @@ function fieldMessage(error: z.ZodError): string {
  * sitting outside the pin — which is the drift DW-346 filed, not a fix for it.
  *
  * Request body: `type` plus those fields. `slug` is the page being fixed,
- * `targetSlug` the page on the other end of the link or conflict, and `message`
+ * `targetSlug` the page on the other end of the link or conflict — accepted
+ * ALSO as `target`, the spelling both MCP doors advertise, so one body works at
+ * every door; `targetSlug` wins when a request sends both — and `message` is
  * the issue's own `message` string from the lint report — `missing-concept-page`
  * PARSES that string, so it must arrive verbatim in the `Concept "…" is
  * mentioned in …` form `checkMissingConceptPages` emits, or the fix answers 400.
@@ -77,6 +90,7 @@ function fieldMessage(error: z.ZodError): string {
  * ```json
  * { "type": "…", "slug": "source-page" }
  * { "type": "…", "slug": "source-page", "targetSlug": "target-page" }
+ * { "type": "…", "slug": "source-page", "target": "target-page" }
  * { "type": "…", "message": "Concept \"vector search\" is mentioned in ingest, retrieval but has no dedicated page. Both describe it at length." }
  * ```
  *
@@ -148,7 +162,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { type, slug, targetSlug, message } = parsed.data;
+    const { type, slug, targetSlug, target, message } = parsed.data;
+    // One value, two accepted spellings (see `LINT_FIX_REQUEST` above): the
+    // legacy `targetSlug` this door shipped with wins, `target` is the MCP
+    // doors' name made portable to this one. Mirrors `workbench-fix`.
+    const resolvedTarget = targetSlug ?? target;
     // The resolved owner is the TRIGGER, not the author (DW-447). This door
     // used to pass the owner's handle as `fixLintIssue`'s fifth argument, the
     // `author` — which credited a human with a machine-generated edit in the
@@ -161,7 +179,7 @@ export async function POST(req: NextRequest) {
     const result = await fixLintIssue(
       type,
       slug ?? "",
-      targetSlug,
+      resolvedTarget,
       message,
       undefined,
       // Non-null: `isOwnerPrincipal` is false for a null/undefined principal,
