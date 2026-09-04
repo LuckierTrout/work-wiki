@@ -37,6 +37,7 @@ import {
   toolSystemPrompt,
   withSelectedSkill,
 } from "../../../sidecar/agent.mjs";
+import { MCP_INSTRUCTIONS } from "../../../sidecar/mcp.mjs";
 import { parseSkillFrontmatter, readSkill, scanSkills, skillId, skillRoots } from "../../../sidecar/skills.mjs";
 import {
   createAgentWorkspace,
@@ -1964,7 +1965,8 @@ describe("chat-agent copy derives its Settings destination", () => {
     // because that drift is invisible to any assertion on a single sentence.
     // Within `src/lib` the label belongs to `SETTINGS_CATEGORIES` and is typed
     // nowhere else; the one copy outside it, `sidecar/mcp.mjs`, is forced by
-    // AD-6 (the sidecar may not import `src/lib`) and is not in scope here.
+    // AD-6 (the sidecar may not import `src/lib`) and is pinned by the next row
+    // rather than left to a rename to find.
     const source = await readFile(
       path.resolve(__dirname, "../chat-agent.ts"),
       "utf8",
@@ -1981,6 +1983,26 @@ describe("chat-agent copy derives its Settings destination", () => {
     // constant, moves a line count without any drift having happened.
     const uses = source.split("${API_MCP_POINTER}").length - 1;
     expect(uses).toBe(3);
+  });
+
+  it("holds the sidecar's MCP instructions to the same derived pointer", () => {
+    // THE ONE COPY AD-6 FORCES (DW-629), and the only one under `sidecar/`.
+    // `MCP_INSTRUCTIONS` hand-types this destination because the sidecar may
+    // not import `src/lib`, and it is the standing instruction every MCP client
+    // reads before it calls anything — so a rename in `SETTINGS_CATEGORIES`
+    // would otherwise point every client at a nav row that no longer exists,
+    // with the suite green. Asserted against `pointer` rather than a retyped
+    // literal: retyping it here would make this row the second copy instead of
+    // the check on the first.
+    //
+    // WHITESPACE COLLAPSED FIRST, because the constant is a hand-wrapped array
+    // joined on `\n`. The destination happens to sit inside one element today,
+    // but a longer label re-wrapped to fit would straddle a line break and fail
+    // this row with NO DRIFT HAVING HAPPENED — and the obvious fix for that
+    // failure is to retype the literal here, which is the one thing this row
+    // exists to prevent. Only the haystack needs it: `pointer` is built from
+    // `SETTINGS_CATEGORIES` at run time and never wraps.
+    expect(MCP_INSTRUCTIONS.replace(/\s+/g, " ")).toContain(pointer);
   });
 
   it("keeps chat-agent.ts client-safe and pure", async () => {

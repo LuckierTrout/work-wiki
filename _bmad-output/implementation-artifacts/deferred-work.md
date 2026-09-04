@@ -4646,7 +4646,9 @@ location: src/lib/chat-pending-turn.ts:139
 source_spec: `spec-dw-444-chat-canvas-transport-extract.md`
 severity: low
 reason: `??` only substitutes on null/undefined. `sidecar/agent.mjs` and `sidecar/chat-transport.mjs` emit `citations: []` on the settle paths, so `OpenTurn.fallbackCitations` is effectively dead and such an answer is reduced to the coverage sentence. Moved verbatim from `ab263b98`, so the behaviour is unchanged by DW-444; deciding whether the assemble's citations should stand in for an empty array is a Chat-behaviour question, not a refactor one.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-chat-sidecar-frame-and-pointer
+resolution-undo: 441770265be2dbf322f7d5dc6ff67f4eb06590577672105b61246f8eaa7e31e7 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-31 Rescue an empty settle — Change the read to `frame.citations?.length ? frame.citations : turn.fallbackCitations` so a settle frame carrying no citations falls back to the ones assemble already resolved, and pin the rescue with a transport test that settles with an empty array and asserts the fallback citations reach the rendered turn.
 
 ### DW-586: Nothing asserts that pressing Stop, or unmounting, actually aborts an in-flight turn.
@@ -5060,7 +5062,9 @@ location: sidecar/mcp.mjs:54
 source_spec: `spec-dw-503-504-settings-pointer-derivation.md`
 severity: low
 reason: `sidecar/mcp.mjs:52-55` reads "the owner has switched the API off in Settings → API + MCP" — the same sentence as `CHAT_API_DISABLED_COPY`, still a literal. It is the standing instruction text every MCP client reads before its first call, so it is owner-facing. `grep -rn MCP_INSTRUCTIONS` returns only its definition (`:50`) and its `McpServer` registration (`:345`); no test asserts its content. Renaming `api-mcp` in `SETTINGS_CATEGORIES` now moves the three `chat-agent.ts` sentences automatically and leaves this one stale with the whole suite green. A plain import cannot fix it — AD-6 forbids the sidecar importing `src/lib` — so it needs a shared `.mjs` constant, or a node-project test that imports `MCP_INSTRUCTIONS` (the idiom `epic8-chat-agent.test.ts` already uses for `sidecar/shell.mjs`) and asserts it contains `settingsPointer("api-mcp", SETTINGS_LABEL)`.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-chat-sidecar-frame-and-pointer
+resolution-undo: 441770265be2dbf322f7d5dc6ff67f4eb06590577672105b61246f8eaa7e31e7 2026-09-04 7374617475733a206f70656e
 
 ### DW-630: Two provider refusals send the owner to a bare "Settings" with no category, now less specific than the guard DW-503 just fixed.
 origin: spec-deferred 2d9ef479a717
@@ -6226,4 +6230,12 @@ location: src/lib/chat-session-transport.ts:74-75 (with the trailing-block flush
 source_spec: `spec-dw-582-584-sse-frame-hardening.md`
 severity: low
 reason: Pre-existing, and the sibling branch of the DW-583 guard rather than a consequence of it. `DATA_RE` (`chat-session-transport.ts:56`) requires a closing `}`, so a payload cut off mid-write does not match at all — `data` falls through to `{}` and the block is returned as a VALID `done` frame. The unparseable-but-complete shape this bundle fixed now returns `null`; the truncated shape three lines up still returns `{}`. It is reachable in production precisely because `consumeSidecarStream` deliberately flushes the trailing partial block at stream end (`:142-145`), which is exactly where a dropped loopback connection lands. VERIFIED during this run's review: `readSidecarSseBlock('event: done\ndata: {"content":"Roll')` returns `{"event":"done","data":{}}`, and `consumeSidecarStream` over `['event: agent\ndata: {"delta":"Roll"}\n\n', 'event: done\ndata: {"content":"Roll']` RESOLVES with `{}` rather than rejecting. Downstream, `ChatCanvas.driveTurn` (`ChatCanvas.tsx:527`) hands that `{}` to `s
+status: open
+
+### DW-755: An Agent turn that ends in a refusal — a denied shell command, a cancelled Skill form — reaches the owner as the coverage sentence instead of the refusal the sidecar actually sent.
+origin: spec-deferred bfd1a55c01c6
+location: src/lib/chat-pending-turn.ts:155 (the `sanitizeCitedAnswer` call), against src/lib/chat-citations.ts:52-58 and sidecar/chat-transport.mjs:76-82
+source_spec: `spec-dw-585-629-chat-settle-citations-and-mcp-pointer.md`
+severity: low
+reason: Pre-existing and untouched by this bundle: it is the FULL-array branch of the same read, and it survives unchanged under both `??` and the new length test. The two copies of `sanitizeCitedAnswer` disagree. The sidecar's takes a fourth `allowUncited` argument (`sidecar/chat-transport.mjs:44-47,76-82`) and `runToolTurn` passes `allowUncited: result.outputs.length > 0 || result.toolCalls.length > 0` (`:376-379`), so an answer with no `[n]` marker survives when the turn ran a tool. The browser's copy (`src/lib/chat-citations.ts:19-56`) has NO such parameter: `used.size === 0` returns `CHAT_COVERAGE_MISSING_COPY` with `citations: []` unconditionally. So the frame the sidecar settles is re-sanitized on arrival under a stricter rule than it was emitted under, and its content is replaced. VERIFIED during this run's review with a throwaway `node`-project probe (since removed) composing the real functions: the sidecar emits `{"content":"Denied. The command did not run.","citations":[{"n":1,…}],"
 status: open

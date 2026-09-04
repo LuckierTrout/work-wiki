@@ -34,7 +34,10 @@ import { SETTINGS_LABEL, settingsPointer } from "./workbench-settings";
  * forced rather than missed: `sidecar/mcp.mjs`'s `MCP_INSTRUCTIONS` names the
  * same destination for every MCP client that reads it, and the sidecar may not
  * import `src/lib` (AD-6), so that sentence cannot be derived from here. A
- * rename therefore still has exactly one other place to visit, by design.
+ * rename therefore still has exactly one other place to visit, by design — and
+ * it will be TOLD to visit it: `epic8-chat-agent.test.ts` imports
+ * `MCP_INSTRUCTIONS` and asserts it contains the same derived pointer, so a
+ * rename that skips the sidecar fails a named row rather than shipping quietly.
  *
  * The SHORT surface label is passed rather than defaulted because these three
  * render INSIDE the Workbench: there the unprefixed "Settings" already names

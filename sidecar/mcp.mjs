@@ -46,6 +46,23 @@ export const MCP_BASE_URL = `http://${LOOPBACK_HOST}:${LOOPBACK_PORT}`;
  * because a stock client reads this and nothing else. `authConfigured: false`
  * means the owner has not generated a token — retrying the call is useless, and
  * saying so is the difference between one clear sentence and a loop of 401s.
+ *
+ * THE SETTINGS DESTINATION BELOW IS HAND-TYPED, and within the sidecar's own
+ * runtime code it is the only copy: `grep -rn "API + MCP" sidecar/` returns
+ * this line and nothing else. It cannot be derived — `SETTINGS_CATEGORIES` owns
+ * that label and the sidecar may not import `src/lib` (AD-6) — so it is held to
+ * that owner from the other side instead:
+ * `src/lib/__tests__/epic8-chat-agent.test.ts` imports this constant and
+ * asserts it contains `settingsPointer("api-mcp", SETTINGS_LABEL)`. Rename the
+ * category without editing the sentence below and that row fails, naming this
+ * file; change the label typed below and it fails too. RE-WRAPPING the array is
+ * free: the row compares with whitespace collapsed, so the destination may
+ * straddle a line break.
+ *
+ * THE PIN DOES NOT MAKE A RENAME SAFE REPO-WIDE. The same label is hand-typed
+ * in `skills/work-wiki/*.md`, in an `e2e/workbench-owner.spec.ts` role name and
+ * in a doc comment on `src/app/api/v1/loopback-settings/route.ts`. None of
+ * those are covered by this row — it speaks for this file only.
  */
 export const MCP_INSTRUCTIONS = [
   "This server reads one work-wiki workspace over its local loopback API.",

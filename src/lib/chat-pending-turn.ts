@@ -134,9 +134,27 @@ export function settleTurn(turn: OpenTurn, frame: SidecarDoneFrame): ChatTurnOut
       ? { kind: "pending", pending, formValues: initialFormValues(pending.fields) }
       : { kind: "pending", pending };
   }
+  // A LENGTH TEST, not `??` (DW-585). Every sidecar settle path SENDS the
+  // `citations` key rather than omitting it — `chat-transport.mjs:396` and
+  // `:619` pass on its own `sanitizeCitedAnswer`, `:573` sends `[]` beside the
+  // coverage sentence, and the `AgentTurn` refusals send `[]` too — so the
+  // nullish branch was unreachable and `OpenTurn.fallbackCitations` was dead
+  // despite `ChatCanvas.tsx:488` populating it on every turn.
+  //
+  // NO FRAME THE CURRENT SIDECAR EMITS SETTLES DIFFERENTLY UNDER THE TWO
+  // OPERATORS, and the claim here is deliberately no stronger than that: the
+  // sidecar re-sanitizes before it emits, and `chat-transport.mjs:375` already
+  // falls back to the caller's assemble rows — the very rows held here — while
+  // doing so, so an empty array only ever ships beside content whose unmapped
+  // markers have already been stripped. What this restores is the FIELD'S
+  // CONTRACT, which is what the field always meant: `[]` says "none of my own"
+  // exactly as `undefined` and `null` do, and all three now reach the assemble,
+  // while a frame carrying real rows is still preferred. It becomes
+  // load-bearing the moment a settle path emits without re-sanitizing against
+  // the assemble first.
   const sanitized = sanitizeCitedAnswer(
     frame.content ?? "",
-    frame.citations ?? turn.fallbackCitations,
+    frame.citations?.length ? frame.citations : turn.fallbackCitations,
   );
   // AN EMPTY ANSWER WITH NO TOOL CALLS is the coverage-missing case the assemble
   // predicted.

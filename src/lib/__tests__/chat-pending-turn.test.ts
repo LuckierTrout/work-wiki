@@ -160,6 +160,39 @@ describe("a done frame that writes the turn down", () => {
     expect(outcome.frames[1].citations).toEqual([cited]);
   });
 
+  it("falls back to the assemble when the frame's citations are an EMPTY array", () => {
+    // A HAND-BUILT FRAME, not one observed on the wire (DW-585). The sidecar
+    // re-sanitizes before it emits and falls back to these same assemble rows
+    // while doing so (`chat-transport.mjs:375`), so it does not currently pair
+    // `citations: []` with a surviving marker — every real frame settles the
+    // same way under `??` and under the length test today. What this pins is
+    // the FIELD'S CONTRACT: an empty array says "none of my own" exactly as an
+    // absent key does, so `fallbackCitations` — populated on every turn by
+    // `ChatCanvas.tsx:488` — is reachable rather than dead. A row of its own
+    // because that difference is invisible to every other assertion here.
+    const outcome = settleTurn(openTurn(), {
+      content: "Alpha says so [1].",
+      citations: [],
+    });
+    if (outcome.kind !== "settled") throw new Error("expected a settled turn");
+    expect(outcome.frames[1].content).toBe("Alpha says so [1].");
+    expect(outcome.frames[1].citations).toEqual(ASSEMBLED.citations);
+  });
+
+  it("has nothing to rescue when the assemble carried no citations either", () => {
+    // THE OTHER HALF OF THE BRANCH: the length test picks a fallback, it does
+    // not invent evidence. With both sides empty the marker is still invented,
+    // so the answer is still reduced to the coverage sentence — which is what
+    // stops the rescue from becoming an unconditional override.
+    const outcome = settleTurn(openTurn({ fallbackCitations: [] }), {
+      content: "Certainly [9].",
+      citations: [],
+    });
+    if (outcome.kind !== "settled") throw new Error("expected a settled turn");
+    expect(outcome.frames[1].content).toBe(CHAT_COVERAGE_MISSING_COPY);
+    expect(outcome.frames[1].citations).toEqual([]);
+  });
+
   it("settles an empty answer to the coverage sentence, with nothing cited", () => {
     const outcome = settleTurn(openTurn(), { content: "", toolCalls: [] });
     if (outcome.kind !== "settled") throw new Error("expected a settled turn");
