@@ -3240,7 +3240,9 @@ source_spec: `spec-dw-411-pnpm-workspace-root.md`
 location: Dockerfile:5-13
 severity: low
 reason: Dockerfile:5-6 copies only `package.json pnpm-lock.yaml` and then runs `pnpm install --frozen-lockfile`; Dockerfile:13's `COPY . .` brings `pnpm-workspace.yaml` into the build stage before `pnpm build`, and `.dockerignore` does not exclude it. Nothing observably breaks today (the image has no ancestor workspace file to adopt, and the build stage only builds), but the divergence is unverified: `docker build .` was not part of this story's verification.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-deployment-and-e2e-environment-parity
+resolution-undo: de38a85a2ebc702ef3b0ffa7e5293fc10f4d3bb6ad476351b62a81e62a94df89 2026-09-05 7374617475733a206f70656e
 
 ### DW-432: `.github/workflows/deploy-cloudflare.yml`'s `paths:` filter does not list pnpm-workspace.yaml, so changing or deleting that file alone never triggers the workflow it protects.
 origin: spec-deferred 2ff1a73d7250
@@ -4197,7 +4199,9 @@ location: src/app/layout.tsx:88, src/lib/viewer-handle.ts
 source_spec: `spec-dw-389-392-authz-gate-and-copy-tails.md`
 severity: low
 reason: `src/app/layout.tsx:88` renders the shell WITHOUT `<ClerkProvider>` when `isE2eIdentityArmed()`, while `middleware.ts` admits the owner from the `yopedia_e2e` cookie. `useViewerHandle` reads Clerk, so `isSignedIn` and `handle` are unavailable on that path: Delete and Re-ingest were already hidden from the E2E owner for this reason, and DW-392's signed-in term extends the same blind spot to Revert. Nothing breaks today — neither `e2e/workbench-owner.spec.ts` nor `e2e/retired-routes.spec.ts` exercises an article affordance — but an E2E case that ever does will see a control the server would admit.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-deployment-and-e2e-environment-parity
+resolution-undo: de38a85a2ebc702ef3b0ffa7e5293fc10f4d3bb6ad476351b62a81e62a94df89 2026-09-05 7374617475733a206f70656e
 
 ### DW-535: Deleting talk.ts's derived-index hooks left syncDiscussStatsForSlug and recordTalkForAuthor with zero production callers, and their doc comments still describe the deleted talk.ts caller.
 origin: spec-deferred 34c447f2691e
@@ -6573,4 +6577,12 @@ location: src/lib/agent-handle.ts:91
 source_spec: `spec-dw-396-709-ingest-path-plumbing.md`
 severity: low
 reason: `humanOwnerOf` (`src/lib/agent-handle.ts:91`) returns everything before the first `--` whenever that segment is non-blank. Principal handles come from a Clerk username, an X handle, or a raw Clerk id (`src/lib/auth.ts:136-148`); X handles cannot contain `-` and Clerk ids do not, but nothing in the repo constrains a Clerk username, so a user `jean--luc` reads tenant `jean`'s Purpose and dictionary. A punctuation-only prefix (`.--yoyo`, `/--yoyo`) passes the blank check too and then collapses to the DEFAULT tenant through `ownerToTenant`, handing the default silo's guidance to an unrelated handle. The ambiguity is pre-existing at the labelling level (`isAgentHandle` treats any `--` as an agent) and was introduced for guidance by DW-543 at the merge and ingest doors; DW-709 did not widen the class, only the number of sites where its consequence is reachable. Consequence is a wrong answer, not a leak of stored pages: guidance is prompt text, and every storage/attribution path still uses th
+status: open
+
+### DW-781: `docker build .` cannot produce an image at all: the build stage's `pnpm build` fails with a webpack error pulling `node:timers/promises` into a client bundle.
+origin: spec-deferred 6a280dd6a244
+location: Dockerfile:20
+source_spec: `spec-dw-431-534-deployment-and-e2e-environment-parity.md`
+severity: low
+reason: Verifying DW-431 with a real build surfaced this. `docker build .` fails at `Dockerfile:20` (`RUN pnpm build`) with "Build failed because of webpack errors" and the import trace `node:timers/promises` -> src/lib/storage/filesystem.ts -> src/lib/storage/index.ts -> src/lib/backups.ts -> src/components/SystemHealthDesk.tsx. Pre-existing, not caused by this change: a control build from a Dockerfile whose deps stage still reads `COPY package.json pnpm-lock.yaml ./` fails identically at the same step. `docker build --target deps .` succeeds either way, so only the image's build stage is dead. Nothing in `.github/workflows/` runs `docker build`, so CI cannot see it; `Dockerfile` and `docker-compose.yml` are the only record that the container path is meant to work.
 status: open

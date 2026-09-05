@@ -6,6 +6,7 @@ import { Footer } from "@/components/Footer";
 import { SiteChrome } from "@/components/SiteChrome";
 import { ClientProviders } from "@/components/ClientProviders";
 import { EnsureYoyo } from "@/components/EnsureYoyo";
+import { E2eViewerIdentity } from "@/components/E2eViewerIdentity";
 import { RegisterSW } from "@/components/RegisterSW";
 import { APP_NAME, APP_ORIGIN, APP_TITLE } from "@/lib/brand";
 import { isE2eIdentityArmed } from "@/lib/e2e-identity";
@@ -73,6 +74,17 @@ const themeScript = `
  * exception: dummy keys make `<ClerkProvider>` throw before the Workbench
  * can paint, and `useUser()` in EnsureYoyo / NavHeader would throw without
  * it. The E2E cookie is the identity there — see `e2e-identity.ts`.
+ *
+ * That cookie is also what the client islands must gate on under the harness
+ * (DW-534). With no `<ClerkProvider>` here, `useViewerHandle()` used to answer
+ * SIGNED OUT for the very owner `middleware.ts` admits, so Delete, Re-ingest,
+ * Graphify and Revert all failed closed for the only viewer the E2E lane has.
+ * `<E2eViewerIdentity>` resolves the cookie on the server and injects the
+ * resulting handle; it wraps the armed branch ONLY, so the live Clerk path is
+ * byte-for-byte what it was. This function stays SYNCHRONOUS — the async work
+ * lives inside `<E2eViewerIdentity>`, which React awaits during the server
+ * render — because `src/app/__tests__/app-shell.test.tsx` mounts
+ * `RootLayout({children})` by calling it directly.
  */
 function AppProviders({ children }: { children: React.ReactNode }) {
   const e2e = isE2eIdentityArmed();
@@ -85,7 +97,9 @@ function AppProviders({ children }: { children: React.ReactNode }) {
       </SiteChrome>
     </ClientProviders>
   );
-  return e2e ? shell : (
+  return e2e ? (
+    <E2eViewerIdentity>{shell}</E2eViewerIdentity>
+  ) : (
     <ClerkProvider
       signInFallbackRedirectUrl="/"
       signInForceRedirectUrl="/"

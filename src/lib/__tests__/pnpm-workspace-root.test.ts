@@ -75,6 +75,28 @@ const OUTDATED_LOCKFILE = "ERR_PNPM_OUTDATED_LOCKFILE";
 
 const ROOT_WORKSPACE = "pnpm-workspace.yaml";
 const ROOT_LOCKFILE = "pnpm-lock.yaml";
+const ROOT_MANIFEST = "package.json";
+
+const DOCKERFILE = "Dockerfile";
+const DOCKERIGNORE = ".dockerignore";
+
+/**
+ * The root files pnpm consults to decide WHAT it is installing: the manifest,
+ * the lockfile, and the workspace file that stops the upward walk. All three
+ * have to reach the stage that runs `pnpm install`, and all three have to
+ * survive `.dockerignore` so the later `COPY . .` stage sees the same answer.
+ */
+const INSTALL_INPUTS = [ROOT_MANIFEST, ROOT_LOCKFILE, ROOT_WORKSPACE] as const;
+
+/**
+ * How each of the two stages is IDENTIFIED — by what it runs, never by its `AS`
+ * label, so renaming or reordering the stages keeps the assertions pointed at
+ * the right ones. `[^&|;]*` keeps each match inside one command of a chained
+ * `RUN`, so `corepack … && pnpm install` is an install and nothing else in the
+ * chain can be mistaken for one.
+ */
+const PNPM_INSTALL = /\bpnpm\b[^&|;]*\binstall\b/;
+const APP_BUILD = /\bpnpm\b[^&|;]*\bbuild\b/;
 const WORKSPACE_FILE = "pnpm-workspace.yaml";
 const LOCKFILE = "pnpm-lock.yaml";
 const WORKFLOWS_DIR = ".github/workflows";
@@ -248,6 +270,132 @@ function rootEntriesClaiming(packages: string[], target: string): string[] {
   return packages.filter((entry) =>
     globToRegExp(normalizeDir(entry)).test(normalizedTarget),
   );
+}
+
+/**
+ * Dockerfile instructions, comments dropped and `\`-continuations joined.
+ *
+ * A Dockerfile's `COPY`/`RUN` may span lines, so a line-at-a-time reader would
+ * see half an instruction and could miss both the source it is looking for and
+ * the `pnpm install` that identifies the stage.
+ */
+function dockerInstructions(text: string): string[] {
+  const out: string[] = [];
+  let pending = "";
+  for (const raw of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+    const line = raw.replace(/\r$/, "");
+    // Docker strips comment lines wherever they appear, continuations included.
+    if (/^\s*#/.test(line)) continue;
+    if (pending === "" && line.trim() === "") continue;
+    const continued = /\\\s*$/.test(line);
+    const body = line.replace(/\\\s*$/, "").trim();
+    pending = pending === "" ? body : `${pending} ${body}`;
+    if (!continued) {
+      if (pending !== "") out.push(pending);
+      pending = "";
+    }
+  }
+  if (pending !== "") out.push(pending);
+  return out;
+}
+
+interface DockerStage {
+  /** The `AS <name>` label, or a positional description when it has none. */
+  name: string;
+  /** Sources of every `COPY` that reads from the BUILD CONTEXT, flattened. */
+  contextCopies: string[];
+  /** Whether any `COPY --from=<stage>` brings files in from another stage. */
+  copiesFromStage: boolean;
+  /** Each `RUN` command, on one line. */
+  runs: string[];
+}
+
+/**
+ * The stages of a Dockerfile, with what each one copies OUT OF THE BUILD
+ * CONTEXT and what it runs.
+ *
+ * `COPY --from=<stage>` is tracked separately and its sources are NOT context
+ * copies: those files come from an earlier stage's filesystem, so they say
+ * nothing about what the build context supplies — and counting them would let a
+ * `COPY --from=deps /app/pnpm-workspace.yaml` satisfy an assertion about what
+ * the install stage reads from the repo.
+ */
+function dockerStages(text: string): DockerStage[] {
+  const stages: DockerStage[] = [];
+  let current: DockerStage | null = null;
+  for (const instruction of dockerInstructions(text)) {
+    const parsed = /^([A-Za-z]+)\s+(.*)$/.exec(instruction);
+    if (!parsed) continue;
+    const keyword = parsed[1].toUpperCase();
+    const rest = parsed[2].trim();
+    if (keyword === "FROM") {
+      const labelled = /\sAS\s+(\S+)\s*$/i.exec(rest);
+      current = {
+        name: labelled ? labelled[1] : `the unnamed stage #${stages.length + 1}`,
+        contextCopies: [],
+        copiesFromStage: false,
+        runs: [],
+      };
+      stages.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (keyword === "RUN") current.runs.push(rest);
+    if (keyword === "COPY" || keyword === "ADD") {
+      const tokens = rest.split(/\s+/).filter((token) => token !== "");
+      if (tokens.some((token) => /^--from=/i.test(token))) {
+        current.copiesFromStage = true;
+        continue;
+      }
+      // Flags (`--chown=`, `--link`) are not sources, and the LAST token is the
+      // destination.
+      current.contextCopies.push(
+        ...tokens.filter((token) => !token.startsWith("--")).slice(0, -1),
+      );
+    }
+  }
+  return stages;
+}
+
+/**
+ * Whether `.dockerignore` keeps `filePath` out of the build context.
+ *
+ * Docker applies every pattern in order and the LAST match wins — that is what
+ * makes this repo's `!SCHEMA.md` after `*.md` a re-inclusion rather than a
+ * conflict — and a pattern naming a directory excludes everything beneath it,
+ * which is why each ancestor path is tested too.
+ *
+ * A LEADING SLASH is stripped, not honoured as a path. Docker reads `/foo` as
+ * "foo, relative to the context root" — the same file `foo` names — but the
+ * candidates below carry no leading slash, so keeping it would compile a
+ * pattern that can never match anything. This function's answer is read as "the
+ * build context still contains this file", so an unmatched pattern is the
+ * SILENT-PASS direction: `/pnpm-workspace.yaml` really does empty the context
+ * of it while the guard reports all clear.
+ */
+function dockerignoreExcludes(text: string, filePath: string): boolean {
+  const segments = normalizeDir(filePath).split("/");
+  const candidates = segments.map((_, index) =>
+    segments.slice(0, index + 1).join("/"),
+  );
+  let excluded = false;
+  for (const raw of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const negated = line.startsWith("!");
+    // The `!` comes off FIRST: `!/SCHEMA.md` is a root-anchored re-inclusion,
+    // and stripping the anchor before the negation would leave the `!` sitting
+    // inside the pattern text.
+    const pattern = normalizeDir(
+      (negated ? line.slice(1) : line).trim().replace(/^\/+/, ""),
+    );
+    if (pattern === "" || pattern === ".") continue;
+    const matcher = globToRegExp(pattern);
+    if (candidates.some((candidate) => matcher.test(candidate))) {
+      excluded = !negated;
+    }
+  }
+  return excluded;
 }
 
 /**
@@ -649,6 +797,118 @@ describe("pnpm workspace roots", () => {
         `its own lockfile. Without it, it is not installable on its own and ` +
         `this suite's whole nested-package story no longer holds.`,
     );
+  });
+
+  it("the Dockerfile stage that installs sees the same workspace root the build stage does (DW-431)", async () => {
+    // DW-431: the deps stage copied `package.json pnpm-lock.yaml` and nothing
+    // else, while the build stage's `COPY . .` brought `pnpm-workspace.yaml`
+    // along with everything else (`.dockerignore` does not exclude it). So the
+    // two stages disagreed about whether `/app` is a pnpm workspace root: the
+    // install ran with pnpm walking UP out of `/app` for a workspace file, the
+    // build ran with one in place. Nothing in the repo could see the divergence
+    // — no `docker build` runs in CI — which is what this test replaces.
+    //
+    // The install stage is DERIVED (the stage whose `RUN` invokes
+    // `pnpm install`), not named, so renaming or reordering the stages keeps the
+    // assertion pointed at the right one.
+    const dockerfile = await readRepoFile(
+      DOCKERFILE,
+      `It is the container build for this app, and the stage that runs ` +
+        `\`pnpm install\` is what this test compares against ${ROOT_WORKSPACE}.`,
+    );
+    const ignore = await readRepoFile(
+      DOCKERIGNORE,
+      `It decides which root files the build stage's \`COPY . .\` supplies, ` +
+        `which is the other half of the stage parity asserted here.`,
+    );
+
+    const stages = dockerStages(dockerfile);
+    expect(
+      stages.length,
+      `${DOCKERFILE} parsed to no stages at all — this reader can no longer ` +
+        `see what any stage copies, so every assertion below would be ` +
+        `vacuous. Check for a syntax it does not handle.`,
+    ).toBeGreaterThan(0);
+
+    const installStages = stages.filter((stage) =>
+      stage.runs.some((run) => PNPM_INSTALL.test(run)),
+    );
+    expect(
+      installStages.map((stage) => stage.name),
+      `No stage in ${DOCKERFILE} runs \`pnpm install\`. Either the container ` +
+        `build stopped installing dependencies, or this reader no longer ` +
+        `recognises the command — and an unrecognised install makes this whole ` +
+        `test pass while the divergence it guards is wide open.`,
+    ).not.toEqual([]);
+
+    for (const stage of installStages) {
+      for (const input of INSTALL_INPUTS) {
+        expect(
+          stage.contextCopies,
+          `${DOCKERFILE} stage \`${stage.name}\` runs \`pnpm install\` without ` +
+            `copying ${input} from the build context (it copies ` +
+            `${stage.contextCopies.join(", ") || "nothing"}). The build stage's ` +
+            `\`COPY . .\` DOES supply it, so the two stages would disagree about ` +
+            `what pnpm is installing — for ${ROOT_WORKSPACE} specifically, ` +
+            `whether \`/app\` is a workspace root at all, which decides between ` +
+            `resolving the single \`.\` importer in place and walking up out of ` +
+            `\`/app\` for someone else's workspace file. Add it to the ` +
+            `stage's \`COPY\`.`,
+        ).toContain(input);
+      }
+    }
+
+    // The OTHER stage, derived the same way. Everything above is about the
+    // install stage, and the failure messages there lean on "the build stage's
+    // `COPY . .` DOES supply it" — a claim nothing was checking. Narrowing that
+    // to explicit paths (`COPY src ./src`, `COPY package.json ./`, …) is an
+    // ordinary layer-caching refactor, and it would re-open DW-431 from the
+    // untested side with this suite green and no `docker build` in CI to catch
+    // it. A whole-context `COPY . .` satisfies this, and so does naming each
+    // file — what must not happen is the root going missing from one side.
+    const buildStages = stages.filter((stage) =>
+      stage.runs.some((run) => APP_BUILD.test(run)),
+    );
+    expect(
+      buildStages.map((stage) => stage.name),
+      `No stage in ${DOCKERFILE} runs the app build (\`pnpm build\`). Either ` +
+        `the container stopped building the app, or this reader no longer ` +
+        `recognises the command — and an unrecognised build stage makes the ` +
+        `parity assertion below vacuous.`,
+    ).not.toEqual([]);
+
+    for (const stage of buildStages) {
+      for (const input of INSTALL_INPUTS) {
+        expect(
+          stage.contextCopies.some((source) => {
+            const normalized = normalizeDir(source);
+            return normalized === "." || normalized === input;
+          }),
+          `${DOCKERFILE} stage \`${stage.name}\` runs the app build without ` +
+            `receiving ${input} from the build context (it copies ` +
+            `${stage.contextCopies.join(", ") || "nothing"}). The install stage ` +
+            `copies it by name, so the two stages would disagree about the ` +
+            `workspace root again — this time with the INSTALL side correct and ` +
+            `the build side walking up out of \`/app\`. Copy the context root ` +
+            `(\`COPY . .\`), or name ${input} in this stage's \`COPY\` too.`,
+        ).toBe(true);
+      }
+    }
+
+    // The last half: `COPY . .` only supplies what the build context contains,
+    // so excluding one of these files would re-open the same divergence from the
+    // opposite side — and it would do so SILENTLY, because the deps stage names
+    // each file explicitly and would keep working.
+    for (const input of INSTALL_INPUTS) {
+      expect(
+        dockerignoreExcludes(ignore, input),
+        `${DOCKERIGNORE} excludes ${input} from the build context, so the ` +
+          `stage that runs \`COPY . .\` never receives it while the install ` +
+          `stage copies it by name — the two stages disagree about the ` +
+          `workspace root again, in the other direction. Un-exclude it (or ` +
+          `re-include it with a later \`!${input}\` line).`,
+      ).toBe(false);
+    }
   });
 
   it("every nested pnpm package is shielded from the root workspace", async () => {
@@ -1250,6 +1510,113 @@ describe("pnpm workspace roots", () => {
       expect(pnpmDirTargets("      - run: pnpm --dir workers/a install\r\n")).toEqual([
         "workers/a",
       ]);
+    });
+  });
+
+  describe("the Dockerfile reader", () => {
+    it("attributes each COPY and RUN to the stage it belongs to", () => {
+      const stages = dockerStages(
+        [
+          "# a comment",
+          "FROM node:22-alpine AS deps",
+          "WORKDIR /app",
+          "COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./",
+          "RUN pnpm install --frozen-lockfile",
+          "",
+          "FROM node:22-alpine AS build",
+          "COPY --from=deps /app/node_modules ./node_modules",
+          "COPY . .",
+          "RUN pnpm build",
+        ].join("\n"),
+      );
+      expect(stages.map((stage) => stage.name)).toEqual(["deps", "build"]);
+      expect(stages[0].contextCopies).toEqual([
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+      ]);
+      expect(stages[0].runs).toEqual(["pnpm install --frozen-lockfile"]);
+      // `--from=` sources belong to another stage's filesystem, not to the
+      // build context — counting them would let a `COPY --from=deps
+      // /app/pnpm-workspace.yaml` answer "does this stage read the repo's
+      // workspace file?" with a yes it has not earned.
+      expect(stages[1].contextCopies).toEqual(["."]);
+      expect(stages[1].copiesFromStage).toBe(true);
+    });
+
+    it("joins a continued instruction, so half of it is never read as the whole", () => {
+      const stages = dockerStages(
+        [
+          "FROM node:22-alpine",
+          "COPY package.json \\",
+          "     pnpm-lock.yaml \\",
+          "     pnpm-workspace.yaml ./",
+          "RUN pnpm install \\",
+          "    --frozen-lockfile",
+        ].join("\n"),
+      );
+      expect(stages[0].contextCopies).toEqual([
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+      ]);
+      expect(stages[0].runs).toEqual(["pnpm install --frozen-lockfile"]);
+      // An unnamed stage still gets a description, so a failure message can
+      // point at it.
+      expect(stages[0].name).toContain("#1");
+    });
+
+    it("drops flags and the destination, keeping only sources", () => {
+      const stages = dockerStages(
+        "FROM scratch\nCOPY --chown=1001:1001 --link a.json b.json /app/\n",
+      );
+      expect(stages[0].contextCopies).toEqual(["a.json", "b.json"]);
+    });
+  });
+
+  describe("the .dockerignore matcher", () => {
+    it("lets a later re-inclusion win, the way docker does", () => {
+      const ignore = ["*.md", "!SCHEMA.md"].join("\n");
+      expect(dockerignoreExcludes(ignore, "README.md")).toBe(true);
+      expect(dockerignoreExcludes(ignore, "SCHEMA.md")).toBe(false);
+      // Order matters, not specificity: reversed, the broad pattern wins.
+      expect(dockerignoreExcludes("!SCHEMA.md\n*.md", "SCHEMA.md")).toBe(true);
+    });
+
+    it("honours a root-anchored pattern, in both directions", () => {
+      // `/foo` is docker's "foo, relative to the context root" — the SAME file
+      // `foo` names. Left unstripped, the leading slash compiles to a pattern
+      // that matches nothing, and this guard answers "still in the context" for
+      // a file the build genuinely no longer receives: the silent pass the
+      // whole Dockerfile test exists to close.
+      expect(dockerignoreExcludes("/pnpm-workspace.yaml", ROOT_WORKSPACE)).toBe(true);
+      expect(dockerignoreExcludes("/node_modules", "node_modules/x/index.js")).toBe(
+        true,
+      );
+      // …and the negation is anchored the same way, with the `!` read first.
+      expect(
+        dockerignoreExcludes("*.yaml\n!/pnpm-workspace.yaml", ROOT_WORKSPACE),
+      ).toBe(false);
+      expect(dockerignoreExcludes("/pnpm-workspace.yaml", ROOT_LOCKFILE)).toBe(false);
+    });
+
+    it("excludes everything under an excluded directory", () => {
+      expect(dockerignoreExcludes("node_modules/", "node_modules/x/index.js")).toBe(
+        true,
+      );
+      expect(dockerignoreExcludes(".git/", "src/app/layout.tsx")).toBe(false);
+    });
+
+    it("does not exclude a file no pattern names", () => {
+      const ignore = ["node_modules/", "*.md", "!SCHEMA.md", "# comment", ""].join(
+        "\n",
+      );
+      expect(dockerignoreExcludes(ignore, ROOT_WORKSPACE)).toBe(false);
+      expect(dockerignoreExcludes(ignore, ROOT_LOCKFILE)).toBe(false);
+      expect(dockerignoreExcludes(ignore, ROOT_MANIFEST)).toBe(false);
+      // …and it DOES see one that is named, so the assertions above are not
+      // passing because the matcher never matches anything.
+      expect(dockerignoreExcludes("pnpm-workspace.yaml", ROOT_WORKSPACE)).toBe(true);
     });
   });
 
