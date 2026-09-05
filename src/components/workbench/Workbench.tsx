@@ -481,30 +481,82 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // Seed the URL so the FIRST entry names its mode AND its surface too.
     // Without this, Back after one switch lands on an entry with no `mode` at
     // all and the popstate handler below would have to invent a policy for it.
-    // `replaceState`, so no entry is added and the owner's Back button still
-    // leaves the app on the first press.
+    // On a load with Settings CLOSED that is one `replaceState`, so no entry is
+    // added and the owner's Back button still leaves the app on the first press.
     //
     // That REPLACE is what makes DW-167's second half work IN SESSION: the
     // entry Settings is then pushed onto names the surface as closed, so Back
     // from Settings lands on it and closes the surface instead of leaving.
     //
-    // It does NOT cover a `?settings=1` deep link opened in a fresh tab. That
-    // entry is the first in its session, this replace only rewrites it in place,
-    // and there is nothing behind it — so Back leaves the app, taking whatever
-    // the owner had typed into Settings with it. Unfixable from here: a seeded
-    // extra entry would mean the owner's first Back never left the app they
-    // arrived on, which is worse. The residue is bounded to a link that was
-    // COPIED while Settings was open and followed into a new tab; every
-    // in-session route to the surface pushes its own entry.
+    // A load whose URL carries `settings=1` is seeded as a PAIR instead
+    // (DW-512). The case that motivates it is the DEEP LINK followed into a
+    // fresh tab: its entry is the first of that session, so a lone replace
+    // rewrites it in place and leaves nothing behind it — Back walks straight
+    // out of the app carrying whatever the visitor had typed into Settings, with
+    // no way to close the surface short of editing the URL by hand. So the
+    // replace writes the surface CLOSED — something to land on — and a push puts
+    // the open one on top of it. The mode's Back contract really does change for
+    // such a load: the visitor's FIRST press closes Settings onto the canvas the
+    // link named rather than leaving, and the second press leaves as it always
+    // did. That is the recorded trade — a surface holding an unsaved draft is
+    // worth one press.
+    //
+    // The predicate is `restoredSettings` ALONE, not "is this the first entry of
+    // the session" — the History API will not answer the second question, and
+    // `history.length` counts entries the shell did not write. So the pair is
+    // seeded on ANY load carrying the flag, a RELOAD of an in-session Settings
+    // URL included. There the entry being replaced was already the open one, so
+    // the stack ends up with two adjacent CLOSED entries around it: the first
+    // Back closes the surface, the second moves between two entries the triple
+    // guard below finds identical and is swallowed — a press that changes
+    // nothing on screen, one more of them per reload. Judged the cheaper half of
+    // the trade against a Back that leaves the app holding an unsaved draft.
+    // (React StrictMode runs this effect twice in DEV, so a dev reload seeds the
+    // pair twice; there is no ran-once ref here and production mounts once.)
+    //
+    // A load with Settings CLOSED is untouched by all of it: `beneath` and
+    // `seeded` are then the same string, no push runs, and `history.length` does
+    // not move.
     try {
+      // BOTH hrefs off the PRE-SEED location, before either write moves it.
+      // `surfaceHref` leaves a param where it already sits, so `/?settings=1`
+      // normalizes to `?settings=1&mode=lint`; reading the location again after
+      // the replace would see `?mode=lint` and hand back `?mode=lint&settings=1`,
+      // reordering the visitor's own link for nothing.
+      const beneath = surfaceHref(
+        window.location,
+        restoredMode,
+        false,
+        restoredCategory,
+      );
       const seeded = surfaceHref(
         window.location,
         restoredMode,
         restoredSettings,
         restoredCategory,
       );
-      if (seeded !== locationHref(window.location)) {
-        window.history.replaceState(null, "", seeded);
+      if (beneath !== locationHref(window.location)) {
+        window.history.replaceState(null, "", beneath);
+      }
+      // Only when the URL carries the flag — and with its OWN `try`, because the
+      // two calls can fail INDEPENDENTLY. The Safari limit the outer `catch`
+      // cites is a rate, not a capability: it is crossed between two adjacent
+      // calls as readily as before either. A replace that lands followed by a
+      // push that throws would leave the address bar naming the surface CLOSED
+      // while Settings is open on screen — the visitor's own `?settings=1`
+      // rewritten away, so copying the link now loses the surface. That is worse
+      // than writing nothing at all, so the failure is repaired by putting the
+      // open href back in place: the entry Back would have consumed is lost, the
+      // URL still agrees with the screen. If THAT throws too — history is simply
+      // gone, not rate-limited — it falls through to the outer `catch`, which is
+      // the same place the replace's own failure lands and leaves the URL as the
+      // visitor wrote it. Either way the restore below runs.
+      if (restoredSettings) {
+        try {
+          window.history.pushState(null, "", seeded);
+        } catch {
+          window.history.replaceState(null, "", seeded);
+        }
       }
     } catch {
       // History unavailable — a sandboxed iframe or opaque-origin document
@@ -703,8 +755,11 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    * either, because the effect only ran in one direction. A counter moves on
    * every bump, so the same destination can be reached again and can be reached
    * from both directions — while the paths that must NOT move focus (the rail
-   * control closing Settings, a traversal that only changes the mode) simply do
-   * not bump it.
+   * control closing Settings, a traversal that only changes the mode, a pane
+   * pick) simply do not bump it. A traversal that MOVES the flag is the one
+   * conditional caller: it bumps only when the keyboard was inside the canvas
+   * being swapped (DW-513), which the handler samples before applying the
+   * surface — the decision cannot be made from here.
    *
    * `#wb-canvas` is the right target in both directions because `ModeCanvas` and
    * `SettingsCanvas` hand the id and `tabIndex={-1}` back and forth: whichever
@@ -870,18 +925,46 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       ) {
         return;
       }
-      // Read BEFORE `applySurface`, which is what moves the ref on the next
-      // render: a traversal that swaps the canvas has no control holding the
-      // keyboard, so the landing site has to catch it (DW-423). A traversal that
-      // only changes the MODE moves nothing — the canvas the owner was standing
-      // in is still the canvas on screen.
+      // Both read BEFORE `applySurface`, which is what moves the ref and swaps
+      // the canvas on the next render.
+      //
+      // The SURFACE swap is what can strand the keyboard: the section the owner
+      // was standing in goes `display: none` in the same commit, so the landing
+      // site has to catch it (DW-423). A traversal that only changes the MODE
+      // moves nothing — the canvas is still the canvas on screen — and neither
+      // does one that moved the PANE alone: the detail column re-renders under
+      // whatever control the owner is standing in, so a bump would take them
+      // off it.
       const movedSettings = settings !== settingsOpenRef.current;
+      // …but only when the keyboard was actually IN the canvas about to be
+      // swapped (DW-513). Back pressed with focus on the rail is a press the
+      // owner made on a control that outlives the swap, and yanking them to
+      // `#wb-canvas` for it is the same mistake `toggleSettings` deliberately
+      // avoids on the rail-close path — this is the traversal path being made
+      // symmetric with it. `contains` answers true for the node ITSELF, which is
+      // what keeps the common route green: `toggleSettings` and `g s` both land
+      // the keyboard on `#wb-canvas` on the way in, so a Back straight back out
+      // still bumps.
+      //
+      // The narrowing has a REAL COST, and it is deliberate rather than
+      // overlooked: focus sitting in a region this same commit withdraws, but
+      // which is not the canvas, is no longer rescued. `selectSettingsCategory`
+      // does not bump, so after a pane pick the keyboard is on a `SettingsNav`
+      // row — that nav renders in the LEFT COLUMN, outside `#wb-canvas`, and is
+      // unmounted by the commit that closes the surface — and a Back out of
+      // Settings from there now drops to `<body>`. The trees, `ActivityDock` and
+      // the Preview column have the same shape on a traversal that OPENS
+      // Settings. The guard is fixed at `#wb-canvas` by the recorded decision;
+      // widening it to "any region about to be withdrawn" is a separate change,
+      // and the surfaces beyond the canvas are explicitly out of scope here.
+      //
+      // Sampled in THIS handler rather than in `bumpCanvasFocus` or the nonce
+      // effect, both of which run after the swap — and that effect's own comment
+      // explains why it must not read `activeElement` at all.
+      const hadCanvas =
+        document.getElementById(CANVAS_ID)?.contains(document.activeElement) ?? false;
       applySurface(next, settings, category);
-      // Only the SURFACE swap moves the keyboard. A traversal that moved the
-      // pane alone leaves the same `#wb-canvas` section on screen — the detail
-      // column re-renders under whatever control the owner is standing in — so
-      // a bump here would take them off it (DW-423's other half).
-      if (movedSettings) bumpCanvasFocus();
+      if (movedSettings && hadCanvas) bumpCanvasFocus();
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -1571,10 +1654,13 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    * Keyed on the NONCE, not on `settingsOpen`. The boolean could only report a
    * change of state, so a second `g s` over an open surface announced Settings
    * and moved nothing (DW-425) and a Back that took the surface away moved
-   * nothing either (DW-423). The bump sites are the whole policy — both openers
-   * and a traversal that MOVES the flag — and the paths that must leave the
-   * keyboard alone (the rail control closing Settings, a traversal that only
-   * changes the mode) are exactly the ones that do not bump.
+   * nothing either (DW-423). The bump SITES are the whole policy — both openers
+   * unconditionally, and a traversal that MOVES the flag only when the keyboard
+   * was inside the canvas being swapped (DW-513) — and the paths that must leave
+   * the keyboard alone (the rail control closing Settings, a traversal that only
+   * changes the mode, a pane pick) are exactly the ones that do not bump. This
+   * effect asks none of that: by the time it runs the canvas has already been
+   * swapped, so the condition is sampled in the `popstate` handler instead.
    *
    * Guarding on the initial value keeps the MOUNT silent, which is what lets a
    * `?settings=1` deep link restore the surface without stealing focus from

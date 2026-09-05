@@ -3954,7 +3954,9 @@ source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
 location: src/components/workbench/Workbench.tsx (the mount seed)
 severity: low
 reason: The seed uses `replaceState`, matching the mode restore's own contract that Back must still leave the app on the first press. So a `?settings=1` link opened in a fresh tab is the first entry of its session and has nothing behind it to close the surface on — verbatim the symptom DW-167 describes, now reachable through the URL the fix introduces. Fixed for the in-session case only; the code comment states the residue rather than claiming otherwise. Closing it needs a decision about seeding a second entry on load, which would change the mode's Back contract too.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-workbench-back-and-focus
+resolution-undo: 095635ee55559a18401a48c5beca1afa4992a79ba01b037934cde96add24e27c 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-28 Seed a second entry — Push a second history entry on a deep-linked ?settings=1 load so Back closes the Settings surface in a fresh tab, accepting and re-pinning the matching change to the mode's Back contract.
 
 ### DW-513: The popstate focus bump is unconditional on where the keyboard was, so Back pressed with focus on the rail still pulls it to `#wb-canvas`.
@@ -3963,7 +3965,9 @@ source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
 location: src/components/workbench/Workbench.tsx (the popstate listener)
 severity: low
 reason: DW-423's own text scopes the defect to "if the owner is inside the Settings surface". The rail-close path deliberately leaves focus alone for exactly that reason — the control the owner pressed holds the keyboard — so the two paths are asymmetric. A narrowing (`document.getElementById(CANVAS_ID)?.contains(document.activeElement)` sampled in the handler, before the commit) would restore the symmetry; nothing pins the case today.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-workbench-back-and-focus
+resolution-undo: 095635ee55559a18401a48c5beca1afa4992a79ba01b037934cde96add24e27c 2026-09-04 7374617475733a206f70656e
 
 ### DW-514: The URL names the Settings surface but not its category, so a copied link reopens the default pane while the live region announces it.
 origin: spec-deferred 592f71cccf15
@@ -6293,4 +6297,12 @@ location: src/lib/storage/r2.ts (queryEmbeddings, Vectorize branch)
 source_spec: `spec-dw-598-599-vector-drift-window-and-epoch.md`
 severity: medium
 reason: `queryEmbeddings`' pre-slice guarantee is exact only where the provider ranks locally (filesystem, the R2 KV fallback). The Vectorize branch over-fetches to `VECTORIZE_FILTERED_TOPK` (20, the `returnMetadata: "all"` ceiling) and filters that window here, so on a corpus whose nearest 20 vectors are all stale the door returns `matches: []` with `rejected: 20` and burns `drift:<model>` — while perfectly current vectors sit at rank 21. The owner reads "rebuild embeddings" about a corpus that does not need it, and the burn then suppresses the next genuine drift line until a rebuild bumps the epoch. The bundle's own note named a Vectorize metadata filter plus a pre-created metadata index as the fix; that route was found unusable, not merely unbuilt — `modelMatches` is "model equals the active one OR the vector carries no model at all", Vectorize's filter grammar has no existence operator and excludes vectors missing the filtered field, so any expressible filter would drop unlabelled legacy v
+status: open
+
+### DW-759: A traversal that moves the Settings flag no longer rescues a keyboard sitting in a region the same commit withdraws but which is not `#wb-canvas` — a `SettingsNav` pane row most reachably — so Back ou
+origin: spec-deferred 8e6e8b7705b5
+location: src/components/workbench/Workbench.tsx (the popstate listener's `hadCanvas` sample)
+source_spec: `spec-dw-512-513-workbench-back-and-focus.md`
+severity: medium
+reason: DW-513 narrowed the popstate bump to `document.getElementById(CANVAS_ID)?.contains(document.activeElement)`, which is the expression the recorded decision names. But `selectSettingsCategory` deliberately does not bump, so after a pane pick the keyboard is on a `SettingsNav` button — and that nav renders in the left `<aside>`, OUTSIDE `#wb-canvas`, and is unmounted by the very commit that closes the surface. Reproduced against this change: open Settings, click a pane row, Back (pane undone, focus stays on the row — already pinned), Back again (surface closes) → `document.activeElement` is `<body>`. Before the narrowing it was `#wb-canvas`. That is DW-423's own symptom, re-opened for one class of focus position. The trees, `ActivityDock` and the Preview column have the same shape on a traversal that OPENS Settings. Not fixed here: DW-513's decision fixes the sample at the canvas, and the code comment now states the cost rather than claiming otherwise. Widening it to "any region this comm
 status: open

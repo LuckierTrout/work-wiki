@@ -425,9 +425,14 @@ describe("Workbench mode ↔ URL", () => {
     expect(settingsShowing()).toBe(true);
     expect(current()).toBe(SETTINGS_LABEL);
     expect(window.location.search).toBe("?mode=chat&settings=1");
-    // A restore is not a change the owner made: no entry, nothing announced,
-    // and the keyboard left exactly where the visitor had it.
-    expect(window.history.length).toBe(before);
+    // ONE entry, and it is not a step the visitor took (DW-512). The link's own
+    // entry is the first of its session, so a lone `replaceState` would leave
+    // nothing behind the open surface and Back would walk out of the app with
+    // the unsaved draft in it. The seed writes the surface CLOSED into that
+    // first entry and pushes the open one on top, so Back has somewhere to land.
+    expect(window.history.length).toBe(before + 1);
+    // Still SILENT: the extra entry is bookkeeping, not a change the owner made,
+    // so nothing is announced and the keyboard is left where the visitor had it.
     expect(announced()).toBe("");
     expect(document.activeElement).toBe(resting);
     // …and the mode UNDERNEATH the surface came back with it, which is what
@@ -438,14 +443,47 @@ describe("Workbench mode ↔ URL", () => {
     expect(current()).toBe("Chat");
   });
 
+  it("closes a deep-linked Settings on Back instead of leaving the app", async () => {
+    // DW-512, the headline. Followed into a fresh tab, this link's entry is the
+    // FIRST of its session: before the seeded pair, Back went past the shell
+    // entirely and took the unsaved Settings draft with it, leaving no way to
+    // close the surface short of hand-editing the URL. Now the entry underneath
+    // is the same link with the surface closed, so the press lands on the canvas
+    // the link named.
+    window.history.replaceState(null, "", "/?mode=chat&settings=1");
+    writeStoredMode("wiki");
+    await renderShell();
+    const resting = document.activeElement;
+    expect(settingsShowing()).toBe(true);
+
+    await traverse(() => window.history.back());
+
+    expect(settingsShowing()).toBe(false);
+    // The mode the LINK named, not the stored one: the entry beneath was built
+    // from the same location, so closing reveals the canvas the sender meant.
+    expect(current()).toBe("Chat");
+    expect(window.location.search).toBe("?mode=chat");
+    // A traversal IS a change the owner made, so it announces where it lands.
+    expect(announced()).toBe("Chat");
+    // …and the keyboard stays where the visitor had it (DW-513): the restore
+    // never moved focus into the canvas, so there is nothing here to rescue.
+    expect(document.activeElement).toBe(resting);
+    // Nothing navigated: the shell is the same mounted tree it was.
+    expect(screen.getByText("canvas")).toBeTruthy();
+  });
+
   it("honours a settings flag that carries no mode, and seeds the mode beside it", async () => {
     // The two params are read independently: the flag comes straight from the
     // URL, the mode falls back to storage when the URL names none. So a
     // hand-shortened link still opens the surface it asked for, over the canvas
-    // the owner last used rather than over nothing — and the seed's one
-    // `replaceState` writes the mode in beside the flag, so the FIRST entry of
-    // the session names a whole surface and Back has no half-named entry to
-    // land on.
+    // the owner last used rather than over nothing — and the seed writes the
+    // mode in beside the flag, so the FIRST entry of the session names a whole
+    // surface and Back has no half-named entry to land on.
+    //
+    // POSITION survives the two-step seed: both hrefs are computed off the
+    // pre-seed location, so the flag keeps the slot the link wrote it in.
+    // Recomputing the pushed href after the replace would read `?mode=lint` and
+    // hand back `?mode=lint&settings=1`, reordering the visitor's own link.
     window.history.replaceState(null, "", "/?settings=1");
     writeStoredMode("lint");
     const before = window.history.length;
@@ -455,8 +493,9 @@ describe("Workbench mode ↔ URL", () => {
     expect(settingsShowing()).toBe(true);
     expect(current()).toBe(SETTINGS_LABEL);
     expect(window.location.search).toBe("?settings=1&mode=lint");
-    // Still a restore: normalized in place, with nothing announced and no entry.
-    expect(window.history.length).toBe(before);
+    // Still a restore — nothing announced — but a restore that OPENS the surface
+    // costs the one entry Back consumes to close it again (DW-512).
+    expect(window.history.length).toBe(before + 1);
     expect(announced()).toBe("");
 
     // …and the mode it seeded is the one the surface is open OVER.
@@ -530,6 +569,50 @@ describe("Workbench mode ↔ URL", () => {
     expect(document.activeElement).toBe(resting);
   });
 
+  it("leaves a focused rail button alone on a traversal that moves the flag", async () => {
+    // DW-513. The bump exists to rescue a keyboard that the canvas swap would
+    // otherwise strand on `<body>` — and a rail button is not stranded: it
+    // survives the swap and is very often the control the press came from. The
+    // rail's own close path already leaves focus with the control that was
+    // pressed, so this is the traversal path being made symmetric with it.
+    await renderShell();
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    await act(async () => {});
+    const resting = railItem("Graph");
+    resting.focus();
+
+    await traverse(() => window.history.back());
+
+    // The surface really did change and really does announce it…
+    expect(settingsShowing()).toBe(false);
+    expect(current()).toBe("Wiki");
+    expect(announced()).toBe("Wiki");
+    // …and the keyboard was never in the canvas, so it is not moved.
+    expect(document.activeElement).toBe(resting);
+  });
+
+  it("still lands the keyboard when the traversal moves the flag out of the canvas", async () => {
+    // The other side of the narrowing, and the case DW-423 exists for: focus IS
+    // in the section about to be withdrawn, so leaving it there would drop the
+    // owner on `<body>`. `contains` answers true for `#wb-canvas` itself, which
+    // is what keeps every in-app route to Settings green — each of them lands
+    // the keyboard on the canvas on the way in.
+    await renderShell();
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    await act(async () => {});
+    landingSite()?.focus();
+    expect(document.activeElement).toBe(landingSite());
+
+    await traverse(() => window.history.back());
+
+    expect(settingsShowing()).toBe(false);
+    expect(current()).toBe("Wiki");
+    // The NEW `#wb-canvas` — the mode canvas takes the id back when the
+    // Settings surface gives it up.
+    expect(document.activeElement).toBe(landingSite());
+    expect(landingSite()?.querySelector(".wb-set-pad")).toBeNull();
+  });
+
   it("adds no entry when the surface already showing is clicked again", async () => {
     // Nothing about the URL moved, so there is nothing to undo: an entry here
     // would be one Back has to swallow before it can reach the mode the owner
@@ -586,10 +669,12 @@ describe("Workbench mode ↔ URL", () => {
     expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
     // Left exactly as written: the seed has nothing to correct.
     expect(window.location.search).toBe("?mode=chat&settings=1&category=embeddings");
-    // A restore is not a change the visitor made — no entry, nothing announced,
-    // and the keyboard left where they had it. Same silence the mode and the
-    // surface restore with.
-    expect(window.history.length).toBe(before);
+    // The one entry the open surface is seeded with (DW-512) — the closed
+    // spelling of this same link sits underneath it, so Back closes the surface
+    // instead of leaving the app. Everything else about the restore is
+    // unchanged: nothing announced, and the keyboard left where they had it.
+    // Same silence the mode and the surface restore with.
+    expect(window.history.length).toBe(before + 1);
     expect(announced()).toBe("");
     expect(document.activeElement).toBe(resting);
   });
@@ -597,8 +682,8 @@ describe("Workbench mode ↔ URL", () => {
   it("falls back to the default pane on an unknown one, and drops the param", async () => {
     // Narrowed, not trusted. The reader answers `null` for absent, empty and
     // unknown alike, the shell lands on `DEFAULT_SETTINGS_CATEGORY`, and the
-    // seed's one `replaceState` writes the URL the shell is actually in — which
-    // omits the pane, because the default pane is the ordinary state.
+    // seed writes the URL the shell is actually in — which omits the pane,
+    // because the default pane is the ordinary state.
     window.history.replaceState(null, "", "/?settings=1&category=nope");
     writeStoredMode("wiki");
     const before = window.history.length;
@@ -609,8 +694,9 @@ describe("Workbench mode ↔ URL", () => {
     expect(currentPane()).toBe(settingsCategory(DEFAULT_SETTINGS_CATEGORY).label);
     expect(window.location.search).toBe("?settings=1&mode=wiki");
     expect(new URLSearchParams(window.location.search).get("category")).toBeNull();
-    // Still a restore: rewritten in place, nothing announced, no entry.
-    expect(window.history.length).toBe(before);
+    // Still a restore — rewritten in place, nothing announced — and still an
+    // OPEN surface, so it carries the one seeded entry Back consumes (DW-512).
+    expect(window.history.length).toBe(before + 1);
     expect(announced()).toBe("");
   });
 
@@ -880,6 +966,59 @@ describe("Workbench mode ↔ URL", () => {
         "true",
       );
       expect(current()).toBe("Wiki");
+    });
+
+    it("still restores a deep-linked Settings surface when the seed is refused", async () => {
+      // The seed is TWO calls on a `?settings=1` load (DW-512) and both sit in
+      // the one `try`. A refusal costs the linkable URL and the entry Back would
+      // have consumed, together — and must cost the surface, the pane and the
+      // rest of the mount nothing.
+      window.history.replaceState(null, "", "/?mode=chat&settings=1&category=embeddings");
+      const before = window.history.length;
+      vi.spyOn(window.history, "replaceState").mockImplementation(() => {
+        throw new DOMException("blocked", "SecurityError");
+      });
+
+      await renderShell();
+
+      expect(settingsShowing()).toBe(true);
+      expect(current()).toBe(SETTINGS_LABEL);
+      expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
+      // The throw came from the FIRST of the two calls, so the push never ran
+      // and the session history is exactly as the link left it.
+      expect(window.history.length).toBe(before);
+      // …and the effect still finished: the mount flag is what the split handles
+      // and the inline width vars hang off.
+      expect(document.querySelector(".wb-shell")?.getAttribute("data-mounted")).toBe(
+        "true",
+      );
+    });
+
+    it("keeps the URL naming the OPEN surface when only the seed's push is refused", async () => {
+      // The two seed calls can fail INDEPENDENTLY — the Safari limit the catch
+      // cites is a rate, crossed between two adjacent calls as readily as before
+      // either. A landed replace plus a thrown push would leave the address bar
+      // naming the surface CLOSED while Settings is on screen: the visitor's own
+      // `?settings=1` rewritten away, so copying the link would now lose the
+      // surface. That is strictly worse than writing nothing, so the push's own
+      // catch puts the open href back with a replace.
+      window.history.replaceState(null, "", "/?mode=chat&settings=1");
+      const before = window.history.length;
+      vi.spyOn(window.history, "pushState").mockImplementation(() => {
+        throw new DOMException("blocked", "SecurityError");
+      });
+
+      await renderShell();
+
+      expect(settingsShowing()).toBe(true);
+      // The URL still agrees with what is on screen…
+      expect(window.location.search).toBe("?mode=chat&settings=1");
+      // …and only the extra entry was lost, so Back leaves the app exactly as it
+      // did before DW-512. Nothing else about the mount pays for it.
+      expect(window.history.length).toBe(before);
+      expect(document.querySelector(".wb-shell")?.getAttribute("data-mounted")).toBe(
+        "true",
+      );
     });
 
     it("still switches mode on a rail click, losing only the URL", async () => {

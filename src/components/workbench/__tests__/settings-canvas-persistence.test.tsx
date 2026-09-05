@@ -393,10 +393,17 @@ async function seedSettingsEntry() {
  * backdrop that hides the rail from the pointer and the Tab trap that holds the
  * keyboard both stop at the document, so Back is still there. The traversal
  * lands on the entry {@link seedSettingsEntry} left behind, and `Workbench`'s
- * `popstate` listener re-applies `settings=true` and — because the flag MOVED —
- * bumps `canvasFocusNonce`, sending the keyboard to `#wb-canvas` (DW-167,
- * DW-423). Same surface, same withdrawal, same focus landing either in-shell
- * control produces, by the one route this state leaves open.
+ * `popstate` listener re-applies `settings=true` (DW-167).
+ *
+ * It also bumps `canvasFocusNonce`, sending the keyboard to `#wb-canvas`
+ * (DW-423) — but that is now CONDITIONAL, not a consequence of the flag having
+ * moved on its own. Since DW-513 the handler bumps only when the keyboard was
+ * inside the canvas about to be swapped, and here it is: the Create Wiki dialog
+ * holding focus at sample time renders inside the visible mode canvas. A caller
+ * that arranged focus somewhere outside it — a `SettingsNav` row, the trees, the
+ * Preview column — would traverse into the same surface with the keyboard left
+ * where it was. Same surface and same withdrawal either in-shell control
+ * produces, by the one route this state leaves open.
  */
 async function openFromHistory() {
   await traverse(() => window.history.back());
