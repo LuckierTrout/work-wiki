@@ -1,5 +1,6 @@
 import { generateText, NoObjectGeneratedError, Output } from "ai";
 import { z } from "zod";
+import { humanOwnerOf } from "./agent-handle";
 import {
   getStructuredKnowledgeModelSettings,
   llmTimeoutOption,
@@ -332,9 +333,17 @@ export async function extractStructuredKnowledge(
     provider: selection.provider,
     model: selection.model,
   });
-  const dictionary = await listNamesTerms(owner);
+  // Guidance is addressed BY HUMAN, storage by handle (DW-543/DW-709). The
+  // tenant read and the page-owner guard above deliberately keep the RAW
+  // handle — they name a SILO, and `ownerToTenant` keeps the `--<agent>`
+  // suffix precisely so an agent's pages stay in the agent's own silo. But a
+  // Workspace Purpose and a Names & Terms dictionary belong to the PERSON, so
+  // extracting a page owned by `alice--yoyo` must read alice's standards
+  // rather than the agent's empty tenant. Reduce once, for guidance only.
+  const guidanceOwner = humanOwnerOf(owner);
+  const dictionary = await listNamesTerms(guidanceOwner);
   const dictionaryGuidance = renderNamesTermsGuidance(dictionary);
-  const workspaceGuidance = await buildWorkspaceGuidance(owner);
+  const workspaceGuidance = await buildWorkspaceGuidance(guidanceOwner);
   let output: z.infer<typeof extractionSchema>;
   try {
     ({ output } = await retryWithBackoff(() => generateText({

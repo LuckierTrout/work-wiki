@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { humanOwnerOf } from "./agent-handle";
 import { llmTimeoutOption } from "./config";
 import { contentHash } from "./embeddings";
 import { isEnoent } from "./errors";
@@ -383,9 +384,16 @@ async function defaultDraftUpdate(input: {
 }): Promise<string> {
   const parsed = parseFrontmatter(input.currentContent);
   const model = await getConfiguredModel();
+  // Guidance is addressed BY HUMAN, storage by handle (DW-543/DW-709). The
+  // monitor itself stays in its owner's silo — `runSourceMonitor` locks, reads
+  // and writes on the RAW `owner` throughout — but the Purpose and dictionary
+  // that shape the redraft belong to the PERSON behind the handle, so a monitor
+  // owned by `alice--yoyo` redrafts against alice's standards instead of the
+  // agent's own empty tenant.
+  const guidanceOwner = humanOwnerOf(input.monitor.owner);
   const [workspaceGuidance, dictionaryGuidance] = await Promise.all([
-    buildWorkspaceGuidance(input.monitor.owner),
-    buildNamesTermsGuidance(input.monitor.owner),
+    buildWorkspaceGuidance(guidanceOwner),
+    buildNamesTermsGuidance(guidanceOwner),
   ]);
   const { text } = await generateText({
     model,

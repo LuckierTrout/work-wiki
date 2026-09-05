@@ -1,3 +1,4 @@
+import { humanOwnerOf } from "./agent-handle";
 import { isEnoent } from "./errors";
 import { withFileLock } from "./lock";
 import { getStorage } from "./storage";
@@ -97,9 +98,15 @@ export async function proposeActionItems(
   );
   if (clean.length === 0) return [];
 
+  // Guidance is addressed BY HUMAN, storage by handle (DW-543/DW-709). The
+  // lock key and the item store keep the RAW handle — proposals raised for
+  // `alice--yoyo` stay readable only through `listActionItems("alice--yoyo")` —
+  // but the Names & Terms dictionary that canonicalizes an assignee belongs to
+  // the PERSON, and an agent handle keys its own empty tenant.
+  const guidanceOwner = humanOwnerOf(owner);
   return withFileLock(lockKey(owner), async () => {
     const items = await readItems(owner);
-    const dictionary = await listNamesTerms(owner);
+    const dictionary = await listNamesTerms(guidanceOwner);
     const existing = new Set(items.map(dedupeKey));
     const created: ActionItem[] = [];
 
@@ -175,9 +182,13 @@ export async function updateActionItem(
     >
   >,
 ): Promise<ActionItem | null> {
+  // Guidance by human, storage by handle (DW-543/DW-709) — same split as
+  // `proposeActionItems` above: the dictionary is the PERSON's, the lock key
+  // and the item store name the agent's own silo.
+  const guidanceOwner = humanOwnerOf(owner);
   return withFileLock(lockKey(owner), async () => {
     const items = await readItems(owner);
-    const dictionary = await listNamesTerms(owner);
+    const dictionary = await listNamesTerms(guidanceOwner);
     const item = items.find((candidate) => candidate.id === id);
     if (!item) return null;
 

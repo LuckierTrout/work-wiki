@@ -2973,7 +2973,9 @@ source_spec: `spec-dw-322-324-dictionary-guidance-and-request-cache.md`
 location: src/lib/ingest.ts:1328
 severity: low
 reason: `IngestOptions.guidanceCache` holds two `Map`s. The batch route keeps it out of the queue by building `enqueueTask`'s payload as a separate literal (src/app/api/ingest/batch/route.ts:143-150), and `tasks/run` and the agent ingest route do the same by hand. Nothing structural stops a future `enqueueTask({ kind: "ingest", ...ingestOptions })`: TypeScript does not excess-property-check spread properties, so it would compile and fail at structured-clone/JSON time. An `Omit<IngestOptions, "guidanceCache">` on the payload builders, or a handle passed as its own argument rather than a field on the data bag, would make it a compile error.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-ingest-path-plumbing
+resolution-undo: a1e26516a91ca9ef04ee1eaf6360f8097d2790187035b7293353ac3e93d7bd80 2026-09-05 7374617475733a206f70656e
 decision: 2026-08-28 Type the queue payload — Type enqueueTask's ingest payload as Omit<IngestOptions,"guidanceCache"> so the compiler refuses a serialized handle, leaving the call signature of ingestUrl unchanged.
 decision: 2026-08-26 Type the queue payload — Type enqueueTask's ingest payload as Omit<IngestOptions,"guidanceCache"> so the compiler refuses a serialized handle, leaving the call signature of ingestUrl unchanged.
 
@@ -5913,7 +5915,9 @@ location: src/lib/action-extractor.ts:44 and src/lib/structured-knowledge.ts:310
 source_spec: `spec-dw-543-guidance-by-human-owner.md`
 severity: low
 reason: DW-543 scoped the fix to the two doors its `location:` field names, but the decision's `reason:` frames the convention as settling guidance addressing "for every prompt site at once". A concrete agent-reachable path remains: `src/app/api/agents/[id]/ingest/route.ts` sets `owner = asOwner ? agentRecord.owner : id` (the agent id) and records it as the job/task owner; `src/app/api/tasks/run/route.ts` then derives `actionOwner = task.triggeredBy || task.owner || task.author` and hands that agent id to `extractActionsFromPage` (`src/lib/action-extractor.ts:44`) and `extractStructuredKnowledge` (`src/lib/structured-knowledge.ts:310`), each of which calls `buildWorkspaceGuidance(owner)` / `listNamesTerms(owner)` unreduced. So the same agent-owned page whose ingest prompt now carries alice's standards has its follow-on extraction run unguided. Same shape at `src/lib/source-monitors.ts:387-388` (`monitor.owner`), `src/lib/monitor-digests.ts:437` and `src/lib/action-items.ts:102,180`. Not agent-
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-ingest-path-plumbing
+resolution-undo: a1e26516a91ca9ef04ee1eaf6360f8097d2790187035b7293353ac3e93d7bd80 2026-09-05 7374617475733a206f70656e
 
 ### DW-710: With vector search switched ON but no embedding provider actually resolvable, `findMergeCandidates` now takes the vector branch, gets an empty result, and returns early instead of falling through to t
 origin: spec-deferred eacd5deb7dad
@@ -6561,4 +6565,12 @@ location: src/components/workbench/SkillsCanvas.tsx:97
 source_spec: `spec-dw-715-750-settings-surface-claims.md`
 severity: low
 reason: On a rejected loopback scan `SkillsCanvas` renders `SKILLS_SCAN_FAILED_COPY` ("Skills are scanned by the local sidecar, and it did not answer. Start it with `pnpm sidecar`…"). The scan goes through the same origin-blind `loopbackFetch`, so a bare 403 with no `Access-Control-Allow-Origin` reaches it as the same opaque rejection a dead port does. The component holds no `pageOrigin` and the constant has no origin-sensitive twin. Pre-existing and untouched by this change; the "did not answer" contract is a different one from the health/status contract the two surfaces above share, so it was left out of scope rather than half-adopted. `usePageOrigin` and `isSidecarDefaultAdmittedOrigin` are now both in place as the pieces a fix would reuse.
+status: open
+
+### DW-780: `humanOwnerOf` reduces on the first `--` without checking that the prefix names a registered agent owner, so a human handle that itself contains `--` resolves its Workspace Purpose and Names & Terms f
+origin: spec-deferred b57b7cbd5fce
+location: src/lib/agent-handle.ts:91
+source_spec: `spec-dw-396-709-ingest-path-plumbing.md`
+severity: low
+reason: `humanOwnerOf` (`src/lib/agent-handle.ts:91`) returns everything before the first `--` whenever that segment is non-blank. Principal handles come from a Clerk username, an X handle, or a raw Clerk id (`src/lib/auth.ts:136-148`); X handles cannot contain `-` and Clerk ids do not, but nothing in the repo constrains a Clerk username, so a user `jean--luc` reads tenant `jean`'s Purpose and dictionary. A punctuation-only prefix (`.--yoyo`, `/--yoyo`) passes the blank check too and then collapses to the DEFAULT tenant through `ownerToTenant`, handing the default silo's guidance to an unrelated handle. The ambiguity is pre-existing at the labelling level (`isAgentHandle` treats any `--` as an agent) and was introduced for guidance by DW-543 at the merge and ingest doors; DW-709 did not widen the class, only the number of sites where its consequence is reachable. Consequence is a wrong answer, not a leak of stored pages: guidance is prompt text, and every storage/attribution path still uses th
 status: open

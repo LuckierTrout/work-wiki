@@ -1,5 +1,6 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import type { SendEmail } from "@cloudflare/workers-types";
+import { humanOwnerOf } from "./agent-handle";
 import { contentHash } from "./embeddings";
 import { isEmailAddress, normalizeEmailAddress } from "./email-ingest";
 import { isEnoent } from "./errors";
@@ -434,7 +435,14 @@ export async function createMonitorDigest(
       return existing;
     }
     const built = await digestEntries(owner, operations);
-    const dictionary = await listNamesTerms(owner);
+    // Guidance is addressed BY HUMAN, storage by handle (DW-543/DW-709).
+    // Everything else in this function keeps the RAW handle — `ownerTenant`,
+    // `getMonitorDigest`, `digestEntries` and the written `digest.owner` all
+    // name the SILO this digest belongs to. Only the dictionary is reduced: the
+    // canonical spellings applied to the generated entry text are the PERSON's
+    // Names & Terms, and `alice--yoyo` keys its own empty tenant.
+    const guidanceOwner = humanOwnerOf(owner);
+    const dictionary = await listNamesTerms(guidanceOwner);
     const entries = built.entries.map((entry) => ({
       ...entry,
       monitorName: applyNamesTermsToGeneratedText(dictionary, entry.monitorName),

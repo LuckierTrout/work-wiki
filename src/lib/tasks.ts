@@ -158,6 +158,36 @@ export type Task =
       /** Agent id to attach the resulting page to as one of its learning pages
        *  (agent-scoped ingests). */
       learningFor?: string;
+      /**
+       * NEVER — the guidance memo handle must not cross the queue (DW-396).
+       *
+       * `IngestOptions.guidanceCache` is a LIVE pair of `Map`s, so a queue
+       * message carrying one dies in `structuredClone` at `send()` time. What
+       * kept it off the wire was a convention narrower than it looks: no route
+       * spreads its `ingestOptions` OBJECT into a payload — each hand-writes
+       * the literal separately.
+       *
+       * Spreading a shared object into an ingest literal is otherwise routine
+       * here — `api/agents/[id]/ingest/route.ts` spreads `attribution` into
+       * four of them, and `source-rescan.ts` and `extract-dispatch.ts` each
+       * spread a `base`. Those are safe only because none of those objects
+       * carries the handle, which is what makes this guard load-bearing rather
+       * than theoretical: the shape it constrains is already idiomatic, and
+       * TypeScript does not excess-property-check a SPREAD, so
+       * `enqueueTask({ kind: "ingest", url, ...ingestOptions })` compiled
+       * cleanly and failed at runtime.
+       *
+       * Declaring the field as `never` makes that spread a compile error while
+       * leaving every hand-written literal (which simply omits it) untouched.
+       * And the omission is correct on its own terms, not just mechanically: a
+       * queued task is a DIFFERENT, later request, so it must resolve the
+       * Workspace Purpose and the Names & Terms dictionary fresh rather than
+       * inherit a snapshot from the request that enqueued it.
+       *
+       * Pinned in both directions by `tasks.test.ts` (a `@ts-expect-error`
+       * spread) and `ingest-routes.test.ts` (a runtime payload assertion).
+       */
+      guidanceCache?: never;
     }
   | {
       /** Extract owner-only action proposals from a newly ingested page. */

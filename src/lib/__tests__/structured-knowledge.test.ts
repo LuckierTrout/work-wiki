@@ -383,3 +383,106 @@ describe("structured knowledge", () => {
     expect(await getPageEvidence("alice", "failed-extraction")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Guidance by human, storage by handle (DW-709)
+// ---------------------------------------------------------------------------
+
+import { createNamesTerm } from "../names-terms";
+import { tenantForOwner } from "../wiki";
+import { createWiki, writeWikiArtifact } from "../wikis";
+
+/**
+ * `ownerToTenant("alice--yoyo")` is the AGENT's own tenant, so before DW-709 an
+ * agent extracting one of its own pages resolved a Workspace Purpose and a
+ * Names & Terms dictionary that did not exist. The reduction is guidance-only:
+ * the tenant read and the page-owner guard above it still compare RAW handles,
+ * which is what keeps the agent's pages in the agent's silo.
+ */
+describe("agent-owned extraction is guided by the human owner (DW-709)", () => {
+  const HUMAN = "alice";
+  const AGENT = "alice--yoyo";
+  const PURPOSE = "Track Project Lighthouse decisions.";
+
+  const OUTPUT = {
+    records: [{
+      kind: "project",
+      name: "Lighthouse",
+      summary: "Lighthouse shipped in November.",
+      status: null,
+      validFrom: null,
+      validTo: null,
+      evidenceExcerpt: "Lighthouse shipped in November.",
+    }],
+    relations: [],
+  };
+
+  beforeEach(async () => {
+    process.env.OPENAI_API_KEY = "openai-test-key";
+    await saveConfig({
+      provider: "openai",
+      model: "gpt-4o",
+      structuredKnowledgeProvider: "openai",
+      structuredKnowledgeModel: "gpt-4o",
+    });
+    const wiki = await createWiki(HUMAN, { name: "Ops", scenario: "business" });
+    await writeWikiArtifact(HUMAN, wiki.id, "purpose.md", `# Ops\n\n${PURPOSE}\n`);
+    await createNamesTerm(HUMAN, {
+      kind: "project",
+      canonical: "Project Lighthouse",
+      aliases: ["Lighthouse"],
+    });
+    // Written into the AGENT's silo with the AGENT as frontmatter owner, so the
+    // storage read and the owner guard both have to stay raw for this to be
+    // readable at all.
+    await getStorage().writeFile(
+      tenantWikiRelPath(tenantForOwner(AGENT), "decision-log.md"),
+      `---\ntitle: Decision log\nowner: ${AGENT}\n---\nLighthouse shipped in November.\n`,
+    );
+  });
+
+  it("carries the human's Purpose and dictionary into the extraction prompt", async () => {
+    generateTextMock.mockResolvedValueOnce({ output: OUTPUT });
+
+    const graph = await extractStructuredKnowledge(AGENT, "decision-log");
+
+    const system = String(generateTextMock.mock.calls[0][0].system);
+    expect(system).toContain(PURPOSE);
+    expect(system).toContain("WORKSPACE NAMES & TERMS");
+    expect(system).toContain("aliases: Lighthouse");
+    // The DATA-visible half, not just prompt text: `canonicalRecordName` runs
+    // every `person`/`organization`/`project` record through
+    // `canonicalizeNamesTerm(dictionary, …)`, and the fixture emits the ALIAS
+    // as the record name. Against the agent's own empty tenant the name would
+    // persist verbatim as "Lighthouse".
+    expect(graph.records).toHaveLength(1);
+    expect(graph.records[0].name).toBe("Project Lighthouse");
+    // Storage is untouched: the graph lands in the agent's silo, not alice's.
+    expect(tenantForOwner(AGENT)).not.toBe(tenantForOwner(HUMAN));
+    const stored = await getStructuredKnowledge(AGENT);
+    expect(stored.records).toHaveLength(1);
+    expect(stored.records[0].name).toBe("Project Lighthouse");
+    expect((await getStructuredKnowledge(HUMAN)).records).toHaveLength(0);
+  });
+
+  it("still refuses a caller who is not the page owner, comparing RAW tenants", async () => {
+    // Two DIFFERENT refusals, and it matters which is which.
+    //
+    // `alice` never reaches the owner guard at all: the storage read on
+    // `tenantWikiRelPath(tenant(owner), …)` happens FIRST, and the page exists
+    // only in the agent's silo, so this is an ENOENT — evidence that the READ
+    // stayed raw, not evidence about the guard.
+    await expect(extractStructuredKnowledge(HUMAN, "decision-log")).rejects.toThrow();
+    // The guard itself is pinned below, by the one caller that gets past the
+    // read: a DIFFERENT agent of the same human, holding its own copy of the
+    // page. A guard that reduced to the human would compare `alice` to `alice`
+    // and wave `alice--scout` through; the exact message asserts it does not.
+    await getStorage().writeFile(
+      tenantWikiRelPath(tenantForOwner("alice--scout"), "decision-log.md"),
+      `---\ntitle: Decision log\nowner: ${AGENT}\n---\nLighthouse shipped in November.\n`,
+    );
+    await expect(
+      extractStructuredKnowledge("alice--scout", "decision-log"),
+    ).rejects.toThrow("Only the page owner may extract structured knowledge");
+  });
+});

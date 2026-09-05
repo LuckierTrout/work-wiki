@@ -1526,9 +1526,13 @@ export interface IngestOptions {
    * which is what `POST /api/ingest/batch`'s queue-unavailable fallback wants,
    * since one batch is one user action.
    *
-   * NOT serializable, and deliberately absent from the queue task payload (a
-   * separate literal in that route) — a queued task is a different request and
-   * must resolve guidance fresh.
+   * NOT serializable, and it must never reach a queue task payload — a queued
+   * task is a different, later request and must resolve guidance fresh. That
+   * is ENFORCED, not merely conventional: the `kind: "ingest"` variant of
+   * `Task` declares `guidanceCache?: never` (DW-396), so spreading an options
+   * object carrying this handle onto a payload literal is a compile error.
+   * Routes still hand-write their payloads separately; the guard is there for
+   * the day one of them stops.
    */
   guidanceCache?: GuidanceCache;
   /**

@@ -465,3 +465,93 @@ describe("parseTask", () => {
     expect(parseTask({ kind: "ingest", url: "https://x.com" })).not.toHaveProperty("vaultId");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The guidance handle must not cross the queue (DW-396)
+// ---------------------------------------------------------------------------
+
+import { createGuidanceCache } from "../guidance-cache";
+import type { IngestOptions } from "../ingest";
+import type { Task } from "../tasks";
+
+/**
+ * `IngestOptions.guidanceCache` is a live pair of `Map`s, so a queue message
+ * carrying one dies in `structuredClone` at `send()` time. Before DW-396 the
+ * only thing keeping it off the wire was that every route hand-writes its
+ * payload literal separately from its `ingestOptions` object — a convention,
+ * not a rule, because TypeScript does not excess-property-check a SPREAD.
+ *
+ * `guidanceCache?: never` on the `kind: "ingest"` variant turns that convention
+ * into a compile error. These two tests pin it in BOTH directions: the spread
+ * that used to compile now must not, and the shapes routes actually write must
+ * still compile untouched. The runtime half lives in `ingest-routes.test.ts`
+ * ("keeps the handle out of the queued task payload").
+ *
+ * `sourceType` is `Omit`ted because it is independently incompatible — the
+ * options union is wider than the queue's (image/youtube are set internally and
+ * never travel) — and leaving it in would make the assignment fail for a reason
+ * that has nothing to do with the guard under test.
+ */
+describe("ingest Task payload (DW-396)", () => {
+  it("makes spreading a live guidance handle onto the payload a compile error", async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    mockGetCfContext.mockReturnValue({ env: { TASK_QUEUE: { send } } });
+
+    const ingestOptions: Omit<IngestOptions, "sourceType"> = {
+      author: "alice",
+      owner: "alice",
+      triggeredBy: "alice",
+      guidanceCache: createGuidanceCache(),
+    };
+
+    const ok = await enqueueTask(
+      // @ts-expect-error DW-396: `guidanceCache?: never` on the ingest Task
+      // variant rejects a spread that carries the live handle. This is the
+      // exact call shape that used to compile and then die in
+      // `structuredClone` at `send()` time. Removing the field from the
+      // variant turns this line into an unused-directive error.
+      { kind: "ingest", url: "https://example.com/a", ...ingestOptions },
+    );
+
+    // The call still goes THROUGH to the binding — the guard is compile-time
+    // only and strips nothing, which is why the runtime assertion in
+    // `ingest-routes.test.ts` is kept alongside it rather than replaced by it.
+    //
+    // Deliberately NOT asserted: that the payload still carries the handle.
+    // Pinning today's leak as expected behaviour would make a future runtime
+    // strip — an improvement — fail here as though it were a regression.
+    expect(ok).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("still accepts the same options spread once the handle is gone", () => {
+    const { guidanceCache: _handle, ...serializable } = {
+      author: "alice",
+      owner: "alice",
+      triggeredBy: "alice",
+      guidanceCache: createGuidanceCache(),
+    } satisfies Omit<IngestOptions, "sourceType">;
+
+    const task: Task = {
+      kind: "ingest",
+      url: "https://example.com/a",
+      ...serializable,
+    };
+
+    expect(task).toMatchObject({ kind: "ingest", owner: "alice" });
+    expect(task).not.toHaveProperty("guidanceCache");
+  });
+
+  it("leaves the hand-written route literals compiling unchanged", () => {
+    // The exact shape `POST /api/ingest/batch` enqueues.
+    const task: Task = {
+      kind: "ingest",
+      url: "https://example.com/a",
+      owner: "alice",
+      author: "alice",
+      tags: ["research"],
+      vaultId: "tenant--my-vault",
+    };
+    expect(task).not.toHaveProperty("guidanceCache");
+  });
+});

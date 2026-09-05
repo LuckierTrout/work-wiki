@@ -692,6 +692,11 @@ describe("POST /api/ingest/batch — request-scoped guidance cache", () => {
   });
 
   it("keeps the handle out of the queued task payload", async () => {
+    // The runtime half of DW-396. Its compile-time twin — `guidanceCache?:
+    // never` on the ingest `Task` variant, pinned by `@ts-expect-error` in
+    // `tasks.test.ts` ("ingest Task payload (DW-396)") — stops a SPREAD from
+    // putting the handle on the wire; this one proves the literal this route
+    // actually hand-writes never carries it.
     mockedEnqueue.mockResolvedValue(true);
 
     const res = await POST_BATCH(
