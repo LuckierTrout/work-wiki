@@ -593,11 +593,10 @@ ordered sequence of steps, a set of file outputs, and a log entry shape.
 - **Trigger:** a question (free-text).
 - **Steps:**
   1. Read `wiki/index.md` to enumerate candidate pages.
-  2. Score candidates with BM25 keyword scoring. When an embedding provider is
-     configured (OpenAI, Google, or Ollama), also perform vector search and
-     combine results via Reciprocal Rank Fusion (RRF). Optionally refine with
-     an LLM rerank to find the most relevant slugs (`searchIndex()` in
-     `src/lib/query.ts`).
+  2. Score candidates with BM25 keyword scoring. When vector search is switched
+     on, also perform vector search and combine results via Reciprocal Rank
+     Fusion (RRF). Optionally refine with an LLM rerank to find the most
+     relevant slugs (`searchIndex()` in `src/lib/query-search.ts`).
   3. Fetch the full content of the top-ranked pages.
   4. Synthesize an answer with inline citations and return both the answer
      and the list of source slugs.
@@ -730,12 +729,13 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
 Things this schema does NOT yet codify, in rough priority order. Future
 sessions should pick from this list:
 
-- Vector search is partially implemented — embeddings are generated
-  incrementally on page write (when an embedding-capable provider like OpenAI,
-  Google, or Ollama is configured) and used for hybrid BM25+vector retrieval
-  via RRF. Batch rebuild of the full vector index is available via the Settings
-  page (`/api/settings/rebuild-embeddings`).
-  Anthropic-only users see no regression (pure BM25 fallback).
+- Vector search is partially implemented — when vector search is switched on,
+  embeddings are generated incrementally on page write and used for hybrid
+  BM25+vector retrieval via RRF. The switch is what every vector-backed path
+  reads: a deployment with an embedding-capable provider configured but the
+  switch off does no vector work at all. Batch rebuild of the full vector index
+  is available via the Settings page (`/api/settings/rebuild-embeddings`).
+  Deployments without vector search see no regression (pure BM25 fallback).
 - Lint auto-fix handles ten of fifteen checks (`orphan-page`, `stale-index`,
   `empty-page`, `broken-link`, `missing-crossref`, `contradiction`,
   `missing-concept-page`, `stale-page`, `unmigrated-page`,

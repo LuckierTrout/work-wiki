@@ -51,7 +51,45 @@ vi.mock("../embeddings", () => ({
   searchByVector: vi.fn(async () => []),
   upsertEmbedding: vi.fn(async () => {}),
   removeEmbedding: vi.fn(async () => {}),
+  // Not used by anything under test — these two are here for `config.ts`, which
+  // imports them from this module and which the PARTIAL mock below keeps real.
+  // Without them the real `config.ts` cannot evaluate against this stub.
+  getEmbeddingResolution: vi.fn(() => null),
+  hasEmbeddingSupport: vi.fn(() => false),
 }));
+
+/**
+ * The vector-search SWITCH (DW-686), which `searchIndex` reads at its Phase 1b
+ * door.
+ *
+ * WITHOUT THIS MOCK the "hybrid search in searchIndex" block below is entirely
+ * vacuous: this suite points `DATA_DIR` at a fresh temp directory with no
+ * config, so the real switch reads `false`, `searchByVector` is never reached,
+ * and both the RRF-fusion assertions and the "vector failure is non-fatal"
+ * assertion pass on a code path that never ran. Rethrowing from `searchIndex`'s
+ * catch would go unnoticed.
+ *
+ * PARTIAL, not a factory: `../wiki` is REAL here and reads
+ * `getWikiDir`/`getRawDir`/`getDataDir` from this same module.
+ *
+ * ONLY `enabled` FLIPS — the predicate legs are held satisfied, so "off" is a
+ * deployment that has a provider, a model and a key and switched vector search
+ * off anyway (DW-68/DW-686).
+ */
+const vectorSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock("../config", async (orig) => {
+  const actual = await orig<typeof import("../config")>();
+  return {
+    ...actual,
+    getVectorSearchSettings: vi.fn(() => ({
+      enabled: vectorSwitch.enabled,
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: true,
+    })),
+  };
+});
 
 import { hasLLMKey, callLLM, callLLMWithFinish } from "../llm";
 import { LLM_LENGTH_CAP_COPY, LLM_STOPPED_EARLY_COPY } from "../llm-deadline";
@@ -94,6 +132,9 @@ beforeEach(async () => {
   }));
   mockedSearchByVector.mockReset();
   mockedSearchByVector.mockResolvedValue([]);
+  // Switched ON by default: every assertion in this file predates DW-686 and
+  // describes a deployment that does vector work.
+  vectorSwitch.enabled = true;
 });
 
 afterEach(async () => {

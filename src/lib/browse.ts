@@ -6,7 +6,9 @@
  * commons is paginated (the client would only ever search the page it holds).
  * Here the whole scope pool is ranked on the server: a HYBRID of BM25 (exact
  * keyword/title) fused with bge-m3 vector similarity (semantic) via RRF when a
- * query is present, or a plain facet sort when it isn't — then paginated.
+ * query is present AND vector search is switched on, plain BM25 when the switch
+ * is off (DW-686), or a plain facet sort when there is no query — then
+ * paginated.
  *
  * The vector store is global; every path intersects it against the already
  * visibility-scoped candidate pool, so a search never WIDENS visibility beyond
@@ -27,6 +29,7 @@ import { getVault } from "./vault";
 import { getDiscussionStatsForSlugs } from "./talk";
 import { tokenize, buildCorpusStats, bm25Score } from "./bm25";
 import { searchByVector } from "./embeddings";
+import { getVectorSearchSettings } from "./config";
 import { reciprocalRankFusion } from "./query-search";
 import { RRF_K } from "./constants";
 import { logger } from "./logger";
@@ -110,8 +113,10 @@ function sortEntries(entries: IndexEntry[], sort: BrowseSort): IndexEntry[] {
 
 /**
  * Rank candidates for a query: BM25 over title+summary (cheap — no per-page disk
- * read) fused with vector similarity via RRF. Pure BM25 when the vector store is
- * empty/unavailable. Returns slugs in relevance order (only pages that matched).
+ * read) fused with vector similarity via RRF. Pure BM25 when vector search is
+ * switched off (DW-686 — no vector call is made at all), and equally when the
+ * switch is on but the store is empty/unavailable. Returns slugs in relevance
+ * order (only pages that matched).
  */
 async function hybridRank(q: string, entries: IndexEntry[]): Promise<string[]> {
   const queryTokens = tokenize(q);
@@ -123,14 +128,22 @@ async function hybridRank(q: string, entries: IndexEntry[]): Promise<string[]> {
 
   const allowedSlugs = new Set(entries.map((e) => e.slug));
   let vectorResults: Array<{ slug: string; score: number }> = [];
-  try {
-    // Ask for a generous head so semantic-only matches reach the first result
-    // pages; deeper pages still fall back to the full BM25 match set.
-    const limit = Math.min(allowedSlugs.size, Math.max(64, BROWSE_PAGE_SIZE * 4));
-    const raw = await searchByVector(q, limit);
-    vectorResults = raw.filter((r) => allowedSlugs.has(r.slug));
-  } catch (err) {
-    logger.warn("browse", "vector search failed; ranking by BM25 only:", err);
+  // THE SWITCH, NOT THE PREDICATE (DW-68, DW-686). A deployment that turned
+  // vector search off runs no vector half of the hybrid — `searchByVector` is
+  // not called at all, rather than called and discarded, so browse emits none
+  // of the drift breadcrumbs the primitive writes. The empty `vectorResults`
+  // this leaves is the same state an empty store produces, and the fusion
+  // fall-through below already degrades it to plain BM25 order.
+  if (getVectorSearchSettings().enabled) {
+    try {
+      // Ask for a generous head so semantic-only matches reach the first result
+      // pages; deeper pages still fall back to the full BM25 match set.
+      const limit = Math.min(allowedSlugs.size, Math.max(64, BROWSE_PAGE_SIZE * 4));
+      const raw = await searchByVector(q, limit);
+      vectorResults = raw.filter((r) => allowedSlugs.has(r.slug));
+    } catch (err) {
+      logger.warn("browse", "vector search failed; ranking by BM25 only:", err);
+    }
   }
 
   const fused =

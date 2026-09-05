@@ -16,9 +16,41 @@ vi.mock("../embeddings", () => ({
   searchByVector: vi.fn(async () => []),
   upsertEmbedding: vi.fn(async () => {}),
   removeEmbedding: vi.fn(async () => {}),
+  // Not used by anything under test — these two are here for `config.ts`, which
+  // imports them from this module and which the PARTIAL mock below keeps real.
+  // Without them the real `config.ts` cannot evaluate against this stub.
+  getEmbeddingResolution: vi.fn(() => null),
+  hasEmbeddingSupport: vi.fn(() => false),
 }));
 
-import { hasLLMKey } from "../llm";
+/**
+ * The vector-search SWITCH (DW-686) — `searchIndex`'s Phase 1b gate.
+ *
+ * PARTIAL, not a factory: `../wiki` is REAL in this suite and reads
+ * `getWikiDir`/`getRawDir`/`getDataDir` from this same module, so replacing it
+ * wholesale would break every temp-directory fixture below.
+ */
+const vectorSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock("../config", async (orig) => {
+  const actual = await orig<typeof import("../config")>();
+  return {
+    ...actual,
+    // ONLY `enabled` FLIPS — see the note in `search.test.ts`. Every predicate
+    // leg stays satisfied in both states, so "off" is a deployment that HAS a
+    // provider, a model and a key and switched vector search off anyway. A door
+    // reading `.hasKey` or `.provider` instead of `.enabled` fails here; with
+    // these legs co-varying it would not.
+    getVectorSearchSettings: vi.fn(() => ({
+      enabled: vectorSwitch.enabled,
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: true,
+    })),
+  };
+});
+
+import { hasLLMKey, callLLM } from "../llm";
 import { searchByVector } from "../embeddings";
 import {
   selectPagesForQuery,
@@ -29,6 +61,7 @@ import { writeWikiPage, ensureDirectories } from "../wiki";
 import * as wikiModule from "../wiki";
 
 const mockedHasLLMKey = vi.mocked(hasLLMKey);
+const mockedCallLLM = vi.mocked(callLLM);
 const mockedSearchByVector = vi.mocked(searchByVector);
 
 // ---------------------------------------------------------------------------
@@ -49,8 +82,17 @@ beforeEach(async () => {
   process.env.DATA_DIR = tmpDir;
 
   mockedHasLLMKey.mockResolvedValue(false);
+  // The rerank case below moves this; put the module default back so a sticky
+  // implementation cannot leak into a later case.
+  // CLEAR, not just re-implement: re-pointing the implementation leaves the
+  // call HISTORY from earlier tests in place, and this file asserts
+  // `toHaveBeenCalled()` on it — which would pass on somebody else's call.
+  mockedCallLLM.mockClear();
+  mockedCallLLM.mockResolvedValue("mocked response");
   mockedSearchByVector.mockReset();
   mockedSearchByVector.mockResolvedValue([]);
+  // Switched ON by default, so every pre-DW-686 assertion here is unchanged.
+  vectorSwitch.enabled = true;
 });
 
 afterEach(async () => {
@@ -519,6 +561,48 @@ describe("searchIndex — pre-filtered entries", () => {
     expect(result.length).toBeGreaterThan(0);
     // "relevant" should rank first — it has both "neural" and "networks" in title+summary
     expect(result[0]).toBe("relevant");
+  });
+
+  it("pools BM25 alone, calling nothing, when the switch is off (DW-686)", async () => {
+    // `vector-only` shares NO term with the query, so BM25 scores it zero and
+    // it can only reach the pool through the vector half of the fusion.
+    const entries: IndexEntry[] = [
+      { slug: "relevant", title: "Neural Networks", summary: "Deep neural networks for learning" },
+      { slug: "vector-only", title: "Pasta", summary: "How to make pasta" },
+    ];
+    mockedSearchByVector.mockResolvedValue([{ slug: "vector-only", score: 0.95 }]);
+
+    expect(await searchIndex("neural networks", entries, false)).toContain("vector-only");
+    expect(mockedSearchByVector).toHaveBeenCalled();
+
+    mockedSearchByVector.mockClear();
+    vectorSwitch.enabled = false;
+
+    const off = await searchIndex("neural networks", entries, false);
+    // Not called-and-discarded: the primitive is never reached, so `/query`
+    // emits none of the drift breadcrumbs it writes.
+    expect(mockedSearchByVector).not.toHaveBeenCalled();
+    expect(off).toEqual(["relevant"]);
+  });
+
+  it("still re-ranks the BM25-only pool when the switch is off (DW-686)", async () => {
+    // The switch removes the vector HALF of the fusion, not Phase 2 behind it:
+    // a gate placed one block too low would take the rerank down with it.
+    const entries: IndexEntry[] = [
+      { slug: "relevant", title: "Neural Networks", summary: "Deep neural networks for learning" },
+      { slug: "also-relevant", title: "Neural Coding", summary: "Neural spike coding" },
+    ];
+    vectorSwitch.enabled = false;
+    mockedHasLLMKey.mockResolvedValue(true);
+    // A rerank that INVERTS the BM25 order, so its answer is distinguishable
+    // from the pool it was handed.
+    mockedCallLLM.mockResolvedValue('["also-relevant", "relevant"]');
+
+    const result = await searchIndex("neural networks", entries, false);
+
+    expect(mockedSearchByVector).not.toHaveBeenCalled();
+    expect(mockedCallLLM).toHaveBeenCalled();
+    expect(result).toEqual(["also-relevant", "relevant"]);
   });
 });
 

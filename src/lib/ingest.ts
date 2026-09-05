@@ -1063,12 +1063,16 @@ async function findMergeCandidates(
   // and the `tasks/run` backfill already read, so ingest's WRITE side and its
   // merge-retrieval side now answer "do we do vector work?" the same way.
   //
-  // Not yet every reader: `search.ts`'s `findRelatedPages`, `browse.ts`'s
-  // `hybridRank` and `query-search.ts`'s `searchIndex` still call
-  // `searchByVector` with no switch check, and `searchByVector` does not gate
-  // itself. Those are out of DW-68's scope — this entry is about ingest's merge
-  // step — but the claim here is deliberately narrow so nobody reads it as
-  // "the switch is honoured everywhere".
+  // And now every reader: the three DW-68 left ungated — `search.ts`'s
+  // `findRelatedPages` prefilter, `browse.ts`'s `hybridRank` and
+  // `query-search.ts`'s `searchIndex` — plus `search.ts`'s `findSimilarPages`
+  // read the same switch at their own doors (DW-686), so the whole set of
+  // vector-backed doors answers "do we do vector work?" one way. The claim
+  // stays this narrow deliberately: it is about the CALL SITES, one enumerated
+  // list of them, not about the primitives. `searchByVector`/`relatedByVector`
+  // still do not gate themselves, on purpose — `wiki-retrieve.ts`'s
+  // `mergeVectorHits` has to tell "off" from "failed", which it can only do by
+  // reading the switch itself.
   if (getVectorSearchSettings().enabled) {
     const hits = await searchByVector(query, MAX_MERGE_CANDIDATES + 3);
     // A PREFERENCE, NOT AN EXCLUSIVE (DW-710). `searchByVector` answers `[]`

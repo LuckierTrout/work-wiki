@@ -21,6 +21,44 @@ vi.mock("../embeddings", async (orig) => {
   };
 });
 
+/**
+ * The vector-search SWITCH (DW-686), owned by the suite.
+ *
+ * Both of `search.ts`'s vector-backed doors — `findSimilarPages` and
+ * `findRelatedPages`' prefilter — read `getVectorSearchSettings().enabled` for
+ * themselves now. Left real it would resolve against the temp `DATA_DIR`'s
+ * absent config and read `false`, which would silently turn every
+ * `findSimilarPages` assertion in this file into a vacuous one (the door
+ * returns `[]` before it ever consults `relatedByVector`).
+ *
+ * PARTIAL (`importOriginal` spread), not a factory: `config.ts` has other live
+ * readers in this graph — `getEmbeddingModelName()`, which the real
+ * `upsertEmbedding` on `lifecycle.ts`'s write path consults, among them — and a
+ * factory would delete them. It also keeps `config.ts` itself out of the mock:
+ * the `../embeddings` stub above spreads the real module, so the import
+ * `config.ts` makes of it still resolves.
+ */
+const vectorSwitch = vi.hoisted(() => ({ enabled: true }));
+vi.mock("../config", async (orig) => {
+  const actual = await orig<typeof import("../config")>();
+  return {
+    ...actual,
+    // ONLY `enabled` FLIPS. Every predicate leg below is held satisfied in both
+    // states on purpose: "off" here means a deployment with a provider, a model
+    // and a key that has nonetheless switched vector search OFF — the exact
+    // state DW-68/DW-686 exist to distinguish, and the only one in which a door
+    // reading `.hasKey`/`.provider` instead of `.enabled` is observably wrong.
+    // Let these co-vary with `enabled` and that substitution passes the suite.
+    getVectorSearchSettings: vi.fn(() => ({
+      enabled: vectorSwitch.enabled,
+      provider: "openai",
+      baseUrl: null,
+      model: "text-embedding-3-small",
+      hasKey: true,
+    })),
+  };
+});
+
 import {
   writeWikiPage,
   ensureDirectories,
@@ -53,8 +91,10 @@ import { _resetStorage, getStorage } from "../storage";
 import { deleteWikiPage, writeWikiPageWithSideEffects } from "../lifecycle";
 import { relatedByVector, searchByVector } from "../embeddings";
 import { hasLLMKey, callLLM } from "../llm";
+import { getVectorSearchSettings } from "../config";
 
 const mockedRelatedByVector = vi.mocked(relatedByVector);
+const mockedVectorSettings = vi.mocked(getVectorSearchSettings);
 const mockedSearchByVector = vi.mocked(searchByVector);
 const mockedHasLLMKey = vi.mocked(hasLLMKey);
 const mockedCallLLM = vi.mocked(callLLM);
@@ -72,6 +112,20 @@ beforeEach(async () => {
   process.env.WIKI_DIR = path.join(tmpDir, "wiki");
   process.env.RAW_DIR = path.join(tmpDir, "raw");
   process.env.DATA_DIR = tmpDir;
+  // Switched ON by default, so every pre-DW-686 assertion in this file reads
+  // the behaviour it always described; the switch-off cases opt out.
+  vectorSwitch.enabled = true;
+  // THE VECTOR DEFAULTS LIVE HERE, not on the last line of whichever test last
+  // seeded a sticky hit. Restoring them at the end of a test body only runs
+  // when that test PASSES: a failing assertion above the restore used to leak
+  // the hit into every later case, turning one red into a cascade that hides
+  // its own cause. Same reason `mockedVectorSettings` is cleared — the call
+  // COUNT is an assertion target now (the DW-548 ordering case below).
+  mockedRelatedByVector.mockReset();
+  mockedRelatedByVector.mockResolvedValue([]);
+  mockedSearchByVector.mockReset();
+  mockedSearchByVector.mockResolvedValue([]);
+  mockedVectorSettings.mockClear();
   _resetStorage();
 });
 
@@ -689,7 +743,6 @@ describe("findSimilarPages", () => {
         .sort(),
     ).toEqual(["pub", "secret"]);
 
-    mockedRelatedByVector.mockResolvedValue([]); // reset default for later tests
   });
 
   it("respects the limit", async () => {
@@ -703,6 +756,25 @@ describe("findSimilarPages", () => {
 
     const related = await findSimilarPages("anchor", null, 2);
     expect(related).toHaveLength(2);
+  });
+
+  it("does no vector work at all when the switch is off (DW-686)", async () => {
+    await seed(["anchor", "a"]);
+    // A hit that WOULD be returned — so "empty result" cannot pass vacuously.
+    mockedRelatedByVector.mockResolvedValue([{ slug: "a", score: 0.9 }]);
+    expect(await findSimilarPages("anchor")).toEqual([
+      { slug: "a", title: "A", score: 0.9 },
+    ]);
+
+    mockedRelatedByVector.mockClear();
+    vectorSwitch.enabled = false;
+
+    expect(await findSimilarPages("anchor")).toEqual([]);
+    // NOT CALLED-AND-DISCARDED: the primitive writes a model-drift breadcrumb
+    // that would tell an off deployment to rebuild embeddings for a feature it
+    // turned off, so the assertion is on the call, not on the result.
+    expect(mockedRelatedByVector).not.toHaveBeenCalled();
+
   });
 });
 
@@ -1613,5 +1685,44 @@ describe("findRelatedPages — candidate prefilter", () => {
     expect(mockedSearchByVector).not.toHaveBeenCalled();
     const userMessage = mockedCallLLM.mock.calls[0][1] as string;
     expect(indexLines(userMessage)).toHaveLength(10);
+  });
+
+  it("skips the prefilter entirely when the switch is off (DW-686)", async () => {
+    const entries = makeEntries(100);
+    // Hits that WOULD narrow the prompt to three lines with the switch on.
+    mockedSearchByVector.mockResolvedValue([
+      { slug: "page-1", score: 0.9 },
+      { slug: "page-2", score: 0.8 },
+      { slug: "page-3", score: 0.7 },
+    ]);
+    vectorSwitch.enabled = false;
+
+    await findRelatedPages("new-page", "content", entries);
+
+    expect(mockedSearchByVector).not.toHaveBeenCalled();
+    // The door degrades to what an empty store already gives it: the LLM
+    // classifies against the FULL candidate list.
+    const userMessage = mockedCallLLM.mock.calls[0][1] as string;
+    expect(userMessage).toContain("- page-99:");
+    expect(indexLines(userMessage)).toHaveLength(100);
+  });
+
+  it("decides a short candidate list WITHOUT reading the switch (DW-548)", async () => {
+    // THE FREE TEST GOES FIRST, and this is the case that can tell the two
+    // operand orders apart. The switch is deliberately ON: with the conjuncts
+    // swapped to `getVectorSearchSettings().enabled && candidates.length > …`
+    // the door still skips the prefilter and still classifies all ten — every
+    // observable result is identical — but it paid a config read to get there.
+    // Driving this case with the switch OFF (as it first was) cannot see that
+    // at all: `false &&` short-circuits too, so both orders look the same.
+    // The call COUNT is the only witness, hence the assertion on it.
+    vectorSwitch.enabled = true;
+    mockedVectorSettings.mockClear();
+
+    await findRelatedPages("new-page", "content", makeEntries(10));
+
+    expect(mockedVectorSettings).not.toHaveBeenCalled();
+    expect(mockedSearchByVector).not.toHaveBeenCalled();
+    expect(indexLines(mockedCallLLM.mock.calls[0][1] as string)).toHaveLength(10);
   });
 });

@@ -5683,7 +5683,9 @@ origin: migrated from legacy ledger (flat-append deferral bullet, code review of
 location: src/lib/search.ts:299
 source_spec: `spec-dw-406-related-by-vector-drift-parity.md`
 reason: `mergeVectorHits` (src/lib/wiki-retrieve.ts:317) early-returns on `!enabled` so `searchByVector` is unreachable with the setting off, but `findSimilarPages` (src/lib/search.ts:299) and its caller `ArticleView.tsx:168` consult no such gate. Pre-existing and untouched by DW-406, which only added logging to that door — but DW-406 makes it visible, since such a deployment can now be told to "rebuild embeddings" for a feature it believes is off. The line is accurate for the door it sits on (related pages genuinely does use vectors there); the question is whether the door should be running at all.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-686
+resolution-undo: d6d4ab7e9f8ec7beacebdabf433c4f6f4928e92d94c22ed6d309206990c99e15 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Gate all four call sites — Read getVectorSearchSettings (src/lib/config.ts:1655) at src/lib/search.ts:66 and :299, browse.ts:130 and query-search.ts:195, returning empty when vector search is disabled, so one switch governs every vector-backed door. Add tests pinning that Related pages, browse and the query fallback all degrade to their non-vector behaviour with the switch off.
 decision: 2026-09-04 Gate all four call sites — Read getVectorSearchSettings (src/lib/config.ts:1655) at src/lib/search.ts:66 and :299, browse.ts:130 and query-search.ts:195, returning empty when vector search is disabled, so one switch governs every vector-backed door. Add tests pinning that Related pages, browse and the query fallback all degrade to their non-vector behaviour with the switch off.
 

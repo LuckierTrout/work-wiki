@@ -8,6 +8,7 @@
 import { readWikiPage, readWikiPageWithFrontmatter } from "./wiki";
 import { tokenize, buildCorpusStats, bm25Score } from "./bm25";
 import { searchByVector } from "./embeddings";
+import { getVectorSearchSettings } from "./config";
 import { callLLM, hasLLMKey } from "./llm";
 import { MAX_CONTEXT_PAGES, RRF_K, BM25_FULLBODY_MAX_PAGES } from "./constants";
 import { logger } from "./logger";
@@ -140,7 +141,8 @@ export function reciprocalRankFusion(
  * Search the wiki index to find the most relevant page slugs for a question.
  *
  * Phase 1: BM25 sparse scoring (always runs)
- * Phase 1b: Vector search (when an embedding provider is configured)
+ * Phase 1b: Vector search (when vector search is SWITCHED ON — DW-686; a
+ *           provider being configured is not the gate)
  * Phase 1c: RRF fusion of BM25 + vector results (when vector results exist)
  * Phase 2: LLM re-ranking of fusion candidates (if available) — sends
  *          candidate slugs with content snippets to the LLM for re-ordering,
@@ -185,18 +187,27 @@ export async function searchIndex(
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_CONTEXT_PAGES * 2); // Keep more candidates for fusion
 
-  // Phase 1b — Vector search (if an embedding provider is configured).
+  // Phase 1b — Vector search (when vector search is SWITCHED ON).
   // CRITICAL: the vector store is global; it must be intersected with the
   // caller's `entries` (the readable + scoped set) or private pages would leak
   // into fusion → rerank → context → sources. `entries` is authoritative.
+  //
+  // THE SWITCH, NOT THE PREDICATE (DW-68, DW-686). Off means `searchByVector`
+  // is never called — not called and discarded — so a deployment that turned
+  // vector search off emits none of the drift breadcrumbs the primitive
+  // writes. The empty `vectorResults` left behind is the same state an empty
+  // store produces, and Phase 1c already degrades it to the pure-BM25 pool;
+  // the LLM rerank still runs over that pool.
   const allowedSlugs = new Set(entries.map((e) => e.slug));
   let vectorResults: Array<{ slug: string; score: number }> = [];
-  try {
-    const raw = await searchByVector(question, MAX_CONTEXT_PAGES * 2);
-    vectorResults = raw.filter((r) => allowedSlugs.has(r.slug));
-  } catch (err) {
-    logger.warn("query", "searchIndex vector search failed:", err);
-    // Vector search failure is non-fatal — fall back to BM25 only
+  if (getVectorSearchSettings().enabled) {
+    try {
+      const raw = await searchByVector(question, MAX_CONTEXT_PAGES * 2);
+      vectorResults = raw.filter((r) => allowedSlugs.has(r.slug));
+    } catch (err) {
+      logger.warn("query", "searchIndex vector search failed:", err);
+      // Vector search failure is non-fatal — fall back to BM25 only
+    }
   }
 
   // Phase 1c — Combine via RRF if we have vector results, otherwise pure BM25
