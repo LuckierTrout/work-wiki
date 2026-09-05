@@ -2611,7 +2611,9 @@ source_spec: `spec-dw-236-244-brand-scan-coverage.md`
 location: .github/workflows/
 severity: low
 reason: Reviewer found hits at infra-setup.yml:52, deploy-cloudflare.yml:4,79,97,98 and seed-yoyo.yml:4-18,36,92-102. Neither source list reaches the tree. AGENTS.md marks .github/ protected, so folding it in is a decision the intent did not authorise; seed-yoyo.yml:93 also names a second workers.dev subdomain (yopedia.christianlee-flightwall.workers.dev) that the current single-host allowlist entry would not cover.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-brand-scan-coverage
+resolution-undo: 19f28f7b96a21d44baaeaea6d4962d707bb4d26868308ca88a40690a343f56d9 2026-09-05 7374617475733a206f70656e
 decision: 2026-08-28 Scan and allowlist — Add .github/ to the brand-copy scan's sources, add the second workers.dev deployment origin to IDENTIFIER_ALLOWLIST and to AGENTS.md's frozen list, and correct any remaining prose the scan then flags.
 decision: 2026-08-26 Scan and allowlist — Add .github/ to the brand-copy scan's sources, add the second workers.dev deployment origin to IDENTIFIER_ALLOWLIST and to AGENTS.md's frozen list, and correct any remaining prose the scan then flags.
 
@@ -4694,7 +4696,9 @@ location: src/lib/__tests__/brand-copy.test.ts (AGENTS.md yopedia parity test)
 source_spec: `spec-dw-460-461-462-473-test-pin-hardening.md`
 severity: medium
 reason: `brand-copy.test.ts`'s "AGENTS.md's yopedia prose and IDENTIFIER_ALLOWLIST agree in both directions" asserts only that each allowlist PATTERN matches at least one backticked spelling in the frozen-identifier section. Both enumerated families are one pattern each, so a fifth `X_YOPEDIA_HEADERS` member — or a fifteenth `YOPEDIA_HYPHEN_IDENTIFIERS` member — satisfies direction 2 on the strength of a sibling and is never forced into the prose. The minimality sweep forces a member to exist in the shipped TREE, not in AGENTS.md. Pre-existing since DW-352 created the first enumerated family; DW-473 extends it to a second. A per-member parity assertion would close it for both at once.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-brand-scan-coverage
+resolution-undo: 19f28f7b96a21d44baaeaea6d4962d707bb4d26868308ca88a40690a343f56d9 2026-09-05 7374617475733a206f70656e
 
 ### DW-590: Three more call sites from the same 308-shim conversion -- IngestSuccess, BatchItemRow (via BatchIngestForm) and useGlobalSearch's router.push -- are still unpinned, so reverting any of them to slugPa
 origin: spec-deferred 6c8f87fdc7ed
@@ -6319,4 +6323,12 @@ location: src/components/workbench/ModeCanvas.tsx:283
 source_spec: `spec-dw-718-719-720-preview-scroll-and-chrome-parity.md`
 severity: low
 reason: `globals.css:5462-5468` brings `height: 100dvh; overflow: hidden` back on `.wb-shell[data-preview="true"][data-sheet-open="true"]`, so the document stops overflowing and the browser clamps page scroll to 0 and dispatches a `scroll` at `Document`. `ModeCanvas`'s effect is keyed on `[hidden, previewOpen, narrow]` — none of which moves when the sheet opens — so the listener is still on `document` with `restoreEchoRef` null, and `canvasScrollRef` records the clamp. DW-719's ledger entry names the sheet as the third clamp-flipping condition; this bundle's intent enumerated only the other two, so it was left out deliberately. Closing it needs `data-sheet-open` threaded down as a fourth re-probe trigger, which the spec's Never clause forbids here.
+status: open
+
+### DW-761: No allowlist pattern outside the two enumerated families has a minimality sweep, so a single-host deployment-origin waiver outlives the host it waives.
+origin: spec-deferred 7af3c4306d0a
+location: src/lib/__tests__/brand-copy.test.ts:282
+source_spec: `spec-dw-350-589-brand-scan-coverage.md`
+severity: low
+reason: Both enumerated families carry "keeps every waived ... earning its place" sweeps that fail when a member stops occurring in the shipped tree; the eleven plain IDENTIFIER_ALLOWLIST patterns carry none. A reviewer rewrote .github/workflows/seed-yoyo.yml:93 to drop the host entirely and all 22 tests still passed, leaving /yopedia\.christianlee-flightwall\.workers\.dev/g as a repo-wide licence to write that host as display prose. The sibling /yopedia\.yuanhao-li\.workers\.dev/g has the identical gap and predates this change, so the class is pre-existing; this story adds one instance to it. AGENTS.md states the principle for the families ("a name no scanned file spells any more is a standing licence to write that word as copy") but nothing enforces it for the single-host origins.
 status: open

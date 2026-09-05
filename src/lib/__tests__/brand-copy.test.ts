@@ -159,9 +159,14 @@ const YOPEDIA_HYPHEN_PATTERN = new RegExp(
  * too, which is a spelling the waiver deliberately does NOT cover. Evidence for
  * a member has to be the member as the pattern reads it.
  *
- * No `g` flag: these are only ever used with `.test()`, which resumes from
- * `lastIndex` on a global regex and would alternate between matching and not
- * matching the same string across files.
+ * No `g` flag, which is what makes `.test()` safe here: a global regex resumes
+ * from `lastIndex`, so `test()` on a shared pattern would alternate between
+ * matching and not matching the same string across files.
+ *
+ * TWO call sites use these now — `.test()` in the minimality sweep below, and
+ * `String.match` in the AGENTS.md parity loop (DW-589). Only the first depends
+ * on the flag being absent; `match` resets `lastIndex` and is correct either
+ * way. The flag stays off for the stricter of the two.
  */
 const YOPEDIA_HYPHEN_MEMBER_PATTERNS = YOPEDIA_HYPHEN_IDENTIFIERS.map(
   (name) =>
@@ -241,8 +246,9 @@ const X_YOPEDIA_PATTERN = new RegExp(
  * The same enumeration one member at a time, sharing the boundaries above so
  * the evidence sweep below tests exactly what the waiver waives — the
  * {@link YOPEDIA_HYPHEN_MEMBER_PATTERNS} rationale, including the missing `g`
- * flag: these are only ever used with `.test()`, which resumes from `lastIndex`
- * on a global regex.
+ * flag and the two call sites it is chosen for: `.test()` in the evidence sweep
+ * below, which needs the flag absent, and `String.match` in the AGENTS.md
+ * parity loop, which is correct either way.
  */
 const X_YOPEDIA_MEMBER_PATTERNS = X_YOPEDIA_HEADERS.map(
   (name) =>
@@ -273,8 +279,57 @@ const IDENTIFIER_ALLOWLIST = [
   // purpose: a generalised `yopedia\.[a-z0-9.-]+` would wave through any
   // "Yopedia.<something>" a future doc invents.
   /yopedia\.yuanhao-li\.workers\.dev/g,
+  // The SECOND deployment origin, and the reason this had to be a list rather
+  // than one entry: `.github/workflows/seed-yoyo.yml` defaults `YOPEDIA_URL` to
+  // it, so it is a live target this repo ships, not a doc reference. Same class
+  // as its sibling above and spelled out in full for the same reason — a
+  // generalised host shape would wave through any "Yopedia.<something>", which
+  // is exactly what the lookalike slip case below exists to keep failing.
+  /yopedia\.christianlee-flightwall\.workers\.dev/g,
   /yologdev\/yopedia/g, // upstream repo link (AGENTS.md says leave it)
 ];
+
+/**
+ * Each collapsed family pattern in {@link IDENTIFIER_ALLOWLIST} paired with the
+ * member patterns it stands for.
+ *
+ * A small explicit table rather than a clever transform, so the link between a
+ * collapsed pattern and its members is readable at a glance — and so adding a
+ * third enumerated family is one line here rather than a rethink.
+ */
+const ENUMERATED_FAMILIES: readonly (readonly [RegExp, readonly (readonly [string, RegExp])[]])[] =
+  [
+    [YOPEDIA_HYPHEN_PATTERN, YOPEDIA_HYPHEN_MEMBER_PATTERNS],
+    [X_YOPEDIA_PATTERN, X_YOPEDIA_MEMBER_PATTERNS],
+  ];
+
+/**
+ * `IDENTIFIER_ALLOWLIST` with both enumerated families expanded member by
+ * member — what the AGENTS.md parity test below actually has to ask about.
+ *
+ * The allowlist is the right granularity for STRIPPING text and the wrong one
+ * for DOCUMENTING waivers, and DW-589 is the gap between the two. Both families
+ * sit in the allowlist as one collapsed pattern each, so a per-PATTERN parity
+ * loop was satisfied for all seventeen of their members by whichever single
+ * member AGENTS.md happened to spell: a header appended to `X_YOPEDIA_HEADERS`
+ * or a resource appended to `YOPEDIA_HYPHEN_IDENTIFIERS` became a waived word
+ * with nothing forcing it into the prose.
+ *
+ * THE ADD DIRECTION IS THE WHOLE OF IT, and the limit is worth stating so this
+ * expansion is not read as doing more than it does. A member DROPPED from
+ * either enumeration was already caught — by direction 1, not direction 2: the
+ * collapsed pattern stops waiving that spelling, so the AGENTS.md bullet still
+ * naming it is no longer waived and `strayYopedia` reports it. This closes the
+ * open half; it does not duplicate the closed one.
+ *
+ * Member patterns carry no `g` flag (see their own comments), so the `match`
+ * the parity test runs them through is safe against `lastIndex` resumption
+ * either way.
+ */
+const DOCUMENTED_WAIVERS: readonly RegExp[] = IDENTIFIER_ALLOWLIST.flatMap((pattern) => {
+  const family = ENUMERATED_FAMILIES.find(([collapsed]) => collapsed === pattern);
+  return family ? family[1].map(([, member]) => member) : [pattern];
+});
 
 /**
  * The ONE source-type filter. Every walk in this file uses it, so coverage is
@@ -622,6 +677,26 @@ async function maintainerSources(): Promise<string[]> {
     ...(await walkRoot("docs")),
     // Operator scripts, read like `tools/` — every file, whatever the extension.
     ...(await walkRoot("scripts", ANY_FILE)),
+    // CI and deploy workflows (DW-350). Operator tooling in the same family as
+    // `scripts/`: they carry the frozen `YOPEDIA_*` env and secret names and a
+    // deployment origin, and until now NO scan read them — neither list reached
+    // `.github/`, so a brand string could land in a workflow and ship unseen.
+    //
+    // Walked with `SOURCE_TEXT` rather than the `ANY_FILE` its two
+    // operator-tooling siblings use, and the residual is worth stating plainly
+    // rather than dressing up: `.github/` is all `.yml` today, so the shared
+    // filter already reads every file in it and the choice costs nothing NOW.
+    // An extensionless file added later — a `CODEOWNERS`, say — would fall
+    // outside it and be read by no scan, exactly as `Dockerfile` and
+    // `.env.example` were until they were named in `SOURCE_TEXT` by hand.
+    // Keeping ONE source-type filter (point 1 above) is worth that; a second
+    // listing selector here would not be.
+    //
+    // In `maintainerSources()` rather than `scannedSources()` because workflows
+    // ship no rendered copy. The union makes that choice non-load-bearing for
+    // COVERAGE — every predicate reads this list too — but it keeps the scanned
+    // corpus and its floor a statement about authored product surfaces.
+    ...(await walkRoot(".github")),
   ];
 }
 
@@ -821,17 +896,29 @@ describe("no stale brand strings in rendered copy", () => {
       "pnpm-workspace.yaml", // the `.yaml` half of the `ya?ml` alternative
       "pnpm-lock.yaml", // argued for by name in maintainerSources()'s comment
       "AGENTS.md", // the markdown class the listing used to be limited to
+      // The `.github/` root (DW-350), pinned like every other root: a walk that
+      // stops matching it has to fail HERE rather than shrink the corpus
+      // silently. This file in particular, because it is the one the widening
+      // actually corrected — its opt-in comment is where the bare-prose
+      // `yopedia` was, and it now reads as the backticked identifier.
+      path.join(".github", "workflows", "deploy-cloudflare.yml"),
     ]) {
       expect(scanned).toContain(file);
     }
     // The same floor `scannedSources()` carries, for the same reason: pins
     // alone are satisfied by a listing that collapsed to exactly the pinned
-    // set, which is what a broken filter would produce. ~38 files today against
-    // ~22 pins, so 30 sits above the pins and still leaves slack.
+    // set, which is what a broken filter would produce. ~50 files today against
+    // ~23 pins, so 40 sits above the pins and still leaves slack.
+    //
+    // Raised from 30 with the `.github/` widening (DW-350). The widening added
+    // twelve files and only ONE of them is pinned by name, so a floor left at
+    // 30 would have had ~20 files of slack where it was built to have ~8 — the
+    // other eleven workflows could have stopped being read with nothing here
+    // failing, which is the exact silent shrink this floor exists to catch.
     expect(
       scanned.length,
-      "maintainerSources() collapsed — the root listing, tools/, docs/ or scripts/ stopped contributing",
-    ).toBeGreaterThan(30);
+      "maintainerSources() collapsed — the root listing, tools/, docs/, scripts/ or .github/ stopped contributing",
+    ).toBeGreaterThan(40);
   });
 
   it("scans strictly more than either source list alone", async () => {
@@ -921,7 +1008,7 @@ describe("no stale brand strings in rendered copy", () => {
   });
 
   it("tells a frozen yopedia identifier apart from a display-brand slip", () => {
-    // The yopedia allowlist is twelve patterns wide and guards the identifiers
+    // The yopedia allowlist is thirteen patterns wide and guards the identifiers
     // that would orphan production data if renamed, so it is the one most
     // likely to be "tidied" into something more general. These cases are what
     // makes that a failing edit: generalising the deployment origin to
@@ -978,6 +1065,12 @@ describe("no stale brand strings in rendered copy", () => {
       'mkdtempSync(path.join(os.tmpdir(), "yopedia-test-"))',
       "https://yopedia.yolog.dev/api/mcp",
       "https://yopedia.yuanhao-li.workers.dev/api/mcp",
+      // The second deployment origin, as `.github/workflows/seed-yoyo.yml`
+      // writes it — that `env:` entry verbatim, indentation aside, so a reader
+      // can diff it against the workflow and an edit there cannot quietly turn
+      // this case into fiction. Both `YOPEDIA_URL` spellings on it are covered
+      // by the all-caps waiver; the quoted host is the entry added above.
+      "YOPEDIA_URL: ${{ vars.YOPEDIA_URL || 'https://yopedia.christianlee-flightwall.workers.dev' }}",
       "forked from https://github.com/yologdev/yopedia",
     ]) {
       expect(hasStrayYopedia(frozen), frozen).toBe(false);
@@ -988,6 +1081,10 @@ describe("no stale brand strings in rendered copy", () => {
       "# Yopedia inbound email",
       // The near-miss for the deployment origin: same shape, different host.
       "Yopedia.example.com is where the docs live",
+      // The near-miss for the SECOND deployment origin, and the closer one: it
+      // keeps the account segment and changes only the domain, which is exactly
+      // what a `yopedia\.[a-z0-9.-]+` shape would wave through.
+      "Yopedia.christianlee-example.com is where the docs live",
       // The regression guard for the enumerated lowercase-hyphen family: the
       // wildcard `yopedia-[a-z-]+` it replaced swallowed this display prose as
       // if it were a Cloudflare resource (DW-352).
@@ -1392,7 +1489,7 @@ describe("operator-facing surfaces name the product", () => {
   it("AGENTS.md's yopedia prose and IDENTIFIER_ALLOWLIST agree in both directions", async () => {
     // The mirror of the workwiki check above, and the reason DW-356 exists: the
     // section used to freeze `yopedia` as one undifferentiated bullet while
-    // IDENTIFIER_ALLOWLIST waived twelve distinct shapes, so a reader diffing
+    // IDENTIFIER_ALLOWLIST waived thirteen distinct shapes, so a reader diffing
     // prose against allowlist could not tell a documented waiver from an
     // undocumented one — and AGENTS.md's own closing bullet says the two halves
     // must agree.
@@ -1419,20 +1516,86 @@ describe("operator-facing surfaces name the product", () => {
     // Direction 2 — nothing the allowlist waives is unexplained. Without this,
     // widening the allowlist is a silent act: a pattern can be added, or
     // generalised into a shape, with no obligation to say here what production
-    // identifier it protects. `String.match` rather than `RegExp.test` on
-    // purpose: every pattern carries `g`, so `test()` would resume from
-    // `lastIndex` and alternate between matching and not matching.
+    // identifier it protects.
+    //
+    // Asked over DOCUMENTED_WAIVERS rather than IDENTIFIER_ALLOWLIST (DW-589).
+    // Per-PATTERN iteration is the same defect one level down: the two
+    // enumerated families sit in the allowlist as ONE collapsed pattern each,
+    // so all seventeen of their members were answered for by whichever single
+    // member this section happened to spell. Appending a header to
+    // `X_YOPEDIA_HEADERS` or a resource to `YOPEDIA_HYPHEN_IDENTIFIERS` waived
+    // a new word with nothing forcing it into the prose. The expansion asks
+    // member by member, so each answer stands on its own strength rather than
+    // a sibling's. (DROPPING a member was never the open half: direction 1
+    // above already fails on it, because the collapsed pattern stops waiving
+    // the spelling the bullet still carries.)
+    //
+    // `String.match` rather than `RegExp.test` on purpose: the collapsed
+    // patterns carry `g`, so `test()` would resume from `lastIndex` and
+    // alternate between matching and not matching. (The member patterns carry
+    // no `g`, so they are safe here either way — see their own comments.)
+    //
+    // The containment check comes FIRST because the expansion is keyed by
+    // REFERENCE. Inline either family regex at the allowlist call site — write
+    // the same source out instead of naming the constant — and `find` above
+    // stops recognising it, every family silently collapses back to a single
+    // pattern, and DW-589 is back with this test still green. There is no
+    // shape to check for, so the link itself is what gets asserted.
+    for (const [family] of ENUMERATED_FAMILIES) {
+      expect(
+        IDENTIFIER_ALLOWLIST.includes(family),
+        `IDENTIFIER_ALLOWLIST no longer holds ${family} by reference, so DOCUMENTED_WAIVERS ` +
+          "stopped expanding that family member by member and the check below quietly reverted " +
+          "to one question per family (DW-589). Reference the constant rather than inlining it, " +
+          "or drop the family from ENUMERATED_FAMILIES if it is genuinely gone.",
+      ).toBe(true);
+    }
+    // The containment loop above only vouches for the rows that ARE in the
+    // registry. It is silent about a row DELETED from it, and about one whose
+    // two halves were mis-paired by copy-paste (`YOPEDIA_HYPHEN_PATTERN` beside
+    // `X_YOPEDIA_MEMBER_PATTERNS`) — and each of those collapses a family back
+    // to a single question with the loop still green. That is not theoretical:
+    // deleting the `X_YOPEDIA_PATTERN` row and one header bullet from AGENTS.md
+    // passed every test in this file.
+    //
+    // So check the OUTPUT too, and check it from the member lists DIRECTLY
+    // rather than through `ENUMERATED_FAMILIES`. That is the whole point: a
+    // check keyed off the registry cannot catch a defect IN the registry.
+    const MEMBER_LISTS: readonly (readonly [string, readonly (readonly [string, RegExp])[]])[] = [
+      ["YOPEDIA_HYPHEN_MEMBER_PATTERNS", YOPEDIA_HYPHEN_MEMBER_PATTERNS],
+      ["X_YOPEDIA_MEMBER_PATTERNS", X_YOPEDIA_MEMBER_PATTERNS],
+    ];
+    for (const [label, members] of MEMBER_LISTS) {
+      const missing = members.filter(([, member]) => !DOCUMENTED_WAIVERS.includes(member));
+      expect(
+        missing.map(([name]) => name),
+        `DOCUMENTED_WAIVERS stopped expanding ${label}: ${missing.length} of its ` +
+          `${members.length} members are absent from it, so this section is never asked about ` +
+          "them at all and that family collapsed back to one question — DW-589 returning. Its " +
+          "row was deleted from ENUMERATED_FAMILIES, or the row's two halves were mis-paired.",
+      ).toEqual([]);
+    }
+    // The other half of a mis-pairing. Listing one member list TWICE satisfies
+    // the membership check for that list while some other list goes unexpanded,
+    // and the duplicate is the only trace the check above cannot see.
+    expect(
+      DOCUMENTED_WAIVERS.length - new Set(DOCUMENTED_WAIVERS).size,
+      "DOCUMENTED_WAIVERS holds duplicate patterns — a member list is paired with more than one " +
+        "family in ENUMERATED_FAMILIES, which means another list is not being expanded at all " +
+        "(DW-589 returning through a copy-paste).",
+    ).toBe(0);
     expect(
       spelled.length,
       `the frozen-identifier section names only ${spelled.length} backticked yopedia spellings for ` +
-        `${IDENTIFIER_ALLOWLIST.length} allowlist patterns — it was emptied out`,
-    ).toBeGreaterThanOrEqual(IDENTIFIER_ALLOWLIST.length);
-    for (const pattern of IDENTIFIER_ALLOWLIST) {
+        `${DOCUMENTED_WAIVERS.length} documented waivers — it was emptied out`,
+    ).toBeGreaterThanOrEqual(DOCUMENTED_WAIVERS.length);
+    for (const pattern of DOCUMENTED_WAIVERS) {
       expect(
         written.some((spelling) => spelling.match(pattern) !== null),
         `IDENTIFIER_ALLOWLIST waives ${pattern}, but AGENTS.md's \`## Frozen identifiers\` section ` +
           "carries no backticked spelling that pattern matches — either the waiver is unexplained " +
-          "(add the example spelling it protects) or it is dead (drop the pattern).",
+          "(add the example spelling it protects) or it is dead (drop the pattern, or the " +
+          "enumeration member, that produced it).",
       ).toBe(true);
     }
   });
