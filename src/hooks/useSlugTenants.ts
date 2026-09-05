@@ -197,17 +197,80 @@ export function useSlugTenants() {
     // mount. What keeps the mount live afterwards is the subscription, not a
     // dependency — a mount that resolved a degraded `{}` gets the recovered map
     // from the next caller's successful load instead of staying on the
-    // DEFAULT_TENANT fallback for its whole lifetime (DW-234). No polling, no
-    // timer, no retry here: the ONLY recovery signal is another caller's load.
+    // DEFAULT_TENANT fallback for its whole lifetime (DW-234).
     const unsubscribe = subscribe((m) => {
       if (on) setMap(m);
     });
     loadSlugTenants().then((m) => {
       if (on) setMap(m);
     });
+
+    /**
+     * The self-initiated half of recovery (DW-723). DW-234's broadcast only
+     * ever PROPAGATES a load somebody else paid for, and nothing outside this
+     * hook calls `loadSlugTenants()` — so "the next cold caller" is always a
+     * later MOUNT. A surface that goes idle after an outage (a Workbench
+     * sitting still: no navigation, no panel opening) never mounts anything
+     * again and would keep its DEFAULT_TENANT hrefs, and their extra 308 hop,
+     * for the life of the tab.
+     *
+     * Still no polling and no timer: user attention is the trigger.
+     */
+    const retryIfDegraded = () => {
+      // Read the MODULE `cache` at event time, not at effect time — the effect
+      // runs once per mount with `[]` deps, so anything closed over here (the
+      // hook's `map`, a snapshot of `cache`) would be frozen at mount and the
+      // degraded check would answer for a moment that has passed.
+      //
+      // `cache !== null` is exactly "a map has already arrived successfully" (a
+      // legitimately empty `{}` from an OK response caches and counts), and
+      // production never clears the cache — only the `_resetSlugTenants` test
+      // seam does. So the first success turns this into a permanent no-op for
+      // the rest of the tab's life: THAT, not a counter or a backoff, is what
+      // bounds the retry.
+      //
+      // Be honest about this line, though: it is REDUNDANT BY CONSTRUCTION
+      // today and no test can distinguish its presence. What actually stops a
+      // warm session from re-fetching is `loadSlugTenants`' own
+      // `if (cache) return Promise.resolve(cache)` short-circuit, one frame
+      // below. Deleting this guard changes no observable behavior. It stays
+      // because it is where the BOUND is legible — and because it is the half
+      // that would still be correct if that short-circuit ever gained a TTL or
+      // a revalidation pass, which would otherwise silently turn every
+      // attention event on a healthy tab back into a request.
+      if (cache !== null) return;
+      // A tab going HIDDEN must not re-fetch — the repo idiom from
+      // `useSidecarStatus` and `DataVersionWatcher`. Nobody is looking.
+      if (document.visibilityState !== "visible") return;
+      // No `.then`: a successful load broadcasts to every subscriber and this
+      // hook is one, so the recovered map arrives through the EXISTING path
+      // rather than a second route into `setMap`. A still-failing one degrades
+      // to `{}`, caches nothing, and leaves this hook eligible to retry on the
+      // next attention event. Concurrent calls — N mounted hooks × 2 events —
+      // collapse into one request via `loadSlugTenants`' `inflight` slot.
+      //
+      // That dedupe has a consequence worth stating, because it is a contract
+      // and not an accident: an event that lands while a FAILING request is
+      // still in flight JOINS that request rather than starting a second one,
+      // and is answered its degraded `{}`. So it buys no retry of its own —
+      // the next attention event is the one that does. Slow failures are
+      // exactly when someone switches away and back mid-request, so this is a
+      // reachable path, not a corner: the alternative (bypassing `inflight`)
+      // would stampede the endpoint precisely while it is already struggling.
+      void loadSlugTenants();
+    };
+    // Two events, not one. `visibilitychange` covers tab switching and
+    // un-minimising; a window that merely lost OS focus to another app usually
+    // stays `visibilityState === "visible"`, and returning to it fires only
+    // `focus` — which is the idle-Workbench case DW-723 is about.
+    document.addEventListener("visibilitychange", retryIfDegraded);
+    window.addEventListener("focus", retryIfDegraded);
+
     return () => {
       on = false;
       unsubscribe();
+      document.removeEventListener("visibilitychange", retryIfDegraded);
+      window.removeEventListener("focus", retryIfDegraded);
     };
   }, []);
   const hrefForSlug = (slug: string): string => hrefFromMap(map, slug);

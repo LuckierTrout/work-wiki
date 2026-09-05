@@ -51,7 +51,7 @@ deferred:
 - Recovery cannot be observed on a mounted component without adding a test-only seam to a component itself.
 
 **Never:**
-- No polling, no timers, no retry loop inside the hook — the only recovery signal is another caller's successful load.
+- No polling, no timers, no retry loop inside the hook. **Widened by DW-723 (2026-09-05):** the hook may ALSO re-fetch on a `visibilitychange` (guarded `visibilityState === "visible"`) or a `focus` event, and only while the map is still degraded (`cache === null`) — because propagation alone never reaches a surface that goes idle after an outage, where no later mount ever pays for the load this spec's broadcast delivers. Attention events are the only added trigger: `setInterval`, `setTimeout`, backoff and retry counters stay forbidden, and the healthy path is untouched — once a map has cached, no attention event issues another request for the life of the tab. See `spec-dw-723-slug-tenant-idle-recovery.md`.
 - Do not change `hrefFromMap`, `resolveSlugPath`, `DEFAULT_TENANT`, or any component's call sites.
 - Do not weaken or reorder the existing `loadSlugTenants` assertions in `src/hooks/__tests__/useSlugTenants.test.ts`.
 - Do not export the subscribe function to app code; only the hook in this module uses it.
@@ -95,6 +95,13 @@ deferred:
 - Given the full suite, when `pnpm test` runs, then every pre-existing `useSlugTenants`, `owner-scoped-anchors` and `renderer-slug-tenant-adoption` assertion still passes unchanged.
 
 ## Spec Change Log
+
+### 2026-09-05 — Never clause widened by DW-723
+
+- **What changed:** the first Never bullet ("no polling, no timers, no retry loop inside the hook — the only recovery signal is another caller's successful load") now also permits a self-initiated re-fetch on `visibilitychange`/`focus`, bounded to the degraded state (`cache === null`). Nothing else in this spec moves: the subscriber set, the broadcast-on-successful-cache-fill rule, the symmetric-failure contract, the `[]` deps, the three `_` seams and every existing assertion are as shipped.
+- **Why:** this spec closed DW-234 by PROPAGATION, and nothing outside `useSlugTenants` calls `loadSlugTenants()`, so "the next cold caller" is always a later MOUNT. A surface that goes idle after an `/api/wiki/routes` outage never mounts anything again and kept its DEFAULT_TENANT hrefs — and their extra 308 hop — until a full reload. That is the harvested deferred item below, raised as DW-723 and implemented in `spec-dw-723-slug-tenant-idle-recovery.md`.
+- **Still forbidden:** `setInterval`, `setTimeout`, backoff, retry counters, and any re-fetch on the healthy path. The bound is the cache, not a clock: production never clears it, so the first successful load turns the retry into a permanent no-op.
+- **The `deferred:` frontmatter entry is left exactly as written.** It is the harvest record that produced DW-723, not a live TODO — rewriting it would erase the provenance of the widening this entry documents.
 
 ## Review Triage Log
 

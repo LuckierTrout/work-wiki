@@ -6065,7 +6065,9 @@ location: src/hooks/useSlugTenants.ts:165
 source_spec: `spec-dw-234-262-slug-tenant-map-lifecycle.md`
 severity: low
 reason: DW-234 is closed by propagation: `loadSlugTenants` broadcasts a successful cache fill to every mounted hook. Verified by grep over src/, e2e/ and workers/ that nothing outside `useSlugTenants` calls `loadSlugTenants()`, so "the next cold caller" is always a later MOUNT. On a surface that goes idle after the outage — a Workbench sitting still, no navigation, no panel opening — no later mount occurs, nothing re-fetches, and that component stays on the wrong-handle 308 hop until reload. Closing it needs a self-initiated refresh (retry-after-degraded, or a visibility/focus signal), which this spec's Never clause rules out on the authority of DW-234's own reason field ("the next cold caller re-fetches").
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-723
+resolution-undo: e928551d34fd868af8b58362d993b3ca897e7388b7c8aa51dff81fc9f489da51 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Add a self-initiated retry — Add a bounded self-recovery signal to useSlugTenants -- a visibilitychange/focus listener, or a retry when the resolved map is the degraded empty map -- so an idle surface leaves the DEFAULT_TENANT hrefs behind without a reload, and amend the spec's Never clause to record the widened contract.
 decision: 2026-09-04 Re-fetch on visibility or focus — Add a visibilitychange/focus listener that re-fetches the slug-tenant map when the map is in its degraded DEFAULT_TENANT state, leaving the healthy path unchanged and unpolled. Pin that a degraded hook recovers on the next focus without a mount.
 

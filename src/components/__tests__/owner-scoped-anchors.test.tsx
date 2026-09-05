@@ -1050,4 +1050,49 @@ describe("RecentIngests with a failing /api/wiki/routes", () => {
     // and show up only here.
     expect(routeFetches()).toBe(2);
   });
+
+  it("recovers its hrefs when the tab regains focus, with no remount", async () => {
+    // DW-723, on a real surface. The case above needs a THIRD party to call
+    // `loadSlugTenants()`, and in production that party is always another
+    // component MOUNTING — so a surface that goes idle after the outage (this
+    // list sitting still: no navigation, no panel opening) never recovers and
+    // keeps the wrong-handle 308 hop on every row until the tab is reloaded.
+    // Here the trigger is only the user coming back to the window.
+    //
+    // The focus event is NOT inert for this fixture: `RecentIngests` registers
+    // its own `window` focus listener (`RecentIngests.tsx:247-255`) that
+    // resets its poll counter and re-runs `tick()`, re-reading the ledger and
+    // the email jobs and re-setting their state. That is real and deliberate —
+    // it is what a focus event does to this component in production, and this
+    // case runs the whole of it rather than a sanitised version.
+    //
+    // It still isolates DW-723, for two reasons: the hrefs asserted below can
+    // only come from the slug-tenant map (every row builds them through
+    // `hrefForSlug`, and the ledger/jobs payloads carry slugs, never owners),
+    // and `routeFetches()` counts `/api/wiki/routes` alone, so the component's
+    // own two refetches cannot inflate it.
+    renderRecentIngests();
+    expect(await hrefOf("target")).toBe(DEGRADED_TARGET);
+    await settleLoad(); // the failed request is out of `inflight` before the retry
+    expect(await hrefOf(EMAIL_SUBJECT)).toBe(DEGRADED_OTHER);
+
+    // Held across the recovery, as above: these exact nodes have to survive it,
+    // or the claim is "something on screen has the right href" rather than
+    // "the mounted component re-rendered".
+    const ledgerLink = await screen.findByRole("link", { name: "target" });
+    const emailLink = await screen.findByRole("link", { name: EMAIL_SUBJECT });
+
+    routes["/api/wiki/routes"] = { ...SLUG_TENANTS };
+    // No `loadSlugTenants()` call, no remount, no timer — one native `focus`
+    // event on the window, which is what returning to the app actually fires.
+    window.dispatchEvent(new Event("focus"));
+    await settleLoad();
+
+    expect(ledgerLink.isConnected, "the ledger row was remounted").toBe(true);
+    expect(emailLink.isConnected, "the email row was remounted").toBe(true);
+    expect(ledgerLink.getAttribute("href")).toBe(ALICE_TARGET);
+    expect(emailLink.getAttribute("href")).toBe(BOB_OTHER);
+    // Twice: the mount's failed load and the retry the focus event started.
+    expect(routeFetches()).toBe(2);
+  });
 });
