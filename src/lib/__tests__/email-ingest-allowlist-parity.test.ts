@@ -17,6 +17,7 @@ import {
   AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES,
   BASE64_EXPANSION_FACTOR,
   EMAIL_ROUTING_MAX_INBOUND_BYTES,
+  ENFORCED_AGGREGATE_DOCUMENT_BYTES,
   MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
@@ -28,6 +29,7 @@ import {
   MIME_ENVELOPE_HEADROOM_BYTES,
   MIME_STRUCTURAL_HEADROOM_BYTES,
   QUOTED_PRINTABLE_EXPANSION_FACTOR,
+  RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES,
   SUPPORTED_EXTENSIONS,
   SUPPORTED_MIME_TYPES,
   WORST_CASE_TRANSFER_ENCODING_FACTOR,
@@ -171,7 +173,7 @@ describe("email-ingest allowlist parity", () => {
    * survives DW-449 intact. What DW-449 changed is that the derivation is no
    * longer what a sender meets: `MAX_RAW_EMAIL_BYTES` clamps it to the 25 MiB
    * this repo records for Cloudflare Email Routing -- a bound chosen, not
-   * observed (DW-457) -- and a maximally-escaped full-size document is above
+   * observed (DW-706) -- and a maximally-escaped full-size document is above
    * that, so this Worker refuses it, and under that bound the transport would
    * have refused it first. Re-pointed rather than deleted, so the derivation's
    * reach stays measured here and the clamp is measurably a CEILING rather than
@@ -414,10 +416,11 @@ describe("email-ingest allowlist parity", () => {
    * over it. Paying for the maximal body out of the average took that away: the
    * second is now an over-budget loss.
    *
-   * Reachable, not theoretical. Two unencoded `7bit`/`8bit` parts are ~1x on the
-   * wire, so the pair is ~20.0 MiB and clears the 25 MiB raw gate -- the same
-   * encoding `email-ingest-worker.test.ts` uses to reach the DW-360 budget at
-   * all.
+   * A cost against the DERIVATION, which is what this case measures. Whether a
+   * sender can still meet it is a separate question, and since DW-697 the answer
+   * is no: the enforced budget is lower again, and a pair of full-size documents
+   * is ~27.4 MiB of base64 -- refused at the door rather than losing its second
+   * part. The clamp's own cases below measure what a sender does meet.
    *
    * Written as a derived comparison rather than as a hand-typed 20,971,520, so it
    * follows `MAX_EMAIL_DOCUMENT_BYTES` if that ever moves. This is a RECORD of an
@@ -484,7 +487,7 @@ describe("email-ingest allowlist parity", () => {
    * The clamp itself (DW-449). The derivation says how wide the aggregate budget
    * NEEDS the door to be; `EMAIL_ROUTING_MAX_INBOUND_BYTES` says how wide this
    * repo has CHOSEN to assume Cloudflare Email Routing makes it -- a
-   * conservative bound recorded, not measured (DW-457). A cap taken from the
+   * conservative bound recorded, not measured (DW-706). A cap taken from the
    * derivation alone quoted senders 62.4 MB, two and a half times that bound,
    * inviting a resend at a size nothing here has any reason to think arrives.
    *
@@ -503,7 +506,7 @@ describe("email-ingest allowlist parity", () => {
     expect(MAX_RAW_EMAIL_BYTES).toBeLessThanOrEqual(EMAIL_ROUTING_MAX_INBOUND_BYTES);
     // The platform figure in the unit this repo records it in, which is also the
     // unit `workers/email-ingest/README.md` gives operators. 25 MiB is an
-    // unverified conservative bound, not a checked one (DW-457), so this pins
+    // unverified conservative bound, not a checked one (DW-706), so this pins
     // what was RECORDED rather than what was confirmed -- still the unit worth
     // pinning, because a byte count restated here would agree with the constant
     // however wrong both were.
@@ -519,6 +522,175 @@ describe("email-ingest allowlist parity", () => {
     // against the derivation: a base64 full-size document is the one full-size
     // shape that still arrives.
     expect(base64PartWireSize(MAX_DOCUMENT_SIZE)).toBeLessThan(MAX_RAW_EMAIL_BYTES);
+  });
+
+  /**
+   * The SECOND clamp (DW-697), one level down from the DW-449 one above. That
+   * clamp fixed the figure the over-SIZE refusal quotes; this one fixes the
+   * figure the over-BUDGET sentence quotes, and the budget the selection loop
+   * spends with it.
+   *
+   * The defect it closes: `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` is derived from
+   * the WORST transfer encoding, so nothing in the derivation ever asked whether
+   * a message could carry that many DECODED bytes through the door the DW-449
+   * clamp left. It could not -- 20,671,520 decoded bytes are over the enforced
+   * gate under both encodings a real client picks -- so the quoted 19 MB named a
+   * budget only an unencoded `7bit`/`8bit` sender could spend, which is not a
+   * shape mainstream clients emit for the formats this Worker advertises.
+   *
+   * Both constants stay exported and both are measured here, exactly as the
+   * derivation and the platform ceiling are above: the derivation records what
+   * the budget NEEDS, and the enforced figure records what a sender can spend.
+   */
+  it("clamps the aggregate budget to what the enforced door can carry as base64", () => {
+    // The lower of the two terms, and at or above the floor. Stated as the three
+    // inequalities the `Math.max`/`Math.min` has to satisfy rather than by
+    // copying the source expression, which could only ever detect an edit.
+    expect(ENFORCED_AGGREGATE_DOCUMENT_BYTES).toBeLessThanOrEqual(
+      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
+    );
+    expect(ENFORCED_AGGREGATE_DOCUMENT_BYTES).toBeLessThanOrEqual(
+      RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES,
+    );
+    // The DW-104/DW-358 admission the floor exists to protect: ONE full-size
+    // document is still admissible against the budget, so a single part above it
+    // is refused by the per-document ceiling and never becomes an over-budget
+    // loss. If the carrying capacity ever computed BELOW this, the floor would
+    // be doing all the work and the aggregate budget would have collapsed onto
+    // the per-document ceiling -- which retires DW-362 and is a product
+    // decision, not arithmetic.
+    expect(ENFORCED_AGGREGATE_DOCUMENT_BYTES).toBeGreaterThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
+    expect(RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES).toBeGreaterThan(MAX_EMAIL_DOCUMENT_BYTES);
+    // Which term binds TODAY, stated rather than left to the reader: the
+    // carrying capacity, and it really is a NARROWING -- the clamp gives up
+    // budget rather than being a no-op that would leave DW-697 unfixed.
+    expect(ENFORCED_AGGREGATE_DOCUMENT_BYTES).toBe(RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES);
+    expect(ENFORCED_AGGREGATE_DOCUMENT_BYTES).toBeLessThan(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    // And it stays an integer -- it feeds a `Math.floor(... / 1024 / 1024)` the
+    // acknowledgement quotes, and a fractional byte count there is a figure no
+    // sender could act on.
+    expect(Number.isInteger(ENFORCED_AGGREGATE_DOCUMENT_BYTES)).toBe(true);
+    // The quoted MB is never larger than the budget enforced, the same
+    // invariant `MAX_RAW_EMAIL_MB` carries for the raw gate. Written as the
+    // floor arithmetic production uses, because the budget is not MiB-aligned.
+    expect(
+      Math.floor(ENFORCED_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024) * 1024 * 1024,
+    ).toBeLessThanOrEqual(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
+  });
+
+  /**
+   * The reachability claim itself, measured rather than asserted in a comment:
+   * a message that spends the WHOLE enforced budget as base64 attachments really
+   * does fit under the enforced door, and one that spends the whole DERIVED
+   * budget really does not. The second half is the DW-697 defect as a pin -- if
+   * a future widening makes the derived budget base64-reachable, the clamp is a
+   * no-op and this case says so.
+   */
+  it("lets a base64 sender spend the whole enforced budget under the raw gate", () => {
+    // Measured through the shared wire helper, never restated: the budget's own
+    // base64 wire size plus the whole envelope allowance is inside the gate.
+    expect(
+      base64PartWireSize(ENFORCED_AGGREGATE_DOCUMENT_BYTES) + MIME_ENVELOPE_HEADROOM_BYTES,
+    ).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
+    // And PER PART, which is the shape a real message has and costs slightly
+    // more: ten parts each pay their own short final line. Measured beside a
+    // MAXIMAL body on the worst-case wire -- the body is charged the same way
+    // the derivation charges it -- with structural room left over for every
+    // part's headers and boundary marker, the attachments' and the body's.
+    const perPartBytes = Math.ceil(ENFORCED_AGGREGATE_DOCUMENT_BYTES / MAX_EMAIL_ATTACHMENTS);
+    const aggregateWireSize = MAX_EMAIL_ATTACHMENTS * base64PartWireSize(perPartBytes);
+    const maximalBodyWireSize = quotedPrintablePartWireSize(WORKER_MAX_EMAIL_CONTENT_BYTES);
+    const PART_HEADER_AND_BOUNDARY_BUDGET_BYTES = 512;
+    expect(MAX_RAW_EMAIL_BYTES - aggregateWireSize - maximalBodyWireSize).toBeGreaterThanOrEqual(
+      (MAX_EMAIL_ATTACHMENTS + 1) * PART_HEADER_AND_BOUNDARY_BUDGET_BYTES,
+    );
+    // The defect, pinned as the thing that is NOT reachable: the derived budget
+    // in base64 is over the enforced gate, which is why quoting it told senders
+    // about a budget no message of theirs could ever spend.
+    expect(base64PartWireSize(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES)).toBeGreaterThan(
+      MAX_RAW_EMAIL_BYTES,
+    );
+    // Quoted-printable is not a candidate for a clamp target and this is why:
+    // what the door carries at ~3.12x is BELOW the per-document floor, so no
+    // quoted-printable-reachable aggregate budget exists at all. Recorded here
+    // so a future edit that "fixes" the clamp by aiming it at the worst case is
+    // met with the reason that cannot work.
+    expect(
+      Math.floor(
+        (MAX_RAW_EMAIL_BYTES - MIME_ENVELOPE_HEADROOM_BYTES) / QUOTED_PRINTABLE_EXPANSION_FACTOR,
+      ),
+    ).toBeLessThan(MAX_EMAIL_DOCUMENT_BYTES);
+  });
+
+  /**
+   * The band's UPPER edge, derived rather than restated. 19,156,674 is quoted in
+   * four places -- twice in `workers/email-ingest/index.ts`, once in
+   * `email-ingest-worker.test.ts` and once in `workers/email-ingest/README.md`
+   * -- as the most decoded attachment payload a base64 message can carry before
+   * the raw gate refuses it, and until this case nothing measured it. In a suite
+   * whose whole convention is that such figures are computed from the exported
+   * constants, four hand-typed copies of one number is exactly the drift the
+   * convention exists to prevent.
+   *
+   * It is NOT `Math.floor(MAX_RAW_EMAIL_BYTES / BASE64_EXPANSION_FACTOR)`. The
+   * ratio is a per-byte average that ignores how the final short line is
+   * written, and it over-states the capacity by two bytes; only the per-part
+   * wire measurement gives ...674. So the edge is found by walking DOWN from the
+   * ratio's estimate through `base64PartWireSize`, the same helper the cap is
+   * measured with everywhere else, and the walk is asserted to have been
+   * necessary.
+   */
+  it("measures the widest base64 payload the raw gate admits, and the band above the budget", () => {
+    let carried = Math.floor(MAX_RAW_EMAIL_BYTES / BASE64_EXPANSION_FACTOR);
+    // The ratio really does over-state it, which is why the walk exists at all.
+    // A future correction to `BASE64_EXPANSION_FACTOR` that made the ratio exact
+    // would fail here rather than silently turning the loop into a no-op.
+    expect(base64PartWireSize(carried)).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+    while (base64PartWireSize(carried) > MAX_RAW_EMAIL_BYTES) carried -= 1;
+    // The edge, both sides of it: exactly this many decoded bytes fit on the
+    // base64 wire, and one more does not. A one-sided pin would stay green if
+    // the real edge moved UP.
+    expect(base64PartWireSize(carried)).toBeLessThanOrEqual(MAX_RAW_EMAIL_BYTES);
+    expect(base64PartWireSize(carried + 1)).toBeGreaterThan(MAX_RAW_EMAIL_BYTES);
+    // The figure the comments and the README quote. Restated HERE and nowhere
+    // else on purpose: this is the one place it is derived, so a change that
+    // moves the edge fails here and names the four prose sites that owe an
+    // update, rather than leaving them quietly wrong.
+    const DOCUMENTED_BASE64_CARRIED_TOTAL_BYTES = 19_156_674;
+    expect(carried).toBe(DOCUMENTED_BASE64_CARRIED_TOTAL_BYTES);
+    // And the band the over-budget line is reachable in: non-empty, which is the
+    // whole DW-697 claim, and ~0.70 MiB wide as the constant's docblock and the
+    // README both say. The width is `MIME_ENVELOPE_HEADROOM_BYTES` converted
+    // back through the expansion factor -- the envelope the enforced budget
+    // reserves but a real message with a short body does not spend.
+    expect(carried).toBeGreaterThan(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
+    expect((carried - ENFORCED_AGGREGATE_DOCUMENT_BYTES) / 1024 / 1024).toBeCloseTo(0.7, 2);
+  });
+
+  /**
+   * The clamp is ABOVE the derivation and feeds back into no term of it, which
+   * is what keeps `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` -- and therefore
+   * `MAX_RAW_EMAIL_BYTES` and the 25.0 MB the refusal quotes -- untouched by
+   * DW-697. Verified rather than assumed: the clamped budget's OWN derivation is
+   * still over the platform ceiling, so the `Math.min` in `MAX_RAW_EMAIL_BYTES`
+   * would still select the platform term even if the derivation were re-aimed at
+   * the enforced figure.
+   */
+  it("leaves the raw gate and the size the refusal quotes exactly where they were", () => {
+    expect(MAX_RAW_EMAIL_BYTES).toBe(EMAIL_ROUTING_MAX_INBOUND_BYTES);
+    expect(
+      Math.ceil(ENFORCED_AGGREGATE_DOCUMENT_BYTES * WORST_CASE_TRANSFER_ENCODING_FACTOR) +
+        MIME_ENVELOPE_HEADROOM_BYTES,
+    ).toBeGreaterThan(EMAIL_ROUTING_MAX_INBOUND_BYTES);
+    // The circularity guard, stated as the ordering it depends on: the carrying
+    // capacity is computed FROM the enforced gate, so the gate may not be
+    // computed from it. The derivation the gate's `Math.min` reads is still the
+    // one built from `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` -- pinned verbatim in
+    // the full-size-document case above -- and the assertion here is that the
+    // enforced budget is strictly smaller, so substituting it could only ever
+    // have lowered the derivation, never raised the gate.
+    expect(ENFORCED_AGGREGATE_DOCUMENT_BYTES).toBeLessThan(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    expect(AGGREGATE_DERIVED_RAW_EMAIL_BYTES).toBeGreaterThan(EMAIL_ROUTING_MAX_INBOUND_BYTES);
   });
 
   it("computes the worst-case factor from the encodings it names", () => {

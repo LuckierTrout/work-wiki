@@ -3,6 +3,7 @@ import worker, {
   AGGREGATE_DERIVED_RAW_EMAIL_BYTES,
   AGGREGATE_DOCUMENT_AVERAGE_BYTES,
   EMAIL_ROUTING_MAX_INBOUND_BYTES,
+  ENFORCED_AGGREGATE_DOCUMENT_BYTES,
   MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS,
   MAX_EMAIL_ATTACHMENT_NAMES_RECORDED,
@@ -501,13 +502,17 @@ function partBytes(index: number, length = 96): Uint8Array {
 const ASCII_PART_LINE_STRIDE = 76;
 
 /**
- * The payload of a part written with NO transfer encoding (`7bit`), which is
- * the only shape that can still carry more decoded bytes than
- * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` while staying under the raw gate: since
- * DW-449 that gate is 25 MiB, and base64's ~1.37x puts the budget's ~19.71 MiB
- * of decoded payload at ~27.0 MiB on the wire, refused at the door. An unencoded
- * part costs ~1x, so the DW-360 bound is reachable through it and through
- * nothing else.
+ * The payload of a part written with NO transfer encoding (`7bit`), the
+ * CHEAPEST shape on the wire at ~1x.
+ *
+ * It is no longer what the aggregate-budget fixtures use. Between DW-449 and
+ * DW-697 it was the only encoding that could carry more decoded bytes than the
+ * budget then enforced -- the DERIVED 20,671,520, whose ~27.0 MiB of base64 the
+ * 25 MiB gate refuses -- and DW-697 fixed that by clamping the enforced budget
+ * to what the door carries as base64. What still needs an unencoded part is a
+ * fixture that must carry more decoded bytes than base64 can push through the
+ * gate at all: a PAIR of oversized 10 MiB documents, ~27.4 MiB encoded, whose
+ * case is about the per-document ceiling rather than about the door.
  *
  * Distinct per part and per offset for the same reason `partBytes` is, but
  * constrained to what an unencoded body may actually contain:
@@ -589,13 +594,13 @@ function multipartEmail(
     headers?: readonly string[];
     /**
      * Transfer encoding for the part body. Defaults to base64, the encoding
-     * every fixture used before DW-358; `quoted-printable` is the worst-case
-     * encoding a sending client may pick instead, and `7bit` writes the payload
-     * with no encoding at all -- the CHEAPEST wire cost, and since DW-449 the
-     * only one under which a message can carry the whole decoded aggregate
-     * budget and still clear the 25 MiB raw gate. A `7bit` part's payload comes
-     * from `asciiPartBytes` rather than `partBytes`, because an unencoded body
-     * may only carry what the wire can hold literally.
+     * every fixture used before DW-358 and the one the budget fixtures use again
+     * since DW-697; `quoted-printable` is the worst-case encoding a sending
+     * client may pick instead, and `7bit` writes the payload with no encoding at
+     * all -- the CHEAPEST wire cost, kept for the fixtures that must carry more
+     * decoded bytes past the 25 MiB gate than base64 can. A `7bit` part's
+     * payload comes from `asciiPartBytes` rather than `partBytes`, because an
+     * unencoded body may only carry what the wire can hold literally.
      */
     encoding?: "base64" | "quoted-printable" | "7bit";
   })[],
@@ -728,14 +733,20 @@ async function forwardedForm(raw: string, subject: string, slug: string) {
 // copy of the shape would mean encoding ~28 MB of base64 twice for no gain.
 /**
  * The budget as the acknowledgement quotes it, derived with the SAME floor
- * arithmetic production uses. Since DW-455 the budget is not MiB-aligned at all
- * -- 20,671,520 bytes, ~19.71 MiB -- so the floor is doing real work and a plain
- * `/ 1024 / 1024` would quote 19.7 where the acknowledgement says 19. The
+ * arithmetic production uses. The budget is not MiB-aligned -- since DW-697 it
+ * is 18,424,785 bytes, ~17.57 MiB -- so the floor is doing real work and a plain
+ * `/ 1024 / 1024` would quote 17.5 where the acknowledgement says 17. The
  * "rounded DOWN, so the figure quoted is never larger than the one enforced"
  * invariant is pinned for `MAX_RAW_EMAIL_MB` and would otherwise be unpinned
  * here.
+ *
+ * Read off `ENFORCED_AGGREGATE_DOCUMENT_BYTES`, not off
+ * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` (DW-697). The derived figure is the raw
+ * cap's DERIVATION record; the enforced one is what the selection loop spends
+ * and what the sentence quotes, and pointing this at the other would quote
+ * senders a budget no message of theirs could reach.
  */
-const AGGREGATE_BUDGET_MB = Math.floor(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024);
+const AGGREGATE_BUDGET_MB = Math.floor(ENFORCED_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024);
 
 /**
  * Three parts that together exceed the budget, and a fourth that still fits
@@ -748,28 +759,30 @@ const AGGREGATE_BUDGET_MB = Math.floor(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 1024
  * whether a file survives would depend on what sat ahead of it rather than on
  * the budget.
  */
-const PART_BYTES = 7 * 1024 * 1024;
+const PART_BYTES = 6 * 1024 * 1024;
 
 /**
- * Built once: ~21 MB of message is worth assembling a single time.
+ * Built once: ~26 MB of message is worth assembling a single time.
  *
- * Written with NO transfer encoding (DW-449). Base64 was the original choice
- * because it is the encoding that makes the decoded-vs-wire gap reachable, but
- * once `MAX_RAW_EMAIL_BYTES` is clamped to the 25 MiB inbound ceiling this repo
- * records for Email Routing -- a bound adopted, not checked (DW-457) -- ~21 MiB
- * of decoded payload is ~28.7 MiB of base64 and is refused at the door, which
- * would test the raw gate instead of this bound. An unencoded part costs ~1x, so
- * it is now the only shape that carries an over-budget decoded payload through a
- * gate a real message could clear.
+ * BASE64, which is the whole point of the fixture since DW-697. It was written
+ * unencoded (`7bit`) under DW-449, because the budget being enforced then --
+ * 20,671,520 decoded bytes -- was ~27.0 MiB of base64 and refused at the door,
+ * so only an unencoded sender could reach the selection loop at all. That is the
+ * defect DW-697 fixed: the enforced budget is now
+ * `ENFORCED_AGGREGATE_DOCUMENT_BYTES`, clamped to what the door carries as
+ * base64, so three 6 MiB parts are over budget AND under the raw gate at the
+ * encoding a real client actually uses for a PDF. The premises are asserted in
+ * the cases below rather than trusted here -- two parts fit, three do not, and
+ * the assembled message clears the gate.
  */
 let overBudgetEmail: string | undefined;
 function overBudgetFixture(): string {
   overBudgetEmail ??= multipartEmail(
     [
-      { filename: "big-1.pdf", mime: "application/pdf", bytes: PART_BYTES, encoding: "7bit" },
-      { filename: "big-2.pdf", mime: "application/pdf", bytes: PART_BYTES, encoding: "7bit" },
-      { filename: "big-3.pdf", mime: "application/pdf", bytes: PART_BYTES, encoding: "7bit" },
-      { filename: "tail.pdf", mime: "application/pdf", encoding: "7bit" },
+      { filename: "big-1.pdf", mime: "application/pdf", bytes: PART_BYTES },
+      { filename: "big-2.pdf", mime: "application/pdf", bytes: PART_BYTES },
+      { filename: "big-3.pdf", mime: "application/pdf", bytes: PART_BYTES },
+      { filename: "tail.pdf", mime: "application/pdf" },
     ],
     {
       subject: "Too much at once",
@@ -963,9 +976,9 @@ describe("email-ingest route refusal", () => {
     // refusal array kept every one of them green.
     //
     // The same cached fixture the aggregate suite's own case uses -- three
-    // 7 MB parts that together exceed the budget, plus a small tail that still
-    // fits behind the one that does not -- answered with a refusal instead of
-    // an `{ ok: true }` response.
+    // base64 parts of `PART_BYTES` (6 MiB) that together exceed the budget, plus
+    // a small tail that still fits behind the one that does not -- answered with
+    // a refusal instead of an `{ ok: true }` response.
     const text = await refusedReply(
       overBudgetFixture(),
       "Too much at once",
@@ -1366,7 +1379,8 @@ describe("email-ingest oversized attachments", () => {
    *
    * The aggregate budget (DW-360) is deliberately NOT in play: the oversized
    * pair never reaches the selection loop, and eleven 96-byte parts cannot spend
-   * a ~19.71 MiB budget. Its own three-way case lives next door.
+   * a budget of `ENFORCED_AGGREGATE_DOCUMENT_BYTES`. Its own three-way case
+   * lives next door.
    */
   it("reports oversized, over-cap and unsupported losses in one scrubbed acknowledgement", async () => {
     const raw = multipartEmail(
@@ -1806,10 +1820,10 @@ describe("email-ingest inline parts", () => {
     // A real MIME fixture, against the cost convention recorded in
     // `email-ingest-worker-normalization.test.ts` (`describe("email-ingest
     // oversized inline parts")`): a mocked 10 MiB part is one allocation, this
-    // is ~21 MB of message on every run. Written unencoded for the reason the
-    // aggregate-budget suite records: at base64's ~1.37x the same decoded
-    // payload is ~27.4 MiB and the 25 MiB raw gate refuses it (DW-449). That
-    // convention is about parts whose disposition is incidental to the case.
+    // is ~25 MB of message on every run. Written in BASE64 since DW-697: the
+    // enforced budget is the door's base64 carrying capacity, so the trio spends
+    // it, overshoots it and still arrives at the encoding a real client uses.
+    // That convention is about parts whose disposition is incidental to the case.
     // Here the disposition IS the case -- whether a `Content-Disposition:
     // inline` header survives PostalMime as `disposition === "inline"` is a
     // fact about the parser, and a mock that sets the field directly would
@@ -1817,20 +1831,17 @@ describe("email-ingest inline parts", () => {
     // fails.
     const INLINE_BYTES = MAX_EMAIL_DOCUMENT_BYTES;
     // The `+ 1` is the smallest per-part bump that puts the trio over the
-    // budget: without it the three parts land EXACTLY on it, and the gate is
+    // budget: without it the three parts land at or under it, and the gate is
     // `>`, so even the pre-fix code would have forwarded both real PDFs and this
     // case would prove nothing. Both real parts carry the bump, so the total
-    // sits two bytes over -- the least an equal-sized pair can overshoot by.
-    const REAL_BYTES = Math.floor(
-      (MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES - INLINE_BYTES) / 2 + 1,
-    );
+    // sits one or two bytes over -- the least an equal-sized pair can overshoot
+    // by, depending on the parity of what the inline part leaves.
+    const REAL_BYTES = Math.floor((ENFORCED_AGGREGATE_DOCUMENT_BYTES - INLINE_BYTES) / 2 + 1);
     // The premise, computed rather than assumed.
     expect(REAL_BYTES).toBeGreaterThan(0);
     expect(REAL_BYTES).toBeLessThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
-    expect(2 * REAL_BYTES).toBeLessThanOrEqual(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
-    expect(INLINE_BYTES + 2 * REAL_BYTES).toBeGreaterThan(
-      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
-    );
+    expect(2 * REAL_BYTES).toBeLessThanOrEqual(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
+    expect(INLINE_BYTES + 2 * REAL_BYTES).toBeGreaterThan(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
 
     const raw = multipartEmail(
       [
@@ -1843,11 +1854,10 @@ describe("email-ingest inline parts", () => {
           filename: "preview.pdf",
           mime: "application/pdf",
           bytes: INLINE_BYTES,
-          encoding: "7bit",
           disposition: 'Content-Disposition: inline; filename="preview.pdf"',
         },
-        { filename: "real-1.pdf", mime: "application/pdf", bytes: REAL_BYTES, encoding: "7bit" },
-        { filename: "real-2.pdf", mime: "application/pdf", bytes: REAL_BYTES, encoding: "7bit" },
+        { filename: "real-1.pdf", mime: "application/pdf", bytes: REAL_BYTES },
+        { filename: "real-2.pdf", mime: "application/pdf", bytes: REAL_BYTES },
       ],
       { subject: "Two files", messageId: "message-inline-budget", body: "Two files attached." },
     );
@@ -2252,22 +2262,31 @@ describe("email-ingest Content-ID parts", () => {
  * in memory at once. Widening the door for DW-358/DW-362 without this bound
  * would have made that peak worse, not better.
  *
- * Unencoded (`7bit`) parts on purpose: they are what makes the gap reachable
- * now. Quoted-printable at ~3.12x was never a candidate, and base64 at ~1.37x
- * stopped being one when DW-449 clamped the raw gate to Email Routing's 25 MiB
- * ceiling -- ~19.71 MiB of decoded payload is ~27.0 MiB of base64, refused at the
- * door, which would test the raw gate rather than this bound. At ~1x the door
- * is clear and the budget is the only thing that can drop a part.
+ * BASE64 parts, which is what these fixtures are FOR since DW-697. They were
+ * written unencoded (`7bit`) between DW-449 and DW-697, and that was the defect:
+ * the budget being enforced was the DERIVED 20,671,520 bytes, ~27.0 MiB of
+ * base64 and refused at the door, so the only sender who could reach the
+ * selection loop was one that sent a `application/pdf` part as printable ASCII
+ * with no encoding at all -- a shape no mainstream client emits. The suite could
+ * only pin the loop's logic, and the docblock here said so: the fixtures were
+ * declared SYNTHETIC and the budget unreachable in the field.
  *
- * Read the fixture shape as SYNTHETIC, not as evidence the budget is reachable
- * in the field. `Content-Transfer-Encoding: 7bit` over printable-ASCII bodies
- * labelled `application/pdf` is not something a real client emits for a binary
- * format -- a real sender encodes a PDF, and once it does, the raw gate refuses
- * the message long before this bound can drop a part. What these cases pin is
- * the SELECTION LOGIC of DW-360: that the loop spends the budget in source
- * order, skips rather than stops, and reports what it left behind. Whether any
- * live message can still spend that budget is a question about the transport,
- * answered by the raw-gate suite and by `workers/email-ingest/README.md`.
+ * That claim is what DW-697 retires. The enforced budget is now
+ * `ENFORCED_AGGREGATE_DOCUMENT_BYTES` -- the derived figure clamped to what the
+ * 25 MiB door carries as base64 -- so a message can spend it, exceed it, and
+ * still arrive, at the encoding a real client uses for a PDF. Every fixture
+ * below is base64 as a result, and each case asserts its own premises against
+ * the exported constants: that the parts are within the per-document ceiling,
+ * that the decoded total lands where the case needs it relative to the budget,
+ * and that the assembled message clears `MAX_RAW_EMAIL_BYTES` so the budget is
+ * the only thing that can drop a part.
+ *
+ * The band is real but narrow, and the fixtures live inside it. A base64 message
+ * carries at most 19,156,674 decoded attachment bytes before the raw gate
+ * refuses it, against an enforced budget of 18,424,785 -- about 0.70 MiB of
+ * room, less as the body grows. Quoted-printable at ~3.12x is still not a
+ * candidate and never was: it carries less than one full-size document past the
+ * door, so it meets the raw gate long before any budget.
  */
 describe("email-ingest aggregate decoded budget", () => {
   it("stops appending parts once the decoded budget is spent", async () => {
@@ -2275,8 +2294,8 @@ describe("email-ingest aggregate decoded budget", () => {
     // Stated here so a change to the budget or the part size fails loudly rather
     // than turning this case into a no-op that passes on an empty over-budget
     // list.
-    expect(2 * PART_BYTES).toBeLessThanOrEqual(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
-    expect(3 * PART_BYTES).toBeGreaterThan(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    expect(2 * PART_BYTES).toBeLessThanOrEqual(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
+    expect(3 * PART_BYTES).toBeGreaterThan(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
     expect(PART_BYTES).toBeLessThan(MAX_EMAIL_DOCUMENT_BYTES);
 
     const { form, reply } = await forwardedForm(
@@ -2297,9 +2316,9 @@ describe("email-ingest aggregate decoded budget", () => {
     const forwardedBytes = (
       await Promise.all(parts.map((part) => (part as File).arrayBuffer()))
     ).reduce((total, buffer) => total + buffer.byteLength, 0);
-    expect(forwardedBytes).toBeLessThanOrEqual(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    expect(forwardedBytes).toBeLessThanOrEqual(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
     // The tail really is the fourth part's payload, not the third's shifted up.
-    expect(new Uint8Array(await (parts[2] as File).arrayBuffer())).toEqual(asciiPartBytes(3));
+    expect(new Uint8Array(await (parts[2] as File).arrayBuffer())).toEqual(partBytes(3));
 
     // Named and counted, not dropped in silence. The name list is unaffected --
     // the file was attached, it just was not queued.
@@ -2323,7 +2342,7 @@ describe("email-ingest aggregate decoded budget", () => {
     // Never larger than the budget actually enforced: a quoted figure above the
     // real one invites the sender to resend a message that bounces again.
     expect(AGGREGATE_BUDGET_MB * 1024 * 1024).toBeLessThanOrEqual(
-      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
+      ENFORCED_AGGREGATE_DOCUMENT_BYTES,
     );
   });
 
@@ -2334,13 +2353,17 @@ describe("email-ingest aggregate decoded budget", () => {
     expect(new TextEncoder().encode(raw).byteLength).toBeLessThan(MAX_RAW_EMAIL_BYTES);
     // And the decoded payload really is over budget while the wire size is not:
     // the gap base64 opens under a cap derived from quoted-printable is exactly
-    // what this bound exists to close.
-    expect(4 * PART_BYTES).toBeGreaterThan(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    // what this bound exists to close, and since DW-697 the fixture opens it at
+    // the encoding a real client picks rather than at an unencoded one.
+    expect(4 * PART_BYTES).toBeGreaterThan(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
+    // The whole message is base64: no part of this fixture leans on `7bit` to
+    // clear the gate any more.
+    expect(raw).not.toContain("Content-Transfer-Encoding: 7bit");
   });
 
   /**
    * The exact boundary, as the raw gate has one. The bound is
-   * `aggregateBytes + size > MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`, so a selection
+   * `aggregateBytes + size > ENFORCED_AGGREGATE_DOCUMENT_BYTES`, so a selection
    * landing EXACTLY on the budget is forwarded whole and the next byte after it
    * is not -- a `>=` would drop a message that fits, invisibly to a
    * clearly-under / clearly-over pair.
@@ -2350,7 +2373,15 @@ describe("email-ingest aggregate decoded budget", () => {
    * fires because nothing more is selected, so this shape is exactly the one
    * that could name an unbounded list of files in one reply line.
    */
-  const ON_BUDGET_HALF = MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 2;
+  /**
+   * Split as floor/ceil rather than as one half doubled: the enforced budget is
+   * 18,424,785 bytes and ODD (DW-697), so a plain `/ 2` gives a fractional part
+   * size the builder cannot write and the pair would no longer land on the
+   * budget to the byte. The two together are asserted to be exactly the budget
+   * in the case below, which is the whole premise of the boundary test.
+   */
+  const ON_BUDGET_FIRST = Math.floor(ENFORCED_AGGREGATE_DOCUMENT_BYTES / 2);
+  const ON_BUDGET_SECOND = Math.ceil(ENFORCED_AGGREGATE_DOCUMENT_BYTES / 2);
   /** Enough over-budget parts to overflow the recorded-name cap and then some. */
   const OVERFLOW_PART_COUNT = MAX_EMAIL_ATTACHMENT_NAMES_RECORDED + 5;
 
@@ -2358,20 +2389,18 @@ describe("email-ingest aggregate decoded budget", () => {
   function onBudgetFixture(): string {
     onBudgetEmail ??= multipartEmail(
       [
-        // Unencoded, so the pair reaches the budget without the message
-        // exceeding the raw gate -- see the suite comment above. The stragglers
-        // below stay base64: they are 96 bytes each and cost nothing either way.
+        // Base64 like everything else in this suite since DW-697: the pair
+        // spends the enforced budget to the byte and the message still clears
+        // the raw gate, which the case below asserts rather than assumes.
         {
           filename: "half-1.pdf",
           mime: "application/pdf",
-          bytes: ON_BUDGET_HALF,
-          encoding: "7bit",
+          bytes: ON_BUDGET_FIRST,
         },
         {
           filename: "half-2.pdf",
           mime: "application/pdf",
-          bytes: ON_BUDGET_HALF,
-          encoding: "7bit",
+          bytes: ON_BUDGET_SECOND,
         },
         // ONE byte. The smallest thing the budget can refuse, and the only
         // payload size that tells `>` from `>=` at the boundary.
@@ -2391,8 +2420,15 @@ describe("email-ingest aggregate decoded budget", () => {
   }
 
   it("forwards a selection sitting exactly on the budget, and refuses the next byte", async () => {
-    // The premise, computed rather than assumed.
-    expect(2 * ON_BUDGET_HALF).toBe(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    // The premise, computed rather than assumed: the pair lands exactly on the
+    // budget, neither half is an oversized document, and the assembled message
+    // clears the raw gate -- so the budget is the only thing that can refuse the
+    // byte that follows.
+    expect(ON_BUDGET_FIRST + ON_BUDGET_SECOND).toBe(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
+    expect(ON_BUDGET_SECOND).toBeLessThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
+    expect(new TextEncoder().encode(onBudgetFixture()).byteLength).toBeLessThan(
+      MAX_RAW_EMAIL_BYTES,
+    );
 
     const { form, reply } = await forwardedForm(onBudgetFixture(), "Exactly full", "exactly-full");
     const parts = form.getAll("attachments");
@@ -2401,7 +2437,7 @@ describe("email-ingest aggregate decoded budget", () => {
     const forwardedBytes = (
       await Promise.all(parts.map((part) => (part as File).arrayBuffer()))
     ).reduce((total, buffer) => total + buffer.byteLength, 0);
-    expect(forwardedBytes).toBe(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES);
+    expect(forwardedBytes).toBe(ENFORCED_AGGREGATE_DOCUMENT_BYTES);
     // The one-byte part is refused. A `>=` gate would have dropped `half-2.pdf`
     // as well and this assertion would still pass on the first line alone --
     // hence the exact equality above.
@@ -2446,7 +2482,7 @@ describe("email-ingest aggregate decoded budget", () => {
     // every part was a supported document -- a single file above the whole
     // budget -- and this suite pinned the no-body exit against exactly that
     // shape. DW-253's per-document ceiling then CLOSED it: the ceiling partition
-    // runs before the selection loop, and `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`
+    // runs before the selection loop, and `ENFORCED_AGGREGATE_DOCUMENT_BYTES`
     // is floored at `MAX_EMAIL_DOCUMENT_BYTES` by its own `Math.max`, so any
     // part big enough to spend the budget alone is refused as oversized first
     // and never becomes an over-budget loss at all.
@@ -2456,7 +2492,7 @@ describe("email-ingest aggregate decoded budget", () => {
     // fails and says the over-budget branch of the no-body exit is reachable
     // again and owes a behavioural test. The Worker keeps `overBudgetLine` at
     // that exit for the same reason.
-    expect(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES).toBeGreaterThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
+    expect(ENFORCED_AGGREGATE_DOCUMENT_BYTES).toBeGreaterThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
 
     // What a sender who sends that file gets instead, observed end to end: the
     // oversize sentence, not the budget one. The honest lead sentence is pinned
@@ -2466,8 +2502,7 @@ describe("email-ingest aggregate decoded budget", () => {
         {
           filename: "enormous.pdf",
           mime: "application/pdf",
-          bytes: MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES + 1,
-          encoding: "7bit",
+          bytes: ENFORCED_AGGREGATE_DOCUMENT_BYTES + 1,
         },
       ],
       { subject: "One enormous file", messageId: "message-over-budget-no-body", body: "" },
@@ -2533,10 +2568,17 @@ describe("email-ingest aggregate decoded budget", () => {
     // that finish the selection and narrow enough that the mid-size ones do not
     // fit. The first lead sits EXACTLY on the ceiling, which also pins the
     // per-document gate as `>` rather than `>=`.
-    const HEADROOM = 1024 * 1024;
+    //
+    // 64 KiB rather than the 1 MiB it was before DW-697, and the size is load
+    // bearing now that the fixture is base64: the two over-budget parts are
+    // `HEADROOM + 1` bytes EACH and are carried on the wire alongside a budget
+    // that already fills the door, so a megabyte of headroom would put the
+    // assembled message over `MAX_RAW_EMAIL_BYTES` and this case would be
+    // testing the raw gate instead of the loss accounting. The gate is asserted
+    // below rather than trusted.
+    const HEADROOM = 64 * 1024;
     const LEAD_PART_BYTES = MAX_EMAIL_DOCUMENT_BYTES;
-    const SECOND_LEAD_BYTES =
-      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES - LEAD_PART_BYTES - HEADROOM;
+    const SECOND_LEAD_BYTES = ENFORCED_AGGREGATE_DOCUMENT_BYTES - LEAD_PART_BYTES - HEADROOM;
     const OVER_BUDGET_PART_BYTES = HEADROOM + 1;
     /** Small files finishing the selection, on top of the two leads. */
     const SMALL_PART_COUNT = MAX_EMAIL_ATTACHMENTS - 2;
@@ -2547,40 +2589,38 @@ describe("email-ingest aggregate decoded budget", () => {
       expect(size).toBeLessThanOrEqual(MAX_EMAIL_DOCUMENT_BYTES);
     }
     expect(LEAD_PART_BYTES + SECOND_LEAD_BYTES).toBeLessThanOrEqual(
-      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
+      ENFORCED_AGGREGATE_DOCUMENT_BYTES,
     );
     expect(LEAD_PART_BYTES + SECOND_LEAD_BYTES + OVER_BUDGET_PART_BYTES).toBeGreaterThan(
-      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
+      ENFORCED_AGGREGATE_DOCUMENT_BYTES,
     );
     // ...and the small tail still fits in what the leads left behind, so the
     // selection really does reach the count cap.
     expect(LEAD_PART_BYTES + SECOND_LEAD_BYTES + SMALL_PART_COUNT * 96).toBeLessThanOrEqual(
-      MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES,
+      ENFORCED_AGGREGATE_DOCUMENT_BYTES,
     );
 
     const OVER_CAP_EXTRAS = 3;
     const raw = multipartEmail(
       [
-        // Unencoded, like every other over-budget fixture in this suite: base64
-        // would put ~21 MiB of decoded payload past the 25 MiB raw gate.
+        // Base64, like every other over-budget fixture in this suite since
+        // DW-697: the enforced budget is the door's base64 carrying capacity, so
+        // a message that spends it and a little more still arrives.
         {
           filename: "lead-1.pdf",
           mime: "application/pdf",
           bytes: LEAD_PART_BYTES,
-          encoding: "7bit",
         },
         {
           filename: "lead-2.pdf",
           mime: "application/pdf",
           bytes: SECOND_LEAD_BYTES,
-          encoding: "7bit",
         },
         // An RFC 2231 encoded name that really does arrive carrying CR/LF.
         {
           filename: null,
           mime: "application/pdf",
           bytes: OVER_BUDGET_PART_BYTES,
-          encoding: "7bit",
           disposition: `Content-Disposition: attachment; filename*=utf-8''huge%0D%0A1.pdf`,
         },
         // No filename parameter at all: `postal-mime` reports `null`, which is
@@ -2589,7 +2629,6 @@ describe("email-ingest aggregate decoded budget", () => {
           filename: null,
           mime: "application/pdf",
           bytes: OVER_BUDGET_PART_BYTES,
-          encoding: "7bit",
         },
         // Inline and ineligible -- the signature logo DW-359 is about.
         {
@@ -2619,6 +2658,9 @@ describe("email-ingest aggregate decoded budget", () => {
       ],
       { subject: "Every loss at once", messageId: "message-every-budget-loss", body: "Lots." },
     );
+    // ...and the assembled message really clears the door, so every loss below
+    // is a loss the selection made rather than a message that never arrived.
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThan(MAX_RAW_EMAIL_BYTES);
     const { form, reply } = await forwardedForm(raw, "Every loss at once", "every-loss-at-once");
 
     // Ten forwarded: the two leads plus the smalls. The two over-budget parts
@@ -2751,7 +2793,7 @@ describe("email-ingest misconfigured bindings", () => {
  * `Math.min(AGGREGATE_DERIVED_RAW_EMAIL_BYTES, EMAIL_ROUTING_MAX_INBOUND_BYTES)`,
  * so the derivation states what the aggregate budget NEEDS while the platform
  * term states what this repo records Email Routing as delivering -- a
- * conservative bound adopted without verification (DW-457). These cases test the
+ * conservative bound adopted without verification (DW-706). These cases test the
  * ENFORCED figure, which is the only one a sender meets: what it forwards, what
  * it refuses, and -- the point of the clamp -- that the size the refusal quotes
  * back is never one the recorded platform ceiling would have rejected first.
@@ -2768,7 +2810,7 @@ describe("email-ingest misconfigured bindings", () => {
  * recorded PLATFORM ceiling invites a resend that -- if that ceiling is real --
  * never reaches this Worker to be bounced by, so the sender's own provider
  * returns a delivery failure and work-wiki never explains anything. That second
- * bound is a bound this repo adopted rather than measured (DW-457), which is why
+ * bound is a bound this repo adopted rather than measured (DW-706), which is why
  * it is stated as a ceiling recorded and not as transport behaviour observed;
  * the assertion holds either way, since a quoted figure under a conservative
  * bound is safe whether or not the bound is tight. It is what fails if the
@@ -2935,7 +2977,7 @@ describe("email-ingest raw message cap", () => {
     // actually feels. It no longer clears the gate: at ~3.12x a full-size
     // document is 32,715,573 bytes on the wire, above the 25 MiB this repo records
     // as Email Routing's own ceiling, so under that bound this Worker would never
-    // have seen it however wide its own cap was (DW-449, DW-457). The
+    // have seen it however wide its own cap was (DW-449, DW-706). The
     // derivation's admission of it is still pinned -- against
     // `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, in the parity suite.
     //
@@ -2983,7 +3025,7 @@ describe("email-ingest raw message cap", () => {
     // half times the 25 MiB this repo records for Email Routing. This gate
     // refuses the message. Under that recorded bound the transport would have
     // refused it upstream first. Either way the sender must hear a figure they
-    // can act on (DW-449, DW-457).
+    // can act on (DW-449, DW-706).
     //
     // The derivation's reach is not deleted with the admission: the parity suite
     // still measures this same aggregate against

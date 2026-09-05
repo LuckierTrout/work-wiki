@@ -5799,7 +5799,9 @@ location: workers/email-ingest/index.ts (MAX_EMAIL_AGGREGATE_DOCUMENT_MB acknowl
 source_spec: `spec-dw-449-email-raw-message-ceiling.md`
 severity: low
 reason: `MAX_EMAIL_AGGREGATE_DOCUMENT_MB` is quoted in the over-budget acknowledgement (`workers/email-ingest/index.ts`, "the 20 MB total attachment budget"), but 20 MiB of decoded payload is ~27.4 MiB of base64 and ~62 MiB of quoted-printable — both above the 25 MiB inbound ceiling this bundle just recorded. It is reachable only from a client sending unencoded (`7bit`/`8bit`) parts, which is not a shape any mainstream client emits for the PDF/DOCX/XLSX formats the Worker advertises. `README.md` records the arithmetic honestly, but the sender-facing sentence still names a budget no real message can spend, and the DW-360 selection loop it guards is correspondingly unreachable in the field — the suite now has to build synthetic `7bit` PDF fixtures to exercise it at all. Out of scope here: the recorded decision named only `MAX_RAW_EMAIL_BYTES`, and lowering the budget moves constants this spec's Block If holds back.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-email-ingest-copy-and-citations
+resolution-undo: bf5d4c2d8d5f5f4167bbe86ff53c75e108bed1935ad894486f4cb9c09be5eb36 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-03 Clamp the quoted budget — Derive the sender-facing aggregate figure from what MAX_RAW_EMAIL_BYTES can actually carry under base64 and quoted-printable and quote that number instead, updating README.md's arithmetic and the DW-360 selection tests so they exercise a reachable budget.
 
 ### DW-698: The realm-fork guard at src/lib/ingest.ts:1952 reads through `pageCache` and flattens a non-ENOENT storage failure to `null`, so a provider blip skips the fork and lets a non-owner's ingest overwrite
@@ -5890,7 +5892,9 @@ location: workers/email-ingest/index.ts (EMAIL_ROUTING_MAX_INBOUND_BYTES, MAX_RA
 source_spec: `spec-dw-457-email-inbound-ceiling-provenance.md`
 severity: low
 reason: `_bmad-output/implementation-artifacts/deferred-work.md:3386` reads "### DW-457: `missing-concept-page` is effectively unreachable over both MCP transports", status done 2026-08-29, and `src/mcp.ts` already cites DW-457 for that. The email-ceiling decision reached this work only through a `decision:` line misfiled onto that archived entry -- a misfiling `spec-dw-395-455-456-457-mcp-rest-door-parity.md:214` already flagged as "worth correcting in the ledger". A maintainer grepping DW-457 after this change now gets two unrelated defects and no way to tell which citation belongs to which. Fixing it means correcting the ledger, which this run was forbidden to touch.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-email-ingest-copy-and-citations
+resolution-undo: bf5d4c2d8d5f5f4167bbe86ff53c75e108bed1935ad894486f4cb9c09be5eb36 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-03 Re-point the citations at DW-706 — Change the nine code and test citations to name DW-706, whose entry records the email inbound-ceiling provenance, and note in this entry's resolution that the decision was originally misfiled onto DW-457. No new ledger id is minted and no product behaviour changes.
 
 ### DW-707: The Sources-pane rescan lists `raw/sources/**` only, so a legacy-address silo mirror is visible in the Files tab but never in Sources.

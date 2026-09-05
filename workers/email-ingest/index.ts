@@ -164,9 +164,20 @@ export const AGGREGATE_DOCUMENT_AVERAGE_BYTES =
   AGGREGATE_DOCUMENT_NOMINAL_AVERAGE_BYTES -
   Math.ceil(MAX_EMAIL_CONTENT_BYTES / MAX_EMAIL_ATTACHMENTS);
 /**
- * The DECODED attachment budget one message is sized for: `MAX_EMAIL_ATTACHMENTS`
- * documents at `AGGREGATE_DOCUMENT_AVERAGE_BYTES` each — 20,671,520 bytes
- * (~19.71 MiB, quoted to senders as 19 MB).
+ * The DECODED attachment budget the raw cap is DERIVED from:
+ * `MAX_EMAIL_ATTACHMENTS` documents at `AGGREGATE_DOCUMENT_AVERAGE_BYTES` each —
+ * 20,671,520 bytes (~19.71 MiB).
+ *
+ * READ THIS BEFORE THE ARITHMETIC BELOW: since DW-697 this figure is neither the
+ * budget the selection loop spends nor the one the acknowledgement quotes.
+ * `ENFORCED_AGGREGATE_DOCUMENT_BYTES`, declared after `MAX_RAW_EMAIL_BYTES`, is
+ * both — 18,424,785 bytes, quoted as 17 MB — because 20,671,520 decoded bytes
+ * cannot fit through the enforced door under any encoding a real client picks.
+ * This constant is kept as the DERIVATION record the clamp bounds, the same way
+ * `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` is kept while dormant: it is what
+ * `MIME_ENVELOPE_HEADROOM_BYTES` and `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` are
+ * sized for, and the clamp does not change any term of that. Everything below
+ * describes the derivation; nothing below describes what a sender meets.
  *
  * Slightly under the round 20 MiB it used to be, and deliberately so: since
  * DW-455 the average has each attachment's share of `MAX_EMAIL_CONTENT_BYTES`
@@ -179,10 +190,12 @@ export const AGGREGATE_DOCUMENT_AVERAGE_BYTES =
  * to fit precisely — with nothing to spare. At 20,671,520 they no longer do: the
  * first is forwarded and the second becomes an over-budget loss, named in the
  * acknowledgement as a file left behind once the total budget was spent. That is
- * a real narrowing of a shape a sender could hit, not a theoretical one — the
- * pair is ~20.0 MiB on the wire as unencoded `7bit`/`8bit` parts and clears the
- * 25 MiB raw gate, which is the same encoding the DW-360 budget cases use. It is
- * accepted rather than fixed because the alternative is widening the raw cap,
+ * a real narrowing of the DERIVATION, not a theoretical one. Whether a sender
+ * can still hit it is a separate question and the answer is now no: since DW-697
+ * the enforced budget is lower again, and 20,971,520 decoded bytes are
+ * 28,697,872 bytes of base64 — over the raw gate, so the pair is refused at the
+ * door rather than losing its second part. It is accepted rather than fixed
+ * because the alternative is widening the raw cap,
  * which the DW-455 decision ruled out. Pinned by
  * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`, so the cost is
  * observed rather than only narrated here.
@@ -191,10 +204,14 @@ export const AGGREGATE_DOCUMENT_AVERAGE_BYTES =
  * Deriving the body term from `MAX_EMAIL_CONTENT_BYTES` rather than from
  * `MAX_EMAIL_CONTENT_CHARS` triples what the average surrenders — 30,000 bytes
  * a document instead of 10,000 — so the budget gave up a further 200,000
- * decoded bytes, from 20,871,520 to 20,671,520. The shape that pays for it is a
+ * decoded bytes, from 20,871,520 to 20,671,520. The shape that paid for it is a
  * supported-attachment total in the band (20,671,520, 20,871,520]: it fitted
- * before and now loses its last part to the same over-budget line, which is the
- * two-full-size-documents narrowing above repeated ~195 KiB lower down. Accepted
+ * before and then lost its last part to the same over-budget line, which is the
+ * two-full-size-documents narrowing above repeated ~195 KiB lower down. NO
+ * SENDER MEETS THAT BAND ANY MORE: since DW-697 the enforced budget is
+ * 18,424,785, below the whole of it, so every total in it is over budget under
+ * any encoding — and a base64 one is refused at the door on top. Kept as the
+ * record of what the DERIVATION gave up, which is what this constant is. Accepted
  * for the same reason and by the same argument — the alternative is widening the
  * raw cap — and pinned the same way: the parity suite asserts the WHOLE
  * shortfall from the nominal equals
@@ -223,16 +240,24 @@ export const AGGREGATE_DOCUMENT_AVERAGE_BYTES =
  * attachment count can therefore never push the budget below a single document.
  * Pinned by `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
  *
- * This is the cap's derivation AND, since DW-360, the post-decode bound: the
- * forwarding selection below stops appending parts to the outbound `FormData`
- * once their decoded lengths reach this figure. That pairing is the point. The
- * cap is derived from the WORST transfer encoding, so a sender using a CHEAPER
- * one (base64 at ~1.37x, an unencoded 7bit/8bit part at ~1x) could otherwise
- * slip far more decoded bytes past the raw gate than the budget names — ~47 MB
- * under the 62.4 MB `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` this budget yields, and
- * ~19 MB under the 25 MiB figure the DW-449 clamp actually enforces.
+ * This WAS the cap's derivation AND, from DW-360 until DW-697, the post-decode
+ * bound as well: the forwarding selection below stopped appending parts once
+ * their decoded lengths reached this figure. The pairing was the point, and the
+ * reason for it survives the split — the cap is derived from the WORST transfer
+ * encoding, so a sender using a CHEAPER one (base64 at ~1.37x, an unencoded
+ * 7bit/8bit part at ~1x) could otherwise slip far more decoded bytes past the
+ * raw gate than any budget names: ~47 MB under the 62.4 MB
+ * `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` this budget yields, and, since the DW-449
+ * clamp, up to the 25 MiB gate itself for an unencoded part.
  *
- * WHICH peak this bounds, stated precisely, because the loose reading of it is
+ * What DW-697 CHANGED is which figure the selection loop spends. Pairing the
+ * bound with THIS constant made the loop unreachable for the encodings real
+ * clients use — 20,671,520 decoded bytes are ~27.0 MiB of base64, refused at the
+ * door — so the bound is now `ENFORCED_AGGREGATE_DOCUMENT_BYTES`, this figure
+ * clamped to what the door can carry. The two remain the same shape of claim;
+ * only the second is enforced.
+ *
+ * WHICH peak that bounds, stated precisely, because the loose reading of it is
  * wrong. It bounds the `FormData` copies of the SELECTED parts — the bytes this
  * Worker chooses to hold and forward. It does NOT bound the message's whole
  * buffered payload: `PostalMime.parse(message.raw)` has already decoded the
@@ -245,14 +270,6 @@ export const AGGREGATE_DOCUMENT_AVERAGE_BYTES =
 export const MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES = Math.max(
   MAX_EMAIL_DOCUMENT_BYTES,
   MAX_EMAIL_ATTACHMENTS * AGGREGATE_DOCUMENT_AVERAGE_BYTES,
-);
-/**
- * The aggregate budget as the acknowledgement quotes it. Rounded DOWN, for the
- * same reason `MAX_RAW_EMAIL_MB` is: the figure a sender is told about must
- * never be larger than the one actually enforced.
- */
-const MAX_EMAIL_AGGREGATE_DOCUMENT_MB = Math.floor(
-  MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024,
 );
 /**
  * Base64 writes 4 characters for every 3 bytes, and RFC 2045 wraps the result at
@@ -309,7 +326,7 @@ export const BASE64_EXPANSION_FACTOR = (4 / 3) * (78 / 76);
  * over it — this Worker refuses those messages at the door, and under the
  * ceiling `EMAIL_ROUTING_MAX_INBOUND_BYTES` records they would not have reached
  * it in the first place. That ceiling is a bound this repo adopted, not one it
- * observed (DW-457), so the upstream half of that sentence is only as good as
+ * observed (DW-706), so the upstream half of that sentence is only as good as
  * the bound. Worst-case quoted-printable therefore carries roughly 8.0 MiB of
  * decoded payload past the enforced gate, not a full-size document; base64
  * still carries one (14,348,938 bytes on the wire) with room to spare.
@@ -416,6 +433,17 @@ export const MIME_STRUCTURAL_HEADROOM_BYTES = 64 * 1024;
  * A property of `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, which is what this headroom
  * is added to. The DW-449 clamp sits ABOVE that arithmetic and does not change
  * it: it lowers the enforced gate without re-sizing any term of the derivation.
+ *
+ * ITS SECOND CONSUMER, and the one that makes this term sender-facing (DW-697).
+ * `RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES` SUBTRACTS this figure from
+ * `MAX_RAW_EMAIL_BYTES` before dividing by `BASE64_EXPANSION_FACTOR`, and
+ * `ENFORCED_AGGREGATE_DOCUMENT_BYTES` is clamped to the result — so this
+ * headroom now sets the attachment budget the selection loop spends and the MB
+ * the acknowledgement quotes, not only a dormant derivation. Every byte added
+ * here takes ~0.73 of a byte off that budget. Widening it is therefore no longer
+ * free in the way the paragraph above describes: it costs the raw cap nothing
+ * and costs the sender-facing budget directly. Pinned by
+ * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
  */
 export const MIME_ENVELOPE_HEADROOM_BYTES =
   MIME_STRUCTURAL_HEADROOM_BYTES +
@@ -474,14 +502,25 @@ export const MIME_ENVELOPE_HEADROOM_BYTES =
  * rather than its intent. Only this cap moves: the per-document ceiling, the
  * attachment count, the body cap and the `message.rawSize` gate itself are
  * unchanged. What is NEW below it is the post-decode aggregate bound (DW-360),
- * which holds the bytes actually copied into the outbound `FormData` to the same
- * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` this cap is sized for.
+ * which holds the bytes actually copied into the outbound `FormData`. That bound
+ * was this same `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` until DW-697 and is
+ * `ENFORCED_AGGREGATE_DOCUMENT_BYTES` now — the figure below clamped to what
+ * this door carries as base64, because a message spending the budget this cap is
+ * SIZED for cannot get through the door the `Math.min` below actually leaves.
  *
  * READ THIS BEFORE THE ARITHMETIC ABOVE: since DW-449 this constant gates
  * nothing. It appears only inside the `Math.min` below, where
- * `EMAIL_ROUTING_MAX_INBOUND_BYTES` wins, so `WORST_CASE_TRANSFER_ENCODING_FACTOR`
- * and `MIME_ENVELOPE_HEADROOM_BYTES` are — today — arithmetic no message is ever
- * measured against. It is kept for two reasons rather than inlined away: it is
+ * `EMAIL_ROUTING_MAX_INBOUND_BYTES` wins, so
+ * `WORST_CASE_TRANSFER_ENCODING_FACTOR` is — today — arithmetic no message is
+ * ever measured against.
+ *
+ * `MIME_ENVELOPE_HEADROOM_BYTES` is NOT dormant with it, and that changed under
+ * DW-697. It is subtracted inside `RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES`, so it
+ * sets the enforced attachment budget and the MB figure the acknowledgement
+ * quotes: every byte added to the envelope takes ~0.73 of a byte off the budget
+ * a sender is told about. Do not read the sentence above as covering it.
+ *
+ * This constant is kept for two reasons rather than inlined away: it is
  * the record of what the aggregate budget NEEDS the door to be, which is the
  * claim the parity suite still measures; and it is the term that binds again as
  * soon as `EMAIL_ROUTING_MAX_INBOUND_BYTES` reaches it — at or above 65,496,679
@@ -490,7 +529,7 @@ export const MIME_ENVELOPE_HEADROOM_BYTES =
  * anyone having to re-derive it.
  *
  * Two different thresholds, and it is worth not confusing them. 25 MiB is a
- * bound this repo recorded rather than verified (DW-457): if the real published
+ * bound this repo recorded rather than verified (DW-706): if the real published
  * limit is anything ABOVE 25 MiB, work-wiki is narrowing itself and giving up
  * reach the transport would have carried. But only a real limit at or above
  * ~62.46 MiB makes THIS arithmetic live again. In between — a real ceiling of,
@@ -509,7 +548,7 @@ export const AGGREGATE_DERIVED_RAW_EMAIL_BYTES =
  * invites the sender to resend under a size the transport has already refused
  * (DW-449).
  *
- * 25 MiB is an UNVERIFIED bound, not a checked one (DW-457). It entered this
+ * 25 MiB is an UNVERIFIED bound, not a checked one (DW-706). It entered this
  * repository on 2026-08-31 under DW-449, adopted AS IF verified against
  * Cloudflare's published limits — but DW-449's own record says the figure could
  * not be verified offline, so that verification cannot have happened. It is
@@ -548,7 +587,7 @@ export const EMAIL_ROUTING_MAX_INBOUND_BYTES = 25 * 1024 * 1024;
  * 14,348,938 bytes, ~11.3 MiB clear — and roughly 8.0 MiB decoded under
  * worst-case quoted-printable.
  *
- * Those losses are ACCEPTED BY DECISION, not observed (DW-457).
+ * Those losses are ACCEPTED BY DECISION, not observed (DW-706).
  * `EMAIL_ROUTING_MAX_INBOUND_BYTES` is an unverified conservative bound, so the
  * DW-362 aggregate worst case is out of reach because this repo chose a low
  * ceiling — not because the transport was ever seen refusing it. Three branches,
@@ -572,6 +611,113 @@ export const MAX_RAW_EMAIL_BYTES = Math.min(
 const MAX_RAW_EMAIL_MB = (
   Math.floor((MAX_RAW_EMAIL_BYTES / 1024 / 1024) * 10) / 10
 ).toFixed(1);
+/**
+ * How many DECODED attachment bytes the enforced door can actually carry, once
+ * the message is encoded the cheapest way a real client encodes the formats this
+ * Worker advertises: `MAX_RAW_EMAIL_BYTES` less the envelope allowance, divided
+ * by `BASE64_EXPANSION_FACTOR` — 18,424,785 bytes (~17.57 MiB).
+ *
+ * WHY BASE64 and not `WORST_CASE_TRANSFER_ENCODING_FACTOR` (DW-697). "Reachable"
+ * here can only mean reachable by the cheapest encoding a mainstream client
+ * emits for a PDF, DOCX or XLSX, and that is base64. Dividing by the worst case
+ * instead would carry ~8,081,046 bytes (~7.71 MiB) — BELOW the
+ * `MAX_EMAIL_DOCUMENT_BYTES` floor the budget must keep — so a
+ * quoted-printable-reachable budget does not exist at all and clamping to one
+ * would only collapse the aggregate budget onto the per-document ceiling and
+ * retire DW-362 by accident. Quoted-printable's real reach is recorded at
+ * `QUOTED_PRINTABLE_EXPANSION_FACTOR`, where it belongs; it is not a budget.
+ *
+ * NOT `7bit`/`8bit`, which is cheaper still (~1x) and would carry the whole
+ * derivation. An unencoded part is what the derived budget was implicitly
+ * assuming, and it is exactly the shape DW-697 is about: no mainstream client
+ * sends a binary document unencoded, so a budget only an unencoded sender could
+ * spend is a figure quoted to senders who can never reach it.
+ */
+export const RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES = Math.floor(
+  (MAX_RAW_EMAIL_BYTES - MIME_ENVELOPE_HEADROOM_BYTES) / BASE64_EXPANSION_FACTOR,
+);
+/**
+ * The decoded attachment budget the selection loop actually spends, and the one
+ * the acknowledgement quotes: the lower of what the derivation asks for and what
+ * the door can carry, floored at one full-size document.
+ *
+ * DW-697. `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` is 20,671,520 bytes and was
+ * quoted to senders as 19 MB, but 20,671,520 decoded bytes are ~27.0 MiB of
+ * base64 and ~61.5 MiB of quoted-printable — both far above the 25 MiB
+ * `MAX_RAW_EMAIL_BYTES` gate. Only an unencoded `7bit`/`8bit` sender could ever
+ * have spent it, which is a shape no mainstream client emits for the formats
+ * this Worker advertises, so the quoted figure named a budget almost no real
+ * message could reach, and the DW-360 selection loop it guarded was reachable
+ * only by that one unencoded shape — which in this repo meant synthetic
+ * fixtures. The clamp makes the quoted figure a spendable one.
+ *
+ * WHAT IT COSTS: 2,246,735 decoded bytes of budget (20,671,520 − 18,424,785).
+ * The bill falls unevenly across the three encodings, and is stated per encoding
+ * rather than as one sentence, because for one of them the outcome really moves.
+ *
+ * A QUOTED-PRINTABLE sender loses nothing. At ~3.12x the enforced door carries
+ * ~7.71 MiB of decoded payload — below the `MAX_EMAIL_DOCUMENT_BYTES` floor — so
+ * such a message meets the raw gate long before any aggregate budget, and the
+ * surrendered bytes were never within its reach.
+ *
+ * A BASE64 sender GAINS: the band named below opens, and the over-budget line
+ * becomes reachable for the first time since the DW-449 clamp.
+ *
+ * An UNENCODED `7bit`/`8bit` sender pays the whole bill, and this is the one
+ * shape whose outcome changes. Such a part is ~1x on the wire, so a supported
+ * total anywhere in (18,424,785, 20,671,520] clears the 25 MiB gate with room to
+ * spare: it used to be forwarded WHOLE, and now loses its trailing parts to the
+ * over-budget line. Not hypothetical — `email-ingest-worker.test.ts` keeps
+ * `asciiPartBytes` and the builder's `7bit` branch precisely because messages of
+ * that shape reach this Worker. It is accepted rather than avoided, because
+ * those bytes are exactly the promise the derived figure should never have made:
+ * a budget advertised to every sender that only an unencoded one could spend.
+ * Narrowing the figure to what a real client can reach is the whole of DW-697,
+ * and this is what that costs.
+ *
+ * WHAT IT BUYS, stated as the band it opens rather than as a slogan. A base64
+ * message may carry at most 19,156,674 decoded bytes before the raw gate refuses
+ * it, so supported totals in (18,424,785, 19,156,674] — ~0.70 MiB wide, and
+ * narrower as the body grows, since the body spends the same wire bytes — now
+ * arrive AND lose their last part to the over-budget line. That band is the
+ * reachability DW-697 asks for, and `src/lib/__tests__/email-ingest-worker.test.ts`
+ * exercises it with base64 fixtures rather than the `7bit` ones it used before.
+ *
+ * ABOVE the derivation, never inside it. `RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES`
+ * is computed from `MAX_RAW_EMAIL_BYTES`, which is a `Math.min` over
+ * `AGGREGATE_DERIVED_RAW_EMAIL_BYTES`, which is computed from
+ * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` — so this constant must not feed back
+ * into any term of that chain or the derivation becomes circular. It does not:
+ * nothing above this line reads it, exactly as the DW-449 clamp sits above
+ * `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` without re-sizing any of its terms. The
+ * derivation constants are kept, dormant, as the record of what the budget NEEDS
+ * the door to be — the same reason `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` is kept.
+ *
+ * Written as a `Math.max` over a `Math.min` with every term named and exported,
+ * this module's idiom (`WORST_CASE_TRANSFER_ENCODING_FACTOR`,
+ * `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`, `MAX_RAW_EMAIL_BYTES`): the DW-104/DW-358
+ * admission that ONE full-size document is always admissible is COMPUTED by the
+ * floor rather than assumed, so a future narrowing of the carrying capacity can
+ * never push the aggregate budget below the per-document ceiling. Pinned by
+ * `src/lib/__tests__/email-ingest-allowlist-parity.test.ts`.
+ */
+export const ENFORCED_AGGREGATE_DOCUMENT_BYTES = Math.max(
+  MAX_EMAIL_DOCUMENT_BYTES,
+  Math.min(MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES, RAW_CARRIED_AGGREGATE_DOCUMENT_BYTES),
+);
+/**
+ * The enforced budget as the acknowledgement quotes it — 17. Rounded DOWN, for
+ * the same reason `MAX_RAW_EMAIL_MB` is: the figure a sender is told about must
+ * never be larger than the one actually enforced.
+ *
+ * Derived from `ENFORCED_AGGREGATE_DOCUMENT_BYTES` and declared HERE rather than
+ * beside `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`, which is where it used to sit
+ * (DW-697). The sentence and the gate have to name the same budget, and the
+ * budget the gate spends is the clamped one.
+ */
+const ENFORCED_AGGREGATE_DOCUMENT_MB = Math.floor(
+  ENFORCED_AGGREGATE_DOCUMENT_BYTES / 1024 / 1024,
+);
 /**
  * Duplicates `MAX_EMAIL_ATTACHMENTS_RECORDED` in `src/lib/email-ingest.ts`,
  * which truncates the recorded name list to the same number in
@@ -1076,7 +1222,7 @@ export default {
     // above readmits every supported part. Filtering here —
     // ahead of sizing, the per-document partition and the selection loop — is
     // what stops an inline part from spending a `MAX_EMAIL_ATTACHMENTS` slot or
-    // a byte of `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` that a real attachment then
+    // a byte of `ENFORCED_AGGREGATE_DOCUMENT_BYTES` that a real attachment then
     // loses. Charging the sender for a part they never attached is bad; doing it
     // while the loss accounting below hides the charge is worse — they were
     // told they had exceeded a ten-attachment limit having attached nine files.
@@ -1099,7 +1245,7 @@ export default {
     //
     // Two byte bounds answer different questions and must not be merged:
     // `MAX_EMAIL_DOCUMENT_BYTES` mirrors the route's own `MAX_DOCUMENT_SIZE`,
-    // which 400s a single file above it; `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`
+    // which 400s a single file above it; `ENFORCED_AGGREGATE_DOCUMENT_BYTES`
     // bounds what the forwarding loop copies in TOTAL. Partitioning first is
     // what makes an oversized part cost nothing but itself: it consumes neither
     // a `MAX_EMAIL_ATTACHMENTS` slot nor any of the aggregate budget, so it can
@@ -1114,24 +1260,31 @@ export default {
       ({ size }) => size <= MAX_EMAIL_DOCUMENT_BYTES,
     );
     // The forwarding selection, bounded by BOTH limits the cap is sized for: the
-    // attachment COUNT, and — since DW-360 — the aggregate DECODED byte budget
-    // `AGGREGATE_DERIVED_RAW_EMAIL_BYTES` is derived from.
+    // attachment COUNT, and — since DW-360 — an aggregate DECODED byte budget.
+    //
+    // That budget is `ENFORCED_AGGREGATE_DOCUMENT_BYTES` since DW-697, not the
+    // `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES` the raw cap is DERIVED from. The
+    // derived figure is 20,671,520 bytes, and no message carrying that many
+    // decoded attachment bytes can reach this loop under an encoding a real
+    // client picks — ~27.0 MiB of base64, ~61.5 MiB of quoted-printable, both
+    // over the 25 MiB gate — so the gate below spends the figure clamped to what
+    // the door can actually carry, and the acknowledgement quotes that same one.
     //
     // The byte bound is not redundant with the raw gate. `message.rawSize` is
     // measured on the wire, and every encoding a sender may pick is cheaper than
     // the worst-case ~3.12x the derivation assumes: base64 is ~1.37x and an
     // unencoded 7bit/8bit part is ~1x. So a message inside the enforced
     // `MAX_RAW_EMAIL_BYTES` can still carry more decoded bytes than the budget
-    // names — ~47 MB under the 62.4 MB derivation, and, since the DW-449 clamp,
-    // up to the 25 MiB gate itself for an unencoded part. Without this loop
-    // every one of those bytes would be copied AGAIN into `FormData` and held
-    // there for the lifetime of the forward.
+    // names — up to 19,156,674 of them in base64, against the enforced
+    // 18,424,785, and up to the 25 MiB gate itself for an unencoded part.
+    // Without this loop every one of those bytes would be copied AGAIN into
+    // `FormData` and held there for the lifetime of the forward.
     //
     // What it does not bound: `PostalMime.parse` above has already decoded the
     // whole MIME tree, so the parse-time peak is `MAX_RAW_EMAIL_BYTES`' problem
     // — a figure DW-362 raised and the DW-449 clamp then lowered to 25 MiB. The
     // budget bounds the second copy, not the first — see
-    // `MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES`.
+    // `ENFORCED_AGGREGATE_DOCUMENT_BYTES`.
     //
     // Sizes come from `decodedByteLength`, which reads `byteLength` (or scans a
     // string) and allocates nothing: no attachment is decoded any more times
@@ -1143,7 +1296,7 @@ export default {
       // The count cap is checked first and BREAKS, so parts beyond it stay
       // over-cap losses rather than being re-labelled as over-budget ones.
       if (supportedAttachments.length >= MAX_EMAIL_ATTACHMENTS) break;
-      if (aggregateBytes + size > MAX_EMAIL_AGGREGATE_DOCUMENT_BYTES) {
+      if (aggregateBytes + size > ENFORCED_AGGREGATE_DOCUMENT_BYTES) {
         // `continue`, not `break`: a smaller file behind an enormous one still
         // fits, and refusing it would make the loss depend on part order rather
         // than on the budget.
@@ -1217,7 +1370,7 @@ export default {
     const overBudgetLine = overBudgetCount
       ? `${overBudgetCount} supported attachment${
           overBudgetCount === 1 ? " was" : "s were"
-        } not queued because this email exceeds the ${MAX_EMAIL_AGGREGATE_DOCUMENT_MB} MB total attachment budget: ${replyLossNames(
+        } not queued because this email exceeds the ${ENFORCED_AGGREGATE_DOCUMENT_MB} MB total attachment budget: ${replyLossNames(
           overBudgetAttachments,
         )}.`
       : "";
