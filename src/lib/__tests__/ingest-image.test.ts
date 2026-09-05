@@ -23,6 +23,7 @@ import {
   rawRelPath,
   wikiRelPath,
   tenantWikiRelPath,
+  tenantRawRelPath,
   tenantForOwner,
 } from "../wiki";
 import { parseSources } from "../sources";
@@ -58,6 +59,10 @@ beforeEach(async () => {
   mockedStoreBytes.mockImplementation(async (_bytes, slug, fname) => ({
     localPath: `assets/${slug}/${fname}`,
     filename: fname,
+    // `created` is the "this ingest minted the key" fact the DW-738 re-key
+    // gates its delete on. The stub reports a creation, matching what a fresh
+    // per-test tmpdir actually does.
+    created: true,
   }));
 });
 
@@ -209,7 +214,8 @@ describe("source provenance — text-paste supersession", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ingestImage — asset keys are content-addressed (DW-693)
+// ingestImage — asset keys are content-addressed (DW-693), and a forked page's
+// directory is re-keyed onto its own slug (DW-738)
 //
 // `ingestImage` mints the asset key from `slugify(title)` BEFORE calling
 // `ingest()`, because the key is embedded in the body `ingest()` is handed —
@@ -229,9 +235,19 @@ describe("source provenance — text-paste supersession", () => {
 // ABLATION — it is what fails without the digest. The identical-bytes row is an
 // INVARIANT: it passes unchanged against the pre-fix code, and its job is to
 // stop the fix from being "over-applied" into a per-call unique key.
+//
+// DW-738 then fixed the DIRECTORY the digest only made survivable. Both pages
+// were still keyed under `assets/photo/`, so `/api/assets/[...path]` — which
+// reads the first segment as the page slug — gated Bob's own image on ALICE's
+// private page, and `syncSiloForPage` mirrored his bytes into her tenant.
+// `ingest()` now re-keys onto the final slug and rewrites the body ref, so the
+// two rows below assert `assets/<bob-slug>/` rather than `assets/photo/`, and
+// the identical-bytes row's "one shared key" became "his own key, her key
+// untouched": the delete is gated on whether THIS ingest created the key, and
+// `writeAssetIfAbsent` answering `false` means the bytes are hers.
 // ---------------------------------------------------------------------------
 
-describe("ingestImage — asset keys are content-addressed (DW-693)", () => {
+describe("ingestImage — content-addressed asset keys (DW-693) + forked re-key (DW-738)", () => {
   beforeEach(async () => {
     const actual = await vi.importActual<typeof import("../fetch")>("../fetch");
     mockedStoreBytes.mockImplementation(actual.storeImageBytes);
@@ -283,12 +299,17 @@ describe("ingestImage — asset keys are content-addressed (DW-693)", () => {
   const ALICE_BYTES = [11, 22, 33, 44];
   const BOB_BYTES = [55, 66, 77, 88];
 
-  // ABLATION row: fails with the digest removed from the stored filename. Both
-  // pages then address `assets/photo/photo.png`, and `writeAsset` is an
-  // overwrite door — Bob's upload replaces Alice's bytes under the key her page
-  // still embeds. The assertions that catch it are `bobRef` vs `aliceRef` and
-  // the two byte read-backs below it.
-  it("gives two same-title, same-filename uploads with DIFFERENT bytes two different keys", async () => {
+  /** Does the storage key behind an `assets/<...>` ref still hold bytes? */
+  async function assetExists(ref: string): Promise<boolean> {
+    return getStorage().fileExists(rawRelPath(ref));
+  }
+
+  // ABLATION row for BOTH fixes. Without the digest (DW-693) the two pages
+  // address one key and `writeAsset` overwrites Alice's bytes; without the
+  // re-key (DW-738) Bob's key stays under `assets/photo/`, where the assets
+  // door gates it on Alice's private page. The `startsWith` assertions are what
+  // catch the second one — they used to read `assets/photo/` for BOTH pages.
+  it("gives a forked page its OWN asset directory when the bytes differ", async () => {
     const alice = await ingestImage(
       { bytes: new Uint8Array(ALICE_BYTES).buffer, filename: "photo.png" },
       { author: "alice", owner: "alice", title: "Photo" },
@@ -300,9 +321,6 @@ describe("ingestImage — asset keys are content-addressed (DW-693)", () => {
       { bytes: new Uint8Array(BOB_BYTES).buffer, filename: "photo.png" },
       { author: "bob", owner: "bob", title: "Photo" },
     );
-    // Bob's PAGE forked, but his asset directory is still `assets/photo/` —
-    // minted from the title before `ingest()` uniquified. Only the digest in
-    // the filename keeps the two keys apart.
     expect(bob.primarySlug).not.toBe("photo");
 
     const aliceRef = embeddedRef((await readWikiPageWithFrontmatter("photo"))!.content);
@@ -310,25 +328,35 @@ describe("ingestImage — asset keys are content-addressed (DW-693)", () => {
       (await readWikiPageWithFrontmatter(bob.primarySlug))!.content,
     );
 
-    // The page slug stays the FIRST segment — `/api/assets/[...path]` reads it
-    // as the page slug to gate private images.
+    // The page slug is the FIRST segment — `/api/assets/[...path]` reads it as
+    // the page slug to gate private images, so each page's ref has to name its
+    // OWN slug or the wrong page decides who may read the bytes.
     expect(aliceRef.startsWith("assets/photo/")).toBe(true);
-    expect(bobRef.startsWith("assets/photo/")).toBe(true);
+    expect(bobRef.startsWith(`assets/${bob.primarySlug}/`)).toBe(true);
     // Two uploads, two keys.
     expect(bobRef).not.toBe(aliceRef);
-    // …and each page reads back its OWN bytes.
+    // …and each page reads back its OWN bytes at its OWN key.
     expect(await readAssetBytes(aliceRef)).toEqual(ALICE_BYTES);
     expect(await readAssetBytes(bobRef)).toEqual(BOB_BYTES);
+    // The pre-fork key THIS ingest created is gone — nothing is left in
+    // Alice's directory pointing at Bob's image.
+    const bobFile = bobRef.slice(bobRef.lastIndexOf("/") + 1);
+    expect(await assetExists(`assets/photo/${bobFile}`)).toBe(false);
+    // Alice's own key is untouched by the move.
+    expect(await assetExists(aliceRef)).toBe(true);
     // The extension survives, so `contentTypeFor` still answers image/png.
     expect(aliceRef.endsWith("photo.png")).toBe(true);
   });
 
-  // INVARIANT row: passes with the digest removed too, by design — identical
-  // bytes already shared one key before the fix. What it pins is that the key
-  // is derived from the BYTES and nothing else: swap the digest for a random or
-  // per-call token and this row fails, because two copies of one image would
-  // start occupying two keys.
-  it("gives two same-title, same-filename uploads with IDENTICAL bytes one shared key", async () => {
+  // INVARIANT row: the key stays derived from the BYTES and nothing else — swap
+  // the digest for a per-call token and the two pages would hold two different
+  // FILENAMES here, not one filename under two directories.
+  //
+  // It is also the DELETE GUARD's row. Bob's `writeAssetIfAbsent` answers
+  // `false` (Alice's identical bytes already occupy the key), so the re-key
+  // copies without removing: deleting a key this ingest did not create would
+  // destroy the bytes Alice's page still embeds.
+  it("re-keys identical bytes into the forked page's directory without touching the original", async () => {
     const shared = [9, 8, 7, 6];
 
     const alice = await ingestImage(
@@ -348,8 +376,94 @@ describe("ingestImage — asset keys are content-addressed (DW-693)", () => {
       (await readWikiPageWithFrontmatter(bob.primarySlug))!.content,
     );
 
-    // Content-addressed: same bytes, same key — and it holds those bytes.
-    expect(bobRef).toBe(aliceRef);
+    // Same digest (content-addressed), different directory (page-keyed).
+    expect(bobRef.startsWith(`assets/${bob.primarySlug}/`)).toBe(true);
+    expect(aliceRef.startsWith("assets/photo/")).toBe(true);
+    expect(bobRef).not.toBe(aliceRef);
+    expect(bobRef.slice(bobRef.lastIndexOf("/"))).toBe(
+      aliceRef.slice(aliceRef.lastIndexOf("/")),
+    );
+
+    // Both keys hold the bytes; Alice's SURVIVES — this ingest did not create
+    // it, so removing it would be data loss.
+    expect(await readAssetBytes(bobRef)).toEqual(shared);
     expect(await readAssetBytes(aliceRef)).toEqual(shared);
+  });
+
+  // The mirror half of the same decision. `syncSiloForPage` keys the asset arm
+  // `raw/assets/<slug>/` → `tenants/<tenant>/raw/assets/<slug>/`, which is
+  // CORRECT once the directory is keyed off the final slug — so this proves it
+  // rather than editing it. Before the re-key, Bob's bytes lived under
+  // `assets/photo/` and a sync of Alice's page carried them into HER tenant.
+  it("mirrors each forked page's asset into its OWN tenant silo", async () => {
+    const { syncSiloForPage } = await import("../silo");
+
+    await ingestImage(
+      { bytes: new Uint8Array(ALICE_BYTES).buffer, filename: "photo.png" },
+      { author: "alice", owner: "alice", title: "Photo" },
+    );
+    await makePrivate("photo");
+    const bob = await ingestImage(
+      { bytes: new Uint8Array(BOB_BYTES).buffer, filename: "photo.png" },
+      { author: "bob", owner: "bob", title: "Photo" },
+    );
+
+    const bobRef = embeddedRef(
+      (await readWikiPageWithFrontmatter(bob.primarySlug))!.content,
+    );
+    const bobFile = bobRef.slice(bobRef.lastIndexOf("/") + 1);
+    const aliceTenant = tenantForOwner("alice");
+    const bobTenant = tenantForOwner("bob");
+
+    await syncSiloForPage("photo", aliceTenant);
+    await syncSiloForPage(bob.primarySlug, bobTenant);
+
+    const storage = getStorage();
+    // Bob's image landed in Bob's tenant…
+    expect(
+      await storage.fileExists(
+        tenantRawRelPath(bobTenant, `assets/${bob.primarySlug}/${bobFile}`),
+      ),
+    ).toBe(true);
+    // …and nowhere in Alice's.
+    expect(
+      await storage.fileExists(
+        tenantRawRelPath(aliceTenant, `assets/photo/${bobFile}`),
+      ),
+    ).toBe(false);
+    expect(
+      await storage.fileExists(
+        tenantRawRelPath(aliceTenant, `assets/${bob.primarySlug}/${bobFile}`),
+      ),
+    ).toBe(false);
+  });
+
+  // The realm fork is the case DW-738 reported, but it is not the only way the
+  // page lands off `slugify(title)` — the alias resolver, the concept/H1
+  // re-derivation and `pinSlug` all move it too, and every one of them leaves
+  // the image under a directory the page does not own. `pinSlug` is the cheapest
+  // of those to state. A re-key written against the FORK rather than against the
+  // final slug declines here, so this row is what pins the broader condition.
+  it("re-keys onto the final slug even when no fork moved it (pinSlug)", async () => {
+    await ingest("Host Page", "# Host Page\n\nBody.", {
+      author: "alice",
+      owner: "alice",
+    });
+
+    const r = await ingestImage(
+      { bytes: new Uint8Array(ALICE_BYTES).buffer, filename: "photo.png" },
+      { author: "alice", owner: "alice", title: "Photo", pinSlug: "host-page" },
+    );
+    expect(r.primarySlug).toBe("host-page");
+
+    const ref = embeddedRef((await readWikiPageWithFrontmatter("host-page"))!.content);
+    // The asset follows the page, not the title it was minted from.
+    expect(ref.startsWith("assets/host-page/")).toBe(true);
+    expect(await readAssetBytes(ref)).toEqual(ALICE_BYTES);
+    // …and the pre-move key this ingest created is gone.
+    const file = ref.slice(ref.lastIndexOf("/") + 1);
+    expect(
+      await getStorage().fileExists(rawRelPath(`assets/photo/${file}`)),
+    ).toBe(false);
   });
 });

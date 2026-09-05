@@ -9,6 +9,7 @@ import {
   sweepOrphanWikiDirs,
   reconcileWikiScenarios,
   backfillWorkspaceProfiles,
+  rekeyForkedAssets,
   reapStrandedScratchFiles,
   DEFAULT_MAINTENANCE_CAP,
 } from "@/lib/maintenance";
@@ -39,10 +40,10 @@ import { getOwnerHandle } from "@/lib/owner";
  * is all `dry: true` in the response means. It does NOT mean the request
  * changed nothing: the index rebuild, the ingest-job GC, the orphan
  * wiki-directory sweep, the stranded-scratch reap, the wiki scenario-drift
- * reconcile and the Workspace Purpose backfill are self-healing upkeep and
- * one-time migration rather than unattended content edits, so they run
- * regardless, as do the scheduled-agent, source-monitor, digest, outbox and
- * backup blocks.
+ * reconcile, the Workspace Purpose backfill and the forked-asset re-key are
+ * self-healing upkeep and one-time migration rather than unattended content
+ * edits, so they run regardless, as do the scheduled-agent, source-monitor,
+ * digest, outbox and backup blocks.
  *
  * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH: it suppresses every one of those
  * side-effecting blocks as well as the enqueue, which is what makes it safe to
@@ -63,7 +64,11 @@ import { getOwnerHandle } from "@/lib/owner";
  * `workspaceProfilesBackfilled` (Wikis handed a copy of
  * the retired tenant-global Workspace Purpose before it is deleted, DW-137 —
  * this route is that migration's only trigger of any kind, and the count is 0
- * on every scan of a tenant that has nothing left to relocate).
+ * on every scan of a tenant that has nothing left to relocate) and
+ * `forkedAssetsRekeyed` (image assets a realm fork left under the pre-fork
+ * page's `assets/<slug>/` directory, moved onto the forked page's own slug so
+ * `/api/assets/[...path]` gates them on the right page — DW-738, this route is
+ * that migration's only trigger, and the count is 0 once nothing is mis-keyed).
  */
 export async function POST(req: Request) {
   const principal = getServicePrincipal(req);
@@ -252,9 +257,21 @@ export async function POST(req: Request) {
       workspaceProfilesBackfilled = await backfillWorkspaceProfiles();
     }
 
+    // Move an already-forked page's image assets onto its own slug (DW-738) —
+    // the directory `ingestImage` keyed before `ingest()` uniquified the slug,
+    // where `/api/assets/[...path]` gates them on the OTHER page's visibility.
+    // Gated exactly like the sweep above and for the same reasons: it writes
+    // bytes, so `?dry=1` suppresses it, while `AUTONOMOUS_MAINTENANCE` — which
+    // gates unattended EDITS of page content — does not. This scan is the
+    // migration's only trigger, so a deployment that never scans never repairs.
+    let forkedAssetsRekeyed = 0;
+    if (!forceDry) {
+      forkedAssetsRekeyed = await rekeyForkedAssets();
+    }
+
     logger.info(
       "maintenance",
-      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} wikiScenariosReconciled=${wikiScenariosReconciled} scratchFilesReaped=${scratchFilesReaped} workspaceProfilesBackfilled=${workspaceProfilesBackfilled}`,
+      `scan: enabled=${enabled} dry=${dry} found=${tasks.length} enqueued=${enqueued} jobsPurged=${jobsPurged} orphanWikiDirsRemoved=${orphanWikiDirsRemoved} wikiScenariosReconciled=${wikiScenariosReconciled} scratchFilesReaped=${scratchFilesReaped} workspaceProfilesBackfilled=${workspaceProfilesBackfilled} forkedAssetsRekeyed=${forkedAssetsRekeyed}`,
     );
 
     return NextResponse.json({
@@ -281,6 +298,7 @@ export async function POST(req: Request) {
       wikiScenariosReconciled,
       scratchFilesReaped,
       workspaceProfilesBackfilled,
+      forkedAssetsRekeyed,
       // The candidate list — for dry-run inspection of what it would do.
       tasks: tasks.map((t) =>
         t.kind === "maintain"

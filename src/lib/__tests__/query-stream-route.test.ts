@@ -229,6 +229,41 @@ describe("POST /api/query/stream — agent-scope filtering (#413)", () => {
     expect(mockedPrompt.mock.calls[0][3]).toBe("html");
   });
 
+  it("excludes artifacts from a SCOPED query too (mine/owner scope)", async () => {
+    // DW-726. The artifact exclusion used to live INSIDE the `if (!scopeSlugs)`
+    // block beside the agent-scope filter, so it only ran for an unscoped
+    // query — while `query()` applies it REGARDLESS of scope (query.ts), for
+    // the reason stated there: saved html/slides markup must never enter the
+    // LLM context, including from a vault that curated one or from the owner's
+    // own "Mine" lens. This row is that direction, which nothing covered: the
+    // unscoped row above passes with the filter in either position.
+    mockedScope.mockResolvedValue({ scopeSlugs: ["concept-a", "saved-chart"] });
+    mockedList.mockResolvedValue([
+      { slug: "concept-a", title: "A", summary: "", type: undefined },
+      { slug: "saved-chart", title: "Chart", summary: "", type: "html" },
+      { slug: "saved-deck", title: "Deck", summary: "", type: "slides" },
+      { slug: "yoyo-notes", title: "N", summary: "", type: "agent-knowledge" },
+    ] as unknown as Awaited<ReturnType<typeof listReadableWikiPages>>);
+
+    const res = await POST(makeRequest({ question: "?", scope: "mine" }));
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(ANSWER);
+
+    expect(mockedSelect).toHaveBeenCalledTimes(1);
+    const passedEntries = mockedSelect.mock.calls[0][1] as Array<{ type?: string }>;
+    expect(passedEntries.map((e) => e.type)).not.toContain("html");
+    expect(passedEntries.map((e) => e.type)).not.toContain("slides");
+    // …and the hoist did NOT swallow the scope branch: an agent-scoped entry
+    // still passes on a scoped query, exactly as it does above. Without this
+    // half, moving the agent filter out too would pass unnoticed.
+    expect(passedEntries.map((e) => e.type)).toContain("agent-knowledge");
+    expect(passedEntries.map((e) => (e as { slug: string }).slug)).toEqual([
+      "concept-a",
+      "yoyo-notes",
+    ]);
+  });
+
   it("rejects an invalid format with 400", async () => {
     const res = await POST(makeRequest({ question: "?", format: "bogus" }));
     expect(res.status).toBe(400);

@@ -888,7 +888,7 @@ export async function storeImageBytes(
   bytes: ArrayBuffer,
   slug: string,
   suggestedName: string,
-): Promise<{ localPath: string; filename: string }> {
+): Promise<{ localPath: string; filename: string; created: boolean }> {
   if (bytes.byteLength > MAX_RESPONSE_SIZE) {
     throw new ClientInputError(
       `Image too large (${bytes.byteLength} bytes, max ${MAX_RESPONSE_SIZE})`,
@@ -896,9 +896,95 @@ export async function storeImageBytes(
   }
   const digest = (await bytesSha256(bytes)).slice(0, IMAGE_DIGEST_PREFIX_LEN);
   const filename = `${digest}-${sanitizeImageFilename(suggestedName)}`;
-  const localPath = `assets/${slug}/${filename}`;
-  // Boolean discarded deliberately (not a dropped error): `false` means the
-  // content-addressed key was already occupied by these same bytes.
-  await getStorage().writeAssetIfAbsent(rawRelPath(localPath), bytes);
-  return { localPath, filename };
+  const localPath = assetRefPath(slug, filename);
+  // `false` means the content-addressed key was already occupied by these same
+  // bytes — a plain success, not an error. It is REPORTED rather than discarded
+  // because it is the "this call created the key" fact (DW-738): only a creator
+  // may delete the pre-fork key when `ingest()` re-keys a forked page's asset,
+  // since an occupied key holds the OTHER page's identical bytes.
+  const created = await getStorage().writeAssetIfAbsent(
+    rawRelPath(localPath),
+    bytes,
+  );
+  return { localPath, filename, created };
+}
+
+/**
+ * The markdown ref for one stored image: `assets/<slug>/<filename>`.
+ *
+ * The one spelling the WRITE side shares — the store here, {@link
+ * rekeyImageAsset} below, `ingest()`'s fork re-key and the `asset-slug-rekey`
+ * migration's copy target all mint the ref through this, so a page's embedded
+ * ref and the key behind it cannot drift apart. It is NOT the only place the
+ * `assets/` literal appears in the repo, and claiming so would be false: the
+ * READ side spells its own — `/api/assets/[...path]` rebuilds the path from URL
+ * segments, and the migration's ref-scanning regex has to spell the prefix to
+ * recognize it. Those parse; this one constructs.
+ */
+export function assetRefPath(slug: string, filename: string): string {
+  return `assets/${slug}/${filename}`;
+}
+
+/**
+ * Move one stored image from `assets/<fromSlug>/<filename>` to
+ * `assets/<toSlug>/<filename>`, returning the NEW markdown ref.
+ *
+ * WHY THIS EXISTS (DW-738). `ingestImage` has to mint the asset key before the
+ * page slug is final — the key goes into the body it hands `ingest()`, and
+ * `ingest()` is what uniquifies the slug when the realm-fork guard forks off
+ * another owner's private page. So a forked page's image was left sitting in
+ * the OTHER page's asset directory, where `/api/assets/[...path]` gates it on
+ * the wrong page's visibility and `syncSiloForPage` mirrors it into the wrong
+ * tenant. Re-keying onto the final slug is what puts the bytes under the page
+ * that owns them.
+ *
+ * Copy-then-delete, and the delete is OPTIONAL and caller-gated. Passing
+ * `removeSource: false` leaves the source key alone, which is the required
+ * behaviour whenever this ingest did not create it: `writeAssetIfAbsent`
+ * answering `false` means the key already held byte-identical content belonging
+ * to the other page, and removing it would be data loss. The delete is also
+ * FAIL-SOFT — the bytes are already readable at the new key by then, so a
+ * provider hiccup on the cleanup must not fail an otherwise-complete ingest;
+ * the worst case is one orphaned copy under the old page's directory.
+ *
+ * PASS `bytes` WHENEVER THE CALLER STILL HOLDS THEM. The ingest path does, and
+ * threading them through is not just one saved read — it closes a race. Two
+ * concurrent ingests of byte-identical images under one title produce one
+ * `created: true` and one `created: false`; if the creator forks, copies and
+ * DELETES the source key first, the other ingest's read of that key throws, and
+ * the ingest-side re-key has no try/catch by design, so a fully synthesized
+ * ingest fails on a cleanup it never depended on. Supplying the buffer removes
+ * the dependency entirely. The storage read stays as the fallback for a caller
+ * that has only the key (the maintenance migration reads per ref itself).
+ *
+ * `writeAssetIfAbsent` at the destination, not `writeAsset`: the keys are
+ * content-addressed, so an occupied destination already holds these exact bytes
+ * (FR-2 — stored bytes are never mutated).
+ */
+export async function rekeyImageAsset(
+  fromSlug: string,
+  toSlug: string,
+  filename: string,
+  options?: { removeSource?: boolean; bytes?: ArrayBuffer },
+): Promise<string> {
+  const fromRef = assetRefPath(fromSlug, filename);
+  const toRef = assetRefPath(toSlug, filename);
+  if (fromRef === toRef) return toRef;
+
+  const storage = getStorage();
+  const bytes = options?.bytes ?? (await storage.readAsset(rawRelPath(fromRef)));
+  await storage.writeAssetIfAbsent(rawRelPath(toRef), bytes);
+
+  if (options?.removeSource) {
+    try {
+      await storage.deleteFile(rawRelPath(fromRef));
+    } catch (err) {
+      logger.warn(
+        "fetch",
+        `re-keyed ${fromRef} → ${toRef} but could not remove the source key`,
+        err,
+      );
+    }
+  }
+  return toRef;
 }

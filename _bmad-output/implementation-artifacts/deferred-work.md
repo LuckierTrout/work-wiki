@@ -6057,7 +6057,9 @@ location: src/app/api/query/stream/route.ts:124-128
 source_spec: `spec-dw-667-669-query-stream-mock-fidelity.md`
 severity: medium
 reason: `src/lib/query.ts:298-306` filters `!isArtifactType(e.type)` BEFORE the scope branch, with an explicit comment: artifacts "must never enter the LLM context - so exclude them REGARDLESS of scope (incl. a vault that curated one, or the owner/'Mine' scope)". `src/app/api/query/stream/route.ts:124-128` applies the same predicate INSIDE `if (!scopeSlugs)`, so it only runs on an unscoped query. `resolveScopeSlugs` for `mine` / `owner:<handle>` returns that owner's slugs, which include their saved `html`/`slides` pages - so an owner-scoped streaming question can answer from raw artifact markup (and inlined illustration data URIs) that the non-streaming path deliberately withholds. Pre-existing and untouched by this story; surfaced by the review because DW-667 widened the artifact stub at exactly that filter. No test covers the scoped-artifact case in either streaming suite.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-page-scoped-read-gates
+resolution-undo: 5e45a1432c9dee97733e1d3da3e7cefdb44d9d61295ee1b67cf90c80d3df0124 2026-09-05 7374617475733a206f70656e
 
 ### DW-727: A sixth verbatim ~50-field WorkbenchSettingsPayload literal survives in a mounted Settings suite that the harness could always have reached, so the "one home for the payload" property this bundle clai
 origin: spec-deferred 825944fdb6e0
@@ -6163,7 +6165,9 @@ location: src/lib/ingest.ts:425
 source_spec: `spec-dw-698-693-ingest-read-and-asset-keying.md`
 severity: medium
 reason: `ingestImage` mints `assets/<slugify(title)>/…` before `ingest()` uniquifies, so when the realm guard forks (Alice's private `photo`, Bob's page `photo-2`) Bob's image is still stored under `assets/photo/`. `src/app/api/assets/[...path]/route.ts:69-76` reads `segments[0]` as the page slug and gates on THAT page: Bob's own image 404s for Bob and for every reader of his public page, while Alice — who owns neither the page nor the image — can fetch it. The mirror case (first page public, forked page private) serves a private page's image ungated. `syncSiloForPage` (`src/lib/silo.ts:281-295`) likewise mirrors Bob's bytes into Alice's tenant silo and never into his own. Pre-existing — the directory was always the pre-uniquified slug — and unchanged in kind by DW-693's digest keying, which the intent sanctioned as an alternative to keying off the final page slug. Keying off the final page slug (a post-ingest re-key plus body rewrite, or deferring the store) is the fix that would close it. `s
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-page-scoped-read-gates
+resolution-undo: 5e45a1432c9dee97733e1d3da3e7cefdb44d9d61295ee1b67cf90c80d3df0124 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Re-key assets to the final page slug — Re-key the asset directory to the page's final (post-uniquification) slug — a post-ingest re-key plus body rewrite, or defer the store until the slug is settled — and fix syncSiloForPage to mirror into the owning page's tenant. Include a migration for existing forked directories and pin both the fork and mirror cases.
 
 ### DW-739: The same no-prose fold overwrites an existing page's whole body at the INGEST door, where the widened predicate deliberately does not run.
@@ -6200,7 +6204,9 @@ location: src/app/api/raw/[slug]/route.ts:24
 source_spec: `spec-dw-492-536-raw-path-gate-reach.md`
 severity: medium
 reason: DW-536 aligned `/api/assets/[...path]` on `hiddenSlugs`/`rawPathAllowed`. `/api/raw/[slug]` (`src/app/api/raw/[slug]/route.ts:24-30`) reads the same silo tree — `readRawSource` / `readRawSourceById` over `raw/sources/<slug>.md` and `raw/sources/<slug>/<rawId>.<ext>` — and its ONLY gate is `canReadSlug(slug, principal)` (`src/lib/authz.ts:144-162`), which reads frontmatter visibility/owner and nothing else. Those are exactly the paths `rawPathAllowed` refuses for a hidden slug at `listWorkbenchFilePaths`, `resolveWorkbenchFile` and the `/api/v1` file doors. An `agent-*` typed page with `visibility: public` is kept by `listReadableWikiPages` but dropped by `buildKnowledgeTree` (`src/lib/workbench-tree.ts:656`), so its slug is in `hiddenSlugs` and the Files tab withholds its source — while `GET /api/raw/<that-slug>` returns the source text with no session. Verified by reading both routes; no test in the suite exercises that route's GET at all (only citation-href string assertions in `raw-
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-page-scoped-read-gates
+resolution-undo: 5e45a1432c9dee97733e1d3da3e7cefdb44d9d61295ee1b67cf90c80d3df0124 2026-09-05 7374617475733a206f70656e
 
 ### DW-743: A merge-absorb strands the absorbed page's raw Sources at the absorbed slug's silo addresses, so a page later created at that slug inherits them in Files and the Sources pane.
 origin: spec-deferred e7a866f30680
@@ -6437,4 +6443,12 @@ location: src/app/api/ingest/history/route.ts (the ACL loop's plain read)
 source_spec: `spec-dw-233-704-machine-door-miss-parity.md`
 severity: low
 reason: `src/app/api/ingest/history/route.ts`, the ACL loop's `readWikiPageWithFrontmatter(slug)` followed by `if (!page) continue; // Already gone`. Without `strict`, a non-ENOENT failure returns `null` rather than throwing, which is indistinguishable from an absent page — the same class DW-378 hardened on `/api/wiki/<slug>`'s write doors and DW-691 hardened inside `deleteWikiPage`. Pre-existing: that read and its `null` branch predate this change, which only added a second call site for the same read on the index-hidden rung, deliberately matching the existing one rather than diverging from it. The probe path is already correct here — a probe that throws is reported `failed`, never `absent`.
+status: open
+
+### DW-771: The `/u/<handle>/raw/<slug>` page component still serves the same raw source text behind `canReadSlug` alone, so the disclosure DW-742 closed on the API door stays open on the human one.
+origin: spec-deferred 79516cbc22aa
+location: src/app/u/[handle]/raw/[slug]/page.tsx:29
+source_spec: `spec-dw-726-738-742-page-scoped-read-gates.md`
+severity: medium
+reason: `src/app/u/[handle]/raw/[slug]/page.tsx:29` gates on `canReadSlug(slug, principal)` and nothing else, then reads the very bytes this bundle just gated — `readRawSource` / `readRawSourceById` — and hands them to `RawSourceBrowser` as `initialContent`. Middleware admits anonymous GETs on `/u/**`. A review subagent demonstrated it on a tmpdir deployment: for a `visibility: public`, `type: agent-knowledge` page with `getPrincipal -> null`, `GET /api/raw/agent-notes` now answers 404 while `RawSourcePage` passes every gate and reaches its render with the raw text loaded. Pre-existing and not named by the bundle intent, which pointed at `src/app/api/raw/[slug]/route.ts:24`. The same door carries the mirror-image mismatch: `RawSourceBrowser.tsx:62-63` builds its Download link as `/api/raw/<slug>`, and because `hiddenSlugs` is derived from the principal's OWN readable entries, that button now 404s even for the owner of their own agent-scoped page — the intended parity with `/api/assets/[...path
 status: open

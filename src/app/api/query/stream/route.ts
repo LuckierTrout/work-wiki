@@ -125,13 +125,20 @@ export async function POST(request: NextRequest) {
 
     let entries = await listReadableWikiPages(principal);
 
+    // Artifacts (saved html/slides) are NEVER query knowledge — their markup
+    // must never enter the LLM context — so exclude them REGARDLESS of scope
+    // (incl. a vault that curated one, or the owner/"Mine" scope). This term
+    // used to sit inside the `if (!scopeSlugs)` block below, so an owner- or
+    // `mine`-scoped stream could answer from saved artifact markup while the
+    // non-streaming `query()` refused it (DW-726). One invariant, stated the
+    // same way in both paths — see query.ts.
+    entries = entries.filter((e) => !isArtifactType(e.type));
+
     // Unscoped queries answer from the public commons only — exclude agent-scoped
     // pages (identity / knowledge / social), which surface solely via an explicit
     // `agent:` scope. Mirrors the non-streaming query() path (query.ts).
     if (!scopeSlugs) {
-      entries = entries.filter(
-        (e) => !isAgentScopedType(e.type) && !isArtifactType(e.type),
-      );
+      entries = entries.filter((e) => !isAgentScopedType(e.type));
     }
 
     // Empty wiki — nothing to query

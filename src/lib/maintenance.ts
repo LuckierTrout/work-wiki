@@ -465,6 +465,45 @@ export async function backfillWorkspaceProfiles(): Promise<number> {
 
 
 // ---------------------------------------------------------------------------
+// Forked-page asset re-key — the directory a fork left under the wrong slug
+// ---------------------------------------------------------------------------
+
+/**
+ * Fail-soft wrapper around `rekeyForkedPageAssets` (DW-738). Returns how many
+ * already-forked pages' image assets were moved onto their own slug — 0 on
+ * error, and 0 on every scan of a deployment with nothing left to repair.
+ *
+ * ONE-TIME AND SELF-TERMINATING, like {@link backfillWorkspaceProfiles}: the
+ * ingest path re-keys at the source now, so nothing new arrives mis-keyed, and
+ * the rewrite this performs no longer matches its own pattern. The scan is its
+ * only trigger of any kind, so a deployment that never scans keeps serving a
+ * forked page's image gated on the OTHER page's visibility.
+ *
+ * DELIBERATELY NOT INSIDE {@link scanForMaintenance}, for the same reason as
+ * every other migration here: that function's contract is READ-ONLY — it
+ * returns candidate tasks for the route to enqueue — and this writes bytes.
+ *
+ * `await import(...)` keeps the module graph loose, matching the wrappers
+ * above: the migration pulls in `lifecycle.ts` and the whole page-write
+ * pipeline, and nothing else in this module needs it.
+ *
+ * NO OWNER GUARD, unlike the wrappers above, and that is not an omission: those
+ * migrate a named tenant's artifacts and have nothing to do without a handle,
+ * while this walks the page index itself. Gating it on `getOwnerHandle()` would
+ * leave a deployment with no configured owner serving mis-keyed assets forever.
+ */
+export async function rekeyForkedAssets(): Promise<number> {
+  try {
+    const { rekeyForkedPageAssets } = await import("./asset-slug-rekey");
+    return await rekeyForkedPageAssets();
+  } catch (err) {
+    logger.error("maintenance", "forked-asset re-key failed:", err);
+    return 0;
+  }
+}
+
+
+// ---------------------------------------------------------------------------
 // Stranded scratch reclamation — the leak `listFiles` hides
 // ---------------------------------------------------------------------------
 

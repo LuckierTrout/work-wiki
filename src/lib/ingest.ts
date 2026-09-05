@@ -11,7 +11,13 @@ import {
 } from "./wiki";
 import { buildCorpusStats, bm25Score, tokenize } from "./bm25";
 import { callLLM, hasLLMKey } from "./llm";
-import { fetchUrlContent, fetchImageBytes, storeImageBytes } from "./fetch";
+import {
+  fetchUrlContent,
+  fetchImageBytes,
+  storeImageBytes,
+  assetRefPath,
+  rekeyImageAsset,
+} from "./fetch";
 import { describeImage } from "./vision";
 import { isYouTubeUrl, fetchYouTubeContent } from "./youtube";
 import { isXPostUrl, fetchXPostContent, isXArticleTeaser } from "./x-post";
@@ -423,8 +429,18 @@ export async function ingestImage(
     humanizeFilename(filename || imageUrl || "image");
   const slug = slugify(title);
 
-  // 4. Store the asset under the final slug.
-  const { localPath } = await storeImageBytes(bytes, slug, filename);
+  // 4. Store the asset under the slug derived from the title. NOT necessarily
+  //    the final page slug: `ingest()` below uniquifies it when the realm-fork
+  //    guard forks off another owner's private page, and the key has to be
+  //    minted here because it is embedded in the body handed to `ingest()`.
+  //    That is why the three `asset*` fields travel with the body — `ingest()`
+  //    re-keys the directory onto the final slug and rewrites the ref (DW-738),
+  //    and `assetCreated` is what tells it whether it may delete the old key.
+  const {
+    localPath,
+    filename: assetFile,
+    created: assetCreated,
+  } = await storeImageBytes(bytes, slug, filename);
 
   const body =
     `# ${title}\n\n![${title}](${localPath})` + (vision ? `\n\n${vision.text}` : "");
@@ -436,7 +452,14 @@ export async function ingestImage(
     title,
     body,
     { ...options, sourceUrl: imageUrl ?? "upload", sourceType: "image" },
-    { prebuiltContent: body },
+    {
+      prebuiltContent: body,
+      assetSlug: slug,
+      assetFile,
+      assetCreated,
+      // Still in hand here, so the re-key below never has to read the key back.
+      assetBytes: bytes,
+    },
   );
 }
 
@@ -1941,12 +1964,36 @@ async function synthesizeBody(
  * routes import) precisely so an API/UI caller can never set a "write this body
  * verbatim" payload. The sole caller is `ingestImage()` — the image body (embed
  * + vision text) is already final, so re-synthesizing it would be wasteful.
+ *
+ * The `asset*` fields ride the same INTERNAL channel and for the same reason
+ * (DW-738): `ingestImage` must mint the image's storage key before this
+ * function has settled the slug, so when the realm-fork guard below uniquifies
+ * it, the bytes are sitting in the OTHER page's asset directory and only this
+ * function knows the final slug to move them onto.
  */
 export async function ingest(
   title: string,
   content: string,
   options?: IngestOptions,
-  internal?: { prebuiltContent?: string },
+  internal?: {
+    prebuiltContent?: string;
+    /** Slug the image asset's directory was keyed on (`slugify(title)`). */
+    assetSlug?: string;
+    /** The digest-prefixed filename `storeImageBytes` actually wrote. */
+    assetFile?: string;
+    /**
+     * Did that write CREATE the key? `writeAssetIfAbsent` answering `false`
+     * means the content-addressed key already held these exact bytes belonging
+     * to the other page — deleting it on a re-key would be data loss.
+     */
+    assetCreated?: boolean;
+    /**
+     * The stored bytes, still in memory. Lets the re-key write the new key
+     * directly instead of reading the old one back — one less read, and no
+     * dependency on a key a concurrent ingest may already have reclaimed.
+     */
+    assetBytes?: ArrayBuffer;
+  },
 ): Promise<IngestResult> {
   const startedAt = new Date().toISOString();
   // Title is optional for pasted text — derive a provisional one from the
@@ -2190,6 +2237,40 @@ export async function ingest(
     !sameHumanOwner(owner, resolvedExisting.frontmatter.owner)
   ) {
     slug = await findFreeSlug(slug);
+  }
+
+  // `slug` is FINAL here — the alias resolver, the concept/H1 re-derivation, a
+  // `pinSlug` and the realm fork above have all had their say — so this is the
+  // one point where the image `ingestImage` already stored can be keyed off the
+  // page that actually owns it (DW-738). `ingestImage` has to mint
+  // `assets/<slugify(title)>/…` BEFORE calling in, because the key is embedded
+  // in the body handed over; whenever the page then lands somewhere else, the
+  // bytes are left under ANOTHER page's directory, where
+  // `/api/assets/[...path]` gates them on that page's visibility and
+  // `syncSiloForPage` mirrors them into that owner's tenant. The realm fork is
+  // the case DW-738 reported; the condition is written against the final slug
+  // rather than against the fork so every other slug move is closed too.
+  //
+  // `removeSource` follows `assetCreated` because the key is content-addressed:
+  // `writeAssetIfAbsent` answering `false` means it already held byte-identical
+  // content that belongs to the other page. Deleting then is data loss; the
+  // copy is enough.
+  //
+  // Only `wikiContent` is rewritten. `content` is the verbatim arriving
+  // document — the raw snapshot saved below, addressed by `contentHash(content)`
+  // — and must not be edited.
+  if (internal?.assetFile && internal.assetSlug && internal.assetSlug !== slug) {
+    const oldRef = assetRefPath(internal.assetSlug, internal.assetFile);
+    // No try/catch: a re-key that cannot complete must fail the ingest rather
+    // than write a page whose image reference points at bytes it does not own.
+    const newRef = await rekeyImageAsset(internal.assetSlug, slug, internal.assetFile, {
+      removeSource: internal.assetCreated === true,
+      // The buffer `ingestImage` still holds, so the copy never reads the old
+      // key back — a concurrent ingest that already reclaimed it cannot fail
+      // this one. See `rekeyImageAsset`.
+      bytes: internal.assetBytes,
+    });
+    wikiContent = wikiContent.split(oldRef).join(newRef);
   }
 
   // --- Write path ---

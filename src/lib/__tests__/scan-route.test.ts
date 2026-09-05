@@ -8,6 +8,7 @@ vi.mock("@/lib/maintenance", () => ({
   sweepOrphanWikiDirs: vi.fn(),
   reconcileWikiScenarios: vi.fn(),
   backfillWorkspaceProfiles: vi.fn(),
+  rekeyForkedAssets: vi.fn(),
   reapStrandedScratchFiles: vi.fn(),
   DEFAULT_MAINTENANCE_CAP: 10,
 }));
@@ -28,6 +29,7 @@ import {
   sweepOrphanWikiDirs,
   reconcileWikiScenarios,
   backfillWorkspaceProfiles,
+  rekeyForkedAssets,
   reapStrandedScratchFiles,
 } from "@/lib/maintenance";
 import { enqueueTask } from "@/lib/tasks";
@@ -47,6 +49,7 @@ const mockedPurge = vi.mocked(purgeStaleJobs);
 const mockedSweepOrphanWikiDirs = vi.mocked(sweepOrphanWikiDirs);
 const mockedReconcileWikiScenarios = vi.mocked(reconcileWikiScenarios);
 const mockedBackfillProfiles = vi.mocked(backfillWorkspaceProfiles);
+const mockedRekeyForkedAssets = vi.mocked(rekeyForkedAssets);
 const mockedReapScratch = vi.mocked(reapStrandedScratchFiles);
 const mockedEnqueue = vi.mocked(enqueueTask);
 const mockedBackupDue = vi.mocked(isOwnerBackupDue);
@@ -88,6 +91,7 @@ beforeEach(() => {
   mockedSweepOrphanWikiDirs.mockResolvedValue(0);
   mockedReconcileWikiScenarios.mockResolvedValue(0);
   mockedBackfillProfiles.mockResolvedValue(0);
+  mockedRekeyForkedAssets.mockResolvedValue(0);
   mockedReapScratch.mockResolvedValue(0);
   mockedEnqueue.mockResolvedValue(true);
   mockedBackupDue.mockResolvedValue(false);
@@ -365,6 +369,51 @@ describe("POST /api/tasks/scan", () => {
     expect(body.workspaceProfilesBackfilled).toBe(0);
   });
 
+  it("re-keys forked page assets on a normal scan and reports the count", async () => {
+    // The DW-738 migration's ONLY trigger of any kind. It moves bytes rather
+    // than editing page prose, so it runs with AUTONOMOUS_MAINTENANCE off
+    // exactly like the orphan sweep — a deployment that leaves that flag at its
+    // default would otherwise keep serving a forked page's image gated on the
+    // OTHER page's visibility forever.
+    mockedRekeyForkedAssets.mockResolvedValue(2);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedRekeyForkedAssets).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      enabled: false,
+      dry: true,
+      forkedAssetsRekeyed: 2,
+    });
+  });
+
+  it("re-keys forked page assets in the enabled production configuration", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedRekeyForkedAssets.mockResolvedValue(3);
+
+    const res = await scan();
+    const body = await res.json();
+
+    expect(mockedRekeyForkedAssets).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({
+      enabled: true,
+      dry: false,
+      forkedAssetsRekeyed: 3,
+    });
+  });
+
+  it("?dry=1 suppresses the forked-asset re-key", async () => {
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    mockedRekeyForkedAssets.mockResolvedValue(2);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    expect(mockedRekeyForkedAssets).not.toHaveBeenCalled();
+    expect(body.forkedAssetsRekeyed).toBe(0);
+  });
+
   it("reaps stranded scratch files with AUTONOMOUS_MAINTENANCE off and reports the count", async () => {
     // The reaper's ONLY trigger of any kind (DW-292). It removes bytes nothing
     // can reach — stranded `.tmp-<uuid>.tmp` files are hidden from `listFiles`
@@ -491,6 +540,7 @@ describe("POST /api/tasks/scan on a read-only deployment", () => {
     expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
     expect(mockedReapScratch).not.toHaveBeenCalled();
     expect(mockedBackfillProfiles).not.toHaveBeenCalled();
+    expect(mockedRekeyForkedAssets).not.toHaveBeenCalled();
     expect(mockedEnqueue).not.toHaveBeenCalled();
   });
 

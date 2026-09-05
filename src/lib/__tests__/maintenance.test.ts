@@ -16,6 +16,7 @@ import {
   sweepOrphanWikiDirs,
   reconcileWikiScenarios,
   backfillWorkspaceProfiles,
+  rekeyForkedAssets,
   reapStrandedScratchFiles,
 } from "../maintenance";
 import { listCommonsPages } from "../commons";
@@ -670,6 +671,102 @@ describe("backfillWorkspaceProfiles — the scheduled Workspace Purpose migratio
     });
 
     await expect(backfillWorkspaceProfiles()).resolves.toBe(0);
+  });
+});
+
+
+describe("rekeyForkedAssets — the scheduled forked-asset migration (DW-738)", () => {
+  const BOB_FILE = "bbbb2222-photo.png";
+
+  /**
+   * The state a realm fork left behind: `photo` and `photo-2` both embedding
+   * refs under `assets/photo/`, with the forked page's bytes keyed on the base
+   * page's slug.
+   */
+  async function seedMiskeyedFork(): Promise<void> {
+    await seed("photo");
+    await writeWikiPageWithSideEffects({
+      slug: "photo-2",
+      title: "photo-2",
+      content: serializeFrontmatter(
+        {
+          created: PAST,
+          updated: PAST,
+          owner: "bob",
+          visibility: "public",
+          authors: ["bob"],
+          contributors: [],
+          confidence: 0.7,
+          expiry: "2099-01-01",
+          tags: [],
+          disputed: false,
+        } as Frontmatter,
+        `# photo-2\n\n![photo](assets/photo/${BOB_FILE})\n`,
+      ),
+      summary: "the forked page",
+      logOp: "ingest",
+      crossRefSource: null,
+    });
+    await getStorage().writeAsset(
+      `raw/assets/photo/${BOB_FILE}`,
+      new Uint8Array([1, 2, 3]).buffer,
+    );
+  }
+
+  it("runs the migration and returns the count", async () => {
+    // THE ONLY PRODUCTION PATH INTO THE MIGRATION. `scan-route.test.ts` mocks
+    // `@/lib/maintenance` wholesale and `asset-slug-rekey.test.ts` calls the
+    // library function directly, so without this case an `if (1) return 0;` at
+    // the top of the wrapper leaves every other suite green while the migration
+    // never runs anywhere.
+    await seedMiskeyedFork();
+
+    expect(await rekeyForkedAssets()).toBe(1);
+
+    expect(
+      await getStorage().fileExists(`raw/assets/photo-2/${BOB_FILE}`),
+    ).toBe(true);
+  });
+
+  it("needs no configured owner handle, unlike the tenant migrations beside it", async () => {
+    // Deliberate divergence from `backfillWorkspaceProfiles`: those migrate a
+    // NAMED tenant's artifacts and answer 0 without a handle, while this walks
+    // the page index. Gating it on `getOwnerHandle()` would leave an
+    // owner-less deployment serving mis-keyed assets forever.
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    await seedMiskeyedFork();
+
+    expect(await rekeyForkedAssets()).toBe(1);
+  });
+
+  it("returns 0 instead of throwing when the migration fails", async () => {
+    // Fail-soft like every other wrapper here: it runs inside the maintenance
+    // scan, and a failure in a one-time migration must not 500 a scan that did
+    // everything else.
+    //
+    // The library function is mocked rather than starved of storage, and that
+    // is the point: `rekeyForkedPageAssets` is fail-soft at every step it
+    // owns — unreadable page, failed copy, failed rewrite, failed delete are
+    // all absorbed inside it — so no storage fault reaches this catch. Reaching
+    // it through the dynamic import is what exercises the wrapper's OWN
+    // contract instead of re-testing the library's.
+    await seedMiskeyedFork();
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
+    vi.doMock("../asset-slug-rekey", () => ({
+      rekeyForkedPageAssets: async () => {
+        throw new Error("the migration blew up");
+      },
+    }));
+    try {
+      await expect(rekeyForkedAssets()).resolves.toBe(0);
+      expect(logged).toHaveBeenCalledWith(
+        "maintenance",
+        "forked-asset re-key failed:",
+        expect.any(Error),
+      );
+    } finally {
+      vi.doUnmock("../asset-slug-rekey");
+    }
   });
 });
 
