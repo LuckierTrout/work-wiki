@@ -6148,7 +6148,9 @@ location: src/lib/wikis.ts (scenarioNamedByWikiArtifacts / reconcileWikiScenario
 source_spec: `spec-dw-676-708-wiki-create-and-template-failure-truth.md`
 severity: low
 reason: `applyScenarioTemplate`'s failure tail carries `rollbackIncomplete` (DW-210) alongside `registryLanded` (DW-484): a restore that could not put every file back leaves one artifact on the new template and one on the old. `scenarioNamedByWikiArtifacts` answers null the moment its two witnesses disagree, and `reconcileWikiScenarioDrift` is deliberately SILENT when it does not fire — so that state is now detected by nobody, repaired by nobody and logged by nobody, while the switcher still carries whichever label the registry write left. The unanimity rule is correct as written (there is no unambiguous answer to re-derive from two contradicting files, and both artifacts are owner-editable so a guess would overwrite the wrong one), which is exactly why closing this needs its own decision — probably a distinct signal rather than a repair.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-silent-lifecycle-skips
+resolution-undo: 86aba2e09887055fbf0f2062ccd36ae186fe2f6fcec1c41058ca79bf2af4755b 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Distinguish contradiction from absence and signal it — Make scenarioNamedByWikiArtifacts distinguish 'no witness' from 'contradicting witnesses', and have reconcileWikiScenarioDrift emit a distinct diagnostic for the contradiction case — logged and surfaced to the owner — while still repairing nothing. Pin the divergent-artifacts case.
 
 ### DW-736: `PUT /api/workbench/artifact` still relays a raw storage errno into the owner's save banner when the WRITE half of the save fails, not the read half this bundle typed.
@@ -6167,7 +6169,9 @@ location: src/lib/source-cascade.ts:193
 source_spec: `spec-dw-495-497-691-strict-merge-base-sweep.md`
 severity: medium
 reason: `src/lib/source-cascade.ts:193` runs `readWikiPageWithFrontmatter(entry.slug)` with no options inside the loop that builds `summaries` and `others`. A non-ENOENT blip flattens to `null`, `if (!page) continue` skips the page, and the result is PERSISTED into the resume marker written at `:203` — after which `if (resumed)` skips enumeration entirely, so a retry inherits the omission. The cascade then reaches `deleteRawSourceBytes` at `:281` and removes the raw bytes anyway, returning success with the skipped page still carrying a `sources:` entry that points at bytes that no longer exist. This is verbatim the harm that justifies the conversion 40 lines below it at `:229`, which this bundle did convert. The new row in `src/lib/__tests__/strict-merge-base-reads.test.ts` deliberately arms AROUND this read to reach the converted one, so the gap is now documented in a test rather than closed. Out of scope on the intent's own authority: the bundle intent and DW-495's location list name `source
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-silent-lifecycle-skips
+resolution-undo: 86aba2e09887055fbf0f2062ccd36ae186fe2f6fcec1c41058ca79bf2af4755b 2026-09-05 7374617475733a206f70656e
 
 ### DW-738: A forked page's image stays in the OTHER page's asset directory, so `/api/assets/[...path]` gates it on the wrong page's visibility.
 origin: spec-deferred 84c8352da242
@@ -6481,4 +6485,12 @@ location: src/lib/research-completion.ts:1088
 source_spec: `spec-dw-682-734-research-teardown-and-readonly-branch-gates.md`
 severity: low
 reason: DW-682's decision, and every row this bundle pinned, concerns a `cancelRequested` row at `phase: "page"`: that is the only phase whose commit reaches the two exempted reads. `commitResearchPage` returns at the `phase === "sources" || phase === "done"` check ABOVE them, and `drainResearchOutbox` then skips the commit for such a row (`!current.completion || phase === "page"` is false) and throws at the loop guard `requireCompletionSources(completion)`. Reconcile turns that throw into `deliveryBlocked: true`, after which every later sweep `continue`s past the row: a cancel that landed there can never finalize to `cancelled`, exactly the shape DW-682 describes, one phase over. Not caused by this change — the loop guard is DW-579/DW-652's fail-closed discipline and predates it — and not stranded: the row stays listable and DELETE still works, since `deleteRequested` sits above every guard. `requireCompletionSources`' own docblock says the pre-DW-652 bug moved rows `phase: "page"` -> `"sourc
+status: open
+
+### DW-774: `cancelJobsForSource` runs before the cascade's enumeration loop, so a cascade that now fails loudly leaves the source's ingest jobs cancelled while the source itself survives.
+origin: spec-deferred ed85a007edec
+location: src/lib/source-cascade.ts:177
+source_spec: `spec-dw-735-737-silent-lifecycle-skips.md`
+severity: low
+reason: `cascadeDeleteSource` calls `cancelJobsForSource(input.owner, keys)` at src/lib/source-cascade.ts:177, before enumeration. Every throw after that point — the DW-495 sibling read, `deleteWikiPage`, `writeWikiPageWithSideEffects`, and now the DW-737 enumeration read — leaves the cancellation applied to a source whose bytes and citations are all still in place. Nothing re-queues them, so pending ingest work for a surviving source is silently dropped and the owner sees a 500 with no indication that queued jobs were lost. Pre-existing (the cascade could already throw past that line); widened, not created, by the strict enumeration read.
 status: open

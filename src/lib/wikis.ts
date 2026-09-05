@@ -2507,17 +2507,149 @@ function pruneFutureDatedWarnings(owner: string, found: string[]): void {
 }
 
 /**
- * Forget every reported future-dated directory so the next pass warns again.
+ * Every Wiki whose two artifacts have been reported as naming DIFFERENT
+ * Scenario Templates, and WHICH contradiction was reported (DW-735).
+ *
+ * SAME SHAPE AS {@link reportedFutureDatedWrites}, AND FOR THE SAME REASON.
+ * The key is one Wiki of one tenant; the VALUE is the contradiction itself, so
+ * an owner who edits `schema.md` from Research to Personal Growth produces a
+ * NEW fact and the line is emitted again. Carried as a flag instead, an
+ * operator who had
+ * only ever seen the first line would never learn the pair had changed — and
+ * folding the pair into the key would grow the collection without limit as an
+ * owner edited, where as a value a Wiki costs one entry however often its
+ * artifacts move.
+ *
+ * WHY WARN-ONCE AT ALL: a contradiction between two owner-editable files is a
+ * PERMANENT state until an owner resolves it, and
+ * {@link reconcileWikiScenarioDrift} runs on `POST /api/tasks/scan`'s timer —
+ * so a per-tick line would be a recurring entry in the operator log of a
+ * deployment that is behaving exactly as designed, which is the failure DW-483
+ * built this machinery to undo.
+ *
+ * ONCE MEANS ONCE PER ISOLATE, the same bound the future-dated record accepts:
+ * module state, so a recycled isolate says every standing contradiction again
+ * rather than persisting operator-log bookkeeping to storage.
+ */
+const reportedScenarioContradictions = new Map<string, string>();
+
+/** `reportedScenarioContradictions`' key: one Wiki of one tenant. */
+function scenarioContradictionKey(owner: string, wikiId: string): string {
+  return `${owner}/${wikiId}`;
+}
+
+/**
+ * The identity of a contradiction: which file named which template, both
+ * halves, in the order {@link scenarioNamedByWikiArtifacts} read them.
+ *
+ * This is the VALUE compared to decide whether the fact changed, so it has to
+ * move when either half moves — including when only the FILES swap roles
+ * (`purpose.md` Business / `schema.md` Research is a different state of the
+ * world from the mirror image, and an operator chasing the first would be
+ * misled by silence on the second).
+ */
+function scenarioContradictionFact(
+  between: Extract<
+    WikiScenarioWitness,
+    { kind: "contradiction" }
+  >["between"],
+): string {
+  return between.map((half) => `${half.file}=${half.scenario}`).join("|");
+}
+
+/**
+ * Emit the contradiction the first time THIS pair is seen for this Wiki; a
+ * later pass reading the same pair is silent.
+ *
+ * Mirrors {@link warnOnceAboutFutureDatedWrite}: one module-level collection,
+ * one emitter, one re-arm, one prune, one `@internal` reset.
+ *
+ * SIGNAL, NEVER REPAIR. The sentence names both files and both labels and asks
+ * for nothing to be inferred, because the fix requires knowing which of two
+ * owner-authored files is the intended one — a question this process cannot
+ * answer and must not guess at, since the losing file's bytes would be
+ * destroyed by the guess.
+ */
+function warnOnceAboutScenarioContradiction(
+  owner: string,
+  wikiId: string,
+  between: Extract<WikiScenarioWitness, { kind: "contradiction" }>["between"],
+): void {
+  const key = scenarioContradictionKey(owner, wikiId);
+  const fact = scenarioContradictionFact(between);
+  if (reportedScenarioContradictions.get(key) === fact) return;
+  reportedScenarioContradictions.set(key, fact);
+  const [first, second] = between;
+  logger.warn(
+    "wikis",
+    `wiki "${wikiId}" has artifacts that name DIFFERENT Scenario Templates: ${first.file} names ${SCENARIO_LABELS[first.scenario]} while ${second.file} names ${SCENARIO_LABELS[second.scenario]} — the registry label was left alone and no artifact byte was written, because repairing this would mean choosing which of two owner-editable files is right`,
+  );
+}
+
+/**
+ * Forget `wikiId`, so a LATER contradiction on it speaks again.
+ *
+ * The counterpart {@link rearmFutureDatedWarning} has for the same reason: this
+ * caller can see evidence from inside the process that the condition ended. A
+ * pass whose witness read came back `none` or `named` has watched the artifacts
+ * stop disagreeing — either resolved by the owner or gone entirely — and the
+ * next disagreement is genuinely news.
+ *
+ * AN UNREADABLE ARTIFACT IS NOT THAT EVIDENCE, which is why the re-arm sits on
+ * the two answering arms and not in the caller's `catch`: a throw is "I could
+ * not look", the same non-answer that refuses to authorise a repair, and
+ * re-arming on it would repeat a line the operator already has on the next
+ * readable pass. Deleting a key that was never set is a silent no-op, so the
+ * call site re-arms without first asking whether it ever warned.
+ */
+function rearmScenarioContradictionWarning(owner: string, wikiId: string): void {
+  reportedScenarioContradictions.delete(scenarioContradictionKey(owner, wikiId));
+}
+
+/**
+ * Forget every Wiki of `owner` that the registry no longer lists.
+ *
+ * The eviction that makes this record's size a property of the tenant rather
+ * than of the isolate's uptime: a deleted Wiki falls out of the registry and no
+ * per-candidate hook would ever look at its key again.
+ *
+ * DELIBERATELY OVER THE REGISTRY'S FULL ID LIST, NOT THE ROTATING WINDOW —
+ * exactly the distinction {@link pruneFutureDatedWarnings} draws over `found`
+ * rather than `candidates`. {@link rotatingSweepWindow} means most passes reach
+ * only a slice of the tenant, so pruning against what was WALKED would evict
+ * every entry outside today's window and re-warn the whole tail tomorrow,
+ * turning the per-day rotation back into the per-tick repetition this record
+ * exists to prevent.
+ *
+ * Other owners' keys are left alone: this is a per-tenant pass, and it has
+ * observed nothing about any other tenant's Wikis.
+ */
+function pruneScenarioContradictionWarnings(owner: string, ids: string[]): void {
+  if (reportedScenarioContradictions.size === 0) return;
+  const known = new Set(ids);
+  const prefix = `${owner}/`;
+  for (const key of reportedScenarioContradictions.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    if (!known.has(key.slice(prefix.length))) {
+      reportedScenarioContradictions.delete(key);
+    }
+  }
+}
+
+/**
+ * Forget every reported future-dated directory and every reported Scenario
+ * Template contradiction, so the next pass warns again.
  *
  * Mirrors `_resetConfigWarnings`/`_resetEmbeddingWarnings`: without it the first
- * row to assert this warning would silence it for every row after, and the
- * warn-once COUNT is exactly what those rows are about. There is no central
+ * row to assert one of these warnings would silence it for every row after, and
+ * the warn-once COUNT is exactly what those rows are about. There is no central
  * reset registry in `vitest.setup.ts`, so it is wired into the `beforeEach` of
  * the suite that asserts it, beside `_resetLocks` and `_resetStorage`.
  * @internal
  */
 export function _resetWikiSweepWarnings(): void {
   reportedFutureDatedWrites.clear();
+  reportedScenarioContradictions.clear();
 }
 
 /**
@@ -2878,12 +3010,40 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
 }
 
 /**
- * The Scenario Template a Wiki's OWN ARTIFACTS name, or null when they name
- * none — the read half of {@link reconcileWikiScenarioDrift}'s evidence.
+ * What a Wiki's artifacts say about its Scenario Template: nothing, one
+ * answer, or two that conflict.
  *
- * UNANIMITY OR NOTHING. Every artifact that IS present and DOES carry a
- * readable label has to give the same answer; the first disagreement returns
- * null and the Wiki is left alone. One witness is enough — a canonicalized
+ * THREE ARMS RATHER THAN A NULLABLE LABEL (DW-735). "No witness" and "the two
+ * witnesses disagree" are both refusals to authorise a repair, and collapsing
+ * them into one `null` made the second indistinguishable from the first — so
+ * the partially-rolled-back re-template that leaves `purpose.md` and
+ * `schema.md` naming DIFFERENT templates was skipped by
+ * {@link reconcileWikiScenarioDrift} with nothing detecting, repairing or
+ * logging it. The `contradiction` arm carries BOTH halves so the operator line
+ * can name which file said what; a caller that only wants to know whether it
+ * may write still reads it as "not `named`".
+ */
+type WikiScenarioWitness =
+  | { kind: "none" }
+  | { kind: "named"; scenario: CreatableScenario }
+  | {
+      kind: "contradiction";
+      between: readonly [
+        { file: WikiArtifactFile; scenario: CreatableScenario },
+        { file: WikiArtifactFile; scenario: CreatableScenario },
+      ];
+    };
+
+/**
+ * What a Wiki's OWN ARTIFACTS name as its Scenario Template — the read half of
+ * {@link reconcileWikiScenarioDrift}'s evidence.
+ *
+ * UNANIMITY OR NOTHING, SAID IN THREE WORDS INSTEAD OF TWO. Every artifact that
+ * IS present and DOES carry a readable label has to give the same answer; the
+ * first disagreement stops the walk and answers `contradiction` (naming both
+ * files and both labels), and the Wiki is still left alone — the extra arm
+ * changes what the caller can SAY about the Wiki, never what it may write to
+ * it. One witness is enough — a canonicalized
  * `purpose.md` carries no template line at all
  * ({@link import("./workspace-purpose").renderCanonicalPurposeMarkdown} emits
  * none), so insisting on two would make the reconciler blind to exactly the
@@ -2925,17 +3085,27 @@ export async function sweepOrphanWikiDirectories(owner: string): Promise<number>
 async function scenarioNamedByWikiArtifacts(
   owner: string,
   wiki: WikiRecord,
-): Promise<CreatableScenario | null> {
-  let witness: CreatableScenario | null = null;
+): Promise<WikiScenarioWitness> {
+  let witness: { file: WikiArtifactFile; scenario: CreatableScenario } | null =
+    null;
   for (const file of WIKI_ARTIFACT_FILES) {
     const content = await readEffectiveWikiArtifact(owner, wiki.id, file, wiki);
     if (content === null) continue;
     const named = scenarioNamedByArtifact(file, content);
     if (named === null) continue;
-    if (witness !== null && witness !== named) return null;
-    witness = named;
+    if (witness !== null && witness.scenario !== named) {
+      // The FIRST disagreement, in `WIKI_ARTIFACT_FILES` order, so the pair is
+      // reported in the order an operator would open the files.
+      return {
+        kind: "contradiction",
+        between: [witness, { file, scenario: named }],
+      };
+    }
+    witness = { file, scenario: named };
   }
-  return witness;
+  return witness === null
+    ? { kind: "none" }
+    : { kind: "named", scenario: witness.scenario };
 }
 
 /**
@@ -2964,11 +3134,32 @@ async function scenarioNamedByWikiArtifacts(
  * and lint prompt, so a label that matches the bytes is true either way. Being
  * unable to destroy work is what makes it safe to run unattended on a timer.
  *
- * SILENT WHEN IT DOES NOT FIRE. "No witness" and "the witnesses disagree" are
- * ordinary states of an owner-editable file — a hand-edited `purpose.md` reaches
- * one of them permanently — so warning on them would put a recurring line in the
- * operator log of a perfectly healthy deployment on every tick, which is the
- * failure the sweep's warn-once machinery exists to undo. Only a REPAIR speaks.
+ * SILENT ON "NO WITNESS", WARN-ONCE ON "THE WITNESSES DISAGREE" (DW-735). Both
+ * are refusals to repair, but they are not the same event. A `purpose.md` that
+ * names no template is the ordinary resting state of a canonicalized Wiki and
+ * says nothing at all, so it stays completely silent — warning on it would put
+ * a recurring line in the operator log of a perfectly healthy deployment on
+ * every tick. Two artifacts naming DIFFERENT templates is the fingerprint of a
+ * partially-rolled-back re-template, and before this it was indistinguishable
+ * from "nothing to go on": nothing detected it, nothing repaired it, nothing
+ * logged it. It now speaks — ONCE per isolate per distinct pair, through
+ * {@link warnOnceAboutScenarioContradiction}, so a standing contradiction still
+ * costs one line rather than one per tick.
+ *
+ * AND IT IS SIGNAL ONLY. The contradiction path writes NOTHING: not
+ * `wikis.json`, not an artifact byte, no {@link bumpRefreshSignal}, and it
+ * contributes 0 to the returned repair count. Both files are owner-editable, so
+ * a repair would have to guess which of the two is right and destroy the other
+ * — the one thing the direction-of-travel argument above forbids. Only a REPAIR
+ * writes.
+ *
+ * WHICH MEANS THE SIGNAL IS STILL BEHIND THE WRITE GATE, stated plainly because
+ * it is easy to read "writes nothing" as "runs anywhere":
+ * `assertWritable(READ_ONLY_REFUSAL.wikiScenarioReconcile)` refuses this whole
+ * pass before the lock, so on a read-only deployment a contradiction is never
+ * detected and never named. Detection rides on the repair pass rather than
+ * standing alone, and moving the gate to buy the log line would put a scan-time
+ * artifact walk on a deployment that has opted out of exactly that.
  *
  * SCOPE, and what it deliberately leaves alone: the workspace profile's own
  * `scenario` field. Profile-versus-artifact drift is a recorded design decision
@@ -2998,8 +3189,22 @@ export async function reconcileWikiScenarioDrift(owner: string): Promise<number>
   // keeps a refusal from queueing behind every in-flight operation for a tenant
   // it was never going to write to.
   assertWritable(READ_ONLY_REFUSAL.wikiScenarioReconcile);
+  // Collected INSIDE the lock, emitted after it — the same placement the repair
+  // warns already take, so no `logger.warn` runs while `wikis:<tenant>` is held.
+  const contradictions: {
+    id: string;
+    between: Extract<WikiScenarioWitness, { kind: "contradiction" }>["between"];
+  }[] = [];
   const repairs = await withWikiLock(owner, async () => {
     const registry = await readRegistry(owner);
+    // Against the registry's FULL id list, not the window this pass walks —
+    // see `pruneScenarioContradictionWarnings`. Runs before the walk so a Wiki
+    // deleted since the last pass cannot keep its key alive by being outside
+    // today's window.
+    pruneScenarioContradictionWarnings(
+      owner,
+      registry.wikis.map((wiki) => wiki.id),
+    );
     const repaired: {
       id: string;
       from: CreatableScenario;
@@ -3014,23 +3219,35 @@ export async function reconcileWikiScenarioDrift(owner: string): Promise<number>
       // cannot miss today; the guard is what keeps the loop honest if the
       // window is ever fed from a second source.
       if (!wiki) continue;
-      let named: CreatableScenario | null;
+      let witness: WikiScenarioWitness;
       try {
-        named = await scenarioNamedByWikiArtifacts(owner, wiki);
+        witness = await scenarioNamedByWikiArtifacts(owner, wiki);
       } catch {
         // Silently, and per Wiki: one unreadable artifact must not abandon the
         // rest of the window, and it is not evidence of drift — it is evidence
-        // of nothing at all. The next pass reads it again.
+        // of nothing at all. "I could not look" is not a contradiction either,
+        // so the warn record is left exactly as it was. The next pass reads it
+        // again.
         continue;
       }
+      if (witness.kind === "contradiction") {
+        // NO WRITE ON THIS ARM, and no `continue` past a re-arm: a Wiki that is
+        // still contradicting has not produced the evidence that re-arms it.
+        contradictions.push({ id, between: witness.between });
+        continue;
+      }
+      // The artifacts answered — with one voice or with none. Either way they
+      // are not disagreeing right now, which is the evidence that re-arms the
+      // warning for a LATER contradiction on this Wiki.
+      rearmScenarioContradictionWarning(owner, id);
       // The two ordinary answers, both no-ops: nothing to go on, or the
       // artifacts already agree with the label.
-      if (named === null || named === wiki.scenario) continue;
-      repaired.push({ id, from: wiki.scenario, to: named });
+      if (witness.kind === "none" || witness.scenario === wiki.scenario) continue;
+      repaired.push({ id, from: wiki.scenario, to: witness.scenario });
       // The ONLY mutation this function makes anywhere. `updatedAt` is left
       // alone on purpose: nothing about the Wiki changed, the record is being
       // corrected to describe what it always was.
-      wiki.scenario = named;
+      wiki.scenario = witness.scenario;
     }
     // At most once, and only when something actually moved — an untouched
     // registry must not be rewritten, or every scan tick would churn
@@ -3039,6 +3256,15 @@ export async function reconcileWikiScenarioDrift(owner: string): Promise<number>
     return repaired;
   });
 
+  for (const contradiction of contradictions) {
+    // SIGNAL, NOT A REPAIR: nothing was written for this Wiki and it counts for
+    // nothing in the returned total, so this line is the entire outcome.
+    warnOnceAboutScenarioContradiction(
+      owner,
+      contradiction.id,
+      contradiction.between,
+    );
+  }
   for (const repair of repairs) {
     // WARN, with both labels: the switcher was showing the wrong one, and an
     // operator reading this needs to know which way the repair went to tell it

@@ -3,7 +3,14 @@ import fs from "fs/promises";
 import os from "os";
 import path from "path";
 import { writeWikiPageWithSideEffects } from "../lifecycle";
-import { ensureDirectories, listWikiPages, readWikiPage } from "../wiki";
+import {
+  ensureDirectories,
+  listWikiPages,
+  readWikiPage,
+  tenantForOwner,
+  tenantWikiRelPath,
+  wikiRelPath,
+} from "../wiki";
 import { serializeFrontmatter } from "../frontmatter";
 import { serializeSources, buildSourceEntry } from "../sources";
 import { getStorage, _resetStorage } from "../storage";
@@ -144,11 +151,12 @@ describe("cascadeDeleteSource — a blipped page is not a page without a citatio
     });
     const before = (await readWikiPage("shared"))!.content;
 
-    // The blip has to spare the ENUMERATION read (`source-cascade.ts:193`,
-    // deliberately left non-strict as a display/scan read) and hit only the
+    // The blip has to spare the ENUMERATION read (`source-cascade.ts`'s first
+    // per-page read, strict in its own right since DW-737) and hit only the
     // merge-base read in the `others` loop — otherwise the page never enters
-    // `others` and the row asserts nothing. The cascade writes its resume
-    // marker between those two points, so arming on that write is exact.
+    // `others` and the row asserts THAT conversion instead of this one. The
+    // cascade writes its resume marker between those two points, so arming on
+    // that write is exact. The row below drives the enumeration read.
     const storage = getStorage();
     const originalRead = storage.readFile.bind(storage);
     const originalWrite = storage.writeFile.bind(storage);
@@ -187,6 +195,159 @@ describe("cascadeDeleteSource — a blipped page is not a page without a citatio
     // source that no longer exists, with nothing to say so.
     expect((await readWikiPage("shared"))!.content).toBe(before);
     expect((await readWikiPage("shared"))!.content).toContain("deadbeef");
+  }, 20_000);
+
+  /**
+   * DW-737 — the WORSE of the two sites, converted second.
+   *
+   * The `others` read only mis-handles a page already known to cite the doomed
+   * source. A drop during ENUMERATION removes the page from the cascade's world
+   * entirely, and the `writeMarker` immediately below that loop PERSISTS the
+   * omission: a retry takes the `if (resumed)` arm and never re-enumerates, so
+   * one transient fault becomes permanent. The cascade then deletes the raw
+   * source bytes anyway and reports success, leaving a page citing bytes that
+   * are gone.
+   */
+  it("rejects before writing a marker or deleting a byte when ENUMERATION blips", async () => {
+    const { cascadeDeleteSource } = await import("../source-cascade");
+    const { rawSourceRelPath } = await import("../raw");
+    const sourcePath = "raw/sources/meet/deadbeef.md";
+    const rawRel = rawSourceRelPath("meet/deadbeef.md");
+    await getStorage().writeFile(rawRel, "# Meet\n");
+
+    // Two sources again, so a completed cascade would REWRITE this page rather
+    // than delete it — the harm is then visible as changed bytes, not just an
+    // absent file.
+    const shared = serializeSources([
+      buildSourceEntry(sourcePath, "text", "alice", "deadbeef"),
+      buildSourceEntry("raw/sources/other/keep.md", "text", "alice", "keep"),
+    ]);
+    await writeWikiPageWithSideEffects({
+      slug: "shared",
+      title: "Shared",
+      content: serializeFrontmatter(
+        { sources: shared, owner: "alice" },
+        "# Shared\n",
+      ),
+      summary: "a shared page",
+      logOp: "ingest",
+    });
+    const before = (await readWikiPage("shared"))!.content;
+
+    // Seeding the page index puts `listWikiPages` on its metadata fast path, so
+    // the enumeration read is genuinely the FIRST read of `shared.md` the call
+    // makes and the one-shot blip cannot be spent by the listing.
+    await rebuildPageIndex();
+
+    const storage = getStorage();
+    const markerWrites: string[] = [];
+    const originalWrite = storage.writeFile.bind(storage);
+    const writeSpy = vi
+      .spyOn(storage, "writeFile")
+      .mockImplementation(async (filePath: string, content: string) => {
+        if (filePath.startsWith("source-cascade/")) markerWrites.push(filePath);
+        return originalWrite(filePath, content);
+      });
+    const { spy: readSpy, state } = blipOnce("shared");
+
+    let caught: unknown;
+    try {
+      await cascadeDeleteSource({ owner: "alice", path: sourcePath });
+    } catch (err) {
+      caught = err;
+    } finally {
+      readSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    expect(state.blipped).toBe(true);
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain("storage unavailable");
+
+    // THE HARM. Before the conversion this RESOLVED: `shared` was dropped from
+    // the enumeration, the marker below the loop froze that omission for every
+    // retry, and the tail deleted the raw bytes regardless.
+    expect(markerWrites).toEqual([]);
+    expect((await readWikiPage("shared"))!.content).toBe(before);
+    expect((await readWikiPage("shared"))!.content).toContain("deadbeef");
+    expect(await getStorage().readFile(rawRel)).toBe("# Meet\n");
+  }, 20_000);
+
+  it("still treats a genuinely ABSENT page as absent and completes", async () => {
+    // `strict` changes what a NON-ENOENT fault does and nothing else. A slug
+    // `listWikiPages` names whose file is gone must still be skipped by the
+    // `continue`, or the conversion would turn every stale index entry into a
+    // hard cascade failure.
+    const { cascadeDeleteSource } = await import("../source-cascade");
+    const { rawSourceRelPath } = await import("../raw");
+    const sourcePath = "raw/sources/meet/cafe0000.md";
+    await getStorage().writeFile(rawSourceRelPath("meet/cafe0000.md"), "# Meet\n");
+
+    await writeWikiPageWithSideEffects({
+      slug: "cites",
+      title: "Cites",
+      content: serializeFrontmatter(
+        {
+          sources: serializeSources([
+            buildSourceEntry(sourcePath, "text", "alice", "cafe0000"),
+            buildSourceEntry("raw/sources/other/keep.md", "text", "alice", "keep"),
+          ]),
+          owner: "alice",
+        },
+        "# Cites\n",
+      ),
+      summary: "a citing page",
+      logOp: "ingest",
+    });
+    await writeWikiPageWithSideEffects({
+      slug: "vanished",
+      title: "Vanished",
+      content: serializeFrontmatter({ owner: "alice" }, "# Vanished\n"),
+      summary: "about to disappear",
+      logOp: "ingest",
+    });
+
+    // Seed the index so the listing below serves from its METADATA rather than
+    // re-reading the files — that is what lets a slug survive in the listing
+    // after its bytes are gone, which is the state the enumeration read has to
+    // meet an ENOENT in.
+    await rebuildPageIndex();
+
+    // Delete the BYTES out from under the listing, through the real path
+    // helpers — a write lands in the tenant silo AND the flat compatibility
+    // copy, so both have to go or `readWikiPage` still resolves one of them.
+    const storage = getStorage();
+    let removed = 0;
+    for (const candidate of [
+      wikiRelPath("vanished.md"),
+      tenantWikiRelPath(tenantForOwner("alice"), "vanished.md"),
+      tenantWikiRelPath(tenantForOwner(undefined), "vanished.md"),
+    ]) {
+      try {
+        await storage.deleteFile(candidate);
+        removed += 1;
+      } catch {
+        // Not every layout holds a copy; the assertion below is what decides
+        // whether enough of them did.
+      }
+    }
+    expect(removed).toBeGreaterThan(0);
+    // THE ANTI-VACUITY PAIR. Without the first the row can pass having deleted
+    // nothing; without the second `listWikiPages` simply stops yielding the
+    // slug and the enumeration read is never reached for it — either way the
+    // ENOENT `continue` this row exists for goes unexercised.
+    expect(await readWikiPage("vanished")).toBeNull();
+    expect((await listWikiPages()).map((entry) => entry.slug)).toContain(
+      "vanished",
+    );
+
+    const result = await cascadeDeleteSource({ owner: "alice", path: sourcePath });
+
+    // The cascade ran to completion: the surviving citing page was rewritten,
+    // and the vanished slug simply was not part of it.
+    expect(result.updatedPages).toContain("cites");
+    expect(result.deletedPages).not.toContain("vanished");
+    expect((await readWikiPage("cites"))!.content).not.toContain("cafe0000");
   }, 20_000);
 });
 

@@ -26,7 +26,10 @@ import { tenantForOwner } from "../wiki";
 import { wikiDirPath, wikiLockKey } from "../wiki-paths";
 import { buildWorkspaceGuidance } from "../workspace-guidance";
 import { getWorkspaceProfile } from "../workspace-profile";
-import { renderCanonicalPurposeMarkdown } from "../workspace-purpose";
+import {
+  ARTIFACT_AUTHORITY_VERSION,
+  renderCanonicalPurposeMarkdown,
+} from "../workspace-purpose";
 import { WORKSPACE_SCENARIO_TEMPLATES } from "../workspace-profile-schema";
 import {
   MAX_WIKIS,
@@ -80,9 +83,11 @@ beforeEach(async () => {
   process.env.DATA_DIR = tmpDir;
   _resetLocks();
   _resetStorage();
-  // The future-dated sweep warn is warn-ONCE across the module's lifetime
-  // (DW-483), so without this the first row to assert it would silence it for
-  // every row after — and the COUNT is what those rows are about.
+  // TWO warn-once records, both module-global across the suite's lifetime: the
+  // future-dated orphan-sweep skip (DW-483) and the Scenario Template
+  // contradiction the reconciler names (DW-735). Without this reset the first
+  // row to assert either one would silence it for every row after — and the
+  // COUNT is exactly what those rows are about.
   _resetWikiSweepWarnings();
 });
 
@@ -4350,13 +4355,15 @@ describe("reconcileWikiScenarioDrift — registry labels follow the artifacts (D
     expect(await storedScenario(wiki.id)).toBe("business");
   });
 
-  it("skips a wiki whose two artifacts disagree, silently", async () => {
+  it("skips a wiki whose two artifacts disagree, and says so ONCE (DW-735)", async () => {
     // AN OWNER-EDITED ARTIFACT IS A NORMAL STATE, not an anomaly. `purpose.md`
     // and `schema.md` are both in `EDITABLE_ARTIFACT_FILES`, so a hand-edit that
     // leaves the two naming different templates is something this pass will meet
     // on every tick for the life of the wiki — repairing on it would pick a
-    // winner nobody chose, and warning on it would put a permanent recurring
-    // line in the operator log of a healthy deployment.
+    // winner nobody chose. But it is ALSO the fingerprint of a
+    // partially-rolled-back re-template, and collapsing it into the same silence
+    // as "no witness" meant nothing detected, repaired or logged it. So: still
+    // no write, and exactly one operator line per isolate.
     const wiki = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
     // NEITHER label is the stored one, deliberately. If one of them were, a
     // reconciler that simply took the LAST witness it read would answer "no
@@ -4376,11 +4383,270 @@ describe("reconcileWikiScenarioDrift — registry labels follow the artifacts (D
       });
     });
 
+    // SIGNAL ONLY: not one byte moved, and the contradiction counts for nothing
+    // in the repair total.
     expect(repaired).toBe(0);
     expect(writes).toBe(0);
     expect(await registryBytes()).toBe(bytesBefore);
     expect(await readDataVersion()).toBe(versionBefore);
+    expect(await storedScenario(wiki.id)).toBe("reading");
+
+    // ONE line, naming the wiki, both files and both labels — an operator who
+    // has to choose a winner needs to know which file said what.
+    expect(warned).toHaveLength(1);
+    const [scope, message] = warned[0];
+    expect(scope).toBe("wikis");
+    expect(String(message)).toContain(wiki.id);
+    expect(String(message)).toContain("purpose.md");
+    expect(String(message)).toContain("Business");
+    expect(String(message)).toContain("schema.md");
+    expect(String(message)).toContain("Research");
+
+    // A SECOND PASS IN THE SAME ISOLATE IS SILENT. The contradiction is
+    // permanent until an owner resolves it and the reconciler runs on a timer,
+    // so a per-tick line would be a recurring entry in the log of a deployment
+    // behaving exactly as designed.
+    const again = await warnsDuring(async () => {
+      expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    });
+    expect(again).toEqual([]);
+  });
+
+  it("re-arms the contradiction warning once the artifacts stop disagreeing (DW-735)", async () => {
+    const wiki = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
+    await nameScenarioIn(wiki.id, "purpose.md", "Business");
+    await nameScenarioIn(wiki.id, "schema.md", "Research");
+
+    const first = await warnsDuring(async () => {
+      expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    });
+    expect(first).toHaveLength(1);
+
+    // The owner resolves it: both files now name Business. That is a REPAIR
+    // pass, which speaks with the sentence it always did — and it is also the
+    // evidence, visible from inside the process, that the disagreement ended.
+    await nameScenarioIn(wiki.id, "schema.md", "Business");
+    const repairWarns = await warnsDuring(async () => {
+      expect(await reconcileWikiScenarioDrift(OWNER)).toBe(1);
+    });
+    expect(repairWarns).toHaveLength(1);
+    expect(String(repairWarns[0][1])).toContain("relabelled the record");
+    expect(await storedScenario(wiki.id)).toBe("business");
+
+    // A LATER contradiction on the same wiki is news again, not a repeat.
+    await nameScenarioIn(wiki.id, "schema.md", "Research");
+    const second = await warnsDuring(async () => {
+      expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    });
+    expect(second).toHaveLength(1);
+    expect(String(second[0][1])).toContain("DIFFERENT Scenario Templates");
+  });
+
+  it("speaks again when the contradiction itself CHANGES (DW-735)", async () => {
+    // The warn-once value is the PAIR, not a flag: an owner who edits
+    // `schema.md` from Research to Personal Growth has produced a new fact, and
+    // an operator who has only the first line would otherwise never learn the
+    // pair moved.
+    const wiki = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
+    await nameScenarioIn(wiki.id, "purpose.md", "Business");
+    await nameScenarioIn(wiki.id, "schema.md", "Research");
+    const first = await warnsDuring(async () => {
+      await reconcileWikiScenarioDrift(OWNER);
+    });
+    expect(first).toHaveLength(1);
+
+    await nameScenarioIn(wiki.id, "schema.md", "Personal Growth");
+    const second = await warnsDuring(async () => {
+      expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    });
+    expect(second).toHaveLength(1);
+    expect(String(second[0][1])).toContain("Personal Growth");
+  });
+
+  it("prunes the contradiction record against the REGISTRY, not the window (DW-735)", async () => {
+    // TWO PROPERTIES OF THE PRUNE, in the order they can be observed.
+    //
+    // 1. It runs over the registry's FULL id list. Pruning over what the pass
+    //    WALKED would evict every key outside today's rotation window and
+    //    re-warn the whole tail tomorrow, turning the per-day rotation back into
+    //    the per-tick repetition the record exists to prevent.
+    // 2. It runs at all. Re-arming only fires for a wiki the pass REACHED, so a
+    //    wiki that leaves the registry would otherwise leave its key behind for
+    //    the life of the isolate.
+    //
+    // PLANTED, not created, for the reason the window row below states: 26 real
+    // creates cost four writes and a lock apiece and none of it is what this
+    // asserts. Ids are padded so their lexicographic sort — the order
+    // `rotatingSweepWindow` rotates over — is the index order used here.
+    const total = ORPHAN_SWEEP_CANDIDATE_CAP + 1;
+    const stamp = new Date().toISOString();
+    const planted = Array.from({ length: total }, (_, index) => ({
+      id: `${String(index).padStart(8, "0")}-0000-4000-8000-000000000000`,
+      name: `Wiki ${index}`,
+      scenario: "business" as const,
+      createdAt: stamp,
+      updatedAt: stamp,
+      // MARKED, so `readEffectiveWikiArtifact` serves the stored `purpose.md`
+      // bytes rather than a canonical projection — otherwise the planted
+      // purpose line would not be a witness and there would be no contradiction
+      // to report.
+      artifactAuthority: ARTIFACT_AUTHORITY_VERSION,
+    }));
+    // n = 26 against a cap of 25, so every pass misses EXACTLY ONE wiki and the
+    // one it misses shifts by a single position per UTC day. Which position
+    // that is is not hard-coded here — repeating `rotatingSweepWindow`'s
+    // arithmetic in the row would make it agree with a broken window as
+    // readily as a correct one. It is OBSERVED instead, by the probe below.
+    for (const wiki of planted) {
+      await fs.mkdir(path.dirname(artifactPath(wiki.id, "purpose.md")), {
+        recursive: true,
+      });
+      await nameScenarioIn(wiki.id, "purpose.md", "Business");
+      await nameScenarioIn(wiki.id, "schema.md", "Research");
+    }
+    const registryFile = abs(...wikiRegistryPath(OWNER).split("/"));
+    await fs.mkdir(path.dirname(registryFile), { recursive: true });
+    const writeRegistryOf = async (wikis: typeof planted) =>
+      fs.writeFile(
+        registryFile,
+        JSON.stringify({ version: 1, wikis, currentId: wikis[0].id }),
+        "utf8",
+      );
+    await writeRegistryOf(planted);
+
+    const day = 20_000;
+    const now = vi.spyOn(Date, "now");
+    async function warnsOn(at: number): Promise<unknown[][]> {
+      now.mockReturnValue(at * ORPHAN_SWEEP_ROTATION_MS);
+      return warnsDuring(async () => {
+        expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+      });
+    }
+
+    let target: string;
+    try {
+      // THE PROBE. Every wiki contradicts, so on the middle day each one the
+      // pass REACHES says so — and the single id that stays quiet is the one
+      // outside that day's window. Deriving it this way means the row is
+      // reading the real rotation rather than asserting against a copy of it.
+      const seen = new Set(
+        (await warnsOn(day + 2)).flatMap(([, message]) =>
+          planted.map((w) => w.id).filter((id) => String(message).includes(id)),
+        ),
+      );
+      const missed = planted.map((w) => w.id).filter((id) => !seen.has(id));
+      expect(missed).toHaveLength(1);
+      target = missed[0];
+      // Forget everything the probe reported; the days below start clean.
+      _resetWikiSweepWarnings();
+      // And quiet every other wiki, so from here a line about anything but the
+      // target would be noise. They now agree with themselves and with the
+      // registry, so the pass still repairs nothing and writes nothing.
+      for (const wiki of planted) {
+        if (wiki.id === target) continue;
+        await nameScenarioIn(wiki.id, "schema.md", "Business");
+      }
+
+      /** One pass on `at`, keeping only the lines that name the target. */
+      const passOn = async (at: number) =>
+        (await warnsOn(at)).filter(([, message]) =>
+          String(message).includes(target),
+        );
+
+      // The day BEFORE the miss — in the window, so the contradiction is news.
+      expect(await passOn(day + 1)).toHaveLength(1);
+      // The middle day — OUT of the window. Nothing reaches it, so nothing can
+      // re-arm it, and the prune must not evict it either.
+      expect(await passOn(day + 2)).toHaveLength(0);
+      // THE LOAD-BEARING ASSERTION. The day after, the same standing
+      // contradiction is in the window again. Pruning against what the pass
+      // WALKED would have dropped the key on the middle day, and this line
+      // would speak a second time.
+      expect(await passOn(day + 3)).toHaveLength(0);
+
+      // Now the eviction half: the wiki leaves the registry entirely. The walk
+      // never reaches it, so only the prune can clear its key.
+      await writeRegistryOf(planted.filter((wiki) => wiki.id !== target));
+      expect(await passOn(day + 3)).toHaveLength(0);
+
+      // Back, with the SAME contradiction the record once held — so a surviving
+      // key would silence it, and speaking again is the prune's doing.
+      await writeRegistryOf(planted);
+      expect(await passOn(day + 3)).toHaveLength(1);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("names EVERY contradicting wiki in a pass, not just the first (DW-735)", async () => {
+    // The record is per WIKI, and the collect must not stop at the first hit: a
+    // partially-rolled-back BULK re-template leaves several wikis in exactly
+    // this state at once, which is the case the change exists for. A per-pass
+    // flag — or an `if (contradictions.length === 0)` guard on the collect —
+    // would satisfy every single-wiki row above and lose the rest of the batch.
+    const first = await createWiki(OWNER, { name: "One", scenario: "reading" });
+    const second = await createWiki(OWNER, { name: "Two", scenario: "reading" });
+    await nameScenarioIn(first.id, "purpose.md", "Business");
+    await nameScenarioIn(first.id, "schema.md", "Research");
+    await nameScenarioIn(second.id, "purpose.md", "General");
+    await nameScenarioIn(second.id, "schema.md", "Personal Growth");
+
+    let warned: unknown[][] = [];
+    const writes = await registryWritesDuring(async () => {
+      warned = await warnsDuring(async () => {
+        expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+      });
+    });
+
+    expect(writes).toBe(0);
+    expect(warned).toHaveLength(2);
+    // Each line names ITS OWN wiki and ITS OWN pair — an operator triaging a
+    // batch has to be able to tell them apart.
+    const forFirst = warned.filter(([, message]) =>
+      String(message).includes(first.id),
+    );
+    const forSecond = warned.filter(([, message]) =>
+      String(message).includes(second.id),
+    );
+    expect(forFirst).toHaveLength(1);
+    expect(forSecond).toHaveLength(1);
+    expect(String(forFirst[0][1])).toContain("Research");
+    expect(String(forSecond[0][1])).toContain("Personal Growth");
+    expect(String(forSecond[0][1])).not.toContain(first.id);
+  });
+
+  it("stays silent when an artifact is UNREADABLE — that is not a contradiction (DW-735)", async () => {
+    // "I could not look" is the non-answer that already refuses to authorise a
+    // repair; it must not be promoted into an operator line, and it must not
+    // re-arm a warning the operator has already seen.
+    const wiki = await createWiki(OWNER, { name: "Doomed", scenario: "reading" });
+    await nameScenarioIn(wiki.id, "purpose.md", "Business");
+    await nameScenarioIn(wiki.id, "schema.md", "Research");
+
+    const storage = getStorage();
+    const read = storage.readFile.bind(storage);
+    const spy = vi
+      .spyOn(storage, "readFile")
+      .mockImplementation(async (target: string) => {
+        if (target.endsWith("schema.md")) throw new Error("storage unavailable");
+        return read(target);
+      });
+    let warned: unknown[][] = [];
+    try {
+      warned = await warnsDuring(async () => {
+        expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+      });
+    } finally {
+      spy.mockRestore();
+    }
     expect(warned).toEqual([]);
+
+    // And the record was left untouched, so the first READABLE pass is the one
+    // that speaks.
+    const after = await warnsDuring(async () => {
+      expect(await reconcileWikiScenarioDrift(OWNER)).toBe(0);
+    });
+    expect(after).toHaveLength(1);
   });
 
   it("repairs on ONE witness when the other artifact names nothing", async () => {

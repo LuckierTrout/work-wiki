@@ -190,7 +190,31 @@ export async function cascadeDeleteSource(input: {
     const pages = await listWikiPages();
     for (const entry of pages) {
       if (BOOKKEEPING.has(entry.slug)) continue;
-      const page = await readWikiPageWithFrontmatter(entry.slug);
+      // STRICT (DW-737), and it matters MORE here than at the sibling read
+      // below. This read decides MEMBERSHIP: without `strict` a non-ENOENT
+      // storage blip reads back as `null`, the `continue` under it drops the
+      // slug from `summaries`/`others` as if it cited nothing, and the
+      // `writeMarker` a few lines down PERSISTS that omission — a retry takes
+      // the `if (resumed)` arm and never re-enumerates. The cascade then
+      // deletes the raw source bytes anyway and reports success, leaving a
+      // page citing bytes that are gone. Rethrowing fails the cascade before
+      // any marker is written or byte is deleted.
+      //
+      // ITS REACH IS WIDER THAN THIS FILE, and that is accepted on purpose:
+      // `readWikiPage` forwards `strict` into `getPageIndex({ strict })`, which
+      // rethrows a non-ENOENT — or a `JSON.parse` — failure on
+      // `derived-indexes/pages.json` where the default logs and falls back to a
+      // scan. So an index-only fault now fails the cascade too. The sibling read
+      // forty lines below already carries exactly that reach, and an enumeration
+      // that cannot be trusted is precisely what must not authorise
+      // `deleteRawSourceBytes` at the tail.
+      //
+      // NO `fresh`, deliberately: nothing derived here backs a write
+      // precondition. The sibling's `fresh` exists for the merge base it hands
+      // to `writeWikiPageWithSideEffects`; this read only classifies.
+      const page = await readWikiPageWithFrontmatter(entry.slug, {
+        strict: true,
+      });
       if (!page) continue;
       if (!ownerOwnsPage(input.owner, page.frontmatter)) continue;
       const summary = isSourceSummary(page.frontmatter, keys);
