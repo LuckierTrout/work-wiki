@@ -2495,7 +2495,9 @@ source_spec: `spec-dw-310-313-embedding-truth-and-warning-attribution.md`
 location: src/components/workbench/__tests__/settings-vector-namespace.test.tsx
 severity: low
 reason: The fixture is `embeddingProvider: "workers-ai"` with `embeddingModel: "text-embedding-3-small"` and `embeddingModelOverridden: false, embeddingModelInEffect: null`. For that config `embeddingModelAnswer` returns `overridden: true, inEffect: "@cf/baai/bge-m3"`, so the real GET body would carry a third sentence on the model row. The pre-existing cases assert the announced string with `toBe`, and they are about the vector gate rather than the substitution, so the simplification is deliberate and documented in the fixture comment — but it means those assertions describe a payload the server never serves. Making the fixture faithful would repin every one of them.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-settings-payload-fixture-fidelity
+resolution-undo: 64b2675a3478e317007de88ffcbb8fb47dac8609bf027a567c8d6149053a40ea 2026-09-04 7374617475733a206f70656e
 
 ### DW-336: The substitution sentence exists as two hand-maintained twins — the flat page's JSX and the canvas's copy function — with nothing pinning that they keep saying the same thing.
 
@@ -6021,7 +6023,9 @@ location: src/components/workbench/__tests__/epic8-skills-canvas.test.tsx:50
 source_spec: `spec-dw-471-472-627-settings-test-harness-consolidation.md`
 severity: low
 reason: `src/components/workbench/__tests__/epic8-skills-canvas.test.tsx:50-98` holds the same ~50-field literal, differing from `settingsPayload()` in exactly four fields (`hasEmbeddingApiKey: true`, `apiEnabled: true`, `hasLoopbackApiToken: true`, `loopbackTokenSource: "store"`). It sits in the directory the harness used to occupy, so the reachability argument DW-471 makes never applied to it — it was simply not named by DW-228's census or by this bundle's intent, which names the fifth suite only. It can import `settingsPayload` alone, exactly as the parity suite now does, with no `installSettingsFetchMock`. Left as-is here because the intent names one suite; folding it is the same mechanical change and would finish the property.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-settings-payload-fixture-fidelity
+resolution-undo: 64b2675a3478e317007de88ffcbb8fb47dac8609bf027a567c8d6149053a40ea 2026-09-04 7374617475733a206f70656e
 
 ### DW-728: `reapStrandedScratchFiles`' two grace-window cases in `storage-fs.test.ts` fail intermittently under full-suite load, so `pnpm test` is not reliably green.
 origin: spec-deferred 535aa7a613ec

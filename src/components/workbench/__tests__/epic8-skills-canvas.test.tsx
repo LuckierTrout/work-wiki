@@ -22,6 +22,7 @@ import {
 } from "@/lib/workbench-settings";
 import { unconfirmedWriteMessage } from "@/lib/workbench-request";
 import { workbenchMode } from "@/lib/workbench-modes";
+import { settingsPayload } from "@/test/settings-harness";
 
 const { send } = vi.hoisted(() => ({ send: vi.fn() }));
 // Only `send` is stubbed — `loopbackFetch` reaches the sidecar through it. The
@@ -58,58 +59,40 @@ const SKILLS = [
  *
  * Only `version` is read here, but `workbenchSettingsFrom` narrows the WHOLE
  * payload before handing any of it back — so a fixture with three fields is
- * rejected and the surface would refuse the write for the wrong reason.
+ * rejected and the surface would refuse the write for the wrong reason. That is
+ * why this is the SHARED base (DW-228/DW-727) rather than a SIXTH verbatim copy
+ * of the same ~50 fields: DW-228 folded the four mounted Settings suites,
+ * DW-471 folded the fifth (`settings-page-legacy-surface-parity.test.tsx`, in
+ * another directory, which is what moved the harness to `src/test/`), and this
+ * is the one after those. A field added to `WorkbenchSettingsPayload` has to
+ * reach every one of these fixtures or the narrowing starts refusing here for a
+ * reason that has nothing to do with Skills.
+ *
+ * `settingsPayload` ALONE, without `installSettingsFetchMock` or
+ * `mountSettings` (DW-727): this file drives `SkillsCanvas`, not the Settings
+ * surface, and it keeps its own `fetch` stub because the stub has to route
+ * `/api/v1/skills` at the sidecar as well as `/api/settings` — which the
+ * Settings harness's single-route mock does not do — and its own `send` mock
+ * because the loopback token comes through `workbench-request`.
+ *
+ * FOUR DELTAS from the shared base, saying TWO things:
+ *   - `apiEnabled: true`, `hasLoopbackApiToken: true`,
+ *     `loopbackTokenSource: "store"` — three fields, one fact: the loopback door
+ *     is OPEN. The rail's scan only answers with the door on, so a fixture
+ *     carrying the base's shut door would describe a machine this surface never
+ *     reaches.
+ *   - `hasEmbeddingApiKey: true` — a stored embedding key, which nothing here
+ *     reads. It restores the value the pre-fold literal carried, so the fold
+ *     changed no field these cases run against; keeping it is not a standing
+ *     claim that the two stay identical as the base moves.
  */
 const SETTINGS_BODY = {
-  workbench: {
-    version: "s1:00000000000000000000000000000000",
-    chatProvider: "openai",
-    chatModel: "gpt-4o",
-    ingestProvider: "anthropic",
-    ingestModel: "claude-sonnet-4-20250514",
-    customBaseUrl: null,
-    hasCustomApiKey: false,
-    envCustomApiKey: false,
-    llmTimeoutSeconds: null,
-    vectorSearchEnabled: false,
-    embeddingProvider: "openai",
-    embeddingModel: "text-embedding-3-small",
-    embeddingBaseUrl: null,
+  workbench: settingsPayload({
     hasEmbeddingApiKey: true,
-    embeddingModelInEffect: null,
-    embeddingModelOverridden: false,
-    envEmbeddingProvider: null,
-    envEmbeddingModel: null,
-    envCustomBaseUrl: null,
-    envEmbeddingApiKeyProviders: [],
-    hasWorkersAiBinding: false,
-    firecrawlBaseUrl: null,
-    hasFirecrawlApiKey: false,
-    envFirecrawlApiKey: false,
-    researchProvider: null,
-    envResearchProvider: null,
-    hasTavilyApiKey: false,
-    hasSerpApiKey: false,
-    serpApiEngine: null,
-    searxngBaseUrl: null,
-    envSearxngBaseUrl: null,
-    searxngCategories: null,
-    envResearchProviders: [],
-    inboundEmailAddress: null,
-    inboundEmailEnabled: false,
-    intakeKeepParsed: false,
-    mineruMode: "off",
-    mineruLocalBaseUrl: null,
-    hasMinerUApiKey: false,
-    // The door is ON here: the rail's scan only answers when it is, so a
-    // fixture with it shut would describe a machine this surface never reaches.
     apiEnabled: true,
-    allowUnauthenticated: false,
     hasLoopbackApiToken: true,
     loopbackTokenSource: "store",
-    language: "English",
-    readOnly: false,
-  },
+  }),
 };
 
 let scanned: () => Response;

@@ -48,13 +48,83 @@ import {
  * gate would refuse for a SECOND reason (DW-225) — which would change every
  * sentence asserted below and leave nothing here about the namespace at all.
  * The binding leg has its own cases at the end, which override it back off.
+ *
+ * AND IT SUBSTITUTES (DW-335). The base config is `workers-ai` holding the
+ * shared fixture's OpenAI id, which is precisely the pair
+ * `resolveEmbeddingModelName` replaces: the provider resolves (explicit
+ * selection, binding present), the stored id is not a Workers AI embedding
+ * model, so the resolver drops it for `@cf/baai/bge-m3` and
+ * `embeddingModelAnswer` reports `overridden: true` with that in effect. The
+ * fixture inherited the harness's `false`/`null` default instead, so exact
+ * equality on the MODEL row pinned a description the wire never serves. Call
+ * sites whose overrides remove the substitution spread {@link NOTHING_EMBEDS}
+ * or {@link servesAsSet} below, whichever their own config implies.
+ *
+ * TWO fixtures are exempt, both of them payloads `getWorkbenchSettings` cannot
+ * mint. The half-wired note guard states its own `overridden`/`inEffect` pair,
+ * because that incoherence IS the case. The pin-beats-invalid guard does not:
+ * it inherits the base pair, and that pair is NOT the answer its own config
+ * implies — a `google` pin over `text-embedding-3-small` substitutes nothing,
+ * so the truthful pair there is `servesAsSet("text-embedding-3-small")`. Nor is
+ * the inherited pair inert: it reaches `SettingsCanvas.tsx:567` like any other,
+ * and the substitution note really does render in that mount. What is true is
+ * only that no assertion in that case reads the model row — every one of them
+ * is about the provider select or the vector switch. It is left alone because
+ * that fixture is out of scope here, not because the pair is right.
  */
 function payload(overrides: Partial<WorkbenchSettingsPayload> = {}): WorkbenchSettingsPayload {
   return settingsPayload({
     embeddingProvider: "workers-ai",
     hasWorkersAiBinding: true,
+    // Workers AI cannot serve `text-embedding-3-small`, so the resolver
+    // substitutes its own default and the GET body says so (DW-335).
+    embeddingModelOverridden: true,
+    embeddingModelInEffect: "@cf/baai/bge-m3",
     ...overrides,
   });
+}
+
+/**
+ * `overridden: false` because NOTHING EMBEDS — spread AFTER the overrides that
+ * make the base pair untrue.
+ *
+ * `resolveEmbeddingProvider` returned `null`, so there is no provider to resolve
+ * a model from and `inEffect` is genuinely absent: a stored `workers-ai` with
+ * the binding off (the override is refused rather than falling through), an
+ * `EMBEDDING_PROVIDER` the `isEmbeddingProvider` filter threw away, or a
+ * deployment that has chosen nothing and holds no vendor key to auto-detect
+ * from. This is the `embeddingSupport: false` story, and `embeddingModelAnswer`
+ * reports `overridden: false` for it because `inEffect` is `null` — not because
+ * anything agrees.
+ */
+const NOTHING_EMBEDS = {
+  embeddingModelOverridden: false,
+  embeddingModelInEffect: null,
+} as const satisfies Partial<WorkbenchSettingsPayload>;
+
+/**
+ * `overridden: false` because the provider SERVES THE ID IT HOLDS — the other
+ * way to be false, and the one that still names a model.
+ *
+ * A provider DOES resolve here, and `embeddingModelMatchesProvider` approves the
+ * id it is handed, so `resolveEmbeddingModelName` returns that id unchanged and
+ * `inEffect === model`. `embeddingModelAnswer`'s rule
+ * (`overridden = model !== null && inEffect !== null && inEffect !== model`)
+ * then answers `false` on the THIRD clause rather than the second — which is a
+ * different deployment from {@link NOTHING_EMBEDS} even though the surface
+ * renders both identically, because `SettingsCanvas.tsx:567` guards on
+ * `overridden` first and never reaches the name.
+ *
+ * Spelled out rather than folded into a single "no substitution" pair because
+ * that fold is the very class of drift DW-335 exists to remove: a fixture
+ * claiming nothing is in effect, over a config where something plainly is.
+ *
+ * The DW-312 case "says NOTHING when nothing is overridden" writes this same
+ * pair out by hand instead of calling this, because that pair IS its subject —
+ * so the two are one convention stated twice, not two conventions.
+ */
+function servesAsSet(model: string): Partial<WorkbenchSettingsPayload> {
+  return { embeddingModelOverridden: false, embeddingModelInEffect: model };
 }
 
 const fetchMock = installSettingsFetchMock();
@@ -101,6 +171,24 @@ const OUT_OF_NAMESPACE =
  */
 const ON_BUT_INACTIVE = `Vector search is switched on, but it needs a supported Cloudflare Workers AI model id (${WORKERS_AI_EMBEDDING_MODEL_IDS.join(", ")}) before it can run. Turn it off, or supply what is missing.`;
 
+/**
+ * The substitution sentence, typed out for the same reason every other sentence
+ * in this file is: the point of a mounted assertion is the string a screen
+ * reader announces, and building it by calling the copy function would assert
+ * only that the component calls the function.
+ *
+ * It names "the model that is set" rather than "the model above", because on
+ * THIS surface the box beside it is empty whenever `EMBEDDING_MODEL` owns the
+ * value — which is exactly the state one of the DW-312 cases below mounts.
+ *
+ * At MODULE scope rather than inside the DW-312 block (DW-335): the base fixture
+ * substitutes, so the two exact-equality assertions in the DW-223 block above
+ * carry this sentence too and would otherwise need a second copy of it.
+ */
+function substituted(model: string): string {
+  return `Not in effect. This deployment embeds with ${model} — the embedding provider cannot serve the model that is set, so it uses its own default instead. Vectors are tagged with the model that produced them, so an index built with a different model needs rebuilding.`;
+}
+
 describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
   it("describes a Workers AI selection holding an OpenAI model id", async () => {
     await mount(payload());
@@ -124,11 +212,25 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
         embeddingModel: "@cf/baai/bge-m3",
         embeddingBaseUrl: "https://embed.example",
         hasEmbeddingApiKey: true,
+        // It substitutes in this direction too, with the OTHER default
+        // (DW-335): OpenAI resolves — explicit selection, key stored — and
+        // cannot serve a `@cf/` id, so `resolveEmbeddingModelName` falls back to
+        // OpenAI's own default rather than to the Workers AI one the base names.
+        embeddingModelOverridden: true,
+        embeddingModelInEffect: "text-embedding-3-small",
       }),
     );
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     expect(checkbox.getAttribute("aria-disabled")).toBe("true");
     expect(announcedFor(checkbox)).toBe(OUT_OF_NAMESPACE);
+    // And the model row names the OTHER default (DW-335). This is the only case
+    // here that mirrors the substitution as well as the refusal: every Workers
+    // AI fixture resolves to `@cf/baai/bge-m3`, so a note built from a hardcoded
+    // Workers AI id rather than from the payload would pass everywhere else in
+    // this file and only be wrong here.
+    expect(
+      announcedFor(screen.getByLabelText("Embedding model") as HTMLInputElement),
+    ).toBe(`${OUT_OF_NAMESPACE} ${substituted("text-embedding-3-small")}`);
     // Clicked, not merely inspected: "the owner cannot turn it on" is a claim
     // about the HANDLER, and asserting `aria-disabled` alone would leave this
     // direction passing even if `onChange` stopped consulting `vectorRefused`.
@@ -222,7 +324,13 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
   });
 
   it("shows the ordinary hint once the id matches the provider", async () => {
-    await mount(payload({ embeddingModel: "@cf/baai/bge-m3" }));
+    // A MATCHING id, so the resolver hands it straight back and nothing is
+    // substituted (DW-335) — the base pair would claim otherwise. It is still
+    // IN EFFECT, though, which is why this is `servesAsSet` and not
+    // `NOTHING_EMBEDS`.
+    await mount(
+      payload({ embeddingModel: "@cf/baai/bge-m3", ...servesAsSet("@cf/baai/bge-m3") }),
+    );
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     // Workers AI carries its own transport, so a matching id is the WHOLE gate:
     // no endpoint, no key, and no refusal.
@@ -240,7 +348,11 @@ describe("the vector switch announces the NAMESPACE refusal (DW-73)", () => {
     // vector search that is running, which is the more damaging of the two
     // mistakes.
     await mount(
-      payload({ embeddingModel: "@cf/baai/bge-m3", vectorSearchEnabled: true }),
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        vectorSearchEnabled: true,
+        ...servesAsSet("@cf/baai/bge-m3"),
+      }),
     );
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     expect(checkbox.checked).toBe(true);
@@ -264,7 +376,14 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
     // The value in the box IS the wrong one, so the box is what is marked.
     expect(modelInput().value).toBe("text-embedding-3-small");
     expect(modelInput().getAttribute("aria-invalid")).toBe("true");
-    expect(announcedFor(modelInput())).toBe(UNSUPPORTED_WORKERS_MODEL);
+    // TWO sentences, because this config really does substitute (DW-335): the
+    // gate's complaint about the id in the box, then what the server resolved
+    // instead. The base fixture is `workers-ai` holding an OpenAI id, which is
+    // exactly the pair the resolver replaces — a single-sentence pin here
+    // described a payload `GET /api/settings` would never serve.
+    expect(announcedFor(modelInput())).toBe(
+      `${UNSUPPORTED_WORKERS_MODEL} ${substituted("@cf/baai/bge-m3")}`,
+    );
     // The `EMBEDDING_MODEL` note is NOT here — no variable is set, and this row
     // is about the value it edits.
     expect(announcedFor(modelInput())).not.toContain("EMBEDDING_MODEL");
@@ -275,6 +394,13 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
     // nothing wrong — marking it would point the owner at a control that cannot
     // fix it. The complaint still has to be readable ON the row that is about
     // the model, which is what the description carries.
+    //
+    // SAME DEPLOYMENT as the DW-312 case "rides BESIDE the env sentence and the
+    // gate complaint, not instead of them" — since the base gained the
+    // substitution pair (DW-335) the two payloads are identical. Neither is
+    // redundant: this one bounds the row with `toContain`, so it goes on holding
+    // whatever else the row grows; that one owns the THIRD sentence and asserts
+    // the note by name. Deleting either would drop a claim the other never makes.
     await mount(
       payload({ embeddingModel: null, envEmbeddingModel: "text-embedding-3-small" }),
     );
@@ -293,7 +419,12 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
   });
 
   it("says nothing at all when the id matches the provider", async () => {
-    await mount(payload({ embeddingModel: "@cf/baai/bge-m3" }));
+    // NOTHING is substituted here, and that is load-bearing for the assertion
+    // below rather than mere tidiness (DW-335): a matching id is what the
+    // resolver returns unchanged, so the row genuinely has no third sentence.
+    await mount(
+      payload({ embeddingModel: "@cf/baai/bge-m3", ...servesAsSet("@cf/baai/bge-m3") }),
+    );
     expect(modelInput().getAttribute("aria-invalid")).toBeNull();
     // No hint at all: with no env override and no complaint there is nothing for
     // this row to describe.
@@ -304,7 +435,22 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
     // The gate has exactly one leg here — "an embedding provider" — and it is
     // not this row's. A model complaint before a provider is picked would be a
     // complaint about a rule that has not been reached.
-    await mount(payload({ embeddingProvider: null }));
+    //
+    // The BINDING goes off with it (DW-335). With nothing chosen and the binding
+    // ON, `resolveEmbeddingProvider`'s auto-detect leg lands on `workers-ai`,
+    // which cannot serve the stored OpenAI id — so the row WOULD carry the
+    // substitution note and the `aria-describedby` assertion below would be
+    // asserting about a payload the wire never serves. That state is a real one
+    // and it already has an owner: the DW-312 case "appears with NO provider
+    // selected". Here the binding is off, nothing auto-detects, no vendor key is
+    // stored, so nothing embeds at all and the row is genuinely silent.
+    await mount(
+      payload({
+        embeddingProvider: null,
+        hasWorkersAiBinding: false,
+        ...NOTHING_EMBEDS,
+      }),
+    );
     expect(modelInput().getAttribute("aria-invalid")).toBeNull();
     expect(modelInput().getAttribute("aria-describedby")).toBeNull();
     expect(announcedFor(screen.getByLabelText("Enable vector search"))).toBe(
@@ -327,8 +473,14 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
     // appends the save bar's sentence here the same way it does on the provider
     // pickers, rather than leaving the box announcing a complaint with no
     // explanation of why it cannot be acted on.
+    //
+    // THREE sentences in the order the component joins them (DW-335): the row's
+    // own description is `[env, gate, substitution]`, and `describedBy` APPENDS
+    // the bar note after all of it — so the substitution this base fixture
+    // really produces sits BETWEEN the complaint and the read-only sentence, not
+    // after them.
     expect(announcedFor(modelInput())).toBe(
-      `${UNSUPPORTED_WORKERS_MODEL} ${SETTINGS_READ_ONLY_COPY}`,
+      `${UNSUPPORTED_WORKERS_MODEL} ${substituted("@cf/baai/bge-m3")} ${SETTINGS_READ_ONLY_COPY}`,
     );
   });
 
@@ -343,6 +495,10 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
         embeddingModel: "text-embedding-3-small",
         embeddingBaseUrl: "https://embed.example",
         hasEmbeddingApiKey: true,
+        // Stored `openai` with a key resolves to OpenAI, which serves this id
+        // as-is — so the config the owner starts from substitutes nothing, and
+        // the id it holds is the one in effect.
+        ...servesAsSet("text-embedding-3-small"),
       }),
     );
     expect(modelInput().getAttribute("aria-invalid")).toBeNull();
@@ -364,20 +520,6 @@ describe("the MODEL INPUT carries its own complaint (DW-223)", () => {
 describe("the MODEL ROW says what this deployment actually embeds with (DW-312)", () => {
   function modelInput(): HTMLInputElement {
     return screen.getByLabelText("Embedding model") as HTMLInputElement;
-  }
-
-  /**
-   * The substitution sentence, typed out for the same reason every other
-   * sentence in this file is: the point of a mounted assertion is the string a
-   * screen reader announces, and building it by calling the copy function would
-   * assert only that the component calls the function.
-   *
-   * It names "the model that is set" rather than "the model above", because on
-   * THIS surface the box beside it is empty whenever `EMBEDDING_MODEL` owns the
-   * value — which is exactly the state the second case below mounts.
-   */
-  function substituted(model: string): string {
-    return `Not in effect. This deployment embeds with ${model} — the embedding provider cannot serve the model that is set, so it uses its own default instead. Vectors are tagged with the model that produced them, so an index built with a different model needs rebuilding.`;
   }
 
   it("announces the substitution on the model row, naming the model IN EFFECT", async () => {
@@ -581,18 +723,34 @@ describe("the vector switch names the Cloudflare AI binding (DW-225)", () => {
   it("refuses a Workers AI selection off the Workers runtime", async () => {
     // Nothing about the stored config is wrong: the provider is explicit and
     // the id is supported. What is missing is the runtime the provider needs.
+    //
+    // …and because it is missing, NOTHING embeds (DW-335):
+    // `resolveEmbeddingProvider` refuses a `workers-ai` override without the
+    // binding rather than falling through, so there is no provider to substitute
+    // a default from — the `embeddingSupport: false` story, not an override one.
     await mount(
-      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: false }),
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        hasWorkersAiBinding: false,
+        ...NOTHING_EMBEDS,
+      }),
     );
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     expect(checkbox.getAttribute("aria-disabled")).toBe("true");
     expect(announcedFor(checkbox)).toBe(
       `Vector search needs the Cloudflare AI binding before it can be turned on. ${SETTINGS_VECTOR_BINDING_NOTE}`,
     );
-    // The model row is silent — the id is not what is wrong.
+    // The model row is silent — the id is not what is wrong. Silent ENTIRELY:
+    // with no provider resolving there is no substitution either (DW-335), so
+    // the row carries no description at all rather than merely no mark.
     expect(
       (screen.getByLabelText("Embedding model") as HTMLInputElement).getAttribute(
         "aria-invalid",
+      ),
+    ).toBeNull();
+    expect(
+      (screen.getByLabelText("Embedding model") as HTMLInputElement).getAttribute(
+        "aria-describedby",
       ),
     ).toBeNull();
     fireEvent.click(checkbox);
@@ -601,8 +759,14 @@ describe("the vector switch names the Cloudflare AI binding (DW-225)", () => {
   });
 
   it("allows the same selection where the binding exists", async () => {
+    // Resolves, and the id MATCHES — so nothing is substituted and that id is
+    // what embeds.
     await mount(
-      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: true }),
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        hasWorkersAiBinding: true,
+        ...servesAsSet("@cf/baai/bge-m3"),
+      }),
     );
     const checkbox = screen.getByLabelText("Enable vector search") as HTMLInputElement;
     expect(checkbox.getAttribute("aria-disabled")).toBeNull();
@@ -626,8 +790,14 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
     "Vector search needs the Cloudflare AI binding before it can be turned on.";
 
   it("marks and describes a STORED workers-ai selection with no binding", async () => {
+    // Nothing resolves without the binding, so nothing embeds and nothing is
+    // substituted.
     await mount(
-      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: false }),
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        hasWorkersAiBinding: false,
+        ...NOTHING_EMBEDS,
+      }),
     );
     // The select holds the value that is wrong for this deployment, and it is
     // the control that can move it — so it is the control that is marked.
@@ -651,6 +821,9 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         embeddingModel: "@cf/baai/bge-m3",
         hasWorkersAiBinding: false,
         envEmbeddingProvider: "workers-ai",
+        // The env override is refused for the same missing binding, so nothing
+        // embeds and nothing is substituted.
+        ...NOTHING_EMBEDS,
       }),
     );
     expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
@@ -679,6 +852,11 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         hasEmbeddingApiKey: true,
         envEmbeddingProvider: "workers-ai",
         hasWorkersAiBinding: false,
+        // `EMBEDDING_PROVIDER` wins in the resolver too, and `workers-ai`
+        // without the binding resolves to nothing — the stored OpenAI leg is
+        // never reached, so nothing embeds and no default is substituted from
+        // either vendor.
+        ...NOTHING_EMBEDS,
       }),
     );
     // The control still reports what a save would write…
@@ -705,8 +883,14 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
   });
 
   it("says nothing about the binding once it exists", async () => {
+    // Resolves, and the id MATCHES — so nothing is substituted and that id is
+    // what embeds.
     await mount(
-      payload({ embeddingModel: "@cf/baai/bge-m3", hasWorkersAiBinding: true }),
+      payload({
+        embeddingModel: "@cf/baai/bge-m3",
+        hasWorkersAiBinding: true,
+        ...servesAsSet("@cf/baai/bge-m3"),
+      }),
     );
     expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
     const announced = announcedFor(providerSelect());
@@ -723,6 +907,9 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         embeddingProvider: null,
         embeddingModel: null,
         hasWorkersAiBinding: false,
+        // Pure absence resolves to nothing, and with no model set there would be
+        // nothing for a substitution to be a substitution FOR.
+        ...NOTHING_EMBEDS,
       }),
     );
     expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
@@ -751,6 +938,9 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         embeddingBaseUrl: "https://embed.example",
         hasEmbeddingApiKey: true,
         hasWorkersAiBinding: false,
+        // Stored `openai` with a key resolves, and OpenAI serves this id as-is —
+        // so it is both set and in effect.
+        ...servesAsSet("text-embedding-3-small"),
       }),
     );
     expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
@@ -783,6 +973,12 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         hasEmbeddingApiKey: true,
         envEmbeddingProvider: "google",
         hasWorkersAiBinding: false,
+        // The pin resolves to `google`, which reads the stored credential — and
+        // Google serves `text-embedding-3-small` as far as
+        // `embeddingModelMatchesProvider` is concerned (the only thing it
+        // refuses off Workers AI is a `@cf/` id), so the id stands, nothing is
+        // substituted, and that id is what embeds.
+        ...servesAsSet("text-embedding-3-small"),
       }),
     );
     // `aria-disabled`, never `disabled`: announced as unavailable and still
@@ -828,6 +1024,10 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         envEmbeddingProvider: null,
         envEmbeddingProviderInvalid: "deepseek",
         hasWorkersAiBinding: false,
+        // The refusal does NOT fall through to the store, so nothing embeds —
+        // which is the whole point of the case, and is also why there is no
+        // provider left to substitute a default from.
+        ...NOTHING_EMBEDS,
       }),
     );
     const announced = announcedFor(providerSelect());
@@ -935,6 +1135,9 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         embeddingBaseUrl: "https://embed.example",
         hasEmbeddingApiKey: true,
         envEmbeddingProvider: null,
+        // Stored `openai` with a key resolves, and OpenAI serves this id as-is —
+        // so it is both set and in effect.
+        ...servesAsSet("text-embedding-3-small"),
       }),
     );
     expect(providerSelect().getAttribute("aria-disabled")).toBeNull();
@@ -961,6 +1164,9 @@ describe("the PROVIDER SELECT carries the binding complaint (DW-277, DW-281)", (
         embeddingModel: "@cf/baai/bge-m3",
         hasWorkersAiBinding: false,
         readOnly: true,
+        // Nothing resolves without the binding, so nothing embeds and nothing is
+        // substituted.
+        ...NOTHING_EMBEDS,
       }),
     );
     expect(providerSelect().getAttribute("aria-invalid")).toBeNull();
