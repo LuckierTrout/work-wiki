@@ -198,6 +198,8 @@ deferred:
 
 ## Spec Change Log
 
+- **Record correction, 2026-09-05 — the `epics.md` line citation in Design Notes was bumped +2 (DW-172).** The DW-30 acceptance-criterion edit (`1efde5ef`) replaced one line of Story 1.4's Wiki-switch criterion with three, so every `epics.md` line below that point shifted down by two. `## Design Notes`' canvas-floor paragraph cited a line two short of its target; the clause it quotes — "**Then** Chat (when visible) cannot go below 320px" — sits at `epics.md:442`, and the citation now reads `:442`. This is a citation correction, not an amendment of approved content: the pointer moved, the claim and the authority behind it did not.
+
 ## Review Triage Log
 
 ### 2026-08-16 — Review pass
@@ -243,7 +245,7 @@ deferred:
 | Tree divider accessible name | `Resize the left column` | authored, UX-DR23 voice |
 | Preview divider accessible name | `Resize the Preview column` | authored, UX-DR23 voice |
 
-**Why the canvas floor is 320px in every mode.** `epics.md:440` reads "Chat (when visible) cannot go below 320px", and in Epic 1 Chat is not a column — it is what the canvas renders when the rail's second icon is active (`ModeCanvas.tsx:79-85`). Nothing about a mode switch changes a width, so a tree dragged to leave 240px of canvas in Wiki mode would either crush Chat on the next click or snap the layout under the owner. Applying the floor to the canvas itself makes the rule true at every moment instead of only while Chat is showing, and it is simultaneously the maximum FR-6 asks for ("trees/Preview cannot consume the whole frame") — expressed once, in the clamp, rather than as a second invented number.
+**Why the canvas floor is 320px in every mode.** `epics.md:442` reads "Chat (when visible) cannot go below 320px", and in Epic 1 Chat is not a column — it is what the canvas renders when the rail's second icon is active (`ModeCanvas.tsx:79-85`). Nothing about a mode switch changes a width, so a tree dragged to leave 240px of canvas in Wiki mode would either crush Chat on the next click or snap the layout under the owner. Applying the floor to the canvas itself makes the rule true at every moment instead of only while Chat is showing, and it is simultaneously the maximum FR-6 asks for ("trees/Preview cannot consume the whole frame") — expressed once, in the clamp, rather than as a second invented number.
 
 **Why the floor is enforced in JavaScript rather than in the grid.** `minmax(var(--wb-split-min-chat), 1fr)` on the canvas track would look like the same rule, but a grid cannot express "when there is not enough room, shrink the TREE" — it overflows instead, and `.wb-shell` is `overflow: hidden`, so the Preview would be clipped out of existence rather than the tree giving up 40px. The clamp orders the two columns explicitly (tree first, then Preview against the clamped tree), which is a decision, so it is a pure function the suite runs.
 

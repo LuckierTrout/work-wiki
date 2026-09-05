@@ -305,6 +305,8 @@ deferred:
 
 - **Review pass, 2026-08-15 — one name→slug rule, not two.** The route re-derived `wiki/<name>.md` → slug inline while `readableWikiLeaf` derived it for the gate; the previous pass fixed a bug that was exactly those two expressions disagreeing about case. `wikiLeafSlug` is exported from `workbench-files.ts` and both call it. Same pass: `canEditPreview` now also requires a non-empty `slug`, because the editor writes to `pageWriteUrl(slug)` and a payload that is `editable` without one opens the editor, enables `Save`, and then does nothing at all when it is pressed — neither a write nor a message. And `.wb-preview-body :where(a)` is painted from `--wb-foreground`: both non-navigating link states were token-painted while the one link the Preview does follow took the user agent's blue and visited purple.
 
+- **Record correction, 2026-09-05 — three `epics.md` line citations in Design Notes were bumped +2 (DW-172).** The DW-30 acceptance-criterion edit (`1efde5ef`) replaced one line of Story 1.4's Wiki-switch criterion with three, so every `epics.md` line below that point shifted down by two. Three citations were left two lines short and now read `epics.md:425` for the Copy table's Edit-control row ("**Given** I choose Edit"), and `epics.md:415` and `:416` for the empty-Preview paragraph ("**Then** copy is “Select a file to preview.”" and "**And** Preview is not a third column until a tree pick"). Each target was resolved against the current `epics.md` and carries the clause its citing sentence quotes. These are citation corrections, not amendments of approved content: the pointers moved, the claims and the authority behind them did not.
+
 ## Review Triage Log
 
 ### 2026-08-15 — Review pass (follow-up 2)
@@ -380,7 +382,7 @@ Note on routing: nothing reached `intent_gap` or `bad_spec`, so no loopback ran 
 | Body not previewable | `This file can’t be previewed here.` | authored |
 | Body truncated | `Preview truncated at 200,000 characters.` | authored, numeral derived from `PREVIEW_MAX_CHARS` |
 | Missing wikilink (visually hidden) | `(missing page)` | authored |
-| Edit control | `Edit` | `epics.md:423` |
+| Edit control | `Edit` | `epics.md:425` |
 | Confirm title | `Edit this page?` | authored |
 | Confirm body | `Preview is view-first. Editing opens the raw markdown — there is no rich-text editor. Saving writes through the wiki and updates its index and links.` | authored, UX-DR23 voice |
 | Confirm / cancel labels | `Edit markdown`, `Cancel` | authored |
@@ -388,7 +390,7 @@ Note on routing: nothing reached `intent_gap` or `bad_spec`, so no loopback ran 
 | Saving | `Saving…` | `ConfirmDialog` busy idiom |
 | Save failed (fallback) | `This page couldn’t be saved.` | authored, UX-DR23 voice — see the Spec Change Log |
 
-**Where the empty sentence already lives.** `epics.md:413` reads "copy is `Select a file to preview.`" and `epics.md:414` reads "Preview is not a third column until a tree pick" — one sentence, one column that does not exist yet, and no contradiction once you look at the mockup: `mockups/create-wiki.html:121` puts the sentence on `<main class="canvas">`. Story 1.2 already shipped it there (`WikiWorkbench.tsx:254`) and `create-wiki-ui.test.ts:128` freezes it. So this criterion is satisfied by not breaking it, and `DESIGN.md:232` confirms the reading by calling that sentence chrome rather than Georgia.
+**Where the empty sentence already lives.** `epics.md:415` reads "copy is `Select a file to preview.`" and `epics.md:416` reads "Preview is not a third column until a tree pick" — one sentence, one column that does not exist yet, and no contradiction once you look at the mockup: `mockups/create-wiki.html:121` puts the sentence on `<main class="canvas">`. Story 1.2 already shipped it there (`WikiWorkbench.tsx:254`) and `create-wiki-ui.test.ts:128` freezes it. So this criterion is satisfied by not breaking it, and `DESIGN.md:232` confirms the reading by calling that sentence chrome rather than Georgia.
 
 **Why the wikilink pass is a remark plugin and not a source rewrite.** Rewriting `[[x]]` to `[x](wikilink:x)` in the markdown string before parsing is fewer lines, and it corrupts every code fence that mentions the syntax — including this repo's own docs, which do (`mcp.ts:1483`). mdast gives `code` and `inlineCode` their own node types, so a transform that only visits `text` nodes cannot reach inside them. That is a structural guarantee rather than a regex that has to be right about fences, and it is what makes the "wikilink in code" matrix row a one-line test.
 

@@ -2,7 +2,7 @@
 title: 'DW-66/67/69/70/71/72 — Settings credential fidelity'
 type: 'bugfix'
 created: '2026-08-18'
-status: 'in-progress' # draft | ready-for-dev | in-progress | in-review | done | blocked
+status: 'withdrawn'
 review_loop_iteration: 1
 followup_review_recommended: false
 context: []
@@ -23,6 +23,60 @@ deferred:
       src/components/workbench/SettingsCanvas.tsx (textRow)
     severity: low
 ---
+
+## Withdrawal Note
+
+**WITHDRAWN 2026-09-05 by the `spec-record-drift` sweep bundle, as the record
+correction resolving DW-399. Do not implement this spec, and do not re-derive
+its per-provider embedding-keying plan from the contract below.** Everything
+from `<intent-contract>` onward is preserved byte-for-byte as the historical
+proposal it was; it is a record of reasoning, not a live instruction.
+
+Why: nothing from this spec landed, and every entry it bundles has since been
+closed by a different record. The spec was committed alone in `ee382ec2`, whose
+only other changes are to `deferred-work.md` and
+`spec-dw-73-workers-ai-embedding-namespace.md` — no source file was touched.
+`src/lib/config.ts` still declares one flat `embeddingBaseUrl?` and one flat
+`embeddingApiKey?` with no per-provider maps, so the store-shape change this
+spec's Approach rests on was never made. The frontmatter reading
+`status: 'in-progress'` was the last thing making this page look like open work,
+which is the observation DW-399 records. No ruling was ever entered against
+DW-399 itself — it carries no `decision:` line — so the authority for this
+withdrawal is the evidence below plus the recorded decisions that settled each
+bundled entry, not a decision about this record.
+
+What actually settled each entry — all six are terminal in the ledger, and every
+superseding spec is `status: 'done'`:
+
+- **DW-66** (env-supplied key conflated with a stored one) — `done 2026-08-29`,
+  resolved by sweep bundle `dw-env-locked-credential-affordances`; the record is
+  `spec-dw-66-559-env-locked-credential-affordances.md`.
+- **DW-67** (edits typed during an in-flight save discarded) — `done 2026-09-01`,
+  resolved by sweep bundle `dw-settings-save-in-flight-freshness`, under the
+  2026-08-28 decision to freeze the form while saving rather than merge drafts;
+  the record is `spec-dw-67-626-337-settings-save-in-flight-freshness.md`.
+- **DW-69** (one `embeddingApiKey` shared by both keyed vendors) — `done
+  2026-08-21`, resolved by sweep bundle `dw-embedding-provider-secret-isolation`,
+  under the 2026-08-21 decision to clear the key on a provider switch with no
+  stored shape change; the record is
+  `spec-dw-69-72-embedding-provider-secret-isolation.md`.
+- **DW-70** (endpoint field offered to providers that never read it) — `done
+  2026-09-01`, resolved by sweep bundle `dw-embedding-config-plumbing`, under the
+  2026-08-28 decision to route `ollama` through `embeddingBaseUrl`; the record is
+  `spec-dw-68-70-embedding-config-plumbing.md`.
+- **DW-71** (`LLM_CUSTOM_BASE_URL` invisible on the surface) — `done 2026-08-20`,
+  resolved by sweep bundle `dw-settings-config-resolution-hardening`; the record
+  is `spec-dw-71-326-272-settings-config-resolution-hardening.md`.
+- **DW-72** (one stored `embeddingBaseUrl` handed to whichever provider is
+  active) — `done 2026-08-21`, resolved by sweep bundle
+  `dw-embedding-provider-secret-isolation`, under the 2026-08-21 decision to
+  clear the base URL on a provider switch with no stored shape change; the record
+  is `spec-dw-69-72-embedding-provider-secret-isolation.md`.
+
+The two embedding entries in particular were settled by clearing the stored value
+on a provider switch — the deliberate opposite of the per-provider keying this
+spec proposed. That is the reason the contract below must not be read as
+outstanding work.
 
 <intent-contract>
 

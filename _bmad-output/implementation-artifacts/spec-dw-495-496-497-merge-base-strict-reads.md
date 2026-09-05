@@ -34,7 +34,7 @@ baseline_revision: '868d2009db0103734159db88dd7e075f560ba7cb'
 
 **Never:**
 - Do not change `ReadWikiPageOptions`, `readWikiPage`'s or `readWikiPageWithFrontmatter`'s `null` contract, or add an option.
-- Do not convert reads that do not authorize a write and do not serve an existence answer — the pure display reads (`src/mcp.ts:157`, `:424`, `:489`, `:626`, `:690`, `:742`, `:793`, `:893`, `:1071`, `:1161`, `:1351`, `:1374`; `src/cli.ts:279`, `:327`, `:366`; `src/lib/ingest.ts:275`, `:543`, `:1098`-`:1141`, `:1416`, `:1779`-`:1935`; `src/lib/source-cascade.ts:193`; `src/lib/ingest-bookkeeping.ts:242`) stay exactly as they are.
+- Do not convert reads that do not authorize a write and do not serve an existence answer — the pure display reads (`src/mcp.ts:157`, `:424`, `:489`, `:626`, `:690`, `:742`, `:793`, `:893`, `:1071`, `:1161`, `:1351`, `:1374`; `src/cli.ts:279`, `:327`; `src/lib/ingest.ts:275`, `:543`, `:1098`-`:1141`, `:1416`, `:1779`-`:1935`; `src/lib/source-cascade.ts:193`; `src/lib/ingest-bookkeeping.ts:242`) stay exactly as they are.
 - Do not edit `src/lib/__tests__/lifecycle.test.ts` — it pins the NON-strict scan fallback and is the counter-check for this change.
 - Do not "fix" the `page already exists` / `Page already exists` copy, the 409/404 statuses, or any ACL/cloak behavior.
 
@@ -113,6 +113,8 @@ Every anchor below is at `868d2009`. Each entry is `read line -> line that consu
 - Given the full suite, when `pnpm test` runs, then it passes with no new failures and `src/lib/__tests__/lifecycle.test.ts` is unedited.
 
 ## Spec Change Log
+
+- **Record correction, 2026-09-05 — `:366` was removed from the `src/cli.ts` group in the pure-display-read Never bullet (DW-696).** That entry was never a display read: it names `runCreate`'s create-conflict guard, whose `null` answer is the sole authorization for the create below it. The site has since moved to `src/cli.ts:378` and was already converted to `await readWikiPage(slug, { fresh: true, strict: true })` by the `dw3-create-conflict-fresh-reads` sweep (`f1c69c6a`), whose commit message records the conversion as DW-425; DW-195 (freshness) and DW-378 (strictness) are the two reasons the guard's own comment block at `:366`–`:375` gives for the option pair, and a catch at `:379` prints `Error: could not read page "<slug>": … Nothing was created.` — so the old address is a comment line today. (Chase the commit rather than the id: the entry the ledger currently numbers DW-425 is an unrelated Settings keyboard observation.) Left in the list, the clause read as authority to revert that guard back to an option-less read. Only that one entry was removed: `src/cli.ts:279` and `:327` are still option-less `readWikiPageWithFrontmatter` calls whose answers are only printed, so the clause remains correct about them and the rest of the bullet is unchanged. This is a record correction, not an amendment of approved content — no decision, acceptance criterion or design ruling in this spec changes meaning, and its `status`, `## Code Map` and `## Tasks & Acceptance` are untouched.
 
 ## Review Triage Log
 

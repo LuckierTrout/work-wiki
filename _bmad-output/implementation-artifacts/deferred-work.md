@@ -1256,7 +1256,9 @@ source_spec: `spec-dw-30-wiki-lens-copy-and-invariant.md`
 location: _bmad-output/implementation-artifacts/spec-1-6-drag-resize-and-durable-layout.md:246
 severity: low
 reason: Verified against the current file: `spec-1-6-drag-resize-and-durable-layout.md:246` cites `epics.md:440` (the 320px clause is now at :442), `spec-1-5-view-first-preview- with-gfm-and-wikilinks.md:383` cites `:423` (now :425), `:391` cites `:413` and `:414` (now :415 and :416), and `spec-1-4-knowledge-tree-and-file-tree.md:136` cites `:530` (now :532). The previous pass's triage entry claimed "every other `epics.md:<line>` citation in the repo sits above the edit" — that holds for shipped code under `src/` (the only other citations there are `epics.md:367`, above the edit, and `workbench-split.ts` was corrected) but not for the planning and implementation artifacts. The intent's Never clause puts the completed `spec-1-4` record off limits, and the same freeze applies to the other completed story records, so none of the four can be corrected from this story. Each lands within the same AC block, so a reader is misdirected by two lines rather than to unrelated text.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-spec-record-drift
+resolution-undo: cabad431baddfb2c50329f5fce6dfda4788761614e927a8e2f7cd31d08e50cee 2026-09-05 7374617475733a206f70656e
 decision: 2026-08-28 Correct the citations — Bump the four line-addressed citations in spec-1-4, spec-1-5 and spec-1-6 to their current epics.md lines, recording that a citation correction is not an amendment of the approved content.
 decision: 2026-08-26 Correct the citations — Bump the four line-addressed citations in spec-1-4, spec-1-5 and spec-1-6 to their current epics.md lines, recording that a citation correction is not an amendment of the approved content.
 
@@ -2987,7 +2989,9 @@ source_spec: `spec-dw-69-72-embedding-provider-secret-isolation.md`
 location: _bmad-output/implementation-artifacts/spec-dw-66-72-settings-credential-fidelity.md
 severity: low
 reason: That spec planned to key `embeddingApiKey`/`embeddingBaseUrl` per provider with a load-time migration. The recorded decisions rule that out, and nothing from it landed — the store is still flat. Its frontmatter is where anyone scanning for open work will look, and it currently claims work is under way on entries this spec resolves.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-spec-record-drift
+resolution-undo: cabad431baddfb2c50329f5fce6dfda4788761614e927a8e2f7cd31d08e50cee 2026-09-05 7374617475733a206f70656e
 
 ### DW-400: The custom-endpoint pointer is visually adjacent to the provider picker on both the primary and the extraction surface, but no `aria-describedby` associates it, so a screen-reader owner selecting Cust
 
@@ -5753,7 +5757,9 @@ location: _bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-s
 source_spec: `spec-dw-425-create-conflict-fresh-reads.md`
 severity: low
 reason: `_bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-strict-reads.md` (`status: in-review`, another session's in-flight bundle) groups `src/cli.ts:366` with `src/cli.ts:279` and `:327` under "Do not convert reads that do not authorize a write and do not serve an existence answer -- the pure display reads ... stay exactly as they are." `:366` is neither: it is `runCreate`'s conflict guard, whose `null` is the sole authorization for the create below, and DW-496's own `reason` (`deferred-work.md:3717`) names the create-conflict guards as the mirror case in scope. That same spec also plans to convert `src/cli.ts:431` -- the SAME site this bundle converted -- and prescribes the opposite handling there ("A rethrow reaches `main().catch` ... correct already, no repair needed"), where this bundle's intent explicitly requires a distinct "could not read" exit message. If the stale Never clause is later acted on, the create guard reverts to a cached-negative read and a create can
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-spec-record-drift
+resolution-undo: cabad431baddfb2c50329f5fce6dfda4788761614e927a8e2f7cd31d08e50cee 2026-09-05 7374617475733a206f70656e
 
 ### DW-697: The 20 MB aggregate attachment budget quoted to accepted senders is itself unreachable over Email Routing, so the same defect DW-449 fixed for the refusal copy survives at the acknowledgement.
 origin: spec-deferred 76510c3ef8c7
@@ -6343,4 +6349,12 @@ location: src/lib/__tests__/brand-copy.test.ts (IDENTIFIER_ALLOWLIST origin rows
 source_spec: `spec-dw-474-475-brand-allowlist-minimality.md`
 severity: low
 reason: DW-475 narrowed YOPEDIA_HYPHEN_BOUNDS's leading class, but `/yopedia\.yolog\.dev/g`, `/yopedia\.yuanhao-li\.workers\.dev/g`, `/yopedia\.christianlee-flightwall\.workers\.dev/g`, `/workwiki\.app/g` and `/\.?workwiki-(?:source-sync|backups|portable-archive|archive|actions\.ics|[*.$0-9])/g` have no lookbehind. Verified by mutation during review: adding "cdn.yopedia.yolog.dev is not the upstream origin", "Xyopedia.yolog.dev is not the upstream origin", "cdn.workwiki-archive.example.com" and "Xworkwiki-backups" to the slip tables makes each of them FAIL — they are stripped whole today and the residue carries no brand word to count. The existing near-misses for those rows all vary the SUFFIX only, so nothing pins the prefix direction. The workwiki hyphen row is the awkward one: its leading `\.?` is deliberate (`.workwiki-source-sync.json`), so it needs an explicit alternative rather than a copied lookbehind. Out of scope for this bundle: DW-475's intent says to add `.` to the leading class o
+status: open
+
+### DW-763: The same strict-reads spec still plans work on `src/cli.ts:431` that already landed with the opposite handling, so its plan sections carry the second half of DW-696's hazard that this bundle's Never c
+origin: spec-deferred a00cac180423
+location: _bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-strict-reads.md:65
+source_spec: `spec-dw-172-399-696-spec-record-drift.md`
+severity: low
+reason: DW-696's ledger reason names two stale items in `spec-dw-495-496-497-merge-base-strict-reads.md`. This bundle fixed the first (the `:366` Never-list entry). The second is untouched: `:65` reads "`src/cli.ts:431` -> `:468` -- `runUpdate` ... A rethrow reaches `main().catch` at `:816` ... correct already, no repair needed", and `:94` instructs "pass the option at `:431`". Both are false against HEAD and contradict each other. `runUpdate` is now declared at `src/cli.ts:441`, converts at `:465` with `{ fresh: true, strict: true }`, and has its own local catch at `:466`-`:472` printing `Error: could not read page "<slug>": ... Nothing was written.` -- the distinct message the earlier bundle required, not the `main().catch` relay `:65` prescribes. A later sweep acting on `:65` could remove it. DW-495/496/497 are all `done` in the ledger, so nothing else will revisit that record.
 status: open
