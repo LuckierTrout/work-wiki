@@ -439,8 +439,28 @@ export async function saveRawSource(
   return `${getRawDir()}/${RAW_SOURCES_DIR}/${id}.md`;
 }
 
-/** A per-source raw id is a hex hash — path-safe by construction. */
-const RAW_ID_RE = /^[a-f0-9]+$/;
+/**
+ * A per-source raw id is a hex digest at one of the two lengths the writers
+ * actually mint — path-safe by construction, and bounded so that "hex stem"
+ * alone is not enough.
+ *
+ * 16 is `contentHash` (FNV-1a forward+reverse, `embeddings.ts`), which
+ * `ingest.ts` and Workbench Intake pass to {@link saveRawSourceFor}. 64 is
+ * SHA-256 (`sourceSha256`/`bytesSha256` in `source-sha256.ts`), which
+ * {@link saveRawSourceBytes}, the extract dispatcher, the chat-save door and
+ * the research pipeline pass. There is no third length: an ALTERNATION of the
+ * two, not a floor, is the exact statement of what a snapshot id IS, so
+ * narrowing costs no real snapshot (DW-744). A floor like `{16,}` would accept
+ * stems no writer produces and leave the collision half-open.
+ *
+ * Hoisted for the same reason as {@link RAW_EXT_RE}: every writer
+ * ({@link saveRawSourceBytes}, {@link saveParsedMarkdown},
+ * {@link saveRawSourceFor}), every reader ({@link readRawSourceById}) and
+ * {@link isRawSnapshotName} test the SAME rule, so a bound cannot land in the
+ * predicate alone and leave the listing and the silo mirror denying a snapshot
+ * a writer happily minted.
+ */
+const RAW_ID_RE = /^(?:[a-f0-9]{16}|[a-f0-9]{64})$/;
 
 /**
  * The extension half of a snapshot filename, as {@link saveRawSourceBytes}
@@ -470,19 +490,28 @@ const RAW_EXT_RE = /^[a-z0-9]{1,8}$/;
  * the listing denies exists, and a change to what a snapshot filename IS
  * lands in every consumer at once.
  *
- * By name alone an import file called `beef.md` is a snapshot; accepted, and
- * bounded — a single colliding FILE at depth 1, never a directory or a tree.
+ * The id half is BOUNDED, and that closes the collision this comment used to
+ * record as accepted. `beef.md` and `2024.pdf` at the top of a folder-import
+ * root are short hex stems, and by "any hex stem" they were snapshots
+ * (DW-744): {@link listRawSourceSnapshots} emitted an unreadable
+ * `{slug: "papers", rawId: "2024"}` row that {@link readRawSourceById} cannot
+ * open; `silo.ts` mirrored somebody else's import file into the colliding
+ * page's silo and deleted it with that page; and for a `.md` one, `cli.ts`'s
+ * `slugsWithSnapshots` read the bogus row as proof the slug had a snapshot and
+ * dropped the slug's real flat `raw/sources/papers.md` from `list --raw`.
+ * {@link RAW_ID_RE} now accepts only the 16- and 64-hex lengths the writers
+ * mint, so those names are ordinary import files again.
  *
- * The BOUND IS WIDER than it was while the listing read `.md` only: this
- * predicate takes every extension the writers accept, so `beef.pdf` at the top
- * of an import root collides too, and a collision now shows up as a row in
- * {@link listRawSourceSnapshots} as well as a file in the colliding page's
- * silo. Still one file per collision, still addressable at the path the row
- * reports, and still the price of letting the content-addressed filename be
- * the only thing in the path that tells the two writers apart. Narrowing the
- * rule — a length floor on the id, say — would trade this for snapshots the
- * mirror drops and the listing denies, so it stays a recorded collision rather
- * than a silent one (`raw.test.ts` pins it).
+ * Narrowing is safe HERE, where a length floor would not have been, because
+ * the bound is not a guess about hashes in general: it is the enumeration of
+ * what {@link saveRawSourceFor} and {@link saveRawSourceBytes} accept. Writer
+ * and predicate read the one constant, so there is no id a writer takes and
+ * this predicate denies — `raw.test.ts` pins that round trip at both lengths,
+ * and pins `beef.md` / `2024.pdf` as NOT snapshots.
+ *
+ * A collision is still POSSIBLE — an import file genuinely named
+ * `<16 hex>.md` — but it now takes a filename no one writes by hand, and it is
+ * still bounded to a single FILE at depth 1, never a directory or a tree.
  */
 export function isRawSnapshotName(name: string): boolean {
   const dot = name.lastIndexOf(".");
@@ -525,13 +554,14 @@ export interface RawSourceSnapshot {
  * mint rows pointing at paths no reader can open, which is DW-568 in a new
  * place.
  *
- * It is NOT an exclusion by construction, and should not be read as one: an
- * import file that happens to sit at depth 1 with a hex stem —
- * `raw/sources/papers/2024.pdf` — is byte-for-byte a snapshot filename and IS
- * emitted, as `{slug: "papers", rawId: "2024", ext: "pdf"}`. That collision is
- * {@link isRawSnapshotName}'s, taken deliberately and bounded there; what
- * matters here is that such a row still names ONE real file at the path it
- * reports, which is the property the unopenable rows lacked.
+ * The filename test carries the id LENGTH bound too, and that is what keeps the
+ * ordinary folder-import file out: `raw/sources/papers/2024.pdf` sits at depth
+ * 1 with an all-hex stem, and while any hex stem was an id it was emitted as
+ * `{slug: "papers", rawId: "2024", ext: "pdf"}` — precisely the unopenable row
+ * this walk exists to avoid, since `readRawSourceById("papers", "2024")`
+ * addresses nothing (DW-744). `2024` is not a length any writer mints, so it is
+ * not an id, and the row is gone. Every row here now names ONE real file at the
+ * path it reports AND is readable by the `<slug>/<rawId>` its own fields spell.
  *
  * `silo.ts`'s `mirrorHashedTree` walks this same tree the same way.
  *

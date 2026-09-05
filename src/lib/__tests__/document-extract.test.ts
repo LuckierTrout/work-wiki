@@ -68,6 +68,53 @@ function craftedDeck(options: { realSlide?: string } = {}): Record<string, strin
   };
 }
 
+/**
+ * A deck whose presentation order aims `p:sldId` rels at REAL non-slide parts.
+ * `media/photo.jpg` and `theme/theme1.xml` are resolved against
+ * `ppt/presentation.xml` into `ppt/media/photo.jpg` and `ppt/theme/theme1.xml`
+ * — keys this archive genuinely holds, so — unlike {@link craftedDeck} —
+ * nothing here leans on `Object.prototype`: the entries EXIST, which is why
+ * `Boolean(files[slide.path])` alone kept them, made `ordered` non-empty,
+ * shadowed the numbered fallback and handed JPEG bytes to `TextDecoder` as
+ * slide XML (DW-724).
+ *
+ * `orderedSlideRel` prepends a genuine `slides/slide1.xml` relationship so the
+ * ordered list still has a real member once the crafted entries are dropped;
+ * `slideText` writes the real `ppt/slides/slide1.xml` part, independently of
+ * whether any rel points at it (the numbered fallback finds it either way).
+ */
+function nonSlidePartDeck(
+  options: { orderedSlideRel?: boolean; slideText?: string } = {},
+): Record<string, string | Uint8Array> {
+  const targets = [
+    ...(options.orderedSlideRel ? ["slides/slide1.xml"] : []),
+    "media/photo.jpg",
+    "theme/theme1.xml",
+  ];
+  const id = (index: number) => `rId${index + 1}`;
+  return {
+    "ppt/presentation.xml": `<p:presentation><p:sldIdLst>${targets
+      .map((_, index) => `<p:sldId r:id="${id(index)}"/>`)
+      .join("")}</p:sldIdLst></p:presentation>`,
+    "ppt/_rels/presentation.xml.rels": `<Relationships>${targets
+      .map((target, index) => `<Relationship Id="${id(index)}" Target="${target}"/>`)
+      .join("")}</Relationships>`,
+    // A real JPEG SOI marker: bytes that are neither slide XML nor valid UTF-8,
+    // so decoding them as a slide leaves U+FFFD in the output.
+    "ppt/media/photo.jpg": new Uint8Array([255, 216, 255, 224, 0, 16]),
+    // A real XML part that is NOT a slide: it decodes cleanly, so only the
+    // slide-path test — not a decode failure — can keep it out of the deck.
+    "ppt/theme/theme1.xml":
+      "<a:theme><a:p><a:r><a:t>Theme placeholder text</a:t></a:r></a:p></a:theme>",
+    ...(options.slideText
+      ? {
+          "ppt/slides/slide1.xml":
+            `<p:sld><a:p><a:r><a:t>${options.slideText}</a:t></a:r></a:p></p:sld>`,
+        }
+      : {}),
+  };
+}
+
 /** How many `## Slide N` sections the extractor actually emitted. */
 function slideHeadings(text: string): string[] {
   return text.match(/^## Slide \d+$/gm) ?? [];
@@ -360,6 +407,65 @@ describe("document extraction", () => {
     expect(thrown).toBeInstanceOf(ClientInputError);
     expect(thrown).not.toBeInstanceOf(TypeError);
     expect((thrown as Error).message).toMatch(/no slides/i);
+  });
+
+  it("keeps the numbered fallback when every presentation rel resolves to a real non-slide part", () => {
+    const result = office("image-rel.pptx", nonSlidePartDeck({ slideText: "Readable slide" }));
+    // `ppt/media/photo.jpg` and `ppt/theme/theme1.xml` really are in the
+    // archive, so the existence check passed both; only the slide-path test
+    // drops them. With `ordered` empty the numbered fallback survives and is
+    // the ONLY slide.
+    expect(result.text).toContain("Readable slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+    expect(result.text).not.toContain("Theme placeholder text");
+    // U+FFFD is what `TextDecoder` leaves behind when JPEG bytes are read as
+    // slide XML — the DW-724 symptom, in the output.
+    expect(result.text).not.toContain("\uFFFD");
+  });
+
+  it("drops only the non-slide parts when the presentation order mixes a real slide and real non-slide keys", () => {
+    const result = office(
+      "mixed-image-rel.pptx",
+      nonSlidePartDeck({ orderedSlideRel: true, slideText: "Real slide" }),
+    );
+    // `ordered` is non-empty here, so it REPLACES the fallback: the image and
+    // theme entries have to be filtered out of it, leaving exactly one slide's
+    // worth of text and no decoded image bytes.
+    expect(result.text).toContain("Real slide");
+    expect(slideHeadings(result.text)).toEqual(["## Slide 1"]);
+    expect(result.text).not.toContain("Theme placeholder text");
+    expect(result.text).not.toContain("\uFFFD");
+  });
+
+  it("throws ClientInputError when a non-slide rel is all the deck offers", () => {
+    let thrown: unknown;
+    try {
+      office("image-rel-only.pptx", nonSlidePartDeck());
+    } catch (error) {
+      thrown = error;
+    }
+    // No `ppt/slides/slideN.xml` part at all, so both lists are empty: the 400
+    // door, and never a deck built out of an image and a theme part.
+    expect(thrown).toBeInstanceOf(ClientInputError);
+    expect(thrown).not.toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/no slides/i);
+  });
+
+  it("extracts a non-slide-rel PPTX nested inside a ZIP without decoding image bytes", async () => {
+    // The live Worker-side route into `extractPptx`: a bare `.pptx` at the HTTP
+    // doors is diverted to the sidecar, but a ZIP wrapping one stays inline.
+    const zipped = zipSync({
+      "decks/image-rel.pptx": officeBytes(
+        nonSlidePartDeck({ orderedSlideRel: true, slideText: "Nested real slide" }),
+      ),
+    });
+    const archive = await extractDocumentTextAsync({
+      bytes: Uint8Array.from(zipped).buffer,
+      filename: "decks.zip",
+    });
+    expect(archive.text).toContain("## File: decks/image-rel.pptx");
+    expect(archive.text).toContain("Nested real slide");
+    expect(slideHeadings(archive.text)).toEqual(["## Slide 1"]);
   });
 
   it("extracts XLSX shared strings, inline strings, values, and sheet names", () => {

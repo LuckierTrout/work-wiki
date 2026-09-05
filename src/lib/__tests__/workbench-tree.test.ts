@@ -889,7 +889,7 @@ describe("listWorkbenchFilePaths", () => {
     // (`raw/sources/<slug>/<hash>.md`, level 4). A join test against the flat
     // writer passes at a depth cap of 3, which is exactly how the arrival that
     // ships could be invisible while this case stayed green.
-    const rawId = "a1b2c3";
+    const rawId = "a1b2c30000000000";
     const stored = await saveRawSourceFor(
       "intake-doc",
       rawId,

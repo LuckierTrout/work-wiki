@@ -614,7 +614,17 @@ function extractPptx(files: Record<string, Uint8Array>): {
     ).map((match, index) => ({
       number: index + 1,
       path: relationships.get(attr(match[1], "r:id")) ?? "",
-    })).filter((slide) => Boolean(files[slide.path]));
+    })).filter(
+      // EXISTENCE IS NOT IDENTITY (DW-724). A `p:sldId` rel can resolve to any
+      // key the archive really holds — `../media/photo.jpg` from
+      // `ppt/presentation.xml` lands on `ppt/media/photo.jpg` — and such an
+      // entry passed the existence check, made `ordered` non-empty, shadowed
+      // the numbered fallback and got image bytes decoded as slide XML. Only a
+      // key shaped like a slide part is a slide.
+      (slide) =>
+        /^ppt\/slides\/slide\d+\.xml$/i.test(slide.path) &&
+        Boolean(files[slide.path]),
+    );
     if (ordered.length) slides = ordered;
   }
   if (slides.length === 0) throw new ClientInputError("The PPTX file has no slides.");

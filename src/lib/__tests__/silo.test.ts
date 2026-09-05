@@ -426,6 +426,32 @@ describe("syncSiloForPage", () => {
     ).toBe(false);
   });
 
+  it("does not mirror a short-hex import file, and spares it on delete (DW-744)", async () => {
+    // `2024.pdf` is the DW-744 shape: a folder-import file at the TOP of its
+    // root whose stem is all hex. While any hex stem was an id it was
+    // page-owned by name, so this mirror carried somebody else's import file
+    // into the colliding page's silo and `removeSiloForPage` deleted it with
+    // the page. 4 is not a length any writer mints, so it is an import file.
+    const hex = "8".repeat(64);
+    const storage = getStorage();
+    await writeWikiPage("papers", "# Papers");
+    await storage.writeFile(`raw/sources/papers/${hex}.pdf`, "snapshot");
+    await storage.writeFile("raw/sources/papers/2024.pdf", "import file");
+
+    expect(await syncSiloForPage("papers", "alice")).toBe(2); // md + snapshot
+    expect(
+      await storage.fileExists("tenants/alice/raw/sources/papers/2024.pdf"),
+    ).toBe(false);
+
+    // And the copy an OLDER mirror already left behind survives the delete
+    // rather than going with the page.
+    await storage.writeFile("tenants/alice/raw/sources/papers/2024.pdf", "theirs");
+    await removeSiloForPage("papers", "alice");
+    expect(
+      await storage.readFile("tenants/alice/raw/sources/papers/2024.pdf"),
+    ).toBe("theirs");
+  });
+
   it("removeSiloForPage spares foreign entries in a shared directory", async () => {
     // The recursive directory delete this replaces took the whole import tree
     // — possibly another owner's — with the colliding page.

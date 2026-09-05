@@ -1372,7 +1372,7 @@ describe("checkIncompleteCoverage", () => {
     ]);
     await saveRawSourceFor(
       "hashed-only",
-      "abc123",
+      "abc1230000000000",
       "# Hashed Only\n\nSnapshot-only detail: 91% of runs converged.",
     );
 
@@ -1407,7 +1407,7 @@ describe("checkIncompleteCoverage", () => {
     ]);
     await saveRawSourceBytes(
       "binary-only",
-      "beef02",
+      "beef020000000000",
       "pdf",
       new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer as ArrayBuffer,
     );
@@ -1422,10 +1422,10 @@ describe("checkIncompleteCoverage", () => {
     expect(await listRawSourceSnapshots()).toEqual([
       {
         slug: "binary-only",
-        rawId: "beef02",
+        rawId: "beef020000000000",
         ext: "pdf",
         mediaType: "application/pdf",
-        path: "raw/sources/binary-only/beef02.pdf",
+        path: "raw/sources/binary-only/beef020000000000.pdf",
       },
     ]);
 
@@ -1440,7 +1440,7 @@ describe("checkIncompleteCoverage", () => {
       warn.mockRestore();
     }
 
-    expect(warnings).not.toContain("binary-only/beef02");
+    expect(warnings).not.toContain("binary-only/beef020000000000");
     expect(issues).toHaveLength(0);
     // And nothing reached the model either.
     expect(mockedCallLLM).not.toHaveBeenCalled();
@@ -1467,7 +1467,7 @@ describe("checkIncompleteCoverage", () => {
     ]);
     await saveRawSourceFor(
       "flat-listing-broken",
-      "abc123",
+      "abc1230000000000",
       "# Flat Listing Broken\n\nSnapshot-only detail: 77% of shards drifted.",
     );
     await saveRawSource("decoy-flat", "a flat source for the walk to stat");
@@ -1520,7 +1520,7 @@ describe("checkIncompleteCoverage", () => {
     // A hashed sibling, so the snapshot walk has a subtree to descend into —
     // and therefore a place to fail. Without one the walk lists the two shared
     // roots and returns cleanly, and this test would prove nothing.
-    await saveRawSourceFor("hashed-sibling", "abc123", "# Sibling\n");
+    await saveRawSourceFor("hashed-sibling", "abc1230000000000", "# Sibling\n");
 
     // Fail EXACTLY the one prefix only the snapshot walk reads. The two roots
     // both listings share (`raw` and `raw/sources`) keep answering, so this is
@@ -1607,12 +1607,12 @@ describe("checkIncompleteCoverage", () => {
     );
     await saveRawSourceFor(
       "multi-source",
-      "aa11",
+      "aa11000000000000",
       "# Multi Source\n\nFirst snapshot detail: 22% of shards drifted.",
     );
     await saveRawSourceFor(
       "multi-source",
-      "bb22",
+      "bb22000000000000",
       "# Multi Source\n\nSecond snapshot detail: 33% of nodes stalled.",
     );
 
@@ -1632,10 +1632,10 @@ describe("checkIncompleteCoverage", () => {
     expect(message).toContain("33% of nodes stalled");
     const flatAt = message.indexOf("--- Raw Source: multi-source [flat] ---");
     const firstSnapshotAt = message.indexOf(
-      "--- Raw Source: multi-source [snapshot aa11] ---",
+      "--- Raw Source: multi-source [snapshot aa11000000000000] ---",
     );
     const secondSnapshotAt = message.indexOf(
-      "--- Raw Source: multi-source [snapshot bb22] ---",
+      "--- Raw Source: multi-source [snapshot bb22000000000000] ---",
     );
     expect(flatAt).toBeGreaterThanOrEqual(0);
     // Collection order, as the rendering comment claims: the flat blob first,
@@ -1667,12 +1667,12 @@ describe("checkIncompleteCoverage", () => {
     ]);
     await saveRawSourceFor(
       "snapshots-only",
-      "aa11",
+      "aa11000000000000",
       "# Snapshots Only\n\nFirst arrival: 44% of jobs retried.",
     );
     await saveRawSourceFor(
       "snapshots-only",
-      "bb22",
+      "bb22000000000000",
       "# Snapshots Only\n\nSecond arrival: 55% of queues drained.",
     );
 
@@ -1700,12 +1700,12 @@ describe("checkIncompleteCoverage", () => {
     ]);
     await saveRawSourceFor(
       "partly-readable",
-      "aa11",
+      "aa11000000000000",
       "# Partly Readable\n\nReadable arrival: 66% of writes landed.",
     );
     await saveRawSourceFor(
       "partly-readable",
-      "bb22",
+      "bb22000000000000",
       "# Partly Readable\n\nUnreadable arrival: 77% of writes landed.",
     );
 
@@ -1717,7 +1717,7 @@ describe("checkIncompleteCoverage", () => {
     const readFile = vi
       .spyOn(storage, "readFile")
       .mockImplementation(async (rel: string) =>
-        rel.includes("bb22.md")
+        rel.includes("bb22000000000000.md")
           ? Promise.reject(new Error("snapshot read failed"))
           : realReadFile(rel),
       );
@@ -1744,7 +1744,7 @@ describe("checkIncompleteCoverage", () => {
       warnings.some(
         (warning) =>
           warning.startsWith("lint: ") &&
-          warning.includes("partly-readable/bb22"),
+          warning.includes("partly-readable/bb22000000000000"),
       ),
     ).toBe(true);
   });
@@ -1767,7 +1767,7 @@ describe("checkIncompleteCoverage", () => {
     );
     await saveRawSourceFor(
       "flat-unreadable",
-      "aa11",
+      "aa11000000000000",
       "# Flat Unreadable\n\nSnapshot detail: 34% of writes stalled.",
     );
 
@@ -1829,7 +1829,7 @@ describe("checkIncompleteCoverage", () => {
     // snapshot is listed but its bytes will not come back.
     await saveRawSourceFor(
       "all-unreadable",
-      "aa11",
+      "aa11000000000000",
       "# All Unreadable\n\nDetail nobody can read.",
     );
 
@@ -1838,7 +1838,7 @@ describe("checkIncompleteCoverage", () => {
     const readFile = vi
       .spyOn(storage, "readFile")
       .mockImplementation(async (rel: string) =>
-        rel.includes("aa11.md")
+        rel.includes("aa11000000000000.md")
           ? Promise.reject(new Error("snapshot read failed"))
           : realReadFile(rel),
       );
@@ -1862,7 +1862,7 @@ describe("checkIncompleteCoverage", () => {
       warnings.some(
         (warning) =>
           warning.startsWith("lint: ") &&
-          warning.includes("all-unreadable/aa11"),
+          warning.includes("all-unreadable/aa11000000000000"),
       ),
     ).toBe(true);
     expect(
@@ -1879,7 +1879,7 @@ describe("checkIncompleteCoverage", () => {
       { slug: "duplicate-source", title: "Duplicate", summary: "Same bytes twice" },
     ]);
     await saveRawSource("duplicate-source", shared);
-    await saveRawSourceFor("duplicate-source", "aa11", shared);
+    await saveRawSourceFor("duplicate-source", "aa11000000000000", shared);
 
     mockedCallLLM.mockResolvedValue("[]");
 
@@ -1930,9 +1930,9 @@ describe("checkIncompleteCoverage", () => {
     ]);
     const big = COVERAGE_MAX_RAW_CHARS; // Every part far longer than its share.
     await saveRawSource("even-split", "F".repeat(big));
-    await saveRawSourceFor("even-split", "aa11", "A".repeat(big));
-    await saveRawSourceFor("even-split", "bb22", "B".repeat(big));
-    await saveRawSourceFor("even-split", "cc33", "C".repeat(big));
+    await saveRawSourceFor("even-split", "aa11000000000000", "A".repeat(big));
+    await saveRawSourceFor("even-split", "bb22000000000000", "B".repeat(big));
+    await saveRawSourceFor("even-split", "cc33000000000000", "C".repeat(big));
 
     mockedCallLLM.mockResolvedValue("[]");
 
@@ -1964,9 +1964,9 @@ describe("checkIncompleteCoverage", () => {
       { slug: "need-aware", title: "Need Aware", summary: "One big, three tiny" },
     ]);
     await saveRawSource("need-aware", "F".repeat(30_000));
-    await saveRawSourceFor("need-aware", "aa11", "tiny-aa11.");
-    await saveRawSourceFor("need-aware", "bb22", "tiny-bb22.");
-    await saveRawSourceFor("need-aware", "cc33", "tiny-cc33.");
+    await saveRawSourceFor("need-aware", "aa11000000000000", "tiny-aa11000000000000.");
+    await saveRawSourceFor("need-aware", "bb22000000000000", "tiny-bb22000000000000.");
+    await saveRawSourceFor("need-aware", "cc33000000000000", "tiny-cc33000000000000.");
 
     mockedCallLLM.mockResolvedValue("[]");
 
@@ -1982,7 +1982,10 @@ describe("checkIncompleteCoverage", () => {
       expect(snapshot.content).toBe(`tiny-${snapshot.label.split(" ")[1]}.`);
     }
     // ...and the long one takes the rest, far more than an equal 2 000 share.
-    expect(flat?.content.length).toBe(COVERAGE_MAX_RAW_CHARS - 30);
+    // Derived from what the three short Sources actually spent, so the
+    // assertion says "the rest" rather than restating a fixture length.
+    const tinyTotal = snapshots.reduce((sum, part) => sum + part.content.length, 0);
+    expect(flat?.content.length).toBe(COVERAGE_MAX_RAW_CHARS - tinyTotal);
     const total = parts.reduce((sum, part) => sum + part.content.length, 0);
     expect(total).toBeLessThanOrEqual(COVERAGE_MAX_RAW_CHARS);
   });

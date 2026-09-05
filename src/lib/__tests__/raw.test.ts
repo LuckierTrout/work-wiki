@@ -16,6 +16,8 @@ import {
   tenantRawSourceRelPath,
   isRawSnapshotName,
 } from "../raw";
+import { contentHash } from "../embeddings";
+import { bytesSha256, sourceSha256 } from "../source-sha256";
 import { ensureDirectories, tenantForOwner } from "../wiki";
 import { getDataDir } from "../paths";
 import { readDataVersion } from "../data-version";
@@ -273,19 +275,19 @@ describe("readRawSource", () => {
 describe("per-source raw snapshots", () => {
   it("round-trips a per-source snapshot at raw/<slug>/<rawId>.md", async () => {
     await ensureDirectories();
-    await saveRawSourceFor("agentic-systems", "deadbeef", "raw source one");
-    const got = await readRawSourceById("agentic-systems", "deadbeef");
+    await saveRawSourceFor("agentic-systems", "deadbeefdeadbeef", "raw source one");
+    const got = await readRawSourceById("agentic-systems", "deadbeefdeadbeef");
     expect(got.content).toBe("raw source one");
-    expect(got.filename).toBe("deadbeef.md");
+    expect(got.filename).toBe("deadbeefdeadbeef.md");
     expect(got.slug).toBe("agentic-systems");
   });
 
   it("keeps multiple sources for the same slug side by side", async () => {
     await ensureDirectories();
-    await saveRawSourceFor("p", "aaa111", "source A");
-    await saveRawSourceFor("p", "bbb222", "source B");
-    expect((await readRawSourceById("p", "aaa111")).content).toBe("source A");
-    expect((await readRawSourceById("p", "bbb222")).content).toBe("source B");
+    await saveRawSourceFor("p", "aaa1110000000000", "source A");
+    await saveRawSourceFor("p", "bbb2220000000000", "source B");
+    expect((await readRawSourceById("p", "aaa1110000000000")).content).toBe("source A");
+    expect((await readRawSourceById("p", "bbb2220000000000")).content).toBe("source B");
   });
 
   it("rejects a non-hex raw id (path-traversal guard)", async () => {
@@ -296,35 +298,50 @@ describe("per-source raw snapshots", () => {
     );
   });
 
+  it("rejects an off-length hex raw id at the writer (DW-744)", async () => {
+    // The other side of the bound: the writer and `isRawSnapshotName` read one
+    // constant, so an id the predicate denies is an id no writer can store.
+    // Without this, a `beef.md` the listing refuses to report could still be
+    // written, which is the divergence the shared rule exists to prevent.
+    await ensureDirectories();
+    await expect(saveRawSourceFor("p", "beef", "x")).rejects.toThrow(
+      /invalid raw id/i,
+    );
+    await expect(
+      saveRawSourceBytes("p", "beef", "pdf", new Uint8Array([1]).buffer as ArrayBuffer),
+    ).rejects.toThrow(/invalid raw id/i);
+    await expect(readRawSourceById("p", "beef")).rejects.toThrow(/not found/);
+  });
+
   it("throws not-found for a missing snapshot", async () => {
     await ensureDirectories();
-    await expect(readRawSourceById("p", "abc123")).rejects.toThrow(/not found/);
+    await expect(readRawSourceById("p", "abc1230000000000")).rejects.toThrow(/not found/);
   });
 
   it("does not pollute the flat listRawSources() (subdirs are skipped)", async () => {
     await ensureDirectories();
     await saveRawSource("flat-one", "flat");
-    await saveRawSourceFor("flat-one", "cafe01", "nested snapshot");
+    await saveRawSourceFor("flat-one", "cafe010000000000", "nested snapshot");
     const slugs = (await listRawSources()).map((s) => s.slug);
     expect(slugs).toContain("flat-one");
     // The per-source subdir is not surfaced as a flat raw source.
-    expect(slugs).not.toContain("cafe01");
+    expect(slugs).not.toContain("cafe010000000000");
     expect(await listRawSourceSnapshots()).toEqual([
       {
         slug: "flat-one",
-        rawId: "cafe01",
+        rawId: "cafe010000000000",
         ext: "md",
         mediaType: "text/markdown",
-        path: "raw/sources/flat-one/cafe01.md",
+        path: "raw/sources/flat-one/cafe010000000000.md",
       },
     ]);
   });
 
   it("writes the snapshot under raw/sources/<slug>/<rawId>.md", async () => {
     await ensureDirectories();
-    const returned = await saveRawSourceFor("nested", "abc123", "bytes");
+    const returned = await saveRawSourceFor("nested", "abc1230000000000", "bytes");
     expect(returned).toBe(
-      path.join(tmpDir, "raw", "sources", "nested", "abc123.md"),
+      path.join(tmpDir, "raw", "sources", "nested", "abc1230000000000.md"),
     );
     expect(await fs.readFile(returned, "utf-8")).toBe("bytes");
   });
@@ -335,9 +352,9 @@ describe("per-source raw snapshots", () => {
     // with DIFFERENT content on purpose: the assertion has to be that the stored
     // blob is untouched, not that two identical writes agree.
     await ensureDirectories();
-    await saveRawSourceFor("immutable", "beef01", "first arrival");
-    await saveRawSourceFor("immutable", "beef01", "second arrival");
-    expect((await readRawSourceById("immutable", "beef01")).content).toBe(
+    await saveRawSourceFor("immutable", "beef010000000000", "first arrival");
+    await saveRawSourceFor("immutable", "beef010000000000", "second arrival");
+    expect((await readRawSourceById("immutable", "beef010000000000")).content).toBe(
       "first arrival",
     );
   });
@@ -349,18 +366,18 @@ describe("per-source raw snapshots", () => {
     // the same: a provider that cannot complete it must fail visibly rather
     // than degrade to an overwrite of immutable bytes. The owner can retry.
     await ensureDirectories();
-    await saveRawSourceFor("occupied", "abc123", "first arrival");
+    await saveRawSourceFor("occupied", "abc1230000000000", "first arrival");
     const spy = vi.spyOn(getStorage(), "writeFileIfAbsent").mockRejectedValue(
       new Error("create failed"),
     );
     try {
       await expect(
-        saveRawSourceFor("occupied", "abc123", "mutant"),
+        saveRawSourceFor("occupied", "abc1230000000000", "mutant"),
       ).rejects.toThrow(/create failed/);
     } finally {
       spy.mockRestore();
     }
-    expect((await readRawSourceById("occupied", "abc123")).content).toBe(
+    expect((await readRawSourceById("occupied", "abc1230000000000")).content).toBe(
       "first arrival",
     );
   });
@@ -372,7 +389,7 @@ describe("per-source raw snapshots", () => {
     // create-only provider call closes it.
     await ensureDirectories();
     const storage = getStorage();
-    const rel = rawSourceRelPath("race/abc123.md");
+    const rel = rawSourceRelPath("race/abc1230000000000.md");
     const original = storage.writeFileIfAbsent.bind(storage);
     let creates = 0;
     let winnerContent: string | null = null;
@@ -388,15 +405,15 @@ describe("per-source raw snapshots", () => {
       });
     try {
       await Promise.all([
-        saveRawSourceFor("race", "abc123", "first arrival"),
-        saveRawSourceFor("race", "abc123", "second arrival"),
+        saveRawSourceFor("race", "abc1230000000000", "first arrival"),
+        saveRawSourceFor("race", "abc1230000000000", "second arrival"),
       ]);
     } finally {
       spy.mockRestore();
     }
 
     expect(creates).toBe(1);
-    expect((await readRawSourceById("race", "abc123")).content).toBe(
+    expect((await readRawSourceById("race", "abc1230000000000")).content).toBe(
       winnerContent,
     );
   });
@@ -408,7 +425,7 @@ describe("per-source raw snapshots", () => {
 // ---------------------------------------------------------------------------
 
 describe("listRawSourceSnapshots", () => {
-  const HEX = "c4ffee01";
+  const HEX = "c4ffee01c4ffee01";
 
   /** Put a file at `raw/<rel>` without going through a writer. */
   async function writeRaw(rel: string, content = "bytes"): Promise<void> {
@@ -563,27 +580,52 @@ describe("listRawSourceSnapshots", () => {
     expect(await listRawSourceSnapshots()).toEqual([]);
   });
 
-  it("emits the depth-1 collision the shared predicate deliberately accepts", async () => {
-    // The counterpart to the case above, and the reason the exclusion must not
-    // be described as structural: an import file that happens to sit at the TOP
-    // of its root with a hex stem is byte-for-byte a snapshot filename, and the
-    // widened predicate takes it at any extension. Recorded so that narrowing
-    // the id rule is a visible diff here rather than a silent behavior change.
-    // Bounded, and that is the point: one addressable FILE at the path the row
-    // reports, never a directory or a nested tree.
+  it("emits NO row for a depth-1 import file with a short hex stem (DW-744)", async () => {
+    // The collision this suite used to record as accepted. `papers/2024.pdf` is
+    // a folder-import file that happens to sit at the TOP of its root with an
+    // all-hex stem; while any hex stem was an id it was emitted as
+    // `{slug: "papers", rawId: "2024", ext: "pdf"}` — a row `readRawSourceById`
+    // cannot open, since `<slug>/<rawId>.md` addresses nothing here, and one
+    // the silo mirror carried into a colliding page and deleted with it.
+    // `2024` is not a length any writer mints (16 or 64), so it is not an id.
     await ensureDirectories();
     await saveRawSourceTree("papers/2024.pdf", "an import file, not a snapshot");
     await saveRawSourceTree("papers/energy/note.md", "a normal import file");
 
+    expect(await listRawSourceSnapshots()).toEqual([]);
+  });
+
+  it("mints no MARKDOWN row from a short-hex import file, so the flat row keeps its slug", async () => {
+    // The second half of DW-744, and the reason the `.md` case is worth its own
+    // test: `cli.ts`'s `listRawSourceRows` adds a slug to `slugsWithSnapshots`
+    // on any `.md` snapshot row and then DROPS that slug's flat row, on the
+    // argument that `ingest()` wrote the two from one text. A `.md` import file
+    // at depth 1 minted exactly such a row for `papers` without `ingest()`
+    // having written anything, so the slug's genuine flat blob vanished from
+    // `list --raw`. That consequence is downstream; what is asserted here is
+    // its cause at the `raw.ts` surface — the row itself.
+    //
+    // `papers` therefore has NO hashed-tree content of its own: the import file
+    // is the only candidate, so a surviving row could only be the bogus one. A
+    // real snapshot lives on a DIFFERENT slug, where it shows genuine rows still
+    // come through without masking the case under test.
+    await ensureDirectories();
+    await saveRawSource("papers", "the flat blob `list --raw` must keep");
+    await saveRawSourceTree("papers/2024.md", "an import file, not a snapshot");
+    await saveRawSourceFor("real-page", HEX, "a real snapshot");
+
+    // Nothing for `papers` can reach `slugsWithSnapshots`...
     expect(await listRawSourceSnapshots()).toEqual([
       {
-        slug: "papers",
-        rawId: "2024",
-        ext: "pdf",
-        mediaType: "application/pdf",
-        path: "raw/sources/papers/2024.pdf",
+        slug: "real-page",
+        rawId: HEX,
+        ext: "md",
+        mediaType: "text/markdown",
+        path: `raw/sources/real-page/${HEX}.md`,
       },
     ]);
+    // ...and the flat row it would have suppressed is still listed.
+    expect((await listRawSources()).map((source) => source.slug)).toContain("papers");
   });
 
   it("falls back to octet-stream for an extension the door does not know", async () => {
@@ -615,7 +657,7 @@ describe("saveRawSourceBytes", () => {
     ];
     const results = await Promise.all(
       payloads.map((bytes) =>
-        saveRawSourceBytes("race", "beef01", "bin", bytes.buffer as ArrayBuffer),
+        saveRawSourceBytes("race", "beef010000000000", "bin", bytes.buffer as ArrayBuffer),
       ),
     );
 
@@ -635,7 +677,7 @@ describe("saveRawSourceBytes", () => {
     const first = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     const stored = await saveRawSourceBytes(
       "occupied-bin",
-      "abc123",
+      "abc1230000000000",
       "bin",
       first.buffer as ArrayBuffer,
     );
@@ -646,7 +688,7 @@ describe("saveRawSourceBytes", () => {
       await expect(
         saveRawSourceBytes(
           "occupied-bin",
-          "abc123",
+          "abc1230000000000",
           "bin",
           new Uint8Array([0, 0, 0]).buffer as ArrayBuffer,
         ),
@@ -662,7 +704,7 @@ describe("saveRawSourceBytes", () => {
     const first = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     const stored = await saveRawSourceBytes(
       "immutable-bin",
-      "cafe02",
+      "cafe020000000000",
       "bin",
       first.buffer as ArrayBuffer,
     );
@@ -670,7 +712,7 @@ describe("saveRawSourceBytes", () => {
 
     const second = await saveRawSourceBytes(
       "immutable-bin",
-      "cafe02",
+      "cafe020000000000",
       "bin",
       new Uint8Array([0, 0, 0]).buffer as ArrayBuffer,
     );
@@ -748,27 +790,27 @@ describe("intake writes (owner option)", () => {
     // `raw/` strictly inside `tenants/<tenant>/raw/` and never falls back to the
     // shared flat tree, so a Source written only to the flat key would land in a
     // Workbench that cannot list it.
-    await saveRawSourceFor("mirrored", "aa11bb", "silo me", { owner: OWNER });
-    expect(await fs.readFile(siloAbs("mirrored/aa11bb.md"), "utf-8")).toBe("silo me");
+    await saveRawSourceFor("mirrored", "aa11bb0000000000", "silo me", { owner: OWNER });
+    expect(await fs.readFile(siloAbs("mirrored/aa11bb0000000000.md"), "utf-8")).toBe("silo me");
   });
 
   it("writes NO silo copy when no owner is given", async () => {
     // Ingest's own callers leave `owner` unset — they reach the silo through
     // `syncSiloForPage` after the page write. A helper that mirrored
     // unconditionally would have to invent a tenant for ownerless seed content.
-    await saveRawSourceFor("unowned", "cc22dd", "flat only");
-    await expect(fs.stat(siloAbs("unowned/cc22dd.md"))).rejects.toThrow();
+    await saveRawSourceFor("unowned", "cc22dd0000000000", "flat only");
+    await expect(fs.stat(siloAbs("unowned/cc22dd0000000000.md"))).rejects.toThrow();
   });
 
   it("repairs a missing mirror even when the flat bytes are already stored", async () => {
     // The flat key is written on the first arrival with no owner, so the silo
     // never receives it. A second arrival that skipped the mirror because the
     // flat write was declined would leave that Source invisible forever.
-    await saveRawSourceFor("repaired", "ee33ff", "bytes");
-    await expect(fs.stat(siloAbs("repaired/ee33ff.md"))).rejects.toThrow();
+    await saveRawSourceFor("repaired", "ee33ff0000000000", "bytes");
+    await expect(fs.stat(siloAbs("repaired/ee33ff0000000000.md"))).rejects.toThrow();
 
-    await saveRawSourceFor("repaired", "ee33ff", "bytes", { owner: OWNER });
-    expect(await fs.readFile(siloAbs("repaired/ee33ff.md"), "utf-8")).toBe("bytes");
+    await saveRawSourceFor("repaired", "ee33ff0000000000", "bytes", { owner: OWNER });
+    expect(await fs.readFile(siloAbs("repaired/ee33ff0000000000.md"), "utf-8")).toBe("bytes");
   });
 
   it("repairs the mirror from the STORED bytes, bumping exactly once", async () => {
@@ -812,11 +854,11 @@ describe("intake writes (owner option)", () => {
     // full reload. A declined write changed nothing, so it must not move the
     // signal — a bump per attempt would re-render the shell on every re-ingest.
     const before = await readDataVersion();
-    await saveRawSourceFor("bumped", "1a2b3c", "new bytes", { owner: OWNER });
+    await saveRawSourceFor("bumped", "1a2b3c0000000000", "new bytes", { owner: OWNER });
     const afterWrite = await readDataVersion();
     expect(afterWrite).toBeGreaterThan(before);
 
-    await saveRawSourceFor("bumped", "1a2b3c", "new bytes", { owner: OWNER });
+    await saveRawSourceFor("bumped", "1a2b3c0000000000", "new bytes", { owner: OWNER });
     expect(await readDataVersion()).toBe(afterWrite);
   });
 
@@ -824,11 +866,11 @@ describe("intake writes (owner option)", () => {
     // First write has no owner, so the silo is empty and the bump already
     // happened. The retry only copies the mirror — without a second bump the
     // watcher is forward-only and Files stays empty.
-    await saveRawSourceFor("repaired-bump", "ee33ff", "bytes");
+    await saveRawSourceFor("repaired-bump", "ee33ff0000000000", "bytes");
     const afterFirst = await readDataVersion();
-    await saveRawSourceFor("repaired-bump", "ee33ff", "bytes", { owner: OWNER });
+    await saveRawSourceFor("repaired-bump", "ee33ff0000000000", "bytes", { owner: OWNER });
     expect(await readDataVersion()).toBeGreaterThan(afterFirst);
-    expect(await fs.readFile(siloAbs("repaired-bump/ee33ff.md"), "utf-8")).toBe(
+    expect(await fs.readFile(siloAbs("repaired-bump/ee33ff0000000000.md"), "utf-8")).toBe(
       "bytes",
     );
   });
@@ -845,7 +887,7 @@ describe("intake writes (owner option)", () => {
     await fs.mkdir(path.dirname(blocker), { recursive: true });
     await fs.writeFile(blocker, "not a directory", "utf-8");
 
-    const returned = await saveRawSourceFor("blocked", "9f8e7d", "kept", {
+    const returned = await saveRawSourceFor("blocked", "9f8e7d0000000000", "kept", {
       owner: OWNER,
     });
     expect(await fs.readFile(returned, "utf-8")).toBe("kept");
@@ -888,14 +930,14 @@ describe("intake writes (owner option)", () => {
     //
     // Bumps are COUNTED at the provider, not read off the counter: `DATA_DIR`
     // is a temp root shared by the whole run.
-    await saveRawSourceFor("unreadable", "ab12cd", "first arrival");
+    await saveRawSourceFor("unreadable", "ab12cd0000000000", "first arrival");
     const storage = getStorage();
     const realReadFile = storage.readFile.bind(storage);
     const bumps = vi.spyOn(storage, "incrementIndex");
     const reads = vi
       .spyOn(storage, "readFile")
       .mockImplementation(async (rel: string) =>
-        rel.endsWith("unreadable/ab12cd.md")
+        rel.endsWith("unreadable/ab12cd0000000000.md")
           ? Promise.reject(new Error("stored bytes unreadable"))
           : realReadFile(rel),
       );
@@ -905,7 +947,7 @@ describe("intake writes (owner option)", () => {
     try {
       // The arrival still SUCCEEDS — the mirror is fail-soft and the flat bytes
       // are intact.
-      await saveRawSourceFor("unreadable", "ab12cd", "mutant", {
+      await saveRawSourceFor("unreadable", "ab12cd0000000000", "mutant", {
         owner: OWNER,
       });
     } finally {
@@ -914,7 +956,7 @@ describe("intake writes (owner option)", () => {
         ([key]) => key === "data-version",
       ).length;
       attemptedReread = reads.mock.calls.some(([rel]) =>
-        rel.endsWith("unreadable/ab12cd.md"),
+        rel.endsWith("unreadable/ab12cd0000000000.md"),
       );
       reads.mockRestore();
       bumps.mockRestore();
@@ -926,11 +968,11 @@ describe("intake writes (owner option)", () => {
     // never entered the repair branch at all. Only the occupied branch re-reads
     // the flat key, so this says the branch under test actually ran.
     expect(attemptedReread).toBe(true);
-    await expect(fs.stat(siloAbs("unreadable/ab12cd.md"))).rejects.toThrow();
+    await expect(fs.stat(siloAbs("unreadable/ab12cd0000000000.md"))).rejects.toThrow();
     expect(dataVersionBumps).toBe(0);
     expect(
       await fs.readFile(
-        path.join(tmpDir, "raw", "sources", "unreadable", "ab12cd.md"),
+        path.join(tmpDir, "raw", "sources", "unreadable", "ab12cd0000000000.md"),
         "utf-8",
       ),
     ).toBe("first arrival");
@@ -964,12 +1006,85 @@ describe("isRawSnapshotName", () => {
     expect(isRawSnapshotName(`${hex}.abcdefghi`)).toBe(false); // 9-char extension
   });
 
-  it("accepts a SHORT all-hex name — the collision this deliberately allows", () => {
-    // `beef.md` is indistinguishable by name from a real snapshot, so a folder
-    // import can put one file (never a directory or a tree) into a colliding
-    // page's silo, and lose it when that page is deleted. Recorded as a test so
-    // that tightening the id rule — a length floor, say — is a visible diff
-    // here rather than a silent behavior change in the mirror.
-    expect(isRawSnapshotName("beef.md")).toBe(true);
+  it("rejects a SHORT all-hex name — the DW-744 collision, closed", () => {
+    // `beef.md` and `2024.pdf` are folder-import files, not snapshots. While
+    // any hex stem was an id they were indistinguishable by name from a real
+    // arrival, so an import put one file into a colliding page's silo and lost
+    // it when that page was deleted. `RAW_ID_RE` now enumerates the two lengths
+    // the writers mint, so a stem of any other length is an import file again.
+    expect(isRawSnapshotName("beef.md")).toBe(false);
+    expect(isRawSnapshotName("2024.pdf")).toBe(false);
+    // Off by one either side of each real length, so the bound is an
+    // alternation rather than a floor.
+    expect(isRawSnapshotName(`${"a".repeat(15)}.md`)).toBe(false);
+    expect(isRawSnapshotName(`${"a".repeat(17)}.md`)).toBe(false);
+    expect(isRawSnapshotName(`${"a".repeat(63)}.md`)).toBe(false);
+    expect(isRawSnapshotName(`${"a".repeat(65)}.md`)).toBe(false);
+  });
+
+  it("accepts every id its own writers accept, at BOTH minted lengths", () => {
+    // The reason the bound lives in the shared `RAW_ID_RE` and not privately
+    // inside the predicate: a writer that minted an id this predicate denied
+    // would store a Source the listing reports nowhere and the silo mirror
+    // never carries. Writer and predicate are driven from the SAME id here, at
+    // 16 hex (`contentHash`) and 64 hex (`sourceSha256`/`bytesSha256`).
+    const ids = [contentHash("some source text"), "c4".repeat(32)];
+    for (const id of ids) {
+      expect(id).toMatch(/^(?:[a-f0-9]{16}|[a-f0-9]{64})$/);
+      expect(isRawSnapshotName(`${id}.md`)).toBe(true);
+      expect(isRawSnapshotName(`${id}.pdf`)).toBe(true);
+    }
+  });
+
+  it("round-trips a 16-hex and a 64-hex id through writer, listing and predicate", async () => {
+    await ensureDirectories();
+    const short = contentHash("round trip me");
+    const long = await sourceSha256("round trip me");
+    expect(short).toHaveLength(16);
+    expect(long).toHaveLength(64);
+
+    await saveRawSourceFor("both-lengths", short, "short id");
+    await saveRawSourceFor("both-lengths", long, "long id");
+    expect((await readRawSourceById("both-lengths", short)).content).toBe("short id");
+    expect((await readRawSourceById("both-lengths", long)).content).toBe("long id");
+
+    const listed = (await listRawSourceSnapshots())
+      .filter((row) => row.slug === "both-lengths")
+      .map((row) => row.rawId)
+      .sort();
+    expect(listed).toEqual([short, long].sort());
+  });
+
+  it("lists AND mirrors a 64-hex BYTES snapshot the way saveRawSourceBytes writes it", async () => {
+    // The binary half of the same round trip: `saveRawSourceBytes` mints its id
+    // with `bytesSha256`, so a bound that admitted only `contentHash`'s 16 would
+    // have made every stored PDF a Source the listing denies and the silo mirror
+    // never carries — DW-569 again, from the other side.
+    await ensureDirectories();
+    const owner = "both-lengths-owner";
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+    const id = await bytesSha256(bytes);
+    expect(id).toHaveLength(64);
+
+    await saveRawSourceBytes("bytes-length", id, "pdf", bytes.buffer as ArrayBuffer, {
+      owner,
+    });
+
+    expect(
+      (await listRawSourceSnapshots()).filter((row) => row.slug === "bytes-length"),
+    ).toEqual([
+      {
+        slug: "bytes-length",
+        rawId: id,
+        ext: "pdf",
+        mediaType: "application/pdf",
+        path: `raw/sources/bytes-length/${id}.pdf`,
+      },
+    ]);
+    const siloed = path.join(
+      getDataDir(),
+      tenantRawSourceRelPath(tenantForOwner(owner), `bytes-length/${id}.pdf`),
+    );
+    expect(new Uint8Array(await fs.readFile(siloed))).toEqual(bytes);
   });
 });

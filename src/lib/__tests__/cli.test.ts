@@ -499,13 +499,13 @@ describe("CLI command execution", () => {
     const { listRawSources, listRawSourceSnapshots } = await import("../raw");
     vi.mocked(listRawSources).mockResolvedValueOnce([]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
-    expect(logSpy).toHaveBeenCalledWith("alpha\tabc123.md");
+    expect(logSpy).toHaveBeenCalledWith("alpha\tabc1230000000000.md");
   });
 
   it("runList(true) prints flat sources and snapshots together, sorted by slug", async () => {
@@ -514,14 +514,14 @@ describe("CLI command execution", () => {
       { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
     const calls = logSpy.mock.calls.map((c) => c[0]);
-    expect(calls).toEqual(["alpha\tabc123.md", "note\tnote.md"]);
+    expect(calls).toEqual(["alpha\tabc1230000000000.md", "note\tnote.md"]);
   });
 
   it("runList(true) prints ONE row for a slug ingest wrote both ways", async () => {
@@ -536,13 +536,13 @@ describe("CLI command execution", () => {
       { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
-    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["alpha\tabc123.md"]);
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["alpha\tabc1230000000000.md"]);
   });
 
   it("runList(true) keeps the flat row when the only snapshot is BINARY", async () => {
@@ -557,10 +557,10 @@ describe("CLI command execution", () => {
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
       {
         slug: "alpha",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "png",
         mediaType: "image/png",
-        path: "raw/sources/alpha/abc123.png",
+        path: "raw/sources/alpha/abc1230000000000.png",
       },
     ]);
 
@@ -569,7 +569,7 @@ describe("CLI command execution", () => {
 
     expect(logSpy.mock.calls.map((c) => c[0])).toEqual([
       "alpha\talpha.md",
-      "alpha\tabc123.png",
+      "alpha\tabc1230000000000.png",
     ]);
   });
 
@@ -587,10 +587,10 @@ describe("CLI command execution", () => {
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
       {
         slug: "alpha",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "png",
         mediaType: "image/png",
-        path: "raw/sources/alpha/abc123.png",
+        path: "raw/sources/alpha/abc1230000000000.png",
       },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
@@ -612,18 +612,18 @@ describe("CLI command execution", () => {
       { slug: "alpha", filename: "alpha.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "aaa111", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/aaa111.md" },
-      { slug: "alpha", rawId: "bbb222", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/bbb222.md" },
-      { slug: "alpha", rawId: "ccc333", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/ccc333.md" },
+      { slug: "alpha", rawId: "aaa1110000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/aaa1110000000000.md" },
+      { slug: "alpha", rawId: "bbb2220000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/bbb2220000000000.md" },
+      { slug: "alpha", rawId: "ccc3330000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/ccc3330000000000.md" },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
     expect(logSpy.mock.calls.map((c) => c[0])).toEqual([
-      "alpha\taaa111.md",
-      "alpha\tbbb222.md",
-      "alpha\tccc333.md",
+      "alpha\taaa1110000000000.md",
+      "alpha\tbbb2220000000000.md",
+      "alpha\tccc3330000000000.md",
     ]);
   });
 
@@ -636,17 +636,17 @@ describe("CLI command execution", () => {
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
       {
         slug: "paper",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "pdf",
         mediaType: "application/pdf",
-        path: "raw/sources/paper/abc123.pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
       },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
-    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc123.pdf"]);
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc1230000000000.pdf"]);
   });
 
   it("runList(true) prints ONE row for a PDF and the Markdown extracted from it", async () => {
@@ -659,24 +659,24 @@ describe("CLI command execution", () => {
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
       {
         slug: "paper",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "md",
         mediaType: "text/markdown",
-        path: "raw/sources/paper/abc123.md",
+        path: "raw/sources/paper/abc1230000000000.md",
       },
       {
         slug: "paper",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "pdf",
         mediaType: "application/pdf",
-        path: "raw/sources/paper/abc123.pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
       },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
-    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc123.pdf"]);
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc1230000000000.pdf"]);
   });
 
   it("runList(true) prefers the original however the two artefacts are ordered", async () => {
@@ -687,24 +687,24 @@ describe("CLI command execution", () => {
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
       {
         slug: "paper",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "pdf",
         mediaType: "application/pdf",
-        path: "raw/sources/paper/abc123.pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
       },
       {
         slug: "paper",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "md",
         mediaType: "text/markdown",
-        path: "raw/sources/paper/abc123.md",
+        path: "raw/sources/paper/abc1230000000000.md",
       },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
-    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc123.pdf"]);
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(["paper\tabc1230000000000.pdf"]);
   });
 
   it("runStatus() counts a PDF-only workspace as 1, not 0 (DW-569)", async () => {
@@ -717,10 +717,10 @@ describe("CLI command execution", () => {
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
       {
         slug: "paper",
-        rawId: "abc123",
+        rawId: "abc1230000000000",
         ext: "pdf",
         mediaType: "application/pdf",
-        path: "raw/sources/paper/abc123.pdf",
+        path: "raw/sources/paper/abc1230000000000.pdf",
       },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
@@ -740,13 +740,13 @@ describe("CLI command execution", () => {
     const { listRawSources, listRawSourceSnapshots } = await import("../raw");
     vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
     ]);
 
     const { runList } = await import("../../cli");
     await runList(true);
 
-    expect(logSpy).toHaveBeenCalledWith("alpha\tabc123.md");
+    expect(logSpy).toHaveBeenCalledWith("alpha\tabc1230000000000.md");
     expect(errorSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain(
       "listing failed",
     );
@@ -830,8 +830,8 @@ describe("CLI command execution", () => {
       { slug: "note", filename: "note.md", size: 10, modified: "2025-01-01T00:00:00Z" },
     ]);
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
-      { slug: "beta", rawId: "def456", ext: "md", mediaType: "text/markdown", path: "raw/sources/beta/def456.md" },
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
+      { slug: "beta", rawId: "def4560000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/beta/def4560000000000.md" },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
 
@@ -853,7 +853,7 @@ describe("CLI command execution", () => {
     vi.mocked(listWikiPages).mockResolvedValueOnce([]);
     vi.mocked(listRawSources).mockRejectedValueOnce(new Error("listing failed"));
     vi.mocked(listRawSourceSnapshots).mockResolvedValueOnce([
-      { slug: "alpha", rawId: "abc123", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc123.md" },
+      { slug: "alpha", rawId: "abc1230000000000", ext: "md", mediaType: "text/markdown", path: "raw/sources/alpha/abc1230000000000.md" },
     ]);
     vi.mocked(getEffectiveSettings).mockReturnValueOnce(effectiveSettings());
 

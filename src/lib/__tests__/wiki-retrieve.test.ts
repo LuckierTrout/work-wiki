@@ -379,9 +379,9 @@ describe("assemble and search", () => {
   });
 
   it("includes hashed raw/sources snapshots that the browse list skips", async () => {
-    await saveRawSourceFor("plaud-meet", "cafe01", "hashed snapshot about backpropagation");
+    await saveRawSourceFor("plaud-meet", "cafe010000000000", "hashed snapshot about backpropagation");
     const { hits } = await retrieveHits("backpropagation", { principal: null });
-    expect(hits.some((hit) => hit.path === "raw/sources/plaud-meet/cafe01.md")).toBe(true);
+    expect(hits.some((hit) => hit.path === "raw/sources/plaud-meet/cafe010000000000.md")).toBe(true);
   });
 
   it("makes no retrieval document out of a BINARY snapshot row", async () => {
@@ -392,20 +392,20 @@ describe("assemble and search", () => {
     // comes from the extract stored beside it under the same `rawId`.
     await saveRawSourceBytes(
       "pdf-only",
-      "beef02",
+      "beef020000000000",
       "pdf",
       new Uint8Array([0x25, 0x50, 0x44, 0x46]).buffer as ArrayBuffer,
     );
-    await saveRawSourceFor("pdf-only", "beef02", "extracted prose about backpropagation");
+    await saveRawSourceFor("pdf-only", "beef020000000000", "extracted prose about backpropagation");
 
     const { hits } = await retrieveHits("backpropagation", { principal: null });
-    expect(hits.some((hit) => hit.path === "raw/sources/pdf-only/beef02.md")).toBe(
+    expect(hits.some((hit) => hit.path === "raw/sources/pdf-only/beef020000000000.md")).toBe(
       true,
     );
     expect(hits.some((hit) => hit.path.endsWith(".pdf"))).toBe(false);
     // Exactly one document per arrival, not one per stored artefact.
     expect(
-      hits.filter((hit) => hit.id === "source:pdf-only:beef02"),
+      hits.filter((hit) => hit.id === "source:pdf-only:beef020000000000"),
     ).toHaveLength(1);
   });
 

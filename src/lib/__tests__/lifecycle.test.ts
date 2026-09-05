@@ -1779,7 +1779,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
       actor: "alice",
       sourceTitle: "Standup",
       sourceText: "We agreed to ship the digest on Friday.",
-      sourcePath: "raw/sources/standup/abc.md",
+      sourcePath: "raw/sources/standup/abc0000000000000.md",
       sourceType: "text",
     });
     const overview = await readWikiPage("overview");
@@ -1790,7 +1790,7 @@ describe("Stories 2.4–2.12 compile remnants", () => {
     const summary = pages.find((entry) => entry.title.includes("source summary"));
     expect(summary).toBeTruthy();
     const body = await readWikiPage(summary!.slug);
-    expect(body?.content).toContain("raw/sources/standup/abc.md");
+    expect(body?.content).toContain("raw/sources/standup/abc0000000000000.md");
     expect(body?.content).toContain("We agreed to ship the digest on Friday.");
   });
 
@@ -1801,9 +1801,9 @@ describe("Stories 2.4–2.12 compile remnants", () => {
       actor: "alice",
       sourceTitle: "Standup",
       sourceText: "first",
-      sourcePath: "raw/sources/standup/abc.md",
+      sourcePath: "raw/sources/standup/abc0000000000000.md",
       sourceType: "text",
-      rawId: "abc",
+      rawId: "abc0000000000000",
     });
     const pages = await listWikiPages();
     const summary = pages.find((entry) => entry.title.includes("source summary"));
@@ -1827,9 +1827,9 @@ describe("Stories 2.4–2.12 compile remnants", () => {
       actor: "alice",
       sourceTitle: "Standup",
       sourceText: "second",
-      sourcePath: "raw/sources/standup/abc.md",
+      sourcePath: "raw/sources/standup/abc0000000000000.md",
       sourceType: "text",
-      rawId: "abc",
+      rawId: "abc0000000000000",
     });
     const rewritten = await readWikiPage(summary!.slug);
     expect(rewritten?.content).toContain("disputed: true");

@@ -203,9 +203,9 @@ describe("runIngestBookkeeping — a blipped page is not an absent one (DW-495)"
       actor: "alice",
       sourceTitle: "Standup",
       sourceText: "We agreed to ship the digest on Friday.",
-      sourcePath: "raw/sources/standup/abc.md",
+      sourcePath: "raw/sources/standup/abc0000000000000.md",
       sourceType: "text",
-      rawId: "abc",
+      rawId: "abc0000000000000",
       ...overrides,
     } as Parameters<typeof runIngestBookkeeping>[0]);
   }

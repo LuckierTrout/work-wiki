@@ -1944,12 +1944,12 @@ describe("F8-05 / F8-06 v1 contract", () => {
       // that `saveRawSourceFor` writes — which is the shape DW-32 was filed
       // against.
       await saveRawSource("hidden-note", "compile me", { owner: "alice" });
-      await saveRawSourceFor("hidden-note", "aa11bb22", "compile me too", {
+      await saveRawSourceFor("hidden-note", "aa11bb2200000000", "compile me too", {
         owner: "alice",
       });
       const paths = [
         "raw/sources/hidden-note.md",
-        "raw/sources/hidden-note/aa11bb22.md",
+        "raw/sources/hidden-note/aa11bb2200000000.md",
       ];
 
       const refused = await rescanSources({

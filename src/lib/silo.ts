@@ -93,7 +93,10 @@ async function deleteDirSafe(path: string): Promise<void> {
  * Mirror the PAGE-OWNED entries of one hashed directory into the silo, and
  * return how many were copied.
  *
- * "Page-owned" is `isRawSnapshotName` — a content-addressed `<hex>.<ext>` —
+ * "Page-owned" is `isRawSnapshotName` — a content-addressed `<hex>.<ext>`,
+ * where `<hex>` is a digest at one of the two lengths the writers mint (16 or
+ * 64; see `RAW_ID_RE` in `raw.ts`), so an import file with a short hex stem
+ * like `2024.pdf` is NOT page-owned and is not mirrored (DW-744) —
  * because `raw/sources/<name>/` is SHARED: `saveRawSourceFor`/
  * `saveRawSourceBytes` address it by page slug while `saveRawSourceTree`
  * addresses it by folder-import root, so a page slugged like an import root

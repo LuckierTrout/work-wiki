@@ -113,6 +113,14 @@ export interface SourceEntry {
    * Identifier of this source's per-source raw snapshot at
    * `raw/<slug>/<raw_id>.md`. Absent on legacy pages ingested before per-source
    * raw existed (those keep only the single latest `raw/<slug>.md`).
+   *
+   * When present it is a hex digest at one of the two lengths the writers mint —
+   * 16 from `contentHash` (`embeddings.ts`) or 64 from
+   * `sourceSha256`/`bytesSha256` (`source-sha256.ts`). That bound is enforced,
+   * not merely documented: `RAW_ID_RE` in `raw.ts` is the ONE rule the writers,
+   * `readRawSourceById` and `isRawSnapshotName` all test, so an id of any other
+   * length is rejected at the writer and names no snapshot the listing or the
+   * silo mirror will admit (DW-744).
    */
   raw_id?: string;
   /** Plaud-origin Intake. Absent on other doors. Survives job GC. */

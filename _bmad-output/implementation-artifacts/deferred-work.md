@@ -6043,7 +6043,9 @@ location: src/lib/document-extract.ts:605
 source_spec: `spec-dw-232-695-inherited-prototype-indexing.md`
 severity: low
 reason: src/lib/document-extract.ts:605 filters the presentation-order list with `Boolean(files[slide.path])` only — it never checks that the resolved path is a slide part. `resolveArchiveTarget("ppt/presentation.xml", "media/photo.jpg")` yields `ppt/media/photo.jpg`, a key the archive really holds, so the bogus entry survives, `ordered.length` is non-zero and it overrides `fallbackSlides`. The deck's readable `ppt/slides/slideN.xml` parts are then never extracted and the image bytes are decoded as slide XML, producing an empty section instead. Reachable through the live ZIP door (`extractDocumentTextAsync`'s zip branch), and distinct from the inherited-prototype defect this bundle closed: it is path confusion, not prototype indexing, and a null-prototype archive does not address it. A `/^ppt\/slides\/slide\d+\.xml$/i` test on `slide.path` alongside the existence check is the shape of the fix.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-archive-and-raw-name-predicates
+resolution-undo: e63bf798b9726ca4f21a5c6a2d47e8cfa1c35cbf101f3ba72e0a020abcc0f1e0 2026-09-05 7374617475733a206f70656e
 
 ### DW-725: `isStoreFault` still leads with `error instanceof StoreFaultError`, the exact identity check DW-578 removed from `ClientInputError` three lines above it in the same file.
 origin: spec-deferred dcc09c8cca55
@@ -6228,7 +6230,9 @@ location: src/lib/raw.ts:446
 source_spec: `spec-dw-568-569-570-raw-source-listing-truth.md`
 severity: low
 reason: DW-568's fix moved the listing onto `isRawSnapshotName`, whose bound was `.md`-only when the listing had its own inline test. Any all-digit stem is valid hex, so a folder import containing `docs/2024.pdf` now yields a row. `readRawSourceById("docs", "2024")` builds `docs/2024.md` and throws, and `listRawSourceRows` adds the slug to `slugsWithSnapshots` — so if a page `docs` also has a flat `raw/sources/docs.md`, its real row is suppressed by an import file. Retrieval and `incomplete-coverage` are unaffected (both filter `ext !== "md"`); only `list --raw` / `Raw sources:` can show it. The `.md` half of this collision is pre-existing and deliberately documented ("accepted, and bounded — a single colliding FILE"); this change widened it to every extension the writers accept. Bounding the stem to the writers' digest length would close both halves.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-archive-and-raw-name-predicates
+resolution-undo: e63bf798b9726ca4f21a5c6a2d47e8cfa1c35cbf101f3ba72e0a020abcc0f1e0 2026-09-05 7374617475733a206f70656e
 
 ### DW-745: A tenant path whose ANCESTOR segment is a file makes the archive collision probe rethrow a raw `ENOTDIR`, leaking the server's absolute filesystem path into the API error body.
 origin: spec-deferred 65685a401880
@@ -6457,4 +6461,12 @@ location: src/app/u/[handle]/raw/[slug]/page.tsx:29
 source_spec: `spec-dw-726-738-742-page-scoped-read-gates.md`
 severity: medium
 reason: `src/app/u/[handle]/raw/[slug]/page.tsx:29` gates on `canReadSlug(slug, principal)` and nothing else, then reads the very bytes this bundle just gated — `readRawSource` / `readRawSourceById` — and hands them to `RawSourceBrowser` as `initialContent`. Middleware admits anonymous GETs on `/u/**`. A review subagent demonstrated it on a tmpdir deployment: for a `visibility: public`, `type: agent-knowledge` page with `getPrincipal -> null`, `GET /api/raw/agent-notes` now answers 404 while `RawSourcePage` passes every gate and reaches its render with the raw text loaded. Pre-existing and not named by the bundle intent, which pointed at `src/app/api/raw/[slug]/route.ts:24`. The same door carries the mirror-image mismatch: `RawSourceBrowser.tsx:62-63` builds its Download link as `/api/raw/<slug>`, and because `hiddenSlugs` is derived from the principal's OWN readable entries, that button now 404s even for the owner of their own agent-scoped page — the intended parity with `/api/assets/[...path
+status: open
+
+### DW-772: extractXlsx has the same "existence is not identity" defect DW-724 fixed in extractPptx: a workbook sheet rel resolving to any real archive key is accepted as a worksheet and shadows the numbered fall
+origin: spec-deferred 9c01d5533a8d
+location: src/lib/document-extract.ts:766
+source_spec: `spec-dw-724-744-archive-and-raw-name-predicates.md`
+severity: low
+reason: src/lib/document-extract.ts:766 pushes a sheet on `if (path && files[path])` with no `^xl/worksheets/sheetN\.xml$` test, and the numbered `xl/worksheets/sheetN.xml` fallback is used only when that list is empty — the identical shadowing shape. Verified during review: a workbook whose `rId1` targets `sharedStrings.xml` alongside a real `xl/worksheets/sheet1.xml` extracts as "## Metrics\n\n[Empty worksheet]", dropping the real sheet's data. Reachable through the same inline ZIP door as DW-724 (`extractDocumentTextAsync`'s zip branch). This bundle's intent named only extractPptx, so the sibling was left untouched.
 status: open
