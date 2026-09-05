@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import {
+  EMBEDDING_WORKERS_AI_COPY,
+  EMBEDDING_WORKERS_AI_INDEX_COPY,
+  EMBEDDING_WORKERS_AI_NO_INDEX_COPY,
   EmbeddingSettings,
   type EmbeddingSettingsProps,
 } from "@/components/EmbeddingSettings";
@@ -314,8 +317,49 @@ describe("EmbeddingSettings — the default-model hint", () => {
   const ENV_PIN_COPY =
     "The environment sets EMBEDDING_MODEL, and that wins at runtime. " +
     "This box is fixed until that variable is unset.";
+  /**
+   * The three forms of the Workers AI clause (DW-715).
+   *
+   * The provider half and the INDEX half are two facts, and `GET /api/settings`
+   * answers them separately: `YOPEDIA_VECTORIZE` is an optional binding, so a
+   * deployment can embed through Workers AI with no index bound at all. Only the
+   * first of these may carry a dimension.
+   */
   const WORKERS_AI_COPY =
     "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.";
+  const WORKERS_AI_NO_INDEX_COPY =
+    "This deployment uses Cloudflare Workers AI. No Vectorize index is bound.";
+  const WORKERS_AI_UNKNOWN_COPY = "This deployment uses Cloudflare Workers AI.";
+
+  it("holds the same three sentences the component EXPORTS", () => {
+    // Both halves are load-bearing and neither replaces the other. The literals
+    // above are what actually pins the copy — asserting the export against
+    // itself would pass on any rewording. THIS case is what stops the module's
+    // three forms and this file's three literals from becoming six sentences:
+    // the component's docblock claims `workersAiHint` "owns all three forms so
+    // no caller can inline a fourth", and until the export is reached from a
+    // test that claim is unenforced. Same pattern as `icon-rail.test.tsx`, which
+    // imports the rail labels rather than retyping them.
+    expect(EMBEDDING_WORKERS_AI_INDEX_COPY).toBe(WORKERS_AI_COPY);
+    expect(EMBEDDING_WORKERS_AI_NO_INDEX_COPY).toBe(WORKERS_AI_NO_INDEX_COPY);
+    expect(EMBEDDING_WORKERS_AI_COPY).toBe(WORKERS_AI_UNKNOWN_COPY);
+    // The three are DISTINCT — a copy edit that collapsed two of them would
+    // silently delete a state from the matrix rather than fail a row.
+    expect(
+      new Set([
+        EMBEDDING_WORKERS_AI_INDEX_COPY,
+        EMBEDDING_WORKERS_AI_NO_INDEX_COPY,
+        EMBEDDING_WORKERS_AI_COPY,
+      ]).size,
+    ).toBe(3);
+    // Only the bound form may carry a dimension: the number is a property of an
+    // index that EXISTS, and the other two are about deployments without one.
+    expect(EMBEDDING_WORKERS_AI_INDEX_COPY).toContain("1,024");
+    expect(EMBEDDING_WORKERS_AI_NO_INDEX_COPY).not.toContain("1,024");
+    expect(EMBEDDING_WORKERS_AI_COPY).not.toContain("1,024");
+    // …and only the two that resolved the question may name Vectorize at all.
+    expect(EMBEDDING_WORKERS_AI_COPY).not.toContain("Vectorize");
+  });
 
   it("is announced whenever the editable input renders, and resolves", () => {
     // The commonest shape of all: no substitution, no vector notice, writable.
@@ -409,6 +453,10 @@ describe("EmbeddingSettings — the default-model hint", () => {
           // The deployment the sentence is ABOUT (DW-616): the resolved
           // provider, served by `GET /api/settings`, not inferred from the id.
           providerInEffect: "workers-ai",
+          // …and the index it claims, which is a SECOND served fact (DW-715).
+          // `YOPEDIA_VECTORIZE` is optional, so only a bound one earns the
+          // dimension clause this case pins byte-for-byte.
+          hasVectorizeBinding: true,
         })}
       />,
     );
@@ -426,6 +474,76 @@ describe("EmbeddingSettings — the default-model hint", () => {
     // the answer.
     expect(hint()!.textContent).toBe(`${ENV_PIN_COPY} ${WORKERS_AI_COPY}`);
     expect(hint()!.textContent).not.toContain("Leave empty");
+  });
+
+  it("drops the index clause on a Workers AI deployment with NO Vectorize binding", () => {
+    // THE DW-715 state, and the one the single composed sentence got wrong:
+    // `YOPEDIA_VECTORIZE` is declared optional on `CloudflareEnv` and every
+    // vector call in the R2 provider guards on it, so a deployment can resolve
+    // `workers-ai` and have no index at all — while the hint announced a
+    // 1,024-dimensional one off the provider alone.
+    render(
+      <EmbeddingSettings
+        {...props({
+          modelSource: "env",
+          effectiveModel: "@cf/baai/bge-m3",
+          providerInEffect: "workers-ai",
+          hasVectorizeBinding: false,
+        })}
+      />,
+    );
+
+    expect(hint()!.textContent).toBe(`${ENV_PIN_COPY} ${WORKERS_AI_NO_INDEX_COPY}`);
+    // The PROVIDER half survives — it was independently resolved, and this
+    // entry narrows one clause rather than taking the sentence away.
+    expect(hint()!.textContent).toContain("Cloudflare Workers AI");
+    // No dimension is claimed of an index that is not there.
+    expect(hint()!.textContent).not.toContain("1,024");
+    expect(hint()!.textContent).not.toContain("Leave empty");
+  });
+
+  it("claims only the provider when nothing answered the binding question", () => {
+    // The THIRD state, and the DW-616 precedent applied to the new fact: the
+    // prop is optional, absent means "nobody resolved it", and an unresolved
+    // claim about infrastructure is withheld rather than guessed in either
+    // direction. Every caller predating the prop renders this sentence.
+    render(
+      <EmbeddingSettings
+        {...props({
+          modelSource: "env",
+          effectiveModel: "@cf/baai/bge-m3",
+          providerInEffect: "workers-ai",
+        })}
+      />,
+    );
+
+    expect(hint()!.textContent).toBe(`${ENV_PIN_COPY} ${WORKERS_AI_UNKNOWN_COPY}`);
+    // Neither an index nor its absence is asserted.
+    expect(hint()!.textContent).not.toContain("Vectorize");
+    expect(hint()!.textContent).not.toContain("1,024");
+  });
+
+  it("stays silent about Workers AI on another provider, whatever the binding says", () => {
+    // The binding is the SECOND term, never the first: a bound Vectorize index
+    // on a deployment that embeds through OpenAI still earns no Workers AI
+    // sentence (DW-616 unchanged). A gate that read the binding before the
+    // provider would fire here.
+    for (const hasVectorizeBinding of [true, false, null] as const) {
+      cleanup();
+      render(
+        <EmbeddingSettings
+          {...props({
+            modelSource: "env",
+            effectiveModel: "@cf/baai/bge-m3",
+            providerInEffect: "openai",
+            hasVectorizeBinding,
+          })}
+        />,
+      );
+      expect(hint()!.textContent, String(hasVectorizeBinding)).toBe(ENV_PIN_COPY);
+      expect(hint()!.textContent).not.toContain("Vectorize");
+      expect(hint()!.textContent).not.toContain("Workers AI");
+    }
   });
 
   it("states the EMBEDDING_MODEL pin on an env model that is not Workers AI's", () => {

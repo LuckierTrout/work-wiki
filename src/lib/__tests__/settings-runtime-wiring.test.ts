@@ -109,7 +109,7 @@ import {
   getConfiguredModel,
   hasLLMKey,
 } from "../llm";
-import { _resetStorage, getStorage } from "../storage";
+import { _resetStorage, getStorage, hasVectorizeBinding } from "../storage";
 import {
   SETTINGS_VECTOR_BINDING_ENV_NOTE,
   canEnableVectorSearch,
@@ -1544,6 +1544,112 @@ describe("the stored embedding credential and endpoint are read", () => {
     // `hasWorkersAiBinding` is `null` here, so the binding leg is not applied —
     // this caller answers exactly as it did before either origin existed.
     expect(settings.enabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Vectorize binding is a fact this deployment RESOLVES (DW-715)
+// ---------------------------------------------------------------------------
+//
+// `hasVectorizeBinding()` is the only NEW statement of fact DW-715 introduces,
+// and it is the one thing the rest of that change's suites structurally cannot
+// reach. `settings-route.test.ts` replaces the helper with `vi.fn(() => false)`;
+// the component and page suites hand the answer in as a prop or a fabricated
+// payload. So inverting the read (`== null` for `!= null`) or misspelling the
+// binding key leaves every one of them green while `/settings` renders the exact
+// false infrastructure claim the entry exists to remove: "…with a
+// 1,024-dimensional Vectorize index" on a deployment that has no index.
+//
+// This file is where it belongs, for the reason its `hasWorkersAiBinding`
+// siblings above already give: it mocks `@opennextjs/cloudflare` and drives the
+// REAL route, so the Cloudflare env is an input rather than a stub of the answer.
+
+describe("the Vectorize binding is read from the runtime and served", () => {
+  /**
+   * A Cloudflare env as OpenNext hands it over.
+   *
+   * `YOPEDIA_BUCKET` and `YOPEDIA_CONFIG` are always present because
+   * `getOpenNextCloudflareEnv()` refuses to claim an object is a `CloudflareEnv`
+   * without BOTH — the R2 provider cannot be constructed otherwise, so a
+   * deployment missing them has no index it could use either way. The one field
+   * that varies between cases is the one under test.
+   *
+   * These are opaque handles here, never called: nothing in a settings read
+   * touches the bucket, and `detectProvider()` still answers `fs` under node
+   * (there is no `caches.default`), so the config store stays the temp dir this
+   * file's `beforeEach` builds.
+   */
+  function cfEnv(extra: Record<string, unknown> = {}) {
+    return { env: { YOPEDIA_BUCKET: {}, YOPEDIA_CONFIG: {}, ...extra } };
+  }
+
+  it("answers true only when YOPEDIA_VECTORIZE is actually bound", () => {
+    // The helper, directly — the seam every other suite mocks away. Inverting
+    // the predicate flips both of these at once.
+    mockGetCfContext.mockReturnValue(cfEnv({ YOPEDIA_VECTORIZE: { query: vi.fn() } }));
+    expect(hasVectorizeBinding()).toBe(true);
+
+    mockGetCfContext.mockReturnValue(cfEnv());
+    expect(hasVectorizeBinding()).toBe(false);
+  });
+
+  it("answers false off Workers, and on a Workers env with no storage bindings", () => {
+    // The two other routes to `false` the helper's docblock names, stated so a
+    // future short-circuit cannot quietly turn either into `true`. Off Workers
+    // `getCloudflareContext()` THROWS — exactly what it does on Docker.
+    mockGetCfContext.mockImplementation(noCloudflareContext);
+    expect(hasVectorizeBinding()).toBe(false);
+
+    // On Workers, but the env is not a `CloudflareEnv` at all. A Vectorize
+    // handle sitting on it changes nothing: without the bucket and the KV
+    // namespace there is no deployment here to have an index.
+    mockGetCfContext.mockReturnValue({ env: { YOPEDIA_VECTORIZE: { query: vi.fn() } } });
+    expect(hasVectorizeBinding()).toBe(false);
+  });
+
+  it("rides the GET body as a boolean, resolved from the SAME env", async () => {
+    // End to end through the real route, the way `embeddingProviderInEffect` is
+    // pinned above: the env is the input, and the served field is the assertion.
+    const { GET } = await import("@/app/api/settings/route");
+
+    mockGetCfContext.mockReturnValue(cfEnv({ YOPEDIA_VECTORIZE: { query: vi.fn() } }));
+    const bound = (await (await GET()).json()) as Record<string, unknown>;
+    expect(bound.hasVectorizeBinding).toBe(true);
+
+    // The SAME env with the one binding removed — the only thing that changed
+    // is the runtime fact the route reads.
+    mockGetCfContext.mockReturnValue(cfEnv());
+    const unbound = (await (await GET()).json()) as Record<string, unknown>;
+    expect(unbound.hasVectorizeBinding).toBe(false);
+    // A BOOLEAN, not an absent field: `EmbeddingSettings` treats absent as
+    // "nobody answered" and drops the clause either way, so a route that served
+    // `undefined` here would look correct on screen while silently retiring the
+    // "no index is bound" sentence this deployment has earned.
+    expect(typeof unbound.hasVectorizeBinding).toBe("boolean");
+  });
+
+  it("is INDEPENDENT of the AI binding, in both directions", async () => {
+    // The whole premise of DW-715: the hint used to state the index off the
+    // resolved Workers AI provider alone. Both bindings are optional and neither
+    // implies the other, so the route has to answer them separately.
+    const { GET } = await import("@/app/api/settings/route");
+
+    // Workers AI bound, no index — the deployment the old sentence lied about.
+    mockGetCfContext.mockReturnValue(cfEnv({ AI: { run: vi.fn() } }));
+    const aiOnly = (await (await GET()).json()) as Record<string, unknown>;
+    expect(aiOnly.embeddingProviderInEffect).toBe("workers-ai");
+    expect(aiOnly.hasVectorizeBinding).toBe(false);
+    expect((aiOnly.workbench as { hasWorkersAiBinding: boolean }).hasWorkersAiBinding).toBe(
+      true,
+    );
+
+    // …and the mirror image: an index bound with no Workers AI binding at all.
+    mockGetCfContext.mockReturnValue(cfEnv({ YOPEDIA_VECTORIZE: { query: vi.fn() } }));
+    const indexOnly = (await (await GET()).json()) as Record<string, unknown>;
+    expect(indexOnly.hasVectorizeBinding).toBe(true);
+    expect(
+      (indexOnly.workbench as { hasWorkersAiBinding: boolean }).hasWorkersAiBinding,
+    ).toBe(false);
   });
 });
 

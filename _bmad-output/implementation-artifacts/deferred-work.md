@@ -5966,7 +5966,9 @@ location: src/components/EmbeddingSettings.tsx:380
 source_spec: `spec-dw-616-workers-ai-dimension-hint.md`
 severity: low
 reason: `resolveEmbeddingProvider` answers `workers-ai` when the Cloudflare `AI` binding is bound (src/lib/embeddings.ts); that says nothing about `YOPEDIA_VECTORIZE`. `R2Storage` holds `this.vectorize` as `VectorizeIndex | undefined` (src/lib/storage/r2.ts:86,91) and guards every vector operation on it (:404, :430, :454, :467, :477), so the index half of the sentence can be false while the provider half is true. Pre-existing and untouched by DW-616, which narrowed only the provider half. The settings route already resolves binding facts server-side (`getWorkersAiBinding()`, served as `hasWorkersAiBinding`), so the same door could answer this one.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-settings-surface-claims
+resolution-undo: 89365e428cdf3038e1e248cfc8b06d0e763ab853ca4f617be7f6dcb00d7fa1c1 2026-09-05 7374617475733a206f70656e
 
 ### DW-716: The Skill count is appended to the health line for every health, so a sidecar that never answered still renders "0 Skills on disk." as a statement of fact.
 origin: spec-deferred e26f7ee1a820
@@ -6313,7 +6315,9 @@ location: src/lib/workbench-loopback-health.ts:26
 source_spec: `spec-dw-604-605-607-sidecar-origin-contract.md`
 severity: low
 reason: `SETTINGS_API_HEALTH_UNREACHABLE_COPY` (src/lib/workbench-loopback-health.ts:26) is "The sidecar is not running on 127.0.0.1:19828." and `IconRail.tsx:83` is "Sidecar not running". Both are decided by the same origin-blind browser fetch this change concedes cannot report WHY it failed: `probeLoopbackApiPane` collapses any rejected fetch — including the bare 403 with no `Access-Control-Allow-Origin` — to `unreachable`. On a deployed unconfigured origin Chat now correctly says the sidecar may be running and simply refused, while Settings, one panel away, flatly asserts it is not running; the pane's own comment (SettingsApiMcpPane.tsx:165) says such a claim beside a running sidecar "is worse than no claim at all". Pre-existing — both sentences were equally wrong before this change — and outside this bundle's intent, which named `CHAT_SIDECAR_DOWN_COPY` alone. `isSidecarDefaultAdmittedOrigin` is now exported and is the piece a fix would reuse. Existing pins assert the current sentences fro
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-settings-surface-claims
+resolution-undo: 89365e428cdf3038e1e248cfc8b06d0e763ab853ca4f617be7f6dcb00d7fa1c1 2026-09-05 7374617475733a206f70656e
 
 ### DW-751: Clicking a graph node leaves the keyboard cursor where it was, so a reader who clicks and then presses an arrow resumes from the first node rather than from the node they just acted on.
 origin: spec-deferred 87acd760c2fe
@@ -6543,4 +6547,12 @@ location: wrangler.jsonc:82-89 (producer) vs src/lib/__tests__/task-consumer.tes
 source_spec: `spec-dw-434-729-730-test-harness-coverage-gaps.md`
 severity: low
 reason: Surfaced by two reviewers while auditing the new consumer-side config block. `wrangler.jsonc:82-89` declares `{"binding": "TASK_QUEUE", "queue": "yopedia-tasks"}`, read at runtime by `getTaskQueue()`/`enqueueTask()` in `src/lib/tasks.ts:383-412`, which returns null and logs `TASK_QUEUE unavailable (off-Workers)` at info level when the binding is missing; call sites such as `src/lib/integration-outbox.ts:227` and `src/app/api/tasks/run/route.ts:328` ignore the boolean return. The only tests that open the root `wrangler.jsonc` are `e2e-identity.test.ts:147` (asserts only that `YOPEDIA_E2E` is absent) and `brand-copy.test.ts` (brand-name counts); `tasks.test.ts:29-57` injects its own `{ env: { TASK_QUEUE: { send } } }` mock and never reads a config file. So a rename there sends messages to a queue nothing drains, or drops them before they are queued, with no test and no error-level signal — the same "queued work is replayable, not lost" promise the new consumer block was added to protect,
+status: open
+
+### DW-779: SkillsCanvas tells an owner on a deployed origin to start a sidecar that may be running and merely refusing that origin — the same flat claim DW-750 removed from the rail dot and the API/MCP health li
+origin: spec-deferred 4e82096771ae
+location: src/components/workbench/SkillsCanvas.tsx:97
+source_spec: `spec-dw-715-750-settings-surface-claims.md`
+severity: low
+reason: On a rejected loopback scan `SkillsCanvas` renders `SKILLS_SCAN_FAILED_COPY` ("Skills are scanned by the local sidecar, and it did not answer. Start it with `pnpm sidecar`…"). The scan goes through the same origin-blind `loopbackFetch`, so a bare 403 with no `Access-Control-Allow-Origin` reaches it as the same opaque rejection a dead port does. The component holds no `pageOrigin` and the constant has no origin-sensitive twin. Pre-existing and untouched by this change; the "did not answer" contract is a different one from the health/status contract the two surfaces above share, so it was left out of scope rather than half-adopted. `usePageOrigin` and `isSidecarDefaultAdmittedOrigin` are now both in place as the pieces a fix would reuse.
 status: open

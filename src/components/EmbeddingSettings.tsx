@@ -25,6 +25,50 @@ import { useId } from "react";
 export const EMBEDDING_REBUILD_READ_ONLY_COPY =
   "Embeddings cannot be rebuilt while this deployment is read-only.";
 
+/**
+ * The Workers AI hint, in the three states the deployment can actually be in
+ * (DW-715).
+ *
+ * THREE WHOLE SENTENCES rather than a stem plus fragments, because each is a
+ * different claim and each has to be readable as the whole of what is being
+ * asserted. The provider half is resolved by `GET /api/settings`'s
+ * `embeddingProviderInEffect`; the INDEX half is a separate, optional
+ * `YOPEDIA_VECTORIZE` binding that the same response answers separately. The
+ * hint used to state both off the provider alone, so a Workers AI deployment
+ * with no index bound was told it had a 1,024-dimensional one.
+ *
+ * Only {@link EMBEDDING_WORKERS_AI_INDEX_COPY} carries a dimension: 1,024 is `bge-m3`'s
+ * output width and the width an index has to be created at, which is advice
+ * about an index that EXISTS. With none bound there is nothing for it to be a
+ * property of, and with the binding unknown nothing resolved it either way — so
+ * the shortest sentence, which claims only the provider, is what stands.
+ */
+export const EMBEDDING_WORKERS_AI_INDEX_COPY =
+  "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.";
+export const EMBEDDING_WORKERS_AI_NO_INDEX_COPY =
+  "This deployment uses Cloudflare Workers AI. No Vectorize index is bound.";
+export const EMBEDDING_WORKERS_AI_COPY = "This deployment uses Cloudflare Workers AI.";
+
+/**
+ * Which of the three the hint has earned, or `""` when it has earned none.
+ *
+ * Pure, and gated on BOTH the resolved provider and the pinned model id exactly
+ * as the composed sentence was (DW-616) — the id alone is what is SET, and
+ * `EMBEDDING_MODEL=@cf/baai/bge-m3` can be pinned on a deployment that embeds
+ * through OpenAI. A non-Workers deployment says nothing at all here, whatever
+ * the binding answered.
+ */
+function workersAiHint(
+  providerInEffect: string | null | undefined,
+  effectiveModel: string | null,
+  hasVectorizeBinding: boolean | null | undefined,
+): string {
+  if (providerInEffect !== "workers-ai" || effectiveModel !== "@cf/baai/bge-m3") return "";
+  if (hasVectorizeBinding === true) return EMBEDDING_WORKERS_AI_INDEX_COPY;
+  if (hasVectorizeBinding === false) return EMBEDDING_WORKERS_AI_NO_INDEX_COPY;
+  return EMBEDDING_WORKERS_AI_COPY;
+}
+
 export interface EmbeddingSettingsProps {
   embeddingModel: string;
   setEmbeddingModel: (v: string) => void;
@@ -58,6 +102,25 @@ export interface EmbeddingSettingsProps {
    * that does not pass it renders byte-identically to before this prop existed.
    */
   providerInEffect?: string | null;
+  /**
+   * Whether `YOPEDIA_VECTORIZE` is bound, as `GET /api/settings` read it
+   * (DW-715).
+   *
+   * The SECOND fact the Workers AI sentence above needs, and independent of the
+   * provider. The binding is optional — the R2 provider holds it as
+   * `VectorizeIndex | undefined` and guards every vector call on it — so a
+   * deployment can resolve Workers AI and have no index at all, which is the
+   * state the old single sentence described as having a 1,024-dimensional one.
+   *
+   * SERVED, never derived here: a binding is readable only inside a Workers
+   * request scope, and nothing in the browser can ask.
+   *
+   * THREE-STATE, like {@link EmbeddingSettingsProps.providerInEffect}. `null`
+   * (the default, and what every caller that does not pass it gets) is "nobody
+   * answered", which drops the index clause and leaves the provider clause —
+   * independently resolved — standing. It never guesses a binding.
+   */
+  hasVectorizeBinding?: boolean | null;
   /**
    * True when the model above is SET but something else is embedding — the
    * embedding provider cannot serve it, so the resolver substitutes its own
@@ -170,6 +233,7 @@ export function EmbeddingSettings({
   modelSource,
   modelInEffect,
   providerInEffect = null,
+  hasVectorizeBinding = null,
   overridden,
   vectorNotice,
   rebuilding,
@@ -183,6 +247,14 @@ export function EmbeddingSettings({
   // they would disagree is a description pointing at an element that is not in
   // the document.
   const showOverrideNote = overridden && modelInEffect !== null;
+  // The Workers AI clause the env-locked hint has earned, or `""` (DW-715).
+  // Resolved ONCE here rather than inside the branch below, so the condition and
+  // the string it appends can never be two different calls.
+  const workersAiClause = workersAiHint(
+    providerInEffect,
+    effectiveModel,
+    hasVectorizeBinding,
+  );
   // The same discipline for the second note, and then ONE list built from the
   // two conditions — so the attribute can never name an id that is not in the
   // document, and never omit one that is. `undefined` rather than `""` when
@@ -374,11 +446,15 @@ export function EmbeddingSettings({
             // claim: the model term is deliberately unchanged, so the inverse
             // gap — Workers AI in effect under a non-Workers pin — stays as it
             // was.
+            //
+            // The sentence itself is now SPLIT on a second served fact (DW-715).
+            // It used to state the provider and the index together off the
+            // provider alone, but `YOPEDIA_VECTORIZE` is an independent optional
+            // binding — see `workersAiHint`, which owns all three forms so no
+            // caller can inline a fourth.
             "The environment sets EMBEDDING_MODEL, and that wins at runtime. " +
             "This box is fixed until that variable is unset." +
-            (providerInEffect === "workers-ai" && effectiveModel === "@cf/baai/bge-m3"
-              ? " This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index."
-              : "")
+            (workersAiClause ? ` ${workersAiClause}` : "")
           : "Leave empty to use the embedding provider default."}
       </p>
       <div className="mt-3 flex items-center gap-3">

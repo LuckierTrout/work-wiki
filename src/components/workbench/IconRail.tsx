@@ -5,6 +5,7 @@ import {
   BADGE_MODE_NOUNS,
   WORKBENCH_MODES,
   badgeAccessibleName,
+  railSidecarDownLabel,
   type WorkbenchModeId,
 } from "@/lib/workbench-modes";
 import type { SidecarStatus } from "@/lib/sidecar";
@@ -40,6 +41,21 @@ export interface IconRailProps {
   collapsed: boolean;
   onToggleCollapsed: () => void;
   sidecar: SidecarStatus;
+  /**
+   * This page's own origin, or nothing (DW-750).
+   *
+   * Read for ONE purpose: choosing which `down` sentence the dot is entitled to.
+   * The probe behind {@link IconRailProps.sidecar} is an origin-blind browser
+   * fetch that cannot report WHY it failed (DW-607), so on a page the sidecar
+   * does not admit by default `down` may be a process that is running and
+   * refusing, which the shorter of the two labels flatly denies.
+   *
+   * Optional, and absent means "nobody answered", which degrades to today's
+   * label rather than guessing the longer claim — see `railSidecarDownLabel`.
+   * That is also what keeps the server render and the first client render equal:
+   * {@link usePageOrigin} answers `null` until its mount effect runs.
+   */
+  pageOrigin?: string | null;
   todoCount?: number;
   reviewCount?: number;
 }
@@ -64,6 +80,7 @@ export const IconRail = forwardRef<HTMLElement, IconRailProps>(function IconRail
     collapsed,
     onToggleCollapsed,
     sidecar,
+    pageOrigin = null,
     todoCount = 0,
     reviewCount = 0,
   },
@@ -76,11 +93,18 @@ export const IconRail = forwardRef<HTMLElement, IconRailProps>(function IconRail
   // accusation, and a tab that starts in the background never probes at all,
   // so that lie would stand indefinitely. Three states, three labels.
   const live = sidecar === "up";
+  //
+  // `down` is the one arm the ORIGIN can qualify (DW-750). The other two are
+  // decided by an affirmative probe and by nothing having asked yet, and neither
+  // is a claim about the sidecar the page's origin says anything about. The
+  // sentence is SELECTED IN `workbench-modes`, beside the Chat canvas's answer
+  // to the same question, so the two surfaces on this screen cannot drift into
+  // contradicting each other about one probe.
   const sidecarLabel =
     sidecar === "up"
       ? "Sidecar running"
       : sidecar === "down"
-        ? "Sidecar not running"
+        ? railSidecarDownLabel(pageOrigin)
         : "Checking sidecar";
 
   return (

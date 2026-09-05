@@ -54,6 +54,24 @@ export interface EffectiveSettings {
    * answer `null` on exactly the deployments the Workers AI sentence is true of.
    */
   embeddingProviderInEffect: string | null;
+  /**
+   * Whether `YOPEDIA_VECTORIZE` is bound to this deployment, as
+   * `GET /api/settings` read it (DW-715).
+   *
+   * The SECOND half of the Workers AI hint's claim, and independent of the
+   * provider above. `YOPEDIA_VECTORIZE` is an optional binding — the R2 provider
+   * holds it as `VectorizeIndex | undefined` and guards every vector call on it
+   * — so a deployment can embed through Workers AI with no index bound, and the
+   * hint's "with a 1,024-dimensional Vectorize index" was asserting one anyway.
+   *
+   * SERVED, never derived. A binding exists only inside a Workers request scope;
+   * the browser has no way to ask, and no other served field implies the answer.
+   *
+   * Optional on the TYPE because this interface is a hand-duplicated view of the
+   * route's body, and absent means "nobody answered" — which makes NO index
+   * claim either way rather than guessing one (the DW-616 precedent).
+   */
+  hasVectorizeBinding?: boolean;
   embeddingModelOverridden: boolean;
   hasApiKey: boolean;
   ollamaBaseUrl: string | null;

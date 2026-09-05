@@ -8,6 +8,14 @@
 import { SKILL_SCAN_URL, type SkillSummary } from "./chat-agent";
 import { loopbackFetch } from "./loopback-client";
 import { LOOPBACK_HEALTH_URL, LOOPBACK_STATUSES, type LoopbackStatus } from "./v1-contract";
+/**
+ * The origin predicates the Chat canvas already selects its fail-closed sentence
+ * with (DW-607/DW-750). Imported rather than re-derived so the two surfaces
+ * degrade identically; `workbench-modes` reaches only `sidecar.ts`, which
+ * imports nothing, so there is no cycle back into this module.
+ */
+import { isPageOrigin } from "./workbench-modes";
+import { isSidecarDefaultAdmittedOrigin } from "./sidecar";
 
 export type ClassifiedLoopbackHealth = LoopbackStatus | "unreachable";
 
@@ -25,6 +33,27 @@ export function classifyLoopbackHealth(payload: unknown): ClassifiedLoopbackHeal
 
 export const SETTINGS_API_HEALTH_UNREACHABLE_COPY =
   "The sidecar is not running on 127.0.0.1:19828.";
+/**
+ * The same failed probe, on a page the sidecar does not admit by default
+ * (DW-750).
+ *
+ * `unreachable` is a browser fetch that REJECTED, and DW-607 already conceded
+ * that such a rejection cannot report why: a refused connection and a CORS
+ * refusal reach the page as the same opaque failure. On a loopback origin the
+ * door is open without configuration, so the sentence above is the honest one.
+ * Anywhere else the sidecar may be running and simply refusing this origin —
+ * and the pane was flatly asserting a dead process while the Chat canvas, from
+ * the same probe on the same screen, said the opposite.
+ *
+ * NAMES BOTH CAUSES AND THE KNOB, unlike the rail's two-word dot label: this is
+ * a paragraph in Settings, which is exactly where an owner has come to fix the
+ * thing, and `WORKWIKI_SIDECAR_ALLOWED_ORIGINS` is the remedy for the half they
+ * cannot otherwise guess.
+ */
+export const SETTINGS_API_HEALTH_UNREACHABLE_ORIGIN_COPY =
+  "Nothing answered on 127.0.0.1:19828 from this page. Either the sidecar is " +
+  "not running, or it is running and refused this page’s origin — add it to " +
+  "WORKWIKI_SIDECAR_ALLOWED_ORIGINS.";
 export const SETTINGS_API_HEALTH_PORT_CONFLICT_COPY =
   "Something else owns port 19828. That process is not this wiki.";
 export const SETTINGS_API_HEALTH_RUNNING_COPY =
@@ -54,8 +83,24 @@ export const SETTINGS_API_HEALTH_STARTING_COPY =
  * `error` and `unreachable` share a sentence deliberately: a listener that died
  * and a connection that was refused are the same fact to the owner — nothing is
  * serving on 19828 — and the remedy is the same one.
+ *
+ * ONLY `unreachable` READS THE ORIGIN (DW-750). `error` is a health payload that
+ * ARRIVED: the request completed, so the door admitted this page and its origin
+ * says nothing more about what is wrong — describing an answered probe as a
+ * possible CORS refusal would be a worse claim than the shared one. The other
+ * three states are the listener's own report of itself and are origin-blind for
+ * the same reason.
+ *
+ * @param pageOrigin — this page's own origin, or nothing. Absent, unparseable
+ * and loopback all degrade to {@link SETTINGS_API_HEALTH_UNREACHABLE_COPY}, the
+ * sentence this function has always answered — so a caller that does not pass it
+ * renders byte-identically to before the argument existed, and the pane's first
+ * client render matches the server's.
  */
-export function loopbackHealthSentence(health: ClassifiedLoopbackHealth): string {
+export function loopbackHealthSentence(
+  health: ClassifiedLoopbackHealth,
+  pageOrigin?: string | null,
+): string {
   switch (health) {
     case "starting":
       return SETTINGS_API_HEALTH_STARTING_COPY;
@@ -63,8 +108,11 @@ export function loopbackHealthSentence(health: ClassifiedLoopbackHealth): string
       return SETTINGS_API_HEALTH_RUNNING_COPY;
     case "port_conflict":
       return SETTINGS_API_HEALTH_PORT_CONFLICT_COPY;
-    case "error":
     case "unreachable":
+      return isSidecarDefaultAdmittedOrigin(pageOrigin) || !isPageOrigin(pageOrigin)
+        ? SETTINGS_API_HEALTH_UNREACHABLE_COPY
+        : SETTINGS_API_HEALTH_UNREACHABLE_ORIGIN_COPY;
+    case "error":
       return SETTINGS_API_HEALTH_UNREACHABLE_COPY;
     default: {
       const unhandled: never = health;

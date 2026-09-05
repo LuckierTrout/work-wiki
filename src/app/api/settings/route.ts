@@ -32,6 +32,18 @@ import {
  * of the vector rule rather than being called from either.
  */
 import { getWorkersAiBinding } from "@/lib/embeddings";
+/**
+ * The ONE place `YOPEDIA_VECTORIZE` is read for the settings surface (DW-715).
+ *
+ * Same shape as the `AI` binding above and for the same reason: server-only, so
+ * the read lives in a route that already has a Workers request scope, and the
+ * ANSWER — not the binding — is what crosses into the browser. The helper is
+ * exported from the storage module because that module owns the binding's only
+ * other consumer (`R2StorageProvider`) and reads it through the same OpenNext
+ * context — see its docblock for the one path (`initCloudflareStorage(env)`)
+ * that no production caller takes.
+ */
+import { hasVectorizeBinding } from "@/lib/storage";
 import {
   PROVIDER_INFO,
   EMBEDDING_PROVIDERS,
@@ -123,6 +135,22 @@ export async function GET() {
   // than turn on for a deployment that would embed nothing (DW-225). The browser
   // has no way to ask, so the answer rides on the payload.
   const hasWorkersAiBinding = getWorkersAiBinding() !== null;
+  // A SECOND, INDEPENDENT binding — not implied by the one above (DW-715).
+  // `YOPEDIA_VECTORIZE` is optional on `CloudflareEnv` and every vector call in
+  // the R2 provider guards on it, so a deployment can resolve `workers-ai` as
+  // its embedding provider with no index bound at all. The Settings hint used to
+  // read the resolved provider and then assert "a 1,024-dimensional Vectorize
+  // index" off it, which is a claim about infrastructure nothing had resolved.
+  // The browser cannot ask — bindings exist only inside a Workers request scope
+  // — so, like `hasWorkersAiBinding`, the fact rides on the payload as DATA.
+  //
+  // FLAT, beside the legacy fields rather than inside `workbench`: the hint it
+  // gates renders on the flat `/settings` page, and `EffectiveSettings` in
+  // `config.ts` deliberately cannot carry it — `getEffectiveSettings()` is sync
+  // and cache-backed and can be called off a Workers request scope, where no
+  // binding is readable. `GET` only: the hint renders on the env-locked branch,
+  // which no `PUT` response feeds.
+  const vectorizeBound = hasVectorizeBinding();
   // ONE settings API. Story 1.9's fields ride under ONE nested `workbench` key
   // beside the frozen legacy object — widening `EffectiveSettings` would force
   // edits to `settings-route.test.ts`'s whole-object fixture and to
@@ -134,6 +162,7 @@ export async function GET() {
   return Response.json({
     ...settings,
     version,
+    hasVectorizeBinding: vectorizeBound,
     workbench: {
       ...getWorkbenchSettings(hasWorkersAiBinding, inbound, read.config),
       version,

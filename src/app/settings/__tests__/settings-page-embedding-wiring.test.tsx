@@ -1,6 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import SettingsPage from "@/app/settings/page";
+/**
+ * The hint's three Workers AI forms, as the component EXPORTS them (DW-715).
+ *
+ * This file goes on spelling the whole composed sentence as a literal below —
+ * that is what pins the copy, and an expectation built out of the same constant
+ * the component renders would pass on any rewording. What the import adds is
+ * that the sentences this file types are still the sentences the component
+ * owns: without it, each form now exists as a hand-copy here, another in
+ * `embedding-settings-override.test.tsx`, and the real one in the module, free
+ * to drift apart three ways.
+ */
+import {
+  EMBEDDING_WORKERS_AI_INDEX_COPY,
+  EMBEDDING_WORKERS_AI_NO_INDEX_COPY,
+} from "@/components/EmbeddingSettings";
 
 /**
  * `/settings` end to end through the browser half of DW-274, MOUNTED.
@@ -158,7 +173,17 @@ describe("/settings gates the Workers AI dimensions sentence on the provider", (
    * that pinned `overridden: false` on the openai leg would be asserting the
    * rendering of a payload no deployment can produce.
    */
-  function pinned(provider: "openai" | "workers-ai") {
+  function pinned(
+    provider: "openai" | "workers-ai",
+    /**
+     * Whether `YOPEDIA_VECTORIZE` is bound, as `GET /api/settings` serves it
+     * (DW-715) — a SECOND independent fact, which is why it is a second
+     * parameter and not implied by the provider. Defaulted to bound so the
+     * `workers-ai` leg keeps describing the deployment the byte-identical
+     * sentence below is true of.
+     */
+    hasVectorizeBinding = true,
+  ) {
     const substituting = provider !== "workers-ai";
     return {
       ...SUBSTITUTED,
@@ -166,9 +191,22 @@ describe("/settings gates the Workers AI dimensions sentence on the provider", (
       embeddingModelSource: "env",
       embeddingModelInEffect: substituting ? "text-embedding-3-small" : "@cf/baai/bge-m3",
       embeddingProviderInEffect: provider,
+      hasVectorizeBinding,
       embeddingModelOverridden: substituting,
     };
   }
+
+  it("types the same two sentences the component exports", () => {
+    // The literals this file asserts with, checked against their one definition
+    // — the parity guard `embedding-settings-override.test.tsx` carries for all
+    // three forms, applied to the two this suite actually renders.
+    expect(EMBEDDING_WORKERS_AI_INDEX_COPY).toBe(
+      "This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.",
+    );
+    expect(EMBEDDING_WORKERS_AI_NO_INDEX_COPY).toBe(
+      "This deployment uses Cloudflare Workers AI. No Vectorize index is bound.",
+    );
+  });
 
   it("stays silent when the deployment embeds through another provider", async () => {
     // THE DW-616 deployment, whole: the `@cf/` id is pinned, openai cannot serve
@@ -217,5 +255,31 @@ describe("/settings gates the Workers AI dimensions sentence on the provider", (
         "This box is fixed until that variable is unset." +
         " This deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize index.",
     );
+  });
+
+  it("withholds the index clause when the served binding says there is none", async () => {
+    // THE mutation guard for the SECOND wire (DW-715). Dropping
+    // `hasVectorizeBinding={settings?.hasVectorizeBinding ?? null}` from
+    // `page.tsx` drops the component back to its `= null` default, which renders
+    // the provider clause alone — so the case above still passes and only this
+    // one fails. It is also the deployment the old single sentence lied about:
+    // `workers-ai` resolves, no Vectorize index is bound, and the hint promised
+    // a 1,024-dimensional one.
+    stubFetch(pinned("workers-ai", false));
+    render(<SettingsPage />);
+
+    await waitFor(() => expect(hint()).not.toBeNull());
+    await waitFor(() =>
+      expect(hint()!.textContent).toContain("No Vectorize index is bound."),
+    );
+    expect(hint()!.textContent).toBe(
+      "The environment sets EMBEDDING_MODEL, and that wins at runtime. " +
+        "This box is fixed until that variable is unset." +
+        " This deployment uses Cloudflare Workers AI. No Vectorize index is bound.",
+    );
+    // The provider half is independently resolved and survives; only the
+    // dimension claim — which nothing resolved — is gone.
+    expect(hint()!.textContent).toContain("Cloudflare Workers AI");
+    expect(hint()!.textContent).not.toContain("1,024");
   });
 });

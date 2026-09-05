@@ -151,6 +151,42 @@ export function getStorage(): StorageProvider {
 }
 
 /**
+ * Is `YOPEDIA_VECTORIZE` bound to this deployment?
+ *
+ * THE SAME BINDING `R2StorageProvider` HOLDS, read through the same
+ * `getOpenNextCloudflareEnv()` the provider is constructed from — which is why
+ * it lives here and not beside a caller. `YOPEDIA_VECTORIZE` is declared
+ * OPTIONAL on `CloudflareEnv`, every vector call in `r2.ts` guards on it, and
+ * nothing else in the codebase can answer the question: a deployment can resolve
+ * Workers AI as its embedding provider and still have no index bound, so the
+ * binding is a SECOND fact, never implied by the first.
+ *
+ * THREE ROUTES TO `false`, deliberately collapsed into one answer:
+ *
+ *   1. Not on Workers at all — `getCloudflareContext()` throws and the helper
+ *      above swallows it.
+ *   2. On Workers, but the env carries no `YOPEDIA_BUCKET`/`YOPEDIA_CONFIG` —
+ *      `getOpenNextCloudflareEnv()` requires BOTH before it will claim the
+ *      object is a `CloudflareEnv`, and without them `R2StorageProvider` cannot
+ *      be constructed, so there is no deployment here that could use an index.
+ *   3. On Workers with those two bound, and `YOPEDIA_VECTORIZE` simply absent.
+ *
+ * None of the three is an index this deployment can write to, and a caller that
+ * needs to tell them apart has a different question than the one this answers.
+ * It never throws, so a caller on any runtime gets a boolean rather than a
+ * branch.
+ *
+ * ONE READ, with one caveat worth stating: `R2StorageProvider` can ALSO be built
+ * from an env handed straight to `initCloudflareStorage(env)`, which this helper
+ * never consults — so the two agree because every production caller reaches the
+ * provider through the OpenNext context, not because the code makes divergence
+ * impossible. No caller passes its own env today.
+ */
+export function hasVectorizeBinding(): boolean {
+  return getOpenNextCloudflareEnv()?.YOPEDIA_VECTORIZE != null;
+}
+
+/**
  * Reset the singleton — useful for testing or provider hot-swap.
  * @internal
  */

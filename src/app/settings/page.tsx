@@ -280,6 +280,7 @@ export default function SettingsPage() {
           modelSource={settings?.embeddingModelSource ?? "none"}
           modelInEffect={settings?.embeddingModelInEffect ?? null}
           providerInEffect={settings?.embeddingProviderInEffect ?? null}
+          hasVectorizeBinding={settings?.hasVectorizeBinding ?? null}
           overridden={settings?.embeddingModelOverridden ?? false}
           vectorNotice={vectorNotice}
           rebuilding={rebuilding}

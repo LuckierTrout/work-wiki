@@ -44,6 +44,20 @@ vi.mock("@/lib/embeddings", () => ({
   getEmbeddingResolution: vi.fn(() => ({ provider: null, model: null })),
   hasEmbeddingSupport: vi.fn(() => false),
 }));
+/**
+ * The Vectorize binding, chosen per test (DW-715).
+ *
+ * PARTIAL, unlike the mock above: `config.ts` reaches `getStorage()` from this
+ * same module and the rest of this file drives it through a real (if mocked-at-
+ * the-door) config layer, so only the one read is replaced. Under vitest the
+ * real helper answers `false` for the honest reason — there is no Workers
+ * request scope — which is the right default here and leaves the "bound" case to
+ * be stated rather than assumed.
+ */
+vi.mock("@/lib/storage", async (original) => ({
+  ...(await original<typeof import("@/lib/storage")>()),
+  hasVectorizeBinding: vi.fn(() => false),
+}));
 
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerPrincipal } from "@/lib/owner";
@@ -61,6 +75,7 @@ import {
   formatIfMatch,
 } from "@/lib/write-precondition";
 import { getWorkersAiBinding } from "@/lib/embeddings";
+import { hasVectorizeBinding } from "@/lib/storage";
 import type { Ai } from "@/lib/storage/cloudflare-types";
 import {
   SETTINGS_INVALID_URL_COPY,
@@ -72,6 +87,7 @@ import {
 } from "@/lib/workbench-settings";
 
 const mockedBinding = vi.mocked(getWorkersAiBinding);
+const mockedVectorize = vi.mocked(hasVectorizeBinding);
 const mockedPrincipal = vi.mocked(getPrincipal);
 const mockedIsOwner = vi.mocked(isOwnerPrincipal);
 const mockedReadOnly = vi.mocked(isReadOnly);
@@ -124,6 +140,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   // No binding by default — the state every existing test ran under.
   mockedBinding.mockReturnValue(null);
+  // Nor a Vectorize index (DW-715), and for the same reason: the two are
+  // INDEPENDENT bindings, so neither default may be inferred from the other.
+  mockedVectorize.mockReturnValue(false);
   // The env halves of the vector rule are the DEPLOYMENT's, not this machine's.
   // `workbenchSettingsStored` reads all four: `EMBEDDING_MODEL` would flip the
   // model leg's origin to "env" and change the refusal sentence, and the two
@@ -583,6 +602,60 @@ describe("/api/settings — one snapshot per response", () => {
       researchProvider: "tavily",
     });
     expect(body.workbench.chatModel).not.toBe(STORED.chatModel);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The Vectorize binding is a SECOND served fact (DW-715)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/settings — the Vectorize binding", () => {
+  it("serves it flat, resolved server-side and independent of the AI binding", async () => {
+    // The browser cannot ask: a binding is readable only inside a Workers
+    // request scope. So the answer has to ride on the payload, exactly as
+    // `hasWorkersAiBinding` does — and it has to be its OWN answer. All four
+    // combinations are exercised because the Settings hint used to state the
+    // index off the resolved provider alone, which is the top-right cell here:
+    // Workers AI in effect, no index bound, "1,024-dimensional" claimed anyway.
+    const { GET } = await import("@/app/api/settings/route");
+
+    for (const ai of [null, {} as unknown as Ai]) {
+      for (const vectorize of [true, false]) {
+        mockedBinding.mockReturnValue(ai);
+        mockedVectorize.mockReturnValue(vectorize);
+
+        const body = await (await GET()).json();
+
+        expect(body.hasVectorizeBinding, `ai=${ai !== null} vec=${vectorize}`).toBe(
+          vectorize,
+        );
+      }
+    }
+  });
+
+  it("is read once per GET, from the storage module that owns the binding", async () => {
+    // ONE door. `R2StorageProvider` holds the same `env.YOPEDIA_VECTORIZE`, and
+    // the helper is exported beside it so the route and the provider cannot
+    // disagree about what "bound" means. A route that re-derived the answer from
+    // the provider, or read it twice through two paths, would fail here.
+    const { GET } = await import("@/app/api/settings/route");
+
+    await GET();
+
+    expect(mockedVectorize).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not on the PUT response, which renders no hint that needs it", async () => {
+    // Scope, stated: the sentence the fact gates renders on the env-locked
+    // branch of the flat page, which is fed by `GET`. Serving it from `PUT` too
+    // would widen a response shape for a reader that does not exist.
+    const { PUT } = await import("@/app/api/settings/route");
+
+    const body = await (
+      await PUT(request({ provider: "ollama-cloud", model: "gpt-oss:120b" }))
+    ).json();
+
+    expect(body).not.toHaveProperty("hasVectorizeBinding");
   });
 });
 

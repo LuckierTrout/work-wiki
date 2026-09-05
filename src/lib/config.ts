@@ -2082,10 +2082,20 @@ export function envResearchProviders(): ResearchProviderId[] {
  * `providerInEffect` is the OTHER half that same door returns, taken from the
  * SAME call rather than a second one (DW-616). It is here because a surface
  * that renders a claim about the embedding infrastructure — `/settings`' "this
- * deployment uses Cloudflare Workers AI with a 1,024-dimensional Vectorize
- * index" — has to be told which provider is actually embedding: the browser
- * holds only the env variable and the stored value, and the resolver's Workers
- * AI auto-detect leg fires with both of those unset.
+ * deployment uses Cloudflare Workers AI…" hint — has to be told which provider
+ * is actually embedding: the browser holds only the env variable and the stored
+ * value, and the resolver's Workers AI auto-detect leg fires with both of those
+ * unset.
+ *
+ * THAT HINT IS NO LONGER ONE SENTENCE (DW-715). `EmbeddingSettings` picks
+ * between three forms, and the one that ends "…with a 1,024-dimensional
+ * Vectorize index" is now the form a deployment has to have EARNED: whether
+ * `YOPEDIA_VECTORIZE` is bound is a second, independent fact, served flat by
+ * `GET /api/settings` off `hasVectorizeBinding()` in the storage module. This
+ * field answers only the PROVIDER half, and deliberately: `getEffectiveSettings`
+ * is sync and cache-backed and can be called off a Workers request scope, where
+ * no binding is readable at all — which is exactly why the index half is
+ * resolved in the route and never here.
  *
  * The reported pair is deliberately left alone rather than replaced with the
  * resolved name: `useSettings` seeds the editable model input from

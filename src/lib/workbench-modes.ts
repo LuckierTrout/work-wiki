@@ -113,8 +113,13 @@ export const CHAT_SIDECAR_UNREACHABLE_COPY =
  * reports — none of which say anything about whether the door would admit the
  * page. Round-tripping through `URL` and comparing against `origin` is what
  * separates a genuine origin from all three, and it never throws.
+ *
+ * EXPORTED since DW-750, and only so the loopback-health module can degrade the
+ * same way this one does. Every origin-sensitive sentence on the Workbench has
+ * to treat "no origin" as "no claim", and a second hand-written parse would be a
+ * second answer to "is this even an origin" waiting to disagree with this one.
  */
-function isPageOrigin(value: string | null | undefined): boolean {
+export function isPageOrigin(value: string | null | undefined): boolean {
   if (typeof value !== "string") return false;
   const trimmed = value.trim();
   if (!trimmed) return false;
@@ -147,6 +152,61 @@ export function chatSidecarDownCopy(
   if (isSidecarDefaultAdmittedOrigin(pageOrigin)) return CHAT_SIDECAR_DOWN_COPY;
   if (!isPageOrigin(pageOrigin)) return CHAT_SIDECAR_DOWN_COPY;
   return CHAT_SIDECAR_UNREACHABLE_COPY;
+}
+
+/**
+ * The rail's sidecar dot, in the two things a `down` probe can actually mean
+ * (DW-750).
+ *
+ * The dot used to say "Sidecar not running" for every `down`, decided by the
+ * same origin-blind browser probe DW-607 already conceded cannot report WHY it
+ * failed — so on a deployed origin the rail flatly asserted a dead process while
+ * Chat, on the same screen and from the same probe, correctly said it may be
+ * running and refusing. Two surfaces, one fact, two contradictory sentences.
+ *
+ * SHORT, because they are a dot's `title` and its live-region text, not a
+ * paragraph: an environment variable name does not fit in either, and a label
+ * that grew to hold one would be read aloud on every mode change. "not
+ * reachable" is what the browser can honestly say about a refused connection
+ * whose cause it cannot see.
+ *
+ * WHICH LEAVES THE DOT WITHOUT A REMEDY, and that is accepted rather than
+ * hidden. Chat's longer sentence is NOT a fallback for it: `ModeCanvas` renders
+ * that only under `mode === "chat"`, while the dot is persistent chrome, so an
+ * owner sitting on Wiki or Search reads "Sidecar not reachable" with no next
+ * step beside it. The remedy lives where an owner goes to act on it — the
+ * Settings API + MCP pane's health line, which has a paragraph and names both
+ * causes and `WORKWIKI_SIDECAR_ALLOWED_ORIGINS`. The dot's job is to stop
+ * asserting a dead process it cannot see, not to teach the fix.
+ *
+ * The `up` and `unknown` labels stay inline in the rail: they are decided by an
+ * affirmative probe and by nothing having asked yet, and neither is a claim the
+ * origin can qualify.
+ */
+export const RAIL_SIDECAR_DOWN_LABEL = "Sidecar not running";
+export const RAIL_SIDECAR_REFUSED_LABEL = "Sidecar not reachable";
+
+/**
+ * Which of the two a `down` probe on THIS page has earned.
+ *
+ * Deliberately the same shape and the same degrade as {@link
+ * chatSidecarDownCopy}, over the same predicates, so the rail dot and the Chat
+ * canvas cannot answer the same question two ways — which is the whole of what
+ * DW-750 is about. It is a separate function rather than a share of that one
+ * because the two surfaces owe DIFFERENT sentences, not different renderings of
+ * one: Chat's is a paragraph carrying the remedy, this is a dot's label.
+ *
+ * DEGRADES TO {@link RAIL_SIDECAR_DOWN_LABEL}. An origin that is absent or
+ * unparseable is the server render, the first client render and the sandboxed
+ * embedding, where the shorter claim is both the more often true one and the one
+ * that keeps the server's markup equal to the first client render.
+ */
+export function railSidecarDownLabel(
+  pageOrigin: string | null | undefined,
+): string {
+  if (isSidecarDefaultAdmittedOrigin(pageOrigin)) return RAIL_SIDECAR_DOWN_LABEL;
+  if (!isPageOrigin(pageOrigin)) return RAIL_SIDECAR_DOWN_LABEL;
+  return RAIL_SIDECAR_REFUSED_LABEL;
 }
 
 export const CHAT_COVERAGE_MISSING_COPY =

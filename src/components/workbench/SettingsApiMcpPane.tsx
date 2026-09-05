@@ -52,6 +52,7 @@ import {
   type ClassifiedLoopbackHealth,
 } from "@/lib/workbench-loopback-health";
 import type { SkillSummary } from "@/lib/chat-agent";
+import { usePageOrigin } from "@/hooks/usePageOrigin";
 
 /**
  * The API + MCP category's pane — the loopback door, its token, and the two
@@ -156,6 +157,12 @@ export function SettingsApiMcpPane({
       cancelled = true;
     };
   }, []);
+  // What the probe above CANNOT report (DW-750). A rejected browser fetch is
+  // opaque: a refused connection and a CORS refusal arrive as the same failure,
+  // so the sentence for `unreachable` is selected from the one fact this page
+  // holds for free — its own origin — rather than from a diagnosis. Read after
+  // mount by the hook, and `null` until then, which the selector degrades to.
+  const pageOrigin = usePageOrigin();
 
   return (
     <>
@@ -185,7 +192,10 @@ export function SettingsApiMcpPane({
               named, so a `starting` sidecar — a listener that has not bound
               yet — was described as serving. The switch in the health module
               cannot compile with a status it has no sentence for. */}
-          {loopbackHealthSentence(apiLive.health)}{" "}
+          {/* The origin is the SECOND argument, and only the `unreachable` arm
+              reads it (DW-750): an `error` payload ARRIVED, so the door admitted
+              this page and its origin says nothing about what is wrong. */}
+          {loopbackHealthSentence(apiLive.health, pageOrigin)}{" "}
           {/* The count comes from the SAME module and the same exhaustive
               shape (DW-716). The inline ternary that used to stand here read
               `apiLive.skills.length` off a list the probe filled with `[]`

@@ -8,6 +8,8 @@ import {
 } from "@/components/workbench/WorkbenchData";
 import {
   BADGE_MODE_NOUNS,
+  RAIL_SIDECAR_DOWN_LABEL,
+  RAIL_SIDECAR_REFUSED_LABEL,
   WORKBENCH_MODES,
   badgeAccessibleName,
 } from "@/lib/workbench-modes";
@@ -32,10 +34,12 @@ import type { SidecarStatus } from "@/lib/sidecar";
  * moved cannot leave a loop here quietly asserting nothing. The expected
  * accessible names are then spelled out as literals beside those imports on
  * purpose: deriving them from `badgeAccessibleName` alone would only assert
- * that the component calls the same function this file does. The three sidecar
- * sentences are literals because they have no module to import from — they are
- * written inline in `IconRail.tsx` itself, so pinning them here is the only
- * place they are held at all.
+ * that the component calls the same function this file does. The `up` and
+ * `unknown` sentences are literals because they have no module to import from —
+ * they are written inline in `IconRail.tsx` itself, so pinning them here is the
+ * only place they are held at all. The two `down` labels are NOT: since DW-750
+ * they live in `workbench-modes` beside the Chat canvas's answer to the same
+ * question, and are imported here so this file cannot pin a third spelling.
  *
  * The rail's THREE remaining rules were added later (DW-257). Every case above
  * mounts `settingsActive: false`, and every one of them leaves `onSelect` and
@@ -160,7 +164,9 @@ describe("the sidecar dot", () => {
   const CASES: ReadonlyArray<[SidecarStatus, string, boolean]> = [
     ["unknown", "Checking sidecar", false],
     ["up", "Sidecar running", true],
-    ["down", "Sidecar not running", false],
+    // No `pageOrigin` is passed, which is the state the label selector degrades
+    // to — so this row is byte-identical to what the dot said before DW-750.
+    ["down", RAIL_SIDECAR_DOWN_LABEL, false],
   ];
 
   for (const [sidecar, label, live] of CASES) {
@@ -179,6 +185,64 @@ describe("the sidecar dot", () => {
       expect(status.classList.contains("wb-status--live")).toBe(live);
     });
   }
+
+  /**
+   * DW-750 — `down` is the one arm the page's ORIGIN can qualify.
+   *
+   * The probe behind `sidecar` is an origin-blind browser fetch that cannot
+   * report why it failed, so on a page the sidecar does not admit by default a
+   * `down` means the process may be running and refusing this origin. The dot
+   * used to deny that flatly while the Chat canvas, from the same probe on the
+   * same screen, allowed it.
+   *
+   * The RULE is executed in `workbench-modes.test.ts`; what these cases show is
+   * that the rail is wired to it — the prop reaches the label, and the two arms
+   * that are not `down` ignore it entirely.
+   */
+  it("says the sidecar is not REACHABLE on a page it may simply be refused from", () => {
+    mountRail({ sidecar: "down", pageOrigin: "https://app.example" });
+
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe(RAIL_SIDECAR_REFUSED_LABEL);
+    expect(status.getAttribute("title")).toBe(RAIL_SIDECAR_REFUSED_LABEL);
+    // The claim this entry exists to remove.
+    expect(status.textContent).not.toBe(RAIL_SIDECAR_DOWN_LABEL);
+    // Still not live: the origin changes what the dot SAYS, never whether it
+    // promises a sidecar that has not answered.
+    expect(status.classList.contains("wb-status--live")).toBe(false);
+  });
+
+  it("keeps today's label on a loopback page, and wherever no origin is known", () => {
+    for (const pageOrigin of [
+      "http://localhost:3000",
+      "http://127.0.0.1:19828",
+      null,
+      // The server render and the first client render both arrive here, and so
+      // does a sandboxed frame reporting the literal string "null".
+      "null",
+      "",
+    ]) {
+      cleanup();
+      mountRail({ sidecar: "down", pageOrigin });
+      expect(screen.getByRole("status").textContent, String(pageOrigin)).toBe(
+        RAIL_SIDECAR_DOWN_LABEL,
+      );
+    }
+  });
+
+  it("ignores the origin on the two arms the probe actually answered", () => {
+    // `up` is an affirmative answer and `unknown` is nothing having asked yet;
+    // neither is a claim an origin can qualify. A selector applied to the whole
+    // ternary rather than to its `down` arm would fail here.
+    for (const [sidecar, label] of [
+      ["up", "Sidecar running"],
+      ["unknown", "Checking sidecar"],
+    ] as ReadonlyArray<[SidecarStatus, string]>) {
+      cleanup();
+      mountRail({ sidecar, pageOrigin: "https://app.example" });
+      expect(screen.getByRole("status").textContent, sidecar).toBe(label);
+    }
+  });
 });
 
 describe("the collapse chevron", () => {

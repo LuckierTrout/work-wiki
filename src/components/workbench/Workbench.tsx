@@ -12,6 +12,7 @@ import {
 } from "react";
 import { APP_NAME } from "@/lib/brand";
 import { nextAnnouncement } from "@/lib/live-region";
+import { usePageOrigin } from "@/hooks/usePageOrigin";
 import { useSidecarStatus } from "@/hooks/useSidecarStatus";
 import { useShortcutAction } from "@/hooks/useKeyboardShortcuts";
 import {
@@ -306,6 +307,11 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   const [shellWidth, setShellWidth] = useState(0);
   const [resizing, setResizing] = useState(false);
   const sidecar = useSidecarStatus();
+  // The other half of what the rail dot needs to be honest about `down`
+  // (DW-750). `null` until the hook's mount effect runs, which is the state the
+  // label selector degrades to — so the shell's first client render is
+  // byte-identical to the server's.
+  const pageOrigin = usePageOrigin();
   const headingId = useId();
   const railRef = useRef<HTMLElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -1896,6 +1902,11 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
         collapsed={collapsed}
         onToggleCollapsed={toggleCollapsed}
         sidecar={sidecar}
+        // The rail dot's `down` sentence is origin-sensitive (DW-750): the same
+        // probe means "nothing is listening" on a loopback page and "may be
+        // running and refusing" anywhere else. Read here, after mount, and
+        // handed down — the rail decides nothing about it.
+        pageOrigin={pageOrigin}
         todoCount={todoCount}
         reviewCount={reviewCount}
       />

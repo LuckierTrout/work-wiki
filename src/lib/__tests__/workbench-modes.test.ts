@@ -17,13 +17,25 @@ import {
   CHAT_SIDECAR_UP_COPY,
   DEFAULT_WORKBENCH_MODE,
   GRAPH_NARROW_COPY,
+  RAIL_SIDECAR_DOWN_LABEL,
+  RAIL_SIDECAR_REFUSED_LABEL,
   TODOS_NON_MEETING_COPY,
   WORKBENCH_MODES,
   badgeAccessibleName,
   chatSidecarDownCopy,
   isWorkbenchModeId,
+  railSidecarDownLabel,
   workbenchMode,
 } from "../workbench-modes";
+/**
+ * The THIRD surface the origin rule is spelled out on (DW-750). Imported into
+ * this file rather than asserted in its own, because the property below is a
+ * correspondence between the three and has no home inside any one of them.
+ */
+import {
+  SETTINGS_API_HEALTH_UNREACHABLE_COPY,
+  loopbackHealthSentence,
+} from "../workbench-loopback-health";
 
 /** Quoted from `EXPERIENCE.md` — do not retype, copy. */
 const HANDOFF_COPY: Record<string, string> = {
@@ -168,6 +180,107 @@ describe("empty-state copy", () => {
       "file:///Users/owner/page.html",
     ]) {
       expect(chatSidecarDownCopy(origin)).toBe(CHAT_SIDECAR_DOWN_COPY);
+    }
+  });
+
+  /**
+   * DW-750 — the RAIL dot's half of the same question.
+   *
+   * The dot said "Sidecar not running" for every `down`, decided by the same
+   * origin-blind probe the sentence above already concedes cannot report why it
+   * failed — so on a deployed page the rail flatly denied what Chat, from the
+   * same probe on the same screen, correctly allowed. Same rule, same degrade,
+   * shorter sentence: a dot has no room for the knob, and Chat's paragraph is
+   * beside it for the owner who wants the remedy.
+   */
+  it("chooses the rail dot's down label from the same origin rule", () => {
+    // The loopback answer is UNCHANGED, byte for byte — it is what
+    // `IconRail.tsx` inlined before the selector existed.
+    expect(RAIL_SIDECAR_DOWN_LABEL).toBe("Sidecar not running");
+    // The deployed one denies nothing it cannot see, and stays a DOT LABEL:
+    // short, no port, no knob, no punctuation a `title` would carry oddly.
+    expect(RAIL_SIDECAR_REFUSED_LABEL).toBe("Sidecar not reachable");
+    expect(RAIL_SIDECAR_REFUSED_LABEL).not.toBe(RAIL_SIDECAR_DOWN_LABEL);
+    expect(RAIL_SIDECAR_REFUSED_LABEL).not.toMatch(/\p{Extended_Pictographic}/u);
+
+    for (const origin of [
+      "http://localhost:3000",
+      "http://127.0.0.1:19828",
+      "http://[::1]:3000",
+      "https://localhost",
+    ]) {
+      expect(railSidecarDownLabel(origin), origin).toBe(RAIL_SIDECAR_DOWN_LABEL);
+    }
+    for (const origin of [
+      "https://app.example",
+      "http://app.example:8080",
+      "https://localhost.evil.test",
+    ]) {
+      expect(railSidecarDownLabel(origin), origin).toBe(RAIL_SIDECAR_REFUSED_LABEL);
+    }
+    // The conservative degrade, for exactly the same reasons: the server render,
+    // the first client render, and everything that is not an origin at all.
+    for (const origin of [
+      null,
+      undefined,
+      "",
+      "   ",
+      "null",
+      "not a url",
+      "http://[::1].evil.test",
+      "file:///Users/owner/page.html",
+    ]) {
+      expect(railSidecarDownLabel(origin), String(origin)).toBe(
+        RAIL_SIDECAR_DOWN_LABEL,
+      );
+    }
+  });
+
+  /**
+   * ALL THREE selectors agree on every input, which is the property DW-750 is
+   * about — one probe, one screen, and no surface allowed to contradict another
+   * about what a failed probe means.
+   *
+   * THREE, not two. The origin rule is spelled out three times: here in
+   * `chatSidecarDownCopy` and `railSidecarDownLabel`, and again inline on
+   * `loopbackHealthSentence`'s `unreachable` arm over in
+   * `workbench-loopback-health.ts`. A pair-wise assertion would let a future
+   * origin form be added to two of the three and leave the Settings health line
+   * disagreeing with both, green — the exact drift this entry closes. So the
+   * Settings surface is a row of the correspondence, not a separate suite.
+   *
+   * Asserted as a correspondence rather than by re-listing each rule's expected
+   * output: those rows are pinned per-selector above and in
+   * `loopback-health-sentence.test.ts`. What this adds is that the three answer
+   * the same QUESTION the same way, whatever the rows become.
+   */
+  it("keeps all three origin-sensitive surfaces in agreement about every origin", () => {
+    for (const origin of [
+      "http://localhost:3000",
+      "http://127.0.0.1:19828",
+      "http://[::1]:3000",
+      "https://localhost",
+      "https://app.example",
+      "http://app.example:8080",
+      "https://localhost.evil.test",
+      null,
+      undefined,
+      "",
+      "   ",
+      "null",
+      "not a url",
+      "http://[::1].evil.test",
+      "file:///Users/owner/page.html",
+    ]) {
+      // "Does this origin get the CONSERVATIVE sentence?", asked of each
+      // surface in its own vocabulary.
+      const railSaysDown = railSidecarDownLabel(origin) === RAIL_SIDECAR_DOWN_LABEL;
+      const chatSaysDown = chatSidecarDownCopy(origin) === CHAT_SIDECAR_DOWN_COPY;
+      const paneSaysDown =
+        loopbackHealthSentence("unreachable", origin) ===
+        SETTINGS_API_HEALTH_UNREACHABLE_COPY;
+      expect(railSaysDown, String(origin)).toBe(chatSaysDown);
+      expect(paneSaysDown, String(origin)).toBe(chatSaysDown);
     }
   });
 });

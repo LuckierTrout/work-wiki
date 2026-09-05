@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { usePageOrigin } from "@/hooks/usePageOrigin";
 import { SurfaceVisibilityProvider } from "@/hooks/useSurfaceVisibility";
 import {
   chatSidecarDownCopy,
@@ -168,16 +169,11 @@ export function ModeCanvas({
   // configuration, `down` means nothing answered; anywhere else the process may
   // be running and simply refused.
   //
-  // READ AFTER MOUNT, never during render. `window` does not exist on the
-  // server, and a render that reached for it on the client would produce
-  // different markup from the one React is hydrating — the sentence would swap
-  // under a hydration mismatch. `null` until the effect runs is the state the
-  // selector already degrades to, so the first client render is byte-identical
-  // to the server's and the swap is a normal re-render.
-  const [pageOrigin, setPageOrigin] = useState<string | null>(null);
-  useEffect(() => {
-    setPageOrigin(window.location.origin);
-  }, []);
+  // The read-after-mount rule and the reason `null` is the right initial value
+  // now live in {@link usePageOrigin}, which the rail dot and the API/MCP pane
+  // ask the same question through (DW-750) — three inline effects on one screen
+  // were three chances for one of them to read `window` during render.
+  const pageOrigin = usePageOrigin();
 
   // On screen — the mode is Wiki AND no other surface is over the canvas. What
   // the wrapper's own `hidden` and the published visibility both key on, so the

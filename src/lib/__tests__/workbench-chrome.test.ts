@@ -110,7 +110,16 @@ describe("IconRail", () => {
   it("gives the sidecar dot all three states, and only goes live on an answer", async () => {
     const source = await read("IconRail.tsx");
     expect(source).toContain('"Sidecar running"');
-    expect(source).toContain('"Sidecar not running"');
+    // The `down` label is no longer INLINE here (DW-750). It is one of two, and
+    // which one this page has earned is decided by the page's own origin — a
+    // rule `workbench-modes` owns beside the Chat canvas's answer to the same
+    // question, so the two surfaces on one screen cannot contradict each other
+    // about one probe. The labels themselves are pinned in
+    // `workbench-modes.test.ts`; what this file can see is that the rail DEFERS.
+    expect(source).toContain("railSidecarDownLabel(pageOrigin)");
+    // …and holds no `down` sentence of its own to drift from it.
+    expect(source).not.toContain("Sidecar not running");
+    expect(source).not.toContain("Sidecar not reachable");
     // "unknown" is neither: before the first probe answers — and in a tab that
     // starts hidden, indefinitely — the dot must not accuse a live sidecar of
     // being dead.
@@ -386,7 +395,19 @@ describe("ModeCanvas", () => {
     // suite fixes the document URL, so it cannot tell a wired component from a
     // constant — while handing every LOOPBACK page the wrong sentence, which no
     // other test in the repo mounts. This line is where that regression lands.
-    expect(source).toContain("window.location.origin");
+    // Since DW-750 the read lives in `usePageOrigin`, which three surfaces share
+    // — the pin follows it there. The hook is the only thing in this repo that
+    // touches `window.location.origin` for this purpose, and `usePageOrigin.ts`
+    // is pinned for that read in its own right below.
+    expect(source).toContain("usePageOrigin()");
+    expect(source).not.toContain("window.location");
+    // …and the hook it moved into really asks the browser, AFTER mount. A hook
+    // that returned a constant would satisfy the line above and still hand every
+    // surface the wrong sentence; one that read `window` during render would
+    // swap the sentence under a hydration mismatch instead.
+    const hook = await readFile(path.join(SRC, "hooks/usePageOrigin.ts"), "utf8");
+    expect(hook).toContain("window.location.origin");
+    expect(hook).toMatch(/useEffect\(\(\) => \{\s*setPageOrigin\(window\.location\.origin\);/);
     expect(source).toContain("<ChatCanvas");
     expect(source).toContain('sidecar === "up"');
     expect(source).toContain("<ChatCanvas");
