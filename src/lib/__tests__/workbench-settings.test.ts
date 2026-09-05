@@ -125,6 +125,7 @@ import {
   fetchWorkbenchSettings,
   flatMovableVectorLegs,
   flatTextFieldAction,
+  isSettingsCategoryId,
   isWorkbenchSettingsPayload,
   resolveEnvEmbeddingProvider,
   saveWorkbenchSettings,
@@ -418,6 +419,34 @@ describe("the settings nav vocabulary", () => {
   it("opens on General", () => {
     expect(DEFAULT_SETTINGS_CATEGORY).toBe("general");
     expect(SETTINGS_CATEGORIES.map((c) => c.id)).toContain(DEFAULT_SETTINGS_CATEGORY);
+  });
+
+  it("narrows an untrusted value to a listed id, and nothing else", () => {
+    // The `?category=` param's narrower (DW-514). It lives beside the
+    // vocabulary rather than beside its reader in `workbench-url.ts` for the
+    // reason `isWorkbenchModeId` does: a validator written at the call site is a
+    // second copy of the list that nothing forces to agree with this one — so
+    // this pins it against `SETTINGS_CATEGORIES` itself, and a category added
+    // above is linkable without a second edit anywhere.
+    for (const category of SETTINGS_CATEGORIES) {
+      expect(isSettingsCategoryId(category.id)).toBe(true);
+    }
+    // A hand-edited link, a label mistaken for an id, an id from a future build,
+    // and the shapes a query read can hand in when the param is absent.
+    for (const value of [
+      "General",
+      "LLM Models",
+      "nope",
+      "",
+      " general",
+      "general ",
+      null,
+      undefined,
+      0,
+      {},
+    ]) {
+      expect(isSettingsCategoryId(value)).toBe(false);
+    }
   });
 
   it("gives every category a unique id and a non-empty label", () => {

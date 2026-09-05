@@ -12,6 +12,7 @@ import {
   SETTINGS_LABEL,
   settingsAnnouncement,
   settingsCategory,
+  type SettingsCategoryId,
 } from "@/lib/workbench-settings";
 import { workbenchMode } from "@/lib/workbench-modes";
 import { CANVAS_ID } from "@/components/workbench/ModeCanvas";
@@ -155,6 +156,22 @@ function settingsShowing(): boolean {
   return document.querySelector(".wb-set-pad") !== null;
 }
 
+/** A pane that is NOT the default, so the omit-at-default rule is observable. */
+const OTHER_CATEGORY: SettingsCategoryId = "embeddings";
+
+/** The Settings nav row for a pane, by the label the vocabulary gives it. */
+function paneRow(id: SettingsCategoryId): HTMLButtonElement {
+  return screen.getByRole("button", {
+    name: settingsCategory(id).label,
+  }) as HTMLButtonElement;
+}
+
+/** Which pane the Settings nav marks as showing, if any. */
+function currentPane(): string | null {
+  const marked = document.querySelector("nav.wb-set-nav [aria-current='page']");
+  return marked?.textContent ?? null;
+}
+
 describe("g s on the mounted Workbench (DW-62)", () => {
   it("opens the in-shell Settings surface, mirrors it into the URL, and does not navigate", async () => {
     await renderShell();
@@ -223,6 +240,45 @@ describe("g s on the mounted Workbench (DW-62)", () => {
     // this press would write is the one already showing and nothing is pushed.
     // An entry per repeat would be a Back the owner has to press twice.
     expect(window.history.length).toBe(before);
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it("keeps the owner on the pane they were reading, and still adds no entry", async () => {
+    // DW-514 on the KEYBOARD route. `openSettings` hands `pushSurface` the pane
+    // the shell is actually on, and every other case in this file presses `g s`
+    // from the DEFAULT pane — where `surfaceHref(loc, mode, true, general)` and
+    // `surfaceHref(loc, mode, true, DEFAULT_SETTINGS_CATEGORY)` are the same
+    // string, so none of them can see which one was passed.
+    //
+    // Replace that argument with the constant and TWO things ship at once, with
+    // this file otherwise green: the URL silently drops the pane the owner was
+    // reading — DW-514's headline bug, arriving through the shortcut instead of
+    // through a copied link — and the href the press would write stops matching
+    // the one already showing, so a repeat press pushes a redundant entry the
+    // owner has to Back through.
+    await renderShell();
+    await press("g", "s");
+    fireEvent.click(paneRow(OTHER_CATEGORY));
+    await act(async () => {});
+    expect(window.location.search).toBe("?mode=wiki&settings=1&category=embeddings");
+    (document.activeElement as HTMLElement | null)?.blur();
+    const before = window.history.length;
+
+    await press("g", "s");
+
+    // "Go to Settings" means the surface, not a pane of it: the key names a
+    // destination and the owner is already standing in it.
+    expect(settingsShowing()).toBe(true);
+    expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
+    expect(window.location.search).toBe("?mode=wiki&settings=1&category=embeddings");
+    // Same rule as the repeat press above — the href this press would write is
+    // the one already showing, so nothing is pushed.
+    expect(window.history.length).toBe(before);
+    // …and the keyboard still lands where the announcement says it does.
+    expect(document.activeElement).toBe(document.getElementById(CANVAS_ID));
+    expect(announced()).toBe(
+      settingsAnnouncement(settingsCategory(OTHER_CATEGORY).label),
+    );
     expect(router.push).not.toHaveBeenCalled();
   });
 

@@ -103,6 +103,24 @@ export function settingsCategory(id: SettingsCategoryId): SettingsCategory {
   return SETTINGS_CATEGORIES.find((category) => category.id === id) ?? SETTINGS_CATEGORIES[0];
 }
 
+const SETTINGS_CATEGORY_IDS: ReadonlySet<string> = new Set(
+  SETTINGS_CATEGORIES.map((category) => category.id),
+);
+
+/**
+ * Narrows an untrusted value (the `?category=` param, DW-514) to a real
+ * category id.
+ *
+ * HERE rather than in `workbench-url.ts`, and shaped exactly like
+ * `isWorkbenchModeId`: this module owns the vocabulary, so the list has one
+ * definition and a category added above is narrowed by that edit alone. A
+ * validator written beside the reader would be a second copy of
+ * {@link SETTINGS_CATEGORIES} that nothing forces to agree with this one.
+ */
+export function isSettingsCategoryId(value: unknown): value is SettingsCategoryId {
+  return typeof value === "string" && SETTINGS_CATEGORY_IDS.has(value);
+}
+
 /**
  * What the shell's live region says when Settings opens or the category moves
  * (EXPERIENCE.md:175 — a surface change announces the surface name).

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import { useGraphSimulation } from "@/hooks/useGraphSimulation";
-import { KNOWLEDGE_TREE_HREF } from "@/lib/workbench-url";
+import { KNOWLEDGE_TREE_HREF, readScopeFromSearch } from "@/lib/workbench-url";
 
 export default function GraphPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -33,15 +33,19 @@ export default function GraphPage() {
   }, [isSignedIn]);
 
   // Initial scope once, on first Clerk load: a `?scope=` deep-link wins, else
-  // default = mine. Reads location directly (not
-  // useSearchParams) to avoid a client-side-rendering bailout of the page.
+  // default = mine. Reads `window.location` directly rather than through
+  // `useSearchParams`, which would opt this whole page into a client-side
+  // rendering bailout — the SAME rationale `@/lib/workbench-url` was written
+  // under, which is why the read is that module's and not a second
+  // `URLSearchParams` hand-rolled here (DW-166). One reader per param, in one
+  // place; the `?? "mine"` below is the page's own fallback, and the reader
+  // deliberately validates nothing because the lens vocabulary is
+  // `/api/wiki/graph`'s and that route already gates it.
   const didInit = useRef(false);
   useEffect(() => {
     if (didInit.current || !isLoaded) return;
     didInit.current = true;
-    const deepLink =
-      new URLSearchParams(window.location.search).get("scope") || undefined;
-    setScope(deepLink || "mine");
+    setScope(readScopeFromSearch(window.location.search) ?? "mine");
   }, [isLoaded]);
 
   const scopedHandle = scope?.startsWith("owner:")

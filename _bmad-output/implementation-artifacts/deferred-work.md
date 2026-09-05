@@ -1210,7 +1210,9 @@ source_spec: `spec-dw-27-workbench-mode-url-sync.md`
 location: src/app/wiki/graph/page.tsx:35-42
 severity: low
 reason: `src/app/wiki/graph/page.tsx:41` already does `new URLSearchParams(window.location.search).get("scope")`, with a comment at `:35` giving the same "avoid the useSearchParams bailout" rationale that `src/lib/workbench-url.ts` was introduced under. Pre-existing — DW-27 did not create it — but `workbench-url.ts` is now presented as the home for URL rules, so the divergence is easier to inherit than it was.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-workbench-url-param-ownership
+resolution-undo: 4f36ee52cd0ea926f905006b16e50bc18a6a4682689bf6995861f11ce39ec329 2026-09-04 7374617475733a206f70656e
 
 ### DW-167: With Settings open the URL still names the underlying mode, so a link copied there reopens the mode canvas and Back on the first entry leaves the app with the unsaved Settings draft.
 
@@ -3969,7 +3971,9 @@ source_spec: `spec-dw-167-423-425-426-settings-url-and-focus-lifecycle.md`
 location: src/lib/workbench-url.ts (the not-in-the-URL list)
 severity: low
 reason: `settingsCategoryId` is local `useState` with no URL and no storage. DW-167 asks only that the link reopen the surface, so this is within intent — but it means the address bar and the announced sentence can disagree about which pane the visitor lands on. Documented as an exclusion in `workbench-url.ts`'s header alongside the tab, the collapse flag, the selection and the widths.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-workbench-url-param-ownership
+resolution-undo: 4f36ee52cd0ea926f905006b16e50bc18a6a4682689bf6995861f11ce39ec329 2026-09-04 7374617475733a206f70656e
 decision: 2026-08-28 Put the category in the URL — Add a settings-category param to workbench-url.ts, write it on category change and restore it on mount, so a copied link reopens the pane the address bar names and the announcement agrees with it.
 
 ### DW-515: `applyTemplate`'s unconfirmed sentence is never dropped when the server render lands, so the card's re-template confirm comes back live under a stale "the outcome is unknown" alert — DW-429's harm on

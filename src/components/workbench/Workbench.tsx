@@ -54,6 +54,7 @@ import {
 import {
   initialMode,
   locationHref,
+  readSettingsCategoryFromSearch,
   readSettingsFromSearch,
   surfaceHref,
 } from "@/lib/workbench-url";
@@ -329,13 +330,20 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // wrong render.
   const settingsOpenRef = useRef(settingsOpen);
   settingsOpenRef.current = settingsOpen;
-  // …and the category, for the SAME reason and nothing else: `applySurface`
-  // announces the Settings sentence on a traversal into the surface, and that
-  // sentence names the pane. Closed over as state it would make `applySurface`
-  // — and `applyMode`, `selectMode`, `openResearch` and the `popstate`
-  // listener behind them — a new identity on every category pick, which is
-  // exactly the listener churn `modeRef` exists to avoid. Only the ANNOUNCEMENT
-  // reads it; `selectSettingsCategory` still drives the state.
+  // …and the category, for the SAME reason: closed over as state it would make
+  // `applySurface` — and `applyMode`, `selectMode`, `openResearch` and the
+  // `popstate` listener behind them — a new identity on every category pick,
+  // which is exactly the listener churn `modeRef` exists to avoid.
+  //
+  // Since DW-514 the pane is in the URL too, so this is read by the paths that
+  // CARRY it rather than only by the announcement: `selectMode` and
+  // `applyArtifactNavigation` hand it to `applySurface`/`pushSurface` so a
+  // surface change preserves the pane it is leaving, and the `popstate` guard
+  // compares against it to tell a traversal that moved the pane from one that
+  // moved nothing. What it is NOT is the announcement's source on a traversal:
+  // `applySurface` takes the pane as an argument, because this ref still holds
+  // the pane the traversal LEFT while the sentence has to name the one it
+  // lands on. `selectSettingsCategory` still drives the state.
   const settingsCategoryIdRef = useRef(settingsCategoryId);
   settingsCategoryIdRef.current = settingsCategoryId;
   // Read inside handlers and the mount effect without taking a dependency on
@@ -449,9 +457,24 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // The surface is restored OVER the mode the same URL names, so closing it
     // reveals the canvas the link intended rather than a default.
     const restoredSettings = readSettingsFromSearch(window.location.search);
+    // The PANE, and only when the URL names the surface as OPEN (DW-514). A
+    // `?category=` with no flag beside it is a stray — a link hand-shortened or
+    // assembled from two halves — and honouring it would leave the shell holding
+    // a pane for a surface nobody asked to see; the seed below then deletes the
+    // param in the same write that names the mode, so the stray survives exactly
+    // one load. An unknown or empty value is `null` from the reader and lands on
+    // `DEFAULT_SETTINGS_CATEGORY` here, which is the pane a link that named none
+    // would have opened anyway.
+    const restoredCategory = restoredSettings
+      ? (readSettingsCategoryFromSearch(window.location.search) ??
+        DEFAULT_SETTINGS_CATEGORY)
+      : DEFAULT_SETTINGS_CATEGORY;
     const restoredTab = readStoredTreeTab();
     setModeState(restoredMode);
     setSettingsOpen(restoredSettings);
+    // SILENT too, and for the reason above it: the pane a link names is the
+    // sender's reading position, not a move the visitor made.
+    setSettingsCategoryId(restoredCategory);
     setCollapsed(readStoredCollapsed());
     setTreeTab(readStoredTreeTab());
     setWidths(readStoredSplitWidths());
@@ -474,7 +497,12 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // COPIED while Settings was open and followed into a new tab; every
     // in-session route to the surface pushes its own entry.
     try {
-      const seeded = surfaceHref(window.location, restoredMode, restoredSettings);
+      const seeded = surfaceHref(
+        window.location,
+        restoredMode,
+        restoredSettings,
+        restoredCategory,
+      );
       if (seeded !== locationHref(window.location)) {
         window.history.replaceState(null, "", seeded);
       }
@@ -695,7 +723,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    * traversal that just happened.
    */
   const applySurface = useCallback(
-    (next: WorkbenchModeId, settings: boolean) => {
+    (next: WorkbenchModeId, settings: boolean, category: SettingsCategoryId) => {
       setModeState(next);
       // Storage is written on this path too, including from `popstate`: what is
       // on screen and what a param-less reload would restore must not diverge.
@@ -709,9 +737,13 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       // `announce(workbenchMode(next).label)` as a literal — a conditional
       // argument would defeat that pin while changing nothing else.
       if (settings) {
-        announce(
-          settingsAnnouncement(settingsCategory(settingsCategoryIdRef.current).label),
-        );
+        // The pane comes in as an ARGUMENT rather than off
+        // `settingsCategoryIdRef`: a traversal has already moved the URL, so the
+        // sentence has to name the pane it LANDS on while the ref still holds
+        // the one it left (DW-514). Passing it also keeps this callback's
+        // identity stable — reading the state instead would rebuild the
+        // `popstate` listener on every category pick.
+        announce(settingsAnnouncement(settingsCategory(category).label));
       } else {
         announce(workbenchMode(next).label);
       }
@@ -719,6 +751,12 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       // so unmounting the surface is the whole of "unsaved edits are discarded
       // on leave". No diff, no prompt, nothing sent.
       setSettingsOpen(settings);
+      // Callers closing the surface pass the pane they are LEAVING, so this is a
+      // no-op on that path: the URL drops the param, and reopening Settings in
+      // this session still lands on the pane the owner was last reading. The
+      // param is the whole of the pane's persistence across a RELOAD, exactly as
+      // it is for the flag — nothing is written to storage here.
+      setSettingsCategoryId(category);
       closeSheet();
     },
     [announce, closeSheet],
@@ -731,7 +769,10 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    */
   const applyMode = useCallback(
     (next: WorkbenchModeId) => {
-      applySurface(next, false);
+      // The pane is carried through unchanged — `surfaceHref` deletes the param
+      // for a closed surface anyway, and resetting the state here would mean a
+      // mode pick silently sent the owner's next Settings visit back to General.
+      applySurface(next, false, settingsCategoryIdRef.current);
     },
     [applySurface],
   );
@@ -745,28 +786,33 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
    * surface the owner came from. The comparison is only sound because
    * `surfaceHref` is idempotent on its own normalized output — see its header.
    *
-   * Both params move together because one builder writes both: there is never a
-   * moment where the URL names half a surface.
+   * All three params move together because one builder writes all three: there
+   * is never a moment where the URL names half a surface, or names a pane of a
+   * surface it has already closed.
    */
-  const pushSurface = useCallback((next: WorkbenchModeId, settings: boolean) => {
-    try {
-      const href = surfaceHref(window.location, next, settings);
-      if (href !== locationHref(window.location)) {
-        window.history.pushState(null, "", href);
+  const pushSurface = useCallback(
+    (next: WorkbenchModeId, settings: boolean, category: SettingsCategoryId) => {
+      try {
+        const href = surfaceHref(window.location, next, settings, category);
+        if (href !== locationHref(window.location)) {
+          window.history.pushState(null, "", href);
+        }
+      } catch {
+        // Same degrade as the mount seed, and the reason every caller applies
+        // the surface BEFORE calling this rather than wrapping the pair: the
+        // surface has already changed and been written down, so a history
+        // failure costs the owner a linkable URL and nothing else. Rethrowing
+        // would take the surface change — and the focus move that follows it —
+        // with it.
       }
-    } catch {
-      // Same degrade as the mount seed, and the reason every caller applies the
-      // surface BEFORE calling this rather than wrapping the pair: the surface
-      // has already changed and been written down, so a history failure costs
-      // the owner a linkable URL and nothing else. Rethrowing would take the
-      // surface change — and the focus move that follows it — with it.
-    }
-  }, []);
+    },
+    [],
+  );
 
   const selectMode = useCallback(
     (next: WorkbenchModeId) => {
       applyMode(next);
-      pushSurface(next, false);
+      pushSurface(next, false, settingsCategoryIdRef.current);
     },
     [applyMode, pushSurface],
   );
@@ -790,6 +836,15 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       const search = window.location.search;
       const next = initialMode(search, readStoredMode());
       const settings = readSettingsFromSearch(search);
+      // The pane the entry names, and only while it names the surface as open:
+      // on a closed entry there is no param to read, so the pane the shell is
+      // already holding IS the answer — which is what keeps the triple below
+      // collapsing back to the DW-167 pair on every traversal that does not
+      // involve Settings. An open entry with no `category` is the default pane,
+      // the same value a link that named none would have opened.
+      const category = settings
+        ? (readSettingsCategoryFromSearch(search) ?? DEFAULT_SETTINGS_CATEGORY)
+        : settingsCategoryIdRef.current;
       // Not every entry in this session is one the shell wrote. The skip link
       // in `SiteChrome` is an `<a href="#wb-canvas">`, and following it pushes a
       // fragment entry carrying the SAME query — so Back from there is a
@@ -797,21 +852,35 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
       // would close Settings (discarding the draft `SettingsCanvas` holds),
       // rewrite storage and announce a surface switch that never happened.
       //
-      // The guard compares the PAIR (DW-167). Back out of Settings moves the
-      // flag and nothing else — the mode underneath is exactly the mode the
-      // previous entry named — so a guard that looked at the mode alone would
-      // swallow the headline case of this entry with the very check that
-      // protects the fragment entry. `modeRef`/`settingsOpenRef` rather than the
+      // The guard compares the TRIPLE (DW-167, widened by DW-514). Back out of
+      // Settings moves the flag and nothing else — the mode underneath is
+      // exactly the mode the previous entry named — so a guard that looked at
+      // the mode alone would swallow the headline case of this entry with the
+      // very check that protects the fragment entry. A pane pick pushes its own
+      // entry for the same reason a rail click does, so Back off one moves
+      // NEITHER the mode nor the flag: left at the pair, that traversal would be
+      // swallowed too and the URL and the surface would part company.
+      // `modeRef`/`settingsOpenRef`/`settingsCategoryIdRef` rather than the
       // state, so this listener is registered once and not rebuilt on every
       // surface change.
-      if (next === modeRef.current && settings === settingsOpenRef.current) return;
+      if (
+        next === modeRef.current &&
+        settings === settingsOpenRef.current &&
+        category === settingsCategoryIdRef.current
+      ) {
+        return;
+      }
       // Read BEFORE `applySurface`, which is what moves the ref on the next
       // render: a traversal that swaps the canvas has no control holding the
       // keyboard, so the landing site has to catch it (DW-423). A traversal that
       // only changes the MODE moves nothing — the canvas the owner was standing
       // in is still the canvas on screen.
       const movedSettings = settings !== settingsOpenRef.current;
-      applySurface(next, settings);
+      applySurface(next, settings, category);
+      // Only the SURFACE swap moves the keyboard. A traversal that moved the
+      // pane alone leaves the same `#wb-canvas` section on screen — the detail
+      // column re-renders under whatever control the owner is standing in — so
+      // a bump here would take them off it (DW-423's other half).
       if (movedSettings) bumpCanvasFocus();
     };
     window.addEventListener("popstate", onPopState);
@@ -844,7 +913,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // undoes the press that opened it and Forward redoes it. AFTER the state
     // change, like every other caller, so a `SecurityError` costs the linkable
     // URL and nothing else.
-    pushSurface(mode, !settingsOpen);
+    pushSurface(mode, !settingsOpen, settingsCategoryId);
     closeSheet();
   }, [
     announce,
@@ -912,7 +981,7 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     bumpCanvasFocus();
     // …and no entry when the surface is already open: `pushSurface` compares the
     // href it would write, and `g s` on open Settings would write the same one.
-    pushSurface(modeRef.current, true);
+    pushSurface(modeRef.current, true, settingsCategoryId);
     closeSheet();
   }, [announce, bumpCanvasFocus, closeSheet, pushSurface, settingsCategoryId]);
 
@@ -922,10 +991,31 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // above this shell.
   useShortcutAction("open-settings", openSettings);
 
-  const selectSettingsCategory = useCallback((next: SettingsCategoryId) => {
-    setSettingsCategoryId(next);
-    announce(settingsAnnouncement(settingsCategory(next).label));
-  }, [announce]);
+  /**
+   * Picking a PANE, which since DW-514 is a move the URL records.
+   *
+   * `pushState`, not `replaceState`: the shell's rule is one entry per press the
+   * owner made, and a pane pick is such a press — the same reason a rail click
+   * pushes and the reason the `popstate` guard above compares the triple. The
+   * NEW pane is what goes in the entry, so Back lands on the previous one and
+   * announces it.
+   *
+   * The write comes AFTER the state change and inside `pushSurface`'s own
+   * `catch {}`, like every other caller: a history failure costs the linkable
+   * URL and never the pane the owner just asked for. `modeRef` rather than
+   * `mode`, so this callback's identity does not move with the mode underneath
+   * the surface — `SettingsNav` takes it as a prop.
+   */
+  const selectSettingsCategory = useCallback(
+    (next: SettingsCategoryId) => {
+      setSettingsCategoryId(next);
+      announce(settingsAnnouncement(settingsCategory(next).label));
+      // No focus move: the canvas did not swap, and the control the owner
+      // pressed is still on screen holding the keyboard.
+      pushSurface(modeRef.current, true, next);
+    },
+    [announce, pushSurface],
+  );
 
   // The storage write is deliberately OUTSIDE the updater: an updater must be
   // pure, and React invokes it twice under StrictMode. Same rule `setSheetClosed`
@@ -1016,8 +1106,8 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
     // Apply the whole destination together: Settings closes, Wiki/Files becomes
     // the visible tree, and Preview points at the artifact. Re-selecting the
     // same target preserves the mounted editor and its draft.
-    applySurface("wiki", false);
-    pushSurface("wiki", false);
+    applySurface("wiki", false, settingsCategoryIdRef.current);
+    pushSurface("wiki", false, settingsCategoryIdRef.current);
     if (treeTab !== "files") {
       // The layout reset effect clears selections whenever the visible tree
       // changes. This navigation intentionally changes the tab and installs a

@@ -408,6 +408,36 @@ describe("the graph canvas's text-list alternative is a live route", () => {
     expect(src).toMatch(/from\s+["']@\/lib\/workbench-url["']/);
   });
 
+  it("reads its `?scope=` lens through the module, not a second URLSearchParams", async () => {
+    // DW-166's STRUCTURAL half, and the only thing in the repo that can see it.
+    // Every mounted assertion about the lens describes behaviour that is
+    // byte-identical either way — a hand-rolled
+    // `new URLSearchParams(window.location.search).get("scope")` answers exactly
+    // what `readScopeFromSearch` answers — so reverting the call site leaves the
+    // whole suite green. What went wrong was never the ANSWER; it was that the
+    // page had a second convention for reading a client query param, written
+    // under the same "avoid the `useSearchParams` bailout" rationale
+    // `workbench-url.ts` was written under, with neither one referencing the
+    // other.
+    //
+    // The `workbench-chrome.test.ts:171` idiom — a call-site scan plus a ban on
+    // the spelling it replaced. `graphSource()` strips comments first, so the
+    // prose above the effect may go on naming what it no longer does.
+    const src = await graphSource();
+    expect(
+      src,
+      "the graph page no longer calls readScopeFromSearch — if the `?scope=` read moved, it moved " +
+        "OUT of @/lib/workbench-url, which is where a client query read belongs (DW-166)",
+    ).toContain("readScopeFromSearch");
+    expect(
+      src,
+      "the graph page hand-rolls a `new URLSearchParams(` of its own again. That is a SECOND " +
+        "convention for reading a client query param — the exact DW-166 defect: workbench-url.ts " +
+        "exists under the same avoid-the-useSearchParams-bailout rationale, and two readers that " +
+        "never reference each other drift. Add the reader there and call it.",
+    ).not.toMatch(/new URLSearchParams\(/);
+  });
+
   it("offers the link OUTSIDE the canvas, where a reader can reach it", async () => {
     // The load-bearing half. A `<canvas>` fallback child renders only where
     // canvas is unsupported, and `role="img"` prunes descendants from the

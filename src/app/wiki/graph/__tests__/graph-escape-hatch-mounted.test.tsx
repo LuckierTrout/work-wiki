@@ -16,17 +16,24 @@ import type { UseGraphSimulationReturn } from "@/hooks/useGraphSimulation";
  *      child is not (DW-594).
  *   3. The canvas advertises its keyboard affordance and ships the live region
  *      that speaks it (DW-595).
+ *   4. A `?scope=` deep link decides which LENS the page opens on (DW-166).
  *
- * They are one claim in three parts: the picture is operable from the keyboard
- * now, so every focus stop it puts in the tab order has to lead somewhere a
- * reader can see, and a reader who cannot see it has to be told the keys exist
- * and be able to hear where the cursor went.
+ * (1)-(3) are one claim in three parts: the picture is operable from the
+ * keyboard now, so every focus stop it puts in the tab order has to lead
+ * somewhere a reader can see, and a reader who cannot see it has to be told the
+ * keys exist and be able to hear where the cursor went.
  *
- * The parts are split across TWO describes rather than three — (2) and (3) are
- * both "what the page's markup promises about the keyboard", and the same
+ * Those three are split across TWO describes rather than three — (2) and (3)
+ * are both "what the page's markup promises about the keyboard", and the same
  * `theCanvas()` read answers both. Whether that promise is KEPT is
  * `graph-activation-mounted.test.tsx`'s subject, against the real hook; the
  * hook is a stub here, so nothing in this file can ask it.
+ *
+ * (4) is a different claim about the same page, and it lives here for the
+ * reason the paragraph above gives: it needs the SAME three stubs — a loaded
+ * signed-out reader, a router, and a simulation that renders the canvas branch
+ * — and a second file holding a second copy of them is two stubs that drift
+ * apart. See its own describe for what it is pinning.
  *
  * ---------------------------------------------------------------------------
  * 1. The escape hatch (DW-461)
@@ -101,6 +108,39 @@ import type { UseGraphSimulationReturn } from "@/hooks/useGraphSimulation";
  * descendants" — is about what an assistive-technology tree EXPOSES. Pruning
  * from the accessibility tree is not removal from the focus order; the
  * `tabIndex={-1}` pinned below is what does that.
+ *
+ * ---------------------------------------------------------------------------
+ * 4. Which lens a `?scope=` link opens on (DW-166)
+ *
+ * The page reads that param through `readScopeFromSearch` in `workbench-url.ts`
+ * rather than hand-rolling a second `new URLSearchParams(window.location.search)`
+ * beside the module that exists for exactly this. Three suites divide that up,
+ * and the split matters because the STRUCTURE and the BEHAVIOUR fail in
+ * different directions:
+ *
+ * - `workbench-url.test.ts` executes the reader, so it can see that the
+ *   function answers correctly;
+ * - `retired-surfaces.test.ts` — the case beside the escape-hatch scans, added
+ *   with DW-166 — reads `page.tsx` as text and pins the CALL: the source must
+ *   name `readScopeFromSearch` and must carry no `new URLSearchParams(` of its
+ *   own. That is the only thing anywhere that fails on a revert to the
+ *   hand-rolled read, because the hand-rolled read returns the same answer and
+ *   every runtime assertion below stays green through it. (The older case one
+ *   describe up pins only `KNOWLEDGE_TREE_HREF` and the import line, both of
+ *   which were already true before this change and neither of which can see
+ *   the reader.)
+ *
+ * NEITHER of those can see whether the page's init effect still feeds the
+ * answer to anything. A read whose result went nowhere — or a `setScope` that
+ * dropped it — would keep both green while every deep link opened on `mine`.
+ * That is what the cases below are for.
+ *
+ * So these ask the rendered page: the lens chrome the owner sees, and the scope
+ * the simulation is actually run with — which is what "graphs that lens" means,
+ * since the hook is what fetches `/api/wiki/graph?scope=`.
+ *
+ * The stub records its arguments for that second read. It still ignores them
+ * when it answers, so every assertion in (1)-(3) is unaffected.
  */
 
 // A signed-out reader is the smallest state that renders the graph at all: the
@@ -135,9 +175,16 @@ vi.mock("next/navigation", () => ({
  * renders the escape hatch — the other three render a `<p>` and nothing else,
  * so a stub that drifted off this branch would assert nothing.
  */
+const { simulationScopes } = vi.hoisted(() => ({ simulationScopes: [] as unknown[] }));
+
 vi.mock("@/hooks/useGraphSimulation", () => ({
-  useGraphSimulation: () =>
-    ({
+  useGraphSimulation: (
+    _canvas: unknown,
+    _router: unknown,
+    scope: string | undefined,
+  ) => {
+    simulationScopes.push(scope);
+    return ({
       loading: false,
       empty: false,
       fetchError: null,
@@ -149,11 +196,16 @@ vi.mock("@/hooks/useGraphSimulation", () => ({
       handleFocus: vi.fn(),
       handleBlur: vi.fn(),
       cursorAnnouncement: "",
-    }) satisfies UseGraphSimulationReturn,
+    }) satisfies UseGraphSimulationReturn;
+  },
 }));
 
 afterEach(() => {
   cleanup();
+  // jsdom's location outlives `cleanup()`, so a deep-link case would otherwise
+  // set the lens for every file that runs after it in this worker.
+  window.history.replaceState(null, "", "/wiki/graph");
+  simulationScopes.length = 0;
 });
 
 /** The tab a reader following `KNOWLEDGE_TREE_HREF` lands on. */
@@ -445,5 +497,66 @@ describe("the graph canvas's focus stops lead somewhere (DW-594/595)", () => {
       "every live region on the page is INSIDE the <canvas>, where role=\"img\" prunes it from " +
         "the accessibility tree (DW-595)",
     ).toBe(true);
+  });
+});
+
+describe("a `?scope=` deep link picks the lens the page opens on (DW-166)", () => {
+  /** The lens the page ran the simulation with, after its init effect settled. */
+  function graphedScope(): unknown {
+    expect(
+      simulationScopes.length,
+      "the page never rendered the simulation at all",
+    ).toBeGreaterThan(0);
+    return simulationScopes[simulationScopes.length - 1];
+  }
+
+  it("graphs the lens the link names", () => {
+    window.history.replaceState(null, "", "/wiki/graph?scope=vault:v1");
+
+    render(<GraphPage />);
+
+    // The whole of DW-166's behavioural half: the reader's answer reaches the
+    // hook that fetches `/api/wiki/graph?scope=`, so the graph on screen is the
+    // one the link asked for.
+    expect(graphedScope()).toBe("vault:v1");
+  });
+
+  it("shows the owner lens a `?scope=owner:` link names", () => {
+    // The one scope value with visible chrome of its own, so this is the read
+    // that a reader would actually notice going wrong.
+    window.history.replaceState(null, "", "/wiki/graph?scope=owner:alice");
+
+    render(<GraphPage />);
+
+    expect(graphedScope()).toBe("owner:alice");
+    expect(
+      screen.getByRole("button", { name: "Clear scope and show the full wiki graph" }),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("@alice");
+  });
+
+  it("falls back to `mine` when the link names no lens, or an empty one", () => {
+    // Absent and empty are one case, because the reader collapses them into one
+    // answer and the page's `?? "mine"` is what turns it into a lens.
+    for (const search of ["", "?q=x", "?scope="]) {
+      window.history.replaceState(null, "", `/wiki/graph${search}`);
+
+      render(<GraphPage />);
+
+      expect(graphedScope(), `on "${search}"`).toBe("mine");
+      // …and the page rendered its NON-OWNER lens chrome — the complement of
+      // the `?scope=owner:` case above, and the whole of what this read can
+      // claim. The group is the else-branch of `scope?.startsWith("owner:")`,
+      // so it renders identically for `mine`, for any `vault:*` and for any
+      // unrecognised value; which chip is active is inline colour and no ARIA
+      // state, so nothing here discriminates WHICH lens is showing. The scope
+      // assertion one line up is what does that.
+      expect(
+        screen.getByRole("group", { name: "Graph scope" }),
+        `on "${search}"`,
+      ).toBeTruthy();
+      cleanup();
+      simulationScopes.length = 0;
+    }
   });
 });

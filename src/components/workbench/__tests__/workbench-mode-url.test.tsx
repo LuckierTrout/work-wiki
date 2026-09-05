@@ -17,16 +17,19 @@ import {
   SETTINGS_LABEL,
   settingsAnnouncement,
   settingsCategory,
+  type SettingsCategoryId,
 } from "@/lib/workbench-settings";
 
 /**
- * DW-27 / DW-167 — the active surface mirrored into the URL, MOUNTED.
+ * DW-27 / DW-167 / DW-514 — the active surface mirrored into the URL, MOUNTED.
  *
  * The mode goes into `?mode=` and an open Settings surface into `?settings=1`,
  * alongside it rather than instead of it — so a copied link reopens Settings
  * over the canvas it was opened from, and Back on the first entry of a session
  * closes the surface instead of leaving the app with an unsaved Settings draft
- * in it. The keyboard follows the canvas in both directions (DW-423): a
+ * in it. The PANE that surface is open on goes into `?category=` (DW-514), so
+ * the address bar and the sentence the shell's live region announces name the
+ * same thing. The keyboard follows the canvas in both directions (DW-423): a
  * traversal has no control holding it, so `#wb-canvas` has to catch it.
  *
  * `workbench-url.test.ts` executes the URL rules and `workbench-chrome.test.ts`
@@ -201,6 +204,22 @@ function landingSite(): HTMLElement | null {
 const SETTINGS_ANNOUNCEMENT = settingsAnnouncement(
   settingsCategory(DEFAULT_SETTINGS_CATEGORY).label,
 );
+
+/** A pane that is NOT the default, so the omit-at-default rule is observable. */
+const OTHER_CATEGORY: SettingsCategoryId = "embeddings";
+
+/** The Settings nav row for a pane, by the label the vocabulary gives it. */
+function paneRow(id: SettingsCategoryId): HTMLButtonElement {
+  return screen.getByRole("button", {
+    name: settingsCategory(id).label,
+  }) as HTMLButtonElement;
+}
+
+/** Which pane the Settings nav marks as showing, if any. */
+function currentPane(): string | null {
+  const marked = document.querySelector("nav.wb-set-nav [aria-current='page']");
+  return marked?.textContent ?? null;
+}
 
 /** How long to wait for a traversal jsdom may never perform. */
 const POPSTATE_TIMEOUT_MS = 1000;
@@ -552,6 +571,191 @@ describe("Workbench mode ↔ URL", () => {
     expect(settingsShowing()).toBe(true);
   });
 
+  it("restores the PANE a deep link names, silently", async () => {
+    // The DW-514 headline. `?settings=1` alone named the surface and not the
+    // pane, so a link copied off Embeddings reopened on General — while the
+    // sentence the sender had just heard said "Settings, Embeddings". The
+    // address bar and the announced surface have to agree.
+    window.history.replaceState(null, "", "/?mode=chat&settings=1&category=embeddings");
+    const before = window.history.length;
+    const resting = document.activeElement;
+
+    await renderShell();
+
+    expect(settingsShowing()).toBe(true);
+    expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
+    // Left exactly as written: the seed has nothing to correct.
+    expect(window.location.search).toBe("?mode=chat&settings=1&category=embeddings");
+    // A restore is not a change the visitor made — no entry, nothing announced,
+    // and the keyboard left where they had it. Same silence the mode and the
+    // surface restore with.
+    expect(window.history.length).toBe(before);
+    expect(announced()).toBe("");
+    expect(document.activeElement).toBe(resting);
+  });
+
+  it("falls back to the default pane on an unknown one, and drops the param", async () => {
+    // Narrowed, not trusted. The reader answers `null` for absent, empty and
+    // unknown alike, the shell lands on `DEFAULT_SETTINGS_CATEGORY`, and the
+    // seed's one `replaceState` writes the URL the shell is actually in — which
+    // omits the pane, because the default pane is the ordinary state.
+    window.history.replaceState(null, "", "/?settings=1&category=nope");
+    writeStoredMode("wiki");
+    const before = window.history.length;
+
+    await renderShell();
+
+    expect(settingsShowing()).toBe(true);
+    expect(currentPane()).toBe(settingsCategory(DEFAULT_SETTINGS_CATEGORY).label);
+    expect(window.location.search).toBe("?settings=1&mode=wiki");
+    expect(new URLSearchParams(window.location.search).get("category")).toBeNull();
+    // Still a restore: rewritten in place, nothing announced, no entry.
+    expect(window.history.length).toBe(before);
+    expect(announced()).toBe("");
+  });
+
+  it("ignores a pane named on a CLOSED surface, and deletes the stray", async () => {
+    // `?category=` with no flag beside it is a link hand-shortened or assembled
+    // from two halves. Honouring it would leave the shell holding a pane for a
+    // surface nobody asked to see, so the state stays default and the seed takes
+    // the stray with it — a pane of a surface that is not showing is not a state
+    // the shell can be in.
+    window.history.replaceState(null, "", "/?mode=wiki&category=embeddings");
+
+    await renderShell();
+
+    expect(settingsShowing()).toBe(false);
+    expect(window.location.search).toBe("?mode=wiki");
+
+    // …and opening Settings lands on the default pane, not the one the stray
+    // named.
+    fireEvent.click(railItem(SETTINGS_LABEL));
+
+    expect(currentPane()).toBe(settingsCategory(DEFAULT_SETTINGS_CATEGORY).label);
+    expect(window.location.search).toBe("?mode=wiki&settings=1");
+  });
+
+  it("pushes one entry on a pane PICK, and Back returns to the pane before it", async () => {
+    await renderShell();
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    await act(async () => {});
+    expect(window.location.search).toBe("?mode=wiki&settings=1");
+    const before = window.history.length;
+
+    const pane = paneRow(OTHER_CATEGORY);
+    pane.focus();
+    fireEvent.click(pane);
+    await act(async () => {});
+
+    expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
+    expect(window.location.search).toBe("?mode=wiki&settings=1&category=embeddings");
+    // ONE entry — a pane pick is a press the owner made, the same as a rail
+    // click, so it is a step Back can undo and no more than a step.
+    expect(window.history.length).toBe(before + 1);
+    expect(announced()).toBe(settingsAnnouncement(settingsCategory(OTHER_CATEGORY).label));
+    // The canvas did not swap, so the keyboard stays on the row that was pressed.
+    expect(document.activeElement).toBe(pane);
+
+    await traverse(() => window.history.back());
+
+    // The guard had to widen from the PAIR to the triple for this: neither the
+    // mode nor the flag moved, so a pair guard would swallow the traversal and
+    // leave the URL naming a pane the surface is not on.
+    expect(currentPane()).toBe(settingsCategory(DEFAULT_SETTINGS_CATEGORY).label);
+    expect(settingsShowing()).toBe(true);
+    // A traversal IS a change the owner made, so it announces — and it names the
+    // pane it LANDS on, which is why `applySurface` takes the pane rather than
+    // reading the ref that still holds the one it left.
+    expect(announced()).toBe(SETTINGS_ANNOUNCEMENT);
+    expect(window.location.search).toBe("?mode=wiki&settings=1");
+    // …and the keyboard did not move: the surface did not swap, only the pane.
+    expect(document.activeElement).toBe(pane);
+  });
+
+  it("drops the pane param when the DEFAULT pane is picked, keeping the surface open", async () => {
+    // The omit-at-default branch of `surfaceHref`, reached mounted by a PICK.
+    // Every other mounted case arrives at the default pane by `history.back()`,
+    // which restores a URL rather than building one — so a writer that emitted
+    // `category=general` on the way back to the default would keep all of them
+    // green while giving the ordinary surface a second spelling, and costing
+    // the fixed point the skip-the-write comparison depends on.
+    await renderShell();
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    fireEvent.click(paneRow(OTHER_CATEGORY));
+    await act(async () => {});
+    expect(window.location.search).toBe("?mode=wiki&settings=1&category=embeddings");
+    const before = window.history.length;
+
+    fireEvent.click(paneRow(DEFAULT_SETTINGS_CATEGORY));
+    await act(async () => {});
+
+    expect(currentPane()).toBe(settingsCategory(DEFAULT_SETTINGS_CATEGORY).label);
+    // The pane leaves; the SURFACE does not. Both are one write, and the pane's
+    // rule is the flag's applied a level in — the ordinary state is the one
+    // without the param.
+    expect(window.location.search).toBe("?mode=wiki&settings=1");
+    expect(settingsShowing()).toBe(true);
+    // Still one entry per press: a pick back to the default is a press like any
+    // other, and Back has to be able to undo it.
+    expect(window.history.length).toBe(before + 1);
+    expect(announced()).toBe(SETTINGS_ANNOUNCEMENT);
+
+    await traverse(() => window.history.back());
+
+    expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
+    expect(window.location.search).toBe("?mode=wiki&settings=1&category=embeddings");
+  });
+
+  it("drops BOTH params in one write when a mode is picked off a non-default pane", async () => {
+    await renderShell();
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    fireEvent.click(paneRow(OTHER_CATEGORY));
+    await act(async () => {});
+    expect(window.location.search).toBe("?mode=wiki&settings=1&category=embeddings");
+    const before = window.history.length;
+
+    fireEvent.click(railItem("Chat"));
+    await act(async () => {});
+
+    expect(settingsShowing()).toBe(false);
+    // One builder writes all three, so there is never a moment where the URL
+    // names a pane of a surface it has already closed.
+    expect(window.location.search).toBe("?mode=chat");
+    expect(window.history.length).toBe(before + 1);
+
+    // …and the pane the owner was reading is still what a reopen lands on. The
+    // param is the whole of its persistence across a RELOAD, not within a
+    // session.
+    fireEvent.click(railItem(SETTINGS_LABEL));
+
+    expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
+    expect(window.location.search).toBe("?mode=chat&settings=1&category=embeddings");
+  });
+
+  it("swallows the skip-link traversal even with a non-default pane showing", async () => {
+    // The fragment entry `SiteChrome`'s skip link pushes carries the SAME query
+    // — mode, flag AND pane — so Back off it is a traversal in which all three
+    // match and nothing may change. The widened guard has to keep swallowing it;
+    // handing it to the surface path would close Settings, discarding the draft
+    // `SettingsCanvas` holds.
+    await renderShell();
+    fireEvent.click(railItem(SETTINGS_LABEL));
+    fireEvent.click(paneRow(OTHER_CATEGORY));
+    await act(async () => {});
+    const sentence = announced();
+    const resting = railItem("Graph");
+    resting.focus();
+    window.history.pushState(null, "", "/?mode=wiki&settings=1&category=embeddings#wb-canvas");
+
+    await traverse(() => window.history.back());
+
+    expect(currentPane()).toBe(settingsCategory(OTHER_CATEGORY).label);
+    expect(current()).toBe(SETTINGS_LABEL);
+    expect(announced()).toBe(sentence);
+    expect(window.location.search).toBe("?mode=wiki&settings=1&category=embeddings");
+    expect(document.activeElement).toBe(resting);
+  });
+
   it("leaves everything alone on a traversal that does not move the mode", async () => {
     await renderShell();
     fireEvent.click(railItem("Settings"));
@@ -603,11 +807,14 @@ describe("Workbench mode ↔ URL", () => {
     expect(screen.queryByRole("complementary", { name: "Preview" })).toBeNull();
   });
 
-  it("puts the mode and the Settings surface in the URL, and nothing else", async () => {
-    // The URL carries exactly two things. The tree tab, the collapse flag, the
+  it("puts the mode, the Settings surface and its pane in the URL, and nothing else", async () => {
+    // The URL carries exactly three things. The tree tab, the collapse flag, the
     // selection and the column widths are browser-local view preferences with
     // nothing to link to, and putting any of them here would make every tab
-    // click a history entry the owner has to Back through.
+    // click a history entry the owner has to Back through. The PANE is in it
+    // (DW-514) precisely because it is not like them: the shell announces it,
+    // so a copied link that reopened on a different one made the address bar
+    // and the announced sentence disagree.
     await renderShell(LOADED);
     const search = window.location.search;
     const length = window.history.length;
@@ -630,11 +837,20 @@ describe("Workbench mode ↔ URL", () => {
     expect(window.location.search).toBe(`${search}&settings=1`);
     expect(window.history.length).toBe(length + 1);
 
-    // …and it comes back off, deleted rather than set to a falsy value.
+    // …and so is the PANE it is open on (DW-514) — a third key rather than a
+    // value on the flag, and written only off the default, so the ordinary
+    // surface keeps the one URL every other suite pins.
+    fireEvent.click(paneRow(OTHER_CATEGORY));
+
+    expect(window.location.search).toBe(`${search}&settings=1&category=embeddings`);
+    expect(window.history.length).toBe(length + 2);
+
+    // …and both come back off, deleted rather than set to falsy values, in the
+    // one write that closes the surface.
     fireEvent.click(railItem(SETTINGS_LABEL));
 
     expect(window.location.search).toBe(search);
-    expect(window.history.length).toBe(length + 2);
+    expect(window.history.length).toBe(length + 3);
   });
 
   /**
