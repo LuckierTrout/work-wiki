@@ -486,12 +486,86 @@ describe("POST /api/tasks/scan", () => {
     );
   });
 
-  it("self-heals the derived indexes every run (even in dry-run)", async () => {
+  it("self-heals the derived indexes and purges stale jobs on the DEFAULT flag", async () => {
+    // The half of DW-134 that must NOT change. `dry: true` here is the
+    // `AUTONOMOUS_MAINTENANCE`-off dry-run, which gates unattended page EDITS
+    // and nothing else: a deployment on the default flag has to keep healing
+    // its indexes and collecting its garbage, or it never does either. Only
+    // `?dry=1` suppresses these — the case below.
     mockedRebuild.mockResolvedValue({ "owner-slugs": { ok: true } });
-    const res = await scan(); // dry (default)
+    mockedPurge.mockResolvedValue(7);
+    const res = await scan(); // no ?dry=1; flag unset → dry (enqueue only)
     const body = await res.json();
     expect(mockedRebuild).toHaveBeenCalledTimes(1);
+    expect(mockedPurge).toHaveBeenCalledTimes(1);
+    expect(body).toMatchObject({ enabled: false, dry: true, jobsPurged: 7 });
     expect(body.indexRebuild).toEqual({ "owner-slugs": { ok: true } });
+  });
+
+  it("?dry=1 writes nothing at all — the whole write set stays uncalled", async () => {
+    // DW-134. The index rebuild and the ingest-job GC ran before the first
+    // `forceDry` guard was consulted, so the ONE documented inspection switch
+    // wrote index files and deleted job records on a live deployment. They are
+    // gated like every other byte-writing block now, and report the counts they
+    // did not earn as empty.
+    //
+    // ASSERTED OVER THE WHOLE SET, not just the two that moved, because the
+    // route docblock and `workers/task-consumer/README.md` now tell an operator
+    // that a `?dry=1` pass writes NOTHING and that this is what makes it safe
+    // to point at production. THE MOCKED SET BELOW *IS* THIS ROUTE'S STORAGE
+    // BOUNDARY: `@/lib/maintenance`, `@/lib/tasks`, `@/lib/monitor-digests` and
+    // `@/lib/backups` are mocked wholesale at the top of this file, and every
+    // byte the handler can commit goes through one of them. So "nothing was
+    // written" is executed here rather than argued in prose — the claim and its
+    // proof are the same list.
+    process.env.AUTONOMOUS_MAINTENANCE = "on";
+    process.env.NEXT_PUBLIC_OWNER_HANDLE = "alice";
+    mockedRebuild.mockResolvedValue({ "owner-slugs": { ok: true } });
+    mockedPurge.mockResolvedValue(9);
+    // Every gated block is given real work to skip. Without this the
+    // assertions below pass on empty inputs and prove nothing about the gate.
+    mockedBackupDue.mockResolvedValue(true);
+    mockedDueDigestOwners.mockResolvedValue(["alice"]);
+    mockedPendingDigests.mockResolvedValue([{
+      id: "mdg_1234567890abcdef",
+      owner: "alice",
+      status: "pending",
+      nextAttemptAt: "2026-08-05T00:00:00.000Z",
+    }] as never);
+
+    const res = await scan("?dry=1");
+    const body = await res.json();
+
+    // The two DW-134 moved.
+    expect(mockedRebuild).not.toHaveBeenCalled();
+    expect(mockedPurge).not.toHaveBeenCalled();
+    // The five byte-writing blocks that were already gated.
+    expect(mockedSweepOrphanWikiDirs).not.toHaveBeenCalled();
+    expect(mockedReapScratch).not.toHaveBeenCalled();
+    expect(mockedReconcileWikiScenarios).not.toHaveBeenCalled();
+    expect(mockedBackfillProfiles).not.toHaveBeenCalled();
+    expect(mockedRekeyForkedAssets).not.toHaveBeenCalled();
+    // The enqueues and the digest writes, all with due work waiting.
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+    expect(mockedCreateDigest).not.toHaveBeenCalled();
+    expect(mockedMarkDigestQueued).not.toHaveBeenCalled();
+
+    // Zeroed counts for the work not done, and the rest of the response shape
+    // untouched by the suppression — an inspection still reports what it saw.
+    expect(body.indexRebuild).toEqual({});
+    expect(body.jobsPurged).toBe(0);
+    expect(body).toMatchObject({
+      enabled: true,
+      dry: true,
+      enqueued: 0,
+      found: SAMPLE.length,
+      monitorDigestOwnersDue: 1,
+      monitorDigestsGenerated: 0,
+      monitorDigestDeliveriesDue: 1,
+      monitorDigestDeliveriesEnqueued: 0,
+      backupDue: true,
+      backupEnqueued: false,
+    });
   });
 
   it("includes lintType and targetSlug for fix tasks in dry-run response", async () => {
@@ -518,11 +592,16 @@ describe("POST /api/tasks/scan", () => {
 /**
  * The scan on a read-only deployment (DW-314).
  *
- * This route wrote bytes ON A TIMER with no gate at all: the index rebuild and
- * the ingest-job GC run every pass, the orphan sweep DELETES `wikis/<uuid>/`
- * directories, and the DW-137 backfill relocates workspace profiles. None of
- * them reaches a kernel writer, so nothing behind the handler would have
- * refused — a cron against a read-only deployment simply kept working.
+ * This route writes bytes ON A TIMER: the index rebuild and the ingest-job GC
+ * run on every pass the cron makes (it never sends `?dry=1`), the orphan sweep
+ * DELETES `wikis/<uuid>/` directories, and the DW-137 backfill relocates
+ * workspace profiles. None of them reaches a kernel writer, so nothing behind
+ * the handler would have refused — a cron against a read-only deployment simply
+ * kept working.
+ *
+ * The 403 lands BEFORE all of it, which is why this describe asserts every
+ * mock stayed uncalled rather than relying on the `forceDry` gates: the refusal
+ * is whole, not a degradation to `?dry=1`.
  */
 describe("POST /api/tasks/scan on a read-only deployment", () => {
   beforeEach(() => {

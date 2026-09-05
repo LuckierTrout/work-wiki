@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
+import { ACTIVITY_ANSWER_BUDGET_MS } from "@/lib/constants";
 import { hasIngestAnalysis } from "@/lib/ingest-analysis";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import { ingest } from "@/lib/ingest";
@@ -101,6 +102,15 @@ export async function POST(request: NextRequest) {
     if (isReadOnly()) {
       return NextResponse.json({ error: READ_ONLY_REFUSAL.ingest }, { status: 403 });
     }
+
+    // THE REQUEST'S OWN DEADLINE (DW-746), captured after the 401/403 and
+    // before any work, so what is handed to the inline runs below is the
+    // REMAINDER — what the job read and the Source read left over — rather
+    // than a fixed margin that cannot bound total work. Ordered against
+    // `REQUEST_TIMEOUT_MS`, the deadline `send` arms for every `ActivityDock`
+    // call. See `ACTIVITY_ANSWER_BUDGET_MS`.
+    const answerBy = Date.now() + ACTIVITY_ANSWER_BUDGET_MS;
+
     const body = (await request.json().catch(() => ({}))) as {
       action?: unknown;
       jobId?: unknown;
@@ -134,6 +144,19 @@ export async function POST(request: NextRequest) {
             await rebuildVectorStore();
             return { primarySlug: "" };
           },
+          // Whatever is LEFT of the answer budget (DW-746). A whole-wiki
+          // `rebuildVectorStore()` can outlast `REQUEST_TIMEOUT_MS`, the
+          // deadline `send` arms in `ActivityDock`; past this point the route
+          // answers `{ queued: true, jobId, retried: true }` and the run goes
+          // on marking the job.
+          //
+          // WHAT THAT AVOIDS, precisely: the dock's retry `.catch` is
+          // `setError(cause.message)` — it does NOT reach `unconfirmedCause`
+          // or `writeFailure`, so an abort here shows the owner the abort's
+          // own mechanism sentence ("signal timed out") beside a row whose
+          // rebuild is still running and will still be marked. Not an
+          // "unknown outcome" verdict; a bare timeout against live work.
+          { inlineBudgetMs: Math.max(0, answerBy - Date.now()) },
         );
         const served = (await response.json().catch(() => ({}))) as Record<string, unknown>;
         return NextResponse.json({ ...served, retried: true }, { status: response.status });
@@ -181,23 +204,34 @@ export async function POST(request: NextRequest) {
         sourcePath: job.sourceRel,
         ...(reuseAnalysis ? { reuseAnalysis: true } : {}),
       };
-      const response = await enqueueOrInline(job.jobId, task, () =>
-        ingest(job.title || "Untitled", text, {
-          owner: principal.handle,
-          author: principal.handle,
-          triggeredBy: principal.handle,
-          jobId: job.jobId,
-          ...(job.wikiId ? { tags: [`wiki:${job.wikiId}`] } : {}),
-          ...(job.origin ? { origin: job.origin } : {}),
-          ...(job.relativePath ? { relativePath: job.relativePath } : {}),
-          ...(job.sourceType === "url" || job.sourceType === "text"
-            ? { sourceType: job.sourceType }
-            : {}),
-          ...(job.url ? { sourceUrl: job.url } : {}),
-          ...(job.contentSha256 ? { contentSha256: job.contentSha256 } : {}),
-          reuseAnalysis,
-          sourcePath: job.sourceRel,
-        }),
+      // Same budget as the embed path above, and for the same reason (DW-746):
+      // the inline `ingest()` is the long step, `ActivityDock` reaches it
+      // through `send`'s `REQUEST_TIMEOUT_MS`, and the remainder is what the
+      // job read and the stored-Source read left of the route's answer budget.
+      // Past it the owner would see the abort's own "signal timed out" from the
+      // dock's `setError(cause.message)` — not an unconfirmed-write verdict —
+      // while the compile it names goes on and marks the job.
+      const response = await enqueueOrInline(
+        job.jobId,
+        task,
+        () =>
+          ingest(job.title || "Untitled", text, {
+            owner: principal.handle,
+            author: principal.handle,
+            triggeredBy: principal.handle,
+            jobId: job.jobId,
+            ...(job.wikiId ? { tags: [`wiki:${job.wikiId}`] } : {}),
+            ...(job.origin ? { origin: job.origin } : {}),
+            ...(job.relativePath ? { relativePath: job.relativePath } : {}),
+            ...(job.sourceType === "url" || job.sourceType === "text"
+              ? { sourceType: job.sourceType }
+              : {}),
+            ...(job.url ? { sourceUrl: job.url } : {}),
+            ...(job.contentSha256 ? { contentSha256: job.contentSha256 } : {}),
+            reuseAnalysis,
+            sourcePath: job.sourceRel,
+          }),
+        { inlineBudgetMs: Math.max(0, answerBy - Date.now()) },
       );
       const served = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       return NextResponse.json({ ...served, retried: true }, { status: response.status });

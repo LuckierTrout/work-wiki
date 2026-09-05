@@ -978,7 +978,9 @@ source_spec: `spec-retire-dead-machinery-round-2.md`
 location: src/app/api/tasks/scan/route.ts:57
 severity: low
 reason: `src/app/api/tasks/scan/route.ts:57` calls `rebuildDerivedIndexes()` and `:60` calls `purgeStaleJobs()` before the `dry` branch is consulted — both write. `workers/task-consumer/README.md` defines dry-run as "logs/returns what it *would* enqueue and enqueues nothing" without noting them, which matters for the "inspect what it would do" step it recommends. Pre-existing route behavior; documenting it accurately means first deciding whether those two calls should move behind the flag, which is beyond a doc correction.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-task-door-contract-fidelity
+resolution-undo: 176193f15ba57c8de00c0b4ef64f6f171767ee55b53abc16d4e8bd287b44e4b3 2026-09-05 7374617475733a206f70656e
 decision: 2026-08-19 Make dry actually dry — Move `rebuildDerivedIndexes()` and `purgeStaleJobs()` behind the `!dry` branch so a dry run performs no writes at all, and add a test asserting no storage write occurs when `dry=1`.
 
 ### DW-135: Follow-up review still recommended for dw-retire-dead-machinery-round-2 after the damping cap was spent
@@ -6258,7 +6260,9 @@ location: src/app/api/workbench/activity/route.ts:123 / :184
 source_spec: `spec-dw-441-700-fetch-door-guards-and-deadline.md`
 severity: low
 reason: DW-700's shape at a door the bundle did not name. `src/app/api/workbench/activity/route.ts:123` (embed rebuild) and `:184` (ingest retry) both call `enqueueOrInline(...)` with no `inlineBudgetMs`, so where `enqueueTask` returns false the FULL `ingest()` -- LLM map/reduce, retries, embeddings, image downloads -- runs inside the request. `src/components/workbench/ActivityDock.tsx:143` and `:193` reach that route through `send(ACTIVITY_ROUTE, ...)`, which arms the same `REQUEST_TIMEOUT_MS` deadline. The client aborts first, `unconfirmedCause` classifies the `TimeoutError` as unconfirmed, and the owner is told the outcome is unknown about work that is still running. Pre-existing and not caused by this change: the opt-in budget added here leaves every other `enqueueOrInline` caller byte-for-byte as it was. Out of scope because the bundle's intent names only `src/app/api/workbench/intake/route.ts:640`. Now named in the `inlineBudgetMs` docblock rather than denied by it.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-task-door-contract-fidelity
+resolution-undo: 176193f15ba57c8de00c0b4ef64f6f171767ee55b53abc16d4e8bd287b44e4b3 2026-09-05 7374617475733a206f70656e
 
 ### DW-747: `NamesTermsSettings.save` has no 2xx shape guard, so a save whose body fails to parse pushes `undefined` into `entries` and the row map throws, blanking the whole section.
 origin: spec-deferred 73a6857e1e9f
@@ -6493,4 +6497,12 @@ location: src/lib/source-cascade.ts:177
 source_spec: `spec-dw-735-737-silent-lifecycle-skips.md`
 severity: low
 reason: `cascadeDeleteSource` calls `cancelJobsForSource(input.owner, keys)` at src/lib/source-cascade.ts:177, before enumeration. Every throw after that point — the DW-495 sibling read, `deleteWikiPage`, `writeWikiPageWithSideEffects`, and now the DW-737 enumeration read — leaves the cancellation applied to a source whose bytes and citations are all still in place. Nothing re-queues them, so pending ingest work for a surviving source is silently dropped and the owner sees a 500 with no indication that queued jobs were lost. Pre-existing (the cascade could already throw past that line); widened, not created, by the strict enumeration read.
+status: open
+
+### DW-775: `POST /api/chat/conversations/[id]/save` runs a full inline `ingest()` under the same 20 s client deadline this bundle bounded at the intake and Activity doors.
+origin: spec-deferred 3a068e899e40
+location: src/app/api/chat/conversations/[id]/save/route.ts:125
+source_spec: `spec-dw-134-746-task-door-contract-fidelity.md`
+severity: low
+reason: `src/app/api/chat/conversations/[id]/save/route.ts:125` calls `enqueueOrInline` with no `inlineBudgetMs`, so where `enqueueTask` returns false the whole compile (LLM map/reduce, retries, embeddings) runs inside the request. `saveAnswerToWiki` in `src/lib/chat-conversation-store.ts:200` reaches that route through `send`, which arms `REQUEST_TIMEOUT_MS = 20_000` (`src/lib/workbench-request.ts:141`), and `send`'s body read classifies the abort through `unconfirmedCause` — so the owner is told the outcome is unknown about an answer page that is still being written. Exactly DW-746's shape at a door this bundle's intent did not name; the `inlineBudgetMs` docblock now names it rather than denying it, but nothing tracks it. Not caused by this change: the option stays opt-in and every other caller is byte-for-byte as it was.
 status: open

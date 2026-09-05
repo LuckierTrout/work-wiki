@@ -54,11 +54,15 @@ skip pages edited today, and a per-scan cap.
 
 The same cron request also enqueues due `run-agent` (scheduled agents),
 `monitor-source`, `deliver-monitor-digest`, `deliver-integration`, and
-`create-backup` work. **These are not gated by `AUTONOMOUS_MAINTENANCE`** — in
-`src/app/api/tasks/scan/route.ts` the `maintain` loop is gated on `dry`
-(`?dry=1` **or** the flag being off), while these are gated on `?dry=1` alone. So
-they run on every cron tick regardless of the flag, and the guardrails above
-don't apply to them — each has its own due/schedule check.
+`create-backup` work, **and** runs the self-healing upkeep: the derived index
+rebuild and the ingest-job GC (DW-134), plus the orphan wiki-directory sweep,
+the stranded-scratch reap, the wiki scenario-drift reconcile, the Workspace
+Purpose backfill and the forked-asset re-key. **None of these are gated by
+`AUTONOMOUS_MAINTENANCE`** — in `src/app/api/tasks/scan/route.ts` the `maintain`
+loop is gated on `dry` (`?dry=1` **or** the flag being off), while all of these
+are gated on `?dry=1` alone. So they run on every cron tick regardless of the
+flag, and the guardrails above don't apply to them — each has its own
+due/schedule check or is idempotent upkeep.
 
 #### It is OFF by default (the `maintain` tasks)
 
@@ -66,8 +70,8 @@ The cron runs daily regardless, but the **maintenance scan** portion **dry-runs*
 — it logs/returns the `maintain` tasks it *would* enqueue and enqueues **nothing**
 of that kind — until the flag is on. So shipping the cron is safe as far as
 autonomous page edits go; you enable it deliberately, after inspecting a few
-dry-runs. (The other task kinds listed above are unaffected by this switch —
-suppress them with `?dry=1`.)
+dry-runs. (The other task kinds and the upkeep listed above are unaffected by
+this switch — suppress them with `?dry=1`.)
 
 The switch is the **`AUTONOMOUS_MAINTENANCE`** env var on the **main** worker
 (that's where the scan route runs — *not* this consumer). Any value other than
@@ -75,13 +79,22 @@ exactly `"on"` (including unset) = dry-run.
 
 #### How to enable it
 
-**1. Inspect what it would do** (dry-run, works regardless of the flag). Replace
-the token with the same `YOPEDIA_SERVICE_TOKEN` the workers use:
+**1. Inspect what it would do** (dry-run, works regardless of the flag).
+`?dry=1` **writes nothing at all** — not the `maintain` enqueue, not the other
+task kinds, and (since DW-134) not the self-healing upkeep either: the derived
+index rebuild and the ingest-job GC are gated on it too, and report
+`indexRebuild: {}` / `jobsPurged: 0` on a dry pass. So this is safe to point at
+a live deployment. Replace the token with the same `YOPEDIA_SERVICE_TOKEN` the
+workers use:
 
 ```sh
 curl -s -X POST "https://yopedia.yuanhao-li.workers.dev/api/tasks/scan?dry=1" \
   -H "Authorization: Bearer <YOPEDIA_SERVICE_TOKEN>" | jq
-# → { enabled, dry: true, found, enqueued: 0, tasks: [ { op, slug, lintType?, targetSlug? } … ] }
+# → { enabled, dry: true, found, enqueued: 0, indexRebuild: {}, jobsPurged: 0,
+#     tasks: [ { op, slug, lintType?, targetSlug? } … ] }
+# `indexRebuild: {}` and `jobsPurged: 0` are how a dry pass REPORTS that it
+# skipped the upkeep. On a real cron tick they carry the per-index ok/error
+# summary and the count of purged job records instead.
 ```
 
 Or watch the daily cron's own dry-runs in the logs:

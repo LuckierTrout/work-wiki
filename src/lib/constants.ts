@@ -82,6 +82,44 @@ export const FETCH_TIMEOUT_MS = 15_000;
 export const INTAKE_ANSWER_BUDGET_MS = 17_000;
 
 /**
+ * The budget `POST /api/workbench/activity` allots itself (17 seconds),
+ * measured from route entry.
+ *
+ * SAME SHAPE AS {@link INTAKE_ANSWER_BUDGET_MS}, DIFFERENT RUNG. It is spent at
+ * the two `enqueueOrInline` calls on the retry path — the `embed` rebuild and
+ * the stored-Source re-ingest — where whatever is LEFT of it becomes the inline
+ * run's `inlineBudgetMs`. Everything before that point (`retryIngestJob`, the
+ * raw-source read, the analysis-reuse probe) still runs with no deadline of its
+ * own; what those steps spend is exactly what the inline run does not get.
+ *
+ * ONLY ONE RUNG BENEATH `REQUEST_TIMEOUT_MS`, with no fetch rung under it: this
+ * door reaches no `fetchUrlContent`, so `FETCH_TIMEOUT_MS` does not bind it and
+ * the ladder here is just `ACTIVITY_ANSWER_BUDGET_MS < REQUEST_TIMEOUT_MS` with
+ * room to compose the answer. That is why this is its own constant rather than
+ * a reuse of the intake one, even though the two agree today: the intake value
+ * is pinned ABOVE `FETCH_TIMEOUT_MS` for a reason that does not exist here, so
+ * a future move of that rung must not silently drag this door with it.
+ *
+ * A REMAINDER, NOT A FIXED MARGIN (DW-746), for the same reason DW-700 gives:
+ * `ActivityDock.tsx` reaches this route through `send`, which arms
+ * `REQUEST_TIMEOUT_MS`; when the remainder elapses the route answers
+ * `{ queued: true, jobId, retried: true }` — the shape the client already polls
+ * — instead of letting the client abort.
+ *
+ * NOT the unconfirmed-write verdict, which this door never renders. The dock's
+ * retry `.catch` is `setError(cause instanceof Error ? cause.message : "Retry
+ * failed.")`; it reaches neither `unconfirmedCause` nor `writeFailure`, so what
+ * an abort actually puts on screen is the mechanism sentence the abort carries
+ * ("signal timed out") next to a row whose retry is still running and will
+ * still be marked `done`/`failed`. That is what this budget prevents — the
+ * milder, more common failure of naming a timeout for work nobody stopped.
+ *
+ * The ladder is executed in `src/lib/__tests__/workbench-request.test.ts`, and
+ * the wiring in `src/lib/__tests__/workbench-epic2-routes.test.ts`.
+ */
+export const ACTIVITY_ANSWER_BUDGET_MS = 17_000;
+
+/**
  * Maximum characters sent to the LLM in a single chunk during ingest.
  *
  * 12,000 chars ≈ 3,000 tokens — conservative enough for all providers and

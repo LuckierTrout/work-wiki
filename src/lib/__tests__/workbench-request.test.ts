@@ -30,7 +30,11 @@ import {
   unconfirmedWriteMessage,
   writeFailure,
 } from "../workbench-request";
-import { FETCH_TIMEOUT_MS, INTAKE_ANSWER_BUDGET_MS } from "../constants";
+import {
+  ACTIVITY_ANSWER_BUDGET_MS,
+  FETCH_TIMEOUT_MS,
+  INTAKE_ANSWER_BUDGET_MS,
+} from "../constants";
 import { CONFIG_UNREADABLE_COPY } from "../config";
 
 const SRC = path.resolve(__dirname, "../..");
@@ -423,6 +427,33 @@ describe("send", () => {
     // leave the rung above it time to compose and send an answer.
     expect(INTAKE_ANSWER_BUDGET_MS - FETCH_TIMEOUT_MS).toBeGreaterThanOrEqual(1_000);
     expect(REQUEST_TIMEOUT_MS - INTAKE_ANSWER_BUDGET_MS).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it("keeps the Activity answer budget under the client deadline with room", () => {
+    // DW-746. The Activity door's ladder has only ONE rung beneath
+    // `REQUEST_TIMEOUT_MS`: it reaches no `fetchUrlContent`, so
+    // `FETCH_TIMEOUT_MS` does not bind it and nothing sits underneath. The rung
+    // it does have means the same thing as intake's -- when the remainder
+    // elapses the route must still have time to compose and send
+    // `{ queued: true, jobId, retried: true }` before `send` aborts.
+    expect(ACTIVITY_ANSWER_BUDGET_MS).toBeLessThan(REQUEST_TIMEOUT_MS);
+    expect(REQUEST_TIMEOUT_MS - ACTIVITY_ANSWER_BUDGET_MS).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it("hands the Activity route's inline retries the REMAINING budget", async () => {
+    // Mirrors the intake scan below, for the same reason: the wiring is the
+    // whole of DW-746 and a deleted option leaves TWO unbounded inline runs
+    // (the stored-Source re-ingest and the `embed` `rebuildVectorStore()`)
+    // behind every other assertion here, still green.
+    const route = await readFile(
+      path.join(SRC, "app/api/workbench/activity/route.ts"),
+      "utf8",
+    );
+    expect(route).toContain("ACTIVITY_ANSWER_BUDGET_MS");
+    // BOTH retry paths, not just whichever one a refactor kept.
+    expect(route.match(/inlineBudgetMs/g) ?? []).toHaveLength(2);
+    // A REMAINDER measured from route entry, not a fixed margin.
+    expect(route.match(/answerBy\s*-\s*Date\.now\(\)/g) ?? []).toHaveLength(2);
   });
 
   it("hands the intake route's inline compile the REMAINING budget", async () => {

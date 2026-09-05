@@ -235,11 +235,14 @@ export default {
   // Autonomous-maintenance cron (Q2). POSTs the scanner. Only its `maintain`
   // tasks are gated on AUTONOMOUS_MAINTENANCE — they dry-run (logs only) while
   // the flag is off in the main app. The scan's other enqueues (`run-agent`,
-  // `monitor-source`, digest/outbox delivery, backups) are gated on `?dry=1`
-  // alone, so they fire on every tick regardless of the flag; see
-  // `src/app/api/tasks/scan/route.ts`. Safe to schedule before enabling the
-  // flag in the sense that no autonomous page edits happen — not in the sense
-  // that the scan does nothing.
+  // `monitor-source`, digest/outbox delivery, backups) AND its self-healing
+  // upkeep (the derived index rebuild and the ingest-job GC — DW-134 — plus the
+  // orphan wiki-directory sweep, the stranded-scratch reap, the scenario-drift
+  // reconcile, the Workspace Purpose backfill and the forked-asset re-key) are
+  // gated on `?dry=1` alone, so they fire on every tick regardless of the flag;
+  // see `src/app/api/tasks/scan/route.ts`. This cron never sends `?dry=1`.
+  // Safe to schedule before enabling the flag in the sense that no autonomous
+  // page edits happen — not in the sense that the scan does nothing.
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
     const base = (env.YOPEDIA_URL ?? "").replace(/\/+$/, "");
     const token = env.YOPEDIA_SERVICE_TOKEN;

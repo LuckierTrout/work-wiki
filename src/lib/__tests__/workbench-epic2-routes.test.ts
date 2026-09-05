@@ -59,6 +59,7 @@ vi.mock("@/lib/workbench-files", () => ({
 
 import { getPrincipal } from "@/lib/auth";
 import { isReadOnly } from "@/lib/config";
+import { ACTIVITY_ANSWER_BUDGET_MS } from "@/lib/constants";
 import { enqueueOrInline } from "@/lib/ingest-async";
 import {
   cancelIngestJob,
@@ -93,6 +94,25 @@ function jsonRequest(url: string, body: unknown): Request {
 
 function activityGet(url = "http://localhost/api/workbench/activity"): Request {
   return new Request(url);
+}
+
+/**
+ * The SHAPE of the fourth argument both Activity retry paths hand
+ * `enqueueOrInline` (DW-746): present, numeric, positive (the route has not
+ * already blown its own budget by the time it enqueues) and never more than the
+ * budget it is measured from.
+ *
+ * SHAPE ONLY — deliberately. This much still passes for a literal
+ * `{ inlineBudgetMs: ACTIVITY_ANSWER_BUDGET_MS }`, which is the fixed margin
+ * DW-746 forbids. That the number is a REMAINDER measured from ROUTE ENTRY is
+ * pinned by the stall case below, which is the only assertion in the repo that
+ * can tell the two apart.
+ */
+function expectAnswerBudget(options: unknown): void {
+  const { inlineBudgetMs } = (options ?? {}) as { inlineBudgetMs?: number };
+  expect(typeof inlineBudgetMs).toBe("number");
+  expect(inlineBudgetMs).toBeGreaterThan(0);
+  expect(inlineBudgetMs).toBeLessThanOrEqual(ACTIVITY_ANSWER_BUDGET_MS);
 }
 
 async function asJson(response: Response): Promise<{
@@ -287,6 +307,7 @@ describe("POST /api/workbench/activity", () => {
     };
     expect(task.sourcePath).toBe("raw/sources/meet/abc.md");
     expect(task.content).toBeUndefined();
+    expectAnswerBudget(mockedEnqueue.mock.calls[0][3]);
   });
 
   it("retries a failed embed job as vector-on backfill", async () => {
@@ -312,6 +333,79 @@ describe("POST /api/workbench/activity", () => {
       rebuildEmbeddings: true,
       owner: "alice",
     });
+    expectAnswerBudget(mockedEnqueue.mock.calls[0][3]);
+  });
+
+  it("hands BOTH inline retries the REMAINDER of the answer budget, not a fresh one", async () => {
+    // DW-746, mirroring `workbench-intake.test.ts`'s remainder pin, and the
+    // assertion neither `expectAnswerBudget` above nor the source scan in
+    // `workbench-request.test.ts` can make. Both of those still pass if
+    // `answerBy` is captured one line ABOVE each `enqueueOrInline` instead of
+    // at route entry -- which hands the inline run a FULL 17 s after the job
+    // read and the stored-Source read may already have spent most of the 20 s
+    // client deadline. That is the original defect, with every other assertion
+    // green. So a step that runs BEFORE both call sites is stalled for a
+    // measurable interval and the budget is read off the call: a remainder
+    // shrinks by what the work ahead of it spent, a fresh fixed margin does not.
+    //
+    // `retryIngestJob` is the stalled step because it is the ONE pre-enqueue
+    // await both paths share -- the embed path reaches `enqueueOrInline` with
+    // nothing else in front of it -- so one stall pins both call sites.
+    const STALL_MS = 60;
+    const stalledRetry = (job: Record<string, unknown>) => async () => {
+      await new Promise((resolve) => setTimeout(resolve, STALL_MS));
+      return job as never;
+    };
+
+    mockedRetry.mockImplementationOnce(
+      stalledRetry({
+        jobId: "job-1",
+        owner: "alice",
+        status: "queued",
+        kind: "ingest",
+        sourceRel: "raw/sources/meet/abc.md",
+        title: "Meet",
+      }),
+    );
+    await POST_ACTIVITY(
+      jsonRequest("http://localhost/api/workbench/activity", {
+        action: "retry",
+        jobId: "job-1",
+      }) as never,
+    );
+
+    mockedRetry.mockImplementationOnce(
+      stalledRetry({
+        jobId: "embed-1",
+        owner: "alice",
+        status: "queued",
+        kind: "embed",
+        title: "Embed current pages",
+      }),
+    );
+    await POST_ACTIVITY(
+      jsonRequest("http://localhost/api/workbench/activity", {
+        action: "retry",
+        jobId: "embed-1",
+      }) as never,
+    );
+
+    const paths = [
+      ["stored-Source re-ingest", mockedEnqueue.mock.calls[0]],
+      ["embed rebuild", mockedEnqueue.mock.calls[1]],
+    ] as const;
+    for (const [label, call] of paths) {
+      const budget = (call?.[3] as { inlineBudgetMs?: number } | undefined)
+        ?.inlineBudgetMs;
+      // Still positive: the route did not answer with a budget already spent.
+      expect(budget, label).toBeGreaterThan(0);
+      // THE PIN: the stall was actually subtracted. `toBeLessThan` alone passes
+      // at 16_999, which a budget captured one line above the call site would
+      // also produce.
+      expect(budget, label).toBeLessThanOrEqual(
+        ACTIVITY_ANSWER_BUDGET_MS - STALL_MS,
+      );
+    }
   });
 
   it("answers 403 on a read-only deployment", async () => {

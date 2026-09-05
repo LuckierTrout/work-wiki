@@ -42,13 +42,17 @@ import { getOwnerHandle } from "@/lib/owner";
  * wiki-directory sweep, the stranded-scratch reap, the wiki scenario-drift
  * reconcile, the Workspace Purpose backfill and the forked-asset re-key are
  * self-healing upkeep and one-time migration rather than unattended content
- * edits, so they run regardless, as do the scheduled-agent, source-monitor,
- * digest, outbox and backup blocks.
+ * edits, so THE FLAG does not hold any of them back — nor the scheduled-agent,
+ * source-monitor, digest, outbox and backup blocks. A default-flag deployment
+ * still heals its indexes and collects its garbage on every cron tick.
  *
- * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH: it suppresses every one of those
- * side-effecting blocks as well as the enqueue, which is what makes it safe to
- * point at a live deployment to see what a scan would do. `?cap=N` overrides the
- * per-scan task cap.
+ * `?dry=1` IS THE ONE TRUE INSPECTION SWITCH, and it is the ONLY thing that
+ * holds those blocks back: every one of them — the index rebuild and the
+ * ingest-job GC included (DW-134) — is gated on `forceDry`, as is the enqueue.
+ * That is what makes it safe to point at a live deployment to see what a scan
+ * would do: a `?dry=1` pass writes no bytes at all, and reports the counts it
+ * did not earn as their empty values (`indexRebuild: {}`, `jobsPurged: 0`).
+ * `?cap=N` overrides the per-scan task cap.
  *
  * Response fields worth naming: `jobsPurged` (terminal ingest-job status files
  * deleted), `orphanWikiDirsRemoved` (`tenants/<t>/wikis/<uuid>/` directories
@@ -78,10 +82,10 @@ export async function POST(req: Request) {
 
   // Deployment read-only (DW-314). After the service-principal 401 and before
   // `scanForMaintenance`, because this scan writes bytes ON A TIMER: the index
-  // rebuild and the ingest-job GC run on every pass, the orphan sweep DELETES
-  // wiki directories, and the DW-137 backfill relocates workspace profiles.
-  // None of those reach a kernel writer, so nothing behind this handler would
-  // have refused.
+  // rebuild and the ingest-job GC run on every pass the cron makes (the cron
+  // never sends `?dry=1`), the orphan sweep DELETES wiki directories, and the
+  // DW-137 backfill relocates workspace profiles. None of those reach a kernel
+  // writer, so nothing behind this handler would have refused.
   //
   // REFUSES WHOLE rather than degrading to `dry`. `?dry=1` is the documented
   // inspection switch and its 200 says "here is what a scan would do"; a
@@ -117,11 +121,26 @@ export async function POST(req: Request) {
 
     // Self-heal the precomputed KV indexes (Phase 2) once per scan run. This is
     // read-derived and idempotent — it never edits pages or enqueues tasks — so
-    // it runs even in dry-run mode. Fully fail-soft (each rebuild is isolated).
-    const indexRebuild = await rebuildDerivedIndexes();
+    // `AUTONOMOUS_MAINTENANCE` does not hold it back and a default-flag
+    // deployment keeps healing its indexes. Gated on `forceDry` rather than
+    // `dry` for exactly that reason (DW-134): it WRITES the index files, so
+    // `?dry=1` — the documented inspection switch — has to suppress it, and
+    // reports the rebuild it did not run as the empty summary. Fully fail-soft
+    // (each rebuild is isolated).
+    let indexRebuild: Awaited<ReturnType<typeof rebuildDerivedIndexes>> = {};
+    if (!forceDry) {
+      indexRebuild = await rebuildDerivedIndexes();
+    }
 
-    // Purge stale ingest-job status files (fail-soft, like the index rebuild).
-    const jobsPurged = await purgeStaleJobs();
+    // Purge stale ingest-job status files. Gated exactly like the index rebuild
+    // above and for the same reasons (DW-134): it DELETES status files, so
+    // `?dry=1` suppresses it and the count reports 0, while
+    // `AUTONOMOUS_MAINTENANCE` — which gates unattended EDITS of page content —
+    // does not. Fail-soft, like the rebuild.
+    let jobsPurged = 0;
+    if (!forceDry) {
+      jobsPurged = await purgeStaleJobs();
+    }
 
     let enqueued = 0;
     if (!dry) {

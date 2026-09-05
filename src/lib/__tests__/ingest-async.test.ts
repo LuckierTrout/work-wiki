@@ -236,6 +236,22 @@ describe("enqueueOrInline", () => {
   // must leave every other caller exactly as it was, which every case above
   // (all of which omit it) is what pins.
 
+  it("a budget is never consulted when the enqueue succeeds", async () => {
+    // The queue-present half of a budgeted door (both Workbench doors pass the
+    // option unconditionally). The enqueue answers first, so a budget of 0 --
+    // which would abandon any inline run instantly -- changes nothing: the
+    // inline callback is never even built into a race.
+    mockedEnqueue.mockResolvedValue(true);
+    const inline = vi.fn();
+    const res = await enqueueOrInline("j-queued", { ...task, jobId: "j-queued" }, inline, {
+      inlineBudgetMs: 0,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ queued: true, jobId: "j-queued" });
+    expect(inline).not.toHaveBeenCalled();
+    expect(mockedUpdate).not.toHaveBeenCalled();
+  });
+
   it("a budgeted inline run that finishes in time behaves exactly as today", async () => {
     mockedEnqueue.mockResolvedValue(false);
     const res = await enqueueOrInline(

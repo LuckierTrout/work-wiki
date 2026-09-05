@@ -31,19 +31,29 @@ export interface EnqueueOrInlineOptions {
   /**
    * How long the CALLER can still wait for the off-Workers inline run, in ms.
    *
-   * OPT-IN, and measured as a REMAINDER (DW-700). The Workbench intake route is
-   * the door THIS change bounds: it sits under a client deadline
-   * (`REQUEST_TIMEOUT_MS`) that the full inline `ingest()` could outlast, so the
-   * client aborted and reported a Source that had already landed as an unknown
-   * outcome. Every other caller (`/api/ingest*`, agents, email, activity,
-   * extract-dispatch) omits it and behaves exactly as before.
+   * OPT-IN, and measured as a REMAINDER. TWO doors pass it, both because they
+   * sit under a client deadline (`REQUEST_TIMEOUT_MS`, armed by `send`) that a
+   * full inline run could outlast, leaving the client to abort and report work
+   * that had already landed — or was still going — as an unknown outcome:
    *
-   * NOT because no other door has the shape. `src/app/api/workbench/activity/
-   * route.ts` runs an unbounded inline `ingest()` on both the retry and the
-   * embed-rebuild paths, and `ActivityDock.tsx` reaches them through the same
-   * `send` helper and therefore the same deadline. Those are still open; they
-   * are simply outside what DW-700 covered. Passing this option is what closes
-   * one of them, and the argument is the same wherever it is added next.
+   * - `POST /api/workbench/intake` (DW-700), spending
+   *   `INTAKE_ANSWER_BUDGET_MS` from route entry at its one compile.
+   * - `POST /api/workbench/activity` (DW-746), spending
+   *   `ACTIVITY_ANSWER_BUDGET_MS` from route entry at BOTH retry paths — the
+   *   stored-Source re-ingest and the `embed` `rebuildVectorStore()`.
+   *
+   * Every other caller (`/api/ingest*`, agents, email, chat save,
+   * extract-dispatch, `ingest-embed`) omits it and behaves exactly as before.
+   *
+   * NOT because no other door has the shape — naming the ones that do is what
+   * keeps this comment honest, which is the whole of DW-746. `POST /api/chat/
+   * conversations/[id]/save` runs an unbounded inline `ingest()`, and
+   * `saveAnswerToWiki` in `src/lib/chat-conversation-store.ts` reaches it
+   * through the same `send` helper and therefore the same deadline. It is
+   * still open; it is simply outside what DW-746 covered. The option stays
+   * opt-in, and the argument for adding it is the same wherever it is added
+   * next — name the client deadline the budget is ordered against, and derive
+   * it from route entry rather than from a fixed margin.
    *
    * When it elapses the run is NOT cancelled and the job record is NOT
    * abandoned: the continuation goes on to mark the job `done`/`failed` exactly
