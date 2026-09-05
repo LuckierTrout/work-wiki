@@ -37,7 +37,7 @@ import { agentIdFor, getAgent, registerAgent } from "../agents";
 import type { Principal } from "../auth";
 import type { Frontmatter } from "../frontmatter";
 import { WRITE_DENIAL_REALM } from "../write-denial";
-import { fixLintIssue } from "../lint-fix";
+import { autoFixRefusal, fixLintIssue } from "../lint-fix";
 import { ALL_CHECK_TYPES, AUTO_FIXABLE_CHECK_TYPES } from "../lint-types";
 
 const spiedFixLintIssue = vi.mocked(fixLintIssue);
@@ -1941,6 +1941,25 @@ describe("dispatchMcp — fix_lint_issue", () => {
       expect(text).toContain(
         "PATCH /api/wiki/contested-page with metadata { disputed: false }",
       );
+      expect(spiedFixLintIssue).not.toHaveBeenCalled();
+    });
+
+    it("hands back no empty path segment when no slug arrived (DW-458)", async () => {
+      // `slug` is OPTIONAL on this tool, so the door passes `slug ?? ""` — the
+      // `""` `autoFixRefusal`'s contract asks a caller with nothing usable to
+      // pass. It used to interpolate straight through, so the agent read
+      // `Reconcile the conflicting claims in ""` above a `PATCH /api/wiki/`
+      // whose path segment was empty: the one thing the interpolation exists to
+      // prevent, since a path that 404s when pasted is worse than no path.
+      const text = errorText(await call({ type: "disputed-page" }));
+
+      // Asserted against the exported refusal, never a retyped sentence: the
+      // wording is owned in `lint-fix.ts` and this row's claim is only that the
+      // wire carries it.
+      expect(text).toContain(autoFixRefusal("disputed-page", ""));
+      expect(text).not.toContain("/api/wiki/");
+      expect(text).not.toContain('""');
+      expect(text).toContain("clear the Disputed toggle in the page editor");
       expect(spiedFixLintIssue).not.toHaveBeenCalled();
     });
 

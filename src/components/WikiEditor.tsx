@@ -62,11 +62,48 @@ export const EDIT_PAGE_SAVE_ACTION = "save this page";
  *
  * NOT for a metadata leg whose outcome is UNKNOWN. A `fetch` that rejected —
  * dropped connection, aborted request — leaves nobody able to say the metadata
- * change "was not" applied; that branch keeps the thrown message alone.
+ * change "was not" applied; that branch says the provable half only, and its
+ * sentence is {@link EDIT_PAGE_METADATA_UNCONFIRMED_COPY} below.
  */
 export function partialSaveMessage(served: string): string {
   return `Your text was saved; the metadata change was not — ${served}`;
 }
+
+/**
+ * The save whose body landed and whose METADATA REQUEST NOBODY ANSWERED
+ * (DW-703).
+ *
+ * Its sibling above relays a served reason because there was one. Here the
+ * `PATCH` left and nothing at all came back — a dropped connection, an aborted
+ * request — so the only honest statement is the asymmetry: the text is on disk
+ * (the `PUT` was answered `ok`, which is the fact only this form knows) and the
+ * metadata half is genuinely unknown. Until now this branch reported
+ * `unconfirmedWriteMessage`, which describes the WHOLE save as unknown and so
+ * sent an owner to retype or reload over a body already stored — the very harm
+ * the partial-save sentence exists to prevent, one cause over.
+ *
+ * THREE NEIGHBOURING BRANCHES ARE DELIBERATELY NOT THIS SENTENCE:
+ *
+ *   - a metadata leg a GATEWAY answered (502/504). Same information state, but
+ *     DW-624 froze the one unconfirmed sentence there and pinned it; this
+ *     sentence does not reopen a decision it is not fixing.
+ *   - a metadata leg the ROUTE refused (`!res.ok` otherwise). The outcome is
+ *     known and served — {@link partialSaveMessage} carries it.
+ *   - the `PUT`'s own dying 2xx body read. The metadata request was NEVER SENT
+ *     there, so "nothing came back to confirm the metadata change" would be a
+ *     false claim about our own knowledge; nothing was ever asked.
+ *
+ * Says nothing about a retry of either half and carries no transport
+ * vocabulary. The reconciliation it offers is the same MOVE
+ * `unconfirmedWriteMessage` offers — go and look rather than press again — but
+ * not the same words: that sentence says "the screen", because it speaks for
+ * every surface in the app, and this one says "the page", because it speaks for
+ * exactly one and can name it.
+ */
+export const EDIT_PAGE_METADATA_UNCONFIRMED_COPY =
+  "Your text was saved; nothing came back to confirm whether the metadata " +
+  "change went through, so that half is unknown. Check what the page shows " +
+  "before trying again.";
 
 interface WikiEditorProps {
   slug: string;
@@ -298,6 +335,22 @@ export function WikiEditor({
     // re-stamps `version` below. A plain local, so it starts false on every
     // attempt and cannot leak into a later one.
     let bodyLanded = false;
+    // Whether the metadata `PATCH` is OUTSTANDING — sent, and not yet answered
+    // (DW-703). True for exactly the window between the `fetch` call and the
+    // `Response` coming back, so it is a claim about our own knowledge and
+    // nothing else.
+    //
+    // "Sent" alone would be too broad in BOTH directions. `bodyLanded` cannot
+    // tell an unanswered metadata leg from the `PUT`'s own dying 2xx body read:
+    // that read rethrows AFTER `bodyLanded` is set and BEFORE this leg fires,
+    // so both reach the outer `catch` with the same body-landed fact and the
+    // same unconfirmed cause — which is why a second local is needed at all.
+    // But a flag left true once the response ARRIVED would still be true at
+    // `router.push` / `router.refresh()`, which run inside this same `try`: a
+    // navigation that throws a `TypeError` is an unconfirmed cause too, and the
+    // owner would be told the metadata outcome is unknown about a `PATCH` the
+    // route answered `ok` a line earlier.
+    let metadataOutstanding = false;
 
     try {
       // 1. Save body if changed (PUT)
@@ -354,11 +407,19 @@ export function WikiEditor({
 
       // 2. Save metadata if changed (PATCH)
       if (metadataDirty) {
+        // Raised BEFORE the call and lowered the moment it returns. Before,
+        // because the whole point of the local is the case where `fetch` itself
+        // rejects; lowered on return, because a `Response` of ANY status is an
+        // answer — the `!res.ok` path below is already excluded by the
+        // `RequestFailedError` condition in the `catch`, so all this has to
+        // record is that something came back at all.
+        metadataOutstanding = true;
         const res = await fetch(`/api/wiki/${slug}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ metadata: buildPatchPayload(metadata) }),
         });
+        metadataOutstanding = false;
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as {
             error?: string;
@@ -405,7 +466,27 @@ export function WikiEditor({
       // The reconciliation is that the flow STOPS: `router.push` is inside the
       // try, so the form stays open on the draft the owner typed, which is the
       // only screen that can still tell them what happened.
-      setError(writeFailure(err, EDIT_PAGE_SAVE_ACTION).message);
+      //
+      // ONE branch of that verdict is narrowed here (DW-703). `writeFailure`
+      // stays the owner of WHETHER the outcome is known — this never re-derives
+      // `unconfirmedCause` — and the four conditions below only select which of
+      // two unknown-outcome sentences fits the facts this form holds: the body
+      // leg was answered `ok`, the metadata request is still outstanding, and
+      // the cause is not a `RequestFailedError`, i.e. nothing answered it at all
+      // rather than a gateway answering instead of the route. Every other path
+      // — the gateway one, the never-sent one, and a throw from the navigation
+      // after both legs landed — keeps `writeFailure`'s own sentence verbatim.
+      const failure = writeFailure(err, EDIT_PAGE_SAVE_ACTION);
+      const metadataUnanswered =
+        failure.unconfirmed &&
+        bodyLanded &&
+        metadataOutstanding &&
+        !(err instanceof RequestFailedError);
+      setError(
+        metadataUnanswered
+          ? EDIT_PAGE_METADATA_UNCONFIRMED_COPY
+          : failure.message,
+      );
       setBusy(false);
     }
   }

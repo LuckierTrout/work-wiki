@@ -47,6 +47,7 @@ import {
 import { GRAPH_INSIGHT_DISMISS_READ_ONLY_COPY } from "@/components/workbench/GraphCanvas";
 import { REVIEW_QUEUE_READ_ONLY_COPY } from "@/components/workbench/ReviewCanvas";
 import { TODOS_READ_ONLY_COPY } from "@/components/workbench/TodosCanvas";
+import { SOURCE_MEETING_READ_ONLY_COPY } from "@/components/workbench/MarkMeetingControl";
 import { SETTINGS_READ_ONLY_COPY } from "../workbench-settings";
 
 /**
@@ -527,6 +528,27 @@ describe("client refusal copy mirrors the server's", () => {
     // a second wording here would be a sentence no door answers.
     expect(
       new Set([TODOS_READ_ONLY_COPY, REVIEW_QUEUE_READ_ONLY_COPY]).size,
+    ).toBe(2);
+  });
+
+  it("Mark as meeting says exactly what ITS door answers", () => {
+    // DW-733. `MarkMeetingControl` has ONE write control and it stands in front
+    // of `POST /api/sources/meeting`, which really does refuse with
+    // `READ_ONLY_REFUSAL.sourceMeeting` (pinned by NAME in the route list
+    // above). The client half folded `readOnly` straight into
+    // `disabled={readOnly || busy}` and rendered no sentence at all, so the
+    // key's only client stood in front of it with nothing to announce: the
+    // refusal was out of the tab order, unreachable by a screen reader, and
+    // indistinguishable from the transient in-flight state. The button now
+    // carries `aria-disabled` and points at this constant, so it has to be the
+    // door's own sentence.
+    expect(SOURCE_MEETING_READ_ONLY_COPY).toBe(READ_ONLY_REFUSAL.sourceMeeting);
+    // DISTINCT from the Todos sentence it sits beside. Both are reachable from
+    // the same workbench surface, and marking a Source as a meeting changes a
+    // SOURCE — a control that announced "Todos cannot be changed…" would name a
+    // refusal it does not meet.
+    expect(
+      new Set([SOURCE_MEETING_READ_ONLY_COPY, TODOS_READ_ONLY_COPY]).size,
     ).toBe(2);
   });
 

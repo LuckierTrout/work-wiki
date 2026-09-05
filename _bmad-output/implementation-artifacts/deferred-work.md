@@ -3474,7 +3474,9 @@ source_spec: `spec-dw-341-343-346-347-348-advertised-input-and-fix-type-parity.m
 location: src/lib/lint-fix.ts:830
 severity: low
 reason: Both doors deliberately pass `""` when no usable slug arrived. For `disputed-page` the `NOT_AUTO_FIXABLE` sentence then reads `Reconcile the conflicting claims in "", then clear the Disputed toggle in the page editor (PATCH /api/wiki/ with metadata { disputed: false })` — a path that 404s if pasted. `src/mcp.ts`'s own comment argues the sentence must name the sibling slug to be worth keeping. No test sends a slug-less non-fixable type to either door.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-refusal-and-failure-copy-fidelity
+resolution-undo: 9f8b1b5e1e39c3bf901283bbafd74a07093c3beee24da14abdfce9a4cf971c0f 2026-09-05 7374617475733a206f70656e
 
 ### DW-459: `MaintainFixType` has no compile-time constraint to `AutoFixableCheckType`, so it remains an un-derived restatement of a subset of the fixable list.
 origin: spec-deferred e7aae2c2adb1
@@ -5850,7 +5852,9 @@ location: src/components/WikiEditor.tsx (handleSave outer catch) and src/compone
 source_spec: `spec-dw-428-editor-per-leg-save-reporting.md`
 severity: medium
 reason: `handleSave`'s prefix sits inside the metadata leg's `!res.ok` branch, so a dropped or aborted `PATCH` falls straight to the outer `catch` and the owner reads only "Failed to fetch" over a body that is already on disk — and retypes or reloads over it, which is the whole harm the change exists to remove. The omission is deliberate and argued (`partialSaveMessage`'s docblock, and the case `makes no claim about a metadata leg whose fetch never came back`): the decision's frozen sentence asserts "the metadata change was not", which nobody can claim about a request that never came back, and it interpolates a `<served error>` that branch does not have. Saying only the provable half — that the text was saved, and that the metadata outcome is unknown — needs a SECOND owner-facing sentence, which is an intent-level copy decision the 2026-08-22 decision did not open.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-refusal-and-failure-copy-fidelity
+resolution-undo: 9f8b1b5e1e39c3bf901283bbafd74a07093c3beee24da14abdfce9a4cf971c0f 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-03 Add an unknown-outcome sentence — Add a second owner-facing constant beside partialSaveMessage that says only the provable half — the text was saved, and the metadata outcome is unknown — wire it into WikiEditor's outer catch for the post-PUT branch, and pin the case that currently makes no claim.
 
 ### DW-704: A ledger row the listing now surfaces because its page is on disk but missing from the page index is still refused by DELETE, so the owner sees a row that can never be cleared.
@@ -6144,7 +6148,9 @@ location: src/components/workbench/MarkMeetingControl.tsx:72
 source_spec: `spec-dw-643-625-workbench-canvas-write-feedback.md`
 severity: low
 reason: `src/components/workbench/MarkMeetingControl.tsx:72` gates its one write with `disabled={readOnly || busy}` and renders no read-only term, while `POST /api/sources/meeting` answers `READ_ONLY_REFUSAL.sourceMeeting` — pinned by NAME in the very door loop `read-only-copy-parity.test.ts:398` runs. `sourceMeeting` is the only `READ_ONLY_REFUSAL` key with ZERO client references, so nothing holds a client sentence to that 403 and the owner meets a dead control with no reason. The control renders on the Todos surface this change hardened (it is exercised in `todos-canvas.test.tsx`), but it is a different door and a different component, and the bundle intent named only `TodosCanvas`'s own write controls — so it was left alone rather than widened into this change.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-refusal-and-failure-copy-fidelity
+resolution-undo: 9f8b1b5e1e39c3bf901283bbafd74a07093c3beee24da14abdfce9a4cf971c0f 2026-09-05 7374617475733a206f70656e
 
 ### DW-734: Reconcile's done-phase branch and `drainResearchOutbox`'s two row-in-hand branches still empty `research-leases.json` and destroy an outbox plus its staged bodies on a read-only deployment.
 origin: spec-deferred 4170863e3525

@@ -5,6 +5,7 @@ import {
   DeletePageButton,
 } from "@/components/DeletePageButton";
 import {
+  EDIT_PAGE_METADATA_UNCONFIRMED_COPY,
   EDIT_PAGE_READ_ONLY_COPY,
   EDIT_PAGE_SAVE_ACTION,
   partialSaveMessage,
@@ -828,16 +829,22 @@ describe("Edit page — a save that half landed", () => {
     expect(router.push).not.toHaveBeenCalled();
   });
 
-  it("makes no claim about a metadata leg whose fetch never came back", async () => {
+  it("says the text landed and the metadata outcome is unknown when the metadata fetch never came back", async () => {
     // A dropped connection leaves the metadata outcome UNKNOWN. "the metadata
     // change was not" would be a claim nobody is in a position to make, so this
     // branch never takes the partial-save prefix.
     //
-    // What it says instead is the ONE unconfirmed sentence (DW-624). It used to
-    // relay the thrown message, which on this path is the engine's own
-    // `Failed to fetch` / `Load failed` / `NetworkError …` — transport
+    // Nor does it relay the thrown message, which on this path is the engine's
+    // own `Failed to fetch` / `Load failed` / `NetworkError …` — transport
     // vocabulary no Copy table in this app contains, and one wording per
-    // browser for a single fact.
+    // browser for a single fact (DW-624).
+    //
+    // What it says NOW is the asymmetry (DW-703). The flat unconfirmed sentence
+    // describes the WHOLE save as unknown, and the body leg is not unknown at
+    // all — the `PUT` was answered `ok`, which is the one fact only this form
+    // holds. An owner told the outcome is unknown retypes or reloads over a
+    // body already on disk, which is precisely the harm the partial-save
+    // sentence exists to prevent, one cause over.
     const DROPPED = "Failed to fetch";
     fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
       if (init?.method === "PUT") {
@@ -855,13 +862,86 @@ describe("Edit page — a save that half landed", () => {
     touchMetadata();
     fireEvent.click(save());
 
+    // The component's own exported constant, never a retyped sentence: the
+    // wording is owned in `WikiEditor.tsx` and this file's claim is only about
+    // which branch renders it.
+    await waitFor(() =>
+      expect(
+        screen.getByText(EDIT_PAGE_METADATA_UNCONFIRMED_COPY),
+      ).toBeTruthy(),
+    );
+    // Both of the things it must NOT be, unchanged from before: the partial-save
+    // claim about a metadata leg nobody answered, and the raw transport message.
+    expect(screen.queryByText(partialSaveMessage(DROPPED))).toBeNull();
+    expect(screen.queryByText(DROPPED)).toBeNull();
+    // …and not the flat whole-save verdict either, which is what this branch
+    // used to say.
+    expect(
+      screen.queryByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
+    ).toBeNull();
+    // The flow still STOPS on the draft the owner typed.
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it("keeps the flat unconfirmed sentence for a metadata-only save whose fetch never came back", async () => {
+    // The body leg is what makes the new sentence honest, so a save with a
+    // CLEAN body cannot take it: nothing was saved, and "Your text was saved"
+    // would be a claim about a `PUT` that never fired. The metadata leg alone
+    // went unanswered, which is exactly the whole-save-unknown case the flat
+    // sentence was written for.
+    fetchMock.mockImplementation(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    mountEditor();
+    touchMetadata();
+    fireEvent.click(save());
+
     await waitFor(() =>
       expect(
         screen.getByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
       ).toBeTruthy(),
     );
-    expect(screen.queryByText(partialSaveMessage(DROPPED))).toBeNull();
-    expect(screen.queryByText(DROPPED)).toBeNull();
+    expect(screen.queryByText(EDIT_PAGE_METADATA_UNCONFIRMED_COPY)).toBeNull();
+    // One call — the `PATCH`; the body was never dirty.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(router.push).not.toHaveBeenCalled();
+  });
+
+  it("says nothing about the metadata when BOTH legs landed and the navigation threw", async () => {
+    // `router.push` and `router.refresh()` sit inside the same `try` as the two
+    // write legs, so a throw from either lands in the same `catch` — and a
+    // `TypeError` from there is an unconfirmed cause exactly like a dropped
+    // socket. The metadata leg is the difference: it was ANSWERED `ok` a line
+    // earlier, so "nothing came back to confirm the metadata change" would be a
+    // false claim about our own knowledge. This is what holds the local to
+    // meaning "outstanding" rather than merely "sent": a flag left raised after
+    // the response arrived would still be raised right here.
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => ({ slug: "alpha", version: SEEDED_VERSION }),
+        }) as unknown as Response,
+    );
+    router.push.mockImplementationOnce(() => {
+      throw new TypeError("Failed to fetch");
+    });
+
+    mountEditor();
+    rewriteBody();
+    touchMetadata();
+    fireEvent.click(save());
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(unconfirmedWriteMessage(EDIT_PAGE_SAVE_ACTION)),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText(EDIT_PAGE_METADATA_UNCONFIRMED_COPY)).toBeNull();
+    // Both legs really did go out and both really were answered.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   /**

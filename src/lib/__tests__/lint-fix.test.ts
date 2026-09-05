@@ -1410,6 +1410,74 @@ describe("fixLintIssue", () => {
     );
   });
 
+  /**
+   * The slug-less refusal (DW-458).
+   *
+   * `""` is what the doors pass by contract when no usable slug arrived —
+   * `POST /api/lint/fix` falls to `autoFixRefusal(record.type, "")` once the
+   * schema rejects `disputed-page`, `mcp-http` passes `slug ?? ""`, and the
+   * stdio server's `handleFixLintIssue` passes `args.slug ?? ""` into
+   * `fixLintIssue`. So this is what an owner really reads, and it used to be
+   * `Reconcile the conflicting claims in ""` over a `PATCH /api/wiki/` whose
+   * path segment was empty: a request that 404s the moment it is pasted, which
+   * is the opposite of the copy-pasteability the interpolation exists for.
+   *
+   * DRIVEN THROUGH `autoFixRefusal` RATHER THAN `fixLintIssue`, because that is
+   * how the empty slug arrives today. `fixLintIssue` is not immune to `""` in
+   * general — `src/cli.ts`'s `--fix` loop hands it `issue.slug` for every issue
+   * the scan emitted, and `lint-checks.ts` emits `slug: ""` on its three
+   * no-LLM-key rows (`contradiction`, `missing-concept-page` and the
+   * non-fixable `incomplete-coverage`) — but NONE of those rows carries type
+   * `disputed-page`: that check only emits an issue once it has read a real
+   * page, so its slug is always the page's. The empty-slug disputed sentence is
+   * therefore a DOOR sentence, and this asserts it where the doors compose it.
+   */
+  it("names no page and no PATCH path when the slug is empty (DW-458)", () => {
+    const refusal = autoFixRefusal("disputed-page", "");
+
+    expect(refusal).toContain("Disputed pages cannot be auto-fixed.");
+    // No un-pasteable path, and no empty quoted page name.
+    expect(refusal).not.toContain("/api/wiki/");
+    expect(refusal).not.toContain('""');
+
+    // What survives is everything the sentence is FOR: the action that clears
+    // the flag, where it is performed, and who can actually complete it — the
+    // DW-389 qualifier, which is the half that would be worth losing least.
+    expect(refusal).toContain("Reconcile the conflicting claims");
+    expect(refusal).toContain("clear the Disputed toggle in the page editor");
+    expect(refusal).toContain("on a public knowledge page");
+    expect(refusal).toContain("admin- or service-only");
+
+    // Still BUILT from the helper rather than restated a third time — the same
+    // claim the slugged case above pins, which is what keeps the two variants
+    // from drifting when the qualifier is next corrected.
+    expect(refusal).toContain(disputedClearGuidance(""));
+  });
+
+  it("leaves an unrecognized type alone when the slug is empty too (DW-458)", () => {
+    // The branch belongs to the `disputed-page` explanation, not to the lookup
+    // in front of it: a type no check emits is still unexplainable, and `""`
+    // gives the generic fall-through nothing new to say.
+    expect(autoFixRefusal("made-up-type", "")).toBe(
+      "Auto-fix not supported for this issue type",
+    );
+    expect(autoFixRefusal("constructor", "")).toBe(
+      "Auto-fix not supported for this issue type",
+    );
+  });
+
+  it("leaves the slugged sentence byte-identical (DW-458)", () => {
+    // The empty-slug branch is a branch, not a rewrite. A real slug renders
+    // exactly what it rendered before, dash and braces included.
+    expect(autoFixRefusal("disputed-page", "contested-page")).toBe(
+      'Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in ' +
+        '"contested-page", then clear the Disputed toggle in the page editor ' +
+        "(PATCH /api/wiki/contested-page with metadata { disputed: false }) — on " +
+        "a public knowledge page that PATCH is admin- or service-only, so an " +
+        "owner who is not an admin has to ask one to clear the flag.",
+    );
+  });
+
   it("dispatches unmigrated-page to fixUnmigratedPage", async () => {
     mockedReadWikiPageWithFrontmatter.mockResolvedValue({
       slug: "old-page",

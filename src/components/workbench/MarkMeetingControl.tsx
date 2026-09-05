@@ -1,9 +1,37 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { workbenchSourcePath } from "@/lib/source-delete";
 import { send, writeFailure } from "@/lib/workbench-request";
 import { TODOS_NON_MEETING_COPY } from "@/lib/workbench-modes";
+
+/**
+ * Why Mark as meeting refuses on a read-only deployment (DW-733).
+ *
+ * The CLIENT mirror of `READ_ONLY_REFUSAL.sourceMeeting`, character-identical
+ * to it and pinned by `read-only-copy-parity.test.ts`. Exported because it is
+ * the sentence the refused button POINTS AT through `aria-describedby`.
+ *
+ * It cannot be imported from `@/lib/read-only`: that module is server-only —
+ * it reads `YOPEDIA_READONLY` off `process.env` — and this is a `"use client"`
+ * component, so the constant is mirrored here the way every other client half
+ * of a refusal already is (Graph, Review, Todos).
+ *
+ * ONE control, ONE door. This surface's only write control meets
+ * `POST /api/sources/meeting`, which answers exactly this sentence, and it is
+ * NOT the Todos sentence — marking a Source as a meeting changes a SOURCE, not
+ * a todo. The two are worth telling apart because both are reachable from the
+ * same workbench shell, not because they share a canvas: this control is
+ * rendered by `SourcesTree` and `PreviewColumn` alone, never by `TodosCanvas`.
+ *
+ * Until now the control folded `readOnly` into bare `disabled`, so the refusal
+ * left the tab order with no sentence to announce and no client half held to
+ * the 403.
+ *
+ * Copy says work-wiki; the runtime identifier stays `YOPEDIA_READONLY`.
+ */
+export const SOURCE_MEETING_READ_ONLY_COPY =
+  "Sources cannot be marked as meetings while this deployment is read-only.";
 
 export interface MarkMeetingControlProps {
   path: string;
@@ -20,6 +48,8 @@ export function MarkMeetingControl({ path, readOnly = false }: MarkMeetingContro
   const [meeting, setMeeting] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Above the `!canonical` early return: a hook cannot be conditional.
+  const noteId = useId();
 
   useEffect(() => {
     if (!canonical) return;
@@ -66,14 +96,31 @@ export function MarkMeetingControl({ path, readOnly = false }: MarkMeetingContro
     <div className="wb-mark-meeting">
       {meeting === false && <p className="wb-mark-meeting-copy">{TODOS_NON_MEETING_COPY}</p>}
       {meeting === false && (
+        // `disabled` is the TRANSIENT state only (DW-531's shape). `busy` lasts
+        // one in-flight request and describes nothing; `readOnly` is a standing
+        // refusal, so it stays focusable and announces its reason instead of
+        // vanishing from the tab order. `mark()` keeps its own early return —
+        // `aria-disabled` is an announcement, not a gate, and Enter still
+        // reaches the handler.
         <button
           type="button"
           className="wb-mark-meeting-btn"
-          disabled={readOnly || busy}
+          disabled={!readOnly && busy}
+          aria-disabled={readOnly || undefined}
+          aria-describedby={readOnly ? noteId : undefined}
           onClick={() => void mark()}
         >
           Mark as meeting
         </button>
+      )}
+      {/* Rendered on the same `meeting === false` condition as the button it
+          describes: this control has exactly one refusable thing on it, and with
+          the button absent (a Source already marked, or still loading) there is
+          nothing for the sentence to be about. */}
+      {readOnly && meeting === false && (
+        <p id={noteId} className="wb-mark-meeting-note">
+          {SOURCE_MEETING_READ_ONLY_COPY}
+        </p>
       )}
       {error && <p className="wb-mark-meeting-error">{error}</p>}
     </div>

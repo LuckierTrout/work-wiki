@@ -102,12 +102,40 @@ export type AutoFixableCheckType = (typeof AUTO_FIXABLE_CHECK_TYPES)[number];
  * `slug` is interpolated into the PATCH so the path can be copy-pasted; a
  * caller with no usable slug should pass `""` rather than invent one, matching
  * `autoFixRefusal`'s contract.
+ *
+ * AND THAT EMPTY CASE DROPS THE PATCH ENTIRELY (DW-458). THREE callers really
+ * do pass `""`: the HTTP door, where a body `{"type":"disputed-page"}` with no
+ * slug falls to `autoFixRefusal(record.type, "")`
+ * (`src/app/api/lint/fix/route.ts`); the HTTP MCP door's
+ * `autoFixRefusal(a.type, slug ?? "")` (`src/lib/mcp-http.ts`); and the stdio
+ * server's `handleFixLintIssue`, which passes `args.slug ?? ""` into
+ * `fixLintIssue` and so reaches the same helper through that function's throw
+ * (`src/mcp.ts`). The stdio path is the narrowest of the three — the registered
+ * `fix_lint_issue` tool's `z.enum` is the FIXABLE subset, so the SDK refuses
+ * `disputed-page` before the handler runs — but `handleFixLintIssue` is
+ * exported and a direct call bypasses that schema entirely. Interpolating `""`
+ * rendered
+ * `PATCH /api/wiki/ with metadata …`, a request that 404s the moment anyone
+ * pastes it. The whole reason the slug is interpolated is copy-pasteability, so
+ * an un-pasteable path is worse than no path: with no slug the sentence names
+ * the editor toggle, says nothing about a URL, and re-points the qualifier at
+ * "that metadata write" so nothing dangles. The qualifier itself is ONE local
+ * shared by both variants — it is the half DW-121/DW-389 corrected, and two
+ * copies of it is how the correction would rot.
  */
 export function disputedClearGuidance(slug: string): string {
+  const qualifier =
+    `admin- or service-only, so an owner who is ` +
+    `not an admin has to ask one to clear the flag`;
+  if (!slug) {
+    return (
+      `clear the Disputed toggle in the page editor — on a public ` +
+      `knowledge page that metadata write is ${qualifier}`
+    );
+  }
   return (
     `clear the Disputed toggle in the page editor ` +
     `(PATCH /api/wiki/${slug} with metadata { disputed: false }) — on a public ` +
-    `knowledge page that PATCH is admin- or service-only, so an owner who is ` +
-    `not an admin has to ask one to clear the flag`
+    `knowledge page that PATCH is ${qualifier}`
   );
 }

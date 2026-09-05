@@ -919,8 +919,18 @@ const NOT_AUTO_FIXABLE: Record<
   // as if any owner could run it; DW-121 made that metadata write admin- or
   // service-only on a public knowledge page, and correcting one copy would have
   // left the other still wrong (DW-389).
+  //
+  // The empty-slug branch is a DOOR PATH, not a hypothetical (DW-458). Both
+  // doors pass `""` by contract when no usable slug arrived — the HTTP door's
+  // schema rejects `disputed-page` outright and falls to
+  // `autoFixRefusal(record.type, "")`, and `mcp-http` passes `slug ?? ""` — so
+  // the interpolation rendered `Reconcile the conflicting claims in ""` above a
+  // `PATCH /api/wiki/` with an empty path segment. With no slug there is no
+  // page to name, so the sentence does not pretend there is one.
   "disputed-page": (slug) =>
-    `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then ${disputedClearGuidance(slug)}.`,
+    slug
+      ? `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims in "${slug}", then ${disputedClearGuidance(slug)}.`
+      : `Disputed pages cannot be auto-fixed. Reconcile the conflicting claims, then ${disputedClearGuidance("")}.`,
 };
 
 /**
@@ -989,7 +999,9 @@ const AUTO_FIX_UNSUPPORTED = "Auto-fix not supported for this issue type";
  *
  * `slug` is interpolated by the `disputed-page` explanation into a
  * copy-pasteable PATCH, so a door with no usable slug should pass `""` rather
- * than invent one.
+ * than invent one. `""` is HANDLED, not merely tolerated (DW-458): the
+ * explanation drops the quoted page name and the PATCH altogether rather than
+ * handing back a path that 404s if pasted.
  */
 export function autoFixRefusal(type: unknown, slug: string): string | null {
   if (typeof type !== "string") return AUTO_FIX_UNSUPPORTED;

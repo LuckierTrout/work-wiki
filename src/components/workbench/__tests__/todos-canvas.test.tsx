@@ -12,7 +12,10 @@ vi.mock("@/lib/workbench-request", () => ({
 }));
 
 import { TODOS_READ_ONLY_COPY, TodosCanvas } from "@/components/workbench/TodosCanvas";
-import { MarkMeetingControl } from "@/components/workbench/MarkMeetingControl";
+import {
+  MarkMeetingControl,
+  SOURCE_MEETING_READ_ONLY_COPY,
+} from "@/components/workbench/MarkMeetingControl";
 import type { TodoItem } from "@/lib/todo-types";
 
 const CANDIDATE: TodoItem = {
@@ -188,5 +191,111 @@ describe("Mark as meeting copy", () => {
     render(<MarkMeetingControl path="raw/sources/notes/a.md" />);
     expect(await screen.findByText(TODOS_NON_MEETING_COPY)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Mark as meeting" })).toBeTruthy();
+  });
+
+  it("refuses in the open on a read-only deployment (DW-733)", async () => {
+    // The control folded `readOnly` into bare `disabled`, so the standing
+    // refusal left the tab order with nothing to announce — in front of
+    // `POST /api/sources/meeting`, which DOES answer a 403 sentence. Same shape
+    // DW-531/DW-643 gave the Graph, Review and Todos canvases: focusable,
+    // `aria-disabled`, pointing at the door's own sentence, refusing in the
+    // handler.
+    render(<MarkMeetingControl path="raw/sources/notes/a.md" readOnly />);
+
+    const button = (await screen.findByRole("button", {
+      name: "Mark as meeting",
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    const noteId = button.getAttribute("aria-describedby");
+    expect(noteId).toBeTruthy();
+    expect(document.getElementById(noteId!)?.textContent).toBe(
+      SOURCE_MEETING_READ_ONLY_COPY,
+    );
+
+    // `aria-disabled` is an announcement, not a gate — the handler is what
+    // refuses, so the click has to reach it and issue nothing.
+    send.mockClear();
+    fireEvent.click(button);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("renders no note and behaves as before on a writable deployment", async () => {
+    render(<MarkMeetingControl path="raw/sources/notes/a.md" />);
+
+    const button = (await screen.findByRole("button", {
+      name: "Mark as meeting",
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBeNull();
+    expect(button.getAttribute("aria-describedby")).toBeNull();
+    expect(screen.queryByText(SOURCE_MEETING_READ_ONLY_COPY)).toBeNull();
+
+    send.mockClear();
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        "/api/sources/meeting",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+
+  it("keeps `disabled` for the TRANSIENT in-flight state", async () => {
+    // The other half of `disabled={!readOnly && busy}`. The rows above pin what
+    // `readOnly` must NOT do to the attribute; without this one, deleting
+    // `busy` from that expression leaves them both green while the owner can
+    // fire a second `POST` on top of the first. `busy` describes nothing and
+    // lasts one request, so unlike the standing refusal it is right for
+    // `disabled` — the same split `canvas-read-only-refusal.test.tsx` pins for
+    // the Review cards.
+    send.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (typeof url === "string" && url.startsWith("/api/sources/meeting")) {
+        // The GET still answers; the POST never settles, so the control stays
+        // in flight for the length of the assertion.
+        if (init?.method === "POST") return new Promise(() => {});
+        return { path: "raw/sources/notes/a.md", meeting: false };
+      }
+      return {};
+    });
+
+    render(<MarkMeetingControl path="raw/sources/notes/a.md" />);
+
+    const button = (await screen.findByRole("button", {
+      name: "Mark as meeting",
+    })) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+
+    fireEvent.click(button);
+    await waitFor(() => expect(button.disabled).toBe(true));
+    // Still the transient state and not a refusal: nothing to announce, so
+    // nothing is announced.
+    expect(button.getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(SOURCE_MEETING_READ_ONLY_COPY)).toBeNull();
+  });
+
+  it("renders no note when there is no button for it to describe", async () => {
+    // The note is guarded on the same `meeting === false` as the button, and
+    // this is what holds it there. A Source ALREADY marked as a meeting offers
+    // no write control at all, so a standing sentence explaining why one is
+    // refused would describe something the owner was never shown — and
+    // `aria-describedby` on a read-only deployment would be the only thing
+    // pointing at it.
+    send.mockImplementation(async (url: string) => {
+      if (typeof url === "string" && url.startsWith("/api/sources/meeting")) {
+        return { path: "raw/sources/notes/a.md", meeting: true };
+      }
+      return {};
+    });
+
+    render(<MarkMeetingControl path="raw/sources/notes/a.md" readOnly />);
+
+    await waitFor(() =>
+      expect(screen.queryByText(TODOS_NON_MEETING_COPY)).toBeNull(),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Mark as meeting" }),
+    ).toBeNull();
+    expect(screen.queryByText(SOURCE_MEETING_READ_ONLY_COPY)).toBeNull();
   });
 });

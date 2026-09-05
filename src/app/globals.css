@@ -3591,6 +3591,7 @@ body:has(.wb-shell) {
   padding: var(--wb-space-2) 0;
 }
 .wb-mark-meeting-copy,
+.wb-mark-meeting-note,
 .wb-mark-meeting-error {
   margin: 0;
   color: var(--wb-muted);
@@ -3606,6 +3607,15 @@ body:has(.wb-shell) {
   cursor: pointer;
 }
 .wb-mark-meeting-btn[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+/* The read-only deployment's face (DW-733), the same pair
+   `.wb-todos-btn[aria-disabled="true"]` set above. `disabled` is kept for the
+   TRANSIENT in-flight state and `aria-disabled` carries the standing refusal,
+   which the browser gives no dimmed face of its own — without this the button
+   that refuses every click looks live and keeps the pointer cursor above. */
+.wb-mark-meeting-btn[aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
 }

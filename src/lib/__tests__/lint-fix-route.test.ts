@@ -25,7 +25,7 @@ vi.mock("@/lib/lint-fix", async (importOriginal) => {
 
 import { getPrincipal } from "@/lib/auth";
 import { isOwnerPrincipal } from "@/lib/owner";
-import { fixLintIssue } from "@/lib/lint-fix";
+import { autoFixRefusal, fixLintIssue } from "@/lib/lint-fix";
 import { ensureDirectories, writeWikiPage } from "@/lib/wiki";
 import { _resetStorage, getStorage } from "@/lib/storage";
 import { _resetLocks } from "@/lib/lock";
@@ -160,6 +160,29 @@ describe("POST /api/lint/fix — body validation", () => {
     expect(((await res.json()) as { error?: string }).error).toContain(
       "PATCH /api/wiki/contested-page with metadata { disputed: false }",
     );
+    expect(spiedFixLintIssue).not.toHaveBeenCalled();
+  });
+
+  it("hands back no empty path segment when the body carries no slug (DW-458)", async () => {
+    // THE DOOR PATH, not a hypothetical: the schema rejects `disputed-page`
+    // outright, so a body with no `slug` falls to `autoFixRefusal(record.type,
+    // "")` — the `""` that module's contract asks doors to pass. That used to
+    // put `PATCH /api/wiki/` with an empty segment on the wire, plus a page
+    // named `""`, and the whole reason the slug is interpolated is that the
+    // path can be pasted.
+    const res = await postFix({ type: "disputed-page" });
+
+    expect(res.status).toBe(400);
+    const error = ((await res.json()) as { error?: string }).error;
+    // Asserted against the exported refusal, never a retyped sentence: the
+    // wording is owned one module in, and this file's claim is only that the
+    // wire carries it.
+    expect(error).toBe(autoFixRefusal("disputed-page", ""));
+    expect(error).not.toContain("/api/wiki/");
+    expect(error).not.toContain('""');
+    // Still the sentence that tells an owner how to clear the flag, and still
+    // refused at the door rather than one layer in.
+    expect(error).toContain("clear the Disputed toggle in the page editor");
     expect(spiedFixLintIssue).not.toHaveBeenCalled();
   });
 
