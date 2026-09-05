@@ -27,6 +27,7 @@ import {
   _getPageCacheSize,
   updateRelatedPages,
   enrichEntry,
+  wikiPageExists,
   Frontmatter,
 } from "../wiki";
 import { _resetStorage } from "../storage";
@@ -2673,5 +2674,78 @@ describe("case-variant page keys", () => {
     expect(page!.content).toContain("silo truth.");
     expect(page!.content).not.toContain("stale public copy.");
     expect(page!.path).toBe(path.join(tmpDir, "tenants", "alice", "wiki", "cased.md"));
+  });
+
+  // -------------------------------------------------------------------------
+  // wikiPageExists (DW-741)
+  //
+  // The existence door was left addressing the NAME after DW-489/490 moved the
+  // read and write doors onto the object. Its one production caller is
+  // `GET /api/ingest/status/[jobId]`, which 404s a completed ingest out of the
+  // Recent-ingests strip on a `false` — so a variant-held Page it called `gone`
+  // was a readable Page vanishing from the UI.
+  // -------------------------------------------------------------------------
+
+  it("wikiPageExists agrees with readWikiPage about a lone flat variant", async () => {
+    await simulateStore({ "wiki/cased.MD": "# Cased\n\nvariant.\n" });
+
+    // The disagreement DW-741 names, pinned as an agreement.
+    expect(await readWikiPage("cased")).not.toBeNull();
+    expect(await wikiPageExists("cased")).toBe(true);
+  });
+
+  it("wikiPageExists sees a variant inside the silo the index routes to", async () => {
+    await simulateStore({
+      "derived-indexes/pages.json": JSON.stringify({
+        cased: { slug: "cased", title: "Cased", summary: "s", owner: "alice" },
+      }),
+      "tenants/alice/wiki/cased.MD": "# Cased\n\nsilo variant.\n",
+    });
+
+    expect(await wikiPageExists("cased")).toBe(true);
+  });
+
+  it("wikiPageExists probes nothing when the canonical spelling is present", async () => {
+    // The case-INSENSITIVE store's shape, and the reason retargeting this door
+    // is free there: the canonical name resolves the object, so the answer costs
+    // the same ONE read it cost before DW-741. Its only caller is polled, so a
+    // regression here is paid per poll.
+    const { readFile } = await simulateStore({ "wiki/cased.md": "# Cased\n\ncanonical.\n" });
+
+    expect(await wikiPageExists("cased")).toBe(true);
+    // Page-key reads only — the page-index read alongside them is pre-existing
+    // and unrelated. Exactly the canonical key, and no variant spelling.
+    const pageReads = readFile.mock.calls
+      .map(([key]) => String(key))
+      .filter((key) => /(?:^|\/)cased\.md$/i.test(key));
+    expect(pageReads).toEqual(["wiki/cased.md"]);
+  });
+
+  it("wikiPageExists still answers false for a genuinely absent page", async () => {
+    // Three bounded probes that all miss are still a miss: retargeting the door
+    // must not turn "no such page" into a hit.
+    await simulateStore({});
+
+    expect(await wikiPageExists("cased")).toBe(false);
+  });
+
+  it("wikiPageExists answers false for a malformed slug without touching storage", async () => {
+    const { readFile } = await simulateStore({});
+
+    expect(await wikiPageExists("../etc")).toBe(false);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("wikiPageExists rethrows an indeterminate variant probe rather than saying gone", async () => {
+    // The re-throw contract carried onto the new branch: the ingest-status route
+    // falls through and returns the job on a thrown error, but 404s it on a
+    // `false`, so a blip flattened into "absent" drops a live job's strip entry.
+    const { readFile } = await simulateStore({});
+    readFile.mockImplementation(async (key: string) => {
+      if (key === "wiki/cased.MD") throw new Error("variant store unavailable");
+      throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+    });
+
+    await expect(wikiPageExists("cased")).rejects.toThrow("variant store unavailable");
   });
 });

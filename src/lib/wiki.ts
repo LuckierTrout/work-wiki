@@ -301,6 +301,13 @@ export function _getPageCacheSize(): number {
  * failure so a caller can tell "the page is genuinely gone" from "the store
  * hiccuped" — e.g. the ingest-status route must not drop a live job's strip
  * entry on a transient blip. A malformed slug is treated as "no such page".
+ *
+ * IT ANSWERS ABOUT THE OBJECT, NOT THE NAME (DW-741). Each arm resolves through
+ * {@link findStoredPageKey}, so on a case-SENSITIVE store a Page held on
+ * `wiki/cased.MD` is `true` here for the same reason {@link readWikiPage}
+ * serves it. The disagreement that fix removes is a live one: the ingest-status
+ * route calls a readable Page `gone` and 404s a completed ingest out of the
+ * Recent-ingests strip.
  */
 export async function wikiPageExists(slug: string): Promise<boolean> {
   try {
@@ -308,7 +315,6 @@ export async function wikiPageExists(slug: string): Promise<boolean> {
   } catch {
     return false;
   }
-  const storage = getStorage();
 
   // Silo-primary: try tenant path first (O(1) page-index lookup only —
   // we must NOT call tenantForSlug here because its slow path triggers
@@ -317,24 +323,13 @@ export async function wikiPageExists(slug: string): Promise<boolean> {
   if (pageIdx) {
     const entry = pageIdx[slug];
     const tenant = tenantForOwner(entry?.owner);
-    const siloPath = tenantWikiRelPath(tenant, `${slug}.md`);
-    try {
-      await storage.readFile(siloPath);
-      return true;
-    } catch (e) {
-      if (!isEnoent(e)) throw e;
-      // Fall through to flat
-    }
+    // The resolution is strict, so a non-ENOENT storage error is re-thrown
+    // rather than masked as "gone"; a total miss falls through to flat.
+    if ((await findStoredPageKey(slug, tenant)) !== null) return true;
   }
 
   // Flat fallback
-  try {
-    await storage.readFile(wikiRelPath(`${slug}.md`));
-    return true;
-  } catch (err) {
-    if (isEnoent(err)) return false;
-    throw err; // real storage error — let the caller decide, don't mask as "gone"
-  }
+  return (await findStoredPageKey(slug, null)) !== null;
 }
 
 /**
@@ -468,6 +463,53 @@ async function readStoredPageVariant(
   const winner = hits.find((hit) => hit.name === elected);
   if (!winner) return null;
   return { key: keyFor(winner.name), content: winner.content };
+}
+
+/**
+ * WHICH STORAGE KEY UNDER THIS ROOT CARRIES THIS SLUG (DW-741)?
+ *
+ * The ONE resolution the delete door (`lifecycle.ts`) and the existence door
+ * ({@link wikiPageExists}) share, so neither restates the candidate set or the
+ * election: canonical `<slug>.md` first, and only on its ENOENT the same
+ * {@link readStoredPageVariant} probe the read and write doors already use.
+ * `null` when no spelling of the slug is present under `tenant` (or under the
+ * flat root when `tenant` is `null`).
+ *
+ * ENOENT-GATED, so a HIT costs exactly what it cost before this existed: one
+ * `readFile` on the same key. On a case-INSENSITIVE store the canonical
+ * spelling resolves whatever object holds the slug, so that is the only path
+ * ever taken there. A MISS is what got more expensive — four reads per root
+ * instead of one — and that is the price of the answer being about the object
+ * rather than the name. Both callers reach a miss only on a slug that really
+ * has no Page under that root.
+ *
+ * `readFile` RATHER THAN `fileExists`, deliberately: only `readFile`
+ * distinguishes a fault from an absence. The filesystem provider's `fileExists`
+ * swallows every error, so a blip there would read as "no such page" — and both
+ * of these doors turn that answer into a destructive or user-visible verdict (a
+ * vacuously "successful" delete; a completed ingest 404'd out of the strip).
+ *
+ * ALWAYS STRICT, which is the same reason: a non-ENOENT failure is rethrown
+ * rather than flattened into "no key here", on the canonical read exactly as
+ * {@link readStoredPageVariant} applies it to each variant.
+ *
+ * DOES NOT VALIDATE `slug` — it builds a storage key from it directly. Callers
+ * validate first ({@link wikiPageExists} and `deleteWikiPage` both do), which
+ * is the same contract {@link readStoredPageVariant} carries.
+ */
+export async function findStoredPageKey(
+  slug: string,
+  tenant: string | null,
+): Promise<string | null> {
+  const canonicalKey =
+    tenant !== null ? tenantWikiRelPath(tenant, `${slug}.md`) : wikiRelPath(`${slug}.md`);
+  try {
+    await getStorage().readFile(canonicalKey);
+    return canonicalKey;
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+  }
+  return (await readStoredPageVariant(slug, tenant, true))?.key ?? null;
 }
 
 /**

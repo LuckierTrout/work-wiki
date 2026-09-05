@@ -14,6 +14,7 @@ import {
   findRelatedPages,
   updateRelatedPages,
   appendToLog,
+  findStoredPageKey,
   wikiRelPath,
   tenantForOwner,
   tenantWikiRelPath,
@@ -623,17 +624,48 @@ async function runPageLifecycleOp(
       }
       // Owner/contributors unknown → falls back to the default tenant in step 3c.
     }
+    const deleteTenant = tenantForOwner(deletedOwner);
+    // A HARD DELETE MUST REMOVE THE OBJECT THE PRE-DELETE READ WAS SHOWN
+    // (DW-741). On a case-SENSITIVE store the Page can be held on `<slug>.MD`,
+    // and unlinking the canonical name there removes nothing while reporting
+    // success — the next read serves the full body back. `findStoredPageKey` is
+    // the same canonical-first, ENOENT-gated election the read and write doors
+    // use, so a case-INSENSITIVE store never reaches the probe and each key
+    // below is the one this branch always built.
+    //
+    // RESOLVED BEFORE THE UNLINK, never on its ENOENT: `deleteFile` is
+    // provider-dependent on a missing key (R2 deletes silently, the filesystem
+    // throws), so a re-election hung off that catch would be dead code on R2 —
+    // which is the deployment the case-sensitive store actually is.
+    //
+    // BOTH KEYS RESOLVE BEFORE ANYTHING IS DESTROYED. These are strict reads,
+    // so a storage fault fails the op; doing them here rather than beside each
+    // unlink means such a fault aborts with the revisions still erasable and
+    // neither root touched, instead of leaving revisions gone (or the silo
+    // object unlinked) under a Page that is still there.
+    //
+    // Resolution only NARROWS the target: when no spelling is present the
+    // canonical unlink is still issued, and behaves exactly as it does today.
+    //
+    // IT ELECTS ONE SPELLING PER ROOT, it does not sweep every spelling. A
+    // DEFEATED case sibling therefore survives this delete and is promoted to
+    // the winner for the slug on the next read — recorded as deferred work on
+    // this spec, because "which spellings a delete is entitled to sweep" is a
+    // wider ruling than the one this change carries.
+    const siloKey =
+      (await findStoredPageKey(slug, deleteTenant)) ??
+      tenantWikiRelPath(deleteTenant, `${slug}.md`);
+    const flatKey = (await findStoredPageKey(slug, null)) ?? wikiRelPath(`${slug}.md`);
     // Revision bytes are part of the hard-delete contract, not a derived index.
     // Erase both layouts before removing the authoritative Page so a transient
     // cleanup failure leaves a visible Page the operator can safely retry.
     await Promise.all([
       deleteRevisions(slug),
-      deleteRevisions(slug, tenantForOwner(deletedOwner)),
+      deleteRevisions(slug, deleteTenant),
     ]);
     // Delete from silo (primary target).
-    const deleteTenant = tenantForOwner(deletedOwner);
     try {
-      await getStorage().deleteFile(tenantWikiRelPath(deleteTenant, `${slug}.md`));
+      await getStorage().deleteFile(siloKey);
     } catch (err: unknown) {
       if (!(err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {
         throw err;
@@ -641,7 +673,7 @@ async function runPageLifecycleOp(
     }
     // Also delete flat copy (transition cleanup — removable after #869).
     try {
-      await getStorage().deleteFile(wikiRelPath(`${slug}.md`));
+      await getStorage().deleteFile(flatKey);
     } catch (err: unknown) {
       // Flat copy may already be gone — swallow ENOENT.
       if (!(err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT')) {

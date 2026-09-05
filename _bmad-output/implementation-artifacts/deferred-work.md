@@ -6212,7 +6212,9 @@ location: src/lib/lifecycle.ts (delete branch); src/lib/wiki.ts (wikiPageExists)
 source_spec: `spec-dw-489-490-case-variant-read-and-write-election.md`
 severity: medium
 reason: This spec retargeted the three doors its decision named — `readWikiPage` recovery, `writeWikiPage` and `writeWikiPageIfContentMatches` — so a variant-held Page is now a live, listed, readable, WRITABLE state rather than an anomaly `readWikiPage` refused to serve at all. Two sibling doors did not move with it, and each is a wrong answer the owner can hit: (1) DELETE. `src/lib/lifecycle.ts`'s delete branch unlinks exactly `tenantWikiRelPath(deleteTenant, `${slug}.md`)` and `wikiRelPath(`${slug}.md`)`, swallowing ENOENT on both. On a case-SENSITIVE store holding only `wiki/cased.MD`, the pre-delete read NOW succeeds (it did not before this change), both unlinks miss, the op reports success — and the next `readWikiPage("cased")` recovers the variant and serves the full body. A hard delete that reports success and removes nothing is worse than the pre-change state, where the Page was simply unreadable through `readWikiPage`. (2) EXISTENCE. `wikiPageExists` (`src/lib/wiki.ts`) probes `tenant
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-case-variant-delete-and-existence
+resolution-undo: 002236f1161b3b011eec59ee6cf8865610c9568fe93f062f5090541c5a62a2f5 2026-09-05 7374617475733a206f70656e
 
 ### DW-742: `/api/raw/[slug]` serves the raw SOURCE text of a page the Knowledge tab hides to anyone, unauthenticated — the sources-half twin of the hole DW-536 just closed on the assets half.
 origin: spec-deferred 6bfe3e1ce755
@@ -6505,4 +6507,12 @@ location: src/app/api/chat/conversations/[id]/save/route.ts:125
 source_spec: `spec-dw-134-746-task-door-contract-fidelity.md`
 severity: low
 reason: `src/app/api/chat/conversations/[id]/save/route.ts:125` calls `enqueueOrInline` with no `inlineBudgetMs`, so where `enqueueTask` returns false the whole compile (LLM map/reduce, retries, embeddings) runs inside the request. `saveAnswerToWiki` in `src/lib/chat-conversation-store.ts:200` reaches that route through `send`, which arms `REQUEST_TIMEOUT_MS = 20_000` (`src/lib/workbench-request.ts:141`), and `send`'s body read classifies the abort through `unconfirmedCause` — so the owner is told the outcome is unknown about an answer page that is still being written. Exactly DW-746's shape at a door this bundle's intent did not name; the `inlineBudgetMs` docblock now names it rather than denying it, but nothing tracks it. Not caused by this change: the option stays opt-in and every other caller is byte-for-byte as it was.
+status: open
+
+### DW-776: A hard delete removes only the ELECTED spelling, so on a case-SENSITIVE store holding two case siblings the defeated one survives, is promoted to the winner on the next read, and the Page serves a bod
+origin: spec-deferred 47ad79539661
+location: src/lib/lifecycle.ts (delete branch, elected-key resolution)
+source_spec: `spec-dw-741-case-variant-delete-and-existence.md`
+severity: low
+reason: `src/lib/lifecycle.ts`'s delete branch resolves one key per root through `findStoredPageKey`, which returns the `electWikiLeafNames` winner. With `wiki/cased.MD` and `wiki/cased.Md` both present, the delete unlinks `.MD` (the lexicographic winner) and the next `readWikiPage("cased")` recovers `.Md` and serves it — the verbatim symptom DW-741 names, on a shape DW-741 did not stage (its ledger entry and this bundle's intent both describe a store "holding only `wiki/cased.MD`"). It is WORSE than the survivor's pre-delete state, not merely unfixed: steps 2b-2e already ran, so the index entry, revisions, discussions and backlinks are gone while the URL still serves content. Left open deliberately. The intent directs "the ENOENT-branch variant probe ... with the `electWikiLeafNames` election", and the election names ONE object; sweeping every spelling instead is the wider ruling the source ledger entry calls out as a decision ("which spellings a delete is entitled to sweep"). Closing it mean
 status: open
