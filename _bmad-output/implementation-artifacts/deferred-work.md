@@ -3606,7 +3606,9 @@ source_spec: `spec-dw-351-356-brand-copy-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts
 severity: low
 reason: The new "keeps every waived yopedia resource name earning its place" test sweeps the corpus for the hyphen enumeration only. /u/yopedia, the health-check bodies, yopedia.yolog.dev, yopedia.yuanhao-li.workers.dev, yologdev/yopedia, yopedia--, yopedia_ and the whole workwiki allowlist have no equivalent, so a retired identifier leaves its word permanently waived as display copy -- the failure mode the enumeration comment itself argues is real.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-brand-allowlist-minimality
+resolution-undo: 614efc3812141ac8b98b6bb9cfaae175d67bcb278370812ff175c085e3ac95c5 2026-09-05 7374617475733a206f70656e
 
 ### DW-475: The anchored hyphen family's LEADING boundary allows a dot, so a lookalike host such as cdn.yopedia-raw.example.com stays waived.
 origin: spec-deferred 22fbd3206d59
@@ -3614,7 +3616,9 @@ source_spec: `spec-dw-351-356-brand-copy-scan-coverage.md`
 location: src/lib/__tests__/brand-copy.test.ts (YOPEDIA_HYPHEN_BOUNDS)
 severity: low
 reason: YOPEDIA_HYPHEN_BOUNDS blocks [A-Za-z0-9_-] on both sides. A trailing dot is deliberately allowed and documented (live workers.dev hostname, /tmp/*.log basenames); a LEADING dot is allowed only as a side effect. A leading slash must stay allowed for /tmp/yopedia-r2.log, so this is a narrowing of the lookbehind, not a removal.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-brand-allowlist-minimality
+resolution-undo: 614efc3812141ac8b98b6bb9cfaae175d67bcb278370812ff175c085e3ac95c5 2026-09-05 7374617475733a206f70656e
 
 ### DW-476: `parseRegistry` refuses a non-array registry but validates no element, so an array of non-project entries still crashes later with an opaque TypeError.
 
@@ -6331,4 +6335,12 @@ location: src/lib/__tests__/brand-copy.test.ts:282
 source_spec: `spec-dw-350-589-brand-scan-coverage.md`
 severity: low
 reason: Both enumerated families carry "keeps every waived ... earning its place" sweeps that fail when a member stops occurring in the shipped tree; the eleven plain IDENTIFIER_ALLOWLIST patterns carry none. A reviewer rewrote .github/workflows/seed-yoyo.yml:93 to drop the host entirely and all 22 tests still passed, leaving /yopedia\.christianlee-flightwall\.workers\.dev/g as a repo-wide licence to write that host as display prose. The sibling /yopedia\.yuanhao-li\.workers\.dev/g has the identical gap and predates this change, so the class is pre-existing; this story adds one instance to it. AGENTS.md states the principle for the families ("a name no scanned file spells any more is a standing licence to write that word as copy") but nothing enforces it for the single-host origins.
+status: open
+
+### DW-762: The literal-host rows of IDENTIFIER_ALLOWLIST and both workwiki hyphen/host rows carry no leading boundary at all, so DW-475's lookalike-host hole stays open one row over.
+origin: spec-deferred 959a85bd5266
+location: src/lib/__tests__/brand-copy.test.ts (IDENTIFIER_ALLOWLIST origin rows, WORKWIKI_IDENTIFIER_ALLOWLIST)
+source_spec: `spec-dw-474-475-brand-allowlist-minimality.md`
+severity: low
+reason: DW-475 narrowed YOPEDIA_HYPHEN_BOUNDS's leading class, but `/yopedia\.yolog\.dev/g`, `/yopedia\.yuanhao-li\.workers\.dev/g`, `/yopedia\.christianlee-flightwall\.workers\.dev/g`, `/workwiki\.app/g` and `/\.?workwiki-(?:source-sync|backups|portable-archive|archive|actions\.ics|[*.$0-9])/g` have no lookbehind. Verified by mutation during review: adding "cdn.yopedia.yolog.dev is not the upstream origin", "Xyopedia.yolog.dev is not the upstream origin", "cdn.workwiki-archive.example.com" and "Xworkwiki-backups" to the slip tables makes each of them FAIL — they are stripped whole today and the residue carries no brand word to count. The existing near-misses for those rows all vary the SUFFIX only, so nothing pins the prefix direction. The workwiki hyphen row is the awkward one: its leading `\.?` is deliberate (`.workwiki-source-sync.json`), so it needs an explicit alternative rather than a copied lookbehind. Out of scope for this bundle: DW-475's intent says to add `.` to the leading class o
 status: open

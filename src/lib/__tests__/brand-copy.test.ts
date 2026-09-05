@@ -123,24 +123,53 @@ const YOPEDIA_HYPHEN_IDENTIFIERS = [
  * The enumeration as one anchored pattern, built from the list above so the
  * two cannot drift.
  *
- * Both boundaries block `A-Z`, `a-z`, `0-9`, `_` and `-`. Blocking more than
- * lowercase is the point: with only `[a-z0-9-]` guarded, "yopedia-tasksQueue",
+ * THE TWO BOUNDARIES ARE DELIBERATELY ASYMMETRIC, and the asymmetry is the
+ * whole of DW-475, so read them one at a time rather than as a pair.
+ *
+ * Both block `A-Z`, `a-z`, `0-9`, `_` and `-`. Blocking more than lowercase is
+ * the point: with only `[a-z0-9-]` guarded, "yopedia-tasksQueue",
  * "yopedia-tasks_dlq" and "yopedia-monitorUA" each lose their frozen prefix and
  * the residue carries no brand word left to count — half-stripped into silence,
  * which is the outcome the guard exists to prevent, not the one it prevented.
  * The leading boundary is the same point from the other side: "not-yopedia-tasks"
  * and "Xyopedia-raw" are not this deployment's resource names.
  *
- * A trailing `.` is deliberately still allowed, and that is a real residual, not
- * an oversight: `workers/task-consumer/README.md` documents the health check at
- * `https://yopedia-task-consumer.<subdomain>.workers.dev`, and the setup script
- * writes `/tmp/yopedia-r2.log`, `/tmp/yopedia-vec.log` and `/tmp/yopedia-pages.log`
- * — blocking `.` would flag a live hostname and move the pinned exempt counts.
- * Stated plainly so nobody reads more safety here than there is: a future
- * `yopedia-<enumerated name>.<anything>` stays waived on the strength of the
- * name before the dot.
+ * The LEADING boundary additionally blocks `.`, which the trailing one does not.
+ * A dot before the family prefix makes the whole thing somebody else's
+ * subdomain or somebody else's dotted path: `cdn.yopedia-raw.example.com` is a
+ * lookalike host, not this deployment's bucket, and with `.` unguarded it was
+ * waived as if it were one. Nothing in the shipped tree writes `.yopedia-`, so
+ * the narrowing strips no real identifier and moves no `YOPEDIA_PROSE_EXEMPT`
+ * count; the live log basenames the setup script writes are reached through a
+ * `/` (`/tmp/yopedia-r2.log`), which stays allowed.
+ *
+ * ONLY `.` WAS ADDED, so read the narrowing as exactly one lookalike shape
+ * closed and not as "attachment is guarded now". `/`, `:` and `@` all still
+ * attach freely, and `/` MUST keep doing so or the setup script's
+ * `/tmp/yopedia-r2.log` stops being waived — which means
+ * `https://evil.example.com/yopedia-raw` and `user@yopedia-tasks` are waived
+ * today, exactly as they were before DW-475. A guard that covered those would
+ * have to distinguish a path segment from a host label, which this character
+ * class cannot do; it is a narrowing of one case, priced honestly.
+ *
+ * THESE BOUNDS ARE SHARED, so the narrowing propagates rather than staying
+ * local: {@link YOPEDIA_HYPHEN_PATTERN} is built from them, and so is
+ * {@link YOPEDIA_HYPHEN_MEMBER_PATTERNS}, which reaches both the member
+ * evidence sweep and the `DOCUMENTED_WAIVERS` AGENTS.md parity loop. Nothing
+ * moves today: AGENTS.md spells every hyphen-family member with no leading dot,
+ * and no scanned file writes `.yopedia-` at all. A future edit to this class
+ * has to be checked against all four call sites, not just the stray scan.
+ *
+ * The TRAILING boundary still allows `.`, on purpose, and that is a real
+ * residual rather than an oversight: `workers/task-consumer/README.md` documents
+ * the health check at `https://yopedia-task-consumer.<subdomain>.workers.dev`,
+ * and the setup script writes `/tmp/yopedia-r2.log`, `/tmp/yopedia-vec.log` and
+ * `/tmp/yopedia-pages.log` — blocking `.` there would flag a live hostname and
+ * move the pinned exempt counts. Stated plainly so nobody reads more safety here
+ * than there is: a future `yopedia-<enumerated name>.<anything>` stays waived on
+ * the strength of the name before the dot.
  */
-const YOPEDIA_HYPHEN_BOUNDS = ["(?<![A-Za-z0-9_-])yopedia-", "(?![A-Za-z0-9_-])"] as const;
+const YOPEDIA_HYPHEN_BOUNDS = ["(?<![A-Za-z0-9_.-])yopedia-", "(?![A-Za-z0-9_-])"] as const;
 
 const YOPEDIA_HYPHEN_PATTERN = new RegExp(
   `${YOPEDIA_HYPHEN_BOUNDS[0]}(?:${YOPEDIA_HYPHEN_IDENTIFIERS.map(escapeIdentifier).join(
@@ -221,9 +250,17 @@ const YOPEDIA_HYPHEN_MEMBER_PATTERNS = YOPEDIA_HYPHEN_IDENTIFIERS.map(
 const X_YOPEDIA_HEADERS = ["Queue-Attempt", "Payload-Bytes", "Signature", "*"] as const;
 
 /**
- * Both boundaries block `A-Z`, `a-z`, `0-9`, `_` and `-`, the same classes and
- * for the same reason as {@link YOPEDIA_HYPHEN_BOUNDS}: with only the frozen
- * spelling's own characters guarded, `X-Yopedia-SignatureV2` and
+ * Both boundaries block `A-Z`, `a-z`, `0-9`, `_` and `-`, for the same reason
+ * {@link YOPEDIA_HYPHEN_BOUNDS} blocks them — but NOT the same classes any
+ * more: that family's LEADING boundary also blocks `.` (DW-475), and this one
+ * does not. The narrowing is scoped to the hyphen family on purpose. There the
+ * dot case is a lookalike HOST (`cdn.yopedia-raw.example.com`); a wire header is
+ * not a hostname component, so `.X-Yopedia-Signature` is not a spelling anything
+ * writes, and widening this class would buy nothing while risking the sentence
+ * that ends a clause on a header name. If that ever changes, change it here
+ * deliberately rather than to restore a symmetry that is not load-bearing.
+ *
+ * With only the frozen spelling's own characters guarded, `X-Yopedia-SignatureV2` and
  * `X-Yopedia-Queue-Attempts` would lose their prefix and the residue would
  * carry no brand word left to count — half-stripped into silence. The leading
  * boundary is the same point from the other side: `not-X-Yopedia-Signature` is
@@ -801,6 +838,125 @@ const YOPEDIA_PROSE_EXEMPT = new Map([
  */
 const FREEZE_PROSE = "AGENTS.md";
 
+/**
+ * One evidence sweep over the corpus, shared by the two allowlist minimality
+ * tests below — DW-474. Each probe is an opaque LABEL paired with the pattern
+ * that has to match something; the labels with no match anywhere outside
+ * {@link FREEZE_PROSE} come back, and the caller turns them into its own
+ * failure message.
+ *
+ * Keyed by label rather than by member name so both allowlists can share it:
+ * the two hoisted enumerations are keyed by the name a maintainer would delete,
+ * an allowlist is keyed by `String(pattern)` — the source and flags, which is
+ * the spelling a maintainer greps for to find the line to edit.
+ *
+ * The `FREEZE_PROSE` exclusion and its `sawFreezeProse` guard live HERE, in one
+ * place, which is the reason this is a helper at all: the exclusion's rationale
+ * is subtle (see the constant above) and the guard against it rotting into a
+ * no-op is easy to omit when copying a test.
+ *
+ * Evidence is `text.match(pattern) !== null`, NOT `pattern.test(text)`, and the
+ * reason is that `match` is correct WHATEVER flags the pattern carries: it sets
+ * `lastIndex` to 0 both before and after, where a global regex's `test()`
+ * resumes from `lastIndex` and so alternates between matching and not matching
+ * the same string across files. The allowlist patterns happen to be global
+ * today, but this choice deliberately does not rest on that — nothing checks
+ * it, and a non-global row added tomorrow needs no thought here. Same reason
+ * DW-589's AGENTS.md parity loop uses `match`.
+ *
+ * THE TWO EXISTING MEMBER SWEEPS ARE NOT RETROFITTED ONTO THIS, deliberately.
+ * They call `.test()` on patterns built WITHOUT `g`, and that pairing is load
+ * bearing in the other direction: routed through `match` here instead, a `g`
+ * flag added to a member pattern would be silently absorbed and the member
+ * patterns would quietly become globals. Note what does NOT happen if someone
+ * adds that flag today — the member sweeps do not fail. Each member still
+ * matches on SOME pass, so `.test()` resuming from `lastIndex` only makes those
+ * sweeps order-dependent, which is worse than a failure because it is quiet.
+ * That is why the flags are asserted outright by
+ * `it("keeps the member patterns non-global …")` below; that test, not an
+ * automatic break, is the enforcement.
+ *
+ * RESIDUALS, stated so nobody reads more minimality here than there is. All
+ * three apply to both allowlists.
+ *
+ * FIRST, this asks whether a pattern matches SOMETHING, not whether it is doing
+ * work the patterns before it in the list do not already do. `strayYopedia` and
+ * `strayWorkwiki` strip in order, so a pattern whose every match would already
+ * have been consumed by an earlier entry still counts as earning its place.
+ * Catching that would mean re-running the strip with each pattern removed, one
+ * corpus pass per pattern — a real check, and a much more expensive one.
+ *
+ * SECOND, a row that is a SHAPE or an alternation earns its place on any ONE of
+ * the identifiers it covers. One surviving env var keeps all of
+ * `/\bYOPEDIA[A-Z0-9_]*\b/` and `/\bWORKWIKI_[A-Z0-9_]*\b/` waived; one
+ * surviving storage key keeps `/yopedia_[a-z_]+/`; one agent id keeps
+ * `/yopedia--[a-z0-9-]+/`; one archive name keeps all six alternatives of
+ * `/\.?workwiki-(?:source-sync|backups|portable-archive|archive|actions\.ics|[*.$0-9])/`.
+ * This is the SAME weakness the two collapsed family rows have — and the
+ * difference worth knowing is that those two have member sweeps above them that
+ * check every member one at a time, while the shape rows have nothing of the
+ * kind. Sweeping a shape member-wise means enumerating it first, which is what
+ * DW-352 and DW-473 did for the two families that earned it.
+ *
+ * THIRD, evidence may come from ANY scanned file that is not {@link FREEZE_PROSE},
+ * including the grandfathered history pinned in {@link YOPEDIA_PROSE_EXEMPT} —
+ * the dated acceptance record, the worker READMEs, the setup script. AGENTS.md
+ * says never to "fix" those, so they would NOT change if the identifier were
+ * retired, which makes them a weaker form of the same self-certification the
+ * `FREEZE_PROSE` exclusion exists to prevent. Not excluded here because they are
+ * also where several live resource names are genuinely written, so excluding
+ * them would fail this sweep on real identifiers. No waiver in either list rests
+ * solely on such a file today — a residual to know about, not a present hole.
+ */
+async function unusedWaivers(probes: readonly (readonly [string, RegExp])[]): Promise<string[]> {
+  // Two ways this sweep passes while proving nothing, guarded here rather than
+  // at each call site so a third caller inherits both.
+  //
+  // An empty probe list has no unused labels by definition, so a `.map()` over
+  // an allowlist that was emptied (or over the wrong constant) would sail
+  // through — the vacuity failure this file guards everywhere else.
+  expect(
+    probes.length,
+    "unusedWaivers() was handed no probes — an empty sweep passes without reading anything; " +
+      "the caller mapped an empty or wrong list",
+  ).toBeGreaterThan(0);
+  // Probes are keyed by `String(pattern)`, so two rows with identical source AND
+  // flags collapse into one label: a dead copy-pasted duplicate would be
+  // certified by its twin, and the failure message would name a label that maps
+  // to more than one line to edit. Dedup is the caller's job; saying so here is
+  // this test's.
+  const labels = probes.map(([label]) => label);
+  expect(
+    labels.length - new Set(labels).size,
+    `these probes carry duplicate labels (${labels.length} probes, ${new Set(labels).size} ` +
+      "distinct) — two rows spelled identically certify each other, and a failure could not say " +
+      "which line to edit; drop the duplicate row",
+  ).toBe(0);
+  const seen = new Set<string>();
+  let sawFreezeProse = false;
+  const { read } = await scanBrandSources((text, relative) => {
+    if (relative === FREEZE_PROSE) {
+      sawFreezeProse = true;
+      return null;
+    }
+    for (const [label, pattern] of probes) {
+      if (text.match(pattern) !== null) seen.add(label);
+    }
+    return null;
+  });
+  expectUnionCorpus(read);
+  // The exclusion has to be a real exclusion of a real file. If `FREEZE_PROSE`
+  // stops naming something the scan reads, the skip above becomes a no-op and
+  // every sweep through this helper silently goes back to accepting the freeze
+  // prose as evidence.
+  expect(
+    sawFreezeProse,
+    `${FREEZE_PROSE} is excluded from this sweep's evidence but no source list reads it — ` +
+      "fix the path, or the exclusion is a no-op and the allowlist certifies itself again",
+  ).toBe(true);
+  return probes.filter(([label]) => !seen.has(label)).map(([label]) => label);
+}
+
 describe("no stale brand strings in rendered copy", () => {
   it("actually reads the browser clipper's shipped copy", async () => {
     // A scan that matches no files passes every assertion below while proving
@@ -1137,6 +1293,13 @@ describe("no stale brand strings in rendered copy", () => {
       "yopedia-rawIsNotTheBucket", // uppercase hump, no separator at all
       "not-yopedia-tasks is not the queue", // leading hyphen attachment
       "Xyopedia-raw is not the bucket", // leading letter attachment
+      // Leading DOT attachment — DW-475. A dot before the prefix makes the name
+      // somebody else's subdomain: this is a lookalike host, not this
+      // deployment's `yopedia-raw` bucket, and no other allowlist pattern
+      // strips it. Revert the `.` in the leading class of
+      // `YOPEDIA_HYPHEN_BOUNDS` and this line fails, which is what pins the
+      // narrowing rather than merely recording it.
+      "cdn.yopedia-raw.example.com is not the bucket",
     ]) {
       expect(hasStrayYopedia(slip), slip).toBe(true);
     }
@@ -1219,6 +1382,93 @@ describe("no stale brand strings in rendered copy", () => {
       `X_YOPEDIA_HEADERS waives ${unused.join(", ")}, which no scanned file outside ` +
         `${FREEZE_PROSE} spells any more — drop the header so the word stops being waived, or ` +
         `fix the spelling if it was renamed.`,
+    ).toEqual([]);
+  });
+
+  it("keeps the member patterns non-global, which is what makes their .test() sweeps sound", () => {
+    // The two member sweeps above call `.test()` on these patterns. `.test()`
+    // on a GLOBAL regex resumes from `lastIndex` and resets it only on a miss,
+    // so a shared global pattern alternates between matching and not matching
+    // the same text as the corpus walks — and the sweep's answer starts
+    // depending on file order.
+    //
+    // The reason this is a test rather than a comment is that the failure it
+    // guards is silent. Adding `"g"` to either construction leaves both member
+    // sweeps GREEN today: every member is still written in enough files that
+    // each one matches on some pass, so the flag buys an order-dependent sweep
+    // rather than a broken one. Nothing would announce it. `unusedWaivers()`
+    // uses `match` and would absorb the flag without noticing either — so this
+    // is the only place the property is actually held.
+    for (const [label, patterns] of [
+      ["YOPEDIA_HYPHEN_MEMBER_PATTERNS", YOPEDIA_HYPHEN_MEMBER_PATTERNS],
+      ["X_YOPEDIA_MEMBER_PATTERNS", X_YOPEDIA_MEMBER_PATTERNS],
+    ] as const) {
+      for (const [name, pattern] of patterns) {
+        expect(
+          pattern.flags,
+          `${label}'s \`${name}\` pattern carries flags "${pattern.flags}" — these are swept with ` +
+            ".test(), which resumes from lastIndex on a global regex, so the two member sweeps " +
+            "would silently become order-dependent instead of failing. Keep them flagless, or " +
+            "move those sweeps to String.match first.",
+        ).toBe("");
+      }
+    }
+  });
+
+  it("keeps every waived yopedia identifier pattern earning its place", async () => {
+    // The two sweeps above cover the two HOISTED enumerations. Every other row
+    // of `IDENTIFIER_ALLOWLIST` — the all-caps env shape, the two deployment
+    // origins, the health-check bodies, the localStorage key shape — was
+    // covered by nothing, so a retired identifier stayed a permanently waived
+    // display word for as long as AGENTS.md kept naming it. DW-474: the same
+    // minimality argument, one level up, keyed by pattern instead of by name.
+    //
+    // THE TWO COLLAPSED FAMILY ROWS (`X_YOPEDIA_PATTERN`,
+    // `YOPEDIA_HYPHEN_PATTERN`) ARE SWEPT HERE TOO, as a weaker restatement of
+    // the member sweeps above: a family passes here while any one of its
+    // members is still written, where the sweeps above require all of them.
+    // Kept rather than excluded on purpose — excluding them would need a
+    // registry of "patterns the member sweeps cover", and that registry is
+    // exactly the kind of second list that rots out of step with the first.
+    // A redundant assertion costs one corpus pass; a stale exclusion list costs
+    // the guarantee.
+    //
+    // The collapsed rows are not the only weak ones, and reading this paragraph
+    // as the whole caveat would be the mistake: the SHAPE rows here
+    // (`YOPEDIA[A-Z0-9_]*`, `yopedia_[a-z_]+`, `yopedia--[a-z0-9-]+`) pass on
+    // one surviving spelling each, with no member sweep above them to make up
+    // the difference. Both cases, and the exempt-file case, are set out in the
+    // residuals on `unusedWaivers()`.
+    const unused = await unusedWaivers(IDENTIFIER_ALLOWLIST.map((p) => [String(p), p] as const));
+    expect(
+      unused,
+      `IDENTIFIER_ALLOWLIST waives ${unused.join(", ")}, which nothing outside ${FREEZE_PROSE} ` +
+        "spells any more — drop the pattern so the word stops being waived, or fix its spelling " +
+        "if the identifier was renamed.",
+    ).toEqual([]);
+  });
+
+  it("keeps every waived workwiki identifier pattern earning its place", async () => {
+    // The `workwiki` half of DW-474. Before this, nothing at all failed when a
+    // waiver here outlived its identifier, and its entries are the ones most
+    // tempting to leave behind: each names a frozen operator artifact (an env
+    // var, an on-disk state file, a persisted extension id) whose removal is
+    // quiet by nature.
+    //
+    // What this buys is bounded, and the bound is worth stating next to the
+    // claim. This list has no hoisted enumeration to sweep member-wise, so its
+    // two shape rows — `WORKWIKI_[A-Z0-9_]*` and the six-alternative
+    // `workwiki-…` family — pass on ONE surviving spelling each and say nothing
+    // about the rest. See the second residual on `unusedWaivers()`. A row
+    // retiring wholesale is caught here; a row half-retiring is not.
+    const unused = await unusedWaivers(
+      WORKWIKI_IDENTIFIER_ALLOWLIST.map((p) => [String(p), p] as const),
+    );
+    expect(
+      unused,
+      `WORKWIKI_IDENTIFIER_ALLOWLIST waives ${unused.join(", ")}, which nothing outside ` +
+        `${FREEZE_PROSE} spells any more — drop the pattern so the word stops being waived, or ` +
+        "fix its spelling if the identifier was renamed.",
     ).toEqual([]);
   });
 
