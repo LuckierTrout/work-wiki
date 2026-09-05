@@ -3266,7 +3266,9 @@ source_spec: `spec-dw-411-pnpm-workspace-root.md`
 location: src/lib/__tests__/pnpm-workspace-root.test.ts (pnpmDirTargets)
 severity: low
 reason: `pnpmDirTargets` in src/lib/__tests__/pnpm-workspace-root.test.ts matches pnpm's two directory flags. A workflow step using GitHub Actions' `working-directory:` key, or a plain `cd`, is not scraped. The on-disk lockfile walk added in review covers every real nested package (a pnpm package installed with --frozen-lockfile necessarily has one), so the residual gap is a directory installed without a committed lockfile.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-test-harness-coverage-gaps
+resolution-undo: b9ab6a0ae4d07a39b025234357a87d4bab217f3c979e94c718119f875cfaff33 2026-09-05 7374617475733a206f70656e
 
 ### DW-435: Silo sync and remove still copy and delete only `raw/sources/<slug>.md`, never the hashed Intake trees at `raw/sources/<slug>/<rawId>.md`.
 
@@ -6100,7 +6102,9 @@ location: src/lib/__tests__/research-runtime.test.ts
 source_spec: `spec-dw-500-501-722-test-suite-determinism.md`
 severity: low
 reason: Observed on the FINISHED tree of this story, in both halves of two concurrent `npx vitest run --project node` runs: run A failed "logs a read-only skip, not data damage, when a delete is refused" and "still names a DAMAGED project when the fault is not a refusal"; run B failed the same two. ~5.1s against the 5s default timeout — a duration failure, not an assertion. The file is NOT touched by this story (absent from `git diff --name-only`), so its behaviour is identical to the 2c00cfaede05a95c326bf1c59447f9e305b0b958 baseline; it passes in a normal single run and in `pnpm test` (369 files green). Same class as DW-722 — the repo's own CI command is not reliably green independent of any change — but a different file that this bundle's intent did not name.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-test-harness-coverage-gaps
+resolution-undo: b9ab6a0ae4d07a39b025234357a87d4bab217f3c979e94c718119f875cfaff33 2026-09-05 7374617475733a206f70656e
 
 ### DW-730: "Queued work is replayable, not lost" rests on the consumer's queue CONFIG, and no test reads that config at all.
 origin: spec-deferred 8fdbff417df2
@@ -6108,7 +6112,9 @@ location: workers/task-consumer/wrangler.jsonc:27
 source_spec: `spec-dw-646-647-648-read-only-queue-door-pins.md`
 severity: low
 reason: `workers/task-consumer/wrangler.jsonc` declares the `yopedia-tasks` consumer's `dead_letter_queue: "yopedia-tasks-dlq"` and `max_retries: 3`, which paired with `MAX_DELIVERY_ATTEMPTS = 4` (`workers/task-consumer/index.ts:56`) is what turns "the consumer retried" into "the message survived". Repo-wide, the only tests that open either wrangler file are `src/lib/__tests__/e2e-identity.test.ts:147-157`, which asserts only `not.toMatch(/YOPEDIA_E2E\b/)`, and `brand-copy.test.ts:952,1000`, which are frozen spelling-list entries that never read the file. DW-647's new pins build `bindings` by hand and never touch the config. Deleting the `dead_letter_queue` line leaves the whole suite green while a read-only deployment DISCARDS every queued message once retries are exhausted — the exact inversion those pins exist to prevent. Bumping `max_retries` to 5 likewise stays green while `attempts = 4` stops being the final delivery, staling DEPLOY.md's "up to four delivery attempts". Only the code->con
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-test-harness-coverage-gaps
+resolution-undo: b9ab6a0ae4d07a39b025234357a87d4bab217f3c979e94c718119f875cfaff33 2026-09-05 7374617475733a206f70656e
 
 ### DW-731: Three comments state that a poison task goes to the DLQ; poison messages are acked and dropped and never reach it.
 origin: spec-deferred e99a008cf7c7
@@ -6529,4 +6535,12 @@ location: src/components/ChatWorkspace.tsx:248
 source_spec: `spec-dw-261-263-752-unpinned-behavior-coverage.md`
 severity: low
 reason: `saveAnswer` (src/components/ChatWorkspace.tsx:246-271) opens with `setSavedMessage(null)` and has no matching `setError(null)`; nothing else on this surface clears `error` except `openConversation`. Both blocks render unconditionally at :296-299, so the owner sees a red "Nothing came back to confirm whether the attempt to save the answer went through" beside a green "Saved as <slug>" for the write that just succeeded. Surfaced by this run's review; not named by DW-263, which covers only the two failure branches themselves. Production behaviour, so out of scope for a tests-only bundle.
+status: open
+
+### DW-778: The PRODUCER half of the `yopedia-tasks` wiring is still unpinned: renaming or deleting `wrangler.jsonc`'s `queues.producers` entry leaves the whole suite green while tasks are never enqueued at all.
+origin: spec-deferred 22d95d827e6b
+location: wrangler.jsonc:82-89 (producer) vs src/lib/__tests__/task-consumer.test.ts (consumer block)
+source_spec: `spec-dw-434-729-730-test-harness-coverage-gaps.md`
+severity: low
+reason: Surfaced by two reviewers while auditing the new consumer-side config block. `wrangler.jsonc:82-89` declares `{"binding": "TASK_QUEUE", "queue": "yopedia-tasks"}`, read at runtime by `getTaskQueue()`/`enqueueTask()` in `src/lib/tasks.ts:383-412`, which returns null and logs `TASK_QUEUE unavailable (off-Workers)` at info level when the binding is missing; call sites such as `src/lib/integration-outbox.ts:227` and `src/app/api/tasks/run/route.ts:328` ignore the boolean return. The only tests that open the root `wrangler.jsonc` are `e2e-identity.test.ts:147` (asserts only that `YOPEDIA_E2E` is absent) and `brand-copy.test.ts` (brand-name counts); `tasks.test.ts:29-57` injects its own `{ env: { TASK_QUEUE: { send } } }` mock and never reads a config file. So a rename there sends messages to a queue nothing drains, or drops them before they are queued, with no test and no error-level signal — the same "queued work is replayable, not lost" promise the new consumer block was added to protect,
 status: open

@@ -1674,7 +1674,20 @@ describe("deep research — remediations", () => {
     for (const id of ids) {
       expect(await getResearchProject("alice", id)).not.toBeNull();
     }
-  });
+    // DW-729. In isolation this row finishes in a few hundred milliseconds,
+    // far inside vitest's 5s default. What DW-729 observed is a DURATION
+    // failure — "Test timed out in 5000ms", never an assertion failure — in
+    // BOTH halves of two concurrent `vitest run --project node` runs. That is
+    // scheduling contention for one machine, not a cost this row carries: the
+    // work does not grow, it just stops being scheduled promptly.
+    //
+    // The failure text reads as a hang inside reconcile, which sends the next
+    // reader hunting a bug that is not there, so the headroom is widened to
+    // the `15_000` the rest of this file already uses rather than leaving a
+    // row that fails for a reason nothing in it explains. Scoped to the row,
+    // not `vitest.config.ts`: a global raise would hide a real hang
+    // everywhere else in the suite.
+  }, 15_000);
 
   it("still names a DAMAGED project when the fault is not a refusal", async () => {
     // The control for the case above (DW-528). A catch that logged the
@@ -1698,7 +1711,13 @@ describe("deep research — remediations", () => {
 
     expect(lines).toContain(`reconcile skipped damaged project ${created.id}`);
     expect(lines.some((line) => line.includes("read-only project"))).toBe(false);
-  });
+    // DW-729, same parallel-load headroom as the row above. Not because this
+    // row is slow — it mocks `getResearchProject` to reject and never calls
+    // `runResearchProject` at all, so it finishes in milliseconds — but
+    // because DW-729 observed the PAIR timing out together under two
+    // concurrent `--project node` runs. Contention does not care which row is
+    // cheap, so the control is widened alongside the case it controls.
+  }, 15_000);
 
   it("executes a create → queue → parseTask → run delivery once", async () => {
     const created = await project();

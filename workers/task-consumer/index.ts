@@ -53,7 +53,18 @@ interface ScheduledEvent {
   readonly cron: string;
 }
 
-const MAX_DELIVERY_ATTEMPTS = 4;
+/**
+ * The attempt number Cloudflare will deliver LAST — `max_retries: 3` in
+ * `wrangler.jsonc` plus the original delivery. It is not a ceiling this file
+ * enforces (the queue parks the message, not the worker); it is how the worker
+ * recognises the final attempt so the failure receipt goes out exactly once,
+ * just before the message lands in `yopedia-tasks-dlq`.
+ *
+ * Exported so `src/lib/__tests__/task-consumer.test.ts` can tie it to the
+ * config's `max_retries` and to the attempt count `DEPLOY.md` publishes,
+ * rather than retyping `4` in three places and letting them drift apart.
+ */
+export const MAX_DELIVERY_ATTEMPTS = 4;
 
 async function runTask(
   env: Env,

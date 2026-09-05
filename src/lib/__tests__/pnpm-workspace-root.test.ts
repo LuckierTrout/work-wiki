@@ -251,26 +251,251 @@ function rootEntriesClaiming(packages: string[], target: string): string[] {
 }
 
 /**
- * Every directory a workflow addresses with `pnpm --dir <path>` / `--dir=<path>`
- * / `-C <path>` / `-C=<path>`. `-C` is pnpm's own documented alias — `pnpm
- * install --help` under the pinned 9.15.9 prints `-C, --dir <dir>` — so a guard
- * that knew only the long spelling would miss half of what it is guarding.
+ * Split workflow YAML into step blocks — one per sequence item — so a step's
+ * keys stay attached to each other.
  *
- * A command that already passes `--ignore-workspace` is skipped: it is immune
- * by construction, and demanding a workspace file for it would be a false
- * failure.
+ * `working-directory:` sits on the step, not on the `run:` line, so a scraper
+ * that reads one line at a time can never see the two together. A new block
+ * opens at a `- ` whose indentation is no deeper than the block it interrupts;
+ * a MORE deeply indented `- ` is a nested list inside the same step (a `paths:`
+ * list under `with:`, say) and stays with it, rather than tearing a step in
+ * half and orphaning its `run:`.
+ */
+function yamlStepBlocks(yaml: string): string[] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let currentIndent = Number.POSITIVE_INFINITY;
+  const close = () => {
+    if (current.length > 0) blocks.push(current.join("\n"));
+    current = [];
+  };
+  for (const line of yaml.split(/\r?\n/)) {
+    const item = /^(\s*)-(?:\s|$)/.exec(line);
+    const trimmed = line.trim();
+    if (item && item[1].length <= currentIndent) {
+      close();
+      currentIndent = item[1].length;
+    } else if (
+      // A blank line, or a comment at column zero between two keys of the same
+      // step, is not a dedent — closing on either would orphan the step's
+      // `run:` from its `working-directory:`.
+      trimmed !== "" &&
+      !trimmed.startsWith("#") &&
+      line.length - line.trimStart().length <= currentIndent
+    ) {
+      // Dedented past the `- ` marker without opening another item: the
+      // sequence ended. Closing here stops a one-line list entry (`- "src/**"`
+      // under `paths:`) from swallowing every step that follows it.
+      close();
+      currentIndent = Number.POSITIVE_INFINITY;
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current.join("\n"));
+  return blocks;
+}
+
+/**
+ * The shell commands a step block actually runs, in source order.
+ *
+ * Only a `run:` value is a command, plus the continuation lines of a `run: |`
+ * block scalar — which carry no `key:` of their own. Everything else that
+ * mentions pnpm is metadata, not an invocation: `- name: Set up pnpm`,
+ * `uses: pnpm/action-setup@v6`, `cache: pnpm`,
+ * `cache-dependency-path: workers/sandbox-runner/pnpm-lock.yaml`. Reading those
+ * as commands is what would let a step named after pnpm drag its
+ * `working-directory:` into the shielded set and demand a workspace file for a
+ * directory nothing installs.
+ */
+function shellCommandsIn(block: string): string[] {
+  const commands: string[] = [];
+  // Which `key: |` block scalar the current line falls inside, and the
+  // indentation of the key that opened it. Continuations belong to THAT key —
+  // `cache-dependency-path: |` followed by `workers/x/pnpm-lock.yaml` is a
+  // cache path, not something the step runs.
+  let scalarKey: string | null = null;
+  let scalarIndent = 0;
+  for (const raw of block.split(/\r?\n/)) {
+    const line = raw.replace(/^(\s*)-(\s)/, "$1 $2");
+    const indent = line.length - line.trimStart().length;
+    if (scalarKey !== null) {
+      if (line.trim() === "") continue;
+      if (indent > scalarIndent) {
+        // Inside a block scalar EVERY line is literal text, so a `run: |` line
+        // that happens to read `word: value` — `export FOO: bar`, a heredoc
+        // carrying YAML — is still a command, not metadata.
+        if (scalarKey === "run") commands.push(line);
+        continue;
+      }
+      scalarKey = null;
+    }
+    const mapping = /^\s*([A-Za-z_][\w.-]*)\s*:(?:\s(.*))?$/.exec(line);
+    if (!mapping) continue;
+    const value = (mapping[2] ?? "").trim();
+    if (/^[|>][-+0-9]*$/.test(value)) {
+      scalarKey = mapping[1];
+      scalarIndent = indent;
+      continue;
+    }
+    if (mapping[1] === "run" && value !== "") commands.push(mapping[2] ?? "");
+  }
+  return commands;
+}
+
+/** The `--dir`/`-C` flag pnpm accepts, and the directory it names. */
+const DIR_FLAG = /(?:--dir|(?:^|\s)-C)[=\s]+("[^"]+"|'[^']+'|\S+)/;
+
+/**
+ * Does this command INSTALL into wherever it is run from?
+ *
+ * The distinction matters because forms 2 and 3 below infer a package root
+ * from a directory rather than from a flag. `working-directory: docs` with
+ * `run: pnpm build`, or `src/journal` with `run: pnpm exec tsc --noEmit`, are
+ * ordinary subdirectories of the ROOT workspace that merely run a script from
+ * there — shielding them would plant a `pnpm-workspace.yaml` that CUTS them
+ * out of the root workspace, which is the opposite of a fix. Only an install
+ * materialises a `node_modules` whose absence is the silent no-op this suite
+ * guards against.
+ *
+ * Form 1 deliberately does NOT apply this test: an explicit `--dir` names a
+ * package root on its own, whatever the subcommand, and `ci.yml` relies on
+ * exactly that with `pnpm --dir workers/sandbox-runner exec tsc --noEmit`.
+ */
+function isInstallCommand(command: string): boolean {
+  return (
+    /\bpnpm\b[^\n]*?\s(?:install|add)\b/.test(command) ||
+    /--frozen-lockfile\b/.test(command)
+  );
+}
+
+/**
+ * Is this a literal path inside the repo that a workspace file could sit in?
+ *
+ * A workflow may name a directory the scraper cannot resolve —
+ * `${{ matrix.dir }}`, `$GITHUB_WORKSPACE/workers/a`, `~/build`, `cd -` — and
+ * a target like that is not a missing workspace file, it is a path that never
+ * existed. Emitting one turns the whole suite red on a `readRepoFile` of a
+ * directory nothing could have created. Silence is the honest answer: the
+ * lockfile walk still catches any such package that commits a lockfile.
+ */
+function isLiteralRepoPath(dir: string): boolean {
+  if (dir === "") return false;
+  if (dir.includes("${{") || dir.includes("$")) return false;
+  if (dir.startsWith("~") || dir.startsWith("-")) return false;
+  // Absolute paths and `..` climbs both leave the checkout.
+  if (dir.startsWith("/")) return false;
+  return !dir.split("/").includes("..");
+}
+
+/** The step's `working-directory:`, if it declares one. */
+function stepWorkingDirectory(block: string): string | null {
+  // `- ` because the key can be the sequence item's own first line.
+  const match = /^\s*(?:-\s+)?working-directory\s*:\s+(.+)$/m.exec(block);
+  return match ? unquote(match[1]) : null;
+}
+
+/**
+ * Every directory a workflow installs a nested pnpm package into.
+ *
+ * Three forms, because a nested package reached by any of them is equally
+ * exposed to the root-workspace capture this suite exists to prevent:
+ *
+ * 1. `pnpm --dir <path>` / `--dir=<path>` / `-C <path>` / `-C=<path>`. `-C` is
+ *    pnpm's own documented alias — `pnpm install --help` under the pinned
+ *    9.15.9 prints `-C, --dir <dir>` — so a guard that knew only the long
+ *    spelling would miss half of what it is guarding.
+ * 2. A step's `working-directory:` key with a plain `pnpm install` in its
+ *    `run:`. GitHub Actions runs the command from there, so pnpm's upward
+ *    search for a workspace root starts there too — identical exposure, no
+ *    flag anywhere on the command line.
+ * 3. `cd <dir> && … pnpm …` inside a `run:`, the hand-rolled spelling of the
+ *    same thing. A RELATIVE `cd` composes with the step's
+ *    `working-directory:`, because that is where the shell starts.
+ *
+ * Resolution is PER COMMAND, not per step: a step's `--dir` on one line does
+ * not describe where a plain `pnpm install` on the next line runs. Each command
+ * takes its own `--dir`/`-C` if it has one, else its own `cd` chain, else the
+ * step's `working-directory:`.
+ *
+ * Forms 2 and 3 additionally require an INSTALL-shaped command
+ * (`isInstallCommand`); form 1 does not. See that function for why the two
+ * halves differ.
+ *
+ * A command that already passes `--ignore-workspace` is skipped in every form:
+ * it is immune by construction, and demanding a workspace file for it would be
+ * a false failure. So is any target that is not a literal in-repo path
+ * (`isLiteralRepoPath`).
+ *
+ * NOT covered, deliberately and worth saying out loud rather than implying
+ * whole-file coverage: a job-level `defaults: run: working-directory:`, which
+ * is not a step block at all; and a `cd` separated from its pnpm call by a
+ * newline or a `;` rather than `&&`. A nested package reached only one of those
+ * ways stays invisible here — though `nestedLockfileDirs()` below still catches
+ * it the moment it has a lockfile of its own, which is the durable half of the
+ * union.
  */
 function pnpmDirTargets(yaml: string): string[] {
   const targets: string[] = [];
-  const invocation = /\bpnpm\b[^\n]*/g;
-  let match = invocation.exec(yaml);
-  while (match !== null) {
-    const command = match[0];
-    if (!/--ignore-workspace\b/.test(command)) {
-      const dir = /(?:--dir|(?:^|\s)-C)[=\s]+("[^"]+"|'[^']+'|\S+)/.exec(command);
-      if (dir) targets.push(normalizeDir(unquote(dir[1])));
+  const emit = (dir: string) => {
+    if (isLiteralRepoPath(dir)) targets.push(normalizeDir(dir));
+  };
+
+  for (const block of yamlStepBlocks(yaml)) {
+    const declared = stepWorkingDirectory(block);
+    // `null` = the step declares none. A declared-but-unresolvable one
+    // (`${{ matrix.dir }}`) is NOT the same as none: a relative `cd` inside it
+    // is unresolvable too, so both forms stay silent rather than guessing.
+    const stepDir =
+      declared !== null && isLiteralRepoPath(declared)
+        ? normalizeDir(declared)
+        : null;
+    const stepDirUsable = declared === null || stepDir !== null;
+
+    for (const command of shellCommandsIn(block)) {
+      if (!/\bpnpm\b/.test(command)) continue;
+      if (/--ignore-workspace\b/.test(command)) continue;
+
+      // Form 1 — the explicit flag. It names the package root outright, so it
+      // wins over anything the step says and needs no install-shape test.
+      const flag = DIR_FLAG.exec(command);
+      if (flag) {
+        emit(unquote(flag[1]));
+        continue;
+      }
+
+      // Form 3, evaluated before form 2 — `cd <dir> && … pnpm install …`. A
+      // relative `cd` is relative to the step's `working-directory:`, so the
+      // two compose; emitting the step's directory as well would claim a
+      // package at a path the shell never visited.
+      let chained = false;
+      const chain = /\bcd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*([^\n]*)/g;
+      let match = chain.exec(command);
+      while (match !== null) {
+        const rest = match[2];
+        if (
+          /\bpnpm\b/.test(rest) &&
+          !/--ignore-workspace\b/.test(rest) &&
+          // An explicit `--dir` after the `cd` is where pnpm actually runs;
+          // form 1 already recorded it and the `cd` is then irrelevant.
+          !DIR_FLAG.test(rest) &&
+          isInstallCommand(rest)
+        ) {
+          // Normalise BEFORE joining, so `workers` + `./a/` composes as
+          // `workers/a` rather than `workers/./a/`.
+          const target = normalizeDir(unquote(match[1]));
+          chained = true;
+          if (target.startsWith("/")) emit(target);
+          else if (stepDir !== null && stepDir !== ".") emit(`${stepDir}/${target}`);
+          else if (stepDirUsable) emit(target);
+        }
+        match = chain.exec(command);
+      }
+      if (chained) continue;
+
+      // Form 2 — the step's own directory, for a command that installs where
+      // it stands.
+      if (stepDir !== null && isInstallCommand(command)) emit(stepDir);
     }
-    match = invocation.exec(yaml);
   }
   return targets;
 }
@@ -666,6 +891,365 @@ describe("pnpm workspace roots", () => {
       ).toEqual([]);
       // Not a pnpm --dir invocation at all.
       expect(pnpmDirTargets("      - uses: pnpm/action-setup@v6\n")).toEqual([]);
+    });
+
+    /**
+     * DW-434. `--dir`/`-C` was the ONLY form the scraper knew, and the guard
+     * above reads as though it covers "every nested package a workflow
+     * installs". It does not: GitHub Actions' own `working-directory:` key and
+     * a plain `cd x && pnpm install` reach a nested package with no flag on the
+     * command line at all, and pnpm's upward search for a workspace root starts
+     * from that directory just the same. A package added that way would be
+     * captured by the root workspace — `pnpm install` a silent 100ms no-op that
+     * creates no `node_modules` — with this suite green throughout.
+     *
+     * No workflow in `.github/workflows/` uses either form today, which is
+     * exactly why these are unit tests over inline fixtures rather than an
+     * assertion about real files: there is nothing real to scrape, and waiting
+     * for the first such step to appear means the guard is written after the
+     * breakage rather than before it.
+     */
+    it("derives a nested package from a step's working-directory:", () => {
+      const step = [
+        "      - name: Install dependencies",
+        "        working-directory: workers/a",
+        "        run: pnpm install --frozen-lockfile",
+        "",
+      ].join("\n");
+      expect(
+        pnpmDirTargets(step),
+        "a step whose working-directory is the nested package runs pnpm from " +
+          "there, so it needs a workspace file exactly as a --dir step does",
+      ).toEqual(["workers/a"]);
+
+      // The key belongs to its OWN step. A `working-directory:` on a
+      // neighbouring step must not be read as though it applied to this one.
+      const neighbours = [
+        "      - name: Elsewhere",
+        "        working-directory: workers/b",
+        "        run: echo hello",
+        "      - name: Install dependencies",
+        "        working-directory: workers/a",
+        "        run: pnpm install --frozen-lockfile",
+        "",
+      ].join("\n");
+      expect(pnpmDirTargets(neighbours)).toEqual(["workers/a"]);
+
+      // Quoted, trailing-slash and `./` spellings normalise like every other
+      // form, so the same directory is never reported under two names.
+      expect(
+        pnpmDirTargets(
+          '      - working-directory: "./workers/a/"\n        run: pnpm install\n',
+        ),
+      ).toEqual(["workers/a"]);
+
+      // An explicit `--dir` overrides the step's directory — that is where
+      // pnpm actually runs — so the flag is reported and the key is not.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers/b\n        run: pnpm --dir workers/a install\n",
+        ),
+      ).toEqual(["workers/a"]);
+
+      // Already immune, same as the flag form.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers/a\n        run: pnpm install --ignore-workspace\n",
+        ),
+        "a working-directory step that passes --ignore-workspace needs no workspace file",
+      ).toEqual([]);
+
+      // A step that names a directory but never runs pnpm in it is not a pnpm
+      // package. Demanding a workspace file for it would be a false failure.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: docs\n        run: npm run build\n",
+        ),
+      ).toEqual([]);
+
+      // Metadata that merely mentions pnpm is not an invocation. Reading
+      // `- name: Set up pnpm` or `cache: pnpm` as a command is what would drag
+      // an unrelated `working-directory:` into the shielded set.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Set up pnpm",
+            "        working-directory: workers/a",
+            "        uses: pnpm/action-setup@v6",
+            "        with:",
+            "          cache: pnpm",
+            "",
+          ].join("\n"),
+        ),
+        "a setup step that only names pnpm installs nothing",
+      ).toEqual([]);
+    });
+
+    it("reads a directory only from a command that INSTALLS into it", () => {
+      // `docs` and `src/journal` are ordinary subdirectories of the ROOT
+      // workspace that merely run a script from there. Shielding them would
+      // demand a `docs/pnpm-workspace.yaml`, which CUTS the directory out of
+      // the root workspace — the opposite of a fix, applied to a directory
+      // that was never a package.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: docs\n        run: pnpm build\n",
+        ),
+        "running a script from a directory does not make it a pnpm package",
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: src/journal\n        run: pnpm exec tsc --noEmit\n",
+        ),
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets(
+          "      - run: cd docs && pnpm build\n",
+        ),
+      ).toEqual([]);
+
+      // The three install shapes that DO materialise a node_modules.
+      expect(
+        pnpmDirTargets("      - working-directory: workers/a\n        run: pnpm install\n"),
+      ).toEqual(["workers/a"]);
+      expect(
+        pnpmDirTargets("      - working-directory: workers/a\n        run: pnpm add left-pad\n"),
+      ).toEqual(["workers/a"]);
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers/a\n        run: pnpm --frozen-lockfile\n",
+        ),
+      ).toEqual(["workers/a"]);
+
+      // Form 1 is deliberately exempt: an explicit `--dir` names a package
+      // root whatever the subcommand, and `ci.yml` relies on exactly this.
+      expect(
+        pnpmDirTargets("      - run: pnpm --dir workers/sandbox-runner exec tsc --noEmit\n"),
+        "an explicit --dir names a package root even when it only runs tsc",
+      ).toEqual(["workers/sandbox-runner"]);
+    });
+
+    it("resolves each command's directory separately, not once per step", () => {
+      // Both commands run in the same step, in DIFFERENT directories: the
+      // first names its own with `--dir`, the second inherits the step's.
+      // Resolving once per step drops whichever one did not win.
+      const step = [
+        "      - name: Install everything",
+        "        working-directory: workers/b",
+        "        run: |",
+        "          pnpm --dir workers/a install --frozen-lockfile",
+        "          pnpm install --frozen-lockfile",
+        "",
+      ].join("\n");
+      expect(
+        pnpmDirTargets(step),
+        "a --dir on one line says nothing about where the next line installs",
+      ).toEqual(["workers/a", "workers/b"]);
+    });
+
+    it("composes a relative cd with the step's working-directory", () => {
+      // The shell starts in `workers`, so `cd a` lands in `workers/a`. Emitting
+      // a bare `a` names a directory that does not exist, and the shielded-set
+      // loop then fails reading `a/pnpm-workspace.yaml`.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers\n        run: cd a && pnpm install\n",
+        ),
+        "a relative cd is relative to the step's working-directory",
+      ).toEqual(["workers/a"]);
+      expect(
+        pnpmDirTargets(
+          '      - working-directory: workers\n        run: cd "./a/" && pnpm install\n',
+        ),
+      ).toEqual(["workers/a"]);
+      // An absolute cd ignores the step's directory, so the two do not compose.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: workers\n        run: cd /a && pnpm install\n",
+        ),
+        "an absolute path leaves the checkout and is not a shieldable target",
+      ).toEqual([]);
+    });
+
+    it("drops targets that are not literal in-repo paths", () => {
+      // Neither of these is a missing workspace file — they are paths that
+      // never existed. Emitting one turns the whole suite red on a readRepoFile
+      // of a directory nothing could have created.
+      expect(
+        pnpmDirTargets(
+          "      - run: cd $GITHUB_WORKSPACE/workers/a && pnpm install\n",
+        ),
+        "a shell variable is not a path this scraper can resolve",
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: ${{ matrix.dir }}\n        run: pnpm install\n",
+        ),
+        "an expression is not a path this scraper can resolve",
+      ).toEqual([]);
+      expect(
+        pnpmDirTargets("      - run: cd ../sibling && pnpm install\n"),
+      ).toEqual([]);
+      expect(pnpmDirTargets("      - run: cd ~ && pnpm install\n")).toEqual([]);
+      // A step whose directory is unresolvable makes its relative `cd`
+      // unresolvable too — silence beats guessing at `a`.
+      expect(
+        pnpmDirTargets(
+          "      - working-directory: ${{ matrix.dir }}\n        run: cd a && pnpm install\n",
+        ),
+      ).toEqual([]);
+    });
+
+    it("attributes a block scalar's lines to the key that opened it", () => {
+      // `cache-dependency-path: |` is metadata, and its continuation lines name
+      // lockfiles. Read as commands, `workers/sandbox-runner/pnpm-lock.yaml`
+      // matches `pnpm` and drags the step's unrelated working-directory into
+      // the shielded set. `deploy-cloudflare.yml` and
+      // `deploy-journal-pages.yml` already carry `pnpm-lock.yaml` list entries,
+      // so this is one `working-directory:` away from a false failure.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Set up Node.js",
+            "        working-directory: workers/b",
+            "        uses: actions/setup-node@v7",
+            "        with:",
+            "          cache-dependency-path: |",
+            "            workers/sandbox-runner/pnpm-lock.yaml",
+            "            pnpm-lock.yaml",
+            "",
+          ].join("\n"),
+        ),
+        "a cache-dependency-path continuation is not something the step runs",
+      ).toEqual([]);
+
+      // The other direction: inside a `run: |` block EVERY line is literal
+      // shell, so a line that happens to read `key: value` is still a command.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Install",
+            "        working-directory: workers/a",
+            "        run: |",
+            "          echo 'note: installing now'",
+            "          pnpm install --frozen-lockfile",
+            "",
+          ].join("\n"),
+        ),
+        "a run: | line shaped `word: value` is shell text, not YAML metadata",
+      ).toEqual(["workers/a"]);
+    });
+
+    it("derives a nested package from a `cd <dir> && pnpm …` chain", () => {
+      expect(
+        pnpmDirTargets("      - run: cd workers/a && pnpm install --frozen-lockfile\n"),
+        "cd-then-pnpm reaches the nested package exactly as --dir does",
+      ).toEqual(["workers/a"]);
+
+      // Inside a `run: |` block scalar, where the chain has no `run:` key of
+      // its own on the line.
+      expect(
+        pnpmDirTargets(
+          [
+            "      - name: Install",
+            "        run: |",
+            "          echo starting",
+            "          cd workers/a && pnpm install --frozen-lockfile",
+            "",
+          ].join("\n"),
+        ),
+      ).toEqual(["workers/a"]);
+
+      expect(
+        pnpmDirTargets("      - run: cd \"./workers/a/\" && pnpm install\n"),
+      ).toEqual(["workers/a"]);
+
+      // Already immune.
+      expect(
+        pnpmDirTargets("      - run: cd workers/a && pnpm install --ignore-workspace\n"),
+        "a cd-chain that passes --ignore-workspace needs no workspace file",
+      ).toEqual([]);
+
+      // `cd` to somewhere that then runs something else entirely.
+      expect(pnpmDirTargets("      - run: cd workers/a && npm ci\n")).toEqual([]);
+
+      // A `--dir` after the `cd` is where pnpm really runs; the `cd` is noise
+      // and reporting both would shield a directory nothing installs.
+      expect(
+        pnpmDirTargets("      - run: cd workers/b && pnpm --dir workers/a install\n"),
+      ).toEqual(["workers/a"]);
+    });
+  });
+
+  describe("the step-block splitter", () => {
+    // Both branches of `yamlStepBlocks` are load-bearing for the scraper above
+    // but are only exercised incidentally by same-indent fixtures, so each is
+    // asserted here directly.
+    it("keeps a MORE deeply indented `- ` inside the step it belongs to", () => {
+      // A nested list under `with:` is part of the step, not a new one.
+      // Splitting on it tears the step in half and orphans its `run:` from the
+      // `working-directory:` above it.
+      const yaml = [
+        "      - name: Install",
+        "        working-directory: workers/a",
+        "        with:",
+        "          paths:",
+        "            - src/**",
+        "            - pnpm-lock.yaml",
+        "        run: pnpm install --frozen-lockfile",
+      ].join("\n");
+      expect(yamlStepBlocks(yaml)).toHaveLength(1);
+      expect(
+        pnpmDirTargets(yaml),
+        "a nested list must not separate a step's run: from its working-directory:",
+      ).toEqual(["workers/a"]);
+    });
+
+    it("closes a sequence when the document dedents out of it", () => {
+      // `- "pnpm-lock.yaml"` under `paths:` is a one-line list entry. Without
+      // the dedent close it would swallow every step that follows, so a
+      // `working-directory:` several steps later would answer for it.
+      const yaml = [
+        "on:",
+        "  push:",
+        "    paths:",
+        '      - "pnpm-lock.yaml"',
+        "jobs:",
+        "  build:",
+        "    steps:",
+        "      - name: Install",
+        "        working-directory: workers/a",
+        "        run: pnpm install --frozen-lockfile",
+      ].join("\n");
+      const blocks = yamlStepBlocks(yaml);
+      expect(
+        blocks.some((block) => /^\s*-\s+"pnpm-lock\.yaml"$/m.test(block) && !/run:/.test(block)),
+        "the paths: entry must close before the steps that follow it",
+      ).toBe(true);
+      expect(pnpmDirTargets(yaml)).toEqual(["workers/a"]);
+    });
+
+    it("does not treat a blank line or a comment as a dedent", () => {
+      // A comment at column zero between two keys of the same step is not the
+      // end of the sequence.
+      const yaml = [
+        "      - name: Install",
+        "        working-directory: workers/a",
+        "",
+        "# a stray comment at column zero",
+        "        run: pnpm install --frozen-lockfile",
+      ].join("\n");
+      expect(yamlStepBlocks(yaml)).toHaveLength(1);
+      expect(pnpmDirTargets(yaml)).toEqual(["workers/a"]);
+    });
+
+    it("carries no carriage return into a target on a CRLF workflow", () => {
+      const yaml =
+        "      - working-directory: workers/a\r\n        run: pnpm install --frozen-lockfile\r\n";
+      expect(pnpmDirTargets(yaml)).toEqual(["workers/a"]);
+      expect(pnpmDirTargets("      - run: pnpm --dir workers/a install\r\n")).toEqual([
+        "workers/a",
+      ]);
     });
   });
 
