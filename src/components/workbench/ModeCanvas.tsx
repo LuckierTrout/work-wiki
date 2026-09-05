@@ -75,6 +75,26 @@ export interface ModeCanvasProps {
    * whatever is showing instead.
    */
   hidden?: boolean;
+  /**
+   * A Preview is docked and on screen (DW-719).
+   *
+   * NEVER READ FOR ITS MEANING — only for WHEN. Which element actually scrolls
+   * behind the canvas is the stylesheet's answer, and the stylesheet flips it
+   * on this condition without `hidden` moving: docking a Preview below the
+   * stacking breakpoint releases `.wb-shell`'s clamp, and the DOCUMENT starts
+   * scrolling instead of `.wb-canvas`. The restore below keys on this so it
+   * RE-PROBES; {@link canvasScroller} still decides.
+   */
+  previewOpen?: boolean;
+  /**
+   * The viewport is below the stacking breakpoint (DW-719).
+   *
+   * The other half of the same flip, and the same rule: an input to when the
+   * effect runs, never to what it decides. The shell subscribes to
+   * `SPLIT_NARROW_QUERY` on this component's behalf, which is what keeps this
+   * file free of a width, a breakpoint, a `matchMedia` and a `max-width`.
+   */
+  narrow?: boolean;
   children: ReactNode;
   wikiId?: string | null;
   readOnly?: boolean;
@@ -127,6 +147,8 @@ export function ModeCanvas({
   sidecar,
   headingId,
   hidden = false,
+  previewOpen = false,
+  narrow = false,
   children,
   wikiId = "current",
   readOnly = false,
@@ -198,6 +220,16 @@ export function ModeCanvas({
   // would still be set when the owner's next genuine scroll arrived and would
   // swallow it.
   const restoreEchoRef = useRef<number | null>(null);
+  // WHICH ELEMENT the offset in `canvasScrollRef` was recorded on (DW-719).
+  //
+  // The offset belongs to the surface, not to this component: the stylesheet
+  // moves which element scrolls when a Preview docks or the stacking breakpoint
+  // is crossed, and neither of those moves `hidden`. Re-applying a canvas offset
+  // to the page — or a page offset to the canvas — is not a restore, it is a
+  // jump to a number that never meant anything on that surface. So the probe's
+  // answer is remembered, and a different answer DROPS the offset rather than
+  // spending it on the wrong box.
+  const scrollerRef = useRef<HTMLElement | null>(null);
   // A LAYOUT effect (DW-524): a passive one runs after the browser has painted,
   // so an un-withdrawn canvas paints at the top and then visibly jumps to the
   // offset. On the server this simply does not run — an effect of either kind
@@ -209,10 +241,19 @@ export function ModeCanvas({
     // owner's next genuine scroll could collide with — the same value, arrived
     // at honestly, silently dropped.
     restoreEchoRef.current = null;
-    // Keyed on `hidden` ALONE: that prop IS the withdrawal, and coming back is
-    // the moment the browser has just reset `scrollTop` to 0.
+    // `hidden` IS the withdrawal, and coming back is the moment the browser has
+    // just reset `scrollTop` to 0. The other two keys are the moments the
+    // stylesheet changes WHICH element scrolls with `hidden` unmoved (DW-719).
     if (!canvas || hidden) return;
     const scroller = canvasScroller(canvas);
+    // The offset belongs to the element it was recorded on. The stylesheet moves
+    // that element without `hidden` moving, so re-applying it to the other
+    // surface would scroll the page to a canvas offset — or the canvas to a page
+    // one.
+    if (scrollerRef.current !== scroller) {
+      scrollerRef.current = scroller;
+      canvasScrollRef.current = null;
+    }
     // A viewport scroll is dispatched at `Document` and does NOT bubble from
     // `documentElement`, so listening on the element that scrolls only works
     // while that element is the canvas.
@@ -239,7 +280,7 @@ export function ModeCanvas({
     };
     target.addEventListener("scroll", onScroll, { passive: true });
     return () => target.removeEventListener("scroll", onScroll);
-  }, [hidden]);
+  }, [hidden, previewOpen, narrow]);
 
   return (
     <section

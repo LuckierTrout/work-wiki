@@ -5953,7 +5953,9 @@ location: src/components/workbench/WorkspacePreview.tsx:84
 source_spec: `spec-dw-205-207-split-handle-hit-and-focus.md`
 severity: low
 reason: `WorkspacePreview.tsx:77` renders its own `<aside className="wb-preview">` for Agent-workspace picks, and its header at `:84` carries the class `wb-preview-header` — one letter off `wb-preview-head`, and `grep -n "wb-preview-header" src/app/globals.css` returns nothing. The class is dead: no padding, no `border-bottom`, no flex row, so the `<h2>` and the path sit flush at the column's x=0 while `PreviewColumn`'s equivalent header is a padded, bordered strip. That is pre-existing and independent of this change, but DW-205 widens the mismatch inside that one column from 16px to 24px, because `.wb-preview-body` there IS matched by the clearance rule and the header still is not. The fix is a component change (render `wb-preview-head`, or declare the missing rule), which moves that column's header geometry — outside a stylesheet-only bundle.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-preview-scroll-and-chrome-parity
+resolution-undo: b1539b454f086b97980c39837c4ac9b163752980e144a6ba8ea868010b2228ce 2026-09-05 7374617475733a206f70656e
 
 ### DW-719: ModeCanvas picks its scroller once per `hidden` transition, so docking or undocking a Preview, or crossing the stacking breakpoint, leaves the listener on the element that no longer scrolls.
 origin: spec-deferred 081c8fe49767
@@ -5961,7 +5963,9 @@ location: src/components/workbench/ModeCanvas.tsx (the DW-416/DW-523 effect)
 source_spec: `spec-dw-521-523-524-scroll-restore-clamp-and-timing.md`
 severity: low
 reason: `canvasScroller` answers a layout question but the effect is keyed on `[hidden]` alone, and `globals.css` flips which element scrolls on three conditions that never change `hidden`: docking a Preview below 899px (`:5341-5370`), crossing the breakpoint, and opening the mode sheet, which re-applies the clamp (`:5372-5382`). `previewOpen` flips when the owner picks a tree row (`Workbench.tsx` `onDockPreview={selectRow}`) with the canvas still showing, so at narrow width the listener stays on `.wb-canvas` after the document has become the scroller and records nothing for the rest of the visit -- DW-523's failure shape reached by dock rather than by width. Across runs the single `canvasScrollRef` can also re-apply an offset recorded on one scroller to the other. Closing it needs either a preview/breakpoint input threaded into `ModeCanvas` (it takes neither today) or a re-probe trigger; the spec's contract forbids listening on both surfaces at once, so it is a mechanism decision rather than
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-preview-scroll-and-chrome-parity
+resolution-undo: b1539b454f086b97980c39837c4ac9b163752980e144a6ba8ea868010b2228ce 2026-09-05 7374617475733a206f70656e
 
 ### DW-720: WorkspacePreview, the Agent-output Preview column, renders the same two `.wb-preview` / `.wb-preview-body` scroll boxes under the same `hidden` withdrawal and did not get DW-520's scroll memory.
 origin: spec-deferred 2876b98a3cb2
@@ -5969,7 +5973,9 @@ location: src/components/workbench/WorkspacePreview.tsx:77-113
 source_spec: `spec-dw-519-520-uncovered-scroll-surfaces.md`
 severity: low
 reason: `Workbench.tsx:1917-1923` mounts `WorkspacePreview` from the same block as `PreviewColumn`, with the same `id={PREVIEW_ID}` and the same `hidden={!previewOpen}` (`previewOpen = previewDocked && !settingsOpen`, `Workbench.tsx:401`). `WorkspacePreview.tsx:77-113` renders `<aside className="wb-preview">` around `<div className="wb-preview-body">` — both `overflow: auto` (`globals.css:4214`, `:4262`) and both discarded by `.wb-preview[hidden] { display: none }` (`globals.css:2782`) — and holds no ref, no restore and no listener. In Chat mode with an `agent-workspace/` file picked (`shouldDockPreview` docks for `mode === "chat"`, `workbench-tree.ts:511-525`) an owner who scrolls a long Agent report, opens Settings and closes it lands back at the top of both boxes: exactly the loss DW-520 names, at a component neither ledger entry mentions. The only suite that mounts it (`epic8-chat-ui.test.tsx:233`) passes no `hidden` prop and asserts only the fetched body.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-preview-scroll-and-chrome-parity
+resolution-undo: b1539b454f086b97980c39837c4ac9b163752980e144a6ba8ea868010b2228ce 2026-09-05 7374617475733a206f70656e
 
 ### DW-721: A create that SUCCEEDS on either wiki surface leaves the other surface's create fully live for the length of `router.refresh()`, so one click there still seeds the second wiki the latch exists to prev
 origin: spec-deferred d337f0eae1fc
@@ -6305,4 +6311,12 @@ location: src/components/workbench/Workbench.tsx (the popstate listener's `hadCa
 source_spec: `spec-dw-512-513-workbench-back-and-focus.md`
 severity: medium
 reason: DW-513 narrowed the popstate bump to `document.getElementById(CANVAS_ID)?.contains(document.activeElement)`, which is the expression the recorded decision names. But `selectSettingsCategory` deliberately does not bump, so after a pane pick the keyboard is on a `SettingsNav` button — and that nav renders in the left `<aside>`, OUTSIDE `#wb-canvas`, and is unmounted by the very commit that closes the surface. Reproduced against this change: open Settings, click a pane row, Back (pane undone, focus stays on the row — already pinned), Back again (surface closes) → `document.activeElement` is `<body>`. Before the narrowing it was `#wb-canvas`. That is DW-423's own symptom, re-opened for one class of focus position. The trees, `ActivityDock` and the Preview column have the same shape on a traversal that OPENS Settings. Not fixed here: DW-513's decision fixes the sample at the canvas, and the code comment now states the cost rather than claiming otherwise. Widening it to "any region this comm
+status: open
+
+### DW-760: Opening the mode sheet below the stacking breakpoint with a Preview docked re-applies the shell's clamp, and the scroll the browser dispatches for that reflow overwrites the canvas's remembered offset
+origin: spec-deferred 542e6fb59763
+location: src/components/workbench/ModeCanvas.tsx:283
+source_spec: `spec-dw-718-719-720-preview-scroll-and-chrome-parity.md`
+severity: low
+reason: `globals.css:5462-5468` brings `height: 100dvh; overflow: hidden` back on `.wb-shell[data-preview="true"][data-sheet-open="true"]`, so the document stops overflowing and the browser clamps page scroll to 0 and dispatches a `scroll` at `Document`. `ModeCanvas`'s effect is keyed on `[hidden, previewOpen, narrow]` — none of which moves when the sheet opens — so the listener is still on `document` with `restoreEchoRef` null, and `canvasScrollRef` records the clamp. DW-719's ledger entry names the sheet as the third clamp-flipping condition; this bundle's intent enumerated only the other two, so it was left out deliberately. Closing it needs `data-sheet-open` threaded down as a fourth re-probe trigger, which the spec's Never clause forbids here.
 status: open

@@ -4303,6 +4303,26 @@ body:has(.wb-shell) {
   border-bottom: 1px solid var(--wb-border);
 }
 .wb-preview-title {
+  /* `margin: 0` and the size, because the Agent-workspace column renders this
+     class on an `<h2>` (DW-718) while the kernel column renders it on a
+     `<strong>`. A UA heading brings its own `1.5em` size and its own block
+     margins into a flex strip that is one padded row tall: the title would sit
+     larger than the chrome around it and push the strip open.
+
+     …and the shrink treatment `.wb-preview-name` already carries, for the same
+     reason it carries it: in the workspace column this holds a FILENAME, and a
+     flex item defaults to `min-width: auto`, so one long unbroken name would
+     refuse to shrink and push the path out of a column whose minimum is 200px.
+     The kernel column renders this class on the constant string "Preview", so
+     it can never truncate there. What the pair of rules buys is a strip whose
+     title stays on ONE line, eliding when it must, while the path below wraps
+     inside the column rather than forcing the column wider. */
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--wb-font-size);
   font-weight: var(--wb-weight-strong);
 }
 .wb-preview-name {
@@ -4325,6 +4345,15 @@ body:has(.wb-shell) {
 }
 .wb-preview-path {
   /* The monospace face itself comes from the shell-wide `code` rule above. */
+  /* A `<p>` in the workspace column's flex strip (DW-718): the UA block margins
+     would open the row, and a flex item defaults to `min-width: auto` — so
+     `agent-workspace/recaps/very-long-name.md`, which has no space in it to
+     break at, would refuse to shrink and push the title out of the column
+     instead. `anywhere` gives the browser a break opportunity inside the path
+     so the strip stays the width of its column. */
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 12px;
 }
 

@@ -59,6 +59,23 @@ function declarations(css: string, selector: string): Map<string, string> {
 }
 
 /**
+ * One top-level rule's block, for the pins that read ordinary declarations
+ * rather than the `--wb-*` tokens {@link declarations} collects.
+ *
+ * The FIRST occurrence, which is the unnested one: the responsive blocks
+ * further down re-open several of these selectors indented inside a media
+ * query, and a pin that read one of those would assert about the wrong layout.
+ */
+function ruleBlock(css: string, selector: string): string {
+  const start = css.indexOf(`${selector} {`);
+  expect(start).toBeGreaterThan(-1);
+  const rest = css.slice(start);
+  const end = rest.indexOf("\n}");
+  expect(end).toBeGreaterThan(-1);
+  return rest.slice(0, end);
+}
+
+/**
  * Splits the appended Workbench CSS into the `.wb-shell { … }` declaration
  * block (where the tokens live) and everything after it (the chrome rules), so
  * "the shell redeclares `--ink`" and "no chrome rule uses `var(--ink)`" can be
@@ -492,7 +509,246 @@ describe("ModeCanvas", () => {
     // Still a REF, and still not keyed per mode: no storage key is invented for
     // a value that never crosses a reload.
     expect(code).not.toContain("localStorage");
-    expect(source).toContain("}, [hidden]);");
+    // Keyed on the withdrawal AND on the two conditions under which the
+    // stylesheet moves the scroll off `.wb-canvas` with `hidden` unmoved
+    // (DW-719). Both are handed down by the shell — this file's `matchMedia`,
+    // `900` and `max-width` bans above still hold inside the component.
+    expect(source).toContain("}, [hidden, previewOpen, narrow]);");
+  });
+
+  it("re-probes the scroller on every run and drops an offset from another surface (DW-719)", async () => {
+    const source = await read("ModeCanvas.tsx");
+    const code = stripComments(source);
+    // The probe runs INSIDE the effect, so a re-run under the new keys asks the
+    // layout again rather than reusing the element the first run happened to
+    // find.
+    expect(code).toContain("const scroller = canvasScroller(canvas);");
+    // …and the offset is DROPPED when the answer changed. Re-applying a canvas
+    // offset to the page — or a page offset to the canvas — is not a restore.
+    expect(code).toContain("const scrollerRef = useRef<HTMLElement | null>(null);");
+    expect(code).toMatch(
+      /if \(scrollerRef\.current !== scroller\) \{\s*scrollerRef\.current = scroller;\s*canvasScrollRef\.current = null;\s*\}/,
+    );
+    // The drop happens BEFORE the restore reads the ref, or it would spend the
+    // wrong offset on the new surface and only then notice.
+    expect(code.indexOf("canvasScrollRef.current = null;")).toBeLessThan(
+      code.indexOf("const stored = canvasScrollRef.current;"),
+    );
+    // The two new props are re-run triggers and nothing else: neither is read
+    // anywhere but the dependency array.
+    for (const prop of ["previewOpen", "narrow"]) {
+      expect(code.match(new RegExp(`\\b${prop}\\b`, "g")) ?? []).toHaveLength(3);
+    }
+    // The third clamp-flipping condition stays out of here. `data-sheet-open`
+    // brings the clamp BACK, and threading it would make this component a
+    // second reader of a layout rule the stylesheet owns.
+    expect(code).not.toContain("data-sheet-open");
+    // And the shell is where the query is subscribed to, using
+    // `workbench-split`'s single copy of the breakpoint.
+    const shell = stripComments(await read("Workbench.tsx"));
+    expect(shell).toContain("window.matchMedia(SPLIT_NARROW_QUERY)");
+    expect(shell).toContain("previewOpen={previewOpen}");
+    expect(shell).toContain("narrow={narrow}");
+  });
+});
+
+/**
+ * Every `wb-*` class the components RENDER, against the rules `globals.css`
+ * actually declares.
+ *
+ * The defect this exists for is invisible everywhere else: `WorkspacePreview`
+ * shipped a longer spelling of `wb-preview-head` that matched no rule anywhere,
+ * so the column's title strip had no padding, no border and a UA heading inside
+ * it — and every suite in the repo stayed green. A class name is not
+ * type-checked, not linted, and not asserted by a mounted test that queries by
+ * role.
+ *
+ * STATIC LITERALS ONLY. A class assembled around a `${…}` is a family of names
+ * this scan cannot enumerate, so the fragments flush against an interpolation
+ * are skipped rather than guessed at — `wb-tree-row--` is not a class and
+ * failing on it would teach the next person to delete the scan.
+ */
+
+/** Class tokens from one template literal, minus anything flush against a hole. */
+function templateClasses(raw: string): string[] {
+  const statics: string[] = [];
+  let buffer = "";
+  for (let i = 0; i < raw.length; i += 1) {
+    if (raw[i] === "$" && raw[i + 1] === "{") {
+      statics.push(buffer);
+      buffer = "";
+      let depth = 1;
+      i += 2;
+      while (i < raw.length && depth > 0) {
+        if (raw[i] === "{") depth += 1;
+        else if (raw[i] === "}") depth -= 1;
+        if (depth > 0) i += 1;
+      }
+      continue;
+    }
+    buffer += raw[i];
+  }
+  statics.push(buffer);
+  const out: string[] = [];
+  for (let index = 0; index < statics.length; index += 1) {
+    const part = statics[index];
+    let tokens = part.split(/\s+/).filter(Boolean);
+    if (!tokens.length) continue;
+    // `a${x}` — the last token of this fragment is a PREFIX, not a class.
+    if (index > 0 && !/^\s/.test(part)) tokens = tokens.slice(1);
+    if (index < statics.length - 1 && !/\s$/.test(part)) tokens = tokens.slice(0, -1);
+    out.push(...tokens);
+  }
+  return out;
+}
+
+/** Every static `wb-*` class one component renders. */
+function renderedClasses(source: string): Set<string> {
+  const code = stripComments(source);
+  const found = new Set<string>();
+  const marker = "className=";
+  for (let at = code.indexOf(marker); at !== -1; at = code.indexOf(marker, at + 1)) {
+    const i = at + marker.length;
+    let expression: string;
+    if (code[i] === '"' || code[i] === "'") {
+      const quote = code[i];
+      expression = code.slice(i, code.indexOf(quote, i + 1) + 1);
+    } else if (code[i] === "{") {
+      let depth = 0;
+      let end = i;
+      for (; end < code.length; end += 1) {
+        if (code[end] === "{") depth += 1;
+        else if (code[end] === "}" && --depth === 0) break;
+      }
+      expression = code.slice(i, end + 1);
+    } else continue;
+    for (const literal of expression.matchAll(/"([^"\\]*)"|'([^'\\]*)'/g)) {
+      for (const token of (literal[1] ?? literal[2] ?? "").split(/\s+/)) {
+        if (token) found.add(token);
+      }
+    }
+    for (const literal of expression.matchAll(/`([^`]*)`/g)) {
+      for (const token of templateClasses(literal[1])) found.add(token);
+    }
+  }
+  return new Set([...found].filter((name) => name.startsWith("wb-")));
+}
+
+/**
+ * The classes that are RENDERED with no rule, each with the reason it is not a
+ * defect this bundle is allowed to absorb silently.
+ *
+ * NOT A PLACE TO PUT A NEW MISS. A sixth entry is either a defect nobody priced
+ * or one an edit just introduced, and the scan is worth nothing if widening this
+ * list is the way past it.
+ */
+const RULELESS_ALLOWED = new Map<string, string>([
+  [
+    "wb-chat-msg",
+    "Chat's message wrapper has never had chrome — giving it any is a UX decision, not a rename.",
+  ],
+  [
+    "wb-chat-msg--assistant",
+    "The assistant modifier on the same unstyled wrapper; it exists as a hook, not as a look.",
+  ],
+  [
+    "wb-chat-msg-role",
+    "The role label inside that wrapper, likewise unstyled since Story 8.1.",
+  ],
+  [
+    "wb-chat-thinking",
+    "The thinking line Chat and Research both render; same argument, two surfaces.",
+  ],
+  [
+    "wb-search-hit-title",
+    "The Search hit's title, which inherits the hit's own type; a rule for it would be new design.",
+  ],
+]);
+
+/**
+ * Every file the scan reads, in one place.
+ *
+ * ONE list for both cases below: an allowlist entry rendered only from
+ * `WikiWorkbench.tsx` would otherwise be reported as un-rendered by the honesty
+ * case while the miss scan was perfectly happy with it — a red test for a
+ * correct allowlist, which teaches the next person to delete the entry.
+ */
+async function classScanFiles(): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(WORKBENCH, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".tsx")) files.push(entry.name);
+  }
+  files.sort();
+  // The Wiki surface renders inside the shell and uses the same vocabulary, so
+  // it is scanned with the columns even though it lives one directory up.
+  return [...files, "../WikiWorkbench.tsx"];
+}
+
+/**
+ * The stylesheet with its PROSE removed, which is the only form a selector may
+ * be matched against.
+ *
+ * `globals.css` is comment-dense and its comments name selectors constantly —
+ * this file's own `.wb-preview-title` block explains itself by naming
+ * `.wb-preview-name`, and the responsive blocks name `.wb-canvas` and
+ * `.wb-preview-body` in prose. Matched against the raw text, a rename that left
+ * its explanatory comment behind would reproduce DW-718 exactly: a class with no
+ * rule, and a green scan pointing at the sentence that used to describe it.
+ */
+async function styledCss(): Promise<string> {
+  return (await globals()).replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/** A selector for EXACTLY this class — `.wb-preview` is not `.wb-preview-body`. */
+function classSelector(name: string): RegExp {
+  return new RegExp(`\\.${name.replace(/[-]/g, "\\-")}(?![\\w-])`);
+}
+
+describe("every rendered wb-* class has a rule", () => {
+  it("names the class and the file when one does not", async () => {
+    const css = await styledCss();
+    const misses: string[] = [];
+    const rendered = new Set<string>();
+    let checked = 0;
+    for (const file of await classScanFiles()) {
+      const source = await read(file);
+      for (const name of renderedClasses(source)) {
+        checked += 1;
+        rendered.add(name);
+        if (classSelector(name).test(css)) continue;
+        if (RULELESS_ALLOWED.has(name)) continue;
+        misses.push(`${file} renders ".${name}", which no rule in globals.css matches`);
+      }
+    }
+    expect(misses).toEqual([]);
+    // The scan is actually looking at something: a `className` parser that
+    // silently found nothing would pass this suite forever.
+    expect(checked).toBeGreaterThan(200);
+    // The workspace column's strip carries the class the stylesheet declares —
+    // the same one the kernel column uses (DW-718). The miss list above is what
+    // catches a rename to anything else; this is what catches the class being
+    // dropped altogether, which the miss list could not.
+    expect(rendered.has("wb-preview-head")).toBe(true);
+    expect(renderedClasses(await read("WorkspacePreview.tsx")).has("wb-preview-head")).toBe(
+      true,
+    );
+  });
+
+  it("keeps the allowlist honest — every entry is still rule-less and still rendered", async () => {
+    // An allowlist nobody prunes becomes a list of classes that DO have rules,
+    // and then a genuine miss can hide behind a stale entry. Both halves are
+    // checked: the class must still be rendered somewhere, and must still have
+    // no rule.
+    const css = await styledCss();
+    const rendered = new Set<string>();
+    for (const file of await classScanFiles()) {
+      for (const name of renderedClasses(await read(file))) rendered.add(name);
+    }
+    for (const [name, reason] of RULELESS_ALLOWED) {
+      expect(reason.length).toBeGreaterThan(20);
+      expect(rendered.has(name)).toBe(true);
+      expect(classSelector(name).test(css)).toBe(false);
+    }
   });
 });
 
@@ -533,6 +789,45 @@ describe("globals.css", () => {
     expect(tokens).toContain("font-family: var(--wb-font);");
     expect(tokens).toContain("font-size: var(--wb-font-size);");
     expect(tokens).toContain("line-height: var(--wb-line-height);");
+  });
+
+  it("makes the Preview strip survive an <h2> and an unbreakable path (DW-718)", async () => {
+    // The class-coverage scan below proves a SELECTOR exists; it says nothing
+    // about what is in it. Every declaration here is load-bearing for the
+    // Agent-workspace column specifically — that column renders
+    // `.wb-preview-title` on an `<h2>` and `.wb-preview-path` on a `<p>`, where
+    // the kernel column renders a `<strong>` and a `<span>` — so all of them
+    // could be deleted with the scan, the mounted suites and the type checker
+    // green, and the strip would go back to a UA `1.5em` heading with UA block
+    // margins in a row that is one padded line tall.
+    const { rules } = shellBlocks(await globals());
+    const title = ruleBlock(rules, ".wb-preview-title");
+    // A heading's own size and margins, overridden.
+    expect(title).toContain("margin: 0;");
+    expect(title).toContain("font-size: var(--wb-font-size);");
+    // …and the shrink treatment `.wb-preview-name` carries, because in that
+    // column this holds a FILENAME rather than the constant "Preview": a flex
+    // item defaults to `min-width: auto`, so one long unbroken name would push
+    // the path out of a column whose minimum is 200px.
+    expect(title).toContain("min-width: 0;");
+    expect(title).toContain("overflow: hidden;");
+    expect(title).toContain("text-overflow: ellipsis;");
+    expect(title).toContain("white-space: nowrap;");
+
+    const pathRule = ruleBlock(rules, ".wb-preview-path");
+    expect(pathRule).toContain("margin: 0;");
+    expect(pathRule).toContain("min-width: 0;");
+    // The path has no space to break at, so the browser is given one INSIDE it
+    // — the strip stays the width of its column and the path wraps in place.
+    expect(pathRule).toContain("overflow-wrap: anywhere;");
+
+    // The three blocks this bundle was not allowed to touch are still the ones
+    // that make both boxes scroll and both columns withdraw.
+    expect(ruleBlock(rules, ".wb-preview")).toContain("overflow: auto;");
+    expect(ruleBlock(rules, ".wb-preview-body")).toContain("overflow: auto;");
+    expect(ruleBlock(rules, ".wb-preview-head")).toContain(
+      "border-bottom: 1px solid var(--wb-border);",
+    );
   });
 
   it("marks the active mode with the wash, in both colour modes", async () => {

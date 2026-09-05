@@ -21,6 +21,7 @@ import {
 } from "@/lib/workbench-modes";
 import {
   DEFAULT_SPLIT_WIDTHS,
+  SPLIT_NARROW_QUERY,
   SPLIT_WIDE_QUERY,
   clampSplitWidth,
   clampSplitWidths,
@@ -408,6 +409,31 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
   // Settings withdraws this column, it does not take the draft down with it.
   const previewOpen = previewDocked && !settingsOpen;
   liveRef.current = { selection, docked: previewOpen };
+
+  // Is the viewport below the stacking breakpoint (DW-719)?
+  //
+  // Owned HERE and handed down, because `ModeCanvas` may not ask: that component
+  // spells no width, no breakpoint, no `matchMedia` and no `max-width`, and the
+  // chrome scan enforces all four. Together with `previewOpen` above this is the
+  // pair of conditions on which `globals.css` releases `.wb-shell`'s clamp and
+  // the DOCUMENT — rather than `.wb-canvas` — becomes the thing that scrolls
+  // behind the canvas. Neither boolean is READ for its meaning down there; they
+  // re-run the canvas's restore so it can probe the surface again.
+  //
+  // `TreePanel`'s idiom exactly, down to seeding inside the effect so the first
+  // render is the server's on both sides of the breakpoint, and the query itself
+  // is `workbench-split`'s single copy of the number.
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    // SSR, and the handful of embedded webviews without the API: the effect
+    // returns early and the canvas keeps its original `[hidden]` behaviour.
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia(SPLIT_NARROW_QUERY);
+    setNarrow(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setNarrow(event.matches);
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
 
   useEffect(() => {
     setTodoCount(todoCountProp);
@@ -2043,6 +2069,11 @@ export function Workbench({ children, todoCount: todoCountProp = 0, reviewCount:
         sidecar={sidecar}
         headingId={headingId}
         hidden={settingsOpen}
+        // The two conditions under which the stylesheet moves the scroll from
+        // `.wb-canvas` to the document without `hidden` moving (DW-719). Passed
+        // as re-probe triggers, not as facts the canvas reads.
+        previewOpen={previewOpen}
+        narrow={narrow}
         wikiId={currentWikiId}
         readOnly={readOnly}
         onDockPreview={selectRow}

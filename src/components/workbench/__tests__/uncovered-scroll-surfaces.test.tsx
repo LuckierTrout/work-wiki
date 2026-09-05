@@ -6,6 +6,7 @@ import { WikiWorkbench } from "@/components/WikiWorkbench";
 import { PreviewColumn } from "@/components/workbench/PreviewColumn";
 import { SourcesTree } from "@/components/workbench/SourcesTree";
 import { Workbench } from "@/components/workbench/Workbench";
+import { WorkspacePreview } from "@/components/workbench/WorkspacePreview";
 import {
   WorkbenchDataProvider,
   type WorkbenchData,
@@ -21,6 +22,7 @@ import {
   SOURCES_WINDOW_INITIAL,
   SOURCES_WINDOW_STEP,
   buildFileTree,
+  workspaceSelection,
 } from "@/lib/workbench-tree";
 import type { WikiRecord } from "@/lib/wikis";
 import { setMediaQuery } from "@/test/dom-helpers";
@@ -114,6 +116,9 @@ const PREVIEW_PAYLOAD = {
   editable: true,
 };
 
+/** What the sidecar answers for an `agent-workspace/` read. */
+const WORKSPACE_BODY = "# Recap\n\nA long Agent report.";
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
@@ -125,11 +130,22 @@ beforeEach(() => {
   // mode the last one left in the URL.
   window.history.pushState(null, "", "/");
   window.history.replaceState(null, "", "/");
-  fetchMock = vi.fn(async (url: unknown) =>
-    String(url).includes("/api/workbench/preview")
-      ? ({ ok: true, status: 200, json: async () => PREVIEW_PAYLOAD } as unknown as Response)
-      : ({ ok: true, status: 200, json: async () => ({}) } as unknown as Response),
-  );
+  fetchMock = vi.fn(async (url: unknown) => {
+    const href = String(url);
+    if (href.includes("/api/workbench/preview")) {
+      return { ok: true, status: 200, json: async () => PREVIEW_PAYLOAD } as unknown as Response;
+    }
+    // The sidecar's read, for the Agent-workspace column (DW-720). Its shape is
+    // `{ content }` and nothing else — no version, because there is no writer.
+    if (href.includes("/api/v1/workspace/file")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ content: WORKSPACE_BODY }),
+      } as unknown as Response;
+    }
+    return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
+  });
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -770,5 +786,426 @@ describe("PreviewColumn scroll memory (DW-520)", () => {
     view.rerender(<PreviewColumn {...props} hidden={false} />);
     await act(async () => {});
     expect(aside.scrollTop).toBe(130);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DW-720 — the Agent-workspace column's two scroll boxes
+// ---------------------------------------------------------------------------
+
+/**
+ * The column alone, `hidden` moved by a rerender.
+ *
+ * The shell docks this column only for a `workspace` selection, and the only
+ * way to make one through the UI is to click an output chip in a Chat turn that
+ * has to be streamed from the sidecar first — none of which is what these cases
+ * are about. `hidden` is the whole of the withdrawal, so moving the prop IS the
+ * Settings round trip as far as this component can tell.
+ */
+function workspace(path: string, hidden?: boolean) {
+  return (
+    <WorkspacePreview
+      id="wb-preview"
+      selection={workspaceSelection(path)}
+      {...(hidden ? { hidden: true } : {})}
+    />
+  );
+}
+
+describe("WorkspacePreview scroll memory (DW-720)", () => {
+  it("brings both boxes back where the owner left them across a Settings visit", async () => {
+    // The same two `overflow: auto` boxes the kernel column has, discarded by
+    // the same `.wb-preview[hidden] { display: none }` — and until now with none
+    // of DW-520's memory, so a Settings visit dropped the owner at the top of a
+    // long Agent report.
+    const view = render(workspace("recaps/acme.md"));
+    await act(async () => {});
+
+    const aside = previewColumn() as HTMLElement;
+    const body = previewBody() as HTMLElement;
+    expect(aside).not.toBeNull();
+    expect(body).not.toBeNull();
+    // The renamed header (DW-718), which is what gives the strip its padding
+    // and its bottom border. Which classes have RULES is the node suite's scan;
+    // what this pins is that the strip is on screen at all.
+    expect(aside.querySelector(".wb-preview-head")).not.toBeNull();
+
+    aside.scrollTop = 150;
+    await act(async () => {
+      aside.dispatchEvent(new Event("scroll"));
+    });
+    body.scrollTop = 320;
+    await act(async () => {
+      body.dispatchEvent(new Event("scroll"));
+    });
+
+    view.rerender(workspace("recaps/acme.md", true));
+    await act(async () => {});
+    expect(aside.hasAttribute("hidden")).toBe(true);
+    // Standing in for the browser's own reset on a `display: none` box.
+    aside.scrollTop = 0;
+    body.scrollTop = 0;
+
+    view.rerender(workspace("recaps/acme.md"));
+    await act(async () => {});
+
+    // The SAME two nodes — withdrawn, not rebuilt — at the same two offsets.
+    expect(previewColumn()).toBe(aside);
+    expect(previewBody()).toBe(body);
+    expect(aside.hasAttribute("hidden")).toBe(false);
+    expect(aside.scrollTop).toBe(150);
+    expect(body.scrollTop).toBe(320);
+
+    // In REFS, not in storage: the scope is the visit, not FR-8, so the round
+    // trip invents no key in either column.
+    expect(
+      Object.keys(window.localStorage).filter((key) =>
+        key.toLowerCase().includes("preview"),
+      ),
+    ).toEqual([]);
+
+    // …and the memory keeps tracking rather than latching on the first offset.
+    aside.scrollTop = 20;
+    await act(async () => {
+      aside.dispatchEvent(new Event("scroll"));
+    });
+    view.rerender(workspace("recaps/acme.md", true));
+    await act(async () => {});
+    aside.scrollTop = 0;
+    view.rerender(workspace("recaps/acme.md"));
+    await act(async () => {});
+    expect(aside.scrollTop).toBe(20);
+  });
+
+  it("does not hand a new file the offsets of the one before it", async () => {
+    // The shell renders this component with no key, so picking another output
+    // keeps the same instance and the same two numbers — and the restore runs on
+    // `hidden` alone. Without the `selectionKey` clearing effect a file the owner
+    // never scrolled is dragged to wherever they left the file before it.
+    const view = render(workspace("recaps/a.md"));
+    await act(async () => {});
+    const aside = previewColumn() as HTMLElement;
+    const bodyA = previewBody() as HTMLElement;
+
+    aside.scrollTop = 190;
+    await act(async () => {
+      aside.dispatchEvent(new Event("scroll"));
+    });
+    bodyA.scrollTop = 280;
+    await act(async () => {
+      bodyA.dispatchEvent(new Event("scroll"));
+    });
+
+    view.rerender(workspace("recaps/b.md"));
+    await act(async () => {});
+    const bodyB = previewBody() as HTMLElement;
+    expect(bodyB).not.toBeNull();
+
+    view.rerender(workspace("recaps/b.md", true));
+    await act(async () => {});
+    // The browser's own reset on both boxes.
+    aside.scrollTop = 0;
+    bodyB.scrollTop = 0;
+    view.rerender(workspace("recaps/b.md"));
+    await act(async () => {});
+
+    // Nothing recorded for THIS file, so nothing assigned to it.
+    expect(aside.scrollTop).toBe(0);
+    expect(bodyB.scrollTop).toBe(0);
+  });
+
+  it("assigns nothing to a column that mounted already withdrawn", async () => {
+    // Nothing recorded means nothing assigned: the box starts where the browser
+    // left it rather than being dragged to a 0 nobody chose.
+    const view = render(workspace("recaps/acme.md", true));
+    await act(async () => {});
+
+    const aside = previewColumn() as HTMLElement;
+    expect(aside.hasAttribute("hidden")).toBe(true);
+    // Where the browser happens to have left it.
+    aside.scrollTop = 64;
+
+    view.rerender(workspace("recaps/acme.md"));
+    await act(async () => {});
+    expect(previewColumn()).toBe(aside);
+    expect(aside.scrollTop).toBe(64);
+    expect(window.localStorage.length).toBe(0);
+
+    // …and the FIRST restore happens once it has been on screen.
+    aside.scrollTop = 130;
+    await act(async () => {
+      aside.dispatchEvent(new Event("scroll"));
+    });
+    view.rerender(workspace("recaps/acme.md", true));
+    await act(async () => {});
+    aside.scrollTop = 0;
+    view.rerender(workspace("recaps/acme.md"));
+    await act(async () => {});
+    expect(aside.scrollTop).toBe(130);
+  });
+
+  it("does not write the browser's clamp back over a box's offset (DW-521)", async () => {
+    const view = render(workspace("recaps/acme.md"));
+    await act(async () => {});
+    const aside = previewColumn() as HTMLElement;
+
+    aside.scrollTop = 300;
+    await act(async () => {
+      aside.dispatchEvent(new Event("scroll"));
+    });
+
+    view.rerender(workspace("recaps/acme.md", true));
+    await act(async () => {});
+
+    // A SHORTER BOX, stated rather than laid out. It starts at 0, which is the
+    // browser's own reset.
+    let value = 0;
+    Object.defineProperty(aside, "scrollTop", {
+      configurable: true,
+      get: () => value,
+      set: (next: number) => {
+        value = Math.min(next, 200);
+      },
+    });
+
+    view.rerender(workspace("recaps/acme.md"));
+    await act(async () => {});
+    // The pixels went where the box allows…
+    expect(aside.scrollTop).toBe(200);
+    // …and the echo the browser dispatches for that assignment is DROPPED.
+    await act(async () => {
+      aside.dispatchEvent(new Event("scroll"));
+    });
+
+    // The content finishes filling in and the box can reach the offset again.
+    view.rerender(workspace("recaps/acme.md", true));
+    await act(async () => {});
+    Reflect.deleteProperty(aside, "scrollTop");
+    aside.scrollTop = 0;
+    view.rerender(workspace("recaps/acme.md"));
+    await act(async () => {});
+    // The owner's OWN offset, not the clamp that briefly stood in for it.
+    expect(aside.scrollTop).toBe(300);
+
+    // …and the arm is spent, so a genuine scroll after the restore is recorded.
+    aside.scrollTop = 80;
+    await act(async () => {
+      aside.dispatchEvent(new Event("scroll"));
+    });
+    view.rerender(workspace("recaps/acme.md", true));
+    await act(async () => {});
+    aside.scrollTop = 0;
+    view.rerender(workspace("recaps/acme.md"));
+    await act(async () => {});
+    expect(aside.scrollTop).toBe(80);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DW-719 — the mode canvas re-probes the surface that actually scrolls
+// ---------------------------------------------------------------------------
+
+function modeCanvas(): HTMLElement {
+  const node = document.querySelector<HTMLElement>(".wb-canvas");
+  if (!node) throw new Error(".wb-canvas is not rendered");
+  return node;
+}
+
+/** Count every write to a node's `scrollTop` without changing what it reads. */
+function watchScrollTop(node: HTMLElement): { writes: () => number } {
+  let value = node.scrollTop;
+  let writes = 0;
+  Object.defineProperty(node, "scrollTop", {
+    configurable: true,
+    get: () => value,
+    set: (next: number) => {
+      writes += 1;
+      value = next;
+    },
+  });
+  return { writes: () => writes };
+}
+
+describe("ModeCanvas scroller re-probe (DW-719)", () => {
+  it("drops the canvas offset when a docked Preview makes the document scroll", async () => {
+    // The stylesheet flips WHICH element scrolls without `hidden` moving:
+    // docking a Preview below the stacking breakpoint releases `.wb-shell`'s
+    // clamp, the canvas row resolves to its content, and the DOCUMENT is what
+    // moves. The restore used to pick its scroller once per `hidden` transition,
+    // so the listener stayed on the element that no longer scrolls and one ref
+    // could re-apply a canvas offset to the page.
+    const root = document.documentElement;
+    // Declared out here so the `finally` can undo the watcher it installs: the
+    // declarations below are own properties on nodes the whole run shares, and
+    // left in place they would put every later case on the document branch.
+    let watched: HTMLElement | null = null;
+    try {
+      await renderShell();
+      await act(async () => {
+        setMediaQuery(SPLIT_NARROW_QUERY, true);
+      });
+
+      const canvas = modeCanvas();
+      // The owner scrolls the CANVAS, which is what scrolls while no Preview is
+      // docked: the document does not overflow, so `canvasScroller` defaults.
+      canvas.scrollTop = 240;
+      await act(async () => {
+        canvas.dispatchEvent(new Event("scroll"));
+      });
+
+      // The overflow is DECLARED, not laid out — jsdom runs no layout engine, so
+      // `documentElement` reports 0/0 and the canvas is the default. Declaring
+      // it is what puts the component on the other branch.
+      Object.defineProperty(root, "scrollHeight", { configurable: true, value: 4000 });
+      Object.defineProperty(root, "clientHeight", { configurable: true, value: 800 });
+      // The page is ALREADY somewhere — the browser's own restoration, a
+      // `#hash` landing, a reload part-way down.
+      root.scrollTop = 555;
+      const canvasWatch = watchScrollTop(canvas);
+      watched = canvas;
+
+      // The Preview docks. `hidden` has not moved, so only the new key re-runs
+      // the effect at all.
+      fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+      await act(async () => {});
+      expect(previewColumn()).not.toBeNull();
+
+      // The canvas offset is DROPPED, not spent on the page: 240 is a position
+      // in a box, and the document has never been at it.
+      expect(root.scrollTop).toBe(555);
+      // …and nothing wrote to the canvas either — a surface this run is not on.
+      expect(canvasWatch.writes()).toBe(0);
+
+      // From here the DOCUMENT's scrolls are what get recorded, which means the
+      // listener moved with the probe.
+      root.scrollTop = 300;
+      await act(async () => {
+        document.dispatchEvent(new Event("scroll"));
+      });
+
+      await toggleSettings();
+      expect(canvas.hasAttribute("hidden")).toBe(true);
+      // Standing in for the reset a browser performs on the way out.
+      root.scrollTop = 0;
+      await toggleSettings();
+
+      expect(modeCanvas()).toBe(canvas);
+      expect((document.scrollingElement ?? root).scrollTop).toBe(300);
+      expect(canvasWatch.writes()).toBe(0);
+    } finally {
+      if (watched) Reflect.deleteProperty(watched, "scrollTop");
+      Reflect.deleteProperty(root, "scrollHeight");
+      Reflect.deleteProperty(root, "clientHeight");
+      root.scrollTop = 0;
+    }
+  });
+
+  it("drops the canvas offset when the breakpoint is crossed under a docked Preview", async () => {
+    // The OTHER of DW-719's two named conditions, and the one `previewOpen`
+    // cannot cover: the Preview is already docked and it is the WIDTH that
+    // moves. `globals.css` releases the clamp on `[data-preview]` below 900px,
+    // so narrowing the window with a Preview on screen hands the scroll to the
+    // document with neither `hidden` nor the dock state moving at all — which is
+    // exactly why `narrow` is in the effect's key.
+    const root = document.documentElement;
+    let watched: HTMLElement | null = null;
+    try {
+      await renderShell();
+      // Docked FIRST, at a width where the shell keeps its clamp: the canvas is
+      // still the scroller here, which is what makes the offset below a canvas
+      // offset.
+      fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+      await act(async () => {});
+      expect(previewColumn()).not.toBeNull();
+
+      const canvas = modeCanvas();
+      canvas.scrollTop = 210;
+      await act(async () => {
+        canvas.dispatchEvent(new Event("scroll"));
+      });
+
+      // The overflow is DECLARED, not laid out, exactly as above.
+      Object.defineProperty(root, "scrollHeight", { configurable: true, value: 4000 });
+      Object.defineProperty(root, "clientHeight", { configurable: true, value: 800 });
+      root.scrollTop = 480;
+      const canvasWatch = watchScrollTop(canvas);
+      watched = canvas;
+
+      // The window narrows. Nothing else about the shell has changed.
+      await act(async () => {
+        setMediaQuery(SPLIT_NARROW_QUERY, true);
+      });
+
+      // 210 is a position in a BOX, and the page has never been at it.
+      expect(root.scrollTop).toBe(480);
+      expect(canvasWatch.writes()).toBe(0);
+
+      // …and the listener moved with the probe, so the DOCUMENT's scrolls are
+      // what a Settings round trip now hands back.
+      root.scrollTop = 260;
+      await act(async () => {
+        document.dispatchEvent(new Event("scroll"));
+      });
+
+      await toggleSettings();
+      root.scrollTop = 0;
+      await toggleSettings();
+      expect((document.scrollingElement ?? root).scrollTop).toBe(260);
+      expect(canvasWatch.writes()).toBe(0);
+    } finally {
+      if (watched) Reflect.deleteProperty(watched, "scrollTop");
+      Reflect.deleteProperty(root, "scrollHeight");
+      Reflect.deleteProperty(root, "clientHeight");
+      root.scrollTop = 0;
+    }
+  });
+
+  it("keeps the offset when the probe answers the same surface across a re-run", async () => {
+    // The other side of the drop. Above the breakpoint the shell keeps its
+    // clamp whatever the Preview does, so `previewOpen` flipping re-runs the
+    // effect and the probe answers the SAME element — the offset must survive
+    // that, and the listener must be re-attached to the surface it belongs to.
+    const root = document.documentElement;
+    // `try`/`finally` because the watcher below is an own property on a node the
+    // WHOLE FILE shares: an assertion that throws part-way would otherwise leave
+    // the accessor installed for every later case in the run.
+    try {
+      await renderShell();
+      const canvas = modeCanvas();
+      const rootWatch = watchScrollTop(root);
+
+      canvas.scrollTop = 180;
+      await act(async () => {
+        canvas.dispatchEvent(new Event("scroll"));
+      });
+
+      // Standing in for the browser's own reset, and the reason the assertion
+      // below observes anything: nothing else moves this node between the
+      // recording and the dock, so a dropped offset and a kept one would leave
+      // it reading 180 either way.
+      canvas.scrollTop = 0;
+
+      fireEvent.click(screen.getByRole("button", { name: "Alpha" }));
+      await act(async () => {});
+      expect(previewColumn()).not.toBeNull();
+      // Same scroller, so the offset was KEPT and re-applied where it belongs.
+      expect(canvas.scrollTop).toBe(180);
+
+      // The listener came back on the same surface: a scroll after the re-run is
+      // recorded rather than lost.
+      canvas.scrollTop = 260;
+      await act(async () => {
+        canvas.dispatchEvent(new Event("scroll"));
+      });
+
+      await toggleSettings();
+      canvas.scrollTop = 0;
+      await toggleSettings();
+      expect(canvas.scrollTop).toBe(260);
+      // …and the document was never the thing being restored at this width.
+      expect(rootWatch.writes()).toBe(0);
+    } finally {
+      Reflect.deleteProperty(root, "scrollTop");
+    }
   });
 });
