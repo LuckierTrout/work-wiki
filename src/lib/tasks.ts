@@ -324,8 +324,9 @@ export type MaintainFixType =
  * The omission half is the one that used to be missing (DW-343). This was a
  * `new Set<MaintainFixType>([…])`, which rejects an extra member but is silent
  * about a forgotten one: a ninth fix type wired into `maintenance.ts` and not
- * added here made `parseTask` return `null` for it, so the task was poison and
- * went to the DLQ with `tsc` perfectly happy.
+ * added here made `parseTask` return `null` for it, so the task was poison —
+ * acked and discarded on the spot, never reaching the DLQ — with `tsc`
+ * perfectly happy.
  */
 export const MAINTAIN_FIX_TYPES = [
   "unmigrated-page",
@@ -451,7 +452,8 @@ export async function enqueueTasks(tasks: readonly Task[]): Promise<EnqueueTasks
 /**
  * Validate + narrow an untrusted JSON body into a {@link Task}, or `null` if it
  * isn't a well-formed task. Used by `/api/tasks/run` to reject malformed
- * messages as poison (4xx → DLQ) rather than retrying them forever.
+ * messages as poison (400 → acked and discarded on the spot, never reaching
+ * the DLQ) rather than retrying them forever.
  */
 export function parseTask(body: unknown): Task | null {
   if (!body || typeof body !== "object") return null;

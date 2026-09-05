@@ -344,8 +344,9 @@ describe("prose inventory parity — task kinds", () => {
   /**
    * `TASK_KINDS` is pinned to the `Task` union at compile time, but a kind can
    * still be added to both and never wired into the executor's dispatch. That
-   * would only surface as a runtime `null` from `parseTask` (poison → DLQ), so
-   * pin the switch here and let `pnpm test` alone catch it.
+   * would only surface as a runtime `null` from `parseTask` (poison → acked
+   * and discarded, never reaching the DLQ), so pin the switch here and let
+   * `pnpm test` alone catch it.
    */
   it("parseTask dispatches on exactly the Task kinds", async () => {
     const file = "src/lib/tasks.ts";

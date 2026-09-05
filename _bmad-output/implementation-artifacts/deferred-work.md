@@ -3535,7 +3535,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: .yoyo/status.md:4
 severity: low
 reason: `**Generated:** 2026-06-02`, `- **API routes:** 32` (148 `route.ts` files under src/app/api), `- **Test files:** 58` (325), `- **Test count:** 2,054` (7,461 passing). Pinning the MCP tool list and the lint-check list makes the surrounding metrics read as maintained when they are not.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-stale-inline-claims
+resolution-undo: c86cf1643b4dcd49ec8c1d02a4f4f815cafa25f46b1f8ccf050ad5d2612056d2 2026-09-05 7374617475733a206f70656e
 
 ### DW-467: DESIGN-triggers.md contradicts itself on lint-check counts, and none of the three numbers is pinned.
 origin: spec-deferred 5c7ee32b3da7
@@ -6092,7 +6094,9 @@ location: src/lib/tasks.ts:454
 source_spec: `spec-dw-645-649-read-only-comment-truth.md`
 severity: low
 reason: `src/lib/tasks.ts:452-454` (`parseTask` JSDoc) reads "reject malformed messages as poison (4xx -> DLQ) rather than retrying them forever"; `src/lib/tasks.ts:326-328` says a poison task "went to the DLQ"; `src/lib/__tests__/prose-inventory-parity.test.ts:347` restates "poison -> DLQ" inside a passing test's rationale. `workers/task-consumer/index.ts:114-125` acks and RETURNS for the poison set, so the message is discarded on the spot. `yopedia-tasks-dlq` is reached only through the transient/retry branch after `max_retries: 3` (`workers/task-consumer/wrangler.jsonc`). This is a different claim from DW-645 (which statuses are poison, now corrected): it is where a poison message ends up. The operational cost is an operator searching the DLQ for a malformed ingest that was never parked there. DW-645's own pass added the correct rule at `src/app/api/tasks/run/route.ts:144-145` ("discarded on the spot and never reaches the DLQ"), so the fix has an in-repo anchor to cite.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-stale-inline-claims
+resolution-undo: c86cf1643b4dcd49ec8c1d02a4f4f815cafa25f46b1f8ccf050ad5d2612056d2 2026-09-05 7374617475733a206f70656e
 
 ### DW-732: PATCH /api/v1/projects/[wikiId]/reviews/[reviewId] with action "deep_research" still answers 500 for the contended-store fault this bundle made a 503 at the three /api/research siblings.
 origin: spec-deferred 58962a9085b1
@@ -6371,4 +6375,12 @@ location: SCHEMA.md:897, SCHEMA.md:698, .yoyo/status.md:22
 source_spec: `spec-dw-467-532-533-doc-copy-drift.md`
 severity: low
 reason: `SCHEMA.md:897` says "work-wiki's 15 lint check types already detect …" — the exact phrasing `documentedCheckCounts` matches, in a file this story already edits, but the pin reads only `DESIGN-triggers.md`. `SCHEMA.md:698` says "Lint auto-fix handles ten of fifteen checks" and `.yoyo/status.md:22` says "15 lint checks (10 with auto-fix)"; both are spelled-out or differently-worded forms the regex would not match even if pointed at those files. All three are correct against `ALL_CHECK_TYPES` (15) and `AUTO_FIXABLE_CHECK_TYPES` (10) today, so nothing is wrong for a reader right now — but they are the same unpinned hand-written count that produced DW-467, and the next roster change leaves them stale. Out of scope here: the bundle intent scoped the pin to "that file", i.e. DESIGN-triggers.md, and DW-467's location names only it.
+status: open
+
+### DW-765: `.yoyo/status.md` tech-debt item 1 still says the repo has no E2E browser tests, but a Playwright suite exists and now carries a fresh 2026-09-05 date stamp.
+origin: spec-deferred 6af417cfadcd
+location: .yoyo/status.md:30
+source_spec: `spec-dw-466-731-stale-inline-claims.md`
+severity: low
+reason: Line 30 reads "No E2E browser tests — Unit and integration tests are strong (9,672) but no Playwright/Cypress tests". The repo has `playwright.config.ts`, three specs under `e2e/` (`retired-routes.spec.ts`, `workbench-layout.spec.ts`, `workbench-owner.spec.ts`) and `"test:e2e": "playwright test"` in `package.json`. This pass refreshed only the parenthetical figure on that line — the intent scoped the edit to the metrics block, the Generated date and the repeated figures — so the false sentence survived and was re-dated with the rest of the document. The real remaining gap is CI: no workflow in `.github/workflows/` invokes `test:e2e`. An owner reading this item would plan browser-test work that is already done.
 status: open

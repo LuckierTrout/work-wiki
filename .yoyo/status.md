@@ -1,17 +1,17 @@
 # Status Report
 
-**Generated:** 2026-06-02  
-**Build status:** ✅ PASS — 2,054 tests, 32 API routes, zero type errors
+**Generated:** 2026-09-05  
+**Build status:** ✅ PASS — 9,672 tests, 149 API routes, zero type errors
 
 ---
 
 ## Metrics snapshot
 
-- **Total lines:** ~56,082 (lib: ~11,158, tests: ~28,551, components: ~5,009, hooks: ~1,913, mcp: 2,344)
-- **Test files:** 58
-- **Test count:** 2,054
-- **Wiki pages (schema):** 12 frontmatter fields (title, aliases, confidence, expiry, valid_from, authors, contributors, sources, disputed, supersedes, tags, type)
-- **API routes:** 32
+- **Total lines:** ~360,810 (lib: ~84,586, tests: ~212,791, components: ~33,818, app: ~21,205, hooks: ~3,387, mcp: 3,446)
+- **Test files:** 386
+- **Test count:** 9,672
+- **Wiki pages (schema):** 18 frontmatter fields (type, source_url, tags, created, updated, source_count, confidence, expiry, valid_from, owner, visibility, authors, contributors, content_hash, disputed, supersedes, aliases, sources)
+- **API routes:** 149
 - **MCP tools:** 40 (search_wiki, read_page, list_pages, create_page, update_page, update_metadata, delete_page, merge_pages, ingest_url, batch_ingest_urls, ingest_text, ingest_x_mention, ingest_pdf, ingest_image, query_wiki, save_query_answer, query_history, agent_context, seed_agent, list_agents, update_agent, delete_agent, lint_wiki, fix_lint_issue, reingest, ingest_history, dataview_query, list_revisions, read_revision, revert_revision, wiki_graph, vault_curate, vault_uncurate, list_vaults, vault_pages, vault_create, vault_rename, vault_delete, maintenance_scan, activity_trail)
 - **Lint checks:** 15 (orphan-page, stale-index, empty-page, missing-crossref, broken-link, contradiction, missing-concept-page, stale-page, low-confidence, unmigrated-page, duplicate-entity, uncited-claims, supersedes-dangling, incomplete-coverage, disputed-page)
 
@@ -27,11 +27,11 @@
 
 ### Known tech debt
 
-1. **No E2E browser tests** — Unit and integration tests are strong (2,054) but no Playwright/Cypress tests
+1. **No E2E browser tests** — Unit and integration tests are strong (9,672) but no Playwright/Cypress tests
 2. **Contributor trust score** — Simple `edits / (edits + reverts)` ratio; needs validation against real multi-user data
 3. **grow.sh still coupled to yoyo-evolve** — Downloads a tarball from a separate repo instead of using the work-wiki API it already has
 4. **GitHub Actions polling workflow** — Phase 3 X-mention polling (#21) blocked on deployment architecture
 
 ---
 
-*This report was generated on 2026-06-02.*
+*This report was generated on 2026-09-05.*
