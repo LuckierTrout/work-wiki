@@ -290,6 +290,53 @@ describe("POST /api/agents/seed", () => {
       const data = await res.json();
       expect(data.error).toMatch(/content/i);
     });
+
+    /**
+     * DW-749 wording parity. The invalid-`type` sentence now lives verbatim in
+     * TWO places — this route's `VALID_SECTION_TYPES` check and `seedAgent`'s
+     * bucketing `default` arm — with no shared constant between them. The
+     * duplication is deliberate (the route refuses before any lib call, and
+     * `seedAgent` is the ONLY refusal on the HTTP MCP path, whose argument gate
+     * does not judge `enum` members by design), but "the three doors agree on
+     * the wording" is a claim that silently rots the next time either file is
+     * edited.
+     *
+     * So this row hardcodes NOTHING. It reads the sentence the route actually
+     * answers with out of its 400 body, provokes the one `seedAgent` actually
+     * throws (through `importActual` — this suite mocks the module), and
+     * asserts the two live strings are equal. It fails when EITHER side drifts,
+     * including a drift in the index formatting, which is why the bogus section
+     * is at index 1 rather than 0.
+     */
+    it("answers a bogus section type with the exact sentence seedAgent throws", async () => {
+      const body = validBody();
+      (body.sections[1] as Record<string, unknown>).type = "bogus";
+
+      const res = await POST(makeRequest(body));
+      expect(res.status).toBe(400);
+      const routeSentence: string = (await res.json()).error;
+
+      // The REAL seedAgent, not this suite's mock. It refuses in the bucketing
+      // pass, before the write loop, so no storage is touched here.
+      const { seedAgent: realSeedAgent } =
+        await vi.importActual<typeof import("@/lib/agents")>("@/lib/agents");
+
+      let libSentence: string | undefined;
+      try {
+        await realSeedAgent({
+          id: body.id,
+          name: body.name,
+          description: body.description,
+          sections: body.sections as Parameters<typeof realSeedAgent>[0]["sections"],
+        });
+      } catch (err) {
+        libSentence = (err as Error).message;
+      }
+
+      expect(libSentence).toBe(routeSentence);
+      // Guard against the vacuous pass where both are undefined/empty.
+      expect(routeSentence).toContain("index 1");
+    });
   });
 
   describe("error handling", () => {

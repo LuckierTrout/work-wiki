@@ -11,7 +11,7 @@
 
 import { getStorage } from "./storage";
 import { getDataDir } from "./config";
-import { isEnoent } from "./errors";
+import { ClientInputError, isEnoent } from "./errors";
 import { serializeFrontmatter } from "./frontmatter";
 import { slugify } from "./slugify";
 import { writeWikiPageWithSideEffects } from "./lifecycle";
@@ -926,6 +926,41 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
   // Hub for interlinking the agent's pages into one connected graph cluster.
   const hubSlug = options.sections[0]?.slug ?? "";
 
+  // Bucket every slug BEFORE any page is written, so a section `type` outside
+  // the declared enum refuses the WHOLE seed rather than leaving a written page
+  // in no list (DW-749). This pass used to sit at the END of each write
+  // iteration, ten lines past `writeWikiPageWithSideEffects`, where a `default`
+  // arm would have refused only AFTER the page it rejects was already on disk.
+  //
+  // It is the only door-side refusal on the HTTP MCP path: that door's
+  // `validateToolArguments` does not judge `enum` members by design (DW-563),
+  // and `handleSeedAgent` maps and delegates without validating. The stdio
+  // door's `z.enum` and `POST /api/agents/seed`'s per-index check already
+  // refuse the same body; the sentence below is the REST door's, verbatim, so
+  // all three doors agree on the wording as well as the outcome.
+  //
+  // Nothing between here and the old position reads the three arrays —
+  // `registerAgent(profile)` after the loop is their only consumer, and
+  // `hubSlug`/`relatedSectionLinks` read `options.sections` directly — so a
+  // mid-loop write failure still registers nothing, exactly as before.
+  options.sections.forEach((section, i) => {
+    switch (section.type) {
+      case "identity":
+        identityPages.push(section.slug);
+        break;
+      case "learnings":
+        learningPages.push(section.slug);
+        break;
+      case "social":
+        socialPages.push(section.slug);
+        break;
+      default:
+        throw new ClientInputError(
+          `Section at index ${i} has invalid 'type' — must be one of: identity, learnings, social`,
+        );
+    }
+  });
+
   for (const section of options.sections) {
     // Build frontmatter for this page
     const frontmatter: Record<string, string | string[] | number | boolean> = {
@@ -991,19 +1026,6 @@ export async function seedAgent(options: SeedAgentOptions): Promise<AgentProfile
       author: options.id,
       ...(existing ? { expectedContent: existing.content } : { createOnly: true }),
     });
-
-    // Bucket the slug into the right page list
-    switch (section.type) {
-      case "identity":
-        identityPages.push(section.slug);
-        break;
-      case "learnings":
-        learningPages.push(section.slug);
-        break;
-      case "social":
-        socialPages.push(section.slug);
-        break;
-    }
   }
 
   // Composite id so each owner can have their own "<name>" (e.g. "work-wiki-yoyo").

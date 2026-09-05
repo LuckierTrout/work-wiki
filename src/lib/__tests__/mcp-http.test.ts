@@ -26,13 +26,14 @@ import {
 } from "../mcp-http";
 import {
   ensureDirectories,
+  readWikiPage,
   readWikiPageWithFrontmatter,
   writeWikiPage,
 } from "../wiki";
 import { listRevisions, readRevision, saveRevision } from "../revisions";
 import { _resetStorage } from "../storage";
 import { createVault, vaultSlugs } from "../vault";
-import { registerAgent } from "../agents";
+import { agentIdFor, getAgent, registerAgent } from "../agents";
 import type { Principal } from "../auth";
 import type { Frontmatter } from "../frontmatter";
 import { WRITE_DENIAL_REALM } from "../write-denial";
@@ -1320,6 +1321,45 @@ describe("dispatchMcp — the argument gate", () => {
 
     expect(message).not.toContain("Invalid request field `sections");
     expect(message).not.toContain("Missing required field: sections");
+  });
+
+  it("leaves the bogus `enum` member to the handler, which refuses the whole seed", async () => {
+    // The positive half of the row above (DW-749). The gate stays silent, so
+    // `seedAgent` is the only refusal left on this path — the stdio door's
+    // `z.enum` and `POST /api/agents/seed`'s per-index check never see this
+    // body. It answers with the REST door's sentence, rendered by
+    // `dispatchMcp`'s catch as an `isError` tool result, and refuses BEFORE the
+    // write loop: neither page is on disk and no profile is registered.
+    const r = await call(
+      "seed_agent",
+      SECTIONED([
+        { slug: "handler-enum-ok", title: "T", type: "identity", content: "c" },
+        { slug: "handler-enum-bad", title: "T", type: "bogus", content: "c" },
+      ]),
+    );
+
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(
+      "Error: Section at index 1 has invalid 'type' — must be one of: identity, learnings, social",
+    );
+
+    expect(await readWikiPage("handler-enum-ok")).toBeNull();
+    expect(await readWikiPage("handler-enum-bad")).toBeNull();
+    expect(await getAgent(agentIdFor("alice", "gatetest"))).toBeNull();
+    expect(await getAgent("gatetest")).toBeNull();
+
+    // The sole-section body the negative row above sends, so the two rows read
+    // the same call two ways: the gate says nothing, the handler names index 0.
+    const sole = await call(
+      "seed_agent",
+      SECTIONED([{ slug: "handler-enum-sole", title: "T", type: "bogus", content: "c" }]),
+    );
+
+    expect(sole.isError).toBe(true);
+    expect(sole.content[0].text).toBe(
+      "Error: Section at index 0 has invalid 'type' — must be one of: identity, learnings, social",
+    );
+    expect(await readWikiPage("handler-enum-sole")).toBeNull();
   });
 
   it("does not REFUSE an undeclared key", async () => {

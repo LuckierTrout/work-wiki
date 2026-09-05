@@ -6043,7 +6043,9 @@ location: src/lib/errors.ts:82
 source_spec: `spec-dw-271-578-module-graph-fragility.md`
 severity: low
 reason: `src/lib/errors.ts` now classifies `ClientInputError` structurally on `err.name`, and its doc block cites `isStoreFault` as the ordering precedent — but `isStoreFault` itself is still an identity check plus an errno probe. A `StoreFaultError` from a second copy of the module carries no errno `code`, so it falls through to `false`. At `src/app/api/tasks/run/route.ts:929` that loses the transient 500-and-retry and drops the task onto the `/not found/i` 422 below it, poisoning work that should have been retried. A `err.name === "StoreFaultError"` arm would close it the same way this pass closed the sibling. Out of scope here: the bundle intent names `ClientInputError` and `commons.ts` only.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-typed-error-and-enum-guards
+resolution-undo: d96e1f39939626370ad0a0fdffb612ca7f0fe5f7d57ffa16554920a24d5fd280 2026-09-05 7374617475733a206f70656e
 
 ### DW-726: The streaming query route excludes saved artifacts only on the UNSCOPED path, while the non-streaming query() excludes them regardless of scope, so a scoped stream query can feed artifact markup into
 origin: spec-deferred a3109c8fb2a9
@@ -6256,7 +6258,9 @@ location: src/lib/agents.ts:995 (seedAgent section bucketing) + src/lib/mcp-http
 source_spec: `spec-dw-672-673-mcp-nested-elements-and-schema-parity.md`
 severity: low
 reason: Neither door's gate judges `enum` members by design (the Never clause, carried from DW-563), so `seed_agent … sections:[{slug,title, type:"bogus",content}]` passes the HTTP gate as a well-typed string. In `seedAgent` (`src/lib/agents.ts:995-1006`) the `switch (section.type)` that appends the slug to `identityPages` / `learningPages` / `socialPages` has no `default`, so the page is written to the wiki and then referenced by no list — the HTTP caller gets a success result and an agent profile that does not mention the page it just seeded. The stdio door refuses the same body at `z.enum(["identity","learnings","social"])` and the REST door at `src/app/api/agents/seed/route.ts` validates per index, so this answer is reachable through the HTTP MCP door alone. Pre-existing and outside this bundle: closing it is either a `default` arm in `seedAgent` or a decision to enforce `enum` somewhere, both of which need a message design this bundle's Never clause rules out.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-typed-error-and-enum-guards
+resolution-undo: d96e1f39939626370ad0a0fdffb612ca7f0fe5f7d57ffa16554920a24d5fd280 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Refuse in seedAgent with a default arm — Add a default arm to seedAgent's bucketing switch that refuses the section as a ClientInputError before any page is written, naming the three valid types. This leaves the HTTP gate's declared no-enum-judgement contract intact and makes the three doors agree on the outcome. Pin the bogus-type body at the HTTP door.
 
 ### DW-750: Settings and the icon rail still assert "not running" for a sidecar that is running but refused, so the two surfaces now contradict Chat on the same screen.
@@ -6397,4 +6401,12 @@ location: src/lib/wikis.ts (writeWikiArtifact, the purpose.md authority-marker b
 source_spec: `spec-dw-732-736-745-api-door-error-typing.md`
 severity: low
 reason: `purpose.md` is in `EDITABLE_ARTIFACT_FILES`, so `PUT /api/workbench/artifact` reaches it. On a Wiki whose record has no `artifactAuthority` marker yet, the save takes the legacy branch: the bytes land, `writeRegistry(owner, registryToMark)` is attempted, and on failure the artifact is restored and the storage error is rethrown unchanged (`src/lib/wikis.ts`, the marker-write catch below the new `putWikiArtifact` wrap). That raw error passes every arm of the route's ladder -- it is neither read-only, write-conflict, unreadable nor unwritable -- and leaves by the fallthrough `json({ error: getErrorMessage(error) }, 500)`, which `savePreviewBody` renders verbatim. `readRegistry` a few lines above the same branch is unguarded too. Two independent review layers reached this by tracing the branch; no test covers it (`grep artifactAuthority` finds only `wikis.test.ts` and `workspace-purpose-canonicalization.test.ts`, and the one registry-write-failure row there drives `canonicalizeWikiPurpose
+status: open
+
+### DW-767: `updateAgent`'s `addPages` bucketing has DW-749's hole in a worse form: an out-of-enum `type` is filed under `socialPages` by the ternary's final `else`, after the page is already written.
+origin: spec-deferred b626dcfb9133
+location: src/lib/agents.ts:845
+source_spec: `spec-dw-725-749-typed-error-and-enum-guards.md`
+severity: low
+reason: `src/lib/agents.ts:845-853` buckets with `page.type === "identity" ? … : page.type === "learnings" ? … : existing.socialPages`, AFTER `writeWikiPageWithSideEffects` at :826-842. `UpdateAgentPage` is the same `{slug,title,type,content}` shape as `SeedAgentSection` and lands in the same three `AgentProfile` lists. Two doors reach it unvalidated, not one: the HTTP MCP gate declares the same `enum` at `src/lib/mcp-http.ts:986` but does not judge `enum` members by design (DW-563), `handleUpdateAgent` (`src/mcp.ts:1041-1055`) passes `addPages` through, and `PUT /api/agents/[id]` validates eight other fields then calls `updateAgent(id, body)` with no `addPages` check at all (`src/app/api/agents/[id]/route.ts:156-257`) — weaker than `POST /api/agents/seed`, whose per-index check this bundle's sentence copies. Only the stdio door refuses, at `src/mcp.ts:2482`. Consequence is worse than the seed hole this bundle closed: seedAgent left a written page in NO list, updateAgent files it under a list
 status: open

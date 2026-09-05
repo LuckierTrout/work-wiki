@@ -87,8 +87,22 @@ export class StoreFaultError extends Error {
  * but under the old name it sent an operator to the filesystem for a fault
  * that was never there.
  *
- * TWO LIMITS, both deliberate and both pre-existing; this pass renamed the
- * predicate, it did not re-scope it.
+ * THE TYPED BRANCH IS STRUCTURAL, NOT AN `instanceof` (DW-725). It reads
+ * `error.name === "StoreFaultError"`, the same shape — and for the same reason
+ * — as its sibling {@link isClientInputError}, the function immediately above
+ * it here (only the {@link StoreFaultError} class declaration sits between). A
+ * `StoreFaultError` thrown by a SECOND copy of this module (vitest's two
+ * projects, a bundler splitting server and edge chunks, the stdio MCP entry
+ * compiled separately) fails `instanceof` against the copy the route imported.
+ * It carries no errno `code` to fall back on, so the identity check answered
+ * `false` and `POST /api/tasks/run` dropped a retryable fault onto the
+ * `/not found/i` 422 poison row that sits below the infrastructure 500 — a
+ * production-only misroute no test could see. `errors.test.ts` pins the
+ * structural claim against a foreign error object, exactly as DW-578 pinned
+ * the sibling.
+ *
+ * TWO LIMITS, both deliberate and both pre-existing; neither the rename nor the
+ * DW-725 retyping re-scoped the predicate.
  *
  * 1. The errno must sit on the CAUGHT VALUE ITSELF. A raw socket or DNS
  *    rejection carries it there and matches. Node's `fetch` does not: undici
@@ -107,13 +121,14 @@ export class StoreFaultError extends Error {
  *    those was right, and still is.
  */
 export function isInfrastructureFault(error: unknown): boolean {
-  if (error instanceof StoreFaultError) return true;
-  // `instanceof Error` is proven BEFORE `code` is read: this classifier runs
-  // inside a route's catch block, where the caught value is arbitrary, and a
-  // property read on it can itself throw (a getter on a hostile or exotic
-  // object). A classifier that throws would replace the fault being reported
-  // with a second, unrelated one.
+  // `instanceof Error` is proven BEFORE any property (`name`, `code`) is read:
+  // this classifier runs inside a route's catch block, where the caught value
+  // is arbitrary, and a property read on it can itself throw (a getter on a
+  // hostile or exotic object). A classifier that throws would replace the fault
+  // being reported with a second, unrelated one.
   if (!(error instanceof Error)) return false;
+  // Structural, not `instanceof` (DW-725) — see the docblock above.
+  if (error.name === "StoreFaultError") return true;
   const code = (error as NodeJS.ErrnoException).code;
   return typeof code === "string" && /^E[A-Z0-9]+$/.test(code);
 }

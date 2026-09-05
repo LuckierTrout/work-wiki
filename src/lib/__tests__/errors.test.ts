@@ -161,6 +161,23 @@ describe("isInfrastructureFault", () => {
     expect(isInfrastructureFault(new StoreFaultError("Research projects file is not a list."))).toBe(true);
   });
 
+  /**
+   * DW-725. The typed branch used to be `error instanceof StoreFaultError` —
+   * the identity check DW-578 had already removed from `isClientInputError`,
+   * the function immediately preceding it in `errors.ts` (only the
+   * `StoreFaultError` class declaration separates the two). A
+   * `StoreFaultError` from a SECOND copy of the module
+   * carries no errno `code` to fall back on, so it answered `false`, and
+   * `POST /api/tasks/run` dropped a retryable fault onto the `/not found/i` 422
+   * poison row below the infrastructure 500. Swap the implementation back to an
+   * identity check and every other row here stays green; only this one fails.
+   */
+  it("returns true for a StoreFaultError from a DIFFERENT copy of this module", () => {
+    const foreign = Object.assign(new Error("boom"), { name: "StoreFaultError" });
+    expect(foreign).not.toBeInstanceOf(StoreFaultError);
+    expect(isInfrastructureFault(foreign)).toBe(true);
+  });
+
   it("returns true for a Node EINVAL errno error — the DW-481 fault", () => {
     const err = Object.assign(new Error("EINVAL: invalid argument, open '/data/x.json'"), {
       code: "EINVAL",
@@ -224,6 +241,18 @@ describe("isInfrastructureFault", () => {
     expect(
       isInfrastructureFault({
         get code() {
+          throw new Error("property getter exploded");
+        },
+      }),
+    ).toBe(false);
+    // Same claim for `name`, the property the DW-725 typed branch reads: a bare
+    // object wearing the name is NOT an Error, and `instanceof Error` is proven
+    // before either property is touched, so neither getter can detonate inside
+    // a route's catch block.
+    expect(isInfrastructureFault({ name: "StoreFaultError" })).toBe(false);
+    expect(
+      isInfrastructureFault({
+        get name() {
           throw new Error("property getter exploded");
         },
       }),

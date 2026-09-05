@@ -878,6 +878,32 @@ describe("POST /api/tasks/run", () => {
       expect((await run(RESEARCH_TASK)).status).toBe(500);
     });
 
+    /**
+     * DW-725. The row above passes even against an `instanceof` check, because
+     * the fixture throws through the same module copy the route imported. This
+     * one is the foreign-copy case a duplicated module graph produces — vitest's
+     * two projects, a bundler splitting server and edge chunks, the stdio MCP
+     * entry compiled separately. It carries no errno `code` to fall back on, so
+     * an identity check answers `false` and the sentence's "not found" lands it
+     * on the 422 poison row instead of the retryable 500. Asserting on the
+     * classifier alone would not see the misroute; the STATUS is the surface
+     * DW-725 names as harmed.
+     */
+    it("500s a FOREIGN-COPY store fault worded like a miss — never the 422 poison", async () => {
+      mockedRunResearch.mockRejectedValueOnce(
+        Object.assign(new Error("Research projects file not found on this volume."), {
+          name: "StoreFaultError",
+        }),
+      );
+
+      const res = await run(RESEARCH_TASK);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({
+        error: "Research projects file not found on this volume.",
+      });
+    });
+
     it("500s a Node errno fault off the filesystem", async () => {
       mockedRunResearch.mockRejectedValueOnce(
         Object.assign(new Error("EINVAL: invalid argument, open '/data/alice/research.json'"), {
