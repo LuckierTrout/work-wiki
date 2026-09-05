@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import RootLayout from "@/app/layout";
+import RootLayout, { metadata } from "@/app/layout";
+import { APP_NAME, APP_ORIGIN, APP_TITLE } from "@/lib/brand";
 import { NavHeader } from "@/components/NavHeader";
 import { ClerkProvider, useUser } from "@clerk/nextjs";
 import { useToast } from "@/hooks/useToast";
@@ -182,6 +183,22 @@ function linkNames(): string[] {
   return screen.getAllByRole("link").map((link) => link.textContent?.trim() ?? "");
 }
 
+/**
+ * `RootLayout` is a SYNC server component: calling it returns the element,
+ * and rendering that element is the whole mount. React hoists the
+ * `<html>`/`<head>`/`<body>` it returns onto the real document, which is why
+ * the assertions below read `document.documentElement` rather than the render
+ * container. (One `In HTML, <html> cannot be a child of <div>` nesting
+ * message is logged as a result; it is expected and changes nothing.)
+ *
+ * Harness-level rather than describe-local: the pre-paint theme script is
+ * reachable ONLY through the `<head>` this mount produces, so the head suite
+ * below needs the same mount (DW-261).
+ */
+function mountLayout() {
+  return render(RootLayout({ children: <Probe /> }));
+}
+
 beforeEach(() => {
   savedOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE;
   // `isOwnerHandle` reads the env var per call, and CI is the only place it is
@@ -220,6 +237,10 @@ afterEach(() => {
   // each one its own jsdom.) A manual reset here would be dead code that reads
   // like a guard.
   Reflect.deleteProperty(navigator, "serviceWorker");
+  // The denied-storage case spies on the shared `MemoryStorage` instance, which
+  // `vitest.setup.dom.ts` defines once for the whole file — a spy left on it
+  // would make every later `getItem` throw.
+  vi.restoreAllMocks();
 });
 
 // ---------------------------------------------------------------------------
@@ -227,18 +248,6 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("RootLayout, mounted", () => {
-  /**
-   * `RootLayout` is a SYNC server component: calling it returns the element,
-   * and rendering that element is the whole mount. React hoists the
-   * `<html>`/`<head>`/`<body>` it returns onto the real document, which is why
-   * the assertions below read `document.documentElement` rather than the render
-   * container. (One `In HTML, <html> cannot be a child of <div>` nesting
-   * message is logged as a result; it is expected and changes nothing.)
-   */
-  function mountLayout() {
-    return render(RootLayout({ children: <Probe /> }));
-  }
-
   it("puts the children on the page through Clerk and the client providers", () => {
     mountLayout();
 
@@ -316,6 +325,141 @@ describe("RootLayout, mounted", () => {
     // `RegisterSW` also renders nothing. Losing it costs the PWA install and
     // the Web Share Target with no visible symptom anywhere in the UI.
     expect(swRegister).toHaveBeenCalledWith("/sw.js");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The document head
+// ---------------------------------------------------------------------------
+
+/**
+ * `metadata` and the pre-paint theme script, as DATA and as BEHAVIOUR (DW-261).
+ *
+ * Both used to be guarded by `readFile` source regexes alone — a scan that
+ * reads `layout.tsx` as text and matches on substrings. That cannot tell a
+ * metadata field from a comment mentioning one, and it cannot tell whether the
+ * `<script>` is still in the tree the layout returns, so deleting either half
+ * left the whole run green. The suite that already MOUNTS the shell is the
+ * place both become observable: the export is imported and asserted as an
+ * object, and the script is fetched out of the `document.head` React actually
+ * produced.
+ */
+describe("the exported metadata", () => {
+  // No mount: `metadata` is a module-level export Next reads at build time, and
+  // rendering the layout is not what publishes it.
+  it("bases every relative URL on the brand origin", () => {
+    // Without `metadataBase`, Next resolves relative OG/Twitter image URLs
+    // against `localhost` in production builds and warns rather than failing.
+    expect(metadata.metadataBase?.origin).toBe(APP_ORIGIN);
+  });
+
+  it("carries the brand title as the default and as a per-page template", () => {
+    // The TEMPLATE is the half a page cannot supply for itself: every
+    // `title: "Settings"` in the app becomes "Settings · work-wiki" only
+    // because this is here.
+    expect(metadata.title).toEqual({
+      default: APP_TITLE,
+      template: `%s · ${APP_NAME}`,
+    });
+  });
+
+  it("says what the site is, once, for search and for social", () => {
+    // One sentence, reused three times — a description that drifted between
+    // the three would show a different site depending on where it was linked.
+    const description = metadata.description;
+    expect(typeof description).toBe("string");
+    expect(description).toContain("shared second brain for humans and agents");
+    expect(metadata.openGraph).toMatchObject({ description });
+    expect(metadata.twitter).toMatchObject({ description });
+  });
+
+  it("describes the site to Open Graph and to Twitter", () => {
+    expect(metadata.openGraph).toMatchObject({
+      title: APP_TITLE,
+      siteName: APP_NAME,
+      type: "website",
+    });
+    // `summary_large_image` is the card the shared link renders as; losing it
+    // silently downgrades every share to the thumbnail form.
+    expect(metadata.twitter).toMatchObject({
+      card: "summary_large_image",
+      title: APP_TITLE,
+    });
+  });
+});
+
+/**
+ * The script source React put into `document.head`.
+ *
+ * THE SEAM IS THE MOUNT, not the module: `themeScript` is a module-local const
+ * and must stay one (Next rejects unknown exports from a Layout file), so the
+ * only honest way to reach it is to render the layout and read back the
+ * `<script>` it injected. A layout that stopped injecting it fails here on the
+ * length assertion rather than on a class that happens not to be applied.
+ */
+function themeScriptSource(): string {
+  mountLayout();
+  const scripts = [...document.head.querySelectorAll("script")];
+  expect(scripts).toHaveLength(1);
+  const source = scripts[0].textContent ?? "";
+  expect(source).not.toBe("");
+  return source;
+}
+
+/** Run the injected source the way the browser runs it, from a clean root. */
+function runThemeScript(source: string): void {
+  document.documentElement.classList.remove("dark", "light");
+  // The script is an IIFE, so a `Function` whose BODY is the source executes it
+  // exactly once — and its free `localStorage` / `document` references resolve
+  // against the same globals the browser would hand it.
+  new Function(source)();
+}
+
+describe("the pre-paint theme script", () => {
+  it("applies the chosen dark theme before the first paint", () => {
+    const source = themeScriptSource();
+    window.localStorage.setItem("theme", "dark");
+
+    runThemeScript(source);
+
+    // The whole point of running this in `<head>`: the class is on the root
+    // element before any of the app's CSS paints, so a dark reader never sees
+    // a light flash.
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(document.documentElement.classList.contains("light")).toBe(false);
+  });
+
+  it("defaults an unset visitor to light, not to the OS preference", () => {
+    const source = themeScriptSource();
+    // No `theme` key at all — `resetDomStorage()` empties the store per test.
+
+    runThemeScript(source);
+
+    // LIGHT IS THE DEFAULT by decision, not by absence: the script writes the
+    // class rather than leaving the root bare, and it deliberately does not
+    // read `prefers-color-scheme`.
+    expect(document.documentElement.classList.contains("light")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  it("survives a browser that refuses storage, and themes nothing", () => {
+    const source = themeScriptSource();
+    // Safari in private mode, and any profile with site data blocked, throw
+    // from `getItem` rather than returning `null`. This runs in `<head>` with
+    // nothing to catch it, so an uncaught throw here is a blank page.
+    const denied = vi
+      .spyOn(window.localStorage, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage is denied");
+      });
+
+    expect(() => runThemeScript(source)).not.toThrow();
+
+    expect(denied).toHaveBeenCalledWith("theme");
+    // The `catch` swallows BEFORE either branch runs, so the root is left as
+    // the server rendered it and the stylesheet's own default takes over.
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(document.documentElement.classList.contains("light")).toBe(false);
   });
 });
 

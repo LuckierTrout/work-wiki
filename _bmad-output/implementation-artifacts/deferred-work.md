@@ -1931,7 +1931,9 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/app/layout.tsx:58
 severity: low
 reason: `src/app/layout.tsx:37-56` (title template, metadataBase, OG/Twitter) and the `themeScript` at :58-70 (which applies the `light`/`dark` class before paint) live only in this file. `app-shell.test.tsx` mounts the layout but asserts neither; the metadata half is pure data and needs no mount at all. Deleting the theme script leaves the whole suite green.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-unpinned-behavior-coverage
+resolution-undo: 635b252cd160e55274eb1c21e32c659bf26a9a346d21b1ff7bdd3c41b6e7dfa2 2026-09-05 7374617475733a206f70656e
 
 ### DW-262: loadSlugTenants has no exported reset, so no mounted suite can express "map still loading" or "/api/wiki/routes failed" -- the DEFAULT_TENANT fallback every converted component is built to survive is
 origin: spec-deferred 91b84f773caf
@@ -1949,7 +1951,9 @@ source_spec: `spec-dw-86-110-118-dom-tests-polling-and-shell.md`
 location: src/components/ChatWorkspace.tsx:232
 severity: low
 reason: `saveAnswer` (src/components/ChatWorkspace.tsx:219-238) keeps the banner hidden when the response carries no slug and surfaces an error alert when the request fails. The new suite always answers `/api/query/save` with an ok body carrying a slug, so a regression rendering "Saved as undefined" -- the exact state the comment at :232 says the guard exists to avoid -- would pass.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-unpinned-behavior-coverage
+resolution-undo: 635b252cd160e55274eb1c21e32c659bf26a9a346d21b1ff7bdd3c41b6e7dfa2 2026-09-05 7374617475733a206f70656e
 
 ### DW-264: `/wiki/new` still lets the owner compose an entire page before `POST /api/wiki` refuses it, now that the route answers 403.
 
@@ -6321,7 +6325,9 @@ location: src/lib/__tests__/epic8-v1-routes.test.ts:207 (and l.214, l.241, l.349
 source_spec: `spec-dw-581-586-537-unexecuted-test-premises.md`
 severity: medium
 reason: DW-537 is now pinned at the rescan door, but `v1SlugGate` returns a PAIR precisely so the three `/api/v1` doors cannot drift (DW-32). `files/route.ts:46` spreads `{ ...slugGate, limit: V1_MAX_TREE_NODES }` into `listWorkbenchFilePaths` and `files/content/route.ts:62` passes `slugGate` into `readWorkbenchFile`; the only tests that import either route module live in `src/lib/__tests__/epic8-v1-routes.test.ts`, and their assertions are `expect(listPaths).toHaveBeenCalledWith("alice", "wiki-1", expect.anything())` (l.207, l.214, l.241) with `readWorkbenchFile`'s gate argument never inspected at all (l.349, l.361). VERIFIED during this run's review: replacing `...slugGate` with `readableSlugs: new Set(), hiddenSlugs: new Set()` in BOTH route files leaves the suite at 35/35 green. `epic8-remediation.test.ts` touches the two sets only by calling `workbench-files` directly, never through these routes. Consequence: the doors an agent actually talks to could serve a hidden page's `wiki/` paths a
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-unpinned-behavior-coverage
+resolution-undo: 635b252cd160e55274eb1c21e32c659bf26a9a346d21b1ff7bdd3c41b6e7dfa2 2026-09-05 7374617475733a206f70656e
 
 ### DW-753: The browser half of the two-halves CSS rule this change introduces runs in no automated lane — `pnpm test:e2e` is not in CI, so a cascade, geometry or hit-test regression is caught only when someone r
 origin: spec-deferred 180035aaedcd
@@ -6515,4 +6521,12 @@ location: src/lib/lifecycle.ts (delete branch, elected-key resolution)
 source_spec: `spec-dw-741-case-variant-delete-and-existence.md`
 severity: low
 reason: `src/lib/lifecycle.ts`'s delete branch resolves one key per root through `findStoredPageKey`, which returns the `electWikiLeafNames` winner. With `wiki/cased.MD` and `wiki/cased.Md` both present, the delete unlinks `.MD` (the lexicographic winner) and the next `readWikiPage("cased")` recovers `.Md` and serves it — the verbatim symptom DW-741 names, on a shape DW-741 did not stage (its ledger entry and this bundle's intent both describe a store "holding only `wiki/cased.MD`"). It is WORSE than the survivor's pre-delete state, not merely unfixed: steps 2b-2e already ran, so the index entry, revisions, discussions and backlinks are gone while the URL still serves content. Left open deliberately. The intent directs "the ENOENT-branch variant probe ... with the `electWikiLeafNames` election", and the election names ONE object; sweeping every spelling instead is the wider ruling the source ledger entry calls out as a decision ("which spellings a delete is entitled to sweep"). Closing it mean
+status: open
+
+### DW-777: ChatWorkspace's saveAnswer clears the saved banner but never clears the error alert, so a save that succeeds after one that failed renders the unconfirmed sentence directly above its own "Saved as" ba
+origin: spec-deferred 9b62c33cc502
+location: src/components/ChatWorkspace.tsx:248
+source_spec: `spec-dw-261-263-752-unpinned-behavior-coverage.md`
+severity: low
+reason: `saveAnswer` (src/components/ChatWorkspace.tsx:246-271) opens with `setSavedMessage(null)` and has no matching `setError(null)`; nothing else on this surface clears `error` except `openConversation`. Both blocks render unconditionally at :296-299, so the owner sees a red "Nothing came back to confirm whether the attempt to save the answer went through" beside a green "Saved as <slug>" for the write that just succeeded. Surfaced by this run's review; not named by DW-263, which covers only the two failure branches themselves. Production behaviour, so out of scope for a tests-only bundle.
 status: open

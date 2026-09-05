@@ -160,6 +160,63 @@ function send(url: string, method: string, body?: unknown) {
   });
 }
 
+/**
+ * An index entry in the shape `buildKnowledgeTree` and `workbenchSlugGate`
+ * read — the seed `assets-route.test.ts` uses for the same derivation.
+ *
+ * Module scope, not per-describe: THREE doors forward the pair `v1SlugGate`
+ * derives (files, files/content, sources/rescan) and every one of them has to
+ * be witnessed against the same listing, or a route that quietly stopped
+ * applying the caller's gate would still be reading a green report (DW-752).
+ */
+function entry(slug: string, type?: string) {
+  return {
+    slug,
+    title: slug,
+    summary: "",
+    type,
+    owner: "alice",
+    visibility: "public",
+    updated: "2026-01-01T00:00:00.000Z",
+  } as never;
+}
+
+/**
+ * The one listing every gate assertion in this file is derived from.
+ *
+ * An `agent-` type is the seed because it needs no `visibility: private` to be
+ * withheld: `buildKnowledgeTree` skips agent-scoped entries outright, so the
+ * slug lands in `hiddenSlugs` and the plain page is the whole of
+ * `readableSlugs`. NON-EMPTY on both halves deliberately — a route that
+ * hardcoded `{ readableSlugs: new Set(), hiddenSlugs: new Set() }` would satisfy
+ * an assertion derived from an empty index and fails against this one.
+ */
+const GATED_ENTRIES = [entry("agentpage", "agent-knowledge"), entry("alpha")] as never;
+
+/**
+ * What `listReadableWikiPages` → `buildKnowledgeTree` → `workbenchSlugGate`
+ * makes of {@link GATED_ENTRIES}. `@/lib/workbench-tree` is NOT mocked here, so
+ * the real derivation runs and this is the shape the doors must forward.
+ *
+ * BOTH HALVES are asserted, because a route that picked up one and dropped the
+ * other is exactly the drift `v1SlugGate` returns a PAIR to prevent (DW-32).
+ *
+ * ASSERTED BY EXACT ARGUMENT, never through `expect.objectContaining` (DW-752).
+ * That matcher compares each sampled property WITHOUT `iterableEquality`, and a
+ * `Set` carries no own enumerable properties — so
+ * `objectContaining({ readableSlugs: new Set(["alpha"]) })` matches an EMPTY
+ * set and the assertion is vacuous. Verified on this vitest by replacing
+ * `...slugGate` with `{ readableSlugs: new Set(), hiddenSlugs: new Set() }` in
+ * both `/api/v1` file routes: every `objectContaining` gate assertion in this
+ * file still passed. `toHaveBeenCalledWith` on the whole argument does carry
+ * `iterableEquality`, so it compares set MEMBERS — which is the only form of
+ * this claim that can fail.
+ */
+const DERIVED_GATE = {
+  hiddenSlugs: new Set(["agentpage"]),
+  readableSlugs: new Set(["alpha"]),
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   owner.mockResolvedValue({ id: "alice", handle: "alice" } as never);
@@ -217,16 +274,38 @@ describe("the façade needs a principal", () => {
 });
 
 describe("{id} resolution", () => {
+  // NON-EMPTY, so the third argument these cases assert on is a real gate
+  // rather than the empty pair the root `beforeEach` leaves behind. Each of
+  // them used to accept `expect.anything()` there, which a route that had
+  // stopped calling `v1SlugGate` altogether would also satisfy (DW-752).
+  beforeEach(() => {
+    listReadable.mockResolvedValue(GATED_ENTRIES);
+  });
+
   it("resolves current to the registry's current Wiki", async () => {
     await getFiles(get("http://local/api/v1/projects/current/files"), params("current"));
-    expect(listPaths).toHaveBeenCalledWith("alice", "wiki-1", expect.anything());
+    // THE CALLER'S OWN GATE, and PROVENANCE is half of that claim: the stub
+    // ignores its argument, so the pair below comes back whichever principal
+    // `v1SlugGate` was handed. Without this line a door that derived the gate
+    // for a hardcoded stranger would still forward `DERIVED_GATE` and pass
+    // (DW-752) — the sibling assertion the rescan case already carries.
+    expect(listReadable).toHaveBeenCalledWith(
+      expect.objectContaining({ handle: "alice" }),
+    );
+    expect(listPaths).toHaveBeenCalledWith("alice", "wiki-1", {
+      ...DERIVED_GATE,
+      limit: V1_MAX_TREE_NODES,
+    });
   });
 
   it("passes a UUID straight through without consulting the registry", async () => {
     const id = "8f4e2c1a-0000-4000-8000-000000000000";
     await getFiles(get(`http://local/api/v1/projects/${id}/files`), params(id));
     expect(registry).not.toHaveBeenCalled();
-    expect(listPaths).toHaveBeenCalledWith("alice", id, expect.anything());
+    expect(listPaths).toHaveBeenCalledWith("alice", id, {
+      ...DERIVED_GATE,
+      limit: V1_MAX_TREE_NODES,
+    });
   });
 
   it("refuses a filesystem path and a spoken name with the access helper's status", async () => {
@@ -253,7 +332,10 @@ describe("{id} resolution", () => {
       params("current"),
     );
     expect(response.status).toBe(200);
-    expect(listPaths).toHaveBeenCalledWith("alice", null, expect.anything());
+    expect(listPaths).toHaveBeenCalledWith("alice", null, {
+      ...DERIVED_GATE,
+      limit: V1_MAX_TREE_NODES,
+    });
   });
 });
 
@@ -415,6 +497,35 @@ describe("files/content refuses in order", () => {
       content: "# Alpha\n",
       bytes: 8,
     });
+  });
+
+  it("hands the read the gate it derived from the caller's own listing", async () => {
+    // DW-752. The door forwards `await v1SlugGate(caller.principal)` as
+    // `readWorkbenchFile`'s FOURTH argument, and nothing in this file ever
+    // looked at it — not even `expect.anything()` — so a route that dropped the
+    // gate, or narrowed the pair to `readableSlugs` alone, would have opened
+    // every withheld page through the external door with the suite still green.
+    listReadable.mockResolvedValue(GATED_ENTRIES);
+    readFileMock.mockResolvedValue({ content: "# Alpha\n" } as never);
+
+    const response = await getContent(
+      get("http://local/api/v1/projects/current/files/content?path=wiki/alpha.md"),
+      params("current"),
+    );
+
+    expect(response.status).toBe(200);
+    // Derived FOR THIS CALLER, not merely derived: the listing stub ignores its
+    // argument, so the pair alone cannot tell `v1SlugGate(caller.principal)`
+    // from `v1SlugGate(someoneElse)`.
+    expect(listReadable).toHaveBeenCalledWith(
+      expect.objectContaining({ handle: "alice" }),
+    );
+    expect(readFileMock).toHaveBeenCalledWith(
+      "alice",
+      "wiki-1",
+      "wiki/alpha.md",
+      DERIVED_GATE,
+    );
   });
 });
 
@@ -883,40 +994,15 @@ describe("sources/rescan", () => {
     expect(rescan).not.toHaveBeenCalled();
   });
 
-  /**
-   * An index entry in the shape `buildKnowledgeTree` and `workbenchSlugGate`
-   * read — the seed `assets-route.test.ts` uses for the same derivation.
-   */
-  function entry(slug: string, type?: string) {
-    return {
-      slug,
-      title: slug,
-      summary: "",
-      type,
-      owner: "alice",
-      visibility: "public",
-      updated: "2026-01-01T00:00:00.000Z",
-    } as never;
-  }
-
   it("hands the rescan the gate it derived from the caller's own listing", async () => {
     // DW-537. The route spreads `await v1SlugGate(caller.principal)` into the
     // call, and the suite used to mock `rescanSources` and assert nothing about
     // its arguments — so `listReadableWikiPages` → `buildKnowledgeTree` →
     // `workbenchSlugGate` never ran through the POST door a real caller hits.
     // `@/lib/workbench-tree` is NOT mocked here, so this drives the real
-    // derivation and only the storage read is stubbed.
-    //
-    // An `agent-` type is the seed because it needs no `visibility: private` to
-    // be withheld: `buildKnowledgeTree` skips agent-scoped entries outright, so
-    // the slug lands in `hiddenSlugs` and the plain page is the whole of
-    // `readableSlugs`. Both halves are asserted, because a route that picked up
-    // one and dropped the other is exactly the drift `v1SlugGate` returns a
-    // PAIR to prevent (DW-32).
-    listReadable.mockResolvedValue([
-      entry("agentpage", "agent-knowledge"),
-      entry("alpha"),
-    ] as never);
+    // derivation and only the storage read is stubbed. See {@link GATED_ENTRIES}
+    // for why that listing is the seed and why both halves are asserted.
+    listReadable.mockResolvedValue(GATED_ENTRIES);
 
     const response = await postRescan(
       send("http://local/api/v1/projects/current/sources/rescan", "POST", {}),
@@ -927,12 +1013,11 @@ describe("sources/rescan", () => {
     expect(listReadable).toHaveBeenCalledWith(
       expect.objectContaining({ handle: "alice" }),
     );
-    expect(rescan).toHaveBeenCalledWith(
-      expect.objectContaining({
-        hiddenSlugs: new Set(["agentpage"]),
-        readableSlugs: new Set(["alpha"]),
-      }),
-    );
+    expect(rescan).toHaveBeenCalledWith({
+      owner: "alice",
+      wikiId: "wiki-1",
+      ...DERIVED_GATE,
+    });
   });
 
   it("clears the scope check and still forwards the derived gate", async () => {
@@ -942,10 +1027,7 @@ describe("sources/rescan", () => {
     // caller naming a Source actually walks: the path clears `isV1FileInScope`
     // AND `raw/sources/`, and the slug gate derived after it still reaches
     // `rescanSources` alongside the `paths` it was called with.
-    listReadable.mockResolvedValue([
-      entry("agentpage", "agent-knowledge"),
-      entry("alpha"),
-    ] as never);
+    listReadable.mockResolvedValue(GATED_ENTRIES);
 
     const response = await postRescan(
       send("http://local/api/v1/projects/current/sources/rescan", "POST", {
@@ -955,13 +1037,12 @@ describe("sources/rescan", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(rescan).toHaveBeenCalledWith(
-      expect.objectContaining({
-        paths: ["raw/sources/a.txt"],
-        hiddenSlugs: new Set(["agentpage"]),
-        readableSlugs: new Set(["alpha"]),
-      }),
-    );
+    expect(rescan).toHaveBeenCalledWith({
+      owner: "alice",
+      wikiId: "wiki-1",
+      paths: ["raw/sources/a.txt"],
+      ...DERIVED_GATE,
+    });
   });
 
   it("runs the raw/sources scope check BEFORE deriving the gate", async () => {
@@ -971,10 +1052,7 @@ describe("sources/rescan", () => {
     // `v1SlugGate`. Seeded identically to the passing case, so the only thing
     // that differs is the `paths` value: a route that derived the gate first
     // would still 403, and only this call count can tell the two apart.
-    listReadable.mockResolvedValue([
-      entry("agentpage", "agent-knowledge"),
-      entry("alpha"),
-    ] as never);
+    listReadable.mockResolvedValue(GATED_ENTRIES);
 
     const response = await postRescan(
       send("http://local/api/v1/projects/current/sources/rescan", "POST", {
