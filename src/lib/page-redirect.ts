@@ -16,6 +16,11 @@
  * rebuild its own surface's shape: forwarding a viewer from `/edit` to the
  * read view would be a cross-surface redirect, and rewriting one route's URL
  * into another's would put URL-shape knowledge in three places.
+ *
+ * The MACHINE doors (`GET /api/raw/<slug>` and the write verbs on
+ * `/api/wiki/<slug>`) share the same gate through a THIRD projection,
+ * {@link canonicalSlugHintForMissing} — and do NOT redirect: they keep their
+ * 404 and name the survivor in the body instead (DW-233).
  */
 
 import { resolveAlias } from "./alias-index";
@@ -86,4 +91,37 @@ export async function aliasRedirectForMissing(
 ): Promise<string | null> {
   const target = await aliasTargetForMissing(slug, principal);
   return target ? pagePath(target.tenant, target.canonical) : null;
+}
+
+/**
+ * The `canonicalSlug` hint a MACHINE door puts on a miss-404 body — or `{}`,
+ * which spreads to nothing, so the envelope is byte-identical to today's
+ * wherever the gate declines.
+ *
+ * The envelope-shaped projection of {@link aliasTargetForMissing}, beside the
+ * page-shaped {@link aliasRedirectForMissing}: `/api/raw/<slug>` and the write
+ * verbs on `/api/wiki/<slug>` keep their 404 STATUS (the recorded 2026-08-28
+ * decision — an API caller is not a browser and must not be silently
+ * redirected), and instead name the survivor in the body so an HTTP client
+ * holding a merged-away slug can follow it in one hop. That is any caller of
+ * these two ROUTES — a script, a fetch from another service, the app's own
+ * clients — and NOT the MCP tools, which dispatch through `src/mcp.ts` and
+ * never touch these handlers. Three projections of ONE gate, so no route
+ * re-derives the fail-closed predicate.
+ *
+ * SLUG ONLY, never the tenant or the owner's handle: both machine doors are
+ * slug-keyed, so the tenant would be information the caller cannot use and the
+ * gate deliberately does not have to leak.
+ *
+ * NOT AN EXISTENCE ORACLE, for the same three reasons the gate itself is not:
+ * it is principal-aware, fail-closed, and requires `canonical !== slug`. The
+ * ACL-cloak 404s — a page that exists but this caller may not read — resolve to
+ * THEMSELVES in the alias index and so carry no hint at all.
+ */
+export async function canonicalSlugHintForMissing(
+  slug: string,
+  principal: Principal | null,
+): Promise<{ canonicalSlug?: string }> {
+  const target = await aliasTargetForMissing(slug, principal);
+  return target ? { canonicalSlug: target.canonical } : {};
 }

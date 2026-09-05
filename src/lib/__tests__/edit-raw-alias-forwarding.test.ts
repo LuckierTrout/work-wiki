@@ -48,6 +48,12 @@ import { getPrincipal } from "@/lib/auth";
 import { notFound, permanentRedirect } from "next/navigation";
 import EditWikiPage from "@/app/u/[handle]/[slug]/edit/page";
 import RawSourcePage from "@/app/u/[handle]/raw/[slug]/page";
+import { GET as rawApiGet } from "@/app/api/raw/[slug]/route";
+import {
+  DELETE as wikiApiDelete,
+  PATCH as wikiApiPatch,
+  PUT as wikiApiPut,
+} from "@/app/api/wiki/[slug]/route";
 
 let tmpDir: string;
 let originalWikiDir: string | undefined;
@@ -267,5 +273,201 @@ describe("/u/<handle>/raw/<slug> alias forwarding for missing slugs", () => {
       }),
     ).rejects.toThrow("NOT_FOUND");
     expect(vi.mocked(permanentRedirect)).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * DW-233 — the MACHINE doors' half of the same parity claim.
+ *
+ * The page components above 308 a merged-away slug to the survivor's
+ * equivalent URL. `GET /api/raw/<slug>` and the write verbs on
+ * `/api/wiki/<slug>` used to hard-404 it, so an MCP client holding an old
+ * bookmark had nowhere to go. Per the recorded 2026-08-28 decision they keep
+ * the 404 STATUS — an API caller is not a browser — and name the survivor in
+ * the body instead, projected from the very same `aliasTargetForMissing` gate
+ * through `canonicalSlugHintForMissing`.
+ *
+ * These cases live BESIDE the UI ones deliberately: the parity claim is only
+ * real if both halves are asserted against the same seeded alias, in the same
+ * harness. A separate file could drift into seeding a different survivor and
+ * still pass.
+ */
+describe("machine doors name the survivor on a miss (DW-233)", () => {
+  let originalAdmin: string | undefined;
+  let originalOwnerHandle: string | undefined;
+  let originalReadOnly: string | undefined;
+
+  beforeEach(() => {
+    // The ACL-cloak cases below need the test principal to be an ORDINARY user:
+    // either of these exported in a developer's shell would make `owner` an
+    // admin, turn the cloak into a readable page, and hide the very assertion
+    // the case exists for — on that machine only. The read-only flag would
+    // turn every write door's 404 into a 403 the same way.
+    originalAdmin = process.env.ADMIN_HANDLES;
+    originalOwnerHandle = process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    originalReadOnly = process.env.YOPEDIA_READONLY;
+    delete process.env.ADMIN_HANDLES;
+    delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    delete process.env.YOPEDIA_READONLY;
+  });
+
+  afterEach(() => {
+    if (originalAdmin === undefined) delete process.env.ADMIN_HANDLES;
+    else process.env.ADMIN_HANDLES = originalAdmin;
+    if (originalOwnerHandle === undefined)
+      delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
+    else process.env.NEXT_PUBLIC_OWNER_HANDLE = originalOwnerHandle;
+    if (originalReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+    else process.env.YOPEDIA_READONLY = originalReadOnly;
+  });
+
+  const params = (slug: string) => ({ params: Promise.resolve({ slug }) });
+
+  const rawGet = (slug: string) =>
+    rawApiGet(new Request(`http://localhost/api/raw/${slug}`), params(slug));
+
+  const wikiDelete = (slug: string) =>
+    wikiApiDelete(
+      new Request(`http://localhost/api/wiki/${slug}`, { method: "DELETE" }),
+      params(slug),
+    );
+
+  const wikiPut = (slug: string) =>
+    wikiApiPut(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "# Replacement\n\nBody." }),
+      }),
+      params(slug),
+    );
+
+  const wikiPatch = (slug: string) =>
+    wikiApiPatch(
+      new Request(`http://localhost/api/wiki/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadata: { tags: ["x"] } }),
+      }),
+      params(slug),
+    );
+
+  const body = async (response: Response) =>
+    (await response.json()) as { error: string; canonicalSlug?: string };
+
+  describe("GET /api/raw/<slug>", () => {
+    it("names the survivor on a merged-away slug, still as a 404", async () => {
+      // The raw blob is deliberately NOT seeded at `old-slug`: with no page and
+      // no archive there, `canReadSlug` passes (a missing page lets the
+      // caller's own not-found speak) and `readRawSource` throws — so this
+      // lands in the CATCH, which is the exit a merged-away slug really takes
+      // and the one that needed `slug` hoisted to answer at all.
+      await seedPage("survivor", { owner: "alice", aliases: ["old-slug"] });
+
+      const response = await rawGet("old-slug");
+
+      expect(response.status).toBe(404);
+      expect(await body(response)).toMatchObject({ canonicalSlug: "survivor" });
+      // The status is NOT a redirect: the decision was to keep the 404 and add
+      // a field, never to 308 a machine caller.
+      expect(response.status).not.toBe(308);
+    });
+
+    it("carries no hint for a slug nothing aliases", async () => {
+      await seedPage("unrelated", { owner: "alice" });
+
+      const response = await rawGet("ghost");
+
+      expect(response.status).toBe(404);
+      expect(await body(response)).not.toHaveProperty("canonicalSlug");
+    });
+
+    it("carries no hint for an anonymous caller whose survivor is private", async () => {
+      // The gate is principal-aware, so the field can never become a
+      // private-page existence oracle: the owner is told, a stranger is not.
+      await seedPage("secret-survivor", {
+        owner: "owner",
+        visibility: "private",
+        aliases: ["gone-slug"],
+      });
+
+      const owned = await body(await rawGet("gone-slug"));
+      expect(owned).toMatchObject({ canonicalSlug: "secret-survivor" });
+
+      vi.mocked(getPrincipal).mockResolvedValueOnce(null);
+      const anonymous = await rawGet("gone-slug");
+
+      expect(anonymous.status).toBe(404);
+      expect(await body(anonymous)).not.toHaveProperty("canonicalSlug");
+    });
+
+    it("carries no hint on the ACL cloak, which resolves to itself", async () => {
+      // `locked` EXISTS; the caller may not read it. The alias index maps every
+      // live slug to itself, so the gate's `canonical !== slug` guard declines
+      // and the cloak stays exactly as silent as it is today.
+      await seedPage("locked", { owner: "alice", visibility: "private" });
+
+      const response = await rawGet("locked");
+
+      expect(response.status).toBe(404);
+      expect(await body(response)).not.toHaveProperty("canonicalSlug");
+    });
+  });
+
+  describe("the write verbs on /api/wiki/<slug>", () => {
+    // There is no `GET` on that route to cover — DW-233's entry named one, and
+    // it has never existed.
+    it.each([
+      ["DELETE", wikiDelete],
+      ["PUT", wikiPut],
+      ["PATCH", wikiPatch],
+    ])(
+      "%s names the survivor on a merged-away slug, still as a 404",
+      async (_verb, call) => {
+        await seedPage("survivor", { owner: "owner", aliases: ["old-slug"] });
+
+        const response = await call("old-slug");
+
+        expect(response.status).toBe(404);
+        expect(await body(response)).toEqual({
+          // The sentence is verbatim what it was before the field existed.
+          error: "page not found: old-slug",
+          canonicalSlug: "survivor",
+        });
+      },
+    );
+
+    it.each([
+      ["DELETE", wikiDelete],
+      ["PUT", wikiPut],
+      ["PATCH", wikiPatch],
+    ])("%s carries no hint for a slug nothing aliases", async (_verb, call) => {
+      await seedPage("unrelated", { owner: "owner" });
+
+      const response = await call("ghost");
+
+      expect(response.status).toBe(404);
+      expect(await body(response)).not.toHaveProperty("canonicalSlug");
+    });
+
+    it.each([
+      ["DELETE", wikiDelete],
+      ["PUT", wikiPut],
+      ["PATCH", wikiPatch],
+    ])(
+      "%s carries no hint when it cloaks a page the caller may not read",
+      async (_verb, call) => {
+        // The page EXISTS and belongs to alice; `owner` may neither read nor
+        // write it, so the verb 404s to avoid an existence oracle — and the
+        // hint must not reintroduce one. It cannot: an existing slug resolves
+        // to ITSELF.
+        await seedPage("locked", { owner: "alice", visibility: "private" });
+
+        const response = await call("locked");
+
+        expect(response.status).toBe(404);
+        expect(await body(response)).not.toHaveProperty("canonicalSlug");
+      },
+    );
   });
 });

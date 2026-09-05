@@ -123,6 +123,47 @@ frontmatter on demand and updated incrementally on page write. The
 `duplicate-entity` lint check scans for pages whose titles/aliases
 overlap (suggesting they should be merged).
 
+## Alias hints on API misses (`canonicalSlug`)
+
+When a page is merged away or renamed, its old slug becomes an alias of the
+survivor (see **Alias resolution at ingest time** above). The browser surfaces
+— `/u/<handle>/<slug>`, `.../<slug>/edit` and `/u/<handle>/raw/<slug>` — answer
+a request for that old slug with a `308` to the survivor's equivalent URL. The
+MACHINE doors do not redirect. They keep their `404` and name the survivor in
+the error body instead:
+
+```json
+{ "error": "page not found: old-slug", "canonicalSlug": "survivor" }
+```
+
+**Which doors emit it — and only these.** `GET /api/raw/<slug>`, and `DELETE`,
+`PUT` and `PATCH` on `/api/wiki/<slug>`. Four handlers, no others.
+
+**Which doors do NOT.** There is no `GET` on `/api/wiki/<slug>` at all. The
+other read door a machine caller reaches for, `GET /api/workbench/preview`,
+answers its own fixed `{ "error": "Not found." }` and carries **no**
+`canonicalSlug` — do not assume parity there. Neither do the MCP tools: they
+reach the wiki library directly rather than through these HTTP routes, so a
+merged-away slug still answers a bare `Page not found: <slug>` on that surface.
+
+**The status never changes.** A miss is still `404`, and the `error` sentence is
+still the one it always was. `canonicalSlug` is purely ADDITIVE — an API client
+is not a browser, and silently redirecting one would hide a moved page from the
+caller that most needs to record the move.
+
+**It is absent unless a readable survivor resolves.** The field is projected
+from the same principal-aware, fail-closed gate the page routes redirect
+through, so it appears only when the alias index resolves the requested slug to
+a *different* slug, a page exists there, and the caller may read it. A slug
+nothing aliases, an anonymous caller whose survivor is private, and the ACL
+cloak (a page that exists but the caller may not read — such a slug resolves to
+*itself*) all answer a bare `{ "error": ... }`. The field can therefore never be
+used as an existence oracle for a private page.
+
+**It carries the SLUG only** — never a tenant or an owner handle. Both machine
+doors are slug-keyed, so the survivor's slug is the whole of what an HTTP client
+needs to retry.
+
 ## Talk pages (Phase 2)
 
 Talk pages **were** work-wiki's threaded discussion surface for editorial

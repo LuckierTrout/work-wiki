@@ -1720,7 +1720,9 @@ source_spec: `spec-dw-83-89-owner-scoped-link-and-notfound-hardening.md`
 location: src/app/api/wiki/[slug]/route.ts
 severity: low
 reason: This story wired aliasTargetForMissing into all three /u/ routes, so the page, edit and raw views forward. The JSON routes were never in scope — the intent names only the edit and raw owner-scoped routes — and were already hard-404 before it. The asymmetry is new even though neither side changed: forwarding the HTML surfaces is what made the API's behavior a divergence rather than the uniform rule. Either forward there too, or return the canonical slug in the 404 envelope so a client can follow it.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-machine-door-miss-parity
+resolution-undo: f41699436cf2d901a6fc8344739f86473766263bf1c8478916d228c161d37bb3 2026-09-05 7374617475733a206f70656e
 decision: 2026-08-28 Canonical slug in the 404 — Keep the 404 status and add the canonical slug to the error envelope on both routes, so a client can follow deliberately; document the field in SCHEMA.md.
 decision: 2026-08-26 Canonical slug in the 404 — Keep the 404 status and add the canonical slug to the error envelope on both routes, so a client can follow deliberately; document the field in SCHEMA.md.
 
@@ -5843,7 +5845,9 @@ location: src/app/api/ingest/history/route.ts (DELETE ingestIds preflight and th
 source_spec: `spec-dw-432-ingest-history-orphan-listing.md`
 severity: medium
 reason: GET now admits an index-missing slug whose page the caller can read (src/app/api/ingest/history/route.ts, the orphan probe in the ledger walk). DELETE was deliberately left alone: its `ingestIds` preflight and its DW-270 read gate both test the index-backed `readable` set built from `listReadableWikiPages`, so the same row answers `SELECTION_NOT_FOUND` and lands in `failed[]`. The owner therefore gets a visible, selectable row whose delete always fails with a sentence that says it was "not found", which is a wrong answer about a row the same route just listed. The gap is the second half of this bundle's own decision ("orphan rows list AND become deletable"); it was not shipped because that decision also says "on this listing path only", and `spec-dw-393-bulk-ingest-delete-per-entry-outcomes.md` shipped the opposing constraint for the delete path ("Do not add a disk fallback for orphan slugs -- the ledger/index contract stays as-is"). Closing it means overturning a shipped human decisio
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-machine-door-miss-parity
+resolution-undo: f41699436cf2d901a6fc8344739f86473766263bf1c8478916d228c161d37bb3 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-03 Make orphan rows deletable — Give the DELETE preflight and the DW-270 read gate the same disk-fallback probe the listing walk uses, explicitly superseding spec-dw-393's delete-path constraint and recording that supersession. Pin that a row the same route just listed can be selected and cleared.
 
 ### DW-705: The envelope's new body term charges MAX_EMAIL_CONTENT_CHARS as if each UTF-16 code unit were one byte, so it buys a maximal ASCII body only; a non-ASCII body of the same length is up to ~3x larger on
@@ -6409,4 +6413,28 @@ location: src/lib/agents.ts:845
 source_spec: `spec-dw-725-749-typed-error-and-enum-guards.md`
 severity: low
 reason: `src/lib/agents.ts:845-853` buckets with `page.type === "identity" ? … : page.type === "learnings" ? … : existing.socialPages`, AFTER `writeWikiPageWithSideEffects` at :826-842. `UpdateAgentPage` is the same `{slug,title,type,content}` shape as `SeedAgentSection` and lands in the same three `AgentProfile` lists. Two doors reach it unvalidated, not one: the HTTP MCP gate declares the same `enum` at `src/lib/mcp-http.ts:986` but does not judge `enum` members by design (DW-563), `handleUpdateAgent` (`src/mcp.ts:1041-1055`) passes `addPages` through, and `PUT /api/agents/[id]` validates eight other fields then calls `updateAgent(id, body)` with no `addPages` check at all (`src/app/api/agents/[id]/route.ts:156-257`) — weaker than `POST /api/agents/seed`, whose per-index check this bundle's sentence copies. Only the stdio door refuses, at `src/mcp.ts:2482`. Consequence is worse than the seed hole this bundle closed: seedAgent left a written page in NO list, updateAgent files it under a list
+status: open
+
+### DW-768: A SILO-ONLY orphan the DELETE ladder now admits still cannot be deleted: `deleteWikiPage` re-reads the page without the owner hint the probe used, so the kernel throws and the row lands in `failed[]`
+origin: spec-deferred 0f7206ced055
+location: src/lib/lifecycle.ts (deleteWikiPage's capture-the-title read); consumed by src/app/api/ingest/history/route.ts DELETE
+source_spec: `spec-dw-233-704-machine-door-miss-parity.md`
+severity: medium
+reason: Verified empirically against the real kernel in a tmpdir (not through the suite's `@/lib/wiki` mock). For a page written only to `tenants/<t>/wiki/silo-only.md` — no flat copy, no page-index row — `readWikiPageWithFrontmatter(slug, {fresh, strict, owner: "alice"})` resolves it, so `readableOnDisk` admits it, but `deleteWikiPage("silo-only", "alice")` rejects with `page not found: silo-only`. Cause: `deleteWikiPage` reads `readWikiPage(slug, { fresh: true, strict: true })` with no `owner` option (`src/lib/lifecycle.ts`, the capture-the-title read), and `readWikiPage` consults the caller's silo only when `options?.owner !== undefined` (`src/lib/wiki.ts`, the ENOENT branch). The other orphan shape — a flat `wiki/<slug>.md` the index lost, which is the shape DW-704's ledger entry names — deletes end to end; the same probe confirmed that. Out of scope here on the intent's own authority: the bundle names the two DELETE gates, and closing this means giving the lifecycle delete owner-hinted re
+status: open
+
+### DW-769: Sibling miss-404s on the same URL family still carry no `canonicalSlug`, so a client that follows one door's hint gets nothing from the next.
+origin: spec-deferred c3b530f2c274
+location: src/app/api/wiki/[slug]/revisions/route.ts; src/app/api/wiki/[slug]/lineage/route.ts; src/app/api/workbench/preview/route.ts
+source_spec: `spec-dw-233-704-machine-door-miss-parity.md`
+severity: low
+reason: `GET`/`POST /api/wiki/<slug>/revisions` (`src/app/api/wiki/[slug]/revisions/route.ts`) answer the byte-identical `{ error: "page not found: <slug>" }`, and `src/app/api/wiki/[slug]/lineage/route.ts` and `GET /api/workbench/preview` answer their own fixed miss bodies. Their UI counterpart `/u/<handle>/<slug>` does 308. Deliberately out of scope: the recorded 2026-08-28 decision names "both routes", meaning `/api/raw/<slug>` and `/api/wiki/<slug>` themselves, and `SCHEMA.md` now enumerates which doors carry the field and which do not — so the asymmetry is documented rather than silent. Closing it is a follow-up decision about how wide the hint should travel, not a defect in this one.
+status: open
+
+### DW-770: The bulk-delete ACL loop's page read is non-strict, so a transient storage fault reads as "already gone" and silently clears a terminal job record whose page is still on disk.
+origin: spec-deferred 814b1c48859a
+location: src/app/api/ingest/history/route.ts (the ACL loop's plain read)
+source_spec: `spec-dw-233-704-machine-door-miss-parity.md`
+severity: low
+reason: `src/app/api/ingest/history/route.ts`, the ACL loop's `readWikiPageWithFrontmatter(slug)` followed by `if (!page) continue; // Already gone`. Without `strict`, a non-ENOENT failure returns `null` rather than throwing, which is indistinguishable from an absent page — the same class DW-378 hardened on `/api/wiki/<slug>`'s write doors and DW-691 hardened inside `deleteWikiPage`. Pre-existing: that read and its `null` branch predate this change, which only added a second call site for the same read on the index-hidden rung, deliberately matching the existing one rather than diverging from it. The probe path is already correct here — a probe that throws is reported `failed`, never `absent`.
 status: open

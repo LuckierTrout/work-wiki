@@ -47,7 +47,7 @@ baseline_revision: '34f1863dfa91cd112c15f85fda4aae2ff59c3d00'
 **Block If:** the change would require distinguishing "does not exist" from "you may not read it" in any caller-visible way.
 
 **Never:**
-- Do not add a disk fallback for orphan slugs (the explicitly rejected option 2 — the ledger/index contract stays as-is).
+- ~~Do not add a disk fallback for orphan slugs (the explicitly rejected option 2 — the ledger/index contract stays as-is).~~ **SUPERSEDED 2026-09-03** by `spec-dw-233-704-machine-door-miss-parity.md` (DW-704). DW-432 gave `GET /api/ingest/history` exactly such a fallback for the LISTING, which left an owner looking at a row whose `DELETE` always answered `SELECTION_NOT_FOUND`. Both `DELETE` gates now run the same three-step ladder the listing runs (`readable` → `indexed` → one `readableOnDisk` probe), under one shared per-request memo and budget. Do not act on this clause. Everything else in this Never list still stands, and the recorded decision changed nothing else: the whole-batch 403/409, the single `SELECTION_NOT_FOUND` sentence and `failed[]`'s shape and submission order are unchanged.
 - Do not change the whole-batch 403 (delete ACL denial, incl. the realm sentence) or the whole-batch 409 (queued/processing job) — both are stable, actionable refusals about items the caller can see and deselect, and both already fire before any mutation. Only the not-found family becomes per-entry.
 - Do not touch `_bmad-output/implementation-artifacts/deferred-work.md`.
 - Do not change `GET /api/ingest/history`, `WRITE_DENIAL*`, or `READ_ONLY_REFUSAL`.

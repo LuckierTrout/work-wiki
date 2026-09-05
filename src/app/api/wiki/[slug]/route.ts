@@ -8,12 +8,13 @@ import {
   type Frontmatter,
 } from "@/lib/wiki";
 import { extractSummary } from "@/lib/ingest";
-import { getPrincipal, getServicePrincipal } from "@/lib/auth";
+import { getPrincipal, getServicePrincipal, type Principal } from "@/lib/auth";
 import { canReadFrontmatter, canWriteFrontmatter } from "@/lib/authz";
 import { resolveWriteDenial } from "@/lib/write-denial";
 import { isReadOnly } from "@/lib/config";
 import { READ_ONLY_REFUSAL, isReadOnlyError } from "@/lib/read-only";
 import { getErrorMessage } from "@/lib/errors";
+import { canonicalSlugHintForMissing } from "@/lib/page-redirect";
 import { patchMetadata } from "@/lib/patch-metadata";
 import {
   IF_MATCH_HEADER,
@@ -23,13 +24,42 @@ import {
   parseIfMatch,
 } from "@/lib/write-precondition";
 
+/**
+ * `/api/wiki/[slug]` — DELETE, PUT and PATCH. THERE IS NO `GET` HANDLER HERE,
+ * and there never has been: a machine reader takes `GET /api/raw/[slug]` (raw
+ * source) or `GET /api/workbench/preview` (rendered page + version — and note
+ * that preview answers its own fixed not-found sentence and carries NO
+ * `canonicalSlug`; only the doors named below do). Stated
+ * because DW-233 was filed against "the GET on this route" — a handler that
+ * does not exist — and the next reader deserves to learn that from the file
+ * rather than by grepping for it.
+ *
+ * EVERY MISS-404 BELOW CARRIES `canonicalSlug` (DW-233). The
+ * `/u/<handle>/<slug>/edit` page component 308s a merged-away slug to the
+ * survivor's editor; these write verbs used to hard-404 it, leaving an HTTP
+ * caller holding an old slug with nowhere to go — any caller of THIS route,
+ * which the MCP tools are not: they go through `src/mcp.ts` straight to the
+ * wiki library and never reach these handlers. Per the recorded
+ * 2026-08-28 decision the STATUS stays 404 — an API caller is not a browser and
+ * must not be silently redirected — and the survivor's slug rides in the body,
+ * projected from the same principal-aware, fail-closed gate the page routes use
+ * ({@link canonicalSlugHintForMissing}). It is ADDITIVE and absent unless that
+ * gate resolves a survivor, so the ACL-cloak 404s below (a page that exists but
+ * this caller may not read, which the alias index maps to ITSELF) still say
+ * exactly what they say today.
+ */
 export async function DELETE(
   req: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
+  // Hoisted out of the `try` so the catch's 404 arm can consult the same alias
+  // gate the two in-body 404s consult (DW-233); both are `null` until assigned,
+  // which is the gate's own fail-closed input.
+  let slug: string | null = null;
+  let principal: Principal | null = null;
   try {
     const { slug: encodedSlug } = await params;
-    const slug = decodeSlug(encodedSlug);
+    slug = decodeSlug(encodedSlug);
 
     // Deployment read-only, answered BEFORE anything is read. The answer is the
     // same for every slug, so it is not an existence oracle — and it keeps the
@@ -46,7 +76,7 @@ export async function DELETE(
     // only by a service principal or an admin — the realm reserves that class
     // for agents. (The middleware already blocks unauthenticated mutations;
     // this is the per-page check on top.)
-    const principal = (await getPrincipal()) ?? getServicePrincipal(req);
+    principal = (await getPrincipal()) ?? getServicePrincipal(req);
 
     // FRESH (DW-195). This read's frontmatter decides a mutation — the ACL
     // below authorizes a delete from it. `pageCache` is module-global and
@@ -66,7 +96,10 @@ export async function DELETE(
     });
     if (!existing) {
       return NextResponse.json(
-        { error: `page not found: ${slug}` },
+        {
+          error: `page not found: ${slug}`,
+          ...(await canonicalSlugHintForMissing(slug, principal)),
+        },
         { status: 404 },
       );
     }
@@ -85,7 +118,14 @@ export async function DELETE(
             { status: 403 },
           )
         : NextResponse.json(
-            { error: `page not found: ${slug}` },
+            {
+              // Inert here by construction: this page EXISTS, and the alias
+              // index maps every live slug to itself, so the gate's
+              // `canonical !== slug` guard declines. Spread anyway — the cloak
+              // must not become the one 404 that decides for itself.
+              error: `page not found: ${slug}`,
+              ...(await canonicalSlugHintForMissing(slug, principal)),
+            },
             { status: 404 },
           );
     }
@@ -111,7 +151,17 @@ export async function DELETE(
     // answers `null` for it, strict or not, so it is already the 404 above and
     // never reaches this catch.
     const status = message.startsWith("page not found") ? 404 : 500;
-    return NextResponse.json({ error: message }, { status });
+    // Only the 404 arm gets the hint: a 500 is a fault, not a miss, and naming
+    // a survivor there would claim the slug was resolved when nothing was.
+    // That arm is NARROW rather than inert — the in-body read above already
+    // found the page, so reaching it means `deleteWikiPage` re-read and found
+    // it gone: the page was merged away mid-request, which is precisely the
+    // race whose caller needs the survivor's name.
+    const hint =
+      status === 404 && slug
+        ? await canonicalSlugHintForMissing(slug, principal)
+        : {};
+    return NextResponse.json({ error: message, ...hint }, { status });
   }
 }
 
@@ -230,7 +280,10 @@ export async function PUT(
     });
     if (!existing) {
       return NextResponse.json(
-        { error: `page not found: ${slug}` },
+        {
+          error: `page not found: ${slug}`,
+          ...(await canonicalSlugHintForMissing(slug, principal)),
+        },
         { status: 404 },
       );
     }
@@ -248,7 +301,12 @@ export async function PUT(
             { status: 403 },
           )
         : NextResponse.json(
-            { error: `page not found: ${slug}` },
+            {
+              // Inert by construction, exactly as in `DELETE`: an existing
+              // slug resolves to itself, so the gate declines.
+              error: `page not found: ${slug}`,
+              ...(await canonicalSlugHintForMissing(slug, principal)),
+            },
             { status: 404 },
           );
     }
@@ -381,9 +439,13 @@ export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
+  // Hoisted for the catch's `NOT_FOUND` arm — the only 404 this verb answers,
+  // and it is raised inside `patchMetadata` rather than in the body here.
+  let slug: string | null = null;
+  let principal: Principal | null = null;
   try {
     const { slug: encodedSlug } = await params;
-    const slug = decodeSlug(encodedSlug);
+    slug = decodeSlug(encodedSlug);
 
     // Deployment read-only, answered before the body is parsed and before
     // `patchMetadata` reads the page. Same answer for every slug — no oracle.
@@ -420,7 +482,7 @@ export async function PATCH(
     }
 
     // Attribution comes from the authenticated session, never the body.
-    const principal = (await getPrincipal()) ?? getServicePrincipal(req);
+    principal = (await getPrincipal()) ?? getServicePrincipal(req);
 
     const result = await patchMetadata({
       slug,
@@ -443,6 +505,12 @@ export async function PATCH(
     else if (code === "NOT_OWNER") status = 403;
     else if (code === "NOT_FOUND") status = 404;
     else if (message.toLowerCase().startsWith("invalid slug")) status = 400;
-    return NextResponse.json({ error: message }, { status });
+    // `NOT_FOUND` is the only miss this verb answers, and it is the only arm
+    // that may name a survivor: a 400/403/500 is not a miss.
+    const hint =
+      code === "NOT_FOUND" && slug
+        ? await canonicalSlugHintForMissing(slug, principal)
+        : {};
+    return NextResponse.json({ error: message, ...hint }, { status });
   }
 }
