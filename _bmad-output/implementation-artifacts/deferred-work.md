@@ -3843,7 +3843,9 @@ source_spec: `spec-dw-394-397-names-terms-memo-hardening.md`
 location: src/lib/names-terms.ts:16
 severity: low
 reason: DW-397 was closed with `Object.freeze` plus tests, and the spec put `readonly` types explicitly out of scope as a ripple beyond the fix. The residual asymmetry is real: `createNamesTerm` / `updateNamesTerm` return UNFROZEN entries of the same declared type, and both shapes reach `src/app/api/names-terms/route.ts` as `NamesTermEntry`, so a consumer reasoning from the type is right only half the time. A readonly return type (e.g. `Readonly<Omit<NamesTermEntry, "aliases">> & { readonly aliases: readonly string[] }`) would move the failure to compile time.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-names-terms-robustness
+resolution-undo: b6eb2f388044bbb4468a25cf1510ecfafaf7dee823c1cc19648bb847f7c715a7 2026-09-05 7374617475733a206f70656e
 decision: 2026-08-31 Split the read type — Give listNamesTerms a distinct FrozenNamesTermEntry (Readonly<NamesTermEntry>) return type while NamesTermEntry itself stays mutable for the create and update paths, so the freeze is expressed in the type of the read without rippling into the write surface. Update the five read-only consumers to the new type and pin that a write through a read result fails to compile.
 
 ### DW-499: A corrupt `names-terms.json` holding a non-object element alongside real entries still throws out of the sort comparator in `resolveSortedEntries`, so the read fails rather than degrading.
@@ -3852,7 +3854,9 @@ source_spec: `spec-dw-394-397-names-terms-memo-hardening.md`
 location: src/lib/names-terms.ts:169
 severity: low
 reason: `readEntries` validates only `Array.isArray(parsed)`. The freeze loop added by this story now skips non-object elements, but the `.sort()` that runs BEFORE it dereferences `a.kind` / `a.canonical`, so `[null, entry]` throws `TypeError: Cannot read properties of null (reading 'kind')`. Confirmed empirically during this story: `[null]` alone resolves (the comparator is never called for a single element), two-or-more does not. Pre-existing — the throw predates this change and is unrelated to DW-394/DW-397 — but nothing validates entry shape at the read boundary.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-names-terms-robustness
+resolution-undo: b6eb2f388044bbb4468a25cf1510ecfafaf7dee823c1cc19648bb847f7c715a7 2026-09-05 7374617475733a206f70656e
 
 ### DW-500: `e2eOwnerHandle()`'s consumers were entirely unpinned before this change: every fixture set `NEXT_PUBLIC_OWNER_HANDLE` to the literal string `E2E_DEFAULT_HANDLE` already is.
 origin: spec-deferred 9d558a647013
@@ -6250,7 +6254,9 @@ location: src/components/NamesTermsSettings.tsx (save, success branch)
 source_spec: `spec-dw-717-721-unconfirmed-write-helper-adoption.md`
 severity: low
 reason: `readJsonBody` resolves `{}` for a 2xx that merely fails to PARSE — the answer arrived and was shapeless — and every other adopting site has its own guard for that (`if (!wiki?.id) throw …` on the wiki surfaces, `if (!data.queued || !data.jobId)` in `BulkDocumentImport`). `save` has none: it pushes `data.entry` straight into `entries`, so `undefined` reaches the row map and `Cannot read properties of undefined (reading 'canonical')` takes the section down. Found while drafting a "2xx that merely fails to parse" case for that surface; the case was dropped because the crash is pre-existing and outside this spec's scope.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-names-terms-robustness
+resolution-undo: b6eb2f388044bbb4468a25cf1510ecfafaf7dee823c1cc19648bb847f7c715a7 2026-09-05 7374617475733a206f70656e
 
 ### DW-748: The v1 façade's new `invalid_input` token does not separate a MALFORMED body from a capacity or stored-row refusal, so an agent that branches on it can retry a `deep_research` request that can never s
 origin: spec-deferred ef94a11eb4a9

@@ -28,6 +28,33 @@ export interface NamesTermEntry {
   updatedAt: string;
 }
 
+/**
+ * The READ type — what {@link listNamesTerms} (and every helper that consumes
+ * its result) hands back. The compile-time half of what
+ * {@link resolveSortedEntries}'s `Object.freeze` already enforces at runtime
+ * (DW-498).
+ *
+ * The read and the write surfaces are genuinely different types here, and until
+ * this existed only the runtime knew it: `listNamesTerms` advertised a mutable
+ * `NamesTermEntry[]` while handing back frozen objects, so a consumer could be
+ * written straight through `tsc` against a contract the runtime then refuses at
+ * the mutating line. Under a {@link NamesTermsCache} that line is worse than a
+ * local failure — the entry objects are SHARED between every array the handle
+ * hands out, which is exactly why they are frozen.
+ *
+ * {@link NamesTermEntry} stays mutable and stays the type of
+ * `createNamesTerm` / `updateNamesTerm` and of {@link cleanInput}: the write
+ * path builds entries, pushes onto their aliases and index-assigns
+ * replacements, and none of that is what a read result is for. Mutable widens
+ * to frozen (TypeScript ignores `readonly` property modifiers for assignability
+ * and treats `string[]` as a `readonly string[]`), so a write-path value still
+ * satisfies every helper below; the direction that must NOT work — a frozen
+ * entry where a mutable one is expected — is the one this split closes.
+ */
+export type FrozenNamesTermEntry = Readonly<Omit<NamesTermEntry, "aliases">> & {
+  readonly aliases: readonly string[];
+};
+
 export interface NamesTermInput {
   kind: NamesTermKind;
   canonical: string;
@@ -184,10 +211,71 @@ function assertNoConflicts(
   }
 }
 
+/**
+ * Can the read pipeline dereference this element without a guard of its own
+ * (DW-499)?
+ *
+ * "Readable" is defined by what the pipeline actually touches, and nothing
+ * wider: the sort comparator reads `kind` and `canonical`, and
+ * `[entry.canonical, ...entry.aliases]` appears in
+ * {@link canonicalizeNamesTerm}, {@link expandQueryWithNamesTerms},
+ * {@link renderNamesTermsGuidance} — and, on the WRITE path,
+ * {@link assertNoConflicts}, which every create and update runs over what
+ * {@link readEntries} just handed it. So: an object, a string `kind`, a string
+ * `canonical`, and an `aliases` array of strings.
+ *
+ * Deliberately NOT validated here: `kind` against {@link NAMES_TERM_KINDS},
+ * `id`, and every optional field. None of them can throw on the read path, and
+ * dropping an element the pipeline would have handled is data loss — see
+ * {@link readEntries} for why a dropped element is worse than it looks.
+ *
+ * A pure predicate. It never coerces, repairs or rewrites an element; the only
+ * outcomes are "kept as it is" and "not in this read".
+ */
+function isReadableEntry(value: unknown): value is NamesTermEntry {
+  if (!value || typeof value !== "object") return false;
+  const { kind, canonical, aliases } = value as Record<string, unknown>;
+  return (
+    typeof kind === "string" &&
+    typeof canonical === "string" &&
+    Array.isArray(aliases) &&
+    aliases.every((alias) => typeof alias === "string")
+  );
+}
+
+/**
+ * The read boundary — and the one place a corrupt element is dropped (DW-499).
+ *
+ * The filter is what lets every later layer (sort, freeze, canonicalize,
+ * render) dereference an entry with no guard of its own. Before it, one bad
+ * element in a hand-edited `names-terms.json` failed the WHOLE read: a `null`
+ * beside a real entry threw a `TypeError` out of the sort comparator, and a
+ * field-less object survived as far as `renderNamesTermsGuidance`'s
+ * `entry.aliases`. Filtering at the boundary degrades the read to the valid
+ * SUBSET instead, which is the behaviour every consumer here already wants —
+ * dictionary guidance is an addition to a prompt, never the operation.
+ *
+ * The WRITE path reads through here too, and that cuts both ways. A
+ * create/update/delete over a dictionary holding an unreadable element now
+ * SUCCEEDS, where {@link assertNoConflicts}' `[entry.canonical, ...aliases]`
+ * used to throw a `TypeError` and the route answered 500 — the owner could not
+ * add a term until they hand-repaired the file. But the element is then NOT
+ * written back: these three persist what they read, so the next write drops it
+ * from `names-terms.json` for good. That is the price of the degrade, it is the
+ * reason the predicate is as narrow as it is (it must never drop something the
+ * pipeline could have handled), and both halves are pinned in
+ * `names-terms.test.ts` — moving this filter down into
+ * {@link resolveSortedEntries} to stop deleting the owner's bytes would restore
+ * the 500 at the write door.
+ *
+ * Unchanged: ENOENT degrades to `[]` and everything else RETHROWS, so the
+ * `JSON.parse` `SyntaxError` from an unparseable file still propagates to the
+ * caller's own catch (`merge.ts`'s pre-fold probe is the one that matters).
+ */
 async function readEntries(owner: string): Promise<NamesTermEntry[]> {
   try {
-    const parsed = JSON.parse(await getStorage().readFile(dictionaryPath(owner)));
-    return Array.isArray(parsed) ? (parsed as NamesTermEntry[]) : [];
+    const parsed: unknown = JSON.parse(await getStorage().readFile(dictionaryPath(owner)));
+    return Array.isArray(parsed) ? parsed.filter(isReadableEntry) : [];
   } catch (error) {
     if (isEnoent(error)) return [];
     throw error;
@@ -243,7 +331,7 @@ async function writeEntries(owner: string, entries: readonly NamesTermEntry[]): 
  * so the `Promise.all` pairs in `ingest.ts` share one in-flight read instead of
  * racing two.
  */
-export type NamesTermsCache = Map<string, Promise<NamesTermEntry[]>>;
+export type NamesTermsCache = Map<string, Promise<FrozenNamesTermEntry[]>>;
 
 /** A fresh, empty handle. One per request/operation — never reused across them. */
 export function createNamesTermsCache(): NamesTermsCache {
@@ -268,17 +356,22 @@ export function createNamesTermsCache(): NamesTermsCache {
  * replacement into it, and `deleteNamesTerm` filters it into a new one — all
  * ARRAY-level writes over entries they never mutate in place, which is exactly
  * why the freeze belongs here and not there.
+ *
+ * The sort and the freeze both dereference every element unguarded, and they
+ * may: {@link readEntries} filters through {@link isReadableEntry}, so a
+ * `null`, a non-object or a field-less element never reaches this function
+ * (DW-499). It used to skip freezing such an element — which did nothing for
+ * the comparator one line above, where a corrupt element in an array of two or
+ * more already threw.
+ *
+ * The return type is {@link FrozenNamesTermEntry}, so what callers are handed
+ * is typed as what it is (DW-498).
  */
-async function resolveSortedEntries(owner: string): Promise<NamesTermEntry[]> {
+async function resolveSortedEntries(owner: string): Promise<FrozenNamesTermEntry[]> {
   const entries = (await readEntries(owner)).sort(
     (a, b) => a.kind.localeCompare(b.kind) || a.canonical.localeCompare(b.canonical),
   );
   for (const entry of entries) {
-    // `readEntries` only checks `Array.isArray`, so a corrupt or hand-edited
-    // file can hold a `null`/non-object element. Skip it: dereferencing
-    // `.aliases` would make the freeze throw where the value used to pass
-    // straight through, and freezing must add no new failure mode.
-    if (!entry || typeof entry !== "object") continue;
     Object.freeze(entry.aliases);
     Object.freeze(entry);
   }
@@ -299,8 +392,17 @@ async function resolveSortedEntries(owner: string): Promise<NamesTermEntry[]> {
  * caller sees. The entry OBJECTS are shared between those arrays, so
  * {@link resolveSortedEntries} freezes each one and its `aliases`: mutating a
  * returned entry throws a `TypeError` rather than silently rewriting what every
- * later caller under the handle sees (DW-397). The exported types stay mutable,
- * so the failure is at runtime, at the mutating line.
+ * later caller under the handle sees (DW-397). The RESULT TYPE says so —
+ * {@link FrozenNamesTermEntry}, not the mutable {@link NamesTermEntry} the
+ * write path uses — so a consumer written to mutate an entry is rejected by
+ * `tsc` rather than by the runtime at the mutating line (DW-498).
+ *
+ * A corrupt element cannot reach here at all: {@link readEntries} filters the
+ * parsed file down to the entries the pipeline can dereference, so a
+ * hand-edited dictionary degrades to its valid subset instead of failing the
+ * read (DW-499). What still rejects is exactly what {@link readEntries}
+ * propagates: an unparseable file, and any storage failure that is not ENOENT
+ * (EACCES, EIO, a remote-storage error). The RENDER layer no longer throws.
  *
  * Only a SUCCESSFUL read is memoized; a failure is evicted and the next call
  * re-reads.
@@ -308,7 +410,7 @@ async function resolveSortedEntries(owner: string): Promise<NamesTermEntry[]> {
 export async function listNamesTerms(
   owner: string,
   cache?: NamesTermsCache,
-): Promise<NamesTermEntry[]> {
+): Promise<FrozenNamesTermEntry[]> {
   if (!cache) return resolveSortedEntries(owner);
   // Keyed by what ADDRESSES the file, not by the raw handle: `dictionaryPath`
   // routes through the same `tenant()`, so `"Alice"` and `"alice"` are one file
@@ -404,8 +506,14 @@ export async function deleteNamesTerm(owner: string, id: string): Promise<boolea
   });
 }
 
+/**
+ * The three helpers below take the READ type (DW-498): they are the only
+ * functions a {@link listNamesTerms} result is passed into, and none of them
+ * writes to an entry. A mutable {@link NamesTermEntry} still satisfies
+ * {@link FrozenNamesTermEntry}, so every write-path caller compiles untouched.
+ */
 export function canonicalizeNamesTerm(
-  entries: readonly NamesTermEntry[],
+  entries: readonly FrozenNamesTermEntry[],
   value: string,
   kinds?: readonly NamesTermKind[],
 ): string {
@@ -427,7 +535,7 @@ function escapedPhrase(phrase: string): string {
 }
 
 export function applyNamesTermsToGeneratedText(
-  entries: readonly NamesTermEntry[],
+  entries: readonly FrozenNamesTermEntry[],
   value: string,
 ): string {
   const replacements = entries.flatMap((entry) =>
@@ -467,7 +575,7 @@ export async function expandQueryWithNamesTerms(
   return `${query}\n\nWorkspace dictionary retrieval expansion: ${expansion.slice(0, 1_500)}`;
 }
 
-export function renderNamesTermsGuidance(entries: readonly NamesTermEntry[]): string {
+export function renderNamesTermsGuidance(entries: readonly FrozenNamesTermEntry[]): string {
   if (entries.length === 0) return "";
   const lines = entries.slice(0, MAX_PROMPT_ENTRIES).map((entry) => {
     const details = [

@@ -199,6 +199,37 @@ export function NamesTermsSettings({
           body: JSON.stringify(input),
         },
       );
+      // A 2xx whose body is not the documented shape must not reach state
+      // (DW-747). `readJsonBody` resolves `{}` for a 200 that merely fails to
+      // PARSE — the answer arrived and was shapeless, and it is the caller's
+      // job to say so — which makes `data.entry` `undefined`. Unguarded, that
+      // `undefined` goes into `entries`, the row map below reads
+      // `entry.canonical` off it, and the whole Names & Terms section blanks
+      // out over a write that most likely landed.
+      //
+      // The guard covers EVERY field this component dereferences off an entry
+      // with no guard of its own, not just the one that crashed first: `id`
+      // (the row key and the edit-target match), `canonical` and `kind` (the
+      // `setEntries` comparator runs `localeCompare` on both, and `KIND_LABELS`
+      // is indexed by `kind`), and `aliases` (the row reads `.length` and maps
+      // it, and `beginEdit` hands it to `aliasesText`). A PARTIAL entry — a
+      // body that parses and carries only some of them — reaches exactly the
+      // same crash, so a guard naming two fields would only move which line
+      // dies. Nothing beyond these four is checked: the optional fields are
+      // read behind truthiness tests already.
+      //
+      // Thrown INSIDE the `try`, so the existing `writeFailure` catch composes
+      // the sentence and no new error-reporting path appears; `unconfirmed` is
+      // false, so the list the owner is looking at stays on screen and is not
+      // refetched.
+      if (
+        !data.entry?.id ||
+        !data.entry.canonical ||
+        typeof data.entry.kind !== "string" ||
+        !Array.isArray(data.entry.aliases)
+      ) {
+        throw new Error("The server did not confirm this entry.");
+      }
       setEntries((current) => {
         const next = editingId
           ? current.map((entry) => entry.id === editingId ? data.entry : entry)

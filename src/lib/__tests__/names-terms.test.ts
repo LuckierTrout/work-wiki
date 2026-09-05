@@ -10,6 +10,7 @@ import {
   createNamesTermsCache,
   deleteNamesTerm,
   expandQueryWithNamesTerms,
+  type FrozenNamesTermEntry,
   listNamesTerms,
   NamesTermConflictError,
   type NamesTermEntry,
@@ -217,9 +218,34 @@ describe("names and terms dictionary caching", () => {
     owner: string,
     entries: readonly NamesTermEntry[],
   ): Promise<void> {
+    await writeDictionaryText(owner, JSON.stringify(entries));
+  }
+
+  /**
+   * The same, for bytes no `NamesTermEntry[]` can express — the hand-edited and
+   * truncated files the read boundary has to degrade over (DW-499). Written as
+   * TEXT rather than cast through the typed helper, because the point of these
+   * fixtures is that they are not entries.
+   */
+  async function writeDictionaryText(owner: string, text: string): Promise<void> {
     const relative = dictionaryFile(owner);
     await fs.mkdir(path.dirname(path.join(tmpDir, relative)), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, relative), JSON.stringify(entries));
+    await fs.writeFile(path.join(tmpDir, relative), text);
+  }
+
+  /**
+   * A read result seen through the WRITE type.
+   *
+   * The read type is frozen at COMPILE time now (DW-498), so the mutations the
+   * freeze tests below assert on no longer typecheck — which is the point of
+   * that change and is pinned on its own further down. The cast is the only way
+   * a consumer could still reach the mutating line (a `any`, a stale
+   * declaration, a JS caller), and `Object.freeze` is what stops them there. It
+   * is deliberately a cast and not a type change: nothing in the source hands
+   * out a mutable read result.
+   */
+  function asMutable(value: FrozenNamesTermEntry): NamesTermEntry {
+    return value as NamesTermEntry;
   }
 
   function entry(canonical: string): NamesTermEntry {
@@ -355,9 +381,9 @@ describe("names and terms dictionary caching", () => {
 
     expect(Object.isFrozen(first[0])).toBe(true);
     expect(Object.isFrozen(first[0].aliases)).toBe(true);
-    expect(() => first[0].aliases.push("Alfa")).toThrow(TypeError);
+    expect(() => asMutable(first[0]).aliases.push("Alfa")).toThrow(TypeError);
     expect(() => {
-      first[0].canonical = "Hijacked";
+      asMutable(first[0]).canonical = "Hijacked";
     }).toThrow(TypeError);
 
     // The ARRAY stays mutable — callers legitimately sort and splice their own.
@@ -382,35 +408,159 @@ describe("names and terms dictionary caching", () => {
 
     expect(Object.isFrozen(entries[0])).toBe(true);
     expect(Object.isFrozen(entries[0].aliases)).toBe(true);
-    expect(() => entries[0].aliases.push("Alfa")).toThrow(TypeError);
+    expect(() => asMutable(entries[0]).aliases.push("Alfa")).toThrow(TypeError);
     expect(() => {
-      entries[0].canonical = "Hijacked";
+      asMutable(entries[0]).canonical = "Hijacked";
     }).toThrow(TypeError);
   });
 
-  it("does not throw on a non-object element in a corrupt dictionary file", async () => {
-    // `readEntries` only checks `Array.isArray`, so a hand-edited or truncated
-    // file can hold a `null`. Before the freeze loop guarded for it, this read
-    // threw `TypeError: Cannot read properties of null (reading 'aliases')`
-    // where the value used to pass straight through — a failure mode the freeze
-    // introduced. Pinned so the guard cannot be refactored away silently.
+  /**
+   * A corrupt dictionary degrades to its VALID SUBSET, at the read boundary
+   * (DW-499).
+   *
+   * Every one of these used to fail the whole read. `resolveSortedEntries`
+   * sorted BEFORE it skipped a non-object element, so a `null` beside a real
+   * entry threw `TypeError: Cannot read properties of null (reading 'kind')`
+   * out of the comparator; and a one-element file the comparator never touched
+   * survived as far as `renderNamesTermsGuidance`'s `entry.aliases`. Both are
+   * now dropped in `readEntries`, so the sort, the freeze and every pure helper
+   * downstream see only elements they can dereference.
+   *
+   * `bytes` is what is on disk; `canonicals` is what the read must yield.
+   */
+  const DEGRADING_DICTIONARIES: ReadonlyArray<
+    [label: string, bytes: string, canonicals: readonly string[]]
+  > = [
+    [
+      "a corrupt element beside a real one",
+      JSON.stringify([null, entry("Project Lighthouse")]),
+      ["Project Lighthouse"],
+    ],
+    [
+      "a field-less entry",
+      '[{"kind":"project","canonical":"X"}]',
+      [],
+    ],
+    [
+      "an entry whose aliases are not all strings",
+      JSON.stringify([{ ...entry("Project Lighthouse"), aliases: [1] }]),
+      [],
+    ],
+    [
+      "a non-object element",
+      '["Project Lighthouse", 7, true]',
+      [],
+    ],
+  ];
+
+  for (const [label, bytes, canonicals] of DEGRADING_DICTIONARIES) {
+    it(`degrades to the valid subset when the file holds ${label}`, async () => {
+      await writeDictionaryText("alice", bytes);
+
+      const uncached = await listNamesTerms("alice");
+      expect(uncached.map((e) => e.canonical)).toEqual(canonicals);
+
+      // And the cached path lands on the same resolve, so the two cannot drift.
+      const cache = createNamesTermsCache();
+      const cached = await listNamesTerms("alice", cache);
+      expect(cached.map((e) => e.canonical)).toEqual(canonicals);
+
+      // The RENDER layer is the one that used to throw on these files, and it
+      // is what `merge.ts` probes before a fold.
+      const guidance = renderNamesTermsGuidance(uncached);
+      await expect(buildNamesTermsGuidance("alice")).resolves.toBe(guidance);
+      if (canonicals.length === 0) expect(guidance).toBe("");
+      else for (const canonical of canonicals) expect(guidance).toContain(canonical);
+    });
+  }
+
+  it("lets a WRITE through a corrupt dictionary — and drops the element from the file", async () => {
+    // The WRITE half of the read-boundary filter, which is not obvious from the
+    // name `readEntries`: `createNamesTerm` / `updateNamesTerm` /
+    // `deleteNamesTerm` all read through it and then persist what they read.
     //
-    // Deliberately a ONE-element file: `resolveSortedEntries` sorts BEFORE it
-    // freezes, and the comparator dereferences `a.kind`, so any array of two or
-    // more containing a `null` already throws out of the sort. That is
-    // pre-existing behaviour this fix neither caused nor claims to repair, so
-    // there is no "surviving entry" to pair with a `null` here — the freeze of
-    // valid entries is pinned by the two tests above.
-    await writeDictionaryBytes(
+    // (a) The create now RESOLVES. Before the filter, `assertNoConflicts` ran
+    //     `[entry.canonical, ...entry.aliases]` over the raw parsed array and
+    //     threw a `TypeError` on the unreadable element, so `POST
+    //     /api/names-terms` answered 500 and the owner could not add a term at
+    //     all until they hand-repaired the file.
+    //
+    // (b) The dropped element is GONE from the bytes afterwards. Every
+    //     comparable store here (`query-history`, `workspace-profile`,
+    //     `research-projects`) asserts the opposite — that a write preserves
+    //     what it did not touch — so this asymmetry is deliberate and has to be
+    //     visible. It is also the tripwire for the obvious future refactor:
+    //     moving the filter down into `resolveSortedEntries` to stop deleting
+    //     the owner's bytes leaves every READ test green while restoring the
+    //     500 that (a) pins.
+    await writeDictionaryText(
       "alice",
-      [null] as unknown as readonly NamesTermEntry[],
+      JSON.stringify([{ kind: "project", canonical: "Half An Entry" }, entry("Project Lighthouse")]),
     );
 
-    await expect(listNamesTerms("alice")).resolves.toHaveLength(1);
+    const created = await createNamesTerm("alice", {
+      kind: "person",
+      canonical: "Ada Lovelace",
+    });
+    expect(created.canonical).toBe("Ada Lovelace");
 
-    // And the cached path lands on the same guarded resolve.
-    const cache = createNamesTermsCache();
-    await expect(listNamesTerms("alice", cache)).resolves.toHaveLength(1);
+    // (a) again, from the outside: the read sees the survivor and the new one.
+    const after = await listNamesTerms("alice");
+    expect(after.map((e) => e.canonical)).toEqual([
+      "Ada Lovelace",
+      "Project Lighthouse",
+    ]);
+
+    // (b): read the BYTES, not the store — the store is what filtered.
+    const bytes = await fs.readFile(
+      path.join(tmpDir, dictionaryFile("alice")),
+      "utf8",
+    );
+    expect(bytes).not.toContain("Half An Entry");
+    expect(bytes).toContain("Project Lighthouse");
+    expect(bytes).toContain("Ada Lovelace");
+  });
+
+  it("still rejects when the dictionary file does not parse at all", async () => {
+    // The filter is a boundary over the PARSED array, not a repair of the
+    // bytes: `readEntries` keeps its rethrow-everything-but-ENOENT behaviour,
+    // so the `JSON.parse` SyntaxError still reaches the caller's own catch —
+    // which is the whole reason `merge.ts` probes before it folds.
+    await writeDictionaryText("alice", "{not json");
+
+    await expect(listNamesTerms("alice")).rejects.toThrow(SyntaxError);
+    await expect(buildNamesTermsGuidance("alice")).rejects.toThrow(SyntaxError);
+  });
+
+  it("types a read result as frozen, so a write through it does not compile", async () => {
+    // The COMPILE-TIME half of the freeze (DW-498). `listNamesTerms` has always
+    // handed back frozen entries, but its type said `NamesTermEntry[]`, so a
+    // consumer could be written straight through `tsc` against a contract the
+    // runtime then refuses at the mutating line — and under a shared handle
+    // that line rewrites what every later caller sees.
+    //
+    // Never INVOKED: the assertions here are the `@ts-expect-error` directives
+    // themselves, and each one fails the typecheck as "unused" the moment the
+    // line below it starts compiling. Running the body would only re-prove the
+    // runtime freeze, which the two tests above already pin.
+    const writeThroughReadResult = async () => {
+      const read = await listNamesTerms("alice");
+      // @ts-expect-error — `FrozenNamesTermEntry.canonical` is `readonly`.
+      read[0].canonical = "Hijacked";
+      // @ts-expect-error — and `aliases` is a `readonly string[]`, so no `push`.
+      read[0].aliases.push("Alfa");
+
+      // The direction that must KEEP working: the write path stays mutable, so
+      // a created or updated entry is still assignable in place.
+      const created = await createNamesTerm("alice", {
+        kind: "project",
+        canonical: "Project Lighthouse",
+      });
+      created.canonical = "Renamed";
+      created.aliases.push("Lighthouse");
+    };
+
+    expect(writeThroughReadResult).toBeTypeOf("function");
   });
 
   it("collapses two owner casings of one tenant onto a single read", async () => {

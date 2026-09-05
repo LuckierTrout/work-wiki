@@ -1428,30 +1428,61 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
     expect(prompt).not.toContain(ALICE_TERM);
   });
 
+  it("still folds — unguided — when the survivor owner's dictionary is unparseable", async () => {
+    // The regression this story's first pass shipped. The dictionary guidance
+    // throws, `reconcilePage` resolves both guidance halves before calling the
+    // model, and merge's outer `catch` bakes the raw body concatenation into
+    // the DURABLE receipt — so a damaged dictionary would permanently ship an
+    // unfolded, double-titled survivor with `from` already deleted.
+    //
+    // The RENDER layer no longer throws (DW-499), so what can still reject the
+    // probe is exactly what `readEntries` propagates: this `JSON.parse`
+    // SyntaxError, and any storage failure that is not ENOENT — an EACCES, an
+    // EIO, a remote-storage error under the Workers adapter. Those are the
+    // cases that still cost the owner their Purpose along with their dictionary
+    // — the deliberately coarse degrade the probe's docblock describes. This
+    // one stands for them because it is the one a hand-edited file produces.
+    await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
+    await getStorage().writeFile(DICTIONARY_PATH(SURVIVOR_OWNER), "{not json");
+    await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
+
+    await mergePages({
+      from: ABSORBED_SLUG,
+      into: SURVIVOR_SLUG,
+      actor: SURVIVOR_OWNER,
+    });
+
+    const prompt = reconcileSystemPrompt();
+    const body = await survivorBody();
+    expect(body).toContain(FOLDED_MARKER);
+    // NOT the appended-bodies fallback.
+    expect(body).not.toContain(`Content about ${ABSORBED_TITLE}.`);
+    expect(prompt).toContain(BASE_PROMPT_MARKER);
+    expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
+    // The Purpose goes with the dictionary — the deliberately coarse degrade.
+    expect(prompt).not.toContain(ALICE_PURPOSE);
+  });
+
   /**
-   * Three ways a dictionary file breaks the fold — and they break it at TWO
-   * different layers, which is why the probe has to be `buildNamesTermsGuidance`
-   * (read + sort + render) and not `listNamesTerms` (read + sort) alone.
+   * Files that PARSE as an array but hold an element the read pipeline cannot
+   * dereference. These used to throw at the RENDER layer — `readEntries` only
+   * checked `Array.isArray`, `sort` never called its comparator on a
+   * one-element array, and `resolveSortedEntries` merely skipped FREEZING the
+   * bad element, so `renderNamesTermsGuidance`'s `entry.aliases` was where it
+   * finally died — and the probe dropped the whole owner for it.
+   *
+   * `readEntries` now filters them out (DW-499), so the read resolves its valid
+   * subset (here: empty), the render is `""`, the probe succeeds, and the owner
+   * keeps their Workspace Purpose. Only the dictionary block is missing, which
+   * is the truth about the file.
    */
-  const CORRUPT_DICTIONARIES: ReadonlyArray<[label: string, bytes: string]> = [
-    // Layer 1: `readEntries` → `JSON.parse` throws a SyntaxError.
-    ["unparseable JSON", "{not json"],
-    // Layer 2: parses as an array, so `listNamesTerms` RESOLVES — `sort` never
-    // calls its comparator on a one-element array and `resolveSortedEntries`
-    // only skips FREEZING a null element. `renderNamesTermsGuidance` is where
-    // `entry.aliases` finally throws.
+  const UNREADABLE_DICTIONARY_ELEMENTS: ReadonlyArray<[label: string, bytes: string]> = [
     ["a null entry", "[null]"],
-    // Layer 2 again: a well-formed object missing `aliases`.
     ["a field-less entry", '[{"kind":"project","canonical":"X"}]'],
   ];
 
-  for (const [label, bytes] of CORRUPT_DICTIONARIES) {
-    it(`still folds — unguided — when the survivor owner's dictionary is ${label}`, async () => {
-      // The regression this story's first pass shipped. The dictionary guidance
-      // throws, `reconcilePage` resolves both guidance halves before calling the
-      // model, and merge's outer `catch` bakes the raw body concatenation into
-      // the DURABLE receipt — so a damaged dictionary would permanently ship an
-      // unfolded, double-titled survivor with `from` already deleted.
+  for (const [label, bytes] of UNREADABLE_DICTIONARY_ELEMENTS) {
+    it(`keeps the Purpose and folds when the survivor owner's dictionary holds ${label}`, async () => {
       await seedGuidance(SURVIVOR_OWNER, ALICE_PURPOSE, ALICE_TERM, ALICE_ALIAS);
       await getStorage().writeFile(DICTIONARY_PATH(SURVIVOR_OWNER), bytes);
       await seedMergePair(SURVIVOR_OWNER, SURVIVOR_OWNER);
@@ -1465,12 +1496,14 @@ describe("mergePages guides the fold with the survivor owner's workspace standar
       const prompt = reconcileSystemPrompt();
       const body = await survivorBody();
       expect(body).toContain(FOLDED_MARKER);
-      // NOT the appended-bodies fallback.
       expect(body).not.toContain(`Content about ${ABSORBED_TITLE}.`);
       expect(prompt).toContain(BASE_PROMPT_MARKER);
+      // The dictionary is empty after the filter, so there is no block and no
+      // term — but the owner was NOT dropped…
       expect(prompt).not.toContain("WORKSPACE NAMES & TERMS");
-      // The Purpose goes with the dictionary — the deliberately coarse degrade.
-      expect(prompt).not.toContain(ALICE_PURPOSE);
+      expect(prompt).not.toContain(ALICE_TERM);
+      // …which is the behaviour change: the Purpose survives a corrupt element.
+      expect(prompt).toContain(ALICE_PURPOSE);
     });
   }
 

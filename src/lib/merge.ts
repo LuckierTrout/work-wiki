@@ -496,20 +496,28 @@ async function mergePagesWhileSourceLocked({
             // fold makes. Guidance is an ADDITION to a prompt: losing it must
             // degrade the prompt, never the operation. `buildWorkspaceGuidance`
             // honours that with its own `catch`; its dictionary sibling does
-            // not, and it can throw at EITHER of two layers:
+            // not, and one layer of it still throws:
             //
             //   - `listNamesTerms` → `readEntries` ENOENT-degrades to `[]` but
             //     RETHROWS everything else — the `JSON.parse` SyntaxError from
-            //     a corrupt `names-terms.json`.
-            //   - `renderNamesTermsGuidance` then dereferences `entry.aliases`
-            //     on entries nothing filtered (`resolveSortedEntries` only
-            //     skips FREEZING a null/non-object element), so a file that
-            //     PARSES but holds a `null` or a field-less entry throws only
-            //     at the RENDER layer.
+            //     an unparseable `names-terms.json`, and equally an EACCES, an
+            //     EIO or a remote-storage failure under the Workers adapter.
+            //     Everything `readEntries` propagates is now the whole of what
+            //     the probe rejects for.
+            //   - The RENDER layer used to be a second one: a file that PARSED
+            //     but held a `null` or a field-less entry reached
+            //     `renderNamesTermsGuidance`, which dereferences
+            //     `entry.aliases` unguarded. `readEntries` now filters the
+            //     parsed array to the elements the pipeline can dereference
+            //     (DW-499), so such a file degrades to its valid SUBSET — or to
+            //     no dictionary block at all — and the fold keeps this owner's
+            //     Purpose instead of losing it with the dictionary.
             //
-            // Probing `listNamesTerms` alone would miss that second case, so
-            // this probes `buildNamesTermsGuidance` — read + sort + render,
-            // exactly what `reconcilePage` consumes.
+            // The probe stays `buildNamesTermsGuidance` and not `listNamesTerms`
+            // for a reason the collapsed layer does not retract: it is the EXACT
+            // call `reconcilePage` makes (read + sort + render), so nothing the
+            // fold evaluates is left unprobed — including any future render-time
+            // throw. Probing a prefix of it would be probing a different call.
             //
             // `reconcilePage` awaits both guidance halves in one `Promise.all`
             // before it calls the model, so an unprobed rejection would land in
@@ -525,7 +533,10 @@ async function mergePagesWhileSourceLocked({
             // those cached entries. On failure we drop the WHOLE owner, so the
             // Purpose goes with the dictionary — a deliberately coarse degrade,
             // since the only way to keep one without the other is to compose
-            // the prompt here and duplicate `reconcilePage`.
+            // the prompt here and duplicate `reconcilePage`. What reaches that
+            // degrade is now only what `readEntries` itself propagates — an
+            // unparseable file, or a storage failure that is not ENOENT; a
+            // corrupt ELEMENT costs the owner nothing but the element.
             await buildNamesTermsGuidance(guidanceOwner, guidance.namesTerms);
           } catch (err) {
             logger.warn(
