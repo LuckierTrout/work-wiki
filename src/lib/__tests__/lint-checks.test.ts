@@ -1087,6 +1087,21 @@ describe("retired discussion checks", () => {
   });
 });
 
+/**
+ * Every hand-written lint check-type count in a document, in order.
+ *
+ * Whitespace is collapsed first so a phrasing that markdown reflowed across two
+ * lines is still seen; the two wordings are the two `DESIGN-triggers.md` uses.
+ * A numberless mention ("existing lint check types") carries nothing to pin and
+ * is deliberately not matched.
+ */
+function documentedCheckCounts(text: string): number[] {
+  const flat = text.replace(/\s+/g, " ");
+  return [...flat.matchAll(/\b(\d+) (?:lint check|condition) types\b/g)].map(
+    (m) => Number(m[1]),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The check-type roster
 // ---------------------------------------------------------------------------
@@ -1116,5 +1131,85 @@ describe("ALL_CHECK_TYPES roster", () => {
     // A duplicated entry would render a duplicate UI toggle and would inflate
     // the length assertion above into a false pass.
     expect(new Set<string>(ALL_CHECK_TYPES).size).toBe(ALL_CHECK_TYPES.length);
+  });
+
+  it("DESIGN-triggers.md documents the real check-type count", async () => {
+    // The count is hand-written in three places in that file ("15 lint check
+    // types" twice, "15 condition types" once) and nothing read it out of the
+    // roster, so they drifted apart — one said 14 while the other two said 15
+    // (DW-467). Pin every numbered phrasing to `ALL_CHECK_TYPES.length` rather
+    // than to another hand-written number, the way
+    // `src/lib/__tests__/mcp-annotations.test.ts` pins the MCP *tool* count in
+    // the same file.
+    const text = await fs.readFile(
+      path.resolve(__dirname, "../../..", "DESIGN-triggers.md"),
+      "utf8",
+    );
+    const documented = documentedCheckCounts(text);
+    // A bare count pin, in the same spirit as `toHaveLength(15)` above:
+    // `toBeGreaterThan(0)` would only notice ALL the phrasings vanishing, so
+    // deleting or rewording two of the three would quietly shrink this pin's
+    // reach while it still passed. Three is what the file carries; a fourth
+    // mention is worth one deliberate update here.
+    expect(documented).toHaveLength(3);
+    for (const count of documented) {
+      expect(count).toBe(ALL_CHECK_TYPES.length);
+    }
+  });
+
+  /**
+   * The pin above can only ever assert the doc as it stands today, so its
+   * failure modes — a stale number, a roster change, a doc that lost its
+   * phrasings, a count reflowed across a line — are exercised here against
+   * synthetic text instead. Without these, "the pin would catch it" is a claim
+   * nothing checks.
+   */
+  describe("documentedCheckCounts", () => {
+    it("collects every numbered phrasing, both wordings", () => {
+      expect(
+        documentedCheckCounts(
+          "work-wiki has 15 lint check types … detect 15 condition types",
+        ),
+      ).toEqual([15, 15]);
+    });
+
+    it("surfaces a count that drifted out of step with the others", () => {
+      // The DW-467 state itself: :454 said 14 while :141 and :404 said 15.
+      const drifted = documentedCheckCounts(
+        "15 lint check types … already detect 14 condition types",
+      );
+      expect(drifted).toEqual([15, 14]);
+      expect(drifted.every((n) => n === 15)).toBe(false);
+    });
+
+    it("reports the documented number, not the roster length", () => {
+      // A roster that grew or shrank leaves every doc phrasing behind at the
+      // old number, and that gap is what makes the pin fail. So this reads the
+      // documented number back verbatim and asserts it really is a different
+      // value from `ALL_CHECK_TYPES.length` — the comparison the pin performs.
+      // Contrasting against the live length rather than a literal keeps the
+      // case meaningful if the roster ever reaches the fixture's number.
+      const stale = String(ALL_CHECK_TYPES.length - 1);
+      expect(documentedCheckCounts(`${stale} lint check types`)).toEqual([
+        Number(stale),
+      ]);
+      expect(documentedCheckCounts(`${stale} lint check types`)[0]).not.toBe(
+        ALL_CHECK_TYPES.length,
+      );
+    });
+
+    it("returns nothing when the phrasings are reworded away", () => {
+      // Feeds the pin's length assertion: an empty result must not read as
+      // "every count agrees".
+      expect(
+        documentedCheckCounts("existing lint check types and frontmatter"),
+      ).toEqual([]);
+    });
+
+    it("sees a count wrapped onto the next line", () => {
+      expect(documentedCheckCounts("work-wiki has 15 lint\ncheck types")).toEqual(
+        [15],
+      );
+    });
   });
 });

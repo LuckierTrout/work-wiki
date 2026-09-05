@@ -145,6 +145,14 @@ issues.push({
 });
 ```
 
+> **Superseded (DW-389).** The `suggestion` above is the pre-DW-389 text and is
+> kept only as the record of what DW-76 built — it is no longer the expected
+> copy. The commons realm gate now makes that PATCH admin- or service-only on a
+> public knowledge page, so the clause moved into `disputedClearGuidance()`
+> (`src/lib/lint-types.ts`), which both `checkDisputedPages` (`lint-checks.ts`)
+> and the `disputed-page` refusal in `lint-fix.ts` render. Read the current
+> wording there, not here.
+
 The new module is `lint-types.ts` rather than a const added to `src/lib/types.ts`: `types.ts` is declaration-only today (no imports, no value exports) and adding an emitted value would change that character for every one of its importers.
 
 ## Verification

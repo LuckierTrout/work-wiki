@@ -3543,7 +3543,9 @@ source_spec: `spec-dw-128-131-338-339-340-doc-drift-retired-surfaces.md`
 location: DESIGN-triggers.md:454
 severity: low
 reason: `:141` and `:404` say "15 lint check types"; `:454` says "lint checks already detect 14 condition types". 15 matches `ALL_CHECK_TYPES` (src/lib/lint-types.ts) today, so `:454` is the wrong one — but all three are hand-written, and the file's only pin is the MCP tool count in mcp-annotations.test.ts.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-doc-copy-drift
+resolution-undo: b1f0c839527d1aa70d5a9543f17f4799bfd56dfb1ef0395889b46de5820039ac 2026-09-05 7374617475733a206f70656e
 
 ### DW-468: `showSplitHandle`'s collapsed-column branch is still unmounted — nothing observes that a collapsed left column withdraws its divider.
 origin: spec-deferred 38041b9ba57d
@@ -4155,7 +4157,9 @@ location: _bmad-output/implementation-artifacts/spec-dw-75-76-lint-check-parity-
 source_spec: `spec-dw-389-392-authz-gate-and-copy-tails.md`
 severity: low
 reason: Line 144 of that done spec reproduces the old one-line `suggestion` template, which no longer matches `checkDisputedPages` now that the clause comes from `disputedClearGuidance`. It reads as a record of what DW-76 built rather than a live expectation, and DW-389's decision authorised renegotiating only `spec-dw-121-230-269-270-…`, so it was left as recorded rather than edited. A reader consulting that spec for the current copy gets the version the realm gate falsified.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-doc-copy-drift
+resolution-undo: b1f0c839527d1aa70d5a9543f17f4799bfd56dfb1ef0395889b46de5820039ac 2026-09-05 7374617475733a206f70656e
 
 ### DW-533: `SCHEMA.md` still carries the unqualified "clear it with the Disputed toggle" instruction DW-121 falsified.
 origin: spec-deferred f6826d0c0181
@@ -4163,7 +4167,9 @@ location: SCHEMA.md:633-641
 source_spec: `spec-dw-389-392-authz-gate-and-copy-tails.md`
 severity: medium
 reason: The `disputed-page` entry in the lint-check reference says clearing is "done via the Disputed toggle in the page editor (`PATCH /api/wiki/<slug>` with metadata `{ disputed: false }`)" with no admin/service qualification. DW-389 enumerated the two lint COPY sites (`lint-fix.ts`, `lint-checks.ts`) and both now render `disputedClearGuidance`; this is a third, reader-facing site of the same falsified sentence, in documentation rather than lint output, and it was already wrong before this change.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-doc-copy-drift
+resolution-undo: b1f0c839527d1aa70d5a9543f17f4799bfd56dfb1ef0395889b46de5820039ac 2026-09-05 7374617475733a206f70656e
 
 ### DW-534: Under the armed E2E cookie identity there is no `ClerkProvider`, so every client identity gate — Revert now included — fails closed for the E2E owner.
 origin: spec-deferred d182696f7703
@@ -6357,4 +6363,12 @@ location: _bmad-output/implementation-artifacts/spec-dw-495-496-497-merge-base-s
 source_spec: `spec-dw-172-399-696-spec-record-drift.md`
 severity: low
 reason: DW-696's ledger reason names two stale items in `spec-dw-495-496-497-merge-base-strict-reads.md`. This bundle fixed the first (the `:366` Never-list entry). The second is untouched: `:65` reads "`src/cli.ts:431` -> `:468` -- `runUpdate` ... A rethrow reaches `main().catch` at `:816` ... correct already, no repair needed", and `:94` instructs "pass the option at `:431`". Both are false against HEAD and contradict each other. `runUpdate` is now declared at `src/cli.ts:441`, converts at `:465` with `{ fresh: true, strict: true }`, and has its own local catch at `:466`-`:472` printing `Error: could not read page "<slug>": ... Nothing was written.` -- the distinct message the earlier bundle required, not the `main().catch` relay `:65` prescribes. A later sweep acting on `:65` could remove it. DW-495/496/497 are all `done` in the ledger, so nothing else will revisit that record.
+status: open
+
+### DW-764: The lint check-type count is hand-written in three more reader-facing places outside DESIGN-triggers.md, none of them pinned or reachable by the new pin's regex.
+origin: spec-deferred 3eb13298af77
+location: SCHEMA.md:897, SCHEMA.md:698, .yoyo/status.md:22
+source_spec: `spec-dw-467-532-533-doc-copy-drift.md`
+severity: low
+reason: `SCHEMA.md:897` says "work-wiki's 15 lint check types already detect …" — the exact phrasing `documentedCheckCounts` matches, in a file this story already edits, but the pin reads only `DESIGN-triggers.md`. `SCHEMA.md:698` says "Lint auto-fix handles ten of fifteen checks" and `.yoyo/status.md:22` says "15 lint checks (10 with auto-fix)"; both are spelled-out or differently-worded forms the regex would not match even if pointed at those files. All three are correct against `ALL_CHECK_TYPES` (15) and `AUTO_FIXABLE_CHECK_TYPES` (10) today, so nothing is wrong for a reader right now — but they are the same unpinned hand-written count that produced DW-467, and the next roster change leaves them stale. Out of scope here: the bundle intent scoped the pin to "that file", i.e. DESIGN-triggers.md, and DW-467's location names only it.
 status: open

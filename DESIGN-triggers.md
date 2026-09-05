@@ -451,7 +451,7 @@ that conflicts with where MCP is heading.
 | **MCP integration** | None | None | None | Native (resources + notifications) |
 | **User-definable** | Yes | No | No | Yes (structured conditions) |
 
-work-wiki's advantage: lint checks already detect 14 condition types
+work-wiki's advantage: lint checks already detect 15 condition types
 deterministically. A trigger system built on top of lint is cheaper, more
 reliable, and more predictable than LLM-evaluated NL triggers — while
 covering the conditions that actually matter for a knowledge base (staleness,

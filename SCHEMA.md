@@ -660,7 +660,10 @@ Current checks performed by `lint()` in `src/lib/lint.ts`:
   request). No auto-fix —
   clearing `disputed` asserts a human reconciled the conflicting claims, done
   via the Disputed toggle in the page editor (`PATCH /api/wiki/<slug>` with
-  metadata `{ disputed: false }`).
+  metadata `{ disputed: false }`) — on a public knowledge page that PATCH is
+  admin- or service-only, so an owner who is not an admin has to ask one to
+  clear the flag; on a private, agent-scoped or artifact page the owner's own
+  toggle still works.
 
 ## Provider configuration
 
