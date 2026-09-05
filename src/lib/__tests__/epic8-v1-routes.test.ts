@@ -72,7 +72,19 @@ vi.mock("@/lib/review-queue", () => ({
   getReviewItem: vi.fn(async () => null),
   createPageFromReview: vi.fn(async () => null),
 }));
-vi.mock("@/lib/research-projects", () => ({
+// PARTIAL, spreading `importOriginal`, like the three sibling suites
+// (`research-route.test.ts`, `research-run-route.test.ts`,
+// `research-repair-route.test.ts`). A TOTAL mock left every other binding
+// `undefined` — including `ResearchProjectBusyError` — and the review route's
+// catch does `error instanceof ResearchProjectBusyError`, which THROWS against
+// `undefined` rather than returning false. So the mock shape was itself the
+// thing that made the 503 rung untestable. The module imports only `config`,
+// `errors`, `lock`, `logger`, `read-only`, `storage`, `wiki`,
+// `research-concurrency` and `research-contract`; `@/lib/wiki` and
+// `@/lib/config` are PARTIAL mocks in this suite, so loading the original is
+// safe. Only `createResearchProject` is stubbed.
+vi.mock("@/lib/research-projects", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/research-projects")>()),
   createResearchProject: vi.fn(),
 }));
 
@@ -97,7 +109,10 @@ import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
 import { buildWikiGraph } from "@/lib/graph-build";
 import { rescanSources } from "@/lib/source-rescan";
 import { getReviewItem, reopenReviewItem, skipReviewItem } from "@/lib/review-queue";
-import { createResearchProject } from "@/lib/research-projects";
+import {
+  ResearchProjectBusyError,
+  createResearchProject,
+} from "@/lib/research-projects";
 import { retrieveHits } from "@/lib/wiki-retrieve";
 import { requireAccessibleWikiId } from "@/lib/wiki-access";
 import { listReadableWikiPages } from "@/lib/wiki";
@@ -569,6 +584,12 @@ describe("reviews", () => {
    * refusals — the `MAX_PROJECTS` cap and `cleanInput`'s verdict on
    * `item.title` — reach this catch. It answered 500 for all of them, and an
    * agent told "500" retries a request that can never succeed.
+   *
+   * DW-732 adds the third rung and the row that pins it. This describe had a
+   * row for the caller fault, the server fault and the read-only refusal, and
+   * none for `ResearchProjectBusyError` — so the one class whose verdict
+   * differed from the five `/api/research` doors was the one class nothing
+   * asked about.
    */
   describe("deep_research classifies what the store throws", () => {
     const pending = {
@@ -620,6 +641,24 @@ describe("reviews", () => {
         error: V1_INVALID_INPUT_ERROR,
         detail: fault.message,
       });
+    });
+
+    it("503s a contended registry write, as the store's own retry sentence", async () => {
+      // The SAME class `POST /api/research` answers 503 for, reached through
+      // the same `createResearchProject`. As a 500 it told an agent that a
+      // compare-and-swap which provably never landed was permanent — while the
+      // error's own sentence was asking to be retried.
+      const fault = new ResearchProjectBusyError(
+        "The research project store is busy. Please retry the request.",
+      );
+      research.mockRejectedValue(fault);
+
+      const response = await deepResearch();
+
+      expect(response.status).toBe(503);
+      // The BARE-MESSAGE shape, not the token-plus-detail one: contention is
+      // not the caller's bad input and offers an agent nothing to switch-case.
+      expect(await response.json()).toEqual({ error: fault.message });
     });
 
     it("500s a server-fault store failure, body unchanged", async () => {

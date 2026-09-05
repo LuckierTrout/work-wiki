@@ -186,7 +186,11 @@ Query: `status=open` (default) | `all`.
 An unknown action is 400 `unknown_action`. Reopening something already created is
 409 `not_reopenable`. When `deep_research` is refused for what the request asked
 for — the research-project cap, or a title the store rejects — it is 400
-`invalid_input` with the explanation in `detail`.
+`invalid_input` with the explanation in `detail`. When the research store is
+simply contended, `deep_research` is 503 and nothing was written: retry it. That
+503 carries **no token** — `error` is the store's own sentence, not a string to
+branch on — so do not confuse it with the 503 `busy` below, which is the
+concurrency shed and is a different refusal.
 
 ## POST /api/v1/projects/{id}/reviews/resolve
 

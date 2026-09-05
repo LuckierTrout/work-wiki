@@ -56,13 +56,17 @@ import {
   scenarioTemplate,
 } from "../wiki-scenarios";
 import { listWikiArtifactRevisions } from "../wiki-artifact-revisions";
+import { ReadOnlyError } from "../read-only";
 import {
   ARTIFACT_UNREADABLE_COPY,
+  ARTIFACT_UNWRITABLE_COPY,
   ArtifactUnreadableError,
+  ArtifactUnwritableError,
   createWiki,
   getWikiRegistry,
   setCurrentWiki,
   isArtifactUnreadableError,
+  isArtifactUnwritableError,
   readWikiArtifact,
   wikiArtifactPath,
   writeWikiArtifact,
@@ -1128,11 +1132,31 @@ describe("editing the Schema", () => {
     const wiki = await seed();
     const before = await readDataVersion();
     const seeded = await readSchema(wiki);
-    vi.spyOn(getStorage(), "writeFile").mockRejectedValue(new Error("disk is gone"));
+    // A REAL errno with a REAL absolute path, not "disk is gone" (DW-736). The
+    // fault this row exists to describe is the storage layer's own, and its
+    // messages carry `FilesystemStorage`'s `this.resolve(filePath)` — so a
+    // stand-in with nothing to leak could not tell a leaking body from a
+    // clean one.
+    const fault = Object.assign(
+      new Error(`EACCES: permission denied, open '${tmpDir}/tenants/alice/wikis/w/schema.md'`),
+      { code: "EACCES" },
+    );
+    vi.spyOn(getStorage(), "writeFile").mockRejectedValue(fault);
 
     const response = await put("?path=schema.md", { content: EDITED });
     expect(response.status).toBe(500);
-    expect(typeof (await response.json()).error).toBe("string");
+    // THE EXACT CONSTANT, not merely "a string" (DW-736). This row asserted
+    // only `typeof … === "string"` and so passed just as happily on the raw
+    // `EACCES: permission denied, open '/srv/data/…'` the owner used to be
+    // shown in the save banner — the leak was inside the assertion's blind
+    // spot, not outside its coverage.
+    const body = await response.json();
+    expect(body).toEqual({ error: ARTIFACT_UNWRITABLE_COPY });
+    // Said separately from the equality above, because THIS is the property
+    // that must hold whatever the copy is later reworded to.
+    expect(body.error).not.toContain("EACCES");
+    expect(body.error).not.toContain(tmpDir);
+    expect(body.error).not.toContain("/tenants/");
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
 
     vi.restoreAllMocks();
@@ -1140,6 +1164,44 @@ describe("editing the Schema", () => {
     expect(await readDataVersion()).toBe(before);
     expect(await readLog()).toBeNull();
   });
+
+  /**
+   * DW-736's two pass-throughs. The wrap around the overwrite turns the
+   * STORE's failures into the owner's sentence, and must turn nothing else:
+   * `putWikiArtifact` calls `assertWritable` and builds its storage key, so a
+   * `ReadOnlyError` and a `ClientInputError` both arrive inside the same try —
+   * and the route's 403 and 400 arms read them by type. A wrap that swallowed
+   * either would report an owner's refused save, or their own malformed
+   * request, as our disk failing.
+   *
+   * REJECTING FROM `writeFile` stands in for the real throw sites, which sit a
+   * frame earlier inside `putWikiArtifact`: the route's own read-only gate
+   * answers before `writeWikiArtifact` is ever called, so a mid-request flip is
+   * not reachable through `put()` by env var alone. What the catch sees is
+   * identical either way, which is the whole of what these rows pin.
+   */
+  it.each([
+    ["403", 403, () => new ReadOnlyError("This deployment is read-only.")],
+    ["400", 400, () => new ClientInputError("Invalid wiki id.")],
+  ])(
+    "still answers %s when the overwrite raises that type, not the unwritable 500",
+    async (_label, status, make) => {
+      const wiki = await seed();
+      const before = await readDataVersion();
+      const seeded = await readSchema(wiki);
+      const fault = make();
+      vi.spyOn(getStorage(), "writeFile").mockRejectedValue(fault);
+
+      const response = await put("?path=schema.md", { content: EDITED });
+      expect(response.status).toBe(status);
+      // The type's OWN sentence, which is the thing the wrap must not replace.
+      expect(await response.json()).toEqual({ error: fault.message });
+
+      vi.restoreAllMocks();
+      expect(await readSchema(wiki)).toBe(seeded);
+      expect(await readDataVersion()).toBe(before);
+    },
+  );
 
   it("still answers 200 when only the tail failed", async () => {
     const wiki = await seed();
@@ -1483,5 +1545,75 @@ describe("isArtifactUnreadableError classifies structurally, not by identity", (
     const wrapped = new ArtifactUnreadableError(ARTIFACT_UNREADABLE_COPY, { cause: fault });
     expect(wrapped.cause).toBe(fault);
     expect(wrapped.message).not.toContain("EACCES");
+  });
+});
+
+/**
+ * DW-736, the write half. `isArtifactUnwritableError` is what stands between
+ * the owner-worded 500 and the errno-leaking one, and it is a `name` match for
+ * the reason its read-half twin above is: `instanceof` is the one mechanism
+ * that cannot survive a duplicated module graph — vitest's two projects, a
+ * bundler splitting server and edge chunks. Swap the implementation to an
+ * identity check against the imported class and every OTHER assertion in this
+ * file stays green: each of them throws through the module instance the route
+ * imported. Only the foreign-realm row below fails, and only it stands between
+ * the sentence and a production-only leak.
+ *
+ * The same properties the block above pins for `isArtifactUnreadableError`, in
+ * the same idiom, because this predicate is a copy of that one.
+ */
+describe("isArtifactUnwritableError classifies structurally, not by identity", () => {
+  it("accepts an ArtifactUnwritableError from this module", () => {
+    expect(isArtifactUnwritableError(new ArtifactUnwritableError())).toBe(true);
+    // Its default message IS the owner's sentence, which is what lets the route
+    // log the error and answer the constant without the two disagreeing.
+    expect(new ArtifactUnwritableError().message).toBe(ARTIFACT_UNWRITABLE_COPY);
+  });
+
+  it("accepts one from a DIFFERENT copy of this module", () => {
+    const foreign = Object.assign(new Error("EACCES: permission denied"), {
+      name: "ArtifactUnwritableError",
+    });
+    expect(foreign).not.toBeInstanceOf(ArtifactUnwritableError);
+    expect(isArtifactUnwritableError(foreign)).toBe(true);
+  });
+
+  it("returns false for the neighbours in the route's ladder", () => {
+    // A caller-input fault must still reach the 400 branch and a bare store
+    // fault must still fall through to the generic 500 — neither may be
+    // reported as "this file could not be saved". The READ-half error is a
+    // neighbour too, and the two arms sit adjacent in the route: each must
+    // answer its own sentence, so neither guard may accept the other's class.
+    expect(isArtifactUnwritableError(new ClientInputError("Invalid wiki id."))).toBe(false);
+    expect(isArtifactUnwritableError(new StoreFaultError("boom"))).toBe(false);
+    expect(isArtifactUnwritableError(new Error("disk is gone"))).toBe(false);
+    expect(isArtifactUnwritableError(new ArtifactUnreadableError())).toBe(false);
+    expect(isArtifactUnreadableError(new ArtifactUnwritableError())).toBe(false);
+  });
+
+  it("returns false for non-Error values, without throwing on a property read", () => {
+    expect(isArtifactUnwritableError(null)).toBe(false);
+    expect(isArtifactUnwritableError(undefined)).toBe(false);
+    expect(isArtifactUnwritableError("ArtifactUnwritableError")).toBe(false);
+    // A bare object wearing the name is NOT an Error: `instanceof Error` is
+    // proven first, so the classifier never reads `name` off a hostile value.
+    expect(isArtifactUnwritableError({ name: "ArtifactUnwritableError" })).toBe(false);
+    expect(
+      isArtifactUnwritableError({
+        get name() {
+          throw new Error("property getter exploded");
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("preserves the storage error as `cause`, which is the only place the errno survives", () => {
+    const fault = Object.assign(new Error("EACCES: permission denied, open '/srv/data/x'"), {
+      code: "EACCES",
+    });
+    const wrapped = new ArtifactUnwritableError(ARTIFACT_UNWRITABLE_COPY, { cause: fault });
+    expect(wrapped.cause).toBe(fault);
+    expect(wrapped.message).not.toContain("EACCES");
+    expect(wrapped.message).not.toContain("/srv/data");
   });
 });

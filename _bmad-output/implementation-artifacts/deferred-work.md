@@ -6104,7 +6104,9 @@ location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:167
 source_spec: `spec-dw-641-684-door-fault-status-parity.md`
 severity: low
 reason: That handler calls `createResearchProject` (`src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:141`) — the same function whose exhausted CAS in `applyResearchProjectMutation` throws `ResearchProjectBusyError` — and its catch is still the pre-DW-684 ladder `isClientInputError(error) ? 400 : 500` at `:167`, whose own comment cites "the `src/app/api/research/route.ts` idiom", the ladder this pass changed out from under it. `createResearchProject`'s docblock already names it as the second caller ("the Review-accept handler"). So an API agent is told a permanent server fault for a registry write that provably never landed and would succeed on an immediate retry, while the in-product door for the same store tells it to retry. Out of scope here: DW-684's intent enumerates `POST /api/research`, `PATCH` and `DELETE /api/research/[id]` only. Its suite would not surface it either — `epic8-v1-routes.test.ts:598` has a `ClientInputError` row and an EINVAL row and no `ResearchProjectBusyE
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-api-door-error-typing
+resolution-undo: 008514f4dc26a3755aadf87a194ff54ae019883d2fa23e76f72b250dd16afc92 2026-09-05 7374617475733a206f70656e
 
 ### DW-733: `MarkMeetingControl` stands in front of a door that DOES refuse and folds the refusal into plain `disabled=`, with no sentence and no client mirror.
 origin: spec-deferred 43c75138b2ac
@@ -6137,7 +6139,9 @@ location: src/app/api/workbench/artifact/route.ts:112-116
 source_spec: `spec-dw-688-689-owner-facing-error-recovery.md`
 severity: low
 reason: DW-689 scoped itself to `src/lib/wikis.ts:982` — the pre-overwrite READ — and that throw is now an `ArtifactUnreadableError` the route answers with `ARTIFACT_UNREADABLE_COPY`. The route's fallthrough is unchanged, so a storage fault raised by `putWikiArtifact` (or by `getWikiRegistry` inside the same `try`) still reaches `json({ error: getErrorMessage(error) }, 500)` and `savePreviewBody` renders it verbatim. `src/lib/__tests__/wiki-schema-edit.test.ts` ("answers a failed storage write with 500, and moves nothing") asserts only that the body's `error` is a string, and the suite's own stderr shows the raw message travelling that path. So the owner can still meet `EACCES: permission denied, open '/…'` in the save banner, by the other half of the same door.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-api-door-error-typing
+resolution-undo: 008514f4dc26a3755aadf87a194ff54ae019883d2fa23e76f72b250dd16afc92 2026-09-05 7374617475733a206f70656e
 
 ### DW-737: `cascadeDeleteSource`'s enumeration read decides which pages enter the cascade at all, and a storage blip there drops a page silently while the raw source bytes are still deleted.
 origin: spec-deferred 9072d1b0a96b
@@ -6216,7 +6220,9 @@ location: src/lib/portable-archive.ts:246
 source_spec: `spec-dw-572-701-content-addressed-write-doors.md`
 severity: low
 reason: `parseArchive` stats `tenants/<t>/<entry.path>`. When an ancestor segment is a regular file (e.g. `tenants/alice/raw/atlas` is a file and the entry is `raw/atlas/source.bin`), `fs.stat` raises `ENOTDIR`, `isEnoent` answers false, and the `catch` rethrows it unchanged. That is the same class DW-701 addresses — a path no write this import can ever land at — but it surfaces as `ENOTDIR: not a directory, stat '/abs/host/path/...'` rather than an archive-relative message, and `src/app/api/archive/import/route.ts:21` maps it to a 500 whose JSON body carries that host path. Pre-existing: the same rethrow predates the `readAsset` -> `stat` swap, and no test pins it.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-api-door-error-typing
+resolution-undo: 008514f4dc26a3755aadf87a194ff54ae019883d2fa23e76f72b250dd16afc92 2026-09-05 7374617475733a206f70656e
 
 ### DW-746: The Workbench Activity retry and embed-rebuild doors still run a full inline `ingest()` under the same client deadline this story bounded at the intake door.
 origin: spec-deferred 25d085c76c7e
@@ -6383,4 +6389,12 @@ location: .yoyo/status.md:30
 source_spec: `spec-dw-466-731-stale-inline-claims.md`
 severity: low
 reason: Line 30 reads "No E2E browser tests — Unit and integration tests are strong (9,672) but no Playwright/Cypress tests". The repo has `playwright.config.ts`, three specs under `e2e/` (`retired-routes.spec.ts`, `workbench-layout.spec.ts`, `workbench-owner.spec.ts`) and `"test:e2e": "playwright test"` in `package.json`. This pass refreshed only the parenthetical figure on that line — the intent scoped the edit to the metrics block, the Generated date and the repeated figures — so the false sentence survived and was re-dated with the rest of the document. The real remaining gap is CI: no workflow in `.github/workflows/` invokes `test:e2e`. An owner reading this item would plan browser-test work that is already done.
+status: open
+
+### DW-766: `writeWikiArtifact`'s `purpose.md` authority-marker branch still rethrows a raw storage error, so the owner's save banner can show an errno and the server's absolute filesystem path by the same door D
+origin: spec-deferred 93b4f607afaa
+location: src/lib/wikis.ts (writeWikiArtifact, the purpose.md authority-marker branch)
+source_spec: `spec-dw-732-736-745-api-door-error-typing.md`
+severity: low
+reason: `purpose.md` is in `EDITABLE_ARTIFACT_FILES`, so `PUT /api/workbench/artifact` reaches it. On a Wiki whose record has no `artifactAuthority` marker yet, the save takes the legacy branch: the bytes land, `writeRegistry(owner, registryToMark)` is attempted, and on failure the artifact is restored and the storage error is rethrown unchanged (`src/lib/wikis.ts`, the marker-write catch below the new `putWikiArtifact` wrap). That raw error passes every arm of the route's ladder -- it is neither read-only, write-conflict, unreadable nor unwritable -- and leaves by the fallthrough `json({ error: getErrorMessage(error) }, 500)`, which `savePreviewBody` renders verbatim. `readRegistry` a few lines above the same branch is unguarded too. Two independent review layers reached this by tracing the branch; no test covers it (`grep artifactAuthority` finds only `wikis.test.ts` and `workspace-purpose-canonicalization.test.ts`, and the one registry-write-failure row there drives `canonicalizeWikiPurpose
 status: open

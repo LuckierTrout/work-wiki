@@ -4,6 +4,7 @@ import {
   getErrorMessage,
   isClientInputError,
   isEnoent,
+  isEnotdir,
   isInfrastructureFault,
   StoreFaultError,
 } from "../errors";
@@ -74,6 +75,52 @@ describe("isEnoent", () => {
     expect(isEnoent(undefined)).toBe(false);
     expect(isEnoent("ENOENT")).toBe(false);
     expect(isEnoent({ code: "ENOENT" })).toBe(false);
+  });
+});
+
+/**
+ * DW-745. The mirror of the block above, and it needs its own rows: the only
+ * other thing exercising `isEnotdir` is the portable-archive probe, which
+ * reaches it with a REAL fs errno every time. That path can never observe the
+ * two properties this predicate's own JSDoc leans on — that a wrong code is
+ * refused, and that `instanceof Error` is proven before `code` is read, so a
+ * bare object wearing the code is not mistaken for the errno and a hostile
+ * getter is never called at all.
+ */
+describe("isEnotdir", () => {
+  it("returns true for an ENOTDIR error", () => {
+    const err = Object.assign(new Error("not a directory"), { code: "ENOTDIR" });
+    expect(isEnotdir(err)).toBe(true);
+  });
+
+  it("returns false for a different error code", () => {
+    // ENOENT specifically: the archive probe reads these two as OPPOSITE
+    // verdicts — a missing path is a new file, an ancestor that is a file is a
+    // refusal — so a predicate that confused them would silently import
+    // nothing at a path it should have rejected.
+    expect(isEnotdir(Object.assign(new Error("not found"), { code: "ENOENT" }))).toBe(false);
+    expect(isEnotdir(Object.assign(new Error("is a directory"), { code: "EISDIR" }))).toBe(false);
+  });
+
+  it("returns false for a plain Error without code", () => {
+    expect(isEnotdir(new Error("boom"))).toBe(false);
+  });
+
+  it("returns false for non-Error values", () => {
+    expect(isEnotdir(null)).toBe(false);
+    expect(isEnotdir(undefined)).toBe(false);
+    expect(isEnotdir("ENOTDIR")).toBe(false);
+    expect(isEnotdir({ code: "ENOTDIR" })).toBe(false);
+  });
+
+  it("does not read `code` off a non-Error, even one that would throw", () => {
+    expect(
+      isEnotdir({
+        get code() {
+          throw new Error("property getter exploded");
+        },
+      }),
+    ).toBe(false);
   });
 });
 

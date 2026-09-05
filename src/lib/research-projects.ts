@@ -91,24 +91,41 @@ export class ResearchProjectConflictError extends Error {
  * already said `retry` while the run door reported them 500, which is exactly
  * the mismatch this class closes.
  *
- * FOUR DOORS ANSWER 503 (DW-684). `POST /api/research/[id]/run` and
- * `POST /api/research/repair` answered it first (DW-651); the three siblings
- * that reach the very same exhausted ladder through {@link createResearchProject},
- * {@link editResearchProject} and {@link deleteResearchProject} —
- * `POST /api/research`, `PATCH` and `DELETE /api/research/[id]` — now answer
- * 503 too. They used to answer 500, deliberately and only because DW-651 named
- * the run door alone, which left one store giving two verdicts about one
- * moment of contention.
- *
- * ONE DOOR STILL ANSWERS 500, and knowing which one is the point of saying it:
+ * SIX REQUEST/RESPONSE DOORS ANSWER 503 (DW-732).
+ * `POST /api/research/[id]/run` and `POST /api/research/repair` answered it
+ * first (DW-651); the three siblings that reach the very same exhausted ladder
+ * through {@link createResearchProject}, {@link editResearchProject} and
+ * {@link deleteResearchProject} — `POST /api/research`, `PATCH` and
+ * `DELETE /api/research/[id]` — followed in DW-684; and
  * `PATCH /api/v1/projects/[wikiId]/reviews/[reviewId]` with
  * `action: "deep_research"` — the Review-accept handler named in
- * {@link createResearchProject} — calls this store and ends its catch
- * `isClientInputError(error) ? 400 : 500`, so contention arrives at an agent as
- * a permanent server fault. Not an oversight in that route: DW-684's intent
- * enumerated the three `/api/research` siblings, and that door was outside it.
- * So do NOT read "this class means 503" as true everywhere yet — read it as
- * true of the four doors above, with the v1 door the open exception.
+ * {@link createResearchProject} — is the sixth. Each of the earlier gaps was
+ * the same shape: an intent that enumerated some of the callers, leaving one
+ * store to give two verdicts about one moment of contention, and an agent at
+ * the odd door told that a write which provably never landed was permanent.
+ *
+ * `POST /api/tasks/run` IS NOT ONE OF THEM, AND MUST NOT BECOME ONE. The queue
+ * door reaches this class for real — `run-research` calls `runResearchProject`,
+ * whose `updateResearchProjectIf` calls land in
+ * {@link applyResearchProjectMutation} and can exhaust `CAS_ATTEMPTS` — and it
+ * answers the bare 500 at the end of its ladder, having fallen past
+ * {@link import("./errors").isInfrastructureFault} (this class carries no
+ * errno and is not a `StoreFaultError`), past the not-found row (its sentence
+ * says "busy", not "not found") and past
+ * {@link import("./errors").isClientInputError}. That 500 is the RIGHT answer
+ * there. At that door the status is not read by a caller at all: it is an
+ * instruction to the queue consumer, whose vocabulary that route's header
+ * documents as 4xx → poison (ack and drop) versus 5xx → transient, redelivered
+ * and parked in the DLQ after the bounded retries. Contention wants exactly
+ * that second branch, and the bare 500 already lands in it — so the rung a
+ * request/response door needs to buy the right behavior buys nothing here,
+ * where 500 and 503 are the same 5xx verdict to the only thing reading them.
+ *
+ * So the rule for a NEW caller is not "503 everywhere" but: a REQUEST/RESPONSE
+ * door owes its catch a 503 rung, ordered after any `ClientInputError` 400 and
+ * before the bare 500 — the shape the six above share. A door whose status is
+ * consumed by a retrying machine rather than read by a caller should speak that
+ * machine's vocabulary instead, and `POST /api/tasks/run` already does.
  *
  * 503 RATHER THAN 409 because nothing here is inspectable. A 409 tells the
  * caller their request conflicts with a state they can go look at and resolve;

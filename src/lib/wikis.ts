@@ -62,7 +62,7 @@ import { bumpDataVersion } from "./data-version";
 import { ClientInputError, isClientInputError, isEnoent } from "./errors";
 import { logger } from "./logger";
 import { getOwnerHandle } from "./owner";
-import { assertWritable, READ_ONLY_REFUSAL } from "./read-only";
+import { assertWritable, isReadOnlyError, READ_ONLY_REFUSAL } from "./read-only";
 import { readEnginePageConventions } from "./schema-source";
 import { getStorage } from "./storage";
 import { appendToLog } from "./wiki-log";
@@ -940,6 +940,72 @@ export function isArtifactUnreadableError(err: unknown): err is Error {
 }
 
 /**
+ * The owner's sentence when the OVERWRITE ITSELF failed (DW-736).
+ *
+ * The write-half mirror of {@link ARTIFACT_UNREADABLE_COPY}. DW-689 typed only
+ * the pre-overwrite READ, so the half that actually puts the bytes down kept
+ * relaying its raw storage error into the same save banner: an owner met
+ * `EACCES: permission denied, open '/srv/data/tenants/…/schema.md'` — an errno,
+ * a server filesystem path, and nothing to do about either.
+ *
+ * A DIFFERENT SENTENCE FROM THE READ HALF, not a shared one, because the two
+ * failures leave the owner in different places, and the RECOVERY differs with
+ * them. The read half could not see what it was replacing, so it asks for a
+ * reload — the only way to re-establish a precondition token it could not
+ * read. This half read fine and the overwrite is what did not land: the draft
+ * is still in the editor, the token it holds still matches the untouched
+ * stored bytes, and re-saving is the whole recovery. Telling the owner to
+ * reload HERE would send them to discard their draft for nothing.
+ *
+ * The errno is not lost: it rides as the thrown error's `cause` and reaches the
+ * server log.
+ */
+export const ARTIFACT_UNWRITABLE_COPY =
+  "This file could not be saved, so the stored version is unchanged. " +
+  "This is usually temporary — your text is still here, so try saving again.";
+
+/**
+ * The overwrite failed for a precondition-bearing save (DW-736).
+ *
+ * The write-half mirror of {@link ArtifactUnreadableError}, same shape for the
+ * same reason: a TYPE rather than a message, so `PUT /api/workbench/artifact`
+ * classifies by {@link isArtifactUnwritableError} and never by string-matching
+ * a sentence. Its default message IS {@link ARTIFACT_UNWRITABLE_COPY}, and the
+ * storage error is preserved as `cause` so the log keeps the errno the owner
+ * must not be shown.
+ *
+ * Extends `Error` directly and subclasses nothing, so the route's ladder ends
+ * in the same 500 it always did — DW-736 is a wording fix, not a status fix.
+ */
+export class ArtifactUnwritableError extends Error {
+  constructor(message: string = ARTIFACT_UNWRITABLE_COPY, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ArtifactUnwritableError";
+  }
+}
+
+/**
+ * Whether a caught value is a failed artifact overwrite.
+ *
+ * Matches on `name`, not `instanceof`, for the reason
+ * {@link isArtifactUnreadableError} documents at length: an error thrown by a
+ * SECOND copy of this module — vitest's two projects, a bundler splitting
+ * server and edge chunks — fails `instanceof` against the copy the route
+ * imported, and the owner-worded 500 would silently become an errno-leaking one
+ * in production only, where no test can see it.
+ *
+ * `instanceof Error` is proven BEFORE `name` is read: this runs in a route's
+ * catch block, where the caught value is arbitrary and a property read on it
+ * can itself throw.
+ *
+ * Narrows to `Error`, not to `ArtifactUnwritableError`: under a duplicated
+ * graph the value genuinely is not an instance of the imported class.
+ */
+export function isArtifactUnwritableError(err: unknown): err is Error {
+  return err instanceof Error && err.name === "ArtifactUnwritableError";
+}
+
+/**
  * Overwrite one seeded artifact — the write half of Story 1.8's Schema editing.
  *
  * WHY THIS IS NOT `writeWikiPageWithSideEffects`. The epic's one-write-path rule
@@ -1176,7 +1242,35 @@ export async function writeWikiArtifact(
         );
       }
     }
-    await putWikiArtifact(owner, wikiId, file, content);
+    // THE WRITE HALF IS WRAPPED TOO (DW-736). The read half above has carried
+    // the owner's wording since DW-689 while this line — the one that actually
+    // puts the bytes down — still rethrew whatever the store raised, and the
+    // route relays a thrown message into the save banner verbatim. So the owner
+    // met `EACCES: permission denied, open '/srv/data/…'` for the commoner of
+    // the two failures. The status is unchanged and was never wrong: this IS a
+    // server fault, and {@link ArtifactUnwritableError} extends `Error`
+    // directly so the route's ladder still ends at 500.
+    //
+    // WRAPPED AT THE CALL SITE, not inside `putWikiArtifact`, exactly as the
+    // read half is wrapped at its call site: that function is also the seeder's
+    // and the re-template's one write path, and their contracts are not this
+    // door's to reword.
+    //
+    // TWO TYPES PASS THROUGH UNCHANGED. A `ClientInputError` — an unparseable
+    // owner or Wiki id, thrown while the storage key is built — is the caller's
+    // own request, and telling them "this is usually temporary" about a request
+    // that will fail identically forever turns the route's 400 into a 500 that
+    // lies. A `ReadOnlyError` is the addition over the read half's list and it
+    // is load-bearing: `putWikiArtifact` calls `assertWritable`, so a flag that
+    // flipped mid-request arrives HERE, and the route's 403 arm — first in its
+    // ladder — reads it by type. Wrapped, an owner's refused save would be
+    // reported as our disk failing.
+    try {
+      await putWikiArtifact(owner, wikiId, file, content);
+    } catch (error) {
+      if (isReadOnlyError(error) || isClientInputError(error)) throw error;
+      throw new ArtifactUnwritableError(ARTIFACT_UNWRITABLE_COPY, { cause: error });
+    }
 
     if (registryToMark && wikiToMark) {
       wikiToMark.artifactAuthority = ARTIFACT_AUTHORITY_VERSION;

@@ -12,7 +12,7 @@ import {
   skipReviewItem,
   type ReviewItem,
 } from "@/lib/review-queue";
-import { createResearchProject } from "@/lib/research-projects";
+import { ResearchProjectBusyError, createResearchProject } from "@/lib/research-projects";
 import {
   V1_INVALID_INPUT_ERROR,
   V1_UNKNOWN_ACTION_ERROR,
@@ -169,6 +169,12 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     // `MAX_PROJECTS` refusal and `cleanInput`'s verdict on `item.title` land
     // here — and an agent told "500" retries a request that can never succeed.
     //
+    // THREE RUNGS, NOT TWO. DW-478 split this ladder caller-fault/server-fault,
+    // and DW-684 added the middle rung at the `/api/research` doors: a
+    // contended registry write is neither, and the 503 below is where it goes.
+    // So read what follows as 400 / 503 / 500 — the two-way split was only ever
+    // the first two thirds of the classification.
+    //
     // The caller-fault body is TWO HALVES: `error` is the façade's machine
     // token, the thing an agent switch-cases on as it does at every other 4xx
     // here, and `detail` carries the store's own sentence, which is the only
@@ -179,6 +185,24 @@ export async function PATCH(request: Request, { params }: RouteContext) {
         { error: V1_INVALID_INPUT_ERROR, detail: getErrorMessage(error) },
         { status: 400 },
       );
+    }
+    // THE 503 RUNG (DW-732), matching the ladder DW-684 left in the five
+    // `/api/research` doors. This door calls the SAME `createResearchProject`,
+    // so it reaches the same exhausted compare-and-swap and catches the same
+    // `ResearchProjectBusyError` — transient contention over the registry,
+    // whose own sentence already says "retry the request." DW-684 enumerated
+    // the three `/api/research` siblings and this door was outside its intent,
+    // which left one store giving two verdicts about one moment of contention:
+    // an agent here was told a write that provably never landed was a permanent
+    // server fault, and stopped retrying the one thing that would have worked.
+    //
+    // BARE-MESSAGE BODY, not the token-plus-detail shape above, because the
+    // split is caller-fault versus server-fault and contention is neither the
+    // caller's mistake nor a vocabulary an agent switch-cases on. The store's
+    // own sentence is the whole answer. Ordered AFTER the 400 and before the
+    // 500 fallthrough — the `research/route.ts` ladder, rung for rung.
+    if (error instanceof ResearchProjectBusyError) {
+      return NextResponse.json({ error: getErrorMessage(error) }, { status: 503 });
     }
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 500 });
   }

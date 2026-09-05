@@ -442,6 +442,84 @@ describe("portable owner archive", () => {
     expect(await getStorage().readFile("tenants/alice/wiki/atlas.md")).toBe(sentinel);
   });
 
+  // ---------------------------------------------------------------------------
+  // DW-745 — an ANCESTOR segment that is a file leaks the host path
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The sibling of the directory case, one segment up. `stat` walks the WHOLE
+   * path, so a regular file at `raw/atlas` makes `raw/atlas/source.bin` raise
+   * ENOTDIR rather than the ENOENT the probe reads as "new file" — and the
+   * probe's catch rethrew anything that was not ENOENT untouched.
+   *
+   * What it rethrew was the storage layer's own error, and
+   * `FilesystemStorage.stat` builds its path with `this.resolve(filePath)`. So
+   * `/api/archive/import`'s catch, which echoes `getErrorMessage(error)` into
+   * the 500 body, handed the caller an ABSOLUTE server filesystem path — the
+   * data directory's real location on the host — over an errno they could do
+   * nothing with. The situation is the directory case's exactly: no write this
+   * import can make will ever land at that path, so it is the same loud
+   * refusal, in the archive's own vocabulary.
+   */
+  it("rejects an archive whose tenant path has a FILE for an ancestor, naming no host path", async () => {
+    const page = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nPrivate knowledge.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", page);
+    await getStorage().writeAsset("tenants/alice/raw/atlas/source.bin", new Uint8Array([1, 2, 3]).buffer);
+    const archive = await buildPortableArchive("alice");
+
+    // While `raw/atlas` is still a DIRECTORY, the entry is an ordinary collision.
+    expect((await inspectPortableArchive("alice", buffer(archive.bytes))).collisions)
+      .toContain("raw/atlas/source.bin");
+
+    // Collapse the folder into a regular FILE at the same path, so the entry's
+    // ancestor — not the entry itself — is what blocks it.
+    const ancestor = path.join(tmpDir, "tenants", "alice", "raw", "atlas");
+    await fs.rm(ancestor, { recursive: true });
+    await fs.writeFile(ancestor, "not a folder");
+
+    // The same sentinel discipline as the directory case: a body the archive
+    // does NOT carry, at a path it DOES, keeping alice's frontmatter so the
+    // import's ownership pre-check cannot abort for an unrelated reason.
+    const sentinel = serializeFrontmatter(
+      { owner: "alice", visibility: "private", authors: ["alice"] },
+      "# Atlas\n\nEdited after the archive was built.",
+    );
+    await getStorage().writeFile("tenants/alice/wiki/atlas.md", sentinel);
+
+    const storage = getStorage();
+    const batched = vi.spyOn(storage, "withBatchedWrites");
+
+    // Inspection and both import policies refuse, each naming the ARCHIVE-relative
+    // entry path…
+    for (const attempt of [
+      () => inspectPortableArchive("alice", buffer(archive.bytes)),
+      () => importPortableArchive("alice", buffer(archive.bytes), "skip"),
+      () => importPortableArchive("alice", buffer(archive.bytes), "overwrite"),
+    ]) {
+      const error = await attempt().then(
+        () => { throw new Error("expected a refusal"); },
+        (caught: unknown) => caught as Error,
+      );
+      expect(error.message).toContain("raw/atlas/source.bin");
+      // …and NOTHING of the host. These three are the leak itself: the errno,
+      // the absolute data directory, and the tenant key the caller never named.
+      expect(error.message).not.toContain("ENOTDIR");
+      expect(error.message).not.toContain(tmpDir);
+      expect(error.message).not.toContain("tenants/alice");
+      // The errno is not lost — it rides as `cause` for the server log, which
+      // is the same bargain the artifact wraps make.
+      expect((error.cause as NodeJS.ErrnoException | undefined)?.code).toBe("ENOTDIR");
+    }
+
+    // Refused in the PROBE: no write scope was ever opened, so even the entry
+    // that would have imported cleanly was never touched.
+    expect(batched).not.toHaveBeenCalled();
+    expect(await getStorage().readFile("tenants/alice/wiki/atlas.md")).toBe(sentinel);
+  });
+
   it("rejects an oversized manifest before allocating its expanded payload", async () => {
     const oversized = zipSync({
       "manifest.json": new Uint8Array(5 * 1024 * 1024 + 1),

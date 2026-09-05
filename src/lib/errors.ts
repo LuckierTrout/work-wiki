@@ -126,3 +126,27 @@ export function isEnoent(err: unknown): boolean {
     (err as NodeJS.ErrnoException).code === "ENOENT"
   );
 }
+
+/**
+ * Check whether an unknown caught value is a Node.js ENOTDIR error — a path
+ * walked THROUGH a segment that is a regular file rather than a directory
+ * (DW-745).
+ *
+ * The sibling of {@link isEnoent}, and here rather than spelled raw at its one
+ * call site for the reason that predicate is: a second inline
+ * `(err as NodeJS.ErrnoException).code === "ENOTDIR"` is a second thing to keep
+ * correct, and the two spellings drift the moment one of them grows a guard.
+ *
+ * `instanceof Error` is proven BEFORE `code` is read, exactly as
+ * {@link isEnoent} and {@link isInfrastructureFault} prove it: these classifiers run
+ * inside catch blocks where the caught value is arbitrary, and a property read
+ * on a hostile or exotic object can itself throw — replacing the fault being
+ * reported with a second, unrelated one.
+ */
+export function isEnotdir(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    "code" in err &&
+    (err as NodeJS.ErrnoException).code === "ENOTDIR"
+  );
+}

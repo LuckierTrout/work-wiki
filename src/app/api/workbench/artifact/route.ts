@@ -9,8 +9,10 @@ import { PAGE_CONVENTIONS_REQUIRED_COPY, hasPageConventions } from "@/lib/schema
 import { artifactDisplayName, isEditableArtifactFile } from "@/lib/wiki-scenarios";
 import {
   ARTIFACT_UNREADABLE_COPY,
+  ARTIFACT_UNWRITABLE_COPY,
   getWikiRegistry,
   isArtifactUnreadableError,
+  isArtifactUnwritableError,
   writeWikiArtifact,
 } from "@/lib/wikis";
 import { PREVIEW_MAX_CHARS } from "@/lib/workbench-preview";
@@ -109,6 +111,30 @@ export async function PUT(request: Request) {
         error,
       );
       return json({ error: ARTIFACT_UNREADABLE_COPY }, 500);
+    }
+    // THE STORAGE WRITE FAULT (DW-736), directly beneath its read-half twin
+    // because it is the same fault at the other end of the same save. DW-689
+    // typed the pre-overwrite read and stopped there, so the half that actually
+    // puts the bytes down went on rethrowing raw — and the owner met
+    // `EACCES: permission denied, open '/srv/data/…'` in the save banner for
+    // the commoner of the two failures.
+    //
+    // STILL 500, for the same reason the arm above is: the status was never
+    // wrong, only the sentence. `ArtifactUnwritableError` extends `Error`
+    // directly, so removing this arm would land it back on the fallthrough's
+    // 500 with the errno restored — which is exactly the bug.
+    //
+    // THE CONSTANT, NOT `getErrorMessage(error)`, again: the two agree today,
+    // and reading the message off the error is what would let a future throw
+    // site that passes a diagnostic string walk it onto the owner's screen. The
+    // errno survives as `cause` and is logged here.
+    if (isArtifactUnwritableError(error)) {
+      logger.error(
+        "workbench-artifact",
+        "artifact write refused: the new bytes could not be stored",
+        error,
+      );
+      return json({ error: ARTIFACT_UNWRITABLE_COPY }, 500);
     }
     // A `ClientInputError` is the caller's input — `wikis.ts` throws it for an
     // unparseable owner or Wiki id — and everything else is ours. Without this

@@ -1,5 +1,5 @@
 import { strToU8, unzipSync, zipSync } from "fflate";
-import { isEnoent } from "./errors";
+import { isEnoent, isEnotdir } from "./errors";
 import { rebuildDerivedIndexes } from "./maintenance";
 import { buildAliasIndex } from "./alias-index";
 import { buildSourceIndex } from "./source-index";
@@ -255,7 +255,21 @@ async function parseArchive(owner: string, bytes: ArrayBuffer): Promise<{
       collisions.push(entry.path);
     } catch (error) {
       if (isEnoent(error)) newFiles.push(entry.path);
-      else throw error;
+      // AN ANCESTOR SEGMENT IS A FILE (DW-745). `stat` walks the whole path, so
+      // a regular file at `raw/atlas` makes `raw/atlas/source.bin` raise
+      // ENOTDIR rather than the ENOENT above — the same unwritable-forever
+      // situation the `isDirectory` refusal names, arriving as an errno instead
+      // of as a verdict. Rethrown RAW it carried the storage layer's message,
+      // which `FilesystemStorage.stat` builds from `this.resolve(filePath)` —
+      // an ABSOLUTE host path, echoed to the caller by
+      // `/api/archive/import`'s catch. Same loud refusal as the directory case,
+      // same archive-relative vocabulary, and the errno rides as `cause`.
+      else if (isEnotdir(error)) {
+        throw new Error(
+          `Archive path is blocked by an existing file in its folder path: ${entry.path}`,
+          { cause: error },
+        );
+      } else throw error;
     }
   }
   return {
