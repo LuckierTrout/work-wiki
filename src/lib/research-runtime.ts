@@ -730,6 +730,35 @@ export async function reconcileResearchProjects(
       // before reading lease state so a malformed queue file cannot rewrite a
       // durable success into `failed`.
       if (project.completion?.phase === "done") {
+        // CLAIM THE OUTBOX ID FIRST, above everything that can throw. The
+        // orphan loop at the bottom of this sweep drains whatever is left in
+        // `outboxIds`, and an id that leaves this branch still in the set is
+        // re-drained there as an ORPHAN — for a row that has a project record,
+        // logged as `reconcile skipped read-only orphan outbox <id>`. That is
+        // the hazard `markResearchDeliveryBlocked`'s docblock names as its
+        // reason not to throw, and the gate below would otherwise reintroduce
+        // it one branch over. Deleting from a local `Set` writes nothing, so
+        // this is safe above the gate; the boolean carries what the
+        // `outboxIds.has(...)` test used to ask, leaving writable behaviour
+        // unchanged.
+        const heldOutbox = outboxIds.delete(project.id);
+        // Deployment read-only (DW-734). Gated on the BRANCH, and above the
+        // first line of it that WRITES: `releaseResearchSlotAndConfirmGone`
+        // goes into `research-concurrency.ts`, a module with no gate at all, so
+        // a refused sweep used to empty this project's slot out of
+        // `research-leases.json` while the row went on recording that
+        // `runAttemptId` — DW-680's shape, in the loop it did not name. Below
+        // it sits `deleteResearchOutbox`, which stays ungated for the reason
+        // DW-527 and DW-681 record: ~20 in-flight and fail-soft call sites,
+        // several with `.catch(() => undefined)`, reach it.
+        //
+        // Unconditional, unlike `drainResearchOutbox`' done-phase gate: this
+        // branch has no pure-read path — the retried release writes on every
+        // reconciliation, whatever else is or is not present. The per-project
+        // catch below classifies the refusal with `isReadOnlyError` and logs
+        // `reconcile skipped read-only project <id>`, so the sweep continues to
+        // the next row rather than reporting the row as damaged.
+        assertWritable(READ_ONLY_REFUSAL.researchMutate);
         // Release is deliberately retried on every reconciliation. A failed
         // finally-write must not leave an expired terminal claim consuming one
         // of the three workspace slots forever.
@@ -739,9 +768,8 @@ export async function reconcileResearchProjects(
           project.runAttemptId,
         );
         if (!project.runAttemptId) await releaseExpiredResearchSlot(owner, project.id);
-        if (outboxIds.has(project.id)) {
+        if (heldOutbox) {
           await deleteResearchOutbox(owner, project.id);
-          outboxIds.delete(project.id);
         }
         if (project.deleteRequested && slotGone) {
           await deleteResearchProject(owner, project.id);
@@ -984,6 +1012,15 @@ export async function reconcileResearchProjects(
         // "damaged project" told an operator their data was corrupt when
         // nothing was wrong with the row at all. Either way the loop
         // continues to the next project.
+        //
+        // ONE MORE SHAPE REACHES IT NOW (DW-734): the done-phase branch's own
+        // `assertWritable` above. A `drainResearchOutbox` refused at one of its
+        // new row-in-hand branches does NOT land here — the drain call site a
+        // few lines up has its own try/catch that hands the error to
+        // `markResearchDeliveryBlocked`, which returns early for a
+        // `ReadOnlyError` without rethrowing, so that refusal is logged as
+        // `skipped read-only delivery block for <id>` and the sweep continues
+        // from there instead.
         //
         // STILL HARD TO REACH, and that is not an accident:
         // `GET /api/research` skips reconciliation entirely when read-only and

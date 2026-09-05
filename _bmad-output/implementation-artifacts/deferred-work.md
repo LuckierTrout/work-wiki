@@ -5637,7 +5637,9 @@ location: src/lib/research-completion.ts:570
 source_spec: `spec-dw-652-653-654-research-completion-source-shape.md`
 severity: low
 reason: Before this change a `cancelRequested` row carrying a wrong-shaped completion at `phase: "page"` flowed past the `(cancelRequested || cancelled) && !completion` early return into the claim CAS, whose `authorized` mutator declined and dropped into the cancel-finalize branch (src/lib/research-completion.ts ~636-651): completion deleted, status `cancelled`, outbox removed. The new pre-claim shape guard throws first, so that teardown is unreachable and the row stays `cancelRequested`. Teardown never dereferences `sources` - it deletes the whole completion - so this door now refuses for a value it would not have touched. Not stranded: the `deleteRequested` branch sits above the guard, so deleting the project still works, and refusing loudly is this module's declared fail-closed discipline. Closing it means deciding whether teardown paths should be exempt from the shape guard.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-research-lifecycle-gates
+resolution-undo: 8d3cf606f9f94c24ad5d28f89216319b974bb746e913858874fa883d8e9e5993 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-03 Exempt teardown from the guard — Skip the pre-claim shape guard when the row is cancelRequested or cancelled (or move the guard below the claim CAS), so the cancel-finalize teardown that deletes the completion outright can still run. Pin that a cancelRequested row carrying a wrong-shaped completion finalizes to cancelled with the completion and outbox removed.
 
 ### DW-683: The non-streamed `callLLM` synthesis fallback passes the same 7,000-token cap but cannot see `finishReason`, so a fallback brief cut by that cap is still committed as a finished wiki page.
@@ -6136,7 +6138,9 @@ location: src/lib/research-runtime.ts:741
 source_spec: `spec-dw-680-681-research-readonly-write-leaks.md`
 severity: low
 reason: DW-680/DW-681 closed the two paths their ledger entries name, but the same two shapes remain at sites this bundle did not name. `reconcileResearchProjects`' `completion.phase === "done"` branch calls the ungated `releaseResearchSlotAndConfirmGone` and `releaseExpiredResearchSlot` (src/lib/research-runtime.ts:733-740) and then `deleteResearchOutbox` (:741), and `drainResearchOutbox`'s own done-phase (src/lib/research-completion.ts:934) and `deleteRequested` (:971) branches call the same ungated helper — `clearResearchStaging` plus a raw `deleteFile`, so the staged bodies go with the outbox. The new reconcile case in `research-runtime.test.ts` drives that whole sweep under `YOPEDIA_READONLY=1` and proves the loop runs, but seeds only orphans, so nothing asserts what the done-phase branch does. Same reachability caveat DW-681 carries: `GET /api/research` skips reconciliation when read-only and `POST /api/tasks/run` refuses, so this is a direct-library-caller and mid-sweep-flip exposure ra
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-research-lifecycle-gates
+resolution-undo: 8d3cf606f9f94c24ad5d28f89216319b974bb746e913858874fa883d8e9e5993 2026-09-05 7374617475733a206f70656e
 
 ### DW-735: The partially-rolled-back re-template — the divergence flavour where `purpose.md` and `schema.md` name DIFFERENT Scenario Templates — is skipped by the new reconciler and reported by nothing.
 origin: spec-deferred 53117c53a8d6
@@ -6469,4 +6473,12 @@ location: src/lib/document-extract.ts:766
 source_spec: `spec-dw-724-744-archive-and-raw-name-predicates.md`
 severity: low
 reason: src/lib/document-extract.ts:766 pushes a sheet on `if (path && files[path])` with no `^xl/worksheets/sheetN\.xml$` test, and the numbered `xl/worksheets/sheetN.xml` fallback is used only when that list is empty — the identical shadowing shape. Verified during review: a workbook whose `rId1` targets `sharedStrings.xml` alongside a real `xl/worksheets/sheet1.xml` extracts as "## Metrics\n\n[Empty worksheet]", dropping the real sheet's data. Reachable through the same inline ZIP door as DW-724 (`extractDocumentTextAsync`'s zip branch). This bundle's intent named only extractPptx, so the sibling was left untouched.
+status: open
+
+### DW-773: A cancelled project whose stored completion is malformed at `phase: "sources"` still cannot finalize — the DW-682 teardown exemption is reachable only from `phase: "page"`.
+origin: spec-deferred 6ab05843e1a5
+location: src/lib/research-completion.ts:1088
+source_spec: `spec-dw-682-734-research-teardown-and-readonly-branch-gates.md`
+severity: low
+reason: DW-682's decision, and every row this bundle pinned, concerns a `cancelRequested` row at `phase: "page"`: that is the only phase whose commit reaches the two exempted reads. `commitResearchPage` returns at the `phase === "sources" || phase === "done"` check ABOVE them, and `drainResearchOutbox` then skips the commit for such a row (`!current.completion || phase === "page"` is false) and throws at the loop guard `requireCompletionSources(completion)`. Reconcile turns that throw into `deliveryBlocked: true`, after which every later sweep `continue`s past the row: a cancel that landed there can never finalize to `cancelled`, exactly the shape DW-682 describes, one phase over. Not caused by this change — the loop guard is DW-579/DW-652's fail-closed discipline and predates it — and not stranded: the row stays listable and DELETE still works, since `deleteRequested` sits above every guard. `requireCompletionSources`' own docblock says the pre-DW-652 bug moved rows `phase: "page"` -> `"sourc
 status: open

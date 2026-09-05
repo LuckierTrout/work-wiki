@@ -515,6 +515,17 @@ describe("the read-only gate precedes the store's lock", () => {
       // call — and `deleteResearchOutbox` itself stays ungated, because ~20
       // in-flight and fail-soft call sites reach it.
       ["research-completion", "drainOrphanOutbox", "deleteResearchOutbox(owner, id)"],
+      // DW-734, the same claim for the ROW-IN-HAND branches. The first thing
+      // `drainResearchOutbox` destroys is the done-phase outbox, so the gate
+      // has to precede that call — and `deleteResearchOutbox` itself still
+      // carries none, for the ~20-call-site reason above.
+      ["research-completion", "drainResearchOutbox", "deleteResearchOutbox(owner, id)"],
+      // Also a WRITE rather than a lock, and the DW-680 shape in the loop that
+      // entry did not name: `reconcileResearchProjects`' done-phase branch
+      // opens with `releaseResearchSlotAndConfirmGone`, into the ungated
+      // `research-concurrency.ts`, so a gate below that line would empty the
+      // project's slot out of `research-leases.json` before refusing.
+      ["research-runtime", "reconcileResearchProjects", "releaseResearchSlotAndConfirmGone("],
     ] as const) {
       const source = sources[module];
       // `export` is OPTIONAL: a gate that has to precede a write is the same
@@ -1035,14 +1046,23 @@ describe("the read-only gate precedes the store's lock", () => {
     // it both go. Nothing on a deployment that refuses writes can produce them
     // again, so the drop has to be refused rather than run fail-soft.
     //
-    // NOT the last such path, and this case does not claim to be: several
-    // other `deleteResearchOutbox` call sites still delete on a read-only
-    // deployment — `drainResearchOutbox`'s own done-phase and `deleteRequested`
-    // branches, `commitResearchPage`'s retire/cancel branches, and
-    // `reconcileResearchProjects`' done-phase branch with its ungated lease
-    // release. Each is reached with a project row in hand, which is a different
-    // shape from an orphan and a different decision; DW-681 closed the one
-    // where the row is already gone and the outbox is all that is left.
+    // The ROW-GONE shape specifically. The sibling branches that reach the same
+    // deleters with a project row in hand were a different decision and were
+    // gated separately (DW-734, the four `drainResearchOutbox` cases and the
+    // reconcile case below). DW-681 is the one where the row is already gone
+    // and the outbox is all that is left.
+    //
+    // STILL NOT EXHAUSTIVE, and this case does not claim to be. At least three
+    // shapes go on writing on a read-only deployment: `commitResearchPage`'s
+    // own retire/cancel `deleteResearchOutbox` calls;
+    // `reconcileResearchProjects`' OTHER branches — the `!needsLease` one and
+    // the abandoned/cancelled ones below it, which reach ungated
+    // `releaseResearchSlot`, `releaseExpiredResearchSlot`,
+    // `releaseResearchSlotAndConfirmGone` and `clearResearchStaging`; and
+    // `drainResearchOutbox`'s remaining row-in-hand path, which routes through
+    // those same ungated `commitResearchPage` early returns. Each is its own
+    // decision about which branch owns the sentence, not an oversight this
+    // suite has already covered.
     //
     // The gate lives at `drainOrphanOutbox`, not at `deleteResearchOutbox`,
     // which ~20 in-flight and fail-soft call sites reach — hence the
@@ -1151,6 +1171,222 @@ describe("the read-only gate precedes the store's lock", () => {
     const survived = await loadResearchOutbox(OWNER, orphanId);
     expect(survived?.claimed).toBe(true);
     expect(survived?.synthesis).toBe("Synthesis whose Page write never landed.");
+  });
+
+  /**
+   * DW-734. The three row-in-hand branches DW-681 left open.
+   *
+   * Each is reached with a project ROW in hand rather than an orphan outbox,
+   * and between them they empty `research-leases.json` through the ungated
+   * `research-concurrency.ts`, delete the page-written receipt with a raw
+   * `deleteFile`, and destroy an outbox plus every staged body beside it — on a
+   * deployment that has refused every other write and can reproduce none of it.
+   *
+   * Every seed here takes a REAL lease. The byte claim is only worth making if
+   * the tree actually holds the thing the branch would have emptied.
+   */
+  const pageWrittenPathFor = (id: string) =>
+    `tenants/${tenantForOwner(OWNER)}/research-outbox/${id}.json.page-written`;
+  const leasePath = () => `tenants/${tenantForOwner(OWNER)}/research-leases.json`;
+
+  /** A project holding a real slot, plus whatever the branch under test needs. */
+  async function seedLeasedProject(): Promise<{ id: string; attemptId: string }> {
+    const project = await createResearchProject(OWNER, RESEARCH_INPUT);
+    const grant = await acquireResearchSlot(OWNER, project.id);
+    // Asserted rather than defaulted: the row's `runAttemptId` has to be the
+    // lease's own token or the branch under test would not be reached with a
+    // LIVE slot, and a silent `?? ""` would hide that.
+    expect(grant.attemptId, "the slot grant carried no attempt id").toBeTruthy();
+    return { id: project.id, attemptId: grant.attemptId! };
+  }
+
+  async function seedOutboxWithBody(id: string, sha: string): Promise<string> {
+    const stagingPath =
+      `tenants/${tenantForOwner(OWNER)}/research-outbox`
+      + `/staging-${id}-example-com-${sha}.md`;
+    await getStorage().writeFile(stagingPath, "# Staged body\n");
+    await saveResearchOutbox(OWNER, id, {
+      pageSlug: "research-competitor-pricing",
+      title: "Competitor pricing",
+      synthesis: "Synthesis the deployment can no longer reproduce.",
+      thinking: [],
+      claimed: true,
+      sources: [{
+        url: "https://example.com/a",
+        title: "A",
+        slug: "example-com",
+        sha,
+        sourcePath: stagingPath,
+        length: 14,
+      }],
+      evidence: [{ url: "https://example.com/a", title: "A" }],
+    });
+    return stagingPath;
+  }
+
+  it("drainResearchOutbox refuses a DONE-phase row's outbox teardown", async () => {
+    const { id, attemptId } = await seedLeasedProject();
+    const stagingPath = await seedOutboxWithBody(id, "aaa111");
+    await updateResearchProject(OWNER, id, {
+      status: "complete",
+      runAttemptId: attemptId,
+      completion: { phase: "done", pageSlug: "research-competitor-pricing", sources: [] },
+    });
+
+    const before = await seededSnapshot();
+    expect(
+      before[leasePath()],
+      "the seed took no lease — the byte claim would be vacuous",
+    ).toBeTruthy();
+    expect(
+      before[stagingPath],
+      "the seed wrote no staging body — the deletion would have nothing to destroy",
+    ).toBeTruthy();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => drainResearchOutbox(OWNER, id),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    expect(await snapshot()).toEqual(before);
+    // Read back through the loader, not just off the bytes.
+    const survived = await loadResearchOutbox(OWNER, id);
+    expect(survived?.synthesis).toBe("Synthesis the deployment can no longer reproduce.");
+  });
+
+  it("drainResearchOutbox refuses a DONE-phase row that is deleteRequested with NO outbox", async () => {
+    // The row that makes the done-phase gate's condition load-bearing on BOTH
+    // of its terms. Narrowing `if (outbox || project.deleteRequested)` to
+    // `if (outbox)` leaves every other case in this suite green — and this
+    // shape then walks straight into `deleteRetiredProjectIfLeaseGone`, whose
+    // first statement is the ungated `releaseResearchSlot`, so the project's
+    // slot is emptied out of `research-leases.json` before the refusal finally
+    // arrives from the gated `deleteResearchProject` at the end.
+    const { id, attemptId } = await seedLeasedProject();
+    await updateResearchProject(OWNER, id, {
+      status: "complete",
+      runAttemptId: attemptId,
+      completion: { phase: "done", pageSlug: "research-competitor-pricing", sources: [] },
+    });
+    await mutateResearchProject(OWNER, id, (project) => {
+      project.deleteRequested = true;
+      return project;
+    });
+    expect(await loadResearchOutbox(OWNER, id), "the seed left an outbox").toBeNull();
+
+    const before = await seededSnapshot();
+    expect(
+      before[leasePath()],
+      "the seed took no lease — the only thing this branch would destroy",
+    ).toBeTruthy();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => drainResearchOutbox(OWNER, id),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    // The lease is what this case is really about: it is the ONE thing on disk
+    // the narrowed condition would have emptied.
+    expect(await snapshot()).toEqual(before);
+    expect(await getResearchProject(OWNER, id)).not.toBeNull();
+  });
+
+  it("drainResearchOutbox refuses a deleteRequested row that still has an outbox", async () => {
+    const { id, attemptId } = await seedLeasedProject();
+    const stagingPath = await seedOutboxWithBody(id, "bbb222");
+    await updateResearchProject(OWNER, id, {
+      runAttemptId: attemptId,
+      // NOT `done`, so the drain falls past the branch above and reaches the
+      // `deleteRequested` branch below the commit — the one that destroys all
+      // three things at once.
+      completion: { phase: "sources", pageSlug: "research-competitor-pricing", sources: [] },
+      // Pre-set, and load-bearing for the BYTE claim rather than for the gate:
+      // the drain mints and persists `deliveryAttemptId` before it reaches this
+      // branch, so a row without one would write the registry on the way in and
+      // the tree could not be byte-identical.
+      deliveryAttemptId: "delivery-attempt-fixed",
+    });
+    await mutateResearchProject(OWNER, id, (project) => {
+      project.deleteRequested = true;
+      return project;
+    });
+
+    const before = await seededSnapshot();
+    expect(before[leasePath()], "the seed took no lease").toBeTruthy();
+    expect(before[stagingPath], "the seed wrote no staging body").toBeTruthy();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => drainResearchOutbox(OWNER, id),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    expect(await snapshot()).toEqual(before);
+    expect(await loadResearchOutbox(OWNER, id)).not.toBeNull();
+    // The tombstoned row itself is still there to be retired once the
+    // deployment is writable.
+    expect(await getResearchProject(OWNER, id)).not.toBeNull();
+  });
+
+  it("drainResearchOutbox refuses a deleteRequested row with NO outbox but a page-written marker", async () => {
+    const { id, attemptId } = await seedLeasedProject();
+    // No outbox at all — what this branch destroys is the page-written receipt
+    // and the lease, which is exactly why the gate cannot live on
+    // `deleteResearchOutbox`.
+    const markerPath = pageWrittenPathFor(id);
+    await getStorage().writeFile(markerPath, JSON.stringify({ pageSlug: "research-competitor-pricing" }));
+    await updateResearchProject(OWNER, id, {
+      runAttemptId: attemptId,
+      completion: { phase: "sources", pageSlug: "research-competitor-pricing", sources: [] },
+      deliveryAttemptId: "delivery-attempt-fixed",
+    });
+    await mutateResearchProject(OWNER, id, (project) => {
+      project.deleteRequested = true;
+      return project;
+    });
+
+    const before = await seededSnapshot();
+    expect(before[leasePath()], "the seed took no lease").toBeTruthy();
+    expect(
+      before[markerPath],
+      "the seed wrote no page-written marker — the deletion would have nothing to destroy",
+    ).toBeTruthy();
+    process.env.YOPEDIA_READONLY = "1";
+
+    await expectRefusal(
+      () => drainResearchOutbox(OWNER, id),
+      READ_ONLY_REFUSAL.researchMutate,
+    );
+
+    // Ahead of BOTH the marker delete and the lease release.
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("a DONE-phase row with nothing to destroy is a READ, and is not refused", async () => {
+    // The control the conditional gate exists for. `drainResearchOutbox`'s
+    // done-phase branch also covers a pure read — no outbox, no
+    // `deleteRequested` — that returns the project. An unconditional gate at
+    // the head of that branch would turn a read into a refusal on a read-only
+    // deployment, which is a new bug rather than a closed one, and every byte
+    // case above would still be green.
+    const { id, attemptId } = await seedLeasedProject();
+    await updateResearchProject(OWNER, id, {
+      status: "complete",
+      runAttemptId: attemptId,
+      completion: { phase: "done", pageSlug: "research-competitor-pricing", sources: [] },
+    });
+    expect(await loadResearchOutbox(OWNER, id), "the seed left an outbox").toBeNull();
+
+    const before = await seededSnapshot();
+    process.env.YOPEDIA_READONLY = "1";
+
+    const drained = await drainResearchOutbox(OWNER, id);
+
+    expect(drained?.id).toBe(id);
+    expect(drained?.completion?.phase).toBe("done");
+    expect(await snapshot()).toEqual(before);
   });
 
   it("the research CAS primitives carry no THROWING gate in their own source", async () => {

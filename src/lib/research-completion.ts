@@ -132,23 +132,70 @@ function isCompletionSource(value: unknown): value is ResearchCompletionSource {
  * `updated?.completion?.sources.find(…)` unguarded — it reads back exactly
  * what the guarded mutator one line above just wrote, so the shape is already
  * established. Everything else that iterates or indexes a STORED
- * `completion.sources` comes through here, {@link commitResearchPage}'s two
- * reads included (DW-652). Those two used to be `completion?.sources?.length ?
- * … : …`, which treated a truthy non-array as a usable list and so PERSISTED
- * it forward — writing the string into the stored completion, moving the row
- * `phase: "page"` → `"sources"` and recording a `progress.message` that
- * counted the string's CHARACTERS as sources — leaving only the drain
- * immediately after to refuse. They now guard first and fall back second, so
- * the ordinary first-commit path is the one thing the fallback still means: no
- * `completion` on the row at all, or a completion holding an empty list.
+ * `completion.sources` comes through here or through
+ * {@link completionSourcesOrNull}, which is the SAME decision with the other
+ * answer. {@link commitResearchPage}'s two reads (DW-652) used to be
+ * `completion?.sources?.length ? … : …`, which treated a truthy non-array as a
+ * usable list and so PERSISTED it forward — writing the string into the stored
+ * completion, moving the row `phase: "page"` → `"sources"` and recording a
+ * `progress.message` that counted the string's CHARACTERS as sources — leaving
+ * only the drain immediately after to refuse. They now guard first and fall
+ * back second, so the ordinary first-commit path is the one thing the fallback
+ * still means: no `completion` on the row at all, or a completion holding an
+ * empty list.
+ *
+ * THE ONE EXEMPTION, AND ITS LIMIT (DW-682). Those two reads take
+ * {@link completionSourcesOrNull} instead when the row they are holding is
+ * `cancelRequested` or already `status: "cancelled"`. Refusing there made the
+ * cancel TEARDOWN unreachable: both cancel early returns above require
+ * `!completion`, so a cancel landing on a row whose stored completion is
+ * malformed threw here and never reached the branch that deletes that
+ * completion outright, stranding the row at `cancelRequested` forever. The
+ * exemption never repairs and never writes the malformed list forward — it lets
+ * the value be DELETED, which is the one operation that does not dereference
+ * it. What the exempted path DOES write is stated at the call site: the claim
+ * CAS replaces the completion with an outbox-derived one before the teardown
+ * deletes it. `deleteRequested` is deliberately NOT exempt and needs no
+ * exemption: its branches sit above this guard already.
  */
 function requireCompletionSources(completion: ResearchCompletion): ResearchCompletionSource[] {
+  const sources = completionSourcesOrNull(completion);
+  // An empty stored list is a VALID list, and `[]` is truthy — so this tests
+  // the sibling's answer, not the list's length.
+  if (sources) return sources;
+  // Reached only where the sibling already said "not a valid stored list". The
+  // decision is entirely its; what is recomputed here is only the MESSAGE,
+  // because with no repair route the index is the operator's only handle on
+  // WHICH entry is wrong.
   if (!Array.isArray(completion.sources)) throw new ResearchCompletionShapeError();
   const bad = completion.sources.findIndex((source) => !isCompletionSource(source));
-  if (bad !== -1) {
-    throw new ResearchCompletionShapeError(`Research completion source ${bad} is invalid.`);
-  }
-  return completion.sources;
+  throw new ResearchCompletionShapeError(`Research completion source ${bad} is invalid.`);
+}
+
+/**
+ * {@link requireCompletionSources}' non-throwing sibling: the stored list, or
+ * `null` exactly where that guard would throw.
+ *
+ * ONE notion of a valid stored list, two answers. Both are built on the same
+ * `isCompletionSource` predicate and the guard above now DERIVES its refusal
+ * from this function, so "valid" cannot come to mean two things — a tightening
+ * or a loosening applied here moves both doors together.
+ *
+ * `null` rather than a skipped read, for the callers in
+ * {@link commitResearchPage}. Skipping the read outright would make a
+ * WELL-SHAPED cancelled row fall back to `completionSourcesFromOutbox`, where
+ * it used to use its own stored list — a silent behaviour change on a path
+ * that was never broken. Answering the same list when the shape is fine, and
+ * `null` only where the guard would have refused, keeps the delta to exactly
+ * the malformed case.
+ */
+function completionSourcesOrNull(
+  completion: ResearchCompletion,
+): ResearchCompletionSource[] | null {
+  if (!Array.isArray(completion.sources)) return null;
+  return completion.sources.every((source) => isCompletionSource(source))
+    ? completion.sources
+    : null;
 }
 
 /** Delete a requested project only after its durable execution claim is gone. */
@@ -577,8 +624,39 @@ export async function commitResearchPage(
   // completion at all — the ordinary first commit — and an empty stored list
   // falls back the same way. Anything present but wrong-shaped refuses now,
   // before it can be written forward (DW-652).
+  //
+  // UNLESS THE ROW IS BEING TORN DOWN (DW-682). A `cancelRequested` row, or one
+  // already `status: "cancelled"`, answers `null` for a malformed stored list
+  // instead of refusing — the same list as before whenever the shape is fine,
+  // so nothing changes for a well-shaped cancelled row. Refusing here made the
+  // cancel TEARDOWN below unreachable: both cancel early returns require
+  // `!completion`, so a cancel that landed on a malformed completion threw at
+  // this line and the row stayed at `cancelRequested` forever, never reaching
+  // the `!authorized` branch that DELETES the completion outright, sets
+  // `status: "cancelled"` and drops the outbox. Teardown never dereferences
+  // `sources`, which is the whole reason refusing for it was wrong.
+  //
+  // WHAT THE EXEMPTED PATH WRITES ON THE WAY, stated plainly because "never
+  // writes a malformed list forward" is true of the malformed value and silent
+  // about everything else. The claim CAS below REPLACES the stored completion
+  // with an outbox-derived one — `sources` from `completionSourcesFromOutbox`,
+  // plus `writeClaimedAt` and `writeClaimId` — and the teardown deletes that
+  // completion moments later. A crash in the window between the two therefore
+  // leaves the row carrying a completion the stored row never had, still at
+  // `phase: "page"` with a stale claim that ages out. That is the pre-DW-652
+  // shape of this path and it is deliberate, not a consequence of the
+  // exemption: the same claim-then-teardown sequence runs for a WELL-SHAPED
+  // cancelled row today. The exemption only decides which list the claim
+  // carries.
+  //
+  // `deleteRequested` is NOT exempt and needs no exemption: its branches sit
+  // above this read already, so deleting a project whose completion is
+  // malformed has always worked.
+  const tearingDown = afterSave.cancelRequested === true || afterSave.status === "cancelled";
   const storedSources = afterSave.completion
-    ? requireCompletionSources(afterSave.completion)
+    ? (tearingDown
+        ? completionSourcesOrNull(afterSave.completion)
+        : requireCompletionSources(afterSave.completion))
     : null;
   const sources = storedSources?.length
     ? storedSources
@@ -599,7 +677,28 @@ export async function commitResearchPage(
     // that would otherwise persist a truthy non-array forward. It stays BELOW
     // the phase and claim-freshness guards so a row this mutator would decline
     // to touch is still declined rather than refused.
-    const ownSources = project.completion ? requireCompletionSources(project.completion) : null;
+    //
+    // And exempt the same way (DW-682), from THIS row's own fields rather than
+    // the pre-claim snapshot's, because the mutator holds a freshly loaded row.
+    //
+    // The ORDINARY reason this read is load-bearing is the row that was already
+    // tearing down at BOTH reads: it is the second of the two doors a cancel
+    // has to get through, and leaving it guarded keeps the teardown unreachable
+    // just as surely as leaving the first one guarded does.
+    //
+    // The race it additionally covers is narrower than "a cancel landed between
+    // the two reads", which cannot fire on its own: a row that was NOT tearing
+    // down at the pre-claim read and was already malformed threw there. For
+    // this read to be the door on its own the row has to be corrupted AND
+    // cancelled in that window — the mirror of the DW-652 case that pins the
+    // guarded half of this same line.
+    const ownTearingDown = project.cancelRequested === true
+      || project.status === "cancelled";
+    const ownSources = project.completion
+      ? (ownTearingDown
+          ? completionSourcesOrNull(project.completion)
+          : requireCompletionSources(project.completion))
+      : null;
     if (!project.deliveryAttemptId) project.deliveryAttemptId = crypto.randomUUID();
     project.completion = {
       phase: "page",
@@ -931,6 +1030,24 @@ export async function drainResearchOutbox(
     return null;
   }
   if (project.completion?.phase === "done") {
+    if (outbox || project.deleteRequested) {
+      // Deployment read-only (DW-734). CONDITIONAL, because this branch is also
+      // a pure READ: a done-phase row with no outbox and nothing requested
+      // falls straight through to `return project`, and an unconditional gate
+      // at the head would turn that read into a refusal — a new bug, not a
+      // closed one. With either of those present the branch destroys the outbox
+      // JSON and every `staging-<id>-*.md` body beside it, and then empties the
+      // project's slot out of `research-leases.json` through
+      // `deleteRetiredProjectIfLeaseGone` — none of which a read-only
+      // deployment can reproduce.
+      //
+      // The gate is on the BRANCH and not on `deleteResearchOutbox`: that
+      // helper has ~20 in-flight delivery and fail-soft recovery call sites,
+      // several with `.catch(() => undefined)`, so a throw there strands a run
+      // — DW-527's reasoning, and the same placement DW-681 used at
+      // `drainOrphanOutbox`.
+      assertWritable(READ_ONLY_REFUSAL.researchMutate);
+    }
     if (outbox) await deleteResearchOutbox(owner, id);
     if (project.deleteRequested) {
       await deleteRetiredProjectIfLeaseGone(owner, id, project.runAttemptId);
@@ -940,6 +1057,14 @@ export async function drainResearchOutbox(
   }
   if (!outbox) {
     if (project.deleteRequested) {
+      // Deployment read-only (DW-734), at the head of the branch rather than on
+      // the deleters inside it. There is no outbox here, but there is still a
+      // page-written receipt to delete and a lease to empty out of
+      // `research-leases.json` — `clearPageWrittenMarker` is a raw `deleteFile`
+      // and `deleteRetiredProjectIfLeaseGone` opens with the ungated
+      // `releaseResearchSlot`, so a refusal any lower arrives after the damage.
+      // The branch below (`return project`) stays a pure read.
+      assertWritable(READ_ONLY_REFUSAL.researchMutate);
       await clearPageWrittenMarker(owner, id);
       await deleteRetiredProjectIfLeaseGone(owner, id, project.runAttemptId);
       return null;
@@ -969,6 +1094,14 @@ export async function drainResearchOutbox(
   if (!completion) return current;
 
   if (current.deleteRequested) {
+    // Deployment read-only (DW-734). All three destructive shapes in one
+    // branch: the outbox with its staged bodies, the page-written receipt, and
+    // the project's slot in `research-leases.json` via the ungated
+    // `releaseResearchSlot` inside `deleteRetiredProjectIfLeaseGone`. Gated at
+    // the head of the branch, never on `deleteResearchOutbox` — that helper is
+    // reached by ~20 in-flight and fail-soft sites, several with
+    // `.catch(() => undefined)`, and a throw there is DW-527's stranded run.
+    assertWritable(READ_ONLY_REFUSAL.researchMutate);
     await deleteResearchOutbox(owner, id);
     await clearPageWrittenMarker(owner, id);
     await deleteRetiredProjectIfLeaseGone(owner, id, current.runAttemptId);

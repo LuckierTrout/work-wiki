@@ -1364,6 +1364,161 @@ describe("a stored completion whose sources are not a list", () => {
   });
 
   /**
+   * DW-682. The teardown exemption, and the two doors it has to open.
+   *
+   * `commitResearchPage` guarded BOTH of its reads unconditionally, while both
+   * cancel early returns above them require `!completion` — so a cancel that
+   * landed on a row whose stored completion is malformed threw here and could
+   * never reach the `!authorized` branch that deletes that completion outright,
+   * sets `status: "cancelled"` and drops the outbox. The row sat at
+   * `cancelRequested` forever, refusing on every retry, with no route that
+   * could clear it. Teardown never dereferences `sources`, which is what makes
+   * refusing for it the wrong answer rather than a conservative one.
+   *
+   * Either exempt read on its own is load-bearing for these rows: with only the
+   * pre-claim one exempt the claim CAS re-reads and throws, and with only the
+   * in-CAS one exempt the pre-claim read throws first.
+   */
+  it.each([
+    // Both flavours of "being torn down", because the exemption tests both and
+    // a gate that checked only `cancelRequested` would leave a row that reached
+    // `status: "cancelled"` by another route stuck exactly as before.
+    ["cancelRequested", { cancelRequested: true }],
+    ["status: cancelled", { status: "cancelled" as const }],
+  ])("finalizes a %s row whose stored completion is malformed", async (_label, cancel) => {
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      ...cancel,
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: "https://example.com/a",
+      } as unknown as ResearchCompletion,
+    });
+
+    const committed = await commitResearchPage("alice", created.id, OUTBOX);
+
+    // Resolves rather than refusing, and the row is FINALIZED — not merely
+    // left alone. `status: "cancelled"` with the completion gone is what makes
+    // the row reachable again; a resolve that left `cancelRequested` standing
+    // would be the same stuck row with a quieter symptom.
+    expect(committed?.status).toBe("cancelled");
+    expect(committed?.completion).toBeUndefined();
+    expect(committed?.progress?.message).toBe("Cancelled before the Page write.");
+
+    const after = await getResearchProject("alice", created.id);
+    expect(after?.status).toBe("cancelled");
+    expect(after?.completion).toBeUndefined();
+    // The teardown ran in full: outbox gone, and the Page writer never called.
+    // The exemption exists to let the value be DELETED, never to let a
+    // malformed completion reach the Page write.
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  it("finalizes the same row when it is reached through the drain", async () => {
+    // The route an operator actually hits: the panel poll and reconcile call
+    // `drainResearchOutbox`, not `commitResearchPage`. A drain that still
+    // refused here would leave the stuck row stuck no matter how the commit
+    // behaves in isolation.
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      cancelRequested: true,
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: "https://example.com/a",
+      } as unknown as ResearchCompletion,
+    });
+
+    const drained = await drainResearchOutbox("alice", created.id);
+
+    expect(drained?.status).toBe("cancelled");
+    expect(drained?.completion).toBeUndefined();
+    expect(await loadResearchOutbox("alice", created.id)).toBeNull();
+    // Nothing was delivered on the way out: no Page, no Ingest for the
+    // string's characters.
+    expect(mockedWritePage).not.toHaveBeenCalled();
+    expect(mockedEnqueue).not.toHaveBeenCalled();
+  });
+
+  it("still reads a WELL-SHAPED cancelled row's own stored sources, not the outbox's", async () => {
+    // The limit of the exemption, and the reason it answers `null` instead of
+    // skipping the read. Skipping outright would make a well-shaped cancelled
+    // row fall back to `completionSourcesFromOutbox` where it used to use its
+    // own stored list — a silent behaviour change on a path that was never
+    // broken. So the stored list here holds a source the OUTBOX does not, and
+    // what is asserted is which of the two the claim CAS wrote.
+    const stored = {
+      url: "https://example.com/stored-only",
+      title: "Stored only",
+      slug: "research-example-com-stored-only",
+      sha: "stored-sha",
+    };
+    const created = await createResearchProject("alice", {
+      title: "Launch evidence",
+      question: "What supports the launch date?",
+    });
+    await saveResearchOutbox("alice", created.id, OUTBOX);
+    await updateResearchProject("alice", created.id, {
+      cancelRequested: true,
+      completion: {
+        phase: "page",
+        pageSlug: OUTBOX.pageSlug,
+        sources: [stored],
+      },
+    });
+
+    // The claim CAS's completion is deleted moments later by the teardown, so
+    // the registry's final bytes cannot say which list it used. The CAS write
+    // itself can: registry writes all go through `writeFileIfMatch`.
+    const storage = getStorage();
+    const registryPath = `tenants/${tenantForOwner("alice")}/research-projects.json`;
+    const writeIfMatch = storage.writeFileIfMatch.bind(storage);
+    const claimedSources: unknown[][] = [];
+    vi.spyOn(storage, "writeFileIfMatch").mockImplementation(
+      async (filePath: string, content: string, etag: string) => {
+        if (filePath === registryPath) {
+          const rows = JSON.parse(content) as Array<Record<string, unknown>>;
+          const completion = rows.find((row) => row.id === created.id)?.completion as
+            | { sources?: unknown[]; writeClaimId?: string }
+            | undefined;
+          if (completion?.writeClaimId) claimedSources.push(completion.sources ?? []);
+        }
+        return writeIfMatch(filePath, content, etag);
+      },
+    );
+
+    const committed = await commitResearchPage("alice", created.id, OUTBOX);
+
+    // The claim really landed, or the assertions below would pass vacuously.
+    // Counted rather than pinned at one: the CAS re-emits the same claim
+    // payload, and how many times it does that is not this row's subject —
+    // WHICH list it carried is.
+    expect(claimedSources.length).toBeGreaterThan(0);
+    for (const written of claimedSources) {
+      expect(written).toEqual([stored]);
+      // And the outbox's own source — the one the fallback would have used —
+      // is NOT what got written.
+      expect((written[0] as { url: string }).url).not.toBe(OUTBOX.sources[0].url);
+    }
+
+    // Teardown is unchanged for this row too: the exemption is about which
+    // value the read answers, not about what the cancel branch then does.
+    expect(committed?.status).toBe("cancelled");
+    expect(committed?.completion).toBeUndefined();
+    expect(mockedWritePage).not.toHaveBeenCalled();
+  });
+
+  /**
    * The ACCEPTANCE side of the guard, which is the half a tightening would
    * break silently. The docblock promises `jobId`/`error` may be a string or
    * absent, `ingested` a boolean or absent, and that unknown extra keys are

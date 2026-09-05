@@ -155,7 +155,7 @@ import { _resetStorage, getStorage } from "../storage";
 import { enqueueTask, parseTask } from "../tasks";
 import type { IndexEntry } from "../types";
 import { addToVault } from "../vault";
-import { listWikiPages, writeWikiPage } from "../wiki";
+import { listWikiPages, tenantForOwner, writeWikiPage } from "../wiki";
 
 const mockedSearch = vi.mocked(searchResearchProvider);
 const mockedExtract = vi.mocked(extractResearchSourceText);
@@ -2387,6 +2387,74 @@ describe("deep research — remediations", () => {
     for (const id of ids) {
       expect(await loadResearchOutbox("alice", id)).not.toBeNull();
     }
+  });
+
+  it("logs a read-only skip for a DONE-PHASE project row, and empties no lease", async () => {
+    // DW-734. The per-project catch's sibling shape, and the one nothing
+    // reached: every read-only reconcile case above deletes the project row
+    // first, so they all walk the ORPHAN loop. With the row still present the
+    // sweep takes the done-phase branch instead — which opened with
+    // `releaseResearchSlotAndConfirmGone`, into `research-concurrency.ts` where
+    // there is no gate at all, and then destroyed the outbox with its staged
+    // bodies. On a read-only deployment the slot went out of
+    // `research-leases.json` while the row went on recording that
+    // `runAttemptId`, and the outbox could never be reproduced.
+    //
+    // The REAL flag rather than a mocked rejection: what is under test IS the
+    // gate, and a rejection stubbed onto some other writer would stay green
+    // with the gate deleted.
+    const created = await project();
+    const grant = await acquireResearchSlot("alice", created.id);
+    await saveResearchOutbox("alice", created.id, {
+      pageSlug: "research-launch-evidence",
+      title: "Launch evidence",
+      synthesis: "# Launch evidence\n\nA brief.",
+      thinking: [],
+      sources: [],
+      evidence: [],
+      claimed: true,
+    });
+    await updateResearchProject("alice", created.id, {
+      status: "complete",
+      runAttemptId: grant.attemptId,
+      completion: { phase: "done", pageSlug: "research-launch-evidence", sources: [] },
+    });
+    const leasePath = `tenants/${tenantForOwner("alice")}/research-leases.json`;
+    const leaseBefore = await getStorage().readFile(leasePath);
+    expect(leaseBefore, "the seed took no lease — the claim below would be vacuous")
+      .toContain(created.id);
+
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const savedReadOnly = process.env.YOPEDIA_READONLY;
+    process.env.YOPEDIA_READONLY = "1";
+
+    let lines: string[] = [];
+    try {
+      await reconcileResearchProjects("alice", await listResearchProjects("alice"));
+    } finally {
+      if (savedReadOnly === undefined) delete process.env.YOPEDIA_READONLY;
+      else process.env.YOPEDIA_READONLY = savedReadOnly;
+      // BEFORE `mockRestore`, which clears the recorded calls with it.
+      lines = warn.mock.calls.map((call) => String(call[1]));
+      warn.mockRestore();
+    }
+
+    expect(lines).toContain(`reconcile skipped read-only project ${created.id}`);
+    // Never "damaged": nothing is wrong with this row, and telling an operator
+    // their data is corrupt when the deployment simply refused a write is the
+    // DW-528 mistake in a new branch.
+    expect(lines.some((line) => line.includes("damaged project"))).toBe(false);
+    // And never as an ORPHAN either. The branch takes this id out of
+    // `outboxIds` ABOVE its gate, so a refusal cannot leave it in the set for
+    // the orphan loop at the bottom of the sweep — which would re-drain a row
+    // that HAS a project record and report it under a name that says the
+    // opposite. This is the hazard `markResearchDeliveryBlocked`'s docblock
+    // names as its reason never to throw.
+    expect(lines.filter((line) => line.includes("orphan outbox"))).toEqual([]);
+    // The refusal was real and it arrived FIRST: the slot is still leased and
+    // the outbox is still loadable, drainable once the deployment is writable.
+    expect(await getStorage().readFile(leasePath)).toBe(leaseBefore);
+    expect(await loadResearchOutbox("alice", created.id)).not.toBeNull();
   });
 
   it("still names a DAMAGED orphan outbox when the fault is not a refusal", async () => {

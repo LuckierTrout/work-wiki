@@ -199,6 +199,41 @@
  * one path answers {@link READ_ONLY_REFUSAL.pageWrite} — two doors, two
  * sentences, and `reconcileResearchProjects` classifies both.
  *
+ * AND FOUR MORE OF THE SAME SHAPE, WITH THE PROJECT ROW STILL IN HAND
+ * (DW-734). DW-681 closed the ORPHAN case — no row, just an outbox — and left
+ * the branches that reach the same deleters holding a row. Three in
+ * `drainResearchOutbox` (the done-phase branch, the `!outbox` +
+ * `deleteRequested` branch, and the `deleteRequested` branch below the commit)
+ * and one in `reconcileResearchProjects`' done-phase branch now take
+ * {@link READ_ONLY_REFUSAL.researchMutate} at the head of their OWN branch.
+ * Between them they were emptying `research-leases.json` through
+ * `research-concurrency.ts` — ungated, so the slot went while the row kept
+ * recording its `runAttemptId` — deleting the page-written receipt with a raw
+ * `deleteFile`, and destroying an outbox plus every staged body beside it.
+ * THE RULE THEY SHARE, and the reason there are four gates rather than one:
+ * the gate goes on the branch, NEVER on `deleteResearchOutbox`,
+ * `clearResearchStaging`, `clearPageWrittenMarker` or
+ * `deleteRetiredProjectIfLeaseGone` — shared helpers whose ~20 in-flight and
+ * fail-soft callers, several with `.catch(() => undefined)`, would meet a
+ * throw as DW-527's stranded run rather than as a refusal. One of the four is
+ * CONDITIONAL for the mirror-image reason: `drainResearchOutbox`' done-phase
+ * branch is a pure read when there is no outbox and no `deleteRequested`, and
+ * refusing a read is a new bug, not a closed one. `markResearchDeliveryBlocked`
+ * returns early for a `ReadOnlyError`, so a drain refused from the sweep writes
+ * nothing at all.
+ *
+ * NEITHER `reconcileResearchProjects` NOR `research-completion.ts` IS FULLY
+ * GATED BY THAT, and this note would mislead a reader who assumed otherwise.
+ * Reconcile's other branches — the `!needsLease` one and the
+ * abandoned/cancelled ones below it — still reach ungated `releaseResearchSlot`,
+ * `releaseExpiredResearchSlot`, `releaseResearchSlotAndConfirmGone` and
+ * `clearResearchStaging`; `commitResearchPage`'s own retire/cancel
+ * `deleteResearchOutbox` calls are ungated, and so is the
+ * `drainResearchOutbox` path that routes through them. What DW-734 closed is
+ * the four branches whose refusal costs an operator an outbox, a receipt or a
+ * lease they cannot rebuild; the rest are separate decisions about which branch
+ * owns the sentence, still open.
+ *
  * AND FOURTEEN OF THOSE DOORS NOW CARRY A BACKSTOP AS WELL (DW-316, DW-319,
  * DW-526, DW-527's `PATCH /api/research/[id]`, and DW-639/DW-657's
  * `DELETE /api/research/[id]` and `POST /api/research/[id]/run`). The five
