@@ -5945,7 +5945,9 @@ location: src/components/workbench/ChatCanvas.tsx:472 and src/lib/chat.ts:865
 source_spec: `spec-dw-618-619-621-single-snapshot-model-client.md`
 severity: low
 reason: `ChatCanvas.tsx:472` refuses on `!assembled.chatModel.configured`, which comes from `chatModelForRetrieve` → `getChatModelSettings` (`wiki-retrieve.ts:544`) — the WORKLOAD resolver, which honours `cfg.chatProvider`. `chat.ts:865` then refuses on `!(await hasLLMKey())`, which reads `cfg.provider` only. For a store holding `chatProvider: "ollama"` and no `provider` the two disagree: the UI gate passes (workload resolves ollama, keyless, `configured: true`), the send proceeds, and the runtime gate throws `No LLM provider is configured.` — so the owner is told Chat is ready and then told nothing is configured, on the same click. Underneath sits the real gap DW-621 misdiagnosed as a `hasLLMKey` widening: NO production call site passes `workload` to `getConfiguredModel` (only tests do), and Epics 2 and 3, which `llm.ts:400-406` and `config.ts:1578-1591` name as owning those call sites, are `done` in `sprint-status.yaml` without having wired it — so `chatProvider`/`ingestProvider` change what the UI reports but never which model a call actually uses. Fixing this means either routing chat/ingest by workload at the call sites or making both gates ask one question; picking between those is a story, not a predicate change. See that spec's Design Notes ("The DW-621 finding") for the measurement that ruled out widening the gate on its own.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-711
+resolution-undo: 0c49582892dcced78aaa81029aede59f53a3e639a655f5a73f68259176fac706 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-03 Route by workload at the call sites — Pass workload through getConfiguredModel and getModel at the production call sites Epics 2 and 3 left unwired, so chatProvider and ingestProvider actually select the model a call uses, and make both the UI gate and the runtime gate read that one resolved answer. Resolve DW-621 the same way. Pin that a chatProvider-only store passes both gates and reaches the provider it names.
 
 ### DW-712: `assembleWikiContext` resolves its `chatModel` payload from a config cache nothing on that route ever warms, so a cold process reports a correctly configured provider as `configured: false`.
@@ -6591,4 +6593,12 @@ location: Dockerfile:20
 source_spec: `spec-dw-431-534-deployment-and-e2e-environment-parity.md`
 severity: low
 reason: Verifying DW-431 with a real build surfaced this. `docker build .` fails at `Dockerfile:20` (`RUN pnpm build`) with "Build failed because of webpack errors" and the import trace `node:timers/promises` -> src/lib/storage/filesystem.ts -> src/lib/storage/index.ts -> src/lib/backups.ts -> src/components/SystemHealthDesk.tsx. Pre-existing, not caused by this change: a control build from a Dockerfile whose deps stage still reads `COPY package.json pnpm-lock.yaml ./` fails identically at the same step. `docker build --target deps .` succeeds either way, so only the image's build stage is dead. Nothing in `.github/workflows/` runs `docker build`, so CI cannot see it; `Dockerfile` and `docker-compose.yml` are the only record that the container path is meant to work.
+status: open
+
+### DW-782: `SETTINGS_MODEL_INHERIT_COPY` promises that leaving a workload's provider unset inherits "the primary provider and model", but a saved workload MODEL alone already overrides the model while inheriting
+origin: spec-deferred a895682e1dd9
+location: src/lib/workbench-settings.ts:334
+source_spec: `spec-dw-711-workload-routing-at-chat-and-ingest.md`
+severity: low
+reason: `workloadModelSettings` (`src/lib/config.ts`) sets `usesPrimary = provider === undefined && model === undefined`, so a store holding only `chatModel` reports and now routes that saved model while the provider inherits. The sentence under both model pickers (`src/lib/workbench-settings.ts:333-334`) describes both halves as inherited. PRE-EXISTING: the resolver has reported the saved model this way since Story 1.9; DW-711 only made the same store also select the model a call uses, which raises the copy's cost without having caused it.
 status: open

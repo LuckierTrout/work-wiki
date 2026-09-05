@@ -854,17 +854,32 @@ async function generateChatAnswer(
 
   let content: string;
   let backend: ChatBackend = "native";
+  // `{workload: "chat"}` ON THE GATE AND ON THE CALL IT GUARDS (DW-711). Chat
+  // is Epic 3's call site, so the `chatProvider`/`chatModel` an owner saves in
+  // Settings selects the model this generation actually runs on — and the gate
+  // asks the SAME resolver `assembleWikiContext` puts in the retrieve payload,
+  // which is what `ChatCanvas` refuses on. Before this, a store holding only
+  // `chatProvider` passed the UI gate and was then refused here by a predicate
+  // answering for the primary route. A workload with nothing saved inherits, so
+  // every existing deployment resolves exactly as it did.
+  //
+  // THIS IS THE IN-PROCESS DOOR, and it is the one `src/lib/config.ts` names as
+  // Epic 3's call site. A send from the live Chat surface does not reach it: it
+  // posts to the sidecar, which reads `chatProvider`/`chatModel` through a
+  // ladder of its own (`sidecar/chat-provider.mjs`) that never consults the
+  // primary `provider`/`model`. That path is not in this story's scope and is
+  // unchanged by it.
   if (hermesConfigured()) {
     try {
       content = await callHermes(system, messages);
       backend = "hermes";
     } catch {
-      if (!(await hasLLMKey())) throw new Error("Hermes is unavailable and no fallback LLM is configured.");
-      content = await callLLM(system, rawRetrievalQuestion);
+      if (!(await hasLLMKey({ workload: "chat" }))) throw new Error("Hermes is unavailable and no fallback LLM is configured.");
+      content = await callLLM(system, rawRetrievalQuestion, { workload: "chat" });
     }
   } else {
-    if (!(await hasLLMKey())) throw new Error("No LLM provider is configured.");
-    content = await callLLM(system, rawRetrievalQuestion);
+    if (!(await hasLLMKey({ workload: "chat" }))) throw new Error("No LLM provider is configured.");
+    content = await callLLM(system, rawRetrievalQuestion, { workload: "chat" });
   }
 
   return {

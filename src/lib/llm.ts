@@ -246,37 +246,100 @@ export async function retryWithBackoff<T>(
  * `src/` for exactly that slip, which is also why this sentence does not spell
  * the offending call out: the scan reads this file too.
  *
- * `chatProvider` / `ingestProvider` ARE NOT READ HERE, ON PURPOSE (DW-621).
- * This gate answers one question — "can the PRIMARY route make a call" — and
- * every one of its ~20 consumers takes that route immediately after: `callLLM`,
- * `callLLMStream` and `callVisionLLM` go through {@link getModel}, and the bare
+ * IT ANSWERS FOR WHICHEVER ROUTE THE CALLER NAMES (DW-711). With no argument —
+ * which is how ~20 of its consumers call it — the question is still "can the
+ * PRIMARY route make a call", because that is the route every one of them takes
+ * immediately after: `callLLM`, `callLLMStream` and `callVisionLLM` fall through
+ * to {@link getModel} when no workload is passed, and the bare
  * `getConfiguredModel()` calls (`action-extractor.ts`, `todo-extract.ts`) pass
- * no options at all. That route resolves
- * `cfg.provider ?? env.provider` in `getResolvedCredentials` and ignores the
- * workload fields entirely; nothing in `src/` passes `workload:` yet, by design
- * (see {@link LlmWorkload}). So for a store that names a provider ONLY through
- * `chatProvider` or `ingestProvider`, a `true` answer here would be a promise
- * the resolvers cannot keep: `analyzeSource` in `src/lib/ingest.ts` gates on
- * this function and then calls `callLLM` with no `try` around it, so the gate
- * opening would turn today's empty-analysis degrade into a thrown
- * `No LLM API key found…` and take the ingest with it — ~20 graceful skips
- * traded for a cosmetic honesty gain.
+ * no options at all. Widening that DEFAULT to `chatProvider` / `ingestProvider`
+ * was refused (DW-621) and stays refused: `analyzeSource` in `src/lib/ingest.ts`
+ * gates on this function and then calls `callLLM` with no `try` around it, so a
+ * gate opening for a route the caller does not take turns today's
+ * empty-analysis degrade into a thrown `No LLM API key found…`.
  *
- * THE DISHONESTY IS REAL BUT BELONGS AT THE CALL SITES. A `chatProvider`-only
- * store makes `chat.ts` refuse with "No LLM provider is configured." after the
- * retrieve payload has already reported that chat model configured. That is
- * fixed by wiring the workload route through `chat.ts` and `ingest.ts` (Epics 2
- * and 3, filed as DW-711), not by widening this predicate — which would only
- * move the throw down into `getModel()`.
+ * WITH `{workload}` it asks the workload's own question instead, from the same
+ * resolver the Settings surface and the retrieve payload read
+ * ({@link getChatModelSettings} / {@link getIngestModelSettings}) — so the gate
+ * and the call it guards cannot answer to two different providers. That is what
+ * closed DW-711: a store naming a provider ONLY through `chatProvider` used to
+ * pass `ChatCanvas`'s gate (which reads the workload answer) and then be refused
+ * "No LLM provider is configured." by `chat.ts` (which read this one). The two
+ * call sites that pass it are `src/lib/chat.ts` and `src/lib/ingest.ts`, and
+ * both hand the SAME `{workload}` to the `callLLM` they guard. `chat.ts` is the
+ * IN-PROCESS chat door; a send from the live Chat surface goes to the sidecar,
+ * which resolves `chatProvider`/`chatModel` through a ladder of its own
+ * (`sidecar/chat-provider.mjs`) and is not in this story's scope.
+ *
+ * A CALLER THAT DOES NOT PASS ONE STAYS ON THE PRIMARY, and that is a decision
+ * per call site rather than per file: `reconcilePage` lives in `ingest.ts` but
+ * takes its workload from its caller, because `mergePages`
+ * (`src/lib/merge.ts`, not a workload owner) reaches it behind the bare gate.
+ *
+ * AN UNSET WORKLOAD INHERITS, and inherits all the way: when the store saved no
+ * override, `{workload}` re-asks the primary question — env leg included — so
+ * its answer is byte-for-byte the no-argument answer. Only a store that actually
+ * saved `chatProvider`/`chatModel` or `ingestProvider`/`ingestModel` can tell
+ * the two calls apart. Saving the MODEL alone is such a store: `usesPrimary` is
+ * false as soon as either field is set, so a "cheaper model, same provider"
+ * selection routes through the override with the provider inherited.
+ *
+ * WHAT AN OVERRIDE COSTS WHEN IT IS UNUSABLE. The workload answer is
+ * `providerIsUsable` — credentials AND a model name — where the primary
+ * question asks only about credentials. So a saved override with both credential
+ * halves and NO model name (`{chatProvider: "custom", customApiKey,
+ * customBaseUrl}` and no `chatModel`) closes this gate, and the call site
+ * refuses with its own generic sentence, where the primary route would have
+ * reached `getModel` and named the actual gap — the specific missing-model
+ * refusal the `custom` branch below raises. That is the trade this story buys
+ * and it is deliberate: the UI
+ * gate refuses that same store from that same resolver, so the owner is told no
+ * by one answer rather than yes by one and no by another. The INHERITING case
+ * keeps the specific sentence, because it never enters this branch.
+ *
+ * THE ENV FAST PATH IS SKIPPED FOR A NAMED WORKLOAD, necessarily: the override
+ * lives in the store and BEATS the primary route, so an env-configured
+ * deployment whose owner saved `chatProvider: "openai"` with no
+ * `OPENAI_API_KEY` has to hear `false` here rather than the primary's `true`.
+ * Both workload call sites make an LLM request immediately after and already
+ * read the store again inside `callLLM`; the no-argument fast path — the one
+ * the ~20 other consumers, several inside loops, actually pay for — is
+ * untouched.
  */
-export async function hasLLMKey(): Promise<boolean> {
-  // Fast path: check env vars via shared helper
-  const env = detectEnvProvider();
-  if (env.provider) return true;
+export async function hasLLMKey(options?: {
+  workload?: LlmWorkload;
+}): Promise<boolean> {
+  // Fast path: check env vars via shared helper. Primary question only — see
+  // the docblock's note on why a named workload cannot answer from the env.
+  if (!options?.workload) {
+    const env = detectEnvProvider();
+    if (env.provider) return true;
+  }
 
   // The store leg needs the STORE, and `loadConfigSync()` cannot read it on a
   // cold cache (DW-548) — so this awaits the real read.
   const cfg = await loadConfig();
+
+  if (options?.workload) {
+    // ONE resolver, not a second copy of the ladder: this is the same answer
+    // `assembleWikiContext` puts in the retrieve payload and the Settings
+    // surface renders, so the UI gate and this runtime gate cannot disagree.
+    // `cfg` is threaded for the same reason it is below (DW-334).
+    const settings =
+      options.workload === "chat"
+        ? getChatModelSettings(cfg)
+        : getIngestModelSettings(cfg);
+    // Only an ACTUAL override speaks for itself. An inheriting workload falls
+    // through to the primary question — including the env leg the fast path
+    // above was skipped for — which is what keeps the inherit case identical to
+    // a no-argument call. Answering `settings.configured` here instead would
+    // move the answer for stores that saved nothing: `configured` asks for
+    // credentials AND a model name, so a `{provider: "custom", customApiKey,
+    // customBaseUrl}` store with no model would flip from `true` to `false` and
+    // trade `getModel`'s specific "needs a model name" for a generic refusal.
+    if (!settings.usesPrimary && settings.provider) return settings.configured;
+    if (detectEnvProvider().provider) return true;
+  }
 
   // Ollama is keyless — only config-file provider path that works without env vars
   if (cfg.provider === "ollama") return true;
@@ -476,8 +539,18 @@ function getModel(cfg?: AppConfig) {
  * Which workload a caller is resolving a model for (Story 1.9).
  *
  * Story 1.9 owns the SETTING and this resolver; Epics 2 and 3 own the call
- * sites. Nothing in `ingest.ts` or `chat.ts` passes `workload` yet, deliberately
- * (`epic-1-context.md:63`) — rewiring them here would pre-empt two stories.
+ * sites, and DW-711 wired them: `src/lib/chat.ts` passes `{workload: "chat"}`
+ * and `src/lib/ingest.ts` passes `{workload: "ingest"}`, to {@link hasLLMKey}
+ * and to the `callLLM` each gate guards, so a workload's gate and its call
+ * resolve through one ladder.
+ *
+ * NOT EVERY DOOR TAKES ONE. {@link callVisionLLM} stays on the primary
+ * deliberately: vision needs a MULTIMODAL model and Story 1.9 defines no vision
+ * workload, so spending an owner's text-synthesis choice on an image call would
+ * refuse work that runs today. Neither `query.ts`, `search.ts`, the lint and
+ * merge helpers, `knowledge-compilation.ts`, `research-runtime.ts` nor
+ * `source-monitors.ts` is a workload owner either — `src/lib/config.ts` names
+ * two call-site owners and these are neither.
  */
 export type LlmWorkload = "chat" | "ingest";
 
@@ -495,7 +568,36 @@ export async function getConfiguredModel(options?: {
   // `loadConfig` because an EMPTY answer must stay unthreaded — see its
   // docblock.
   const cfg = await configSnapshot();
+  return resolveConfiguredModel(options, cfg);
+}
 
+/**
+ * THE ONE LADDER, reached from two entry points (DW-711).
+ *
+ * This is {@link getConfiguredModel}'s whole body after its `await`, lifted out
+ * unchanged so `callLLMWithFinish` and `callLLMStream` can resolve a
+ * workload-routed model too. They already hold a `configSnapshot()`; calling
+ * `getConfiguredModel({workload})` from them would take a SECOND one — a second
+ * storage read and a second config generation, undoing DW-618 — and copying the
+ * workload branch into them would be a second ladder free to drift from this
+ * one.
+ *
+ * SYNCHRONOUS on purpose, and it can be: `apiKeyForProvider`,
+ * `getResolvedCredentials`, `getChatModelSettings`, `getIngestModelSettings`,
+ * `getCustomBaseUrl`, `getOllamaBaseUrl`, `getModel` and every `create*` are
+ * all synchronous, so the single `await` stays at the door and one `cfg` is
+ * threaded through every leg of the client built here.
+ *
+ * With no `provider` and no `workload` this expression IS `getModel(cfg)`,
+ * which is what lets the `callLLM` family route through it without changing the
+ * answer for any of its existing callers.
+ */
+function resolveConfiguredModel(
+  options:
+    | { provider?: ProviderValue; model?: string; workload?: LlmWorkload }
+    | undefined,
+  cfg: AppConfig | undefined,
+) {
   let provider = options?.provider;
   let model = options?.model;
   if (!provider && options?.workload) {
@@ -649,17 +751,22 @@ export async function getConfiguredModel(options?: {
  * {@link callLLM}'s — this IS that body.
  *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
+ * @param options.workload — route this call through Chat's or Ingest's own
+ *   provider/model setting instead of the primary one. Omitted, or saved with
+ *   no override, resolves exactly as before (DW-711).
  */
 export async function callLLMWithFinish(
   systemPrompt: string,
   userMessage: string,
-  options?: { maxOutputTokens?: number },
+  options?: { maxOutputTokens?: number; workload?: LlmWorkload },
 ): Promise<{ text: string; finishReason: FinishReason }> {
-  // The snapshot is FORWARDED rather than discarded (DW-618): `getModel()`
-  // would otherwise re-enter the 5 s-TTL cache and could build one client out
-  // of two config generations. Empty stays unthreaded — see `configSnapshot`.
+  // The snapshot is FORWARDED rather than discarded (DW-618): re-entering the
+  // resolver would otherwise re-enter the 5 s-TTL cache and could build one
+  // client out of two config generations. Empty stays unthreaded — see
+  // `configSnapshot`. With no workload this IS `getModel(cfg)`; see
+  // {@link resolveConfiguredModel}.
   const cfg = await configSnapshot();
-  const model = getModel(cfg);
+  const model = resolveConfiguredModel({ workload: options?.workload }, cfg);
 
   const { text, finishReason } = await retryWithBackoff(() =>
     generateText({
@@ -696,11 +803,12 @@ export async function callLLMWithFinish(
  * sibling and branch, which is what `./query` and `./research-runtime` do.
  *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
+ * @param options.workload — see {@link callLLMWithFinish} (DW-711).
  */
 export async function callLLM(
   systemPrompt: string,
   userMessage: string,
-  options?: { maxOutputTokens?: number },
+  options?: { maxOutputTokens?: number; workload?: LlmWorkload },
 ): Promise<string> {
   return (await callLLMWithFinish(systemPrompt, userMessage, options)).text;
 }
@@ -710,6 +818,12 @@ export async function callLLM(
  * (e.g. DeepSeek V4, GPT-4o, Gemini). Sends the image bytes + a text prompt as
  * a single user message. Throws if the provider/model isn't multimodal or the
  * response is empty — the caller (vision.ts) handles the fallback.
+ *
+ * NO `workload` OPTION, deliberately (DW-711). Its sibling doors take one; this
+ * one stays on the primary route because a vision call needs a MULTIMODAL model
+ * and Story 1.9 defines no vision workload. `src/lib/vision.ts` runs inside
+ * ingest, so routing it by the ingest setting would spend an owner's
+ * text-synthesis choice on an image call and refuse work that runs today.
  *
  * @param mediaType — e.g. "image/jpeg"; helps the provider; inferred if omitted.
  */
@@ -787,16 +901,24 @@ export async function callVisionLLM(
  * page. Any future caller of this function has the same obligation — reading
  * `textStream` swallows the abort, and a half answer then reads as a whole one.
  *
+ * NO PRODUCTION CALLER PASSES `workload` HERE YET. The option exists so the
+ * three generation doors stay symmetric: a workload owner that later needs a
+ * streamed answer must not have to choose between streaming and its own
+ * provider, and a door that silently ignored `workload` would be worse than one
+ * that never offered it. `settings-runtime-wiring.test.ts` pins it, because a
+ * regression in the one line that resolves it is otherwise invisible.
+ *
  * @param options.maxOutputTokens — optional cap on output tokens (default 4096).
+ * @param options.workload — see {@link callLLMWithFinish} (DW-711).
  */
 export async function callLLMStream(
   systemPrompt: string,
   userMessage: string,
-  options?: { maxOutputTokens?: number },
+  options?: { maxOutputTokens?: number; workload?: LlmWorkload },
 ) {
   // Forwarded, not discarded — see `callLLM` (DW-618).
   const cfg = await configSnapshot();
-  const model = getModel(cfg);
+  const model = resolveConfiguredModel({ workload: options?.workload }, cfg);
 
   return streamText({
     model,

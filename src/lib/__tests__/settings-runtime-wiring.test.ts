@@ -563,10 +563,12 @@ describe("one model client is built out of one config generation", () => {
   });
 
   it("builds an EXPLICIT provider/model client from that generation", async () => {
-    // The production-reachable shape: nothing in `src/` passes `workload`, but
-    // `agent-runtime.ts` and `structured-knowledge.ts` both call this with an
-    // explicit `{provider, model}` — so this is the branch a real deployment
-    // straddles, and it reads the key and the base URL as two resolvers.
+    // The other production-reachable shape. `agent-runtime.ts` and
+    // `structured-knowledge.ts` both call this with an explicit
+    // `{provider, model}`, and `chat.ts`/`ingest.ts` reach the same ladder with
+    // a `workload` (DW-711, covered below) — so both are branches a real
+    // deployment straddles, and each reads the key and the base URL as two
+    // resolvers.
     await store(CUSTOM);
 
     await underAnExpiringCache(() =>
@@ -611,6 +613,209 @@ describe("one model client is built out of one config generation", () => {
     } finally {
       read.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The workload route reaches the call sites that own it (DW-711)
+// ---------------------------------------------------------------------------
+
+/**
+ * `chatProvider` / `ingestProvider` used to change what the UI REPORTED and
+ * never which model a call USED: no production call site passed `workload` to
+ * the resolver, so Epics 2 and 3 closed with the routing unbuilt. The visible
+ * consequence was two gates answering two different questions on one send —
+ * `ChatCanvas` refusing on the WORKLOAD answer (`getChatModelSettings`, through
+ * the retrieve payload) while `chat.ts` refused on the PRIMARY one
+ * (`hasLLMKey` with no argument). A store holding `chatProvider: "ollama"` and
+ * no `provider` passed the first and was told "No LLM provider is configured."
+ * by the second.
+ *
+ * These cases run against the REAL config store and the mocked provider SDKs,
+ * so they can see which client was actually constructed and with what — which
+ * is the half a module-mocked `../llm` (the pins in `ingest.test.ts` and
+ * `chat-workload-routing.test.ts`) cannot see.
+ */
+describe("a saved workload provider selects the model its own calls run on", () => {
+  /** The `{provider, model}` pair `generateText` was actually handed. */
+  function lastModel(): unknown {
+    return lastGenerateArgs().model;
+  }
+
+  it("routes a chat-only store to the provider it names, through callLLM", async () => {
+    // THE DW-711 STORE: a workload override and no primary at all.
+    await store({ chatProvider: "ollama", chatModel: "llama3" });
+
+    // Both gates agree, which is the whole bug. `getChatModelSettings` is what
+    // `chatModelForRetrieve` puts in the payload `ChatCanvas` gates on.
+    expect(getChatModelSettings().configured).toBe(true);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(true);
+
+    await callLLM("system", "message", { workload: "chat" });
+    expect(createOllamaMock).toHaveBeenCalled();
+    expect(lastModel()).toEqual({ id: "llama3", api: "responses" });
+  });
+
+  it("leaves the bare gate answering false for that same store", async () => {
+    // The decision NOT to widen the default (DW-621) is still in force: ~20
+    // consumers call the gate with no argument and take the primary route
+    // immediately after, so this store must keep degrading them exactly as it
+    // does today. Only the NAMED answer moved.
+    await store({ chatProvider: "ollama", chatModel: "llama3" });
+
+    expect(await hasLLMKey()).toBe(false);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(true);
+    // …and the workload that saved nothing inherits a primary that is absent.
+    expect(await hasLLMKey({ workload: "ingest" })).toBe(false);
+  });
+
+  it("routes an ingest-only store to a custom endpoint, through callLLM", async () => {
+    await store({
+      ingestProvider: "custom",
+      ingestModel: "m",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://api.example/v1",
+    });
+
+    expect(await hasLLMKey({ workload: "ingest" })).toBe(true);
+    expect(await hasLLMKey()).toBe(false);
+
+    await callLLM("system", "message", { workload: "ingest" });
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+    // `.chat()`, not the Responses API — an OpenAI-compatible endpoint
+    // generally does not implement `/responses`.
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith("m");
+  });
+
+  it("refuses a workload whose named provider has no credential", async () => {
+    // The override speaks for itself in BOTH directions. `OPENAI_API_KEY` is
+    // scrubbed per case, so this store names a provider the deployment cannot
+    // construct — and the gate has to say so rather than borrow a `true` from
+    // somewhere the call is not going.
+    await store({ chatProvider: "openai" });
+
+    expect(await hasLLMKey({ workload: "chat" })).toBe(false);
+  });
+
+  it("builds the IDENTICAL client for a workload that saved nothing", async () => {
+    // THE INHERIT CASE, which is what keeps every existing deployment and every
+    // one of the gate's other consumers on today's behaviour byte for byte.
+    // This case fails the moment the workload branch starts answering for a
+    // store that never opened the workload rows in Settings.
+    await store(CUSTOM);
+
+    await callLLM("system", "message");
+    const bare = {
+      ctor: createOpenAIMock.mock.calls.at(-1),
+      model: lastModel(),
+    };
+
+    await callLLM("system", "message", { workload: "chat" });
+    expect(createOpenAIMock.mock.calls.at(-1)).toEqual(bare.ctor);
+    expect(lastModel()).toEqual(bare.model);
+
+    // And the gate agrees with itself for the same reason.
+    expect(await hasLLMKey({ workload: "chat" })).toBe(await hasLLMKey());
+  });
+
+  it("lets the workload BEAT a configured primary", async () => {
+    // The setting selects the model a call uses — that is the whole feature.
+    // The primary here is fully usable, so a resolver that still preferred it
+    // would look correct everywhere except in what got constructed.
+    process.env.ANTHROPIC_API_KEY = "sk-ant";
+    await store({
+      provider: "anthropic",
+      model: "claude-x",
+      ingestProvider: "ollama",
+      ingestModel: "llama3",
+    });
+
+    await callLLM("system", "message", { workload: "ingest" });
+    expect(createOllamaMock).toHaveBeenCalled();
+    expect(lastModel()).toEqual({ id: "llama3", api: "responses" });
+
+    // Chat saved nothing, so it inherits the primary — the two workloads are
+    // independent, which is Story 1.9's headline behaviour.
+    createOllamaMock.mockClear();
+    await callLLM("system", "message", { workload: "chat" });
+    expect(createOllamaMock).not.toHaveBeenCalled();
+  });
+
+  it("routes a MODEL-ONLY override, with the provider inherited", async () => {
+    // "Cheaper chat model, same provider" is the override an owner is most
+    // likely to save, and `usesPrimary` is false as soon as EITHER field is set
+    // — so it must route. Narrowing the branch to `providerSource === "config"`
+    // (a plausible-looking "only an explicit provider is an override") leaves
+    // this store silently on the primary model, and every other case in this
+    // file green.
+    await store({ ...CUSTOM, chatModel: "chat-only-model" });
+
+    await callLLM("system", "message");
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "my-model",
+    );
+
+    await callLLM("system", "message", { workload: "chat" });
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "chat-only-model",
+    );
+    // Same endpoint and key — only the MODEL moved, which is the whole point of
+    // an override that names no provider.
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+  });
+
+  it("routes a workload-named callLLMStream too", async () => {
+    // The third door. Nothing in `src/` streams a workload yet, so without this
+    // case a regression in the one line that resolves it is invisible.
+    await store({
+      chatProvider: "custom",
+      chatModel: "streamed-model",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://api.example/v1",
+    });
+
+    await callLLMStream("system", "message", { workload: "chat" });
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "streamed-model",
+    );
+  });
+
+  it("builds a workload-routed client from ONE config generation", async () => {
+    // The DW-618 straddle, on the route DW-711 opened. The workload branch
+    // reads four resolvers — the workload settings, the key, the base URL and
+    // the credentials — and `callLLM` holds the only snapshot any of them
+    // should answer from. Under an expiring cache a re-entering leg gets the
+    // cold `{}` and refuses a correctly configured endpoint halfway through
+    // building one client.
+    await store({
+      chatProvider: "custom",
+      chatModel: "chat-model",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://api.example/v1",
+    });
+
+    await underAnExpiringCache(() =>
+      callLLM("system", "message", { workload: "chat" }),
+    );
+
+    expect(createOpenAIMock).toHaveBeenLastCalledWith({
+      apiKey: "sk-custom",
+      baseURL: "https://api.example/v1",
+    });
+    expect(createOpenAIMock.mock.results.at(-1)!.value.chat).toHaveBeenCalledWith(
+      "chat-model",
+    );
   });
 });
 

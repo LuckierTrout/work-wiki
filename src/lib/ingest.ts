@@ -10,7 +10,7 @@ import {
   type Frontmatter,
 } from "./wiki";
 import { buildCorpusStats, bm25Score, tokenize } from "./bm25";
-import { callLLM, hasLLMKey } from "./llm";
+import { callLLM, hasLLMKey, type LlmWorkload } from "./llm";
 import {
   fetchUrlContent,
   fetchImageBytes,
@@ -1121,7 +1121,10 @@ async function adjudicateMerge(
   embedBody: string,
   candidates: { slug: string; title: string; snippet: string }[],
 ): Promise<string | null> {
-  if (!(await hasLLMKey())) return null;
+  // `{workload: "ingest"}` on the gate and on the call it guards (DW-711):
+  // ingest is Epic 2's call site, so the provider an owner saves for Ingest is
+  // the one this adjudication runs on. Nothing saved inherits the primary.
+  if (!(await hasLLMKey({ workload: "ingest" }))) return null;
   const list = candidates
     .map((c) => `- slug: ${c.slug}\n  title: ${c.title}\n  snippet: ${c.snippet}`)
     .join("\n");
@@ -1133,6 +1136,7 @@ async function adjudicateMerge(
   try {
     out = await callLLM(MERGE_ADJUDICATION_SYSTEM_PROMPT, user, {
       maxOutputTokens: 24,
+      workload: "ingest",
     });
   } catch (err) {
     logger.warn("ingest", "merge adjudication failed; forking to a new page", err);
@@ -1354,7 +1358,7 @@ export async function reconcilePage(
    * {@link humanOwnerOf}. Callers reduce the raw handle BEFORE calling. */
   guidanceOwner?: string,
   cache?: GuidanceCache,
-  options?: { emptyFallback?: "new" | "throw" },
+  options?: { emptyFallback?: "new" | "throw"; workload?: LlmWorkload },
 ): Promise<{ body: string; disputed: boolean }> {
   const user = `# Current page\n\n${existingBody}\n\n# Newly ingested article (same concept)\n\n${newBody}`;
   const [workspaceGuidance, dictionaryGuidance] = guidanceOwner
@@ -1366,8 +1370,19 @@ export async function reconcilePage(
   const systemPrompt = RECONCILE_SYSTEM_PROMPT +
     (workspaceGuidance ? `\n\n${workspaceGuidance}` : "") +
     (dictionaryGuidance ? `\n\n${dictionaryGuidance}` : "");
+  // THE ROUTE IS THE CALLER'S TO NAME, not this function's (DW-711). Two doors
+  // reach here and they are gated by different questions: `ingest()` below gates
+  // on `hasLLMKey` with `{workload: "ingest"}` and passes the matching workload,
+  // while `mergePages` (`src/lib/merge.ts`) gates on the argument-less gate — the
+  // PRIMARY question — and `merge.ts` is not a workload owner. Baking
+  // `workload: "ingest"` in here would hand the merge fold a provider its own
+  // gate never asked about: with an `ingestProvider` the deployment cannot
+  // construct, merge's gate opens and this call throws into `mergePages`' catch,
+  // which silently appends the two bodies. A gate and the call it guards must
+  // answer to one provider, so the caller supplies it.
   const out = await callLLM(systemPrompt, user, {
     maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS,
+    workload: options?.workload,
   });
   const emptyFallback = options?.emptyFallback ?? "new";
   if (!out || out.trim() === "") {
@@ -1795,7 +1810,11 @@ async function analyzeSource(
   relativePath?: string,
 ): Promise<IngestAnalysis> {
   const context = classificationContext(relativePath);
-  if (!(await hasLLMKey())) {
+  // THE SHARPEST OF THE GATES: there is no `try` around the `callLLM` below, so
+  // this must stay a degrade. Asking the workload keeps the two in step —
+  // opening for a route the call does not take is what would turn the empty
+  // analysis into a thrown ingest (DW-711).
+  if (!(await hasLLMKey({ workload: "ingest" }))) {
     return emptyIngestAnalysis(context);
   }
   const user = [
@@ -1808,6 +1827,7 @@ async function analyzeSource(
     .join("\n");
   const raw = await callLLM(ANALYSIS_SYSTEM_PROMPT, user, {
     maxOutputTokens: 2_000,
+    workload: "ingest",
   });
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
@@ -1889,7 +1909,7 @@ async function synthesizeBody(
   cache?: GuidanceCache,
   analysis?: IngestAnalysis,
 ): Promise<string> {
-  if (!(await hasLLMKey())) {
+  if (!(await hasLLMKey({ workload: "ingest" }))) {
     // Derived title so a title-less paste doesn't emit an empty `# ` H1.
     return generateFallbackPage(title, content);
   }
@@ -1901,7 +1921,9 @@ async function synthesizeBody(
   const chunks = chunkText(content, MAX_LLM_INPUT_CHARS);
   // Larger output budget so the ## Details section can preserve substantive
   // source content instead of being truncated.
-  const llmOptions = { maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS };
+  // The workload rides on the shared options objects, so the single-chunk call
+  // and the reduce call below cannot drift from the gate above (DW-711).
+  const llmOptions = { maxOutputTokens: INGEST_MAX_OUTPUT_TOKENS, workload: "ingest" as const };
 
   if (chunks.length === 1) {
     return callLLM(systemPrompt, chunks[0], llmOptions);
@@ -1911,7 +1933,7 @@ async function synthesizeBody(
   // bounded-concurrency batches), then merge the partials into one article.
   // Mapping from source keeps coverage faithful and stops cross-chunk drift;
   // the parallel map keeps a long transcript well under the request budget.
-  const mapOptions = { maxOutputTokens: INGEST_MAP_MAX_OUTPUT_TOKENS };
+  const mapOptions = { maxOutputTokens: INGEST_MAP_MAX_OUTPUT_TOKENS, workload: "ingest" as const };
   const partials: string[] = [];
   for (let i = 0; i < chunks.length; i += INGEST_MAP_CONCURRENCY) {
     const batch = chunks.slice(i, i + INGEST_MAP_CONCURRENCY);
@@ -2510,7 +2532,7 @@ export async function ingest(
   // new source contradicts what's there. Skipped without an LLM key (fall back
   // to the prior overwrite behaviour) and for a prebuilt image body (already
   // final). The page summary is computed from the raw source, so it is unaffected.
-  const canReconcileWithLlm = await hasLLMKey();
+  const canReconcileWithLlm = await hasLLMKey({ workload: "ingest" });
   if (existing && canReconcileWithLlm && !prebuiltContent) {
     try {
       // Reconcile against the frontmatter-STRIPPED body (existing.content still
@@ -2521,6 +2543,8 @@ export async function ingest(
         wikiContent,
         guidanceOwner,
         guidanceCache,
+        // The same workload `canReconcileWithLlm` just asked about.
+        { workload: "ingest" },
       );
       wikiContent = reconciled.body;
       // Only escalate — never clear a disputed flag preserved from the existing

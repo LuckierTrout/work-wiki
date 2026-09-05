@@ -66,10 +66,20 @@ export interface AppConfig {
   // disk they are flat keys beside the rest — one store, one JSON.
   // -------------------------------------------------------------------------
 
-  /** Chat's generation route (Epic 3 owns the call sites). */
+  /** Chat's generation route. Read by `src/lib/chat.ts` through
+   *  {@link getChatModelSettings} — both its `hasLLMKey` gate and the `callLLM`
+   *  that gate guards pass `{workload: "chat"}` (DW-711), where unset inherits
+   *  the primary `provider`/`model` exactly. `chat.ts` is the IN-PROCESS
+   *  generation door; the live Chat surface drives the sidecar, which reads
+   *  these two fields through its own ladder (`sidecar/chat-provider.mjs`) and
+   *  carries its own inherit rule. */
   chatProvider?: ProviderValue;
   chatModel?: string;
-  /** Ingest's generation route (Epic 2 owns the call sites). */
+  /** Ingest's generation route. Read by `src/lib/ingest.ts` through
+   *  {@link getIngestModelSettings} — every `hasLLMKey` gate and every `callLLM`
+   *  in that file passes `{workload: "ingest"}` (DW-711). Unset inherits the
+   *  primary. `callVisionLLM` is deliberately NOT routed by it: vision needs a
+   *  multimodal model and Story 1.9 defines no vision workload. */
   ingestProvider?: ProviderValue;
   ingestModel?: string;
   /** The `custom` provider's OpenAI-compatible endpoint and credential. */
@@ -1598,8 +1608,21 @@ function workloadModelSettings(
 
 /**
  * The model Chat runs on. Story 1.9 owns the setting; Epic 3 owns the call
- * sites — nothing in `chat.ts` reads this yet, by design
- * (`epic-1-context.md:63`).
+ * sites, and DW-711 wired them: `src/lib/chat.ts` reaches this answer by passing
+ * `{workload: "chat"}` to its `hasLLMKey` gate and to the `callLLM` that gate
+ * guards, and `chatModelForRetrieve` (`src/lib/wiki-retrieve.ts`) puts it in the
+ * payload `ChatCanvas` gates on. ONE answer for both of THOSE gates is the
+ * point — they used to ask different questions and refuse each other's stores.
+ *
+ * An unset `chatProvider`/`chatModel` still inherits the primary provider and
+ * model exactly, so a deployment that saved nothing here is unaffected.
+ *
+ * SCOPE, precisely: `chat.ts` is the in-process generation door. A send from
+ * the live Chat surface goes to the sidecar instead, and
+ * `sidecar/chat-provider.mjs` resolves `chatProvider` / `chatModel` through a
+ * ladder of its own that never reads `provider` / `model` — so the "inherits the
+ * primary" sentence above is this module's rule, not that path's. The sidecar is
+ * out of DW-711's scope and unchanged by it.
  */
 export function getChatModelSettings(
   cfg: AppConfig = loadConfigSync(),
@@ -1609,8 +1632,15 @@ export function getChatModelSettings(
 
 /**
  * The model Ingest runs on. Story 1.9 owns the setting; Epic 2 owns the call
- * sites. Independent of {@link getChatModelSettings} and of the primary
- * provider — that independence is the story's headline behaviour.
+ * sites, and DW-711 wired them: every `hasLLMKey` gate and every `callLLM` in
+ * `src/lib/ingest.ts` passes `{workload: "ingest"}`, so a gate and the call it
+ * guards resolve through one ladder. Independent of
+ * {@link getChatModelSettings} and of the primary provider — that independence
+ * is the story's headline behaviour — while an unset setting still inherits the
+ * primary exactly.
+ *
+ * `callVisionLLM` is NOT routed by it: `src/lib/vision.ts` runs inside ingest
+ * but needs a multimodal model, and Story 1.9 defines no vision workload.
  */
 export function getIngestModelSettings(
   cfg: AppConfig = loadConfigSync(),

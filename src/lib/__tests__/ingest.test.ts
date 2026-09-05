@@ -46,6 +46,7 @@ import {
   type Frontmatter,
 } from "../wiki";
 import { resetSourceIndex } from "../source-index";
+import { createIngestJob } from "../ingest-jobs";
 import { resetAliasIndex } from "../alias-index";
 // `hasEmbeddingSupport` is imported but NOT mocked (DW-68): the pin below needs
 // the REAL predicate to answer true while the switch is off.
@@ -3428,6 +3429,141 @@ describe("chunkText", () => {
 // ---------------------------------------------------------------------------
 // ingest — chunked LLM calls for long content
 // ---------------------------------------------------------------------------
+
+describe("ingest routes every LLM gate and call through its own workload (DW-711)", () => {
+  /**
+   * THE DW-711 STORE, as `ingest.ts` sees it through the module mock: a
+   * deployment that named a provider ONLY through `ingestProvider`, so the gate
+   * says yes to `{workload: "ingest"}` and no to every other question.
+   *
+   * The discrimination is what makes this suite non-vacuous rather than a
+   * convenience. A gate in `ingest.ts` that loses its argument gets `false`
+   * here and degrades — an empty analysis, a fallback page, a skipped
+   * adjudication — so the assertions on what ingest PRODUCED go red, not just
+   * the ones on how it asked. It also keeps `findRelatedPages`
+   * (`src/lib/search.ts`, deliberately NOT a workload owner) off the LLM path,
+   * so every `callLLM` recorded below came from the file under test.
+   */
+  function ingestWorkloadOnly(): void {
+    mockedHasLLMKey.mockImplementation(
+      async (options) => options?.workload === "ingest",
+    );
+  }
+
+  /** Every options object handed to `callLLM`, in order. */
+  function callOptions(): unknown[] {
+    return mockedCallLLM.mock.calls.map((call) => call[2]);
+  }
+
+  /**
+   * EVERY call, not "some call". A gate and the call it guards answering to
+   * different providers is the defect this bundle closes, so one un-routed
+   * `callLLM` beside a routed gate has to fail here.
+   */
+  function expectAllRouted(): void {
+    expect(callOptions().length).toBeGreaterThan(0);
+    for (const options of callOptions()) {
+      expect(options).toMatchObject({ workload: "ingest" });
+    }
+  }
+
+  beforeEach(() => {
+    resetSourceIndex();
+    resetAliasIndex();
+    ingestWorkloadOnly();
+  });
+
+  afterEach(() => {
+    mockedHasLLMKey.mockReset();
+    mockedHasLLMKey.mockResolvedValue(false);
+    mockedCallLLM.mockReset();
+    vectorSearch(false);
+    mockedSearchByVector.mockResolvedValue([]);
+  });
+
+  it("routes the analysis and synthesis calls on a plain ingest", async () => {
+    mockedCallLLM.mockResolvedValue(
+      "CONCEPT: Workload Routing\n\n# Workload Routing\n\n## Summary\n\nSynthesised.",
+    );
+
+    const result = await ingest(
+      "Routing Note",
+      "A source about workload routing. More detail follows here.",
+    );
+
+    // The gates opened — which, with the mock above, they only do when the
+    // caller names the workload.
+    expect(mockedHasLLMKey).toHaveBeenCalledWith({ workload: "ingest" });
+    expect((await readWikiPage(result.primarySlug))!.content).toContain(
+      "Synthesised.",
+    );
+    expectAllRouted();
+  });
+
+  it("routes the MAP and REDUCE calls on long content", async () => {
+    mockedCallLLM.mockImplementation(async (_system: string, user: string) =>
+      /^# Part 1\b/.test(user)
+        ? "CONCEPT: Long Routing\n\n# Long Routing\n\n## Summary\n\nMerged."
+        : "Distilled note from a chunk.",
+    );
+    const longContent = Array.from(
+      { length: 300 },
+      (_, i) => `Paragraph ${i} discusses topic number ${i} in detail with enough text to be substantial.`,
+    ).join("\n\n");
+    expect(longContent.length).toBeGreaterThan(MAX_LLM_INPUT_CHARS);
+
+    await ingest("Long Routing Article", longContent);
+
+    // Analysis + at least two map calls + the reduce.
+    expect(callOptions().length).toBeGreaterThan(2);
+    expectAllRouted();
+  });
+
+  it("routes the ANALYSIS call the Workbench compile path makes", async () => {
+    // `analyzeSource` only runs behind a `jobId` — the Analysis → Generation
+    // contract — so a plain `ingest()` never reaches it. It is also the sharpest
+    // of the four gates: there is no `try` around the `callLLM` it guards, so a
+    // gate and a call resolving to different providers turns today's
+    // empty-analysis degrade into a failed ingest.
+    await createIngestJob({ jobId: "dw711-job", owner: "owner", title: "Analysed" });
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("Reply with ONLY a JSON object")
+        ? '{"entities":["Routing"],"concepts":["workload"]}'
+        : "CONCEPT: Analysed\n\n# Analysed\n\n## Summary\n\nSynthesised.",
+    );
+
+    await ingest("Analysed Source", "A source the compile path analyses first.", {
+      jobId: "dw711-job",
+    });
+
+    expect(callOptions().length).toBeGreaterThan(1);
+    expectAllRouted();
+  });
+
+  it("routes the merge adjudication and the reconcile that follows it", async () => {
+    vectorSearch(true);
+    mockedSearchByVector.mockResolvedValue([{ slug: "alpha-thing", score: 0.95 }]);
+    mockedCallLLM.mockImplementation(async (system: string, user: string) => {
+      if (system.includes("decide whether")) {
+        return user.includes("alpha-thing") ? "alpha-thing" : "none";
+      }
+      return user.includes("alpha")
+        ? "CONCEPT: Alpha Thing\nALIASES: none\n\n# Alpha Thing\n\n## Summary\n\nAbout alpha."
+        : "CONCEPT: Beta Thing\nALIASES: none\n\n# Beta Thing\n\n## Summary\n\nAbout beta.";
+    });
+
+    await ingest("Alpha Source", "First source, alpha topic. Details here.");
+    const result = await ingest("Beta Source", "Second source, beta wording. More.");
+
+    // The merge happened, so `adjudicateMerge`'s gate opened and its call ran —
+    // both of which are workload-routed now.
+    expect(result.primarySlug).toBe("alpha-thing");
+    expect(
+      mockedCallLLM.mock.calls.filter((c) => c[0].includes("decide whether")).length,
+    ).toBeGreaterThan(0);
+    expectAllRouted();
+  });
+});
 
 describe("ingest — chunked LLM calls", () => {
   it("calls LLM multiple times for long content", async () => {

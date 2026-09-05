@@ -142,34 +142,108 @@ describe("hasLLMKey() sees a store nothing warmed (DW-548)", () => {
     expect(await hasLLMKey()).toBe(false);
   });
 
-  it("still refuses a WORKLOAD-only selection — the gate speaks for the primary route", async () => {
-    // DW-621 asked for the gate to be widened to `chatProvider` /
-    // `ingestProvider`, and this case pins the decision NOT to. The gate answers
-    // "can the primary route make a call", and every one of its ~25 consumers
-    // takes that route (`callLLM` / `callLLMStream` / `callVisionLLM` / bare
-    // `getConfiguredModel()`) immediately after. `getResolvedCredentials` still
-    // resolves this store to `provider: null`, so a `true` here would trade a
+  it("still refuses a WORKLOAD-only selection BY DEFAULT, and answers for the workload that is named", async () => {
+    // THE DEFAULT IS STILL THE PRIMARY ROUTE. DW-621 asked for the bare gate to
+    // be widened to `chatProvider` / `ingestProvider`, and this case pins the
+    // decision NOT to. With no argument the gate answers "can the primary route
+    // make a call", and ~20 of its consumers take that route (`callLLM` /
+    // `callLLMStream` / `callVisionLLM` / bare `getConfiguredModel()`) with no
+    // workload immediately after. `getResolvedCredentials` still resolves this
+    // store to `provider: null`, so a `true` from the bare call would trade a
     // graceful skip for a thrown `No LLM API key found…` at every one of them.
-    // Nothing in production passes `workload`, so the `false` is honest.
     //
-    // `analyzeSource` (`src/lib/ingest.ts`) is the sharpest of the ~25: it gates
-    // on this function and then calls `callLLM` with NO `try` around it, so the
-    // gate opening turns today's empty-analysis degrade into a failed ingest.
-    // The reasoning is recorded on `hasLLMKey`'s own docblock; this case is what
-    // stops a later reading of DW-621 from quietly re-widening it.
+    // `analyzeSource` (`src/lib/ingest.ts`) is the sharpest of them: it gates on
+    // this function and then calls `callLLM` with NO `try` around it, so a gate
+    // that opens for a route the call does not take turns today's
+    // empty-analysis degrade into a failed ingest. That file now passes
+    // `{workload: "ingest"}` to BOTH, which is why its gate may open here —
+    // the call it guards takes the same route.
     //
-    // THE WHOLE ARGUMENT, though: this `false` is not costless either. For a
-    // `chatProvider`-only store `chat.ts:865` throws "No LLM provider is
-    // configured." after `ChatCanvas` has already reported the chat model
-    // configured from the retrieve payload — a real user-visible disagreement.
-    // It is filed as DW-711 and fixed at the call sites (wiring the workload
-    // route) rather than by widening this predicate, which would only move the
-    // throw to `getModel()` and take ~20 graceful skips down with it.
+    // WHAT DW-711 CLOSED is the named-workload answer, not this one. A
+    // `chatProvider`-only store used to pass `ChatCanvas`'s gate (which reads
+    // the workload answer through the retrieve payload) and then be refused "No
+    // LLM provider is configured." by `chat.ts` (which read the bare one). Both
+    // sides now ask the same resolver. The bare answer below must not move with
+    // it: widening the DEFAULT is the separate decision this case pins shut.
     await storeConfig({ chatProvider: "ollama", chatModel: "llama3" });
     expect(await hasLLMKey()).toBe(false);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(true);
+    // …and only for the workload that was saved. Ingest saved nothing, so it
+    // INHERITS the primary — which this store does not have either.
+    expect(await hasLLMKey({ workload: "ingest" })).toBe(false);
 
     await storeConfig({ ingestProvider: "ollama", ingestModel: "llama3" });
     expect(await hasLLMKey()).toBe(false);
+    expect(await hasLLMKey({ workload: "ingest" })).toBe(true);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(false);
+  });
+
+  it("answers the PRIMARY question for a workload that saved nothing", async () => {
+    // The inherit case, on the cold-store harness: `{workload}` must be
+    // indistinguishable from a bare call for every deployment that never opened
+    // the workload rows in Settings. Both store-only legs are checked, because
+    // both are legs the workload branch could have skipped past.
+    await storeConfig({ provider: "ollama" });
+    expect(await hasLLMKey()).toBe(true);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(true);
+    expect(await hasLLMKey({ workload: "ingest" })).toBe(true);
+
+    await storeConfig({
+      provider: "custom",
+      customApiKey: "sk-custom",
+      customBaseUrl: "https://api.example/v1",
+    });
+    expect(await hasLLMKey()).toBe(true);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(true);
+
+    await storeConfig({ provider: "custom", customApiKey: "sk-custom" });
+    expect(await hasLLMKey()).toBe(false);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(false);
+  });
+
+  it("refuses a workload whose saved provider has no credential", async () => {
+    // The override SPEAKS FOR ITSELF once it exists, in both directions: a
+    // workload that names a provider the deployment cannot construct must not
+    // borrow the primary's `true`. Here there is no primary at all and no env
+    // key, and `openai` needs one.
+    await storeConfig({ chatProvider: "openai" });
+    expect(await hasLLMKey({ workload: "chat" })).toBe(false);
+  });
+
+  it("treats a MODEL-ONLY selection as an override, against the STORE's provider", async () => {
+    // `usesPrimary` is false as soon as EITHER field is set, so "cheaper chat
+    // model, same provider" routes through the override branch — and that branch
+    // resolves the provider from the STORE (`cfg.provider ?? env.provider`), not
+    // from whatever key happens to be exported.
+    //
+    // Here the store names OpenAI, the deployment has only an Anthropic key, and
+    // the owner saved a chat model. The bare gate answers `true` off the env
+    // fast path; the chat workload has to answer `false`, because
+    // `resolveConfiguredModel` will take `openai` from this same store and throw
+    // "The OpenAI provider is not configured on this server." A branch narrowed
+    // to "only an explicit provider counts as an override" opens this gate onto
+    // that throw.
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    await storeConfig({ provider: "openai", chatModel: "gpt-4o-mini" });
+
+    expect(await hasLLMKey()).toBe(true);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(false);
+    // Ingest saved nothing, so it inherits the primary question and its `true`.
+    expect(await hasLLMKey({ workload: "ingest" })).toBe(true);
+  });
+
+  it("does not let an ENV key answer for a workload that overrides it", async () => {
+    // The env fast path is skipped for a named workload on purpose. The
+    // override beats the primary route at `resolveConfiguredModel`, so a gate
+    // answering `true` from `ANTHROPIC_API_KEY` would open for a call that is
+    // about to build an unconfigured OpenAI client. The bare gate — and an
+    // INHERITING workload — must still answer from the env.
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    await storeConfig({ chatProvider: "openai" });
+
+    expect(await hasLLMKey()).toBe(true);
+    expect(await hasLLMKey({ workload: "ingest" })).toBe(true);
+    expect(await hasLLMKey({ workload: "chat" })).toBe(false);
   });
 
   it("answers from the environment WITHOUT reading the store", async () => {

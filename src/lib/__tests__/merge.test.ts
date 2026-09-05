@@ -956,6 +956,37 @@ describe("mergePages", () => {
     expect(await readDiscussFixture("agent-harness")).toEqual([]);
   });
 
+  it("folds on the PRIMARY route, not on Ingest's workload (DW-711)", async () => {
+    // `reconcilePage` lives in `src/lib/ingest.ts`, but `merge.ts` is not a
+    // workload owner — its only gate is the bare `hasLLMKey()`, the PRIMARY
+    // question. If the fold hardcoded `workload: "ingest"`, this gate would open
+    // on one provider and the call would go to another: with an `ingestProvider`
+    // the deployment cannot construct, the throw lands in `mergePages`' catch
+    // and the two bodies are silently appended instead of folded.
+    //
+    // The gate mock discriminates so this is not a comment with an assertion
+    // stapled to it: an argument here means merge started asking a question its
+    // fold does not answer, and the fold's own options are read directly.
+    mockedHasLLMKey.mockImplementation(async (options) => options === undefined);
+    await seedPage("agent-harness", {
+      title: "Agent Harness",
+      body: "# Agent Harness\n\nThe harness loop.",
+    });
+    await seedPage("harness-ai-agents", {
+      title: "Harness (AI agents)",
+      body: "# Harness (AI agents)\n\nContext window management.",
+    });
+
+    await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+    // The fold ran (so the gate was asked bare and answered yes)…
+    const into = await readWikiPageWithFrontmatter("agent-harness");
+    expect(into!.body).toContain("Folded body covering both sources.");
+    // …and it named no workload, matching the question its gate asked.
+    expect(mockedCallLLM).toHaveBeenCalledTimes(1);
+    expect(mockedCallLLM.mock.calls[0][2]).toMatchObject({ workload: undefined });
+  });
+
   it("appends both bodies (no reconcile) when there's no LLM key", async () => {
     mockedHasLLMKey.mockResolvedValue(false);
     await seedPage("agent-harness", {
