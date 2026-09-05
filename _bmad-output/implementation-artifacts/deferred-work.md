@@ -6228,7 +6228,9 @@ location: src/lib/ingest.ts:1351
 source_spec: `spec-dw-702-710-merge-fold-quality-and-candidate-fallback.md`
 severity: low
 reason: `reconcilePage`'s `"new"` path (the default) still returns the model's text verbatim, so a reconcile answering exactly "DISPUTED: no\n" or a bare heading becomes `wikiContent` at src/lib/ingest.ts:2408 and replaces the existing page's prose with that literal string. This is the identical shape DW-702 names, minus the hard delete: `spec-c3-merge-empty-reconcile-guard.md` and this spec both forbid changing the ingest door, and the new test at `src/lib/__tests__/ingest.test.ts` now PINS the verbatim return, so the residue is deliberate and enforced rather than merely unnoticed. Less severe than the merge door because `writeWikiPage` snapshots a revision first (src/lib/wiki.ts:596), so the prose is recoverable; the published page is still wrong until someone notices. Deciding whether the ingest door should degrade to `newBody` on a no-prose fold is a behaviour change to a door two specs have now declared out of scope, so it wants its own decision.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-739
+resolution-undo: 3fc93146ebba8025a66ee0f2136080f931ed3b171b4169891c1dfd1fe225124c 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Degrade to newBody at the ingest door — Apply the merge door's rule at the ingest door: when foldCarriesProse(body) is false, fall back to newBody as the empty-response path at ingest.ts:1350 already does, and invert the ingest.test.ts:2902-2924 pin to assert the fallback instead of the verbatim return.
 decision: 2026-09-04 Degrade to newBody at the ingest door — Extend the no-prose predicate to the ingest door so a fold carrying no prose falls back to newBody rather than overwriting the page with the literal, repinning the test that currently freezes the verbatim return and recording that the two specs' out-of-scope clauses are superseded here.
 

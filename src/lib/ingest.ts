@@ -1278,11 +1278,17 @@ export function parseDisputedMarker(raw: string): {
  *  - a horizontal rule or setext underline (`---`, `***`, `===`).
  *
  * ANYTHING else is prose: a sentence, a list item, a table row, a blockquote,
- * a fenced-code delimiter or an indented code line. This is used ONLY under
- * `emptyFallback: "throw"` (the merge door), where the bias is safe in exactly
- * one direction: the degrade is the lossless `into.body + "\n\n" + from.body`
- * append, so a false "no prose" costs an unfolded survivor while a false
- * "prose" costs the survivor's prose outright.
+ * a fenced-code delimiter or an indented code line. BOTH doors run this one
+ * predicate (DW-739); only the DEGRADE differs, and at each the bias is safe in
+ * exactly one direction:
+ *  - `emptyFallback: "throw"` (the merge door): the degrade is the lossless
+ *    `into.body + "\n\n" + from.body` append, so a false "no prose" costs an
+ *    unfolded survivor while a false "prose" costs the survivor's prose
+ *    outright.
+ *  - `emptyFallback: "new"` (the ingest door): the degrade is `newBody`, the
+ *    fresh synthesis, so a false "no prose" costs an unfolded page — the old
+ *    body's prose is still in its revision history — while a false "prose"
+ *    publishes the literal scaffolding as the page body.
  */
 function foldCarriesProse(body: string): boolean {
   for (const raw of body.split(/\r?\n/)) {
@@ -1319,9 +1325,8 @@ function foldCarriesProse(body: string): boolean {
  *  - `"new"` (default, the ingest door): `newBody` is the freshly synthesized
  *    article, so falling back to it degrades to the pre-reconcile overwrite —
  *    the page keeps a real body rather than the fold's nothing. (This covers
- *    the empty/whitespace response only. A response that survives that check
- *    but strips down to nothing still returns an empty body at this door; see
- *    the note at the second check below.)
+ *    the empty/whitespace response AND a response that survives that check but
+ *    strips down to nothing; see the note at the second check below.)
  *  - `"throw"` (the merge door): there `newBody` is the ABSORBED page's body,
  *    and the caller writes the result over the SURVIVOR and then hard-deletes
  *    the absorbed Page and its revisions. Returning `newBody` would silently
@@ -1330,26 +1335,29 @@ function foldCarriesProse(body: string): boolean {
  *    replayed verbatim by any Retry. Throwing hands the caller its own
  *    reconcile-failed path (append both bodies) instead, which loses nothing.
  *
- * Under `"throw"` an empty fold is any response that CARRIES NO PROSE — see
+ * At BOTH doors an empty fold is any response that CARRIES NO PROSE — see
  * {@link foldCarriesProse}. That covers the empty/whitespace response and, once
  * the markers above are stripped, a residue of nothing but scaffolding: a
  * leftover `DISPUTED:` / `CONCEPT:` / `ALIASES:` / `TAGS:` header line the
  * parsers did not consume (notably `DISPUTED: no`, which
  * {@link parseDisputedMarker} deliberately leaves in the body), a bare heading,
- * or a horizontal rule. Under `"new"` the predicate is still the narrow
- * `trim() === ""` — the ingest door returns such text verbatim as the body,
- * exactly as it always has, because `newBody` there is the fresh synthesis and
- * changing that door is out of scope.
+ * or a horizontal rule. ONE RULE, TWO DEGRADES (DW-739): `"throw"` throws,
+ * `"new"` falls back to `newBody` exactly as it does on an empty response.
+ * The ingest door used to return such text VERBATIM, which published the
+ * literal `DISPUTED: no` over the existing page's whole body.
  *
- * THE VERDICT GOES WITH THE BODY. Throwing discards any `DISPUTED: yes` the
- * fold emitted, so `"DISPUTED: yes\n\n# X\n"` — a verdict over a bare heading —
- * no longer escalates the survivor's `disputed` flag (which also feeds
- * {@link computeConfidence}); the caller appends bodies and the survivor keeps
- * whatever verdict its own frontmatter already held. That is the rule the
- * marker-only case has always followed — a fold that produced nothing produces
- * no verdict either — and it is the only coherent one: `disputed` asserts that
- * THIS body reconciles contradictory sources, and there is no such body here.
- * A verdict is trusted only when it arrives with the prose it is about.
+ * THE VERDICT GOES WITH THE BODY, at both doors. Neither degrade carries the
+ * `DISPUTED: yes` the fold emitted — throwing discards it, and the `"new"`
+ * fallback resolves `disputed: false` — so `"DISPUTED: yes\n\n# X\n"`, a verdict
+ * over a bare heading, no longer escalates the `disputed` flag (which also
+ * feeds {@link computeConfidence}); the merge caller appends bodies and the
+ * survivor keeps whatever verdict its own frontmatter already held, and the
+ * ingest caller (which only ever escalates) leaves the page's preserved flag
+ * alone. That is the rule the marker-only case has always followed — a fold
+ * that produced nothing produces no verdict either — and it is the only
+ * coherent one: `disputed` asserts that THIS body reconciles contradictory
+ * sources, and there is no such body here. A verdict is trusted only when it
+ * arrives with the prose it is about.
  */
 export async function reconcilePage(
   existingBody: string,
@@ -1394,12 +1402,22 @@ export async function reconcilePage(
   const { disputed, body: afterDisputed } = parseDisputedMarker(out);
   // Guard against the model echoing the synthesis headers into the merged body.
   const { body } = parseConceptMarker(afterDisputed);
-  // A fold that left no prose reduces to the same empty fold as an empty
-  // response (DW-702). Only `"throw"` re-checks. `"new"` deliberately keeps
-  // today's exact behaviour — it returns the parsed body as-is rather than
-  // falling back — because changing the ingest door is out of scope.
-  if (emptyFallback === "throw" && !foldCarriesProse(body)) {
-    throw new Error("reconcile returned an empty body (the fold carried no prose)");
+  // One rule, two degrades: a fold that carries no prose is the same empty fold
+  // as an empty response (DW-702, DW-739). Both doors run the check; only the
+  // degrade differs — the merge door throws into its lossless append, the
+  // ingest door falls back to `newBody`, the fresh synthesis, exactly as the
+  // empty/whitespace branch above does. The verdict goes with the body.
+  if (!foldCarriesProse(body)) {
+    if (emptyFallback === "throw") {
+      throw new Error("reconcile returned an empty body (the fold carried no prose)");
+    }
+    // SAY SO. This degrade resolves NORMALLY, so without a line here the caller
+    // cannot tell "the model folded the page" from "the model emitted
+    // scaffolding and we threw its answer away" — the adjacent degrade at the
+    // ingest call site logs its own. Only on this path: under `"throw"` the
+    // thrown error already IS the caller's signal.
+    logger.warn("ingest", "reconcile fold carried no prose; using new body");
+    return { body: newBody, disputed: false };
   }
   return { body, disputed };
 }

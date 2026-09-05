@@ -2864,8 +2864,67 @@ describe("ingest — reconcile on merge", () => {
     expect(Number(page!.frontmatter.source_count)).toBe(2);
   });
 
-  // The two end-to-end cases above cannot tell the `emptyFallback` default
-  // apart: at the ingest door `newBody` IS the fresh synthesis, so the `"new"`
+  it("keeps the freshly synthesized body when the reconcile carries no prose", async () => {
+    // DW-739, end to end: the fold survives both parsers but strips down to
+    // scaffolding. `DISPUTED: no` is matched by neither parser, so it used to
+    // be returned VERBATIM and become the whole stored body, wiping the page's
+    // prose. It must now degrade to the fresh synthesis, exactly as an empty
+    // response does — and the verdict goes with the body it described.
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("canonical page about one concept")
+        ? "DISPUTED: no\n"
+        : "CONCEPT: Topic\nALIASES: none\n\n# Topic\n\n## Summary\n\nFresh synthesis body.",
+    );
+
+    await ingest("Topic A", "First source. Details one.");
+    const result = await ingest("Topic B", "Second source. Details two.");
+
+    expect(result.primarySlug).toBe("topic");
+    const page = await readWikiPageWithFrontmatter("topic");
+    expect(page!.content).toContain("Fresh synthesis body.");
+    // The literal never reaches `wikiContent`.
+    expect(page!.body.trim()).not.toBe("DISPUTED: no");
+    expect(page!.content).not.toContain("DISPUTED: no");
+    expect(page!.frontmatter.disputed).toBe(false);
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
+  it("does NOT escalate disputed when the fold's verdict has no prose under it", async () => {
+    // DW-739, the verdict half, end to end. `"DISPUTED: yes\n\n# X\n"` used to
+    // resolve `{ body: "# X\n", disputed: true }` at the ingest door, so the
+    // caller's `if (reconciled.disputed) frontmatter.disputed = true` fired and
+    // `computeConfidence` capped the page at the 0.5 dispute cap — on the
+    // strength of a verdict over a bare heading. The verdict now goes with the
+    // body it described, and neither escalation happens.
+    mockedCallLLM.mockImplementation(async (system: string) =>
+      system.includes("canonical page about one concept")
+        ? "DISPUTED: yes\n\n# X\n"
+        : "CONCEPT: Topic\nALIASES: none\n\n# Topic\n\n## Summary\n\nFresh synthesis body.",
+    );
+
+    // Two DISTINCT source URLs, so corroboration lifts confidence to 0.65 —
+    // above the 0.5 dispute cap, which is the only way the cap is observable
+    // (a text-paste pair scores exactly 0.5 either way).
+    await ingest("Topic A", "First source. Details one.", {
+      sourceUrl: "https://example.com/first",
+    });
+    const result = await ingest("Topic B", "Second source. Details two.", {
+      sourceUrl: "https://example.com/second",
+    });
+
+    expect(result.primarySlug).toBe("topic");
+    const page = await readWikiPageWithFrontmatter("topic");
+    expect(page!.content).toContain("Fresh synthesis body.");
+    expect(page!.body.trim()).not.toBe("# X");
+    expect(page!.frontmatter.disputed).toBe(false);
+    // …so confidence keeps its corroborated value instead of the 0.5 cap the
+    // old escalation applied.
+    expect(page!.frontmatter.confidence).toBe(0.65);
+    expect(Number(page!.frontmatter.source_count)).toBe(2);
+  });
+
+  // The end-to-end cases above cannot tell the `emptyFallback` default apart:
+  // at the ingest door `newBody` IS the fresh synthesis, so the `"new"`
   // fallback and the door's own catch produce byte-identical pages. These call
   // `reconcilePage` directly to pin the option itself.
   it("defaults to the new body on an empty fold, and throws only when asked to", async () => {
@@ -2893,13 +2952,20 @@ describe("ingest — reconcile on merge", () => {
         emptyFallback: "throw",
       }),
     ).rejects.toThrow(/empty body/);
+    // …and at the default door it falls back to `newBody`, verdict discarded
+    // with the body it described (DW-739).
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+    ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
 
     // DW-702: shapes that SURVIVE stripping but carry no prose. `DISPUTED: no`
     // is matched by neither parser (`parseDisputedMarker` takes `yes|true`
     // only), so it comes back verbatim as the body; a bare heading is a real
     // string too. Both used to pass as a genuine fold and overwrite the merge
-    // survivor. Under `"throw"` they must throw; under the ingest door's
-    // default they must still be returned VERBATIM, byte-for-byte as today.
+    // survivor. ONE RULE, TWO DEGRADES (DW-739): under `"throw"` they throw;
+    // under the ingest door's default they fall back to `newBody` — they must
+    // NEVER be returned verbatim, which used to publish the literal over the
+    // existing page's whole body.
     for (const noProse of [
       "DISPUTED: no\n",
       "# Agent Harness\n",
@@ -2919,10 +2985,16 @@ describe("ingest — reconcile on merge", () => {
           emptyFallback: "throw",
         }),
       ).rejects.toThrow(/empty body/);
-      // The ingest door is untouched: no throw, no fallback, the text as-is.
+      // The ingest door degrades to the fresh synthesis instead of throwing —
+      // never the literal, and never a verdict without prose.
       await expect(
         reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
-      ).resolves.toEqual({ body: noProse, disputed: false });
+      ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
+      await expect(
+        reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
+          emptyFallback: "new",
+        }),
+      ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
     }
 
     // …and the widening does NOT swallow a real fold: a heading plus one line
@@ -2934,12 +3006,23 @@ describe("ingest — reconcile on merge", () => {
         emptyFallback: "throw",
       }),
     ).resolves.toEqual({ body: "# Agent Harness\n\nThe folded article.", disputed: false });
+    // …and at the DEFAULT door — where the DW-739 change lives — a real fold
+    // still comes back verbatim. Without this the widened check could fall back
+    // to `newBody` on EVERY response and the test would not notice.
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
+    ).resolves.toEqual({ body: "# Agent Harness\n\nThe folded article.", disputed: false });
 
     mockedCallLLM.mockResolvedValue("DISPUTED: yes\n\n# X\n\nProse.");
     await expect(
       reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
         emptyFallback: "throw",
       }),
+    ).resolves.toEqual({ body: "# X\n\nProse.", disputed: true });
+    // A verdict that arrives WITH its prose is still trusted at the default
+    // door: the fallback discards a verdict only when it discards the body.
+    await expect(
+      reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
     ).resolves.toEqual({ body: "# X\n\nProse.", disputed: true });
 
     // Prose that is NOT a paragraph is still prose — a list item, a table row,
@@ -2965,22 +3048,23 @@ describe("ingest — reconcile on merge", () => {
       ).resolves.toEqual({ body: prose, disputed: false });
     }
 
-    // THE VERDICT GOES WITH THE BODY. A `DISPUTED: yes` over a bare heading
-    // used to return `{ body: "# X\n", disputed: true }` and escalate the
-    // survivor's flag (which feeds `computeConfidence`). It now throws, so the
-    // merge door appends bodies and the survivor keeps the verdict its own
-    // frontmatter already held — the same rule the marker-only case has always
-    // followed: a fold that produced nothing produces no verdict either.
+    // THE VERDICT GOES WITH THE BODY, at both doors. A `DISPUTED: yes` over a
+    // bare heading used to return `{ body: "# X\n", disputed: true }` and
+    // escalate the flag (which feeds `computeConfidence`). Under `"throw"` it
+    // throws, so the merge door appends bodies and the survivor keeps the
+    // verdict its own frontmatter already held; under the ingest door's default
+    // it falls back with `disputed: false` (DW-739). Same rule the marker-only
+    // case has always followed: a fold that produced nothing produces no
+    // verdict either.
     mockedCallLLM.mockResolvedValue("DISPUTED: yes\n\n# X\n");
     await expect(
       reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose.", undefined, undefined, {
         emptyFallback: "throw",
       }),
     ).rejects.toThrow(/empty body/);
-    // The ingest door still reads that verdict — its predicate is untouched.
     await expect(
       reconcilePage("# Existing\n\nOld prose.", "# New\n\nNew prose."),
-    ).resolves.toEqual({ body: "# X\n", disputed: true });
+    ).resolves.toEqual({ body: "# New\n\nNew prose.", disputed: false });
   });
 
   it("degrades to the new body (ingest still succeeds) when reconcile throws", async () => {
