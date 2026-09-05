@@ -107,6 +107,170 @@ async function bumpRebuildEpoch(): Promise<number> {
   return getStorage().incrementIndex(EMBEDDING_REBUILD_EPOCH_KEY);
 }
 
+/** What every staged-interleave helper below hands back. */
+interface HeldCall {
+  /**
+   * Resolves once the held call has run for real and is parked — and REJECTS,
+   * with a named reason, if the door never reaches the held seam. A change
+   * that stops the gate calling this seam at all would otherwise surface as an
+   * opaque 5s vitest timeout with no clue which await is stuck.
+   */
+  arrived: Promise<void>;
+  /** Let the parked call return its already-computed answer. */
+  release: () => void;
+  /**
+   * Release the parked call (if any) and un-spy.
+   *
+   * Releasing is part of restoring on purpose: an assertion that throws between
+   * `arrived` and an explicit `release()` would otherwise leave the door's call
+   * parked past the end of the test, turning one readable failure into a
+   * dangling promise and a timeout. Safe to call whether or not the hold ever
+   * fired, and safe to call after an explicit `release()`.
+   */
+  restore: () => void;
+}
+
+/**
+ * How long a staged hold waits for the door to reach it before giving up.
+ *
+ * Under vitest's 5s default test timeout, so the failure names the seam that
+ * was never reached rather than the whole test running out of time.
+ */
+const HELD_CALL_ARRIVAL_TIMEOUT_MS = 2_000;
+
+/**
+ * `arrived`, with a bounded wait and a reason attached to the giving-up.
+ *
+ * The timer is cleared on either settle, so a hold that fires promptly leaves
+ * nothing pending behind it.
+ */
+function withArrivalTimeout(arrived: Promise<void>, what: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`held ${what} never arrived — the door did not reach the held seam`));
+    }, HELD_CALL_ARRIVAL_TIMEOUT_MS);
+    arrived.then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Park the NEXT `queryEmbeddings` call AFTER it has really run, until released.
+ *
+ * This is how DW-602's interleave is STAGED rather than hoped for. The entry's
+ * scenario is "read A gathered its window, read B burnt the key underneath,
+ * then A resolved", and the only honest way to write it is to make the ordering
+ * a fact of the test: the real query runs first (so A's window is genuinely the
+ * pre-burn one), the promise is then held open, and the test decides exactly
+ * what happens in the gap before releasing it. A timer, a `Promise.all` over
+ * two real reads, or a retry would each make these pins flaky AND prove less —
+ * they would assert "this ordering happened to occur", not "this ordering
+ * cannot un-burn the key".
+ *
+ * One-shot: the arm is consumed by the first call, so everything the test does
+ * in the gap — including the read that burns — passes straight through.
+ */
+function holdNextVectorQuery(): HeldCall {
+  const storage = getStorage();
+  const real = storage.queryEmbeddings.bind(storage);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let announce!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    announce = resolve;
+  });
+  let armed = true;
+  const spy = vi
+    .spyOn(storage, "queryEmbeddings")
+    .mockImplementation(async (vector, topK, accept) => {
+      if (!armed) return real(vector, topK, accept);
+      armed = false;
+      let result;
+      try {
+        result = await real(vector, topK, accept);
+      } finally {
+        // In a `finally` so a REJECTING real call still un-blocks the waiter:
+        // otherwise `arrived` hangs and the rejection the test wants to see is
+        // buried under a timeout.
+        announce();
+      }
+      await gate;
+      return result;
+    });
+  return {
+    arrived: withArrivalTimeout(arrived, "queryEmbeddings"),
+    release,
+    restore: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
+
+/**
+ * Park the NEXT rebuild-epoch READ after it has really run, until released.
+ *
+ * The sibling of {@link holdNextVectorQuery}, for the one DW-602 row the query
+ * hold cannot stage: a read that observed a LOW epoch and only reaches its burn
+ * after a higher-epoch burn has already landed. The door reads the epoch after
+ * its query resolves, so holding the query would hand the late read the CURRENT
+ * counter — the very skew the row is about would be impossible to build.
+ *
+ * Filtered to the epoch key so that unrelated index reads (the data-version
+ * counter, say) pass straight through and cannot consume the one-shot arm. It
+ * does NOT make the hold safe around a bump: filesystem `incrementIndex` reads
+ * this very key through this very `getIndex`, inside its `index:<key>` file
+ * lock, so an arm that is still live when a bump runs parks the increment
+ * WHILE it holds that lock. The real constraint is the caller's: arm the hold
+ * only when the next epoch-key read is the door's own, and do every bump after
+ * `arrived` has consumed the arm.
+ */
+function holdNextEpochRead(): HeldCall {
+  const storage = getStorage();
+  const real = storage.getIndex.bind(storage);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let announce!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    announce = resolve;
+  });
+  let armed = true;
+  const spy = vi
+    .spyOn(storage, "getIndex")
+    .mockImplementation(async (key: string) => {
+      if (!armed || key !== EMBEDDING_REBUILD_EPOCH_KEY) return real(key);
+      armed = false;
+      let value;
+      try {
+        value = await real(key);
+      } finally {
+        announce();
+      }
+      await gate;
+      return value;
+    });
+  return {
+    arrived: withArrivalTimeout(arrived, "rebuild-epoch read"),
+    release,
+    restore: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
+}
+
 // Cast for convenience
 const mockLoadConfigSync = loadConfigSync as ReturnType<typeof vi.fn>;
 const mockListWikiPages = listWikiPages as ReturnType<typeof vi.fn>;
@@ -845,6 +1009,297 @@ describe("relatedByVector", () => {
     } finally {
       getIndex.mockRestore();
     }
+  });
+
+  it("reads NO epoch across REPEATED renders while the key is never burnt", async () => {
+    // The same criterion held over the shape production actually runs: this
+    // door is reached from `findSimilarPages` on EVERY article render, so
+    // "one read costs nothing" is only worth anything if N reads do too. A
+    // per-render cache or throttle around the epoch read would pass the
+    // single-render pin above and fail here — as would any change that hoisted
+    // the read out of the `burnt || drifted` branch.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+
+    const storage = getStorage();
+    const getIndex = vi.spyOn(storage, "getIndex");
+    try {
+      for (let i = 0; i < 5; i++) {
+        const results = await relatedByVector("anchor", 10);
+        expect(results.map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      }
+      expect(
+        getIndex.mock.calls.filter((c) => c[0] === EMBEDDING_REBUILD_EPOCH_KEY),
+      ).toEqual([]);
+    } finally {
+      getIndex.mockRestore();
+    }
+  });
+
+  it("does NOT re-arm on a render window gathered BEFORE another render burnt the key (DW-602)", async () => {
+    // DW-602 is filed at `searchByVector`, but the two doors share ONE key and
+    // this is the high-frequency one — a late re-arm would be hit here first
+    // and most often. The interleave is STAGED (see `holdNextVectorQuery`): the
+    // render's query really runs against the healthy corpus, is parked, and the
+    // burn happens in the gap.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        // Render A gathers a wholly CURRENT window and parks.
+        const a = relatedByVector("anchor", 10);
+        await held.arrived;
+        // The corpus drifts underneath it, and a second render — a stale
+        // anchor, so the early-return branch — burns the key at epoch 0.
+        for (const slug of ["anchor", "near", "mid", "far"]) {
+          await removeEmbedding(slug);
+        }
+        await seedAnchorSet("old-model");
+        const burner = await relatedByVector("anchor", 10);
+        // A resolves. Its window is PRE-BURN evidence and no rebuild completed,
+        // so it must not un-burn the key.
+        held.release();
+        const late = await a;
+        // The line a spurious re-arm would have let through.
+        const after = await searchByVector("q", 10);
+        return [late, burner, after];
+      });
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(
+        "relatedByVector: the anchor's own vector is from another model",
+      );
+      // Pin the CAUSE: A really did carry the healthy pre-burn window, which is
+      // exactly what a window-composition gate would have re-armed on.
+      expect(result[0].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("does NOT re-arm on a render window gathered before the OTHER door's burn (DW-602)", async () => {
+    // The cross-door interleave. One key, two doors, so the unsound re-arm does
+    // not need both halves to be the same door: a search burns while a render
+    // is in flight, and the render must still not clear it.
+    await seedAnchorSet();
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        const a = relatedByVector("anchor", 10);
+        await held.arrived;
+        for (const slug of ["anchor", "near", "mid", "far"]) {
+          await removeEmbedding(slug);
+        }
+        await seedAnchorSet("old-model");
+        // The QUERY door burns the shared key this time.
+        const burner = await searchByVector("burn", 10);
+        held.release();
+        const late = await a;
+        const after = await searchByVector("q", 10);
+        return [late, burner, after];
+      });
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(
+        "searchByVector: the model filter dropped every match",
+      );
+      expect(result[0].map((r) => r.slug)).toEqual(["near", "mid", "far"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("never re-arms across REPEATED renders alternating over a partially rebuilt corpus (DW-687)", async () => {
+    // The reported shape: a half-finished rebuild leaves one topical cluster
+    // stale and another current, and the render door — which runs on every
+    // article view — walks over both, over and over. The worry was a
+    // warn/re-arm oscillation that turns a once-per-process line into a
+    // per-render one. It is structurally impossible: the door re-arms on the
+    // EPOCH alone, and no rebuild has COMPLETED, so nothing either cluster
+    // looks like can un-burn the key.
+    await seedVector("stale-anchor", [1, 0, 0], "old-model", "a");
+    await seedVector("stale-near", [0.9, 0.1, 0], "old-model", "b");
+    await seedVector("fresh-anchor", [0, 0, 1], DEFAULT_TEST_MODEL, "c");
+    await seedVector("fresh-near", [0, 0.1, 0.99], DEFAULT_TEST_MODEL, "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      const seen: string[][] = [];
+      for (let i = 0; i < 4; i++) {
+        // Inside the STALE cluster: the anchor's own vector is stale, so this
+        // is the early-return branch — the one that BURNS.
+        seen.push((await relatedByVector("stale-anchor", 10)).map((r) => r.slug));
+        // Inside the CURRENT cluster: a wholly current window, which under any
+        // window-composition gate reads as proof the rebuild landed.
+        seen.push((await relatedByVector("fresh-anchor", 10)).map((r) => r.slug));
+      }
+      // …and then the corpus drifts COMPLETELY under the same active model.
+      await removeEmbedding("fresh-anchor");
+      await removeEmbedding("fresh-near");
+      await seedVector("fresh-anchor", [0, 0, 1], "old-model", "c");
+      await seedVector("fresh-near", [0, 0.1, 0.99], "old-model", "d");
+      seen.push((await searchByVector("q", 10)).map((r) => r.slug));
+      return seen;
+    });
+
+    // ONE line across nine reads, and the following full drift is silent — the
+    // key never re-armed. An alternating gate says five here.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "relatedByVector: the anchor's own vector is from another model",
+    );
+    // Pin the CAUSE: the current-cluster renders really did answer with a
+    // wholly current window, every time.
+    expect(result[0]).toEqual([]);
+    expect(result[1]).toEqual(["fresh-near"]);
+    expect(result[6]).toEqual([]);
+    expect(result[7]).toEqual(["fresh-near"]);
+    expect(result[8]).toEqual([]);
+  });
+
+  it("does NOT re-arm when only ONE topical cluster is re-tagged current (DW-687)", async () => {
+    // The narrower half of the same complaint: a hand re-embed (or a rebuild
+    // that dies partway) can leave one cluster entirely current with no rebuild
+    // having COMPLETED. A render from INSIDE that cluster sees a window with
+    // nothing stale in it at all — the strongest local evidence this door can
+    // ever be handed — and it is still not corpus-level evidence.
+    await seedVector("a1", [1, 0, 0], "old-model", "a");
+    await seedVector("a2", [0.9, 0.1, 0], "old-model", "b");
+    await seedVector("b1", [0, 0, 1], "old-model", "c");
+    await seedVector("b2", [0, 0.1, 0.99], "old-model", "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. Fully drifted: a search burns the key at epoch 0.
+      const one = await searchByVector("one", 10);
+      // 2. Cluster B alone is re-tagged under the active model. The epoch does
+      //    NOT move — nothing completed.
+      await removeEmbedding("b1");
+      await removeEmbedding("b2");
+      await seedVector("b1", [0, 0, 1], DEFAULT_TEST_MODEL, "c");
+      await seedVector("b2", [0, 0.1, 0.99], DEFAULT_TEST_MODEL, "d");
+      // 3. A render from inside cluster B: wholly current window, no re-arm.
+      const inside = await relatedByVector("b1", 10);
+      // 4. The corpus drifts again under the SAME active model.
+      await removeEmbedding("b1");
+      await removeEmbedding("b2");
+      await seedVector("b1", [0, 0, 1], "old-model", "c");
+      await seedVector("b2", [0, 0.1, 0.99], "old-model", "d");
+      const two = await searchByVector("two", 10);
+      return [one, inside, two];
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "searchByVector: the model filter dropped every match",
+    );
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["b2"]);
+    expect(result[2]).toEqual([]);
+  });
+
+  it("reads its warn evidence CORPUS-WIDE, not off the nearest neighbourhood (DW-687)", async () => {
+    // The other half of DW-687's complaint, and the reason the alternation
+    // above cannot even produce a second WARN. Since `accept` moved ahead of
+    // the top-K slice (DW-598), `matches` is the nearest ACCEPTED vectors
+    // corpus-wide — not the accepted survivors of a nearest-neighbour slice —
+    // so an anchor whose immediate neighbourhood is entirely stale still sees
+    // the current vector that lives far away, and does not call that drift.
+    await seedVector("anchor", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("n1", [0.98, 0.02, 0], "old-model", "b");
+    await seedVector("n2", [0.95, 0.05, 0], "old-model", "c");
+    await seedVector("distant", [0, 0, 1], DEFAULT_TEST_MODEL, "d");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // topK 1 → the door queries for 2, over-fetching by one because the
+      // anchor's own vector is the query vector and therefore always the top
+      // hit. Sliced BEFORE the filter, those two are the ANCHOR and `n1`; the
+      // anchor is then dropped as self and `n1` refused, leaving `others`
+      // empty with `rejected` non-zero — drift declared on a corpus holding a
+      // perfectly current vector.
+      const near = await relatedByVector("anchor", 1);
+      // The line a spurious burn here would have swallowed.
+      for (const slug of ["anchor", "distant"]) await removeEmbedding(slug);
+      await seedVector("anchor", [1, 0, 0], "old-model", "a");
+      await seedVector("distant", [0, 0, 1], "old-model", "d");
+      const real = await searchByVector("q", 10);
+      return [near, real];
+    });
+
+    expect(result[0].map((r) => r.slug)).toEqual(["distant"]);
+    expect(result[1]).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(
+      "searchByVector: the model filter dropped every match",
+    );
+  });
+
+  it("RE-ARMS from the stale-anchor early return, bounding the orphan false positive", async () => {
+    // The re-arm on the early-return path is load-bearing, not incidental, and
+    // this is the pin that says so. It is the only thing that bounds the ONE
+    // false positive this door alone can produce: a stale ORPHAN anchor — a
+    // renamed or re-embedded page whose old vector `rebuildVectorStore` never
+    // deletes — burns the process-wide key on ONE page's evidence, over a
+    // corpus that has not drifted at all. Because the orphan is stale forever,
+    // every later render of it lands on this same early return, so if THIS
+    // path could not re-arm the key would stay shut for the rest of the
+    // process no matter how many rebuilds completed.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    await seedVector("page-b", [0.9, 0.1, 0], DEFAULT_TEST_MODEL, "b");
+    await seedVector("orphan", [0, 1, 0], "old-model", "z");
+    process.env.EMBEDDING_MODEL = DEFAULT_TEST_MODEL;
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const { result, warnings } = await withWarnSpy(async () => {
+      // 1. The accepted false positive: rendering the orphan burns the
+      //    process-wide key at epoch 0.
+      const one = await relatedByVector("orphan", 10);
+      // 2. …over a corpus that is perfectly healthy, which a search confirms by
+      //    answering and saying nothing. That is what makes step 1 a FALSE
+      //    positive rather than a report.
+      const healthy = await searchByVector("q", 10);
+      // 3. A rebuild COMPLETES. It cannot touch the orphan — that is what an
+      //    orphan is — so the only door a later render of it reaches is the
+      //    same stale-anchor early return.
+      await bumpRebuildEpoch();
+      // 4. That render must re-arm off the epoch and speak again. Drop the
+      //    `rearmDriftIfRebuilt` from the early return and this goes silent:
+      //    one page's stale vector mutes the key permanently.
+      const two = await relatedByVector("orphan", 10);
+      return [one, healthy, two];
+    });
+
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain(
+      "relatedByVector: the anchor's own vector is from another model",
+    );
+    expect(warnings[1]).toBe(warnings[0]);
+    // Pin the CAUSE: the corpus really was healthy throughout, so nothing but
+    // the early return's own re-arm can account for the second line.
+    expect(result[0]).toEqual([]);
+    expect(result[1].map((r) => r.slug)).toEqual(["page-a", "page-b"]);
+    expect(result[2]).toEqual([]);
   });
 
   it("does NOT warn on a render the CALLER asked to be empty (topK: 0)", async () => {
@@ -1800,6 +2255,184 @@ describe("searchByVector", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('active="text-embedding-3-small"');
     expect(result).toEqual([[], [], []]);
+  });
+
+  it("does NOT re-arm on a window gathered BEFORE another read burnt the key (DW-602)", async () => {
+    // DW-602's own reproduction, staged rather than raced (see
+    // `holdNextVectorQuery`): read A queries a HEALTHY corpus, read B drifts
+    // and burns the key underneath it, and only then does A resolve. A's window
+    // is pre-burn evidence, so re-arming on it would clear the key with no
+    // rebuild behind it at all — the un-burn DW-602 was filed about.
+    //
+    // What makes it impossible is that the re-arm reads no property of A's
+    // window: the only input is an epoch read AFTER that query resolved, which
+    // is at least the one B recorded, and the comparison is strictly greater.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // B drifts the corpus and burns `drift:…-3-small` at epoch 0.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const b = await searchByVector("b", 10);
+        // A resolves now, holding the healthy window it gathered earlier.
+        held.release();
+        const late = await a;
+        // The line a spurious re-arm would have let through.
+        const c = await searchByVector("c", 10);
+        return [late, b, c];
+      });
+
+      // ONE line. A did not re-arm, so C's drift is a suppressed repeat.
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(
+        "searchByVector: the model filter dropped every match",
+      );
+      // Pin the CAUSE: A really did answer off the pre-burn healthy window.
+      expect(result[0].map((r) => r.slug)).toEqual(["page-a"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("DOES re-arm when a real rebuild landed while the read was in flight (DW-602)", async () => {
+    // The sound mirror image of the row above, and the reason the fix is a
+    // comparison rather than "a late read may never re-arm". Same staging, but
+    // a rebuild COMPLETES in the gap: the epoch A reads afterwards is strictly
+    // greater than the watermark B recorded, which is evidence about the
+    // CORPUS between the burn and now — not about the window A is holding.
+    await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextVectorQuery();
+    try {
+      const { result, warnings } = await withWarnSpy(async () => {
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // B burns at epoch 0…
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const b = await searchByVector("b", 10);
+        // …then a rebuild really completes: vectors re-tagged, epoch → 1.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], DEFAULT_TEST_MODEL, "a");
+        await bumpRebuildEpoch();
+        // A resolves and re-arms — on the counter, not on its own window.
+        held.release();
+        const late = await a;
+        // The corpus drifts AGAIN under the same active model, and is heard.
+        await removeEmbedding("page-a");
+        await seedVector("page-a", [1, 0, 0], "old-model", "a");
+        const c = await searchByVector("c", 10);
+        return [late, b, c];
+      });
+
+      expect(warnings).toHaveLength(2);
+      expect(warnings[1]).toBe(warnings[0]);
+      expect(result[0].map((r) => r.slug)).toEqual(["page-a"]);
+      expect(result[1]).toEqual([]);
+      expect(result[2]).toEqual([]);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("keeps the recorded watermark MONOTONE when a STALE-epoch burn lands second (DW-602)", async () => {
+    // The third leg of the interleaving proof, and the one that makes the other
+    // two hold. Two concurrent drifted reads can reach their burns carrying
+    // DIFFERENT observed epochs, in either order. `warnOnceAbout` returns early
+    // on a key it has already seen, so the first burn to arrive is the only one
+    // that writes — a late read holding a lower epoch cannot lower the bar.
+    //
+    // The epoch read is held here rather than the query, because the door reads
+    // the counter AFTER its query resolves: parking the query would hand the
+    // late read the CURRENT epoch and the skew could not be built at all.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    // One rebuild already behind us, so A observes 1 rather than 0.
+    await bumpRebuildEpoch();
+
+    const held = holdNextEpochRead();
+    try {
+      const { warnings } = await withWarnSpy(async () => {
+        // A is drifted and parks on its way to burn, holding epoch 1.
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // A rebuild completes (epoch → 2) and B — also drifted — burns at 2.
+        await bumpRebuildEpoch();
+        await searchByVector("b", 10);
+        // A now reaches its burn with the stale 1. It must not overwrite 2.
+        held.release();
+        await a;
+        // Still at epoch 2, so nothing may re-arm. Against a watermark of 1
+        // this read re-arms and speaks about a rebuild that never happened.
+        await searchByVector("c", 10);
+        // Only a genuinely NEWER rebuild beats the watermark that stands.
+        await bumpRebuildEpoch();
+        await searchByVector("d", 10);
+      });
+
+      // Two lines: B's burn, and D's after a real bump past 2. Three would mean
+      // the watermark had been lowered to A's stale 1.
+      expect(
+        warnings.filter((w) => w.includes("embedding-model drift")),
+      ).toHaveLength(2);
+    } finally {
+      held.restore();
+    }
+  });
+
+  it("speaks an EXTRA line when a bump lands during the burn's own epoch read (accepted residue)", async () => {
+    // Pinning the accepted residue, not a bug. This is the third watermark skew
+    // named on `warnedMisconfigurations`, and it is the one direction the
+    // strictly-greater comparison cannot rule out: a bump that lands WHILE the
+    // burn's own `readRebuildEpoch()` is in flight is not seen by that read, so
+    // the watermark recorded sits BELOW the value already on disk. The next
+    // drifted read then finds a strictly greater epoch, re-arms, and speaks
+    // although no rebuild completed AFTER the burn.
+    //
+    // It errs toward SPEAKING — one extra line — which is the side of DW-310's
+    // trade this module takes everywhere: a suppressed second outage is the
+    // failure the throttle exists to prevent, and a duplicate line is cheap
+    // beside it. Its mirror (a bump landing between query-resolve and the epoch
+    // read, which that read DOES capture) errs toward silence for one cycle and
+    // is pinned by the MIXED-window rows. Neither is DW-602's interleave.
+    await seedVector("page-a", [1, 0, 0], "old-model", "a");
+    process.env.OPENAI_API_KEY = "sk-test";
+    mockEmbed.mockResolvedValue({ embedding: [1, 0, 0] });
+
+    const held = holdNextEpochRead();
+    try {
+      const { warnings } = await withWarnSpy(async () => {
+        // A is drifted and parks mid-epoch-read, holding 0.
+        const a = searchByVector("a", 10);
+        await held.arrived;
+        // The rebuild completes DURING that read: epoch → 1, unseen by A.
+        await bumpRebuildEpoch();
+        // A burns, recording the stale 0 as the watermark.
+        held.release();
+        await a;
+        // B reads 1, beats 0, and re-arms — though nothing landed after the
+        // burn. This is the extra line, and it is accepted.
+        await searchByVector("b", 10);
+      });
+
+      expect(
+        warnings.filter((w) => w.includes("embedding-model drift")),
+      ).toHaveLength(2);
+    } finally {
+      held.restore();
+    }
   });
 
   it("does NOT warn on a topK the CALLER asked to be empty", async () => {

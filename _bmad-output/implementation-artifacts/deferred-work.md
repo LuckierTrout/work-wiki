@@ -4809,7 +4809,9 @@ location: src/lib/embeddings.ts:1015 (searchByVector re-arm/warn branch chain)
 source_spec: `spec-dw-405-drift-rearm-labelled-proof.md`
 severity: low
 reason: The gate, the `warnOnceAbout` burn and the `rearmWarningAbout` delete all run after `await getStorage().queryEmbeddings(...)`, and nothing carries a sequence number across that await. A healthy read that resolves late therefore re-arms on evidence gathered before another query burnt the key, and the next drifted read emits a second line — the repetition DW-310's throttle exists to prevent. Pre-existing and independent of the gate's shape: it holds identically under DW-332's `kept.length > 0`, DW-404's whole-window gate and this one, so this change neither causes nor worsens it. Not reproduced by a test: it needs a specific interleave of concurrent in-flight queries, unlike DW-404's and DW-405's reproductions, which are deterministic on sequential reads. Cost when it does happen is one extra breadcrumb line, and a guard would mean threading a burn sequence number through the door.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-vector-drift-key-races
+resolution-undo: ff6591e71a51536db0a413e56c67a16decfa774c6495535b894056fe483d4d87 2026-09-04 7374617475733a206f70656e
 
 ### DW-603: `cleanUrls`' 40-item and 2000-character caps and its dedupe are untested on what is now the only write path for a project's source URLs.
 
@@ -5636,7 +5638,9 @@ origin: migrated from legacy ledger (flat-append deferral bullet, code review of
 location: src/lib/search.ts:299
 source_spec: `spec-dw-406-related-by-vector-drift-parity.md`
 reason: `findSimilarPages` passes `limit + 10` and runs on every article render, so where `searchByVector` wrote to `drift:<model>` once per distinct query, page A's wholly-stale window can warn while page B's wholly-current window re-arms, repeatedly. The neighbour window is also clustered by construction, so a rebuild that landed for one topic can re-arm the process-wide key on evidence local to that cluster — strictly weaker than DW-598's already-open query-window case. Same residue family as DW-598 and DW-599; closing it needs the corpus-level rebuild-epoch signal both entries name, which spec-dw-406's Never list forbids reaching for here.
-status: open
+status: done 2026-09-04
+resolution: resolved by sweep bundle dw-vector-drift-key-races
+resolution-undo: ff6591e71a51536db0a413e56c67a16decfa774c6495535b894056fe483d4d87 2026-09-04 7374617475733a206f70656e
 
 ### DW-685: `isStoreFault`'s `/^E[A-Z0-9]+$/` errno probe matches any errno-shaped code, so non-storage failures (network `ECONNREFUSED`, `ETIMEDOUT`, `ECONNRESET`) classify and log as "store fault", while Node's
 origin: spec-deferred d73affa2aca5

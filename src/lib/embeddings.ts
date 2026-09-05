@@ -226,8 +226,43 @@ async function bumpRebuildEpoch(): Promise<number> {
  *     through the whole of the rebuild that was already running, and clears
  *     only on the NEXT one — erring toward silence, for one cycle. (The mirror
  *     case, a burn whose epoch read failed and recorded `0`, errs toward
- *     speaking and costs one extra line; see {@link readRebuildEpoch}.)
- *     Concurrent interleaving of a burn and a bump is NOT closed here (DW-602).
+ *     speaking and costs one extra line; see {@link readRebuildEpoch}.) The
+ *     THIRD skew is the sibling of the first and errs the other way: a bump
+ *     that lands while the BURN's OWN `readRebuildEpoch()` is in flight is not
+ *     seen by that read, so the watermark recorded is BELOW the value already
+ *     on disk — and the next drifted read finds a strictly greater epoch,
+ *     re-arms and speaks a second line although no rebuild completed AFTER the
+ *     burn. That is one extra line, which is the side of DW-310's trade this
+ *     module takes everywhere: a suppressed second outage is the failure the
+ *     throttle exists to prevent, and an extra line is cheap beside it. All
+ *     three skews are pinned as the accepted behaviour they are, not as bugs.
+ *
+ *     None of the three is the concurrent BURN/BUMP interleave DW-602 asked
+ *     about, and that one is closed — by the persisted rebuild epoch, which
+ *     landed with DW-598/DW-599, not by anything on this line. What DW-602
+ *     asked for was "a burn sequence number threaded through the door"; the
+ *     epoch IS that number, and the disclaimer that used to sit here ("not
+ *     closed") is retracted on the strength of the argument below rather than
+ *     of any change to the gate. Scoped precisely, two things hold, and both
+ *     are pinned:
+ *
+ *       · A read cannot re-arm on its OWN pre-burn evidence. A window
+ *         gathered before another read burnt the key is not consulted on the
+ *         re-arm path at all — the only input is an epoch read issued AFTER
+ *         that query resolved, so it is at least the value the burn recorded,
+ *         and strictly-greater demands a bump in the gap. (A read that arrives
+ *         before the burn does not enter the branch unless it is itself
+ *         drifted, since `burnt` and `drifted` are both false otherwise, so
+ *         there is no third way in.) What that leaves is the third skew above:
+ *         the bump can be one the burn's own read merely MISSED. Sound against
+ *         the window, best-effort against the clock — and erring toward
+ *         speaking.
+ *       · A stale-epoch burn cannot LOWER a watermark another burn already
+ *         set. {@link warnOnceAbout} returns early on a key it has already
+ *         seen, so of two concurrent reads reaching their burns with different
+ *         observed epochs, in either order, only the first to arrive writes.
+ *         Without that, a stale-epoch burn landing second would lower the bar
+ *         and let the next ordinary read re-arm on nothing.
  *
  *     A BURNT key costs one epoch read per read through either door until it
  *     clears — the gate has to ask "has a rebuild landed since?" on every read,
@@ -260,6 +295,26 @@ async function bumpRebuildEpoch(): Promise<number> {
  *     candidate. Accepted deliberately — a burnt key costs a suppressed line,
  *     not a wrong answer, and giving the two doors separate keys would cost
  *     drift being one piece of news.
+ *
+ *     The render door WRITES as well as reads, and that is deliberate
+ *     (DW-687). It is the high-frequency door — `findSimilarPages` runs it on
+ *     every article render — so it was the obvious candidate to make
+ *     warn-only, and the reason not to is the paragraph above: the one false
+ *     positive this door alone can produce is a stale ORPHAN anchor burning
+ *     the process-wide key, and the RE-ARM on this same path is what bounds
+ *     that to a single rebuild cycle. A warn-only render door would also leave
+ *     a deployment whose only vector traffic is page renders unable to ever
+ *     clear the key. The cost that made warn-only tempting — a
+ *     high-frequency writer alternating with the query door — is gone with the
+ *     window conjuncts: this door re-arms on the EPOCH alone, so no property
+ *     of the anchor, its neighbourhood or its topical cluster can un-burn the
+ *     key, and warn/re-arm alternation across anchors on a partially rebuilt
+ *     corpus is structurally impossible however many renders run. Its WARN
+ *     evidence is corpus-level for the same reason `accept` moved before the
+ *     top-K slice (DW-598): `others` is the nearest ACCEPTED vectors
+ *     CORPUS-WIDE, not the accepted survivors of a nearest-neighbour slice, so
+ *     an anchor whose immediate neighbourhood is entirely stale still sees a
+ *     current vector that lives far away and does not call that drift.
  *
  *     What is NOT a case here: a null active model. `currentModel` is typed
  *     `string | null`, but past `searchByVector`'s `if (!queryEmbedding)`
@@ -325,6 +380,16 @@ const warnedMisconfigurations = new Map<string, number | null>();
  * the CALL SITE rather than here so the epoch belongs to the same read that
  * decided to warn, and so a warn on a path with no epoch to speak of does not
  * pay a storage round-trip to record one.
+ *
+ * The `has` early return is load-bearing beyond silencing the repeat: it is
+ * what makes the recorded watermark MONOTONE. Two concurrent reads can reach
+ * their burns carrying different observed epochs in either order, and because
+ * the first one to arrive is the only one that writes, a later read holding a
+ * STALE epoch cannot lower a watermark a higher-epoch burn already set — which
+ * would otherwise let the very next ordinary read clear the key with no
+ * rebuild behind it. Do not turn this into an overwrite or a max(); the whole
+ * DW-602 interleaving argument on {@link warnedMisconfigurations} rests on
+ * "first burn wins".
  */
 function warnOnceAbout(
   key: string,
@@ -354,9 +419,20 @@ function warnOnceAbout(
  * correct: those have no corpus-level evidence of ending, and the one that does
  * re-arm off other evidence uses {@link rearmWarningAbout}.
  *
+ * This pair — a watermark written once at burn, beaten only by a strictly
+ * greater value read after the beating query resolved — IS the burn SEQUENCE
+ * NUMBER DW-602 asked to have threaded through the door (it arrived with
+ * DW-598/DW-599; DW-602's disclaimer is retracted on {@link
+ * warnedMisconfigurations}, where the argument is written out). What a read
+ * observed LOCALLY — its window, its neighbourhood, its anchor — cannot get it
+ * past this comparison at all. What can is a bump the BURN's own epoch read
+ * missed because it was in flight while the bump landed: the watermark is then
+ * low by one and the next drifted read speaks an extra line. That skew is
+ * named as accepted residue there, and errs toward speaking.
+ *
  * See {@link warnedMisconfigurations} for why the epoch REPLACED the
  * window-composition conjuncts this gate used to carry rather than joining
- * them (DW-598, DW-599).
+ * them (DW-598, DW-599), and for the full interleaving argument.
  */
 function rearmDriftIfRebuilt(key: string, observedEpoch: number): void {
   const epochAtBurn = warnedMisconfigurations.get(key);
