@@ -6240,7 +6240,9 @@ location: src/lib/wiki.ts
 source_spec: `spec-dw-489-490-case-variant-read-and-write-election.md`
 severity: low
 reason: `src/lib/wiki.ts:createWikiPage` builds `${slug}.md` and calls `writeFileIfAbsent` on it; unlike `writeWikiPage` and `writeWikiPageIfContentMatches` it was left untouched here on purpose (a Never clause of this spec). The reason is that the two decisions differ: a save is retargeting bytes onto the object the reader was shown, while "create if absent" is a CREATE-CONFLICT question — whether `cased.MD` counts as the page `cased` already existing — and answering it by probing three variants changes when a create is REFUSED, not merely where it lands. THE REACH IS WIDER THAN "a caller that skips the conflict read". The route- and MCP-level guards (`src/app/api/wiki/route.ts`, `src/mcp.ts`) do read through `readWikiPage` and so now see a recovered variant, but `src/lib/lifecycle.ts`'s `createOnly` branch (`:527-531`) carries its OWN precondition — `storageFileExists(wikiRelPath(`${slug}.md`))`, canonical only — and then calls `createWikiPage` twice (`:536` for the silo, `:541` for the flat
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-740
+resolution-undo: 756323dc2da24da57ed19c5e24d9ae9bc528210a15a6dda095877072cc424361 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Variants block a create — Give createWikiPage and lifecycle's createOnly gate the same readStoredPageVariant probe the read and save doors use, so an existing cased.MD makes a create of cased.md refuse as already-existing, matching the answer DW-741 gives at the delete and existence doors.
 decision: 2026-09-04 Probe variants in the create-conflict guard — Give createWikiPage and lifecycle.ts's createOnly precondition the same variant probe the read and write doors carry, so a variant-held page refuses the create rather than producing a second object. Pin the case-sensitive-store create-conflict case at both the route and MCP guards.
 
@@ -6605,4 +6607,12 @@ location: src/lib/workbench-settings.ts:334
 source_spec: `spec-dw-711-workload-routing-at-chat-and-ingest.md`
 severity: low
 reason: `workloadModelSettings` (`src/lib/config.ts`) sets `usesPrimary = provider === undefined && model === undefined`, so a store holding only `chatModel` reports and now routes that saved model while the provider inherits. The sentence under both model pickers (`src/lib/workbench-settings.ts:333-334`) describes both halves as inherited. PRE-EXISTING: the resolver has reported the saved model this way since Story 1.9; DW-711 only made the same store also select the model a call uses, which raises the copy's cost without having caused it.
+status: open
+
+### DW-783: A crash-resume whose silo object is spelled with a case variant now throws `LifecyclePageConflictError` on every retry instead of completing, so the lifecycle receipt can never be written and the op i
+origin: spec-deferred 3a18deec6a05
+location: src/lib/lifecycle.ts (pageAlreadyWritten recovery, silo repair create)
+source_spec: `spec-dw-740-case-variant-create-conflict.md`
+severity: low
+reason: `src/lib/lifecycle.ts`'s `pageAlreadyWritten` branch reads the CANONICAL silo key, and on its ENOENT calls `createWikiPage(slug, op.content, tenant)` and throws a conflict on a `false`. Since DW-740 that `false` is exactly what a variant-held silo object produces, so the resume raises instead of repairing. The receipt is written only after `runPageLifecycleOp` returns, so every later retry repeats the throw. It is a live path, not a hypothetical one: `writeResearchPage` (`src/lib/research-completion.ts`) is the caller that pairs `createOnly` with `idempotency`. This is BETTER than what it replaced — before DW-740 the same call forked the identity into a second object — and DW-740's Design Notes rules the loud conflict deliberate. What is left open is the repair: the branch reads the canonical key where `readWikiPage` would have recovered the variant, so it cannot see the bytes that already landed. Closing it means teaching the recovery read the same resolution the other doors carry, wh
 status: open

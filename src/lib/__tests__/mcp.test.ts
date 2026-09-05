@@ -699,6 +699,56 @@ describe("MCP write tools", () => {
       }
     });
 
+    /**
+     * DW-740. A human ruled that a case VARIANT counts as the page already
+     * existing at the create door. This guard needs no change to honour that —
+     * it reads through `readWikiPage(slug, { fresh: true, strict: true })`,
+     * which has recovered a variant since DW-490 — but "no change needed" is a
+     * claim, and an unpinned one is what lets a later refactor of this guard
+     * quietly reopen the second-object bug the ruling closes.
+     *
+     * The store is SIMULATED: the dev host's volume folds case, so with
+     * `cased.MD` staged a real read of `cased.md` would RESOLVE it and this row
+     * would go green without touching the recovery it claims to pin.
+     */
+    it("rejects a slug held only by the case variant `cased.MD`", async () => {
+      const storage = getStorage();
+      const variantKey = wikiRelPath("cased.MD");
+      const variantBytes = "# cased\n\nThe variant object's bytes.\n";
+      await storage.writeFile(variantKey, variantBytes);
+
+      // Hide every OTHER `.md` spelling of this slug, under any root.
+      // Blacklisting only the canonical name would not be enough: the host
+      // folds case, so `cased.Md` and `cased.mD` would resolve the staged file
+      // too and the recovery would see three hits where a case-sensitive store
+      // presents one.
+      const originalRead = storage.readFile.bind(storage);
+      const readSpy = vi
+        .spyOn(storage, "readFile")
+        .mockImplementation(async (filePath: string) => {
+          if (/(?:^|\/)cased\.md$/i.test(filePath) && filePath !== variantKey) {
+            throw Object.assign(new Error(`ENOENT: no such file, open '${filePath}'`), {
+              code: "ENOENT",
+            });
+          }
+          return originalRead(filePath);
+        });
+      try {
+        await expect(
+          handleCreatePage({
+            slug: "cased",
+            content: "# Cased\n\nShould never land.",
+          }),
+        ).rejects.toThrow("Page already exists: cased");
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      // The conflict REFUSED the create rather than merely reporting it.
+      expect(await storage.readFile(variantKey)).toBe(variantBytes);
+      expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
+    });
+
     it("rejects invalid slug", async () => {
       await expect(
         handleCreatePage({

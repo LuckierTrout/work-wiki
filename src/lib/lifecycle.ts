@@ -473,6 +473,14 @@ async function runPageLifecycleOp(
         if (silo !== op.content) throw new LifecyclePageConflictError(slug);
       } catch (error) {
         if (!isEnoent(error)) throw error;
+        // DW-740 changed what a `false` here MEANS. `createWikiPage` now refuses
+        // when any case spelling of `<slug>.md` holds the slug, so on a
+        // case-SENSITIVE store whose silo object is variant-spelled this resume
+        // throws a conflict on every retry instead of forking the identity into
+        // a second object. That is the ruling applied consistently — a loud
+        // conflict beats a silent fork — not an oversight. Teaching this branch
+        // to READ the variant (as `readWikiPage` does) is a different door and
+        // is deliberately not in DW-740.
         const created = await createWikiPage(slug, op.content, tenant);
         if (!created) throw new LifecyclePageConflictError(slug);
       }
@@ -493,12 +501,30 @@ async function runPageLifecycleOp(
         }
       } catch (error) {
         if (!isEnoent(error)) throw error;
+        // A `false` no longer means only "the copy appeared underneath us"
+        // (DW-740): the likelier cause on a case-SENSITIVE store is that a case
+        // variant of `<slug>.md` holds the slug, which the canonical read above
+        // reported as ENOENT. Both are "something else already holds this slug
+        // under the flat root", and both leave the copy unwritten.
         const created = await createWikiPage(slug, op.content);
-        if (!created) logger.warn("wiki", `flat compatibility copy appeared for "${slug}"`);
+        if (!created) {
+          logger.warn(
+            "wiki",
+            `flat compatibility copy not created for "${slug}": another object already holds the slug`,
+          );
+        }
       }
     } else if (op.createOnly) {
       const flatPath = wikiRelPath(`${slug}.md`);
-      if (await storageFileExists(flatPath)) {
+      // DW-740: the gate asks which OBJECT holds the slug under the flat root,
+      // not whether the canonical NAME is taken — a case variant counts as the
+      // page already existing, the same answer the delete and existence doors
+      // give. It has to be asked HERE and not left to `createWikiPage`'s own
+      // refusal below, because this gate refuses BEFORE the silo is published:
+      // a variant-held flat claim must never reach the compensation path.
+      // `findStoredPageKey` re-throws a non-ENOENT fault exactly as
+      // `storageFileExists` did, so only what counts as present has changed.
+      if ((await findStoredPageKey(slug, null)) !== null) {
         throw new LifecyclePageConflictError(slug, "already exists");
       }
 
@@ -567,7 +593,18 @@ async function runPageLifecycleOp(
             op.revisionReason ?? "conditional lifecycle edit",
           );
           if (!flatUpdated && !await storageFileExists(wikiRelPath(`${slug}.md`))) {
-            await createWikiPage(slug, op.content);
+            // `storageFileExists` answers about the canonical NAME, so it says
+            // "absent" for a flat slug held by a case variant — and since DW-740
+            // the create below then refuses. Its two sibling branches each log
+            // or raise; dropping this refusal on the floor would leave the copy
+            // neither repaired nor mentioned.
+            const flatCreated = await createWikiPage(slug, op.content);
+            if (!flatCreated) {
+              logger.warn(
+                "wiki",
+                `flat compatibility copy not repaired for "${slug}": another object already holds the slug`,
+              );
+            }
           }
         } catch (error) {
           logger.warn("wiki", `flat compatibility copy update failed for "${slug}"`, error);

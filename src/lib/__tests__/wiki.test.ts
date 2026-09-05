@@ -6,6 +6,7 @@ import {
   readWikiPage,
   writeWikiPage,
   writeWikiPageIfContentMatches,
+  createWikiPage,
   listWikiPages,
   updateIndex,
   saveRawSource,
@@ -2459,7 +2460,20 @@ describe("case-variant page keys", () => {
           return true;
         },
       );
-      return { objects, readFile };
+      // The create door's atomic half, served from the SAME exact-key map so
+      // every door in this describe reads one store (DW-740). Create-only
+      // against the exact key, which is precisely the guarantee the real
+      // provider makes and precisely the guarantee that is NOT enough on a
+      // case-sensitive store: `wiki/cased.md` is genuinely absent here while
+      // `wiki/cased.MD` holds the slug.
+      const writeFileIfAbsent = vi
+        .spyOn(storage, "writeFileIfAbsent")
+        .mockImplementation(async (key: string, content: string) => {
+          if (objects.has(key)) return false;
+          objects.set(key, content);
+          return true;
+        });
+      return { objects, readFile, writeFileIfAbsent };
     });
   }
 
@@ -2747,5 +2761,97 @@ describe("case-variant page keys", () => {
     });
 
     await expect(wikiPageExists("cased")).rejects.toThrow("variant store unavailable");
+  });
+
+  // -------------------------------------------------------------------------
+  // createWikiPage (DW-740)
+  //
+  // The create door was the last one still addressing the NAME, and on purpose:
+  // "does `cased.MD` count as the page `cased` already existing?" is a
+  // create-conflict RULING, not a retarget. The human ruled that it does. So
+  // `writeFileIfAbsent` on the canonical key — which is atomic about that key
+  // and nothing else — was landing a SECOND object for one slug and orphaning
+  // the one the Files tab lists and the reader was shown.
+  // -------------------------------------------------------------------------
+
+  it("createWikiPage refuses when a lone flat VARIANT holds the slug", async () => {
+    const { objects, writeFileIfAbsent } = await simulateStore({
+      "wiki/cased.MD": "# Cased\n\nvariant.\n",
+    });
+
+    await expect(createWikiPage("cased", "# Cased\n\nbrand new.\n")).resolves.toBe(false);
+
+    // The refusal is real, not merely reported: no second object for the slug.
+    expect(objects.has("wiki/cased.md")).toBe(false);
+    expect(writeFileIfAbsent).not.toHaveBeenCalled();
+    // And the object that DOES hold the slug is untouched — this bundle refuses
+    // a create, it does not reconcile a collision.
+    expect(objects.get("wiki/cased.MD")).toBe("# Cased\n\nvariant.\n");
+  });
+
+  it("createWikiPage refuses a variant inside the tenant silo it was aimed at", async () => {
+    // The silo is the PRODUCTION-normal root and the lifecycle create publishes
+    // there FIRST, so a fix pinned only on the flat root would still fork the
+    // identity where it matters most.
+    const { objects, writeFileIfAbsent } = await simulateStore({
+      "tenants/alice/wiki/cased.MD": "# Cased\n\nsilo variant.\n",
+    });
+
+    await expect(
+      createWikiPage("cased", "# Cased\n\nbrand new.\n", "alice"),
+    ).resolves.toBe(false);
+
+    expect(objects.has("tenants/alice/wiki/cased.md")).toBe(false);
+    expect(writeFileIfAbsent).not.toHaveBeenCalled();
+    expect(objects.get("tenants/alice/wiki/cased.MD")).toBe("# Cased\n\nsilo variant.\n");
+  });
+
+  it("createWikiPage refuses a canonical hit at the cost of the ONE read it always cost", async () => {
+    // The case-INSENSITIVE store's shape: the canonical spelling resolves an
+    // object, the ENOENT gate closes, and no variant spelling is ever probed.
+    const { objects, readFile, writeFileIfAbsent } = await simulateStore({
+      "wiki/cased.md": "# Cased\n\ncanonical.\n",
+      "wiki/cased.MD": "# Cased\n\nvariant.\n",
+    });
+
+    await expect(createWikiPage("cased", "# Cased\n\nbrand new.\n")).resolves.toBe(false);
+
+    expect(readFile.mock.calls.map(([key]) => key)).toEqual(["wiki/cased.md"]);
+    expect(writeFileIfAbsent).not.toHaveBeenCalled();
+    // Both spellings' bytes are exactly as they were.
+    expect(objects.get("wiki/cased.md")).toBe("# Cased\n\ncanonical.\n");
+    expect(objects.get("wiki/cased.MD")).toBe("# Cased\n\nvariant.\n");
+  });
+
+  it("createWikiPage still creates the canonical key for a genuinely absent slug", async () => {
+    // Four reads that all miss are still a miss. The default target is
+    // unchanged, so a real create is byte-for-byte what it always was — this is
+    // the create's NORMAL path, and the one that got more expensive.
+    const { objects } = await simulateStore({});
+
+    await expect(createWikiPage("fresh", "# Fresh\n")).resolves.toBe(true);
+
+    expect(objects.get("wiki/fresh.md")).toBe("# Fresh\n");
+    expect([...objects.keys()]).toEqual(["wiki/fresh.md"]);
+  });
+
+  it("createWikiPage FAILS on an indeterminate probe rather than calling the slug free", async () => {
+    // Strictness is what stops the fix from being self-defeating: a swallowed
+    // fault reads as "no spelling holds this slug" and falls straight through to
+    // `writeFileIfAbsent` on the canonical key — creating exactly the second
+    // object this bundle exists to prevent, with nothing but a log line to say
+    // so.
+    const { objects, readFile, writeFileIfAbsent } = await simulateStore({});
+    readFile.mockImplementation(async (key: string) => {
+      if (key === "wiki/cased.MD") throw new Error("variant store unavailable");
+      throw Object.assign(new Error(`ENOENT: ${key}`), { code: "ENOENT" });
+    });
+
+    await expect(createWikiPage("cased", "# Cased\n\nnew.\n")).rejects.toThrow(
+      "variant store unavailable",
+    );
+
+    expect(writeFileIfAbsent).not.toHaveBeenCalled();
+    expect([...objects.keys()]).toEqual([]);
   });
 });

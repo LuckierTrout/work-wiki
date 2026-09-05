@@ -99,6 +99,75 @@ async function readIndex(): Promise<string> {
   return fs.readFile(indexPath, "utf-8");
 }
 
+const enoent = (key: string): Error =>
+  Object.assign(new Error(`ENOENT: no such file, open '${key}'`), { code: "ENOENT" });
+
+/**
+ * Present a genuinely case-SENSITIVE store for ONE slug: only the exact keys in
+ * `present` answer, and every OTHER `.md` case spelling of that slug — under any
+ * root — is ENOENT to `readFile` and `deleteFile` and ABSENT to
+ * `writeFileIfAbsent`. Every key outside that slug's spellings goes to the real
+ * filesystem provider.
+ *
+ * MODULE SCOPE because both case-variant describes below read the same store:
+ * the delete door (DW-741) and the create door (DW-740) ask the same question of
+ * the same simulation, and a copy per describe would let the two drift.
+ *
+ * BLACKLISTING ONLY THE CANONICAL NAME IS NOT ENOUGH, which is the trap here:
+ * the host volume folds case, so `cased.Md` and `cased.mD` would still resolve
+ * the file staged as `cased.MD` and the probe would see THREE hits where a
+ * case-sensitive store presents one — the test would then pass on the election's
+ * tie-break rather than on the fix.
+ *
+ * `writeFileIfAbsent` IS FAKED FOR HIDDEN KEYS RATHER THAN DELEGATED, and that
+ * is what makes the create rows mean anything: a hidden spelling is genuinely
+ * absent in the store being simulated, so the create must be reported as having
+ * landed — but performing it for real on the folding host volume would resolve
+ * `wiki/cased.md` onto the staged `wiki/cased.MD` and overwrite the very object
+ * under test, and the row would then pass on the host's case folding instead of
+ * on the refusal. Present (staged) keys and every unrelated key still go to the
+ * real provider, so an ordinary create is unaffected.
+ *
+ * `restore` is hygiene rather than isolation (this file's `afterEach` calls
+ * `_resetStorage()`, so the next `getStorage()` is a fresh provider anyway), but
+ * a spy left on would still see the rest of THIS test.
+ */
+function simulateCaseSensitive(slug: string, present: string[]) {
+  const presentKeys = new Set(present);
+  const spellingOfSlug = new RegExp(`(?:^|/)${slug}\\.md$`, "i");
+  const hidden = (key: string): boolean =>
+    spellingOfSlug.test(key) && !presentKeys.has(key);
+
+  const storage = getStorage();
+  const realRead = storage.readFile.bind(storage);
+  const realDelete = storage.deleteFile.bind(storage);
+  const realWriteIfAbsent = storage.writeFileIfAbsent.bind(storage);
+  const readFile = vi.spyOn(storage, "readFile").mockImplementation(async (key) => {
+    if (hidden(key)) throw enoent(key);
+    return realRead(key);
+  });
+  const deleteFile = vi.spyOn(storage, "deleteFile").mockImplementation(async (key) => {
+    if (hidden(key)) throw enoent(key);
+    return realDelete(key);
+  });
+  const writeFileIfAbsent = vi
+    .spyOn(storage, "writeFileIfAbsent")
+    .mockImplementation(async (key, content) => {
+      if (hidden(key)) return true;
+      return realWriteIfAbsent(key, content);
+    });
+  return {
+    readFile,
+    deleteFile,
+    writeFileIfAbsent,
+    restore: () => {
+      readFile.mockRestore();
+      deleteFile.mockRestore();
+      writeFileIfAbsent.mockRestore();
+    },
+  };
+}
+
 // ===========================================================================
 // writeWikiPageWithSideEffects
 // ===========================================================================
@@ -1144,52 +1213,6 @@ describe("deleteWikiPage", () => {
 // ===========================================================================
 
 describe("deleteWikiPage case-variant targets", () => {
-  const enoent = (key: string): Error =>
-    Object.assign(new Error(`ENOENT: no such file, open '${key}'`), { code: "ENOENT" });
-
-  /**
-   * Present a genuinely case-SENSITIVE store for ONE slug: only the exact keys
-   * in `present` answer, and every OTHER `.md` case spelling of that slug —
-   * under any root — is ENOENT to both `readFile` and `deleteFile`. Every key
-   * outside that slug's spellings goes to the real filesystem provider.
-   *
-   * BLACKLISTING ONLY THE CANONICAL NAME IS NOT ENOUGH, which is the trap here:
-   * the host volume folds case, so `cased.Md` and `cased.mD` would still
-   * resolve the file staged as `cased.MD` and the probe would see THREE hits
-   * where a case-sensitive store presents one — the test would then pass on the
-   * election's tie-break rather than on the fix.
-   *
-   * `restore` is hygiene rather than isolation (this file's `afterEach` calls
-   * `_resetStorage()`, so the next `getStorage()` is a fresh provider anyway),
-   * but a spy left on would still see the rest of THIS test.
-   */
-  function simulateCaseSensitive(slug: string, present: string[]) {
-    const presentKeys = new Set(present);
-    const spellingOfSlug = new RegExp(`(?:^|/)${slug}\\.md$`, "i");
-    const hidden = (key: string): boolean =>
-      spellingOfSlug.test(key) && !presentKeys.has(key);
-
-    const storage = getStorage();
-    const realRead = storage.readFile.bind(storage);
-    const realDelete = storage.deleteFile.bind(storage);
-    const readFile = vi.spyOn(storage, "readFile").mockImplementation(async (key) => {
-      if (hidden(key)) throw enoent(key);
-      return realRead(key);
-    });
-    const deleteFile = vi.spyOn(storage, "deleteFile").mockImplementation(async (key) => {
-      if (hidden(key)) throw enoent(key);
-      return realDelete(key);
-    });
-    return {
-      readFile,
-      deleteFile,
-      restore: () => {
-        readFile.mockRestore();
-        deleteFile.mockRestore();
-      },
-    };
-  }
-
   it("removes the variant object the pre-delete read was shown", async () => {
     // The headline data-loss symptom: before DW-741 this delete reported success
     // while `wiki/cased.MD` survived, and the very next read served the body back.
@@ -1395,6 +1418,179 @@ describe("deleteWikiPage case-variant targets", () => {
       readFile.mockRestore();
       deleteFile.mockRestore();
       deleteDirectory.mockRestore();
+    }
+  });
+});
+
+// ===========================================================================
+// createOnly on a case-SENSITIVE store (DW-740)
+//
+// The create door was left addressing the NAME after DW-489/490/741 moved the
+// read, save, delete and existence doors onto the stored OBJECT, because "does
+// `cased.MD` count as the page `cased` already existing?" is a create-conflict
+// RULING rather than a retarget. A human ruled that it does.
+//
+// The gate here is its own half of that ruling: `createOnly` carried a
+// canonical-only precondition of its own, so fixing `createWikiPage` alone would
+// still have published the authoritative SILO copy before anything refused, and
+// the refusal would have arrived through the compensation path instead of ahead
+// of it.
+//
+// Same simulation as the delete describe, for the same reason: the dev host's
+// volume folds case, so the collision cannot be staged on disk at all.
+// ===========================================================================
+
+describe("createOnly on a case-SENSITIVE store (DW-740)", () => {
+  it("refuses a create whose slug is held by a lone flat VARIANT", async () => {
+    // The gate's own row: `wiki/cased.MD` holds the slug, `wiki/cased.md` is
+    // genuinely absent, and before DW-740 the canonical-only precondition read
+    // that absence as "the slug is free".
+    const storage = getStorage();
+    const variantBytes = "# Cased\n\nvariant body.\n";
+    await storage.writeFile("wiki/cased.MD", variantBytes);
+
+    const sim = simulateCaseSensitive("cased", ["wiki/cased.MD"]);
+    try {
+      await expect(
+        writeWikiPageWithSideEffects(makeOpts({
+          slug: "cased",
+          title: "Cased",
+          content: "# Cased\n\nsecond object.\n",
+          summary: "x",
+          crossRefSource: null,
+          createOnly: true,
+        })),
+      ).rejects.toThrow("already exists");
+
+      // Refused BEFORE the silo was published, which is why the gate had to
+      // move too: not one create-only claim went out, under either root.
+      expect(sim.writeFileIfAbsent).not.toHaveBeenCalled();
+    } finally {
+      sim.restore();
+    }
+
+    // The object that holds the slug is untouched, byte for byte.
+    expect(await storage.readFile("wiki/cased.MD")).toBe(variantBytes);
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
+  });
+
+  it("refuses a create whose slug is held only by a SILO variant", async () => {
+    // The flat root is genuinely empty here, so the gate passes and the refusal
+    // has to come from `createWikiPage`'s own probe on the authoritative root —
+    // the half of the ruling that lives in `wiki.ts`.
+    const storage = getStorage();
+    const tenant = tenantForOwner(undefined);
+    const siloKey = `tenants/${tenant}/wiki/cased.MD`;
+    const variantBytes = "# Cased\n\nsilo variant body.\n";
+    await storage.writeFile(siloKey, variantBytes);
+
+    const sim = simulateCaseSensitive("cased", [siloKey]);
+    try {
+      await expect(
+        writeWikiPageWithSideEffects(makeOpts({
+          slug: "cased",
+          title: "Cased",
+          content: "# Cased\n\nsecond object.\n",
+          summary: "x",
+          crossRefSource: null,
+          createOnly: true,
+        })),
+      ).rejects.toThrow("already exists");
+
+      // THE ASSERTION WITH TEETH. The staged variant is hidden from
+      // `writeFileIfAbsent` as well as from `readFile`, so a create over it
+      // would be reported as landing without touching the volume — which means
+      // the two disk assertions below are structurally green either way. Only
+      // this one distinguishes "refused" from "published a second object".
+      expect(sim.writeFileIfAbsent).not.toHaveBeenCalled();
+    } finally {
+      sim.restore();
+    }
+
+    expect(await storage.readFile(siloKey)).toBe(variantBytes);
+    // And no flat compatibility copy was published for a slug that was refused.
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
+  });
+
+  it("still creates both copies for a slug no spelling holds", async () => {
+    // Refusal must not become the answer for every create: an unrelated free
+    // slug goes to the real provider end to end and lands exactly where it
+    // always landed, silo first and flat compatibility copy second. The
+    // variant-held slug is staged alongside it so the row also pins the
+    // refusal's BLAST RADIUS — a create for `fresh` must not disturb `cased`.
+    const storage = getStorage();
+    const casedBytes = "# Cased\n\nvariant body.\n";
+    await storage.writeFile("wiki/cased.MD", casedBytes);
+    const tenant = tenantForOwner(undefined);
+    const content = "# Fresh\n\nBrand new.\n";
+
+    const sim = simulateCaseSensitive("cased", ["wiki/cased.MD"]);
+    try {
+      await writeWikiPageWithSideEffects(makeOpts({
+        slug: "fresh",
+        title: "Fresh",
+        content,
+        summary: "x",
+        crossRefSource: null,
+        createOnly: true,
+      }));
+    } finally {
+      sim.restore();
+    }
+
+    expect(await storage.readFile(`tenants/${tenant}/wiki/fresh.md`)).toContain("Brand new.");
+    expect(await storage.readFile("wiki/fresh.md")).toContain("Brand new.");
+    // The unrelated slug's object is byte-for-byte untouched.
+    expect(await storage.readFile("wiki/cased.MD")).toBe(casedBytes);
+  });
+
+  it("fails the create with the STORAGE error when the GATE's probe is indeterminate", async () => {
+    // The gate is its own call site with its own new failure mode, and its
+    // comment claims a re-throw that nothing else in this file exercises:
+    // `findStoredPageKey` is always strict, so a non-ENOENT fault on a VARIANT
+    // spelling now fails a create that used to succeed — the canonical-only
+    // precondition never read that key at all.
+    //
+    // Flattening the fault into "no key here" would be the worse answer: the
+    // gate would wave a create through onto a root whose contents it could not
+    // determine, which is exactly the second object DW-740 refuses.
+    const storage = getStorage();
+    const realRead = storage.readFile.bind(storage);
+    const readFile = vi.spyOn(storage, "readFile").mockImplementation(async (key) => {
+      // The FLAT variant probe only the gate reaches. Every canonical spelling
+      // still answers ENOENT, so the slug looks free by the old precondition.
+      if (key === "wiki/faulty.MD") throw new Error("variant store unavailable");
+      if (/(?:^|\/)faulty\.md$/i.test(key)) throw enoent(key);
+      return realRead(key);
+    });
+    const writeFileIfAbsent = vi.spyOn(storage, "writeFileIfAbsent");
+    try {
+      let caught: unknown;
+      try {
+        await writeWikiPageWithSideEffects(makeOpts({
+          slug: "faulty",
+          title: "Faulty",
+          content: "# Faulty\n\nShould never land.\n",
+          summary: "x",
+          crossRefSource: null,
+          createOnly: true,
+        }));
+      } catch (error) {
+        caught = error;
+      }
+
+      // The caller is told the STORE failed — CLASSIFICATION, not wording: a
+      // conflict sentence would send them to fix a slug collision that does not
+      // exist.
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toContain("variant store unavailable");
+      expect((caught as Error).message).not.toContain("already exists");
+
+      // And not one create-only claim went out, under either root.
+      expect(writeFileIfAbsent).not.toHaveBeenCalled();
+    } finally {
+      readFile.mockRestore();
+      writeFileIfAbsent.mockRestore();
     }
   });
 });

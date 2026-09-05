@@ -468,20 +468,24 @@ async function readStoredPageVariant(
 /**
  * WHICH STORAGE KEY UNDER THIS ROOT CARRIES THIS SLUG (DW-741)?
  *
- * The ONE resolution the delete door (`lifecycle.ts`) and the existence door
- * ({@link wikiPageExists}) share, so neither restates the candidate set or the
- * election: canonical `<slug>.md` first, and only on its ENOENT the same
- * {@link readStoredPageVariant} probe the read and write doors already use.
- * `null` when no spelling of the slug is present under `tenant` (or under the
- * flat root when `tenant` is `null`).
+ * The ONE resolution the delete door (`lifecycle.ts`), the existence door
+ * ({@link wikiPageExists}) and, since DW-740, the create door
+ * ({@link createWikiPage} and lifecycle's `createOnly` gate) share, so none of
+ * them restates the candidate set or the election: canonical `<slug>.md` first,
+ * and only on its ENOENT the same {@link readStoredPageVariant} probe the read
+ * and write doors already use. `null` when no spelling of the slug is present
+ * under `tenant` (or under the flat root when `tenant` is `null`).
  *
  * ENOENT-GATED, so a HIT costs exactly what it cost before this existed: one
- * `readFile` on the same key. On a case-INSENSITIVE store the canonical
- * spelling resolves whatever object holds the slug, so that is the only path
- * ever taken there. A MISS is what got more expensive — four reads per root
- * instead of one — and that is the price of the answer being about the object
- * rather than the name. Both callers reach a miss only on a slug that really
- * has no Page under that root.
+ * `readFile` on the same key, no variant probed. That is true of every caller on
+ * either kind of store — and on a case-INSENSITIVE store, where the canonical
+ * spelling resolves whatever object holds the slug, a hit is the only way a
+ * stored page is ever found here. A MISS is what got more expensive — four reads
+ * per root instead of one — and that is the price of the answer being about the
+ * object rather than the name. The delete and existence doors reach a miss only
+ * on a slug that really has no Page under that root; the create door is the one
+ * caller whose NORMAL path is a miss, so it pays that four-read price on every
+ * successful create, on both store kinds (see {@link createWikiPage}).
  *
  * `readFile` RATHER THAN `fileExists`, deliberately: only `readFile`
  * distinguishes a fault from an absence. The filesystem provider's `fileExists`
@@ -494,8 +498,9 @@ async function readStoredPageVariant(
  * {@link readStoredPageVariant} applies it to each variant.
  *
  * DOES NOT VALIDATE `slug` — it builds a storage key from it directly. Callers
- * validate first ({@link wikiPageExists} and `deleteWikiPage` both do), which
- * is the same contract {@link readStoredPageVariant} carries.
+ * validate first ({@link wikiPageExists}, `deleteWikiPage` and
+ * {@link createWikiPage} all do), which is the same contract
+ * {@link readStoredPageVariant} carries.
  */
 export async function findStoredPageKey(
   slug: string,
@@ -789,9 +794,48 @@ export async function writeWikiPage(
 /**
  * Atomically create a wiki page without overwriting an existing page.
  *
- * Returns `false` when the target already exists. Unlike `writeWikiPage`, this
- * intentionally does not create a revision because a successful call is the
- * first write for the path.
+ * Returns `false` when the target already exists — and since DW-740 "the
+ * target" means the stored OBJECT that carries the slug, not the name. A case
+ * variant COUNTS as the page already existing here: that is the human ruling
+ * this door was left open for while DW-489/490/741 moved the read, save, delete
+ * and existence doors onto {@link findStoredPageKey}. Without it, a create over
+ * a variant-held Page on a case-SENSITIVE store lands a SECOND object for one
+ * slug and orphans the one the Files tab lists and the reader was shown.
+ *
+ * The refusal resolves through the SAME {@link findStoredPageKey} those other
+ * doors use, so this call site restates neither the candidate set, the election,
+ * nor the ENOENT gate. That gate is what keeps a REFUSAL cheap: a canonical hit
+ * closes it on the first read, so refusing a create over a stored `<slug>.md`
+ * costs the ONE read it always cost, on either kind of store.
+ *
+ * A SUCCESSFUL create is what got more expensive, and — unlike the doors that
+ * came before — a miss IS this door's normal path, so the three variant reads
+ * run on every real create, on a case-INSENSITIVE store included, where they can
+ * only miss. Four reads per root instead of one. A lifecycle `createOnly` write
+ * pays about TWELVE for one created page: the gate probes the flat root, the
+ * silo `createWikiPage` probes the silo root, and the flat `createWikiPage`
+ * probes the flat root AGAIN — a duplicate of the gate's. `createOnly` writes do
+ * arrive from bulk pipelines (ingest, agent seeding, the review queue), so this
+ * is bounded and O(1) per page but it is not free and it is not rare.
+ *
+ * STRICT is inherited, not restated: {@link findStoredPageKey} always rethrows a
+ * non-ENOENT failure, so an indeterminate probe FAILS the create rather than
+ * being flattened into "the slug is free" — the same reason `writeWikiPage`'s
+ * recovery is strict, since an absence inferred from a blip is what authorizes
+ * the second object.
+ *
+ * `writeFileIfAbsent` on the canonical key REMAINS the create-only guarantee.
+ * The probe only ADDS a refusal ahead of it; it never replaces the atomic check,
+ * so a CANONICAL object appearing between the two still loses to the provider
+ * rather than to this read. A VARIANT appearing in that same window is not
+ * covered by either — no provider offers create-if-no-spelling-exists — but the
+ * only writes in this module that address a non-canonical name are
+ * {@link writeWikiPage}'s and {@link writeWikiPageIfContentMatches}' retargets
+ * onto an object the probe would already have found; neither brings a NEW
+ * spelling into existence, so that window still needs a store-external writer.
+ *
+ * Unlike `writeWikiPage`, this intentionally does not create a revision because
+ * a successful call is the first write for the path.
  */
 export async function createWikiPage(
   slug: string,
@@ -802,6 +846,10 @@ export async function createWikiPage(
   const storagePath = tenant
     ? tenantWikiRelPath(tenant, `${slug}.md`)
     : wikiRelPath(`${slug}.md`);
+  // DW-740: a case variant IS the page here — the human ruling. ENOENT-gated,
+  // so a canonical hit costs the one read it always cost.
+  if ((await findStoredPageKey(slug, tenant ?? null)) !== null) return false;
+  // Still the atomic create-only guarantee for the canonical key.
   const created = await getStorage().writeFileIfAbsent(storagePath, content);
   if (created && pageCache !== null) pageCache.delete(slug);
   return created;

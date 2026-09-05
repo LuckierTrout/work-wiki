@@ -16,6 +16,7 @@ import {
   readWikiPageWithFrontmatter,
   serializeFrontmatter,
   tenantForOwner,
+  wikiRelPath,
   writeWikiPage,
   writeWikiPageWithSideEffects,
 } from "../wiki";
@@ -2420,6 +2421,84 @@ describe("unreadable ≠ absent — DELETE ACL and the create guard (DW-496)", (
     } finally {
       cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The create guard on a case-SENSITIVE store (DW-740)
+//
+// A human ruled that a case variant COUNTS as the page already existing at the
+// create door. This route's guard needs no change to honour that — it reads
+// through `readWikiPage(slug, { fresh: true, strict: true })`, which has
+// recovered a variant since DW-490 — but "no change needed" is a claim, and an
+// unpinned one is what lets a later refactor of the guard quietly reopen the
+// door onto the second-object bug.
+//
+// The store is SIMULATED because the dev host's volume folds case: with
+// `wiki/cased.MD` staged, a real `readFile("wiki/cased.md")` would RESOLVE it
+// here, so the row would go green without ever exercising the recovery it
+// claims to pin.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/wiki create guard on a case-SENSITIVE store (DW-740)", () => {
+  async function create(slug: string) {
+    const { POST } = await import("@/app/api/wiki/route");
+    return POST(
+      new Request("http://localhost/api/wiki", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, content: `# ${slug}\n\nBrand new.` }),
+      }),
+    );
+  }
+
+  it("409s a slug held only by `wiki/cased.MD`, and writes nothing", async () => {
+    const storage = getStorage();
+    const today = new Date().toISOString().slice(0, 10);
+    const variantBytes = serializeFrontmatter(
+      {
+        created: today,
+        confidence: 0.5,
+        authors: ["someone-else"],
+        owner: "someone-else",
+        visibility: "public",
+        contributors: [],
+        expiry: "2099-01-01",
+        sources: [],
+      } as Frontmatter,
+      "# cased\n\nThe variant object's bytes.",
+    );
+    // `wikiRelPath`, not a hand-written `wiki/…`: this file leaves `DATA_DIR`
+    // alone, so the storage-relative key for the temp wiki root is not the
+    // literal string the other case-variant suites use.
+    const variantKey = wikiRelPath("cased.MD");
+    await storage.writeFile(variantKey, variantBytes);
+
+    // Hide every OTHER `.md` spelling of this slug, under any root. Blacklisting
+    // only the canonical name would not be enough: the host folds case, so
+    // `cased.Md` and `cased.mD` would resolve the staged file too and the
+    // recovery would see three hits where a case-sensitive store presents one.
+    const realRead = storage.readFile.bind(storage);
+    const readSpy = vi.spyOn(storage, "readFile").mockImplementation(async (key: string) => {
+      if (/(?:^|\/)cased\.md$/i.test(key) && key !== variantKey) {
+        throw Object.assign(new Error(`ENOENT: no such file, open '${key}'`), {
+          code: "ENOENT",
+        });
+      }
+      return realRead(key);
+    });
+    try {
+      const response = await create("cased");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: "page already exists: cased" });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    // The conflict REFUSED the create rather than merely reporting it: the
+    // object holding the slug is untouched and no canonical sibling appeared.
+    expect(await storage.readFile(variantKey)).toBe(variantBytes);
+    expect(await fs.readdir(path.join(tmpDir, "wiki"))).not.toContain("cased.md");
   });
 });
 
