@@ -208,6 +208,35 @@ export const V1_UNKNOWN_ACTION_ERROR = "unknown_action";
  */
 export const V1_INVALID_INPUT_ERROR = "invalid_input";
 
+/**
+ * THE TWO CAPACITY REFUSALS, and why they are not `invalid_input` (DW-748).
+ *
+ * `invalid_input` above means "the request is wrong; fix it and resend". A cap
+ * means the opposite: the request was well-formed and RESENDING IT UNCHANGED
+ * CANNOT SUCCEED. An agent that switch-cases these apart retries the first and
+ * changes something before retrying the second; an agent given `invalid_input`
+ * for a cap loops on a body that was never the problem.
+ *
+ * They are two tokens because the two caps are cleared by different things:
+ *
+ * - {@link V1_TOO_MANY_PATHS_ERROR} is REQUEST-SHAPED — the rescan `paths` list
+ *   is longer than {@link import("./source-rescan").RESCAN_MAX_SOURCES}. The
+ *   caller clears it by naming fewer paths, so the fix is in the next request,
+ *   and the body carries `limit` rather than a `detail` to say what to fit
+ *   under. Its value is ALREADY PUBLISHED in `skills/work-wiki/api-reference.md`
+ *   and is hoisted here verbatim only so the vocabulary has one owner; changing
+ *   it would be a wire-contract break, exactly as {@link V1_EMPTY_QUERY_ERROR}
+ *   describes.
+ * - {@link V1_LIMIT_REACHED_ERROR} is WORKSPACE-STATE — `deep_research` refused
+ *   because the workspace already holds the maximum research projects. Nothing
+ *   in the request can clear it; someone has to delete a project first. The body
+ *   is the `{ error, detail }` shape, the store's own sentence riding in
+ *   `detail`.
+ */
+export const V1_TOO_MANY_PATHS_ERROR = "too_many_paths";
+/** See {@link V1_TOO_MANY_PATHS_ERROR} — the workspace-state half of the pair. */
+export const V1_LIMIT_REACHED_ERROR = "limit_reached";
+
 // ---------------------------------------------------------------------------
 // Limits. Every one of them is in the I/O matrix.
 // ---------------------------------------------------------------------------

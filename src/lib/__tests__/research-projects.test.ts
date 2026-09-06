@@ -12,6 +12,7 @@ import {
   listResearchProjects,
   repairResearchRegistry,
   ResearchProjectBusyError,
+  ResearchProjectCapacityError,
   updateResearchProject,
   updateResearchProjectIf,
 } from "../research-projects";
@@ -417,9 +418,26 @@ describe("research projects", () => {
       const spy = vi.spyOn(storage, "writeFile");
 
       try {
-        await expect(
-          createResearchProject("alice", { title: "One too many", question: "Fits?" }),
-        ).rejects.toBeInstanceOf(ClientInputError);
+        // TYPE FIRST (DW-748). The cap is a distinguishable class so the v1
+        // façade can answer `limit_reached` rather than `invalid_input` — the
+        // request was well-formed and no edit to it clears this. Asserted
+        // ALONGSIDE the `ClientInputError` row, not instead of it: the subclass
+        // is what keeps `POST /api/research` and ~20 other doors at 400.
+        const thrown = await createResearchProject("alice", {
+          title: "One too many",
+          question: "Fits?",
+        }).then(
+          () => {
+            throw new Error("expected the cap to refuse the create");
+          },
+          (error: unknown) => error,
+        );
+        expect(thrown).toBeInstanceOf(ResearchProjectCapacityError);
+        expect(thrown).toBeInstanceOf(ClientInputError);
+        // The SENTENCE is unchanged and rides verbatim in the façade's `detail`.
+        expect((thrown as Error).message).toBe(
+          `This workspace already has the maximum of ${MAX_PROJECTS} research projects.`,
+        );
         expect(spy).not.toHaveBeenCalled();
       } finally {
         spy.mockRestore();

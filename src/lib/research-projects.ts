@@ -140,6 +140,52 @@ export class ResearchProjectBusyError extends Error {
   }
 }
 
+/**
+ * The workspace is AT ITS CAP — {@link MAX_PROJECTS} projects already exist
+ * (DW-748).
+ *
+ * A refusal about workspace STATE, not about the request. The body was
+ * well-formed, every field passed `cleanInput`, and NO EDIT TO THE REQUEST CAN
+ * EVER CLEAR IT: the caller has to delete a project, or ask a different
+ * workspace. That is the whole reason this is a class rather than one more
+ * anonymous `ClientInputError` — a door that cannot tell it apart answers the
+ * same "fix your input and resend" token for both, and an agent reading that
+ * retries a request that can never succeed.
+ *
+ * EXTENDS `ClientInputError`, deliberately. The cap has always been a 400 at
+ * `POST /api/research` and stays one at every door that classifies with
+ * {@link import("./errors").isClientInputError}; only the v1 façade's TOKEN
+ * changes. The subclass keeps that classification through the structural brand
+ * that predicate documents — not through `name`, which this class must override
+ * to be distinguishable, and not through `instanceof`.
+ */
+export class ResearchProjectCapacityError extends ClientInputError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResearchProjectCapacityError";
+  }
+}
+
+/**
+ * Whether a caught value is the workspace-cap refusal.
+ *
+ * STRUCTURAL on `name`, not `instanceof`, for the reason
+ * {@link import("./errors").isClientInputError} spells out at length: a
+ * `ResearchProjectCapacityError` thrown by a SECOND copy of this module —
+ * vitest's two projects, a bundler splitting server and edge chunks — fails
+ * `instanceof` against the copy the route imported, and the door would silently
+ * fall through to the generic caller-fault rung and emit the OLD token. That is
+ * a production-only regression no test can see, and the failure mode is quiet:
+ * a still-400 answer with the wrong machine word in it.
+ *
+ * Narrows to `Error`, not to the class, for the same reason its sibling does:
+ * under a duplicated graph the value genuinely is not an instance of the
+ * imported class, and `Error` is enough to read `.message` off it.
+ */
+export function isResearchProjectCapacityError(err: unknown): err is Error {
+  return err instanceof Error && err.name === "ResearchProjectCapacityError";
+}
+
 export type ResearchProjectStatus =
   | "draft"
   | "queued"
@@ -897,7 +943,12 @@ export async function createResearchProject(
   const cleaned = cleanInput(input);
   const created = await lockedMutation(owner, (projects) => {
     if (filterResearchProjects(projects, null).length >= MAX_PROJECTS) {
-      throw new ClientInputError(
+      // TYPED as capacity, not as a bare `ClientInputError` (DW-748): the body
+      // was fine and no edit to it clears this, so the v1 façade answers
+      // `limit_reached` rather than telling an agent to fix an input that was
+      // never wrong. Still a `ClientInputError` by classification — the SENTENCE
+      // is byte-identical and every existing 400 is unchanged.
+      throw new ResearchProjectCapacityError(
         `This workspace already has the maximum of ${MAX_PROJECTS} research projects.`,
       );
     }

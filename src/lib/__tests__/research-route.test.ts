@@ -32,6 +32,7 @@ import {
   listResearchProjects,
   REPAIR_HINT,
   ResearchProjectBusyError,
+  ResearchProjectCapacityError,
 } from "@/lib/research-projects";
 import { researchRegistryRepairable } from "@/lib/research-panel";
 import { reconcileResearchProjects } from "@/lib/research-runtime";
@@ -134,6 +135,31 @@ describe("POST /api/research failure classification", () => {
 
     const response = await POST(request(BODY));
 
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "This workspace already has the maximum of 100 research projects.",
+    });
+  });
+
+  it("400s the cap when the store throws its TYPED capacity class", async () => {
+    // DW-748. The row above drives a RAW `ClientInputError`, which is not what
+    // the store throws any more — so it stopped exercising the real path the
+    // moment the cap became a subclass. This is that path: the subclass carries
+    // its own `name`, so the `name` half of `isClientInputError` answers false
+    // for it and only the inherited brand keeps this door off its 500
+    // fallthrough. Break the brand and THIS row is where it surfaces — as a 500
+    // at the owner-facing door, for a refusal that has been a 400 since DW-164.
+    mockedCreate.mockRejectedValue(
+      new ResearchProjectCapacityError(
+        "This workspace already has the maximum of 100 research projects.",
+      ),
+    );
+
+    const response = await POST(request(BODY));
+
+    // Status AND body unchanged from the row above: this door speaks no token
+    // vocabulary, so the store's own sentence stays the whole answer here. Only
+    // the v1 façade tells the two 400s apart.
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
       error: "This workspace already has the maximum of 100 research projects.",

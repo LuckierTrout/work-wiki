@@ -12,9 +12,14 @@ import {
   skipReviewItem,
   type ReviewItem,
 } from "@/lib/review-queue";
-import { ResearchProjectBusyError, createResearchProject } from "@/lib/research-projects";
+import {
+  ResearchProjectBusyError,
+  createResearchProject,
+  isResearchProjectCapacityError,
+} from "@/lib/research-projects";
 import {
   V1_INVALID_INPUT_ERROR,
+  V1_LIMIT_REACHED_ERROR,
   V1_UNKNOWN_ACTION_ERROR,
   v1ReviewIntent,
 } from "@/lib/v1-contract";
@@ -169,17 +174,42 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     // `MAX_PROJECTS` refusal and `cleanInput`'s verdict on `item.title` land
     // here — and an agent told "500" retries a request that can never succeed.
     //
-    // THREE RUNGS, NOT TWO. DW-478 split this ladder caller-fault/server-fault,
-    // and DW-684 added the middle rung at the `/api/research` doors: a
-    // contended registry write is neither, and the 503 below is where it goes.
-    // So read what follows as 400 / 503 / 500 — the two-way split was only ever
-    // the first two thirds of the classification.
+    // FOUR RUNGS NOW: CAPACITY / CALLER-INPUT / CONTENTION / SERVER. DW-478
+    // split this ladder caller-fault/server-fault, DW-684 added the contention
+    // rung at the `/api/research` doors, and DW-748 splits the caller-fault rung
+    // itself — read what follows as 400 `limit_reached` / 400 `invalid_input` /
+    // 503 / 500.
     //
     // The caller-fault body is TWO HALVES: `error` is the façade's machine
     // token, the thing an agent switch-cases on as it does at every other 4xx
     // here, and `detail` carries the store's own sentence, which is the only
     // part that says WHICH input was wrong. The 500 body stays the bare
     // message: a server fault has no token vocabulary and nothing to branch on.
+    //
+    // THE CAPACITY RUNG IS FIRST OF THE TWO 400s, AND THE ORDER IS THE WHOLE
+    // MECHANISM. The workspace cap IS a `ClientInputError` by classification —
+    // it must be, or it would stop being a 400 at `POST /api/research` and the
+    // ~20 other doors that classify with `isClientInputError` — so the generic
+    // rung below would swallow it and the token would silently never change.
+    // Swapping these two rungs is caught by the CAPACITY rows in
+    // `epic8-v1-routes.test.ts`, which go red on the swapped token; the live
+    // non-capacity row beside them stays green under it, and is there to pin the
+    // separate claim that `invalid_input` did not move with the cap.
+    //
+    // THE TWO 400s SAY DIFFERENT THINGS TO AN AGENT. `invalid_input` means the
+    // store refused a value it was handed — usually one it can only fix by
+    // sending different input, though at THIS door the title and question come
+    // off the stored review row, which is the residue DW-748 left open and
+    // `api-reference.md` states plainly. `limit_reached` means the request was
+    // FINE and the workspace is full — resending it unchanged cannot succeed,
+    // and the caller has to delete a project first. Same status, opposite
+    // instruction, which is why one token could not carry both.
+    if (isResearchProjectCapacityError(error)) {
+      return NextResponse.json(
+        { error: V1_LIMIT_REACHED_ERROR, detail: getErrorMessage(error) },
+        { status: 400 },
+      );
+    }
     if (isClientInputError(error)) {
       return NextResponse.json(
         { error: V1_INVALID_INPUT_ERROR, detail: getErrorMessage(error) },

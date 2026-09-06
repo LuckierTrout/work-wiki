@@ -6,6 +6,7 @@ import { RESCAN_MAX_SOURCES, rescanSources } from "@/lib/source-rescan";
 import {
   V1_FILE_OUT_OF_SCOPE_ERROR,
   V1_INVALID_INPUT_ERROR,
+  V1_TOO_MANY_PATHS_ERROR,
   isV1FileInScope,
 } from "@/lib/v1-contract";
 import { readV1JsonBody, resolveV1Caller, v1SlugGate } from "@/lib/v1-route";
@@ -86,8 +87,17 @@ export async function POST(request: Request, { params }: RouteContext) {
         // REFUSED, not silently trimmed: a caller that named forty paths and got
         // twenty-five compiles would have no way to know which fifteen it still
         // owes. `remaining` covers the unnamed case; this one is a mistake.
+        //
+        // The token now comes from `v1-contract.ts` (DW-748), value unchanged
+        // and still the published one — the hoist buys it an owner, not a new
+        // spelling. It sits there beside `limit_reached`, the WORKSPACE-STATE
+        // half of the same capacity family, which THIS DOOR NEVER EMITS: a
+        // rescan cap is request-shaped and the caller clears it by naming fewer
+        // paths, while `limit_reached` (the `deep_research` door) is cleared
+        // only by deleting a project. Both differ from `invalid_input` above,
+        // which is a genuinely malformed body.
         return NextResponse.json(
-          { error: "too_many_paths", limit: RESCAN_MAX_SOURCES },
+          { error: V1_TOO_MANY_PATHS_ERROR, limit: RESCAN_MAX_SOURCES },
           { status: 400 },
         );
       }

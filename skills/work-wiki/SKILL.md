@@ -130,3 +130,5 @@ It requires the sidecar. On the cloud deployment it answers 503
   stored as bytes; their extracted text is a separate file under `raw/`.
 - 503 `busy` or 429 `rate_limited` means back off and retry, not that anything is
   wrong.
+- 400 `limit_reached` is the opposite: the request was fine and the workspace is
+  full. Do not retry it unchanged — see the reference for how to clear it.

@@ -283,6 +283,38 @@ describe("isClientInputError classifies structurally, not by identity", () => {
     expect(isClientInputError(foreign)).toBe(true);
   });
 
+  it("accepts a SUBCLASS that carries its own name", () => {
+    // DW-748. A subclass exists to be TOLD APART at one door, so it must set its
+    // own `name` — which is precisely what the `name` row above matches on, so
+    // that row alone answers `false` here. The base class's inherited
+    // `clientInput` brand is the only thing keeping the subclass a 400 at the
+    // ~20 doors that classify with this predicate; delete it and the workspace
+    // cap becomes a 500 at `POST /api/research`.
+    class Capacity extends ClientInputError {
+      constructor(message: string) {
+        super(message);
+        this.name = "ResearchProjectCapacityError";
+      }
+    }
+    const err = new Capacity("This workspace already has the maximum…");
+    expect(err.name).not.toBe("ClientInputError");
+    expect(isClientInputError(err)).toBe(true);
+  });
+
+  it("accepts a subclass from a DIFFERENT copy of this module", () => {
+    // The duplicated-graph case, one level down: a subclass instance built by a
+    // foreign copy fails `instanceof` against the class the route imported and
+    // carries neither our identity nor the `ClientInputError` name — only the
+    // brand, which is an OWN PROPERTY and therefore survives the copy exactly as
+    // `name` does one row up.
+    const foreign = Object.assign(new Error("full"), {
+      name: "ResearchProjectCapacityError",
+      clientInput: true,
+    });
+    expect(foreign).not.toBeInstanceOf(ClientInputError);
+    expect(isClientInputError(foreign)).toBe(true);
+  });
+
   it("returns false for a StoreFaultError — a 500 ladder still ends in 500", () => {
     expect(isClientInputError(new StoreFaultError("boom"))).toBe(false);
   });

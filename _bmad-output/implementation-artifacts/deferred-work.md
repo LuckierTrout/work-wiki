@@ -6324,7 +6324,9 @@ location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:177
 source_spec: `spec-dw-564-580-machine-door-field-and-error-vocabulary.md`
 severity: medium
 reason: `reviews/[reviewId]/route.ts`'s caller-fault 400 answers `V1_INVALID_INPUT_ERROR` for every `ClientInputError`, and the dominant one is `research-projects.ts`'s "This workspace already has the maximum of 100 research projects." That request's body is well-formed — the refusal is workspace STATE, and no edit to the body clears it. `cleanInput`'s verdict on `item.title` lands in the same branch, where the offending value is the stored review row rather than anything the caller sent. The sentence still rides in `detail`, so nothing regressed against the prose body this bundle replaced, and the single-token shape is what DW-580's "give it a token" authorized; a finer vocabulary (a cap/limit token beside `too_many_paths`, or a 409) is a scope decision the ledger entry did not make. Raised independently by two review layers.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-748
+resolution-undo: 079e6521751080ae78a48dd1f023fa20fbb82fcd92496149423672e235e180c1 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Add a limit_reached token — Add a capacity token beside too_many_paths in v1-contract.ts, give createResearchProject a distinguishable capacity error type to branch on, and return the new token from both v1 invalid_input sites so a malformed body and a workspace at its cap are separable. Update the v1 contract documentation and epic8-v1-routes.test.ts:620,:970.
 decision: 2026-09-04 Add a distinct capacity/state token — Add a token beside too_many_paths for refusals that are workspace state rather than caller input (the project cap, and a stored-row verdict), answer it from the review door and any sibling with the same shape, document it in the v1 error vocabulary, and pin that an agent branching on the token does not retry a request that can never succeed.
 
@@ -6625,4 +6627,12 @@ location: src/lib/silo.ts:relocateSiloRawSourcesForMerge
 source_spec: `spec-dw-743-merge-absorb-silo-source-relocation.md`
 severity: low
 reason: `deleteRawSourceBytes(rest, owner)` (src/lib/raw.ts:908-925) deletes flat `raw/sources/<rest>` and silo `tenants/<t>/raw/sources/<rest>` with `rest` derived from the frontmatter source entry by `linkedRawRests` (src/lib/source-cascade.ts:101-124) — i.e. `<from>/<hex>.md` or `<from>.md`, spelling the ABSORBED slug. Before DW-743 the silo arm matched the preserved-in-place copy at `tenants/<t>/raw/sources/<from>/`. After it, the copy is at `tenants/<t2>/raw/sources/<into>/<hex>.<ext>` — and for the two flat singletons under a `<sha256>` name no frontmatter entry references at all — so the silo arm matches nothing while the flat arm still deletes. The result is a silo Source whose flat original is gone, still walked by `listWorkbenchFilePaths` under the survivor. Caused by this change, not pre-existing. The fix is not local: making the Sources' recorded addresses follow them would mean rewriting the survivor's already-published merged frontmatter, which is the merge receipt's linearizatio
+status: open
+
+### DW-785: At the `deep_research` door a `cleanInput` verdict on the STORED review row still answers `invalid_input`, a token whose whole meaning is "the request is wrong" — for a value the caller never sent and
+origin: spec-deferred 8815eadbcc40
+location: src/app/api/v1/projects/[wikiId]/reviews/[reviewId]/route.ts:211
+source_spec: `spec-dw-748-v1-capacity-limit-token.md`
+severity: low
+reason: `reviews/[reviewId]/route.ts` parses only `resolved`/`action` from the body and hands `createResearchProject` the review's own `item.title` and `item.summary || item.title`. So `cleanInput`'s "Research title is required" reaches the caller as `invalid_input` on a body that has nothing in it to fix — structurally the same dead-end retry DW-748 removed for the workspace cap, one branch over. The ledger entry's reason names this case explicitly ("the offending value is the stored review row rather than anything the caller sent"), and the ledger's SECOND decision option covered it ("the project cap, and a stored-row verdict"); the human chose option 1, which names only the cap, so it is out of this bundle's scope by the intent's own authority rather than by oversight. This pass closed the misleading half: `api-reference.md` now states that the title and question come from the stored review row and that resending unchanged will not clear such a refusal. What remains is the TOKEN — an agent
 status: open

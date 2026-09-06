@@ -19,6 +19,20 @@ export function getErrorMessage(
  * classify by type rather than by string-matching the message.
  */
 export class ClientInputError extends Error {
+  /**
+   * STRUCTURAL BRAND, and the only thing that keeps a SUBCLASS a 400.
+   *
+   * A subclass that must be distinguishable at one door — `ResearchProjectCapacityError`
+   * in `research-projects.ts` is the first — has to carry its own `name`, which
+   * is exactly what the `name` row in {@link isClientInputError} matches on. So
+   * the subclass would answer `false` there and drop off the end of ~20 catch
+   * ladders as a 500. This own property is set by the BASE constructor, so every
+   * subclass inherits it without `errors.ts` enumerating subclass names — a list
+   * that would live in the wrong module and drift the first time someone adds a
+   * class without reading this one.
+   */
+  readonly clientInput = true;
+
   constructor(message: string) {
     super(message);
     this.name = "ClientInputError";
@@ -45,9 +59,30 @@ export class ClientInputError extends Error {
  * value genuinely is NOT an instance of the imported class, so claiming that
  * type would be a lie — while `Error` is both true and enough to read
  * `.message` off it under `strict`.
+ *
+ * TWO ROWS, NOT ONE (DW-748), and both are load-bearing.
+ *
+ * The `name` row stays FIRST and stays pinned: it is what catches a foreign
+ * copy hand-built as `Object.assign(new Error(m), { name: "ClientInputError" })`,
+ * which carries no brand at all. That is the duplicated-graph case above.
+ *
+ * The `clientInput` row is what keeps a SUBCLASS a caller fault. A subclass
+ * that has to be distinguishable at one door carries its own `name` — see
+ * {@link import("./research-projects").ResearchProjectCapacityError}, whose
+ * whole purpose is to be told apart from a malformed body — so the `name` row
+ * answers `false` for it, and without this second row the workspace cap would
+ * fall past the 400 rung at `POST /api/research` and every other door in this
+ * predicate's caller list and land on a 500. The brand is an own property set
+ * by {@link ClientInputError}'s constructor, so it is inherited by every
+ * subclass, present on a subclass instance from a SECOND copy of this module
+ * exactly as `name` is, and needs no maintenance here as subclasses are added.
  */
 export function isClientInputError(err: unknown): err is Error {
-  return err instanceof Error && err.name === "ClientInputError";
+  return (
+    err instanceof Error &&
+    (err.name === "ClientInputError" ||
+      (err as { clientInput?: unknown }).clientInput === true)
+  );
 }
 
 /**

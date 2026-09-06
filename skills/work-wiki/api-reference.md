@@ -184,13 +184,27 @@ Query: `status=open` (default) | `all`.
 | `{ "action": "deep_research" }` | Create a **draft** research project. Returns `research` and `confirmRequired: true`. Does not run. |
 
 An unknown action is 400 `unknown_action`. Reopening something already created is
-409 `not_reopenable`. When `deep_research` is refused for what the request asked
-for — the research-project cap, or a title the store rejects — it is 400
-`invalid_input` with the explanation in `detail`. When the research store is
-simply contended, `deep_research` is 503 and nothing was written: retry it. That
-503 carries **no token** — `error` is the store's own sentence, not a string to
-branch on — so do not confuse it with the 503 `busy` below, which is the
-concurrency shed and is a different refusal.
+409 `not_reopenable`.
+
+`deep_research` has **two different 400s**, and they ask for opposite things:
+
+- 400 `invalid_input` — the store refused one of the values it was given, with
+  the explanation in `detail`. Note that this call sends the store the **stored
+  review row**, not fields from your body: the research title and question come
+  from the review's own title and summary. So when `detail` names one of those,
+  resending the same call unchanged will not clear it either — the review itself
+  has to change first.
+- 400 `limit_reached` — the workspace already holds the maximum research
+  projects, with the store's sentence in `detail`. The request was fine.
+  **Do not retry it unchanged** — no edit to the body can clear this. The cap is
+  per workspace owner, so another `{id}` answers the same refusal. Clearing it
+  means deleting a research project, which no `/api/v1` route can do: this one
+  has to be resolved outside the API.
+
+When the research store is simply contended, `deep_research` is 503 and nothing
+was written: retry it. That 503 carries **no token** — `error` is the store's own
+sentence, not a string to branch on — so do not confuse it with the 503 `busy`
+below, which is the concurrency shed and is a different refusal.
 
 ## POST /api/v1/projects/{id}/reviews/resolve
 
@@ -247,7 +261,11 @@ Omit `paths` to rescan every source, up to 25 per call.
 - `remaining` is what the cap left for a follow-up call.
 - A path outside `raw/` is 403 `out_of_scope`, and one bad path fails the whole
   call rather than being skipped silently.
-- More than 25 named paths is 400 `too_many_paths`.
+- More than 25 named paths is 400 `too_many_paths`, carrying `limit`. This is
+  the **request-shaped** cap: name fewer paths and the retry succeeds. Its
+  workspace-state sibling is `limit_reached` on `deep_research` above, which
+  says the workspace itself is full — **never retry a `limit_reached` request
+  unchanged**, because nothing in the request can clear it.
 - A `paths` that is not an array of strings is 400 `invalid_input`, with the
   explanation in `detail`.
 - `queued: false` with `reason: "queue_unavailable"` means the compile was not

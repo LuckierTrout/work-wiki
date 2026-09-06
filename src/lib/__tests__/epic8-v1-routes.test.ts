@@ -107,10 +107,11 @@ import { ClientInputError } from "@/lib/errors";
 import { ReadOnlyError } from "@/lib/read-only";
 import { requireOwnerOrServicePrincipal } from "@/lib/owner-route";
 import { buildWikiGraph } from "@/lib/graph-build";
-import { rescanSources } from "@/lib/source-rescan";
+import { RESCAN_MAX_SOURCES, rescanSources } from "@/lib/source-rescan";
 import { getReviewItem, reopenReviewItem, skipReviewItem } from "@/lib/review-queue";
 import {
   ResearchProjectBusyError,
+  ResearchProjectCapacityError,
   createResearchProject,
 } from "@/lib/research-projects";
 import { retrieveHits } from "@/lib/wiki-retrieve";
@@ -124,9 +125,11 @@ import {
   V1_FILE_OUT_OF_SCOPE_ERROR,
   V1_FILE_TOO_LARGE_ERROR,
   V1_INVALID_INPUT_ERROR,
+  V1_LIMIT_REACHED_ERROR,
   V1_MAX_FILE_BYTES,
   V1_MAX_GRAPH_LIMIT,
   V1_MAX_TREE_NODES,
+  V1_TOO_MANY_PATHS_ERROR,
   V1_TREE_TOO_LARGE_ERROR,
   V1_UNKNOWN_ACTION_ERROR,
 } from "@/lib/v1-contract";
@@ -735,14 +738,70 @@ describe("reviews", () => {
       getItem.mockReset();
     });
 
-    // The two branches now answer DIFFERENT SHAPES, so they are two rows rather
+    // The branches answer DIFFERENT SHAPES, so they are separate rows rather
     // than one `it.each` over a shared body assertion: a caller fault is the
     // façade's machine token plus the sentence in `detail`, a server fault is
     // still the bare message with no token vocabulary to offer.
-    it("400s a caller-fault store refusal, as a token plus a detail", async () => {
-      const fault = new ClientInputError(
+    //
+    // THE TWO 400 ROWS ARE A PAIR, and they pin DIFFERENT claims (DW-748). The
+    // capacity error IS a `ClientInputError` by classification — it has to be,
+    // or it would stop being a 400 at `POST /api/research` — so the generic rung
+    // in that catch would swallow it if the rungs were ordered the other way,
+    // and the token would silently stay `invalid_input`. The capacity row below
+    // is what falsifies that ordering: swap the two rungs in the route and it is
+    // the row that goes red. The live non-capacity row beside it pins the
+    // separate claim that `invalid_input` did NOT move with the cap — it stays
+    // green under the swap, which is exactly why it cannot stand in for the
+    // capacity row.
+    it("400s the workspace cap as `limit_reached`, not `invalid_input`", async () => {
+      // Workspace STATE, not the request: the body was well-formed and no edit
+      // to it can ever clear this refusal, so an agent that read `invalid_input`
+      // here would retry a request that cannot succeed.
+      const fault = new ResearchProjectCapacityError(
         "This workspace already has the maximum of 100 research projects.",
       );
+      research.mockRejectedValue(fault);
+
+      const response = await deepResearch();
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: V1_LIMIT_REACHED_ERROR,
+        detail: fault.message,
+      });
+    });
+
+    it("still answers `limit_reached` for a cap from a DIFFERENT copy of the store", async () => {
+      // The duplicated-graph case at the DOOR, not at the predicate: vitest's
+      // two projects, or a bundler splitting server and edge chunks, produce a
+      // capacity error that fails `instanceof` against the class this route
+      // imported. `isResearchProjectCapacityError` is structural on `name` for
+      // exactly that reason — an identity check would fall through to the
+      // generic rung below and emit the OLD token, a production-only regression
+      // whose failure mode is quiet: still a 400, with the wrong machine word.
+      // The `clientInput` brand is present because the real subclass inherits
+      // it, so this stands in for the foreign object faithfully.
+      const foreign = Object.assign(
+        new Error("This workspace already has the maximum of 100 research projects."),
+        { name: "ResearchProjectCapacityError", clientInput: true },
+      );
+      expect(foreign).not.toBeInstanceOf(ResearchProjectCapacityError);
+      research.mockRejectedValue(foreign);
+
+      const response = await deepResearch();
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: V1_LIMIT_REACHED_ERROR,
+        detail: foreign.message,
+      });
+    });
+
+    it("400s a genuinely malformed input as `invalid_input`, unchanged", async () => {
+      // `cleanInput`'s verdict on the stored review row — the review's own title
+      // was empty. THIS one is about the input, so the old token is the right
+      // answer and must not have moved with the cap.
+      const fault = new ClientInputError("Research title is required");
       research.mockRejectedValue(fault);
 
       const response = await deepResearch();
@@ -1104,6 +1163,42 @@ describe("sources/rescan", () => {
     expect(rescan).not.toHaveBeenCalled();
     // And read-only refuses EARLIEST of all — above the body read, so above the
     // gate too.
+    expect(listReadable).not.toHaveBeenCalled();
+  });
+
+  it("400s more than the path cap as `too_many_paths`, value unchanged", async () => {
+    // The REQUEST-SHAPED capacity refusal, and the sibling branch of the same
+    // `if` as the `invalid_input` row above — which is what makes "a malformed
+    // body and a cap are separable" already true at this door. The
+    // WORKSPACE-STATE sibling `limit_reached` belongs to `deep_research` and is
+    // never emitted here.
+    //
+    // WHAT THIS ROW PINS IS THE SHAPE, NOT THE VALUE. It compares the response
+    // to the same constant the route emits, so the two agree with each other no
+    // matter what that constant says — mutate `V1_TOO_MANY_PATHS_ERROR` and this
+    // row stays green. The published VALUE is pinned in `workbench-epic8.test.ts`
+    // ("pins the two published capacity tokens on both sides of the wire"),
+    // against the literal and against the installed pack.
+    const over = await postRescan(
+      send("http://local/api/v1/projects/current/sources/rescan", "POST", {
+        paths: Array.from(
+          { length: RESCAN_MAX_SOURCES + 1 },
+          (_unused, index) => `raw/sources/s${index}.md`,
+        ),
+      }),
+      params("current"),
+    );
+
+    expect(over.status).toBe(400);
+    // `limit`, not a `detail`: this cap names the number to fit under, because
+    // the caller CAN clear it in the next request. The KEYS are what this
+    // assertion owns; the token's published spelling is the parity row's job.
+    expect(await over.json()).toEqual({
+      error: V1_TOO_MANY_PATHS_ERROR,
+      limit: RESCAN_MAX_SOURCES,
+    });
+    expect(rescan).not.toHaveBeenCalled();
+    // Refused above `v1SlugGate`, exactly as its sibling branch is.
     expect(listReadable).not.toHaveBeenCalled();
   });
 

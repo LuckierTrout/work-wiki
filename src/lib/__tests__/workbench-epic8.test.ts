@@ -946,4 +946,24 @@ describe("the branded Agent Skill pack", () => {
       expect(reference).toContain(route);
     }
   });
+
+  it("pins the two published capacity tokens on both sides of the wire", async () => {
+    // DOC/WIRE PARITY, the same deal the sidecar-mirror row buys for the
+    // transport tokens one describe up — and the reason it is needed here is
+    // that the route suites compare each response to the SAME constant the route
+    // emits, so they agree with themselves no matter what the value is. Mutate
+    // either constant and the whole node project stays green without this row.
+    //
+    // BOTH HALVES, because either alone is satisfiable by a broken pair: the
+    // literal check pins the wire value an agent switch-cases on, and the
+    // reference check pins that the installed pack still publishes that same
+    // word. `too_many_paths` has been published since the rescan route shipped;
+    // `limit_reached` is published as of DW-748. Neither is free to change.
+    expect(contract.V1_TOO_MANY_PATHS_ERROR).toBe("too_many_paths");
+    expect(contract.V1_LIMIT_REACHED_ERROR).toBe("limit_reached");
+
+    const reference = await pack("api-reference.md");
+    expect(reference).toContain("too_many_paths");
+    expect(reference).toContain("limit_reached");
+  });
 });
