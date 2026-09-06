@@ -6357,7 +6357,9 @@ location: src/hooks/useGraphSimulation.ts (handleClick)
 source_spec: `spec-dw-594-596-graph-canvas-keyboard-cursor.md`
 severity: medium
 reason: A `tabIndex={0}` canvas takes focus on mousedown in every browser, so a click both focuses the canvas — seeding the cursor at index 0 via `handleFocus` — and navigates through `openNode`. `handleClick` never writes `cursorIndexRef`, so the pointer and the keyboard disagree about where "here" is from the first click onward, and the live region announces the first node rather than the clicked one. The fix was implemented during review and then REVERTED: this spec's `Never` list forbids "mouse-driven cursor movement" and the bundle's recorded 2026-08-29 decision says "keep the pointer path unchanged", both of which a click that moves the cursor contradicts. Resolving it needs a human to widen that boundary, not an unattended reading of it.
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-751
+resolution-undo: e41f08f907f32c067a74383a897c9e99d0096925cf012a18c30d7967a99cbbef 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Click moves the cursor — Set cursorIndexRef to the hit node's index (and announce it the way moveCursor does) in handleClick before openNode, so arrow keys resume from the clicked node; amend the spec's Never clause and add a click-then-arrow test.
 decision: 2026-09-04 Widen the boundary: click moves the cursor — Have handleClick write cursorIndexRef to the clicked node's index before openNode, so a subsequent arrow key resumes from the node the reader acted on and the live region announces that node. Record the supersession of the spec's Never clause and the 2026-08-29 decision, and pin click-then-arrow.
 

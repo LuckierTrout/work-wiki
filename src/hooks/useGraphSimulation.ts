@@ -30,9 +30,14 @@ export interface UseGraphSimulationReturn {
   handleFocus: () => void;
   handleBlur: () => void;
   /**
-   * What the canvas's sibling live region should say right now — the focused
+   * What the canvas's sibling live region should say right now — the cursor
    * node's label, its connection count, its position in the node set, and the
-   * key that opens it. Empty while the canvas is unfocused or has no nodes.
+   * key that opens it. Empty until something seats the cursor, and emptied
+   * again by blur and by a lens change; empty always if there are no nodes.
+   *
+   * NOT focus-gated (DW-751). Focus seats the cursor and blur clears this, but
+   * a click seats it too, without consulting `focusedRef` — see that ref's
+   * comment for why the ring and this string are deliberately asymmetric.
    *
    * State, not a ref, because the announcement is RENDERED: a live region only
    * announces text that changes in the DOM.
@@ -79,9 +84,31 @@ export function useGraphSimulation(
    * the array wholesale, so an index is the thing that stays meaningful across
    * a frame — and `nodeAt()` below is the single place that resolves it, so a
    * stale index can never become a node from a previous fetch.
+   *
+   * BOTH input paths write it (DW-751). A `tabIndex={0}` canvas takes focus on
+   * mousedown, so a click already seats a cursor via `handleFocus` — on the
+   * FIRST node, whatever node was clicked. Leaving the pointer path silent
+   * therefore does not mean "no cursor after a click", it means a cursor
+   * pointing at the wrong node: the live region names the first node while the
+   * reader just acted on the fifth, and the next arrow press resumes from the
+   * first. So `handleClick` seats it too, through the same `seatCursor` the
+   * keyboard uses. This widens DW-594/595/596's `Never: no mouse-driven cursor
+   * movement`, on the human decision recorded for DW-751 on 2026-09-04.
    */
   const cursorIndexRef = useRef<number | null>(null);
-  /** Is the canvas itself focused? Gates BOTH the ring and the announcement. */
+  /**
+   * Is the canvas itself focused? Gates the RING only.
+   *
+   * It gated the announcement too until DW-751, and the asymmetry that remains
+   * is deliberate. The ring is a FOCUS INDICATION: drawing it on a canvas that
+   * does not have focus would point at an element the reader is not on, so it
+   * has to be gated. The announcement is the standing description of where the
+   * cursor IS, and the cursor is now seated by the pointer as well — a click
+   * both seats it and, in any real browser, focuses the canvas in the same
+   * gesture. So "seated but unfocused" is a state only jsdom can produce
+   * (`fireEvent.click` moves no focus), and gating the string on `focusedRef`
+   * would buy nothing in a browser while making the pointer seat untestable.
+   */
   const focusedRef = useRef<boolean>(false);
 
   const [loading, setLoading] = useState(true);
@@ -160,6 +187,29 @@ export function useGraphSimulation(
     cancelAnimationFrame(animRef.current);
     animRef.current = requestAnimationFrame(simulate);
   }, [simulate, canvasRef]);
+
+  /**
+   * Put the cursor on `nodes[index]` and say so — the ONLY way the cursor moves.
+   *
+   * Three effects, always together: the index, the announcement, and a frame.
+   * Every path that seats the cursor — an arrow (`moveCursor`), focus
+   * (`handleFocus`), a click (`handleClick`, DW-751) — calls this rather than
+   * repeating them, because a pointer and a keyboard describing one node in two
+   * wordings, or moving to it in one place and not the other, IS the defect
+   * DW-751 records. The caller owns the index arithmetic (wrapping, clamping,
+   * the hit test); this owns what "the cursor is here" means.
+   *
+   * `nodes` is a parameter rather than a read of `dataRef`, so the announcement
+   * is built from the very array the caller resolved its index against.
+   */
+  const seatCursor = useCallback(
+    (index: number, nodes: GraphNode[]) => {
+      cursorIndexRef.current = index;
+      setCursorAnnouncement(describeCursor(nodes[index], index, nodes.length));
+      redraw();
+    },
+    [redraw],
+  );
 
   // Fetch graph data (re-fetches when the scope lens changes). A `cancelled`
   // guard drops a stale in-flight response when the scope toggles again, so an
@@ -374,7 +424,27 @@ export function useGraphSimulation(
     [router],
   );
 
-  // Click handler — hit-test the pointer, then activate
+  /**
+   * Click handler — hit-test the pointer, seat the cursor, then activate.
+   *
+   * The seat is not decoration on the navigation (DW-751). The same gesture
+   * FOCUSES the canvas, and focus seats a cursor whether or not this handler
+   * does: without the line below, `handleFocus` puts it on the FIRST node, and
+   * the live region — the standing description of where the keyboard cursor is
+   * — names that first node while the reader just clicked the fifth. A live
+   * region that lies is worse than a silent one, and the next arrow press
+   * compounds it by resuming from the first node too. The pointer-and-keyboard
+   * reader (a magnifier user, a trackpad user who then tabs) is who this serves.
+   *
+   * Order matters twice over: seating BEFORE `openNode` is what the DW-751 AC
+   * reads, and `router.push` is mocked in tests but a real navigation in the
+   * browser. And the seat is deliberately NOT gated on `focusedRef` — a real
+   * browser focuses on mousedown, so the gate would be dead code that also made
+   * this untestable in jsdom, where `fireEvent.click` moves no focus.
+   *
+   * An indexed loop rather than `for…of`, because `seatCursor` addresses the
+   * node by its position in the array — the same thing `cursorIndexRef` holds.
+   */
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       const data = dataRef.current;
@@ -383,17 +453,21 @@ export function useGraphSimulation(
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      for (const n of data.nodes) {
+      for (let i = 0; i < data.nodes.length; i++) {
+        const n = data.nodes[i];
         const r = nodeRadius(n.linkCount);
         const dx = n.x - mx;
         const dy = n.y - my;
         if (dx * dx + dy * dy <= (r + 4) ** 2) {
+          // Only on a HIT: a click on empty canvas leaves the cursor exactly
+          // where the reader left it.
+          seatCursor(i, data.nodes);
           openNode(n);
           return;
         }
       }
     },
-    [openNode, canvasRef],
+    [openNode, canvasRef, seatCursor],
   );
 
   /**
@@ -413,11 +487,9 @@ export function useGraphSimulation(
       // A first arrow press with no cursor yet lands on the first node rather
       // than on "one past nothing".
       const next = from === null ? 0 : (((from + delta) % total) + total) % total;
-      cursorIndexRef.current = next;
-      setCursorAnnouncement(describeCursor(nodes[next], next, total));
-      redraw();
+      seatCursor(next, nodes);
     },
-    [redraw],
+    [seatCursor],
   );
 
   // Focus — put the cursor on a node and say which one it is
@@ -430,10 +502,8 @@ export function useGraphSimulation(
     if (!nodes || nodes.length === 0) return;
     if (cursorIndexRef.current === null) cursorIndexRef.current = 0;
     const index = Math.min(cursorIndexRef.current, nodes.length - 1);
-    cursorIndexRef.current = index;
-    setCursorAnnouncement(describeCursor(nodes[index], index, nodes.length));
-    redraw();
-  }, [redraw]);
+    seatCursor(index, nodes);
+  }, [seatCursor]);
 
   /**
    * Blur — stop drawing the ring and empty the live region.

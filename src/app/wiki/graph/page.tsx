@@ -185,6 +185,20 @@ export default function GraphPage() {
             the answer then was to remove the stop, and the answer now is to
             make it lead somewhere.
 
+            A CLICK seats that cursor too, on the node it hit, before it
+            navigates (DW-751). The pointer path is not inert with respect to
+            the cursor and cannot be: the same mousedown focuses the canvas, so
+            a cursor is seated either way — on the FIRST node, if only `onFocus`
+            does it. The live region below is the standing description of where the
+            keyboard cursor is, so leaving it naming the first node while the
+            reader just clicked the fifth is a live region that lies, and the
+            next arrow key resumes from the wrong place. Both paths seat it
+            through one function in the hook, for the same reason both activate
+            through one `openNode`. This deliberately supersedes DW-594/595/596's
+            "no mouse-driven cursor movement" boundary, on the human decision
+            recorded for DW-751 on 2026-09-04 — a reader here is the person who
+            would otherwise revert it back.
+
             It stays `role="img"`, because it is still a picture with a text
             alternative and DW-131/DW-461 pin that semantics. An operable
             `role="img"` is unusual, so the cursor is announced by the sibling

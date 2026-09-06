@@ -229,6 +229,22 @@ const SPREAD: [number, number][] = [
   [1, 1],
 ];
 
+/**
+ * A router stub for the cases that drive the hook directly with `renderHook`
+ * rather than through the mounted page, which has `next/navigation` mocked for
+ * it. Module scope because two describes below need one.
+ */
+function router() {
+  return {
+    push: vi.fn(),
+    replace: vi.fn(),
+    refresh: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+    forward: vi.fn(),
+  };
+}
+
 describe("the graph canvas opens a page on click (DW-596)", () => {
   it("navigates to the node under the pointer", async () => {
     const canvas = await mountGraph();
@@ -507,6 +523,211 @@ describe("both activation paths open the same page (DW-595)", () => {
   });
 });
 
+describe("a click seats the keyboard cursor on the node it hit (DW-751)", () => {
+  /**
+   * Why any of this is observable at all: a `tabIndex={0}` canvas takes focus
+   * on mousedown, so a click ALREADY seats a cursor — `handleFocus` puts it on
+   * the FIRST node regardless of which node was clicked. So the choice was
+   * never "cursor or no cursor after a click", it was "the clicked node or the
+   * first one", and the live region is the standing description of where the
+   * cursor is.
+   *
+   * EVERY case here spreads the nodes with `positionNodes(SPREAD)`. Under this
+   * file's default geometry all three stack at (100, 100), which makes "the
+   * clicked node" and "the first node" the same node — the one arrangement in
+   * which a `handleClick` that seats nothing looks identical to one that seats
+   * correctly, since `handleFocus` seated the first node anyway.
+   */
+
+  it("announces the clicked node, not the one focus landed on", async () => {
+    const at = positionNodes(SPREAD);
+    const canvas = await mountGraph();
+    focusCanvas(canvas);
+    expect(announcement()).toContain("1 of 3");
+
+    fireEvent.click(canvas, { clientX: at[1].x, clientY: at[1].y });
+
+    // The navigation is unchanged — the same openNode, the same URL.
+    expect(pushMock.mock.calls).toEqual([[HREF_OF[1]]]);
+    const said = announcement();
+    expect(
+      said,
+      "the live region still names the node FOCUS landed on after a click on a different node " +
+        "— it is describing a cursor position the reader never chose (DW-751)",
+    ).toContain("Beta");
+    expect(said).toContain("2 of 3");
+    // The same wording an arrow press produces, because both go through
+    // describeCursor: a second copy in the click path is the same defect said
+    // twice.
+    expect(said).toContain("1 connection,");
+    expect(said).toMatch(/Enter/);
+  });
+
+  it("resumes an arrow press from the clicked node", async () => {
+    // The acceptance criterion: click the second node, press ArrowRight, land
+    // on the third. Without the seat the cursor is still at 0 and this
+    // announces "2 of 3".
+    const at = positionNodes(SPREAD);
+    const canvas = await mountGraph();
+    focusCanvas(canvas);
+
+    fireEvent.click(canvas, { clientX: at[1].x, clientY: at[1].y });
+    pressKey(canvas, "ArrowRight");
+
+    const said = announcement();
+    expect(
+      said,
+      "ArrowRight after a click on the SECOND node did not land on the third — the keyboard " +
+        "resumed from where focus seeded the cursor rather than from the node the reader just " +
+        "acted on (DW-751)",
+    ).toContain("Gamma");
+    expect(said).toContain("3 of 3");
+  });
+
+  it("leaves the cursor alone when the click hits nothing", async () => {
+    positionNodes(SPREAD);
+    const canvas = await mountGraph();
+    focusCanvas(canvas);
+    pressKey(canvas, "ArrowRight");
+    expect(announcement()).toContain("Beta");
+
+    // SPREAD puts the nodes at (100, 100), (300, 250) and (500, 400). The
+    // NEAREST of those to (400, 100) is the middle one, ~180px away; the
+    // others are 300px and ~316px. The biggest hit radius in this fixture is
+    // `nodeRadius(2)` ≈ 11.7px plus the test's 4px slop, so ~16px — every
+    // node is more than ten times that away.
+    fireEvent.click(canvas, { clientX: 400, clientY: 100 });
+
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(
+      announcement(),
+      "a click on empty canvas moved the keyboard cursor — the seat is not gated on the hit " +
+        "test, so an aimless click throws away the reader's position",
+    ).toContain("Beta");
+    expect(announcement()).toContain("2 of 3");
+  });
+
+  it("returns to the clicked node when the canvas is refocused", async () => {
+    const at = positionNodes(SPREAD);
+    const canvas = await mountGraph();
+    focusCanvas(canvas);
+
+    fireEvent.click(canvas, { clientX: at[1].x, clientY: at[1].y });
+    blurCanvas(canvas);
+    expect(announcement()).toBe("");
+
+    focusCanvas(canvas);
+
+    expect(
+      announcement(),
+      "refocusing after a click announced the FIRST node — the click wrote no index for blur " +
+        "to preserve, so the pointer's position did not survive leaving the canvas",
+    ).toContain("Beta");
+  });
+
+  it("seats the cursor BEFORE it navigates", async () => {
+    /**
+     * The ordering is claimed in three places — `handleClick`'s comment, this
+     * bundle's spec, and its Code Map — and every other case here is blind to
+     * it, because `router.push` is an inert mock: with the seat moved after
+     * `openNode` both lines still run and the suite stays green.
+     *
+     * A router whose `push` THROWS is what separates them. Navigation is the
+     * last thing this handler does, so nothing that must happen first may be
+     * behind it; a `push` that does not return is the cheapest way to say so.
+     * (In a browser the equivalent is a real navigation committing — the
+     * handler does not get a second chance to write the cursor.) Driven
+     * through `renderHook` rather than the page, since the page's router is
+     * the module mock every other case reads.
+     */
+    const at = positionNodes(SPREAD);
+    const canvasRef = { current: document.createElement("canvas") };
+    const nav = router();
+    nav.push.mockImplementation(() => {
+      throw new Error("navigated");
+    });
+
+    const { result } = renderHook(() =>
+      useGraphSimulation(
+        canvasRef,
+        nav as unknown as Parameters<typeof useGraphSimulation>[1],
+      ),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Caught INSIDE `act`, not around it: a throw that escapes `act` leaves
+    // the render it queued uncommitted, so `result.current` would still hold
+    // the pre-click announcement and this case would fail either way.
+    let thrown: unknown;
+    act(() => {
+      try {
+        result.current.handleClick({
+          clientX: at[1].x,
+          clientY: at[1].y,
+        } as unknown as React.MouseEvent<HTMLCanvasElement>);
+      } catch (err) {
+        thrown = err;
+      }
+    });
+    expect(
+      (thrown as Error | undefined)?.message,
+      "the click did not reach openNode at all, so this case is not observing the ordering",
+    ).toBe("navigated");
+
+    expect(
+      result.current.cursorAnnouncement,
+      "the cursor was not seated before openNode ran — a navigation that does not return takes " +
+        "the seat with it, and the ordering handleClick's comment claims is not the code's",
+    ).toContain("Beta");
+    expect(result.current.cursorAnnouncement).toContain("2 of 3");
+  });
+
+  it("seats the cursor on a click after a lens change, with no focus first", async () => {
+    // Two facts in one case. The lens change is the state the fetch effect
+    // resets the cursor from — index and announcement both cleared — so the
+    // click here seats from NOTHING rather than from a stale index. And no
+    // `handleFocus` runs before it: the seat must not be gated on `focusedRef`,
+    // which a real browser sets on mousedown but jsdom's `fireEvent.click`
+    // never does, so a gate would be untestable dead code.
+    const canvasRef = { current: document.createElement("canvas") };
+    const nav = router();
+
+    const { result, rerender } = renderHook(
+      ({ scope }: { scope: string }) =>
+        useGraphSimulation(
+          canvasRef,
+          nav as unknown as Parameters<typeof useGraphSimulation>[1],
+          scope,
+        ),
+      { initialProps: { scope: "mine" } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // The next lens's nodes get the spread positions; the first lens's were
+    // stacked, which is why the click below could not be aimed before now.
+    const at = positionNodes(SPREAD);
+    fetchMock.mockResolvedValue(graphResponse(NODES));
+    rerender({ scope: "vault:v1" });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.cursorAnnouncement).toBe("");
+
+    act(() =>
+      result.current.handleClick({
+        clientX: at[2].x,
+        clientY: at[2].y,
+      } as unknown as React.MouseEvent<HTMLCanvasElement>),
+    );
+
+    expect(nav.push).toHaveBeenCalledWith(HREF_OF[2]);
+    expect(
+      result.current.cursorAnnouncement,
+      "a click after a lens change announced nothing or the wrong node — the pointer seats the " +
+        "cursor whether or not the canvas has been focused yet (DW-751)",
+    ).toContain("Gamma");
+    expect(result.current.cursorAnnouncement).toContain("3 of 3");
+  });
+});
+
 describe("a cursor change asks for a new frame (DW-595)", () => {
   /**
    * The simulation STOPS when it settles: `simulate` only re-arms
@@ -549,6 +770,33 @@ describe("a cursor change asks for a new frame (DW-595)", () => {
       since(),
       "a key the canvas does not handle still scheduled a redraw",
     ).toBe(afterMove);
+  });
+
+  it("requests one on a click that hits, and none on a click that misses", async () => {
+    // `seatCursor` has THREE effects and the click path's other cases read only
+    // two of them: the index and the announcement are React-visible, the frame
+    // is not. Without this the pointer could seat a cursor the ring never
+    // follows — on a settled graph the ring would stay drawn around whatever
+    // node the keyboard last left it on. Same quiescent setup as above: no 2D
+    // context, so any frame in this window came from `redraw`.
+    positionNodes(SPREAD);
+    const canvas = await mountGraph();
+    focusCanvas(canvas);
+
+    const since = countFrames();
+    fireEvent.click(canvas, { clientX: 300, clientY: 250 });
+    expect(
+      since(),
+      "a click that seated the cursor requested no animation frame, so the focus ring stays " +
+        "around the node the cursor has LEFT (DW-751)",
+    ).toBeGreaterThan(0);
+
+    const afterHit = since();
+    fireEvent.click(canvas, { clientX: 400, clientY: 100 });
+    expect(
+      since(),
+      "a click that hit no node still scheduled a redraw — nothing about the scene changed",
+    ).toBe(afterHit);
   });
 
   it("requests one on blur, so the ring is taken down", async () => {
@@ -633,17 +881,6 @@ describe("the cursor the canvas is asked to draw follows focus", () => {
  * hook is what is asked.
  */
 describe("the keyboard cursor outside the canvas's rendered branch", () => {
-  function router() {
-    return {
-      push: vi.fn(),
-      replace: vi.fn(),
-      refresh: vi.fn(),
-      prefetch: vi.fn(),
-      back: vi.fn(),
-      forward: vi.fn(),
-    };
-  }
-
   /** Drive `handleKeyDown` without a DOM event, reporting `preventDefault`. */
   function pressOn(
     result: { current: ReturnType<typeof useGraphSimulation> },

@@ -42,7 +42,7 @@ baseline_revision: 'd9675d177b6311c95cd0bea2d8b0af6357cdc878'
 
 **Always:**
 - One activation function is the only place that navigates; `handleClick` and the Enter/Space branch both call it, so the two paths cannot diverge on target URL.
-- The pointer path's observable behaviour is unchanged: hover, cursor style, tooltip, and click-to-open all still work exactly as today.
+- The pointer path's observable behaviour is unchanged: hover, cursor style, tooltip, and click-to-open all still work exactly as today. **SUPERSEDED IN PART by DW-751 (human decision, 2026-09-04):** a click now ALSO seats the keyboard cursor on the node it hit and announces it. Hover, cursor style, tooltip and the click's navigation are still unchanged; only the cursor/announcement effect was added. See the Spec Change Log below.
 - The canvas keeps `role="img"` and an `aria-label` that still names the Knowledge tree; the visible `<Link>` outside the canvas stays outside it and stays in the keyboard order (DW-131/DW-461 contracts, pinned in `retired-surfaces.test.ts` and the escape-hatch describe).
 - The canvas fallback child stays a real `<a href={KNOWLEDGE_TREE_HREF}>` with `href` as its first attribute — `retired-surfaces.test.ts` matches on that shape.
 - Arrow/Enter/Space presses the canvas handles call `preventDefault()`; unhandled keys are left alone.
@@ -54,7 +54,7 @@ baseline_revision: 'd9675d177b6311c95cd0bea2d8b0af6357cdc878'
 **Never:**
 - Do not change `role="img"` to `application`/`listbox`/etc., and do not remove the fallback child or the visible link.
 - Do not edit `src/lib/__tests__/retired-surfaces.test.ts` — its source pins must stay green untouched.
-- Do not add a per-node DOM shadow tree, hit regions, `drawFocusIfNeeded`, panning/zooming, or mouse-driven cursor movement.
+- Do not add a per-node DOM shadow tree, hit regions, `drawFocusIfNeeded`, panning/zooming, or ~~mouse-driven cursor movement~~ — **that last clause is SUPERSEDED by DW-751 (human decision, 2026-09-04)** and forbids nothing: a click on a node now seats the keyboard cursor on that node. Every other item in this bullet stands. See the Spec Change Log below.
 - Do not edit the deferred-work ledger.
 
 ## I/O & Edge-Case Matrix
@@ -64,7 +64,7 @@ baseline_revision: 'd9675d177b6311c95cd0bea2d8b0af6357cdc878'
 | Keyboard reader focuses the canvas | Graph rendered with N>0 nodes, canvas receives focus | Canvas is a tab stop (`tabIndex >= 0`); the cursor lands on the first node; the live region announces that node's label, connection count, position (i of N) and that Enter opens it; a ring is drawn around it | No data yet → no cursor, no announcement, no throw |
 | Arrow key moves the cursor | Canvas focused, cursor on node i | Right/Down → i+1, Left/Up → i-1, both wrapping at the ends; announcement and drawn ring follow; the event is `defaultPrevented` so the page does not scroll | No nodes → no-op, no throw |
 | Enter or Space activates | Canvas focused, cursor on node n | Router pushes `/u/{n.tenant}/{n.id}` — the same URL a click on that node produces, through the same function; event is `defaultPrevented` | No cursor → no navigation |
-| Pointer reader clicks a node | Click whose coordinates hit node n | Router pushes `/u/{n.tenant}/{n.id}` (unchanged behaviour, now via the shared activation function) | Click hits no node → no navigation |
+| Pointer reader clicks a node | Click whose coordinates hit node n | Router pushes `/u/{n.tenant}/{n.id}` (unchanged behaviour, now via the shared activation function). **SUPERSEDED IN PART by DW-751 (human decision, 2026-09-04):** the click ALSO seats the keyboard cursor on node n and announces it in the live region, before it navigates — same index, same `describeCursor` wording, same redraw as an arrow press | Click hits no node → no navigation, and (per DW-751) no cursor change either |
 | Canvas loses focus | Canvas focused with a cursor, then blurred | The cursor ring is no longer drawn and the live region is emptied; refocusing announces again | No error expected |
 | Keyboard reader tabs past the canvas | Graph rendered | The canvas's fallback `<a>` is out of the tab order (`tabIndex < 0`), so there is no focus stop that renders nothing on screen | No error expected |
 
@@ -96,6 +96,20 @@ baseline_revision: 'd9675d177b6311c95cd0bea2d8b0af6357cdc878'
 - Given a reviewer reading `page.tsx`, when they reach the canvas block comment, then it records the keyboard activation path, the `role="img"` + live-region choice, and why the fallback anchor is deliberately out of the tab order.
 
 ## Spec Change Log
+
+### 2026-09-05 — DW-751 widens the pointer-path boundary (human decision, 2026-09-04)
+
+**What changed.** Three places in this spec were amended so they no longer forbid — or misdescribe — a click seating the keyboard cursor:
+
+- `Never` — "Do not add a per-node DOM shadow tree, hit regions, `drawFocusIfNeeded`, panning/zooming, **or mouse-driven cursor movement**". The final clause is withdrawn. The rest stands.
+- `Always` — "The pointer path's observable behaviour is unchanged: hover, cursor style, tooltip, and click-to-open all still work exactly as today". Still true of hover, cursor style, tooltip, and the click's navigation; no longer true of the keyboard cursor and the live region, which a click now writes.
+- The **I/O & Edge-Case Matrix** row "Pointer reader clicks a node", whose expected behaviour was navigation only. It now also names the cursor seat and the announcement, and its error column records that a click missing every node changes no cursor.
+
+The bundle's recorded 2026-08-29 decision, "keep the pointer path unchanged", is superseded to the same extent.
+
+**Why.** This spec's `deferred:` entry (kept above, as the record of what was deferred) describes the defect: a `tabIndex={0}` canvas takes focus on mousedown, so a click seats a cursor whether or not `handleClick` writes one — `handleFocus` puts it at index 0, whatever node was clicked. The boundary as written therefore did not buy an inert pointer path; it bought a cursor pointing at the wrong node, a live region naming the first node while the reader had just acted on the fifth, and an arrow key that resumed from node 1. The original fix was written during this bundle's review and then REVERTED for contradicting the two clauses above, which is why resolving it required a human to widen them rather than an unattended reading. That decision was taken on 2026-09-04 and implemented as DW-751; see `spec-dw-751-graph-click-moves-cursor.md`.
+
+**What is still forbidden.** Everything else in the `Never` list, and every other `Always`: one activation function is still the only navigation site, hover/tooltip/cursor-style are untouched, `role="img"` and the fallback `<a>` are untouched, and `retired-surfaces.test.ts` stays unmodified. The seat happens only on a hit-test hit, and only through the one function the keyboard path also uses — a second copy of the announcement wording in the pointer path would be the same divergence defect restated.
 
 ## Review Triage Log
 
