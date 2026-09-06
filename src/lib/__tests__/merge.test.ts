@@ -32,6 +32,8 @@ import { resetAliasIndex, resolveAlias } from "../alias-index";
 import { rebuildBacklinkIndex } from "../backlink-index";
 import { readDiscussFixture } from "./discuss-fixtures";
 import { _resetStorage, getStorage } from "../storage";
+import { sourceSha256 } from "../source-sha256";
+import { logger } from "../logger";
 import { hasLLMKey, callLLM } from "../llm";
 import type { SourceEntry } from "../types";
 
@@ -505,15 +507,13 @@ describe("mergePages", () => {
     await seedPage("agent-harness", { title: "Agent Harness" });
     await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
     const storage = getStorage();
-    // The absorbed page's silo artifacts, so the RESUME delete call site
-    // (the `!currentFrom` recovery branch) is pinned too — it passes
-    // `preserveRawSources` just as the normal one does, and nothing else
-    // observes it (DW-609). The first, failing attempt already reaches the
-    // 2b-2d cleanup batch, so the raw Sources that survive into the resume are
-    // themselves evidence the normal call site preserved them; the resumed
-    // delete then has to preserve them a second time.
+    // The absorbed page's silo artifacts, so the RESUME branch's own silo
+    // handling is pinned too (DW-609/DW-743). The first, failing attempt
+    // reaches the normal call site, which relocates these to the survivor and
+    // then deletes with `preserveRawSources`; the resume branch is re-seeded
+    // below and has to do the same a second time.
     const hex = "e".repeat(64);
-    const preservedOnResume = [
+    const absorbedSiloSources = [
       "tenants/alice/raw/sources/harness-ai-agents.md",
       "tenants/alice/raw/harness-ai-agents.md",
       `tenants/alice/raw/sources/harness-ai-agents/${hex}.md`,
@@ -523,7 +523,7 @@ describe("mergePages", () => {
       "tenants/alice/discuss/harness-ai-agents.json",
       "tenants/alice/raw/assets/harness-ai-agents/pic.png",
     ];
-    for (const rel of [...preservedOnResume, ...cleanedOnResume]) {
+    for (const rel of [...absorbedSiloSources, ...cleanedOnResume]) {
       await storage.writeFile(rel, "absorbed provenance bytes");
     }
     const originalWrite = storage.writeFile.bind(storage);
@@ -562,6 +562,28 @@ describe("mergePages", () => {
       author: "alice",
     });
 
+    // The failed attempt already relocated the seeded Sources onto the
+    // survivor. Put them back at the absorbed address — the state a fail-soft
+    // relocation that could not finish leaves behind — so the RESUME call site
+    // has something of its own to move (DW-743).
+    //
+    // The two flat singletons get DISTINCT bytes, so their content-addressed
+    // target can only have come from this re-seed. The hashed ones keep the
+    // original bytes: `<hex>` is content-addressed, so the same name carrying
+    // different content is a state no writer can produce, and a test that
+    // depended on one overwriting the other would be pinning fiction.
+    const resumedBytes = "resumed provenance bytes";
+    await storage.writeFile("tenants/alice/raw/sources/harness-ai-agents.md", resumedBytes);
+    await storage.writeFile("tenants/alice/raw/harness-ai-agents.md", resumedBytes);
+    await storage.writeFile(
+      `tenants/alice/raw/sources/harness-ai-agents/${hex}.md`,
+      "absorbed provenance bytes",
+    );
+    await storage.writeFile(
+      `tenants/alice/raw/harness-ai-agents/${hex}.md`,
+      "absorbed provenance bytes",
+    );
+
     await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
 
     expect((await listWikiPages({ strict: true })).map((entry) => entry.slug))
@@ -569,14 +591,87 @@ describe("mergePages", () => {
     expect((await readWikiPage("agent-harness"))?.content)
       .toContain("Owner edit after partial delete.");
 
-    // The resumed merge-absorb delete is still a merge, not a discard: the
-    // survivor's frontmatter claims the absorbed page's sources.
-    for (const rel of preservedOnResume) {
-      expect(await storage.fileExists(rel), rel).toBe(true);
+    // The resumed merge-absorb is still a merge, not a discard: the absorbed
+    // page's Sources move to the survivor's silo rather than being dropped…
+    for (const rel of absorbedSiloSources) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+    expect(
+      await storage.readFile(
+        `tenants/alice/raw/sources/agent-harness/${await sourceSha256(resumedBytes)}.md`,
+      ),
+    ).toBe(resumedBytes);
+    for (const rel of [
+      `tenants/alice/raw/sources/agent-harness/${hex}.md`,
+      `tenants/alice/raw/agent-harness/${hex}.md`,
+    ]) {
+      expect(await storage.readFile(rel), rel).toBe("absorbed provenance bytes");
     }
     // Its discuss thread and assets are still cleaned up.
     for (const rel of cleanedOnResume) {
       expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+  }, 15_000);
+
+  it("keeps the absorbed silo Sources when the RESUME branch's relocation fails", async () => {
+    // The resume call site's own `preserveRawSources` — unobservable while its
+    // relocation succeeds, which is why it needs a run where the move fails
+    // (DW-743).
+    mockedHasLLMKey.mockResolvedValue(false);
+    await seedPage("agent-harness", { title: "Agent Harness" });
+    await seedPage("harness-ai-agents", { title: "Harness (AI agents)" });
+    const storage = getStorage();
+    const hex = "f".repeat(64);
+    const absorbedSiloSources = [
+      "tenants/alice/raw/sources/harness-ai-agents.md",
+      `tenants/alice/raw/sources/harness-ai-agents/${hex}.md`,
+    ];
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const originalWrite = storage.writeFile.bind(storage);
+    let failDeleteIndex = true;
+    let failRelocation = false;
+    vi.spyOn(storage, "writeFile").mockImplementation(async (target, content) => {
+      if (failRelocation && target.startsWith("tenants/alice/raw/sources/agent-harness/")) {
+        throw new Error("silo write unavailable");
+      }
+      if (
+        failDeleteIndex
+        && target === "wiki/index.md"
+        && !await storage.fileExists("tenants/alice/wiki/harness-ai-agents.md")
+      ) {
+        failDeleteIndex = false;
+        throw new Error("index unavailable after Page delete");
+      }
+      return originalWrite(target, content);
+    });
+
+    try {
+      await expect(mergePages({
+        from: "harness-ai-agents",
+        into: "agent-harness",
+        actor: "alice",
+      })).rejects.toThrow(/index unavailable/i);
+
+      // The absorbed page's bytes are gone but its silo Sources are back at the
+      // absorbed address — a fail-soft move that did not finish.
+      for (const rel of absorbedSiloSources) {
+        await storage.writeFile(rel, "absorbed provenance bytes");
+      }
+      failRelocation = true;
+
+      await mergePages({ from: "harness-ai-agents", into: "agent-harness", actor: "alice" });
+
+      expect(
+        warn.mock.calls.some(
+          (call) =>
+            call[0] === "merge" && /could not relocate/i.test(String(call[1])),
+        ),
+      ).toBe(true);
+      for (const rel of absorbedSiloSources) {
+        expect(await storage.readFile(rel), rel).toBe("absorbed provenance bytes");
+      }
+    } finally {
+      warn.mockRestore();
     }
   }, 15_000);
 
@@ -1770,23 +1865,42 @@ describe("mergePages leaves the retired contributor index alone", () => {
 });
 
 // ---------------------------------------------------------------------------
-// A merge is not a discard (DW-609)
+// A merge is not a discard (DW-609), and the Sources follow the content (DW-743)
 // ---------------------------------------------------------------------------
 //
 // `mergePages` hard-deletes the absorbed page through the SAME lifecycle delete
-// branch that now clears the whole silo — but it first unions the absorbed
-// page's sources into the survivor's frontmatter. Dropping the absorbed page's
-// silo raw Sources there would destroy provenance the survivor now claims, so
-// both `deleteWikiPageWhileLocked` call sites pass `preserveRawSources`.
+// branch that clears the whole silo — but it first unions the absorbed page's
+// sources into the survivor's frontmatter. Dropping the absorbed page's silo
+// raw Sources there would destroy provenance the survivor now claims, so both
+// `deleteWikiPageWhileLocked` call sites pass `preserveRawSources`.
+//
+// DW-609 stopped at that, which stranded the bytes at the ABSORBED slug's silo
+// address. DW-743's recorded decision moves them to the SURVIVOR's silo first,
+// so they follow the content: a page later created at the absorbed slug does
+// not inherit them, and a cross-owner survivor's owner can actually read them.
+// The move is fail-soft, and `preserveRawSources` is the floor under a move
+// that could not finish.
 // ---------------------------------------------------------------------------
 
-describe("mergePages preserves the absorbed page's silo Sources", () => {
-  it("keeps alpha's silo raw Sources while beta's frontmatter claims them", async () => {
-    const hex = "d".repeat(64);
-    const storage = getStorage();
-    const ALPHA_URL = "https://example.com/alpha-provenance";
-    const BETA_URL = "https://example.com/beta-provenance";
+describe("mergePages relocates the absorbed page's silo Sources", () => {
+  const ALPHA_URL = "https://example.com/alpha-provenance";
+  const BETA_URL = "https://example.com/beta-provenance";
+  const ALPHA_BYTES = "alpha provenance bytes";
+  const hex = "d".repeat(64);
 
+  const absorbedSiloSources = [
+    "tenants/alice/raw/sources/alpha.md",
+    "tenants/alice/raw/alpha.md",
+    `tenants/alice/raw/sources/alpha/${hex}.md`,
+    `tenants/alice/raw/alpha/${hex}.md`,
+  ];
+  const cleaned = [
+    "tenants/alice/discuss/alpha.json",
+    "tenants/alice/raw/assets/alpha/pic.png",
+  ];
+
+  /** Two pages owned by "alice" (→ tenant "alice"), alpha's silo fully seeded. */
+  async function seedMergePair(): Promise<void> {
     await seedPage("beta", {
       title: "Beta",
       created: "2026-02-01",
@@ -1797,21 +1911,15 @@ describe("mergePages preserves the absorbed page's silo Sources", () => {
       created: "2026-01-15",
       sources: [src(ALPHA_URL)],
     });
-
-    // Both pages are owned by "alice" → tenant "alice".
-    const preserved = [
-      "tenants/alice/raw/sources/alpha.md",
-      "tenants/alice/raw/alpha.md",
-      `tenants/alice/raw/sources/alpha/${hex}.md`,
-      `tenants/alice/raw/alpha/${hex}.md`,
-    ];
-    const cleaned = [
-      "tenants/alice/discuss/alpha.json",
-      "tenants/alice/raw/assets/alpha/pic.png",
-    ];
-    for (const rel of [...preserved, ...cleaned]) {
-      await storage.writeFile(rel, "alpha provenance bytes");
+    const storage = getStorage();
+    for (const rel of [...absorbedSiloSources, ...cleaned]) {
+      await storage.writeFile(rel, ALPHA_BYTES);
     }
+  }
+
+  it("moves alpha's silo raw Sources onto beta, whose frontmatter claims them", async () => {
+    const storage = getStorage();
+    await seedMergePair();
 
     await mergePages({ from: "alpha", into: "beta", actor: "alice" });
 
@@ -1825,12 +1933,144 @@ describe("mergePages preserves the absorbed page's silo Sources", () => {
     expect(sources).toContain(ALPHA_URL);
     expect(sources).toContain(BETA_URL);
 
-    // So alpha's silo raw Sources MUST survive the merge delete…
-    for (const rel of preserved) {
-      expect(await storage.fileExists(rel), rel).toBe(true);
+    // Nothing is left at the absorbed slug's silo addresses — that is the
+    // strand a later page created at "alpha" used to inherit.
+    for (const rel of absorbedSiloSources) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
     }
-    // …while its discuss thread and assets are still cleaned up.
+    // The bytes are under BETA instead. The two flat singletons normalise into
+    // beta's hashed tree under one content-addressed name (they share content
+    // here); the hashed arrivals keep their names and their root.
+    const digest = await sourceSha256(ALPHA_BYTES);
+    for (const rel of [
+      `tenants/alice/raw/sources/beta/${digest}.md`,
+      `tenants/alice/raw/sources/beta/${hex}.md`,
+      `tenants/alice/raw/beta/${hex}.md`,
+    ]) {
+      expect(await storage.readFile(rel), rel).toBe(ALPHA_BYTES);
+    }
+    // Beta's OWN mirrored Source address is never written through.
+    expect(await storage.fileExists("tenants/alice/raw/sources/beta.md")).toBe(false);
+
+    // Alpha's discuss thread and assets are still cleaned up.
     for (const rel of cleaned) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+  });
+
+  it("completes the merge and keeps the Sources in place when the relocation fails", async () => {
+    const storage = getStorage();
+    await seedMergePair();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const originalWrite = storage.writeFile.bind(storage);
+    vi.spyOn(storage, "writeFile").mockImplementation(async (target, content) => {
+      if (target.startsWith("tenants/alice/raw/sources/beta/")) {
+        throw new Error("silo write unavailable");
+      }
+      return originalWrite(target, content);
+    });
+
+    try {
+      await mergePages({ from: "alpha", into: "beta", actor: "alice" });
+
+      // The merge is not aborted by a cleanup…
+      expect(await readWikiPage("alpha")).toBeNull();
+      expect(await readWikiPage("beta")).not.toBeNull();
+      expect(
+        warn.mock.calls.some(
+          (call) =>
+            call[0] === "merge" && /could not relocate/i.test(String(call[1])),
+        ),
+      ).toBe(true);
+
+      // …and `preserveRawSources` is what keeps the delete from dropping the
+      // bytes the relocation could not move. Removing it here loses provenance
+      // the survivor's frontmatter already claims.
+      for (const rel of absorbedSiloSources) {
+        expect(await storage.fileExists(rel), rel).toBe(true);
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps what a PARTIAL relocation could not move, and moves the rest", async () => {
+    // The relocation walks the four addresses in order, so a failure part-way
+    // splits the absorbed page's Sources across both silos. The survivor gets
+    // what moved; `preserveRawSources` is what keeps the delete from dropping
+    // the remainder. Failing the LEGACY hashed arm reaches that state — it runs
+    // last, and through `writeAsset` rather than `writeFile`.
+    const storage = getStorage();
+    await seedMergePair();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    const originalWriteAsset = storage.writeAsset.bind(storage);
+    vi.spyOn(storage, "writeAsset").mockImplementation(async (target, data) => {
+      if (target.startsWith("tenants/alice/raw/beta/")) {
+        throw new Error("silo asset write unavailable");
+      }
+      return originalWriteAsset(target, data);
+    });
+
+    try {
+      await mergePages({ from: "alpha", into: "beta", actor: "alice" });
+
+      expect(await readWikiPage("alpha")).toBeNull();
+      expect(
+        warn.mock.calls.some(
+          (call) =>
+            call[0] === "merge" && /could not relocate/i.test(String(call[1])),
+        ),
+      ).toBe(true);
+
+      // What moved before the failure is under beta…
+      const digest = await sourceSha256(ALPHA_BYTES);
+      expect(await storage.readFile(`tenants/alice/raw/sources/beta/${digest}.md`))
+        .toBe(ALPHA_BYTES);
+      expect(await storage.readFile(`tenants/alice/raw/sources/beta/${hex}.md`))
+        .toBe(ALPHA_BYTES);
+      expect(await storage.fileExists("tenants/alice/raw/sources/alpha.md")).toBe(false);
+      // …and what did not is still at alpha's address, not dropped.
+      expect(await storage.readFile(`tenants/alice/raw/alpha/${hex}.md`)).toBe(ALPHA_BYTES);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("follows the survivor into another owner's tenant on a cross-owner merge", async () => {
+    const storage = getStorage();
+    await seedPage("beta", {
+      title: "Beta",
+      owner: "bob",
+      created: "2026-02-01",
+      sources: [src(BETA_URL)],
+    });
+    await seedPage("alpha", {
+      title: "Alpha",
+      created: "2026-01-15",
+      sources: [src(ALPHA_URL)],
+    });
+    for (const rel of absorbedSiloSources) {
+      await storage.writeFile(rel, ALPHA_BYTES);
+    }
+
+    await mergePages({
+      from: "alpha",
+      into: "beta",
+      actor: "alice",
+      bypassOwnerCheck: true,
+    });
+
+    // `raw/` resolves strictly inside the owner's silo (DW-40), so provenance
+    // the survivor claims has to sit in the SURVIVOR's tenant to be readable.
+    const digest = await sourceSha256(ALPHA_BYTES);
+    for (const rel of [
+      `tenants/bob/raw/sources/beta/${digest}.md`,
+      `tenants/bob/raw/sources/beta/${hex}.md`,
+      `tenants/bob/raw/beta/${hex}.md`,
+    ]) {
+      expect(await storage.readFile(rel), rel).toBe(ALPHA_BYTES);
+    }
+    for (const rel of absorbedSiloSources) {
       expect(await storage.fileExists(rel), rel).toBe(false);
     }
   });

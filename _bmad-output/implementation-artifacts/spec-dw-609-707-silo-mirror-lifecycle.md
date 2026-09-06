@@ -108,6 +108,19 @@ The DW-707 listing sites — `listRawSourceFilePaths` (`workbench-files.ts:726`)
 
 ## Spec Change Log
 
+### 2026-09-05 — AMENDED by DW-743: preserve in place became relocate to the survivor
+Human decision of 2026-09-04 (bundle `decision-dw-743`, run `20260904-130751-f452`): the
+"preserve in place, do not re-key" half of resolve #2 below is **superseded**. Preserving in place
+stranded the absorbed page's silo raw Sources at the ABSORBED slug's addresses with no wiki md
+anchoring them — a page later created at that slug inherited another page's provenance, and a
+cross-owner merge left the bytes in a tenant the survivor's owner could not read at all (DW-40).
+`mergePages` now RELOCATES those Sources into the SURVIVOR's silo, fail-soft, immediately before
+each `deleteWikiPageWhileLocked` call (`relocateSiloRawSourcesForMerge` in `src/lib/silo.ts`).
+Everything else in resolve #2 stands: `preserveRawSources` is unchanged and both call sites still
+pass it — it is now the floor under a relocation that could not finish, not the resting place of the
+bytes. `listWorkbenchFilePaths` and `rawPathAllowed` stay untouched by the same decision, and DW-707
+stays open. See `spec-dw-743-merge-absorb-silo-source-relocation.md`.
+
 ### 2026-09-03 — Escalation resolve #2 (carried forward): merge-absorb preserves silo Sources
 Recorded decision (`.bmad-loop/runs/20260902-121800-87bf/resolve/dw-silo-mirror-lifecycle/resolution.json`): **a merge is not a discard.** `mergePages` hard-deletes the absorbed page through the SAME delete branch this spec extends, but first unions the absorbed page's sources into the survivor's frontmatter — so the raw-Source cleanup DW-609 adds would destroy provenance the survivor now claims. The delete branch takes a `preserveRawSources` flag: discard deletes leave it off and clean the whole silo; merge-absorb deletes (both `deleteWikiPageWhileLocked` call sites in `merge.ts`, normal and resume) set it on so the absorbed page's silo raw Sources survive **while discussions and assets still get cleaned**. `removeSiloForPage` may gain the matching optional option.
 
@@ -135,7 +148,7 @@ Delete-side placement. `removeSiloForPage` is fail-soft cleanup, not a required 
 
 Accepted residuals:
 - **Forward-only.** The reverse-orphan pass discovers ghosts by scanning the very `tenants/<t>/wiki/*.md` a hard delete removes, so silos leaked by deletes that ALREADY happened are not repaired by this change. A backlog-repair path is a separate decision.
-- A merge-absorb deliberately leaves the absorbed page's raw Sources in the silo at the ABSORBED slug's address, with no wiki md anchoring them. That is the recorded decision (preserve in place, do not re-key); the reverse-orphan pass cannot see them, so nothing reaps them.
+- ~~A merge-absorb deliberately leaves the absorbed page's raw Sources in the silo at the ABSORBED slug's address, with no wiki md anchoring them. That is the recorded decision (preserve in place, do not re-key); the reverse-orphan pass cannot see them, so nothing reaps them.~~ **Superseded 2026-09-05 by DW-743** — see the Spec Change Log entry above. `mergePages` now relocates those Sources into the survivor's silo; `preserveRawSources` remains as the floor under a failed relocation.
 
 Provenance of this implementation: this bundle was driven twice before under run `20260902-121800-87bf` and escalated twice; the second re-drive completed, was reviewed, and was preserved by the orchestrator at git ref `attempt-preserve/20260902-121800-87bf-d698f921` (parent `0db5a127`, identical to this spec's baseline) when the run restarted an in-flight phase. That work implements exactly the two recorded resolutions above, so this run restores it rather than re-deriving a divergent second answer, and re-verifies it independently against the current baseline.
 

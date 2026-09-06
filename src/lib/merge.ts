@@ -57,6 +57,7 @@ import { buildNamesTermsGuidance } from "./names-terms";
 import { getStorage } from "./storage";
 import { isEnoent } from "./errors";
 import { sourceSha256 } from "./source-sha256";
+import { relocateSiloRawSourcesForMerge } from "./silo";
 import { withDurableLock } from "./lock";
 import { listRevisions, readRevision } from "./revisions";
 
@@ -321,6 +322,51 @@ async function readMergeReceipt(path: string): Promise<MergeOperationReceipt | n
   } catch (error) {
     if (isEnoent(error)) return null;
     throw error;
+  }
+}
+
+/**
+ * Move the absorbed page's silo raw Sources to the survivor's silo, just before
+ * the absorbed page is hard-deleted (DW-743).
+ *
+ * Step 3 already unioned the absorbed page's `sources` into the survivor's
+ * frontmatter, so the bytes those entries point at belong to the survivor now.
+ * Leaving them at the absorbed slug's silo address — DW-609's answer — strands
+ * them: the slug is reusable, so a page later created there inherits another
+ * page's provenance, and a cross-owner merge leaves them in a tenant the
+ * survivor's owner cannot read at all.
+ *
+ * FAIL-SOFT, and deliberately so. This runs after the survivor is durable; a
+ * storage hiccup must not abort a merge for a cleanup. Swallowing lands exactly
+ * on DW-609's behaviour — the bytes stay where they were — which is why the
+ * delete below still passes `preserveRawSources`: that flag is the floor under
+ * a relocation that could not finish.
+ */
+async function relocateAbsorbedRawSources(
+  fromSlug: string,
+  fromOwner: string | undefined,
+  intoSlug: string,
+  intoOwner: string | undefined,
+): Promise<void> {
+  try {
+    const moved = await relocateSiloRawSourcesForMerge(
+      fromSlug,
+      tenantForOwner(fromOwner),
+      intoSlug,
+      tenantForOwner(intoOwner),
+    );
+    if (moved > 0) {
+      logger.info(
+        "merge",
+        `relocated ${moved} silo raw Source object(s) from "${fromSlug}" to "${intoSlug}"`,
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      "merge",
+      `could not relocate "${fromSlug}"'s silo raw Sources to "${intoSlug}"; they stay at the absorbed slug's silo address`,
+      err,
+    );
   }
 }
 
@@ -671,6 +717,15 @@ async function mergePagesWhileSourceLocked({
     ) {
       throw new Error(`merge aborted: survivor Page "${intoSlug}" was replaced after the absorbed Page was deleted`);
     }
+    // The survivor's CURRENT owner, not the receipt's: the tenant check just
+    // above proved the two agree, and this is the tenant the bytes have to be
+    // readable in.
+    await relocateAbsorbedRawSources(
+      fromSlug,
+      asString(from.frontmatter.owner),
+      intoSlug,
+      currentOwner,
+    );
     await deleteWikiPageWhileLocked(
       fromSlug,
       sourceLock,
@@ -683,7 +738,9 @@ async function mergePagesWhileSourceLocked({
       true,
       // Merge-absorb, not a discard: the survivor's frontmatter already claims
       // this page's sources (step 3 unioned them), so the delete-time silo
-      // cleanup must leave its raw Sources alone (DW-609).
+      // cleanup must leave its raw Sources alone (DW-609). The relocation above
+      // normally empties those addresses first; this is the floor for the run
+      // where it could not (DW-743).
       true,
     );
     await repointBacklinks(fromSlug, intoSlug, actor);
@@ -736,6 +793,12 @@ async function mergePagesWhileSourceLocked({
     "merge",
     `merged "${fromSlug}" into "${intoSlug}" — deleting "${fromSlug}" (its revisions + discussion threads are hard-deleted)`,
   );
+  await relocateAbsorbedRawSources(
+    fromSlug,
+    asString(from.frontmatter.owner),
+    intoSlug,
+    asString(into.frontmatter.owner),
+  );
   await deleteWikiPageWhileLocked(
     fromSlug,
     sourceLock,
@@ -748,7 +811,9 @@ async function mergePagesWhileSourceLocked({
     true,
     // Merge-absorb, not a discard: the survivor's frontmatter already claims
     // this page's sources (step 3 unioned them), so the delete-time silo
-    // cleanup must leave its raw Sources alone (DW-609).
+    // cleanup must leave its raw Sources alone (DW-609). The relocation above
+    // normally empties those addresses first; this is the floor for the run
+    // where it could not (DW-743).
     true,
   );
   // Catch a linker edit that landed after the pre-delete repoint snapshot.

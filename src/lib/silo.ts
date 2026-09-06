@@ -27,6 +27,7 @@ import {
   tenantWikiRelPath,
   tenantRawRelPath,
   tenantForOwner,
+  validateSlug,
   validateTenant,
 } from "./wiki";
 import {
@@ -36,6 +37,7 @@ import {
   rawSourceRelPath,
   tenantRawSourceRelPath,
 } from "./raw";
+import { sourceSha256 } from "./source-sha256";
 import { logger } from "./logger";
 
 async function copyText(src: string, dst: string): Promise<boolean> {
@@ -144,21 +146,29 @@ async function mirrorHashedTree(
 }
 
 /**
- * Remove one page's snapshots from a silo hashed directory, and the directory
- * itself only when nothing foreign was left in it.
+ * Hand every PAGE-OWNED entry of one silo hashed directory to `take`, and
+ * remove the directory itself only when nothing foreign was left in it.
  *
  * The recursive `deleteDirectory` this replaces was correct only while the
  * directory belonged to one page. It does not: a page slugged like a
  * folder-import root shares `raw/sources/<name>/` with that import, so deleting
  * the page took the whole import tree — another owner's, possibly — with it
- * (DW-611). Deleting the page-owned FILES individually is the narrowest
- * cleanup that still leaves no silo ghost behind for the reverse-orphan pass
- * to trip over.
+ * (DW-611). Taking the page-owned FILES individually is the narrowest cleanup
+ * that still leaves no silo ghost behind for the reverse-orphan pass to trip
+ * over.
  *
  * A directory holding anything this mirror would never have written — an import
  * file, a subdirectory, a dotfile — survives with that content intact.
+ *
+ * Shared by the two ways a page leaves a hashed directory: a delete
+ * ({@link removeHashedTree}) and a merge-absorb relocation
+ * ({@link relocateSiloRawSourcesForMerge}, DW-743). ONE partition rule, so the
+ * relocation cannot carry off an import file the delete would have spared.
  */
-async function removeHashedTree(siloPrefix: string): Promise<void> {
+async function sweepHashedTree(
+  siloPrefix: string,
+  take: (name: string) => Promise<void>,
+): Promise<void> {
   const entries = await listSafe(siloPrefix);
   // Nothing there — including the common case of a directory that never
   // existed. Return before `deleteDirSafe`: `removeSiloForPage` calls this at
@@ -173,12 +183,19 @@ async function removeHashedTree(siloPrefix: string): Promise<void> {
       !f.name.startsWith(".") &&
       isRawSnapshotName(f.name)
     ) {
-      await deleteSafe(`${siloPrefix}/${f.name}`);
+      await take(f.name);
     } else {
       foreign++;
     }
   }
   if (foreign === 0) await deleteDirSafe(siloPrefix);
+}
+
+/** Remove one page's snapshots from a silo hashed directory — see {@link sweepHashedTree}. */
+async function removeHashedTree(siloPrefix: string): Promise<void> {
+  await sweepHashedTree(siloPrefix, (name) =>
+    deleteSafe(`${siloPrefix}/${name}`),
+  );
 }
 
 /**
@@ -311,6 +328,12 @@ export interface RemoveSiloForPageOptions {
    * absorbed page through the shared delete branch, so removing those bytes
    * would destroy provenance the survivor now claims. A plain discard leaves
    * this off and clears the whole silo.
+   *
+   * Since DW-743 the merge-absorb caller RELOCATES those Sources to the
+   * survivor's silo first ({@link relocateSiloRawSourcesForMerge}), so on the
+   * happy path there is nothing left here to preserve. The flag is the floor
+   * under a relocation that FAILED: that move is fail-soft, and this is what
+   * stops the delete from dropping the bytes it could not move.
    */
   preserveRawSources?: boolean;
 }
@@ -348,6 +371,142 @@ export async function removeSiloForPage(
             : [removeHashedTree(tenantRawRelPath(tenant, slug))]),
         ]),
   ]);
+}
+
+/**
+ * Move one silo file into a hashed directory under a CONTENT-ADDRESSED name.
+ *
+ * The flat singletons `raw/sources/<slug>.md` and `raw/<slug>.md` are the one
+ * Source address that cannot be relocated address-for-address: the survivor's
+ * matching singleton is owned by {@link syncSiloForPage}, which rewrites it
+ * from flat on every write and every {@link reconcileSilos} pass. Foreign bytes
+ * there would destroy the survivor's own mirrored Source AND be reverted by the
+ * next reconcile. `<sha256>.md` in the hashed tree is the address family
+ * `saveRawSourceBytes` mints and `mirrorHashedTree` only ever ADDS to, so it is
+ * stable in both directions — and the digest makes a retry byte-identical.
+ */
+async function moveTextToHashedTree(
+  src: string,
+  siloPrefix: string,
+): Promise<boolean> {
+  const storage = getStorage();
+  let content: string;
+  try {
+    content = await storage.readFile(src);
+  } catch (e) {
+    if (isEnoent(e)) return false;
+    throw e;
+  }
+  await storage.writeFile(
+    `${siloPrefix}/${await sourceSha256(content)}.md`,
+    content,
+  );
+  await deleteSafe(src);
+  return true;
+}
+
+/** Move one hashed directory's page-owned snapshots to another, keeping their names. */
+async function moveHashedTree(
+  fromPrefix: string,
+  intoPrefix: string,
+): Promise<number> {
+  if (fromPrefix === intoPrefix) return 0;
+  let moved = 0;
+  await sweepHashedTree(fromPrefix, async (name) => {
+    // Copy FIRST, delete only on success: a vanished source (`copyAsset` →
+    // false) must not take the delete with it. `copyAsset`, not `copyText`,
+    // because this namespace holds PDFs/DOCX/JPEGs beside the extracted `.md`
+    // and a UTF-8 round trip would mangle them.
+    if (await copyAsset(`${fromPrefix}/${name}`, `${intoPrefix}/${name}`)) {
+      await deleteSafe(`${fromPrefix}/${name}`);
+      moved++;
+    }
+  });
+  return moved;
+}
+
+/**
+ * Move the absorbed page's silo raw Sources to the SURVIVOR's silo, and return
+ * how many objects moved (DW-743).
+ *
+ * A merge-absorb hard-deletes the absorbed page after unioning its sources into
+ * the survivor's frontmatter. DW-609 answered that by leaving those bytes where
+ * they were, which strands them at the ABSORBED slug's silo addresses with no
+ * wiki md anchoring them: slugs are reusable, so a page later created there
+ * inherits another page's provenance in Files and the Sources pane, and under a
+ * cross-owner merge the bytes stay in the absorbed owner's tenant where the
+ * survivor's owner cannot read them at all (`raw/` resolves silo-only, DW-40).
+ * Recorded decision of 2026-09-04: the Sources follow the content.
+ *
+ * Address mapping — hashed trees keep their names and their root (the mirror's
+ * own legacy/modern convention); the two flat singletons normalise into the
+ * survivor's MODERN hashed tree, for the reason {@link moveTextToHashedTree}
+ * records. Only page-owned names move ({@link sweepHashedTree}), so a
+ * folder-import file sharing a directory stays exactly where a delete would
+ * have spared it (DW-611).
+ *
+ * The listing doors are deliberately untouched: `listWorkbenchFilePaths` walks
+ * the whole silo `raw/` root, so the moved bytes are visible under the survivor
+ * without any change to `rawPathAllowed` or the Workbench shaping (DW-707 stays
+ * open).
+ *
+ * The SURVIVOR's hashed directory may itself be shared with a folder import
+ * rooted at `<intoSlug>` — the DW-611 collision, pointing the other way. Writing
+ * a page-owned `<hex>.<ext>` into it is safe and needs no partition: that is
+ * exactly what `saveRawSourceFor` writes there for this page already, the name
+ * is content-addressed, and the import's own files are never touched.
+ */
+export async function relocateSiloRawSourcesForMerge(
+  fromSlug: string,
+  fromTenant: string,
+  intoSlug: string,
+  intoTenant: string,
+): Promise<number> {
+  // Both slugs, not just the tenants: `intoSlug` composes the WRITE prefix, and
+  // `tenantRawSourceRelPath`/`tenantRawRelPath` validate only the tenant. Every
+  // other writer into this namespace (`saveRawSourceFor`, `saveRawSourceBytes`,
+  // `saveRawSourceTree`) validates its slug first; this one is no different for
+  // being reached from a merge.
+  validateSlug(fromSlug);
+  validateSlug(intoSlug);
+  validateTenant(fromTenant);
+  validateTenant(intoTenant);
+  if (fromSlug === intoSlug && fromTenant === intoTenant) return 0;
+
+  const intoModern = tenantRawSourceRelPath(intoTenant, intoSlug);
+  let moved = 0;
+
+  // Flat singletons, at both the modern and the pre-move address.
+  for (const src of [
+    tenantRawSourceRelPath(fromTenant, `${fromSlug}.md`),
+    tenantRawRelPath(fromTenant, `${fromSlug}.md`),
+  ]) {
+    if (await moveTextToHashedTree(src, intoModern)) moved++;
+  }
+
+  // Modern hashed arrivals: raw/sources/<slug>/<rawId>.<ext> (DW-435).
+  moved += await moveHashedTree(
+    tenantRawSourceRelPath(fromTenant, fromSlug),
+    intoModern,
+  );
+
+  // Legacy hashed arrivals: raw/<slug>/<rawId>.<ext> (DW-610). Same structural
+  // -root skip the mirror uses on the SOURCE side — a slug naming
+  // `raw/sources/`, `raw/assets/`, … was never mirrored there, so there is
+  // nothing of this page's to move out. On the TARGET side a structural
+  // survivor slug is the same ambiguity pointing the other way: writing into
+  // `tenants/<t>/raw/assets/` would drop one page's snapshots into a shared
+  // root, so those go to the survivor's unambiguous modern tree instead.
+  if (!RAW_STRUCTURAL_DIRS.has(fromSlug)) {
+    moved += await moveHashedTree(
+      tenantRawRelPath(fromTenant, fromSlug),
+      RAW_STRUCTURAL_DIRS.has(intoSlug)
+        ? intoModern
+        : tenantRawRelPath(intoTenant, intoSlug),
+    );
+  }
+
+  return moved;
 }
 
 // ---------------------------------------------------------------------------

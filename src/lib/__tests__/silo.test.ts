@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { syncSiloForPage, removeSiloForPage, reconcileSilos } from "../silo";
+import {
+  syncSiloForPage,
+  removeSiloForPage,
+  reconcileSilos,
+  relocateSiloRawSourcesForMerge,
+} from "../silo";
+import { sourceSha256 } from "../source-sha256";
 import { writeWikiPage, ensureDirectories, updateIndex } from "../wiki";
 import { getStorage, _resetStorage } from "../storage";
 import { listWorkbenchFilePaths } from "../workbench-files";
@@ -574,6 +580,167 @@ describe("removeSiloForPage on page delete", () => {
     for (const rel of kept) {
       expect(await storage.fileExists(rel), rel).toBe(false);
     }
+  });
+});
+
+describe("relocateSiloRawSourcesForMerge", () => {
+  // ── DW-743: on a merge-absorb, the Sources follow the content ──
+  // DW-609 left the absorbed page's silo raw Sources at the ABSORBED slug's
+  // address. Recorded decision of 2026-09-04: move them to the survivor's silo,
+  // leaving `listWorkbenchFilePaths` and `rawPathAllowed` untouched.
+
+  const hex = "a".repeat(64);
+  const other = "b".repeat(16);
+
+  it("moves all four raw-Source addresses onto the survivor", async () => {
+    const storage = getStorage();
+    await storage.writeFile("tenants/alice/raw/sources/alpha.md", "modern flat");
+    await storage.writeFile("tenants/alice/raw/alpha.md", "legacy flat");
+    await storage.writeFile(`tenants/alice/raw/sources/alpha/${hex}.md`, "modern hashed");
+    await storage.writeFile(`tenants/alice/raw/alpha/${other}.pdf`, "legacy hashed");
+
+    expect(await relocateSiloRawSourcesForMerge("alpha", "alice", "beta", "alice")).toBe(4);
+
+    for (const rel of [
+      "tenants/alice/raw/sources/alpha.md",
+      "tenants/alice/raw/alpha.md",
+      `tenants/alice/raw/sources/alpha/${hex}.md`,
+      `tenants/alice/raw/alpha/${other}.pdf`,
+    ]) {
+      expect(await storage.fileExists(rel), rel).toBe(false);
+    }
+    // The flat singletons normalise into the survivor's MODERN hashed tree
+    // under a content-addressed name: the survivor's own singleton address is
+    // owned by `syncSiloForPage`, which would overwrite foreign bytes there on
+    // the next reconcile.
+    expect(
+      await storage.readFile(
+        `tenants/alice/raw/sources/beta/${await sourceSha256("modern flat")}.md`,
+      ),
+    ).toBe("modern flat");
+    expect(
+      await storage.readFile(
+        `tenants/alice/raw/sources/beta/${await sourceSha256("legacy flat")}.md`,
+      ),
+    ).toBe("legacy flat");
+    expect(await storage.fileExists("tenants/alice/raw/sources/beta.md")).toBe(false);
+    expect(await storage.fileExists("tenants/alice/raw/beta.md")).toBe(false);
+    // Hashed arrivals keep their content-addressed name AND their root.
+    expect(await storage.readFile(`tenants/alice/raw/sources/beta/${hex}.md`))
+      .toBe("modern hashed");
+    expect(await storage.readFile(`tenants/alice/raw/beta/${other}.pdf`))
+      .toBe("legacy hashed");
+  });
+
+  it("carries the Sources into the survivor's tenant on a cross-owner merge", async () => {
+    const storage = getStorage();
+    await storage.writeFile(`tenants/alice/raw/sources/alpha/${hex}.md`, "provenance");
+
+    expect(await relocateSiloRawSourcesForMerge("alpha", "alice", "beta", "bob")).toBe(1);
+
+    expect(await storage.fileExists(`tenants/alice/raw/sources/alpha/${hex}.md`)).toBe(false);
+    expect(await storage.readFile(`tenants/bob/raw/sources/beta/${hex}.md`)).toBe("provenance");
+  });
+
+  it("spares a foreign file and its shared hashed directory", async () => {
+    // `raw/sources/<name>/` is shared with a folder import addressed by root
+    // name (DW-611) — the same partition the delete arm uses.
+    const storage = getStorage();
+    await storage.writeFile(`tenants/alice/raw/sources/papers/${hex}.md`, "mine");
+    await storage.writeFile("tenants/alice/raw/sources/papers/note.md", "import file");
+
+    expect(await relocateSiloRawSourcesForMerge("papers", "alice", "beta", "alice")).toBe(1);
+
+    expect(await storage.readFile(`tenants/alice/raw/sources/beta/${hex}.md`)).toBe("mine");
+    expect(await storage.fileExists("tenants/alice/raw/sources/beta/note.md")).toBe(false);
+    // The foreign file keeps the directory alive, so the moved snapshot has to
+    // be removed FILE BY FILE — a copy that left the original behind would
+    // leave the absorbed page's provenance in two places.
+    expect(await storage.fileExists(`tenants/alice/raw/sources/papers/${hex}.md`)).toBe(false);
+    expect(await storage.readFile("tenants/alice/raw/sources/papers/note.md"))
+      .toBe("import file");
+  });
+
+  it("sends the legacy root's arrivals to the modern tree when the survivor slug is structural", async () => {
+    // Writing into `tenants/<t>/raw/assets/` would drop one page's snapshots
+    // into a root shared with every other page's binary assets.
+    const storage = getStorage();
+    await storage.writeFile(`tenants/alice/raw/alpha/${hex}.md`, "legacy hashed");
+
+    expect(await relocateSiloRawSourcesForMerge("alpha", "alice", "assets", "alice")).toBe(1);
+
+    expect(await storage.fileExists(`tenants/alice/raw/assets/${hex}.md`)).toBe(false);
+    expect(await storage.readFile(`tenants/alice/raw/sources/assets/${hex}.md`))
+      .toBe("legacy hashed");
+  });
+
+  it("moves a binary snapshot byte-for-byte, not through a UTF-8 round trip", async () => {
+    // `saveRawSourceBytes` publishes PDFs/DOCX/JPEGs into the same hashed
+    // namespace as the extracted `.md`. `FilesystemStorage.readFile` decodes as
+    // UTF-8, so a text round trip would replace every invalid byte with U+FFFD
+    // — and the absorbed-address original is deleted right after the copy, so
+    // the corruption would be unrecoverable from the silo.
+    const storage = getStorage();
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff, 0xfe, 0x80]);
+    await storage.writeAsset(`tenants/alice/raw/sources/alpha/${hex}.pdf`, bytes.buffer);
+
+    expect(await relocateSiloRawSourcesForMerge("alpha", "alice", "beta", "alice")).toBe(1);
+
+    const moved = await storage.readAsset(`tenants/alice/raw/sources/beta/${hex}.pdf`);
+    expect(Array.from(new Uint8Array(moved))).toEqual(Array.from(bytes));
+  });
+
+  it("shows the relocated Sources under the survivor at the Files door", async () => {
+    // The whole reason the listing doors are left alone: `listWorkbenchFilePaths`
+    // resolves `raw/` strictly inside the OWNER's silo (DW-40) and walks the
+    // whole root, so relocating the bytes is enough to move the rows.
+    const storage = getStorage();
+    await writeWikiPage("beta", "---\nowner: bob\n---\n# Beta\n\nBody.");
+    await storage.writeFile("tenants/alice/raw/sources/alpha.md", "alpha's Source");
+    await storage.writeFile(`tenants/alice/raw/sources/alpha/${hex}.md`, "alpha snapshot");
+
+    const gate = { readableSlugs: new Set(["beta"]), hiddenSlugs: new Set<string>() };
+    const before = await listWorkbenchFilePaths("bob", null, gate);
+    expect(before.paths.some((p) => p.startsWith("raw/sources/beta/"))).toBe(false);
+
+    await relocateSiloRawSourcesForMerge("alpha", "alice", "beta", "bob");
+
+    const after = await listWorkbenchFilePaths("bob", null, gate);
+    const digest = await sourceSha256("alpha's Source");
+    expect(after.paths).toContain(`raw/sources/beta/${hex}.md`);
+    expect(after.paths).toContain(`raw/sources/beta/${digest}.md`);
+    // …and the absorbed owner's Files tree no longer lists them.
+    const absorbed = await listWorkbenchFilePaths("alice", null, {
+      readableSlugs: new Set(["alpha"]),
+      hiddenSlugs: new Set<string>(),
+    });
+    expect(absorbed.paths.some((p) => p.startsWith("raw/sources/alpha"))).toBe(false);
+  });
+
+  it("does nothing when the absorbed page has no silo raw Sources", async () => {
+    expect(await relocateSiloRawSourcesForMerge("alpha", "alice", "beta", "alice")).toBe(0);
+    expect(
+      await getStorage().fileExists("tenants/alice/raw/sources/beta"),
+    ).toBe(false);
+  });
+
+  it("leaves the relocated bytes alone when the survivor's silo is re-synced", async () => {
+    // The reason the flat singletons normalise into the hashed tree: that tree
+    // is add-only for `mirrorHashedTree`, so a reconcile cannot undo the move.
+    const storage = getStorage();
+    await writeWikiPage("beta", "---\nowner: alice\n---\n# Beta\n\nBody.");
+    await storage.writeFile("raw/sources/beta.md", "beta's own Source");
+    await storage.writeFile("tenants/alice/raw/sources/alpha.md", "alpha's Source");
+
+    await relocateSiloRawSourcesForMerge("alpha", "alice", "beta", "alice");
+    await syncSiloForPage("beta", "alice");
+
+    const digest = await sourceSha256("alpha's Source");
+    expect(await storage.readFile(`tenants/alice/raw/sources/beta/${digest}.md`))
+      .toBe("alpha's Source");
+    // …and beta's own mirrored Source is untouched by the relocation.
+    expect(await storage.readFile("tenants/alice/raw/sources/beta.md"))
+      .toBe("beta's own Source");
   });
 });
 

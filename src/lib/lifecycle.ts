@@ -193,6 +193,11 @@ type PageLifecycleOp =
        * deleting it through this same branch, so dropping those bytes would
        * destroy provenance the survivor now claims. Discussions and assets are
        * cleaned either way.
+       *
+       * It does NOT mean those Sources stay at this slug's silo address:
+       * `mergePages` moves them to the SURVIVOR's silo first, and that move is
+       * fail-soft (DW-743). This flag is what keeps the delete from dropping
+       * what a failed move left behind.
        */
       preserveRawSources?: boolean;
     };
@@ -1015,7 +1020,10 @@ async function runPageLifecycleOp(
   //     recover them because it discovers ghosts by scanning the very silo wiki
   //     md the delete already removed (DW-609). A merge-absorb delete passes
   //     `preserveRawSources` so the absorbed page's Sources — which the
-  //     survivor's frontmatter now claims — survive that cleanup.
+  //     survivor's frontmatter now claims — survive that cleanup; `mergePages`
+  //     has normally already moved them into the SURVIVOR's silo by then, and
+  //     the flag covers the run where that fail-soft move did not finish
+  //     (DW-743).
 
   // 3d. (removed) Pages no longer auto-join a vault. In the multi-vault model
   //     vault membership is EXPLICIT — a page joins a vault only via an
@@ -1261,6 +1269,8 @@ export async function pruneStaleIndexEntry(
  * fail-soft `removeSiloForPage` cleanup (DW-609). The one exception is a
  * merge-absorb delete, which passes `preserveRawSources` so the absorbed page's
  * silo Sources — provenance the survivor's frontmatter now claims — survive.
+ * Those Sources do not stay HERE: `mergePages` relocates them into the
+ * survivor's silo before deleting, and the flag covers a failed move (DW-743).
  *
  * `triggeredBy` is the handle of whoever ASKED for an automated delete, when a
  * door resolved one (DW-447) — today only the `empty-page` lint auto-fix passes
@@ -1325,8 +1335,10 @@ export async function deleteWikiPage(
  *
  * `preserveRawSources` marks this delete a MERGE-ABSORB rather than a discard:
  * the caller has already unioned this page's sources into a survivor's
- * frontmatter, so the delete-time silo cleanup (DW-609) must leave the silo raw
- * Sources in place while still clearing the discuss thread and assets.
+ * frontmatter, so the delete-time silo cleanup (DW-609) must not drop the silo
+ * raw Sources while still clearing the discuss thread and assets. The caller
+ * also relocates them to the survivor's silo first, so on the happy path this
+ * spares nothing; it is the floor under a failed relocation (DW-743).
  */
 export async function deleteWikiPageWhileLocked(
   slug: string,

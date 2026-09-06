@@ -6272,7 +6272,9 @@ location: src/lib/silo.ts:311
 source_spec: `spec-dw-609-707-silo-mirror-lifecycle.md`
 severity: low
 reason: `removeSiloForPage(slug, tenant, { preserveRawSources: true })` (src/lib/silo.ts:311-347, reached from src/lib/merge.ts:676,741) leaves `tenants/<t>/raw/sources/<from>.md`, `tenants/<t>/raw/<from>.md` and both hashed trees in place at the ABSORBED slug's address, with no silo wiki md anchoring them. `listWorkbenchFilePaths` resolves `raw/` silo-primary (src/lib/workbench-files.ts:707-712) and `rawPathAllowed`'s refusal set covers hidden pages, not deleted ones, so those bytes keep listing. Slugs are reusable: recreating a page at `<from>` makes another page's provenance show up as the new page's Sources, and under a cross-owner merge (`bypassOwnerCheck`, src/mcp.ts:489) the survivor's owner cannot read the bytes at all because DW-40 resolves `raw/` strictly inside the owner's silo. Preserving in place is the recorded decision for this bundle, which records that "nothing reaps them"; the slug-reuse and cross-tenant consequences are not named anywhere, and no test covers the listing surf
-status: open
+status: done 2026-09-05
+resolution: resolved by sweep bundle dw-decision-dw-743
+resolution-undo: e2f6b8e931637fd8ca93ef616ac431e8b47e95c9584ece7838d21e5723629f52 2026-09-05 7374617475733a206f70656e
 decision: 2026-09-04 Relocate to the survivor's silo — On merge-absorb, move the absorbed page's raw Sources to the survivor's silo addresses so they follow the content, leaving listWorkbenchFilePaths and rawPathAllowed untouched; amend the 'preserve in place' resolve decision to record the relocation.
 decision: 2026-09-04 Relocate to the survivor's silo — On merge-absorb, move the absorbed page's raw Sources to the survivor's silo addresses so they follow the content, leaving listWorkbenchFilePaths and rawPathAllowed untouched; amend the 'preserve in place' resolve decision to record the relocation.
 
@@ -6615,4 +6617,12 @@ location: src/lib/lifecycle.ts (pageAlreadyWritten recovery, silo repair create)
 source_spec: `spec-dw-740-case-variant-create-conflict.md`
 severity: low
 reason: `src/lib/lifecycle.ts`'s `pageAlreadyWritten` branch reads the CANONICAL silo key, and on its ENOENT calls `createWikiPage(slug, op.content, tenant)` and throws a conflict on a `false`. Since DW-740 that `false` is exactly what a variant-held silo object produces, so the resume raises instead of repairing. The receipt is written only after `runPageLifecycleOp` returns, so every later retry repeats the throw. It is a live path, not a hypothetical one: `writeResearchPage` (`src/lib/research-completion.ts`) is the caller that pairs `createOnly` with `idempotency`. This is BETTER than what it replaced — before DW-740 the same call forked the identity into a second object — and DW-740's Design Notes rules the loud conflict deliberate. What is left open is the repair: the branch reads the canonical key where `readWikiPage` would have recovered the variant, so it cannot see the bytes that already landed. Closing it means teaching the recovery read the same resolution the other doors carry, wh
+status: open
+
+### DW-784: After a merge-absorb relocates the absorbed page's silo raw Sources onto the survivor, a Source cascade-delete on the survivor no longer reaps the relocated silo copy, so it outlives its flat bytes an
+origin: spec-deferred 14dc1dfb8ce8
+location: src/lib/silo.ts:relocateSiloRawSourcesForMerge
+source_spec: `spec-dw-743-merge-absorb-silo-source-relocation.md`
+severity: low
+reason: `deleteRawSourceBytes(rest, owner)` (src/lib/raw.ts:908-925) deletes flat `raw/sources/<rest>` and silo `tenants/<t>/raw/sources/<rest>` with `rest` derived from the frontmatter source entry by `linkedRawRests` (src/lib/source-cascade.ts:101-124) — i.e. `<from>/<hex>.md` or `<from>.md`, spelling the ABSORBED slug. Before DW-743 the silo arm matched the preserved-in-place copy at `tenants/<t>/raw/sources/<from>/`. After it, the copy is at `tenants/<t2>/raw/sources/<into>/<hex>.<ext>` — and for the two flat singletons under a `<sha256>` name no frontmatter entry references at all — so the silo arm matches nothing while the flat arm still deletes. The result is a silo Source whose flat original is gone, still walked by `listWorkbenchFilePaths` under the survivor. Caused by this change, not pre-existing. The fix is not local: making the Sources' recorded addresses follow them would mean rewriting the survivor's already-published merged frontmatter, which is the merge receipt's linearizatio
 status: open
