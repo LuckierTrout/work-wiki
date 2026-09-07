@@ -6605,7 +6605,8 @@ location: Dockerfile:20
 source_spec: `spec-dw-431-534-deployment-and-e2e-environment-parity.md`
 severity: low
 reason: Verifying DW-431 with a real build surfaced this. `docker build .` fails at `Dockerfile:20` (`RUN pnpm build`) with "Build failed because of webpack errors" and the import trace `node:timers/promises` -> src/lib/storage/filesystem.ts -> src/lib/storage/index.ts -> src/lib/backups.ts -> src/components/SystemHealthDesk.tsx. Pre-existing, not caused by this change: a control build from a Dockerfile whose deps stage still reads `COPY package.json pnpm-lock.yaml ./` fails identically at the same step. `docker build --target deps .` succeeds either way, so only the image's build stage is dead. Nothing in `.github/workflows/` runs `docker build`, so CI cannot see it; `Dockerfile` and `docker-compose.yml` are the only record that the container path is meant to work.
-status: open
+status: done 2026-09-07
+resolution: already resolved: Fixed by 17d1bf90 (fix(backups): restore production client build boundary): SystemHealthDesk.tsx:6-7 now imports runtime copy from the dependency-free src/lib/backup-display.ts and takes only `import type { BackupSummary }` from @/lib/backups, so the node:timers/promises chain no longer reaches client compilation; `pnpm build` — the exact Dockerfile:20 step — now completes with a full route table and no webpack errors.
 
 ### DW-782: `SETTINGS_MODEL_INHERIT_COPY` promises that leaving a workload's provider unset inherits "the primary provider and model", but a saved workload MODEL alone already overrides the model while inheriting
 origin: spec-deferred a895682e1dd9
