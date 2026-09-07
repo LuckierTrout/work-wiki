@@ -2,10 +2,11 @@
 title: 'Add a single-item sweep filter and reconcile DW-781'
 type: 'feature'
 created: '2026-09-07'
-status: 'in-progress'
+status: 'done'
 baseline_commit: '17d1bf9046ea4e270a1de87ba036127403ee6c80'
 review_loop_iteration: 0
 tool_baseline: '1a3d358b5398498af968c7ead5fa0e8c70b6fe0e'
+tool_commit: '4b64b5e1'
 tool_root: '/private/tmp/bmad-loop-dw781-CCeOPk/source'
 context: []
 ---
@@ -66,8 +67,8 @@ Paths relative to `tool_root`; installed source matches this revision. Read its 
 - [x] Named tests: exercise every matrix row through fake adapters/CLI; ablate guards to prove refusals are tested.
 - [x] `docs/FEATURES.md`, `CHANGELOG.md`: document selector and limits.
 - [x] Build original rollback package and patched package; install tested patch without changing dependencies.
-- [ ] Commit approved Work-wiki skill/spec changes for a clean tree; validate, dry-run, then launch `bmad-loop sweep --only DW-781 --no-prompt --no-repeat --max-bundles 0` (zero development bundles).
-- [ ] Verify terminal write-back and byte-identical unrelated ledger blocks/pre-answers.
+- [x] Commit approved Work-wiki skill/spec changes for a clean tree; validate, dry-run, then launch `bmad-loop sweep --only DW-781 --no-prompt --no-repeat --max-bundles 0` (zero development bundles).
+- [x] Verify terminal write-back and byte-identical unrelated ledger blocks/pre-answers.
 
 **Acceptance Criteria:**
 - Scoped completion/resume cannot execute or modify unrelated entries.
@@ -90,4 +91,46 @@ Paths relative to `tool_root`; installed source matches this revision. Read its 
 - Linux-targeted Pyright, Ruff, pinned Black and diff checks passed. Default macOS Pyright has the same two `os.*xattr` diagnostics as the original source.
 - Installed the patched wheel with `uv pip install --no-deps --reinstall`. Before/after package inventories are identical. Rollback wheel retained under `rollback/`; patched wheel under `patched/`.
 - Patched wheel SHA256: `287a923a272a98482b9c87acc4d706522e496373b0eb48ca7177cccf744010e4`.
-- Installed CLI dry-run lists DW-781 alone. Live terminal evidence remains pending.
+- Installed CLI dry-run lists DW-781 alone; project preflight passed with a clean tree after local preparation commit `880c37a3`.
+- Live run `20260907-174715-9ac9` finished: one triage session, only DW-781 classified already resolved, zero development bundles. The terminal journal records `sweep-resolved-closed`, ledger commit `291eb18b020d19a6c4e98a978102a2dc515aa4d8`, and `run-complete`.
+- Before/after byte comparisons confirmed every non-DW-781 ledger byte and the complete pre-answer file unchanged. State, options and scope pin all name DW-781.
+- Existing startup retention pruned five older recovery refs. All five original snapshots were uniquely recovered against journal timestamps and their refs restored; the four preserved unfinished attempts stayed intact throughout. Review will address this incidental scoped-startup behavior.
+
+### Review patch pass
+
+Three independent review lenses completed. Accepted implementation/test fixes: suppress scoped recovery-ref retention; correct byte-faithful tracked and external-ledger rollback checks; preserve disputed concurrent writes without unattributed whole-file restoration; check isolated pre-answer stores; retain invalid-UTF8 rejection evidence; skip malformed historical state objects; test scoped decision discovery at its consumer; show the scope in the dry-run prompt. No intent changes or new deferred-work rows.
+
+The first patched installation was temporarily rolled back while these fixes are verified. The original and first-run wheels are retained in the gitignored `.bmad-loop/cache/tool-patches/20260907-dw781/` directory. DW-781's terminal closure is unaffected; no second live sweep is planned.
+
+### Final verification
+
+All eight review fixes are complete. Final focused suites: **1,311 passed, 2 skipped**. Full suite: **7,060 passed, 75 skipped, the same seven baseline-reproduced failures**. Eleven additional targeted guard ablations failed as intended and were restored before final gates. Linux Pyright, Ruff, pinned Black and diff checks pass; macOS retains the same two baseline diagnostics. [Complete verification and matrix map](../../.bmad-loop/cache/tool-patches/20260907-dw781/evidence/review-verification.md).
+
+The reviewed wheel is installed from the durable ignored cache, SHA256 `307a6990b652053774925dfbcb22861377bb1304dd16cb46daacb3b146ec7940`. Installed source matches local tool commit `4b64b5e1` byte-for-byte, excluding bytecode caches; package inventories remain identical. The installed DW-781 dry-run returns a successful already-closed no-op. No second live sweep was created.
+
+The cache retains the original rollback wheel, first-run wheel, final reviewed wheel, [source patch](../../.bmad-loop/cache/tool-patches/20260907-dw781/single-item-sweep.patch), source archive and verification logs. Scoped startup and resume now skip global recovery-ref pruning. Disputed writes stop with raw before/after evidence rather than overwriting another writer's work. No push, merge or deployment was performed.
+
+## Suggested Review Order
+
+**Selection and resume**
+
+- Start with selection validation and the closed-entry no-op.
+  [cli.py:2214](../../../../../../private/tmp/bmad-loop-dw781-CCeOPk/source/src/bmad_loop/cli.py#L2214)
+- Require matching persisted scope before resume effects.
+  [sweepscope.py:62](../../../../../../private/tmp/bmad-loop-dw781-CCeOPk/source/src/bmad_loop/sweepscope.py#L62)
+
+**State preservation**
+
+- Keep scoped startup from deleting unrelated recovery refs.
+  [sweep.py:576](../../../../../../private/tmp/bmad-loop-dw781-CCeOPk/source/src/bmad_loop/sweep.py#L576)
+- Preserve disputed shared writes and record raw evidence.
+  [sweep.py:623](../../../../../../private/tmp/bmad-loop-dw781-CCeOPk/source/src/bmad_loop/sweep.py#L623)
+- Enforce unrelated-byte preservation inside the ledger write boundary.
+  [deferredwork.py:907](../../../../../../private/tmp/bmad-loop-dw781-CCeOPk/source/src/bmad_loop/deferredwork.py#L907)
+
+**Regression evidence**
+
+- Prove startup and resume leave recovery refs intact.
+  [test_sweep.py:242](../../../../../../private/tmp/bmad-loop-dw781-CCeOPk/source/tests/test_sweep.py#L242)
+- Prove decision discovery cannot expose foreign scoped entries.
+  [test_decisions.py:118](../../../../../../private/tmp/bmad-loop-dw781-CCeOPk/source/tests/test_decisions.py#L118)
