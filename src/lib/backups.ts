@@ -4,6 +4,10 @@ import { tenantForOwner, validateTenant } from "./wiki";
 import { recordOperationSafe } from "./operation-ledger";
 import { withFileLock } from "./lock";
 import { effectivePurposeOverrides } from "./wikis";
+import { backupTruncationLabel, type BackupTruncationReason } from "./backup-display";
+
+// Preserve the server API while browser consumers import backup-display directly.
+export { backupTruncationLabel, type BackupTruncationReason } from "./backup-display";
 
 export interface BackupFileEntry {
   path: string;
@@ -11,16 +15,6 @@ export interface BackupFileEntry {
   size: number;
   sha256: string;
 }
-
-/**
- * Why a backup stopped short of the whole tenant.
- *
- * `file-size` is the odd one out: it does not STOP the copy, it drops the one
- * object that could not be materialised and keeps going (DW-677). It is
- * therefore the weakest reason — see the precedence note on
- * {@link BackupLimits.maxFileBytes}.
- */
-export type BackupTruncationReason = "file-count" | "total-bytes" | "file-size";
 
 export interface BackupManifest {
   version: 1;
@@ -486,38 +480,6 @@ export async function verifyOwnerBackup(
     await writeManifest(manifest);
   }
   return manifest;
-}
-
-/**
- * The owner-facing sentence for a backup that stopped at a limit, or null when
- * the backup is whole (DW-215).
- *
- * ONE source for this copy, beside {@link backupSizeLabel}, because three
- * surfaces name the same condition — the manifest field, the operation ledger's
- * detail, and the health desk's row — and they drifted the moment each spelled
- * it for itself. An unrecognised or absent reason still reports PARTIAL: a
- * backup that says it is truncated is truncated whether or not this build knows
- * the word for why, and silently calling it whole would be the one wrong
- * answer.
- */
-export function backupTruncationLabel(backup: {
-  truncated?: true;
-  truncationReason?: BackupTruncationReason;
-}): string | null {
-  if (!backup.truncated) return null;
-  if (backup.truncationReason === "file-count") {
-    return "partial — stopped at the file-count limit";
-  }
-  if (backup.truncationReason === "total-bytes") {
-    return "partial — stopped at the total-bytes limit";
-  }
-  if (backup.truncationReason === "file-size") {
-    // Worded differently on purpose: this one did not STOP the copy, it stepped
-    // over a single object and carried on, and "stopped at" would misdescribe a
-    // backup that is otherwise complete.
-    return "partial — skipped a file over the file-size limit";
-  }
-  return "partial — stopped at a safety limit";
 }
 
 /** Human-readable size used by API/UI without exposing raw backup contents. */

@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { Alert } from "@/components/Alert";
-import { backupTruncationLabel, type BackupSummary } from "@/lib/backups";
+import { backupTruncationLabel } from "@/lib/backup-display";
+import type { BackupSummary } from "@/lib/backups";
 import type { RetrievalEvalCase, RetrievalEvalRun } from "@/lib/retrieval-evals";
 import type { SystemHealthSnapshot } from "@/lib/system-health";
 import {
