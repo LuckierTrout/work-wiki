@@ -684,6 +684,33 @@ describe("workspace outputs", () => {
 });
 
 describe("the shell asks before it leaves the workspace", () => {
+  it("keys a real mixed-case executable and rejects missing or non-executable files", async () => {
+    const executable = path.join(dir, "FixtureTool");
+    const nonExecutable = path.join(dir, "NotExecutable");
+    const missing = path.join(dir, "MissingTool");
+    try {
+      await writeFile(executable, "#!/bin/sh\nexit 0\n");
+      await chmod(executable, 0o755);
+      await writeFile(nonExecutable, "not a program\n");
+      await chmod(nonExecutable, 0o644);
+
+      expect(executableKey(executable)).toBe(`path:${fsSync.realpathSync(executable)}`);
+      expect(
+        shellApprovalReason(
+          { command: executable, args: [], cwd: workspace.root },
+          { workspace, approvedExecutables: new Set<string>() },
+        ),
+      ).toBe("new_executable");
+      expect(executableKey(missing)).toBe("");
+      expect(executableKey(nonExecutable)).toBe("");
+    } finally {
+      await Promise.all([
+        rm(executable, { force: true }),
+        rm(nonExecutable, { force: true }),
+      ]);
+    }
+  });
+
   it("classifies a workspace command, an external cwd, and an external target", () => {
     const approved = new Set([
       executableKey("git", { cwd: workspace.root, workspace }),
@@ -717,16 +744,6 @@ describe("the shell asks before it leaves the workspace", () => {
         { workspace, approvedExecutables: approved },
       ),
     ).toBeNull();
-    // A program the Agent has not used before asks once, by basename.
-    expect(
-      shellApprovalReason(
-        { command: "/usr/bin/python3", args: [], cwd: workspace.root },
-        { workspace, approvedExecutables: approved },
-      ),
-    ).toBe("new_executable");
-    expect(executableKey("/usr/bin/Python3")).toBe(
-      `path:${canonicalizePathSnapshot("/usr/bin/Python3")}`,
-    );
     expect(shellApprovalReason({ command: "   " }, { workspace })).toBe("invalid");
   });
 

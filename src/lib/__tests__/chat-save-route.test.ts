@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/auth", () => ({ getPrincipal: vi.fn() }));
 vi.mock("@/lib/query", () => ({ saveAnswerToWiki: vi.fn() }));
@@ -56,6 +56,8 @@ const conversation = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", "alice");
+  vi.stubEnv("YOPEDIA_OWNER_USER_ID", undefined);
   vi.mocked(getPrincipal).mockResolvedValue({ id: "alice", handle: "alice" } as never);
   vi.mocked(getChatConversation).mockResolvedValue(conversation as never);
   vi.mocked(saveAnswerToWiki).mockResolvedValue({ slug: "queries/cited-turn" });
@@ -64,6 +66,10 @@ beforeEach(() => {
     ok: true,
     json: async () => ({ queued: true, jobId: "job-1" }),
   } as never);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("Save uses the named assistant message and keeps Source paths", () => {

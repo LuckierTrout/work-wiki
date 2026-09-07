@@ -1030,33 +1030,28 @@ describe("POST /api/workbench/intake — the in-app URL", () => {
     expect(task.sourceUrl).toBe("https://example.com/posts/why-wikis.html");
   });
 
-  it("hands the inline compile the REMAINDER of the answer budget, not a fresh one", async () => {
-    // DW-700, and the assertion the source scan in `workbench-request.test.ts`
-    // cannot make: that scan still passes if `answerBy` is captured inside
-    // `storeAndQueue` instead of at route entry -- which hands the inline
-    // compile a FULL 17 s AFTER `fetchUrlContent` may already have spent 15 s,
-    // against a 20 s client deadline. That is the original defect, with every
-    // other assertion green. So the fetch is STALLED for a measurable interval
-    // and the budget is read off the call: a remainder shrinks by what the work
-    // before it spent, a fresh fixed margin does not.
-    const STALL_MS = 60;
-    mockedFetchUrl.mockImplementationOnce(async () => {
-      await new Promise((resolve) => setTimeout(resolve, STALL_MS));
-      return { title: "Slow Page", content: "# Slow Page\n\nClip." };
-    });
+  it.each([
+    { elapsedMs: 60, remainingMs: INTAKE_ANSWER_BUDGET_MS - 60 },
+    { elapsedMs: INTAKE_ANSWER_BUDGET_MS + 1, remainingMs: 0 },
+  ])("hands the inline compile exactly $remainingMs ms after $elapsedMs ms of fetch work", async ({ elapsedMs, remainingMs }) => {
+    // DW-700: refreshing the deadline after fetch would hand compile a fresh
+    // budget. Control elapsed time without replacing asynchronous scheduling.
+    let now = 1_800_000_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      mockedFetchUrl.mockImplementationOnce(async () => {
+        now += elapsedMs;
+        return { title: "Slow Page", content: "# Slow Page\n\nClip." };
+      });
 
-    await post(urlRequest({ url: "https://example.com/slow" }));
+      const { status } = await post(urlRequest({ url: "https://example.com/slow" }));
 
-    const options = mockedEnqueue.mock.calls[0][3];
-    // Still positive: the route did not answer with a budget already spent.
-    expect(options?.inlineBudgetMs).toBeGreaterThan(0);
-    expect(options?.inlineBudgetMs).toBeLessThan(INTAKE_ANSWER_BUDGET_MS);
-    // THE PIN: the stall was actually subtracted. `toBeLessThan` alone passes
-    // at 16_999, which a budget captured one line above the call site would
-    // also produce.
-    expect(options?.inlineBudgetMs).toBeLessThanOrEqual(
-      INTAKE_ANSWER_BUDGET_MS - STALL_MS,
-    );
+      expect(status).toBe(202);
+      expect(mockedEnqueue).toHaveBeenCalledTimes(1);
+      expect(mockedEnqueue.mock.calls[0][3]?.inlineBudgetMs).toBe(remainingMs);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("refuses an empty or non-http URL before fetching anything", async () => {

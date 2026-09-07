@@ -53,9 +53,15 @@ function request(method: string, body: Record<string, unknown>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", "alice");
+  vi.stubEnv("YOPEDIA_OWNER_USER_ID", undefined);
   mockedPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
   mockedCreate.mockResolvedValue(CONVERSATION);
   mockedUpdate.mockResolvedValue(CONVERSATION);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("chat evidence-mode API", () => {
@@ -229,15 +235,8 @@ describe("chat evidence-mode API", () => {
 });
 
 describe("configured owner gate", () => {
-  const previousOwner = process.env.NEXT_PUBLIC_OWNER_HANDLE;
-
-  afterEach(() => {
-    if (previousOwner === undefined) delete process.env.NEXT_PUBLIC_OWNER_HANDLE;
-    else process.env.NEXT_PUBLIC_OWNER_HANDLE = previousOwner;
-  });
-
   it("401s Conversation and Save when the principal is not the owner", async () => {
-    process.env.NEXT_PUBLIC_OWNER_HANDLE = "owner";
+    vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", "owner");
     mockedPrincipal.mockResolvedValue({ id: "user-1", handle: "alice" });
 
     const list = await listConversations();

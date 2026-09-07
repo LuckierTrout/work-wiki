@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -88,6 +88,15 @@ describe("cloud Chat is sidecar_required", () => {
 });
 
 describe("kernel Search auth and empty query", () => {
+  beforeEach(() => {
+    vi.stubEnv("NEXT_PUBLIC_OWNER_HANDLE", "alice");
+    vi.stubEnv("YOPEDIA_OWNER_USER_ID", undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("401s without a session and 400s an empty query", async () => {
     const unauth = await POST_SEARCH(
       new Request("http://local/search", {
