@@ -27,6 +27,18 @@ If the invocation carries `--migrate <manifest-path>`, this is a **migration
 session**, not triage: read `./migration-mode.md` and follow it instead of
 Steps 1–4 below.
 
+If the invocation carries `--only DW-<number>`, scope every instruction about
+"every open entry" to that single ID. Never combine `--only` with `--migrate`.
+This overrides Step 1's full-ledger read and automation-mode.md's whole-ledger
+`open_ids` equality rule: locate and read only the selected block (plus its
+referenced archive body when present), without auditing the other entries.
+Verify only that selected open entry; `open_ids` must contain exactly that ID,
+and every category, decision and bundle must contain only that ID. Never trim
+a mixed bundle's intent to fit: report a CRITICAL scope conflict instead.
+Do not write the ledger or pre-answer store. Keep unrelated findings only in
+run artifacts; scoped sweeps never harvest new ledger rows. The orchestrator
+persists this immutable scope across resumes.
+
 ### Step 1: Locate the ledger
 
 Read `{project-root}/_bmad/bmm/config.yaml` to resolve `implementation_artifacts`,
